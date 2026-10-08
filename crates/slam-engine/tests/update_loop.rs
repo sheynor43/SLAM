@@ -128,3 +128,20 @@ fn invalid_config_is_rejected() {
     assert_eq!(make_with(0.0, 16), Some(InvalidUpdateConfig::Rate));
     assert_eq!(make_with(8000.0, 1), None);
 }
+
+#[test]
+fn a_new_rate_restarts_the_schedule() {
+    let (_sink, mut update) = make(1000.0, 4);
+    assert!(update.step());
+    assert_eq!(update.set_hz(0.0), Err(InvalidUpdateConfig::Rate));
+    assert_eq!(update.set_hz(1e-11), Err(InvalidUpdateConfig::Rate));
+    assert_eq!(update.hz(), 1000.0);
+    update.set_hz(100.0).unwrap();
+    assert_eq!(update.hz(), 100.0);
+    let start = now_ns();
+    assert!(update.step());
+    let waited = now_ns() - start;
+    // One 10 ms period from the restart, not the 1 ms one.
+    assert!(waited >= 9_000_000, "{waited} ns");
+    assert_eq!(update.stats().resyncs, 0);
+}

@@ -14,7 +14,7 @@ mod update;
 mod wake;
 
 pub use draw::{Draw, DrawLoop, FrameInfo};
-pub use engine::{Engine, EngineConfig, EngineError, Stopped};
+pub use engine::{Engine, EngineConfig, EngineError, RATE_PRESETS, Stopped};
 pub use snapshot::{SnapshotReader, SnapshotWriter, triple_buffer};
 pub use update::{InvalidUpdateConfig, MAX_UPDATE_HZ, TickInfo, Update, UpdateLoop, UpdateStats};
 pub use wake::{Parker, Waker, wake_pair};

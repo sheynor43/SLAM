@@ -7,7 +7,7 @@ use crate::snapshot::SnapshotWriter;
 use crate::wake::Parker;
 
 /// Highest supported update rate.
-pub const MAX_UPDATE_HZ: f64 = 8000.0;
+pub const MAX_UPDATE_HZ: f64 = crate::limiter::MAX_HZ;
 
 const NS_PER_SEC: f64 = 1_000_000_000.0;
 
@@ -53,7 +53,10 @@ pub struct UpdateStats {
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, thiserror::Error)]
 pub enum InvalidUpdateConfig {
-    #[error("update rate must be finite and in (0, {MAX_UPDATE_HZ}]")]
+    #[error(
+        "update rate must be finite and in [{}, {MAX_UPDATE_HZ}]",
+        crate::limiter::MIN_HZ
+    )]
     Rate,
     #[error("event batch must hold at least one event")]
     EmptyBatch,
@@ -67,6 +70,7 @@ pub struct UpdateLoop<U: Update> {
     writer: SnapshotWriter<U::Snapshot>,
     /// Preallocated; never grows.
     events: Vec<InputEvent>,
+    hz: f64,
     period_ns: f64,
     spin_ns: u64,
     epoch_ns: u64,
@@ -88,9 +92,7 @@ impl<U: Update> UpdateLoop<U> {
         event_batch: usize,
         spin_ns: u64,
     ) -> Result<Self, InvalidUpdateConfig> {
-        if !(hz.is_finite() && hz > 0.0 && hz <= MAX_UPDATE_HZ) {
-            return Err(InvalidUpdateConfig::Rate);
-        }
+        validate_hz(hz)?;
         if event_batch == 0 {
             return Err(InvalidUpdateConfig::EmptyBatch);
         }
@@ -100,6 +102,7 @@ impl<U: Update> UpdateLoop<U> {
             parker,
             writer,
             events: Vec::with_capacity(event_batch),
+            hz,
             period_ns: NS_PER_SEC / hz,
             spin_ns,
             epoch_ns: 0,
@@ -108,6 +111,19 @@ impl<U: Update> UpdateLoop<U> {
             last_event_ns: 0,
             stats: UpdateStats::default(),
         })
+    }
+
+    /// Changes the update rate. The schedule restarts on the next step.
+    pub fn set_hz(&mut self, hz: f64) -> Result<(), InvalidUpdateConfig> {
+        validate_hz(hz)?;
+        self.hz = hz;
+        self.period_ns = NS_PER_SEC / hz;
+        self.started = false;
+        Ok(())
+    }
+
+    pub fn hz(&self) -> f64 {
+        self.hz
     }
 
     pub fn state(&self) -> &U {
@@ -201,6 +217,14 @@ impl<U: Update> UpdateLoop<U> {
                 self.last_event_ns = event.time_ns;
             }
         }
+    }
+}
+
+pub(crate) fn validate_hz(hz: f64) -> Result<(), InvalidUpdateConfig> {
+    if crate::limiter::is_valid_hz(hz) {
+        Ok(())
+    } else {
+        Err(InvalidUpdateConfig::Rate)
     }
 }
 

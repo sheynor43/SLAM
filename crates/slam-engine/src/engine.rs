@@ -1,22 +1,26 @@
 //! Starts and stops the update and draw threads.
 
 use std::sync::Arc;
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::thread::JoinHandle;
 
 use slam_input::EventSource;
 
 use crate::draw::{Draw, DrawLoop};
 use crate::limiter::{
-    DEFAULT_SPIN_THRESHOLD_NS, FrameLimiter, InvalidRate, LimiterMode, SystemTimer,
+    DEFAULT_SPIN_THRESHOLD_NS, FrameLimiter, InvalidRate, LimiterMode, SystemTimer, is_valid_hz,
 };
 use crate::snapshot::triple_buffer;
-use crate::update::{InvalidUpdateConfig, Update, UpdateLoop, UpdateStats};
+use crate::update::{InvalidUpdateConfig, Update, UpdateLoop, UpdateStats, validate_hz};
 use crate::wake::{Waker, wake_pair};
+
+/// Update and draw rates offered to the player, in Hz. Any rate between
+/// [`MIN_HZ`](crate::limiter::MIN_HZ) and [`MAX_HZ`](crate::limiter::MAX_HZ) is accepted as well.
+pub const RATE_PRESETS: [f64; 4] = [1000.0, 2000.0, 4000.0, 8000.0];
 
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct EngineConfig {
-    /// Update rate in Hz, `0 < hz <= MAX_UPDATE_HZ`. Input wakes update in between.
+    /// Update rate in Hz, `MIN_HZ <= hz <= MAX_UPDATE_HZ`. Input wakes update in between.
     pub update_hz: f64,
     pub draw: LimiterMode,
     /// Most input events passed to one tick.
@@ -29,7 +33,7 @@ impl Default for EngineConfig {
     fn default() -> Self {
         Self {
             update_hz: 1000.0,
-            draw: LimiterMode::Unlimited,
+            draw: LimiterMode::Hz(1000.0),
             event_batch: 1024,
             spin_threshold_ns: DEFAULT_SPIN_THRESHOLD_NS,
         }
@@ -52,6 +56,7 @@ type DrawHandle<U, D> = JoinHandle<DrawLoop<<U as Update>::Snapshot, D, SystemTi
 /// Running update and draw threads. Dropping it stops and joins them.
 pub struct Engine<U: Update, D: Draw<U::Snapshot>> {
     stop: Arc<AtomicBool>,
+    rates: Arc<Rates>,
     waker: Waker,
     update: Option<UpdateHandle<U>>,
     draw: Option<DrawHandle<U, D>>,
@@ -94,18 +99,33 @@ impl<U: Update, D: Draw<U::Snapshot>> Engine<U, D> {
         let mut draw_loop = DrawLoop::new(draw, reader, limiter);
 
         let stop = Arc::new(AtomicBool::new(false));
+        // The loops start with these rates; each thread compares the shared ones
+        // against them, so a change made before the thread first runs is not lost.
+        let (initial_update, initial_draw) = (config.update_hz.to_bits(), encode_mode(config.draw));
+        let rates = Arc::new(Rates {
+            update: AtomicU64::new(initial_update),
+            draw: AtomicU64::new(initial_draw),
+        });
         let mut engine = Self {
             stop: Arc::clone(&stop),
+            rates: Arc::clone(&rates),
             waker,
             update: None,
             draw: None,
         };
         engine.update = Some({
-            let stop = Arc::clone(&stop);
+            let (stop, rates) = (Arc::clone(&stop), Arc::clone(&rates));
             std::thread::Builder::new()
                 .name("slam-update".into())
                 .spawn(move || {
+                    let mut applied = initial_update;
                     while !stop.load(Ordering::Acquire) {
+                        let wanted = rates.update.load(Ordering::Relaxed);
+                        if wanted != applied {
+                            // Validated by `Engine::set_update_hz`.
+                            let _ = update_loop.set_hz(f64::from_bits(wanted));
+                            applied = wanted;
+                        }
                         update_loop.step();
                     }
                     update_loop
@@ -114,7 +134,14 @@ impl<U: Update, D: Draw<U::Snapshot>> Engine<U, D> {
         // On failure `engine` is dropped, which stops the update thread.
         engine.draw = Some(std::thread::Builder::new().name("slam-draw".into()).spawn(
             move || {
+                let mut applied = initial_draw;
                 while !stop.load(Ordering::Acquire) {
+                    let wanted = rates.draw.load(Ordering::Relaxed);
+                    if wanted != applied {
+                        // Validated by `Engine::set_draw_mode`.
+                        let _ = draw_loop.set_mode(decode_mode(wanted));
+                        applied = wanted;
+                    }
                     draw_loop.step();
                 }
                 draw_loop
@@ -129,8 +156,38 @@ impl<U: Update, D: Draw<U::Snapshot>> Engine<U, D> {
         &self.waker
     }
 
+    /// Changes the update rate while running. Takes effect at once: a sleeping update
+    /// thread is woken and restarts its schedule.
+    pub fn set_update_hz(&self, hz: f64) -> Result<(), InvalidUpdateConfig> {
+        validate_hz(hz)?;
+        self.rates.update.store(hz.to_bits(), Ordering::Relaxed);
+        self.waker.notify();
+        Ok(())
+    }
+
+    pub fn update_hz(&self) -> f64 {
+        f64::from_bits(self.rates.update.load(Ordering::Relaxed))
+    }
+
+    /// Changes the draw frame rate while running. Takes effect after the frame being
+    /// waited for (at most `1 / MIN_HZ`).
+    pub fn set_draw_mode(&self, mode: LimiterMode) -> Result<(), InvalidRate> {
+        if let LimiterMode::Hz(hz) = mode
+            && !is_valid_hz(hz)
+        {
+            return Err(InvalidRate);
+        }
+        self.rates.draw.store(encode_mode(mode), Ordering::Relaxed);
+        Ok(())
+    }
+
+    pub fn draw_mode(&self) -> LimiterMode {
+        decode_mode(self.rates.draw.load(Ordering::Relaxed))
+    }
+
     /// Stops both threads and returns their state. A panic in either thread is
-    /// resumed here.
+    /// resumed here. Draw stops after the frame it is waiting for (at most
+    /// `1 / MIN_HZ`).
     pub fn shutdown(mut self) -> Stopped<U, D> {
         self.request_stop();
         let update = join(self.update.take());
@@ -149,6 +206,30 @@ impl<U: Update, D: Draw<U::Snapshot>> Engine<U, D> {
         self.stop.store(true, Ordering::Release);
         // Update may be asleep until a distant deadline.
         self.waker.notify();
+    }
+}
+
+/// Rates requested through the engine handle, polled by each thread once per step.
+struct Rates {
+    /// `f64` bits of the update rate.
+    update: AtomicU64,
+    /// See [`encode_mode`].
+    draw: AtomicU64,
+}
+
+/// `Unlimited` is 0; a rate is its `f64` bits, never 0 since the rate is positive.
+fn encode_mode(mode: LimiterMode) -> u64 {
+    match mode {
+        LimiterMode::Unlimited => 0,
+        LimiterMode::Hz(hz) => hz.to_bits(),
+    }
+}
+
+fn decode_mode(bits: u64) -> LimiterMode {
+    if bits == 0 {
+        LimiterMode::Unlimited
+    } else {
+        LimiterMode::Hz(f64::from_bits(bits))
     }
 }
 
