@@ -7,6 +7,21 @@ repository.workspace = true
 publish.workspace = true
 
 [dependencies]
+rtrb.workspace = true
+thiserror.workspace = true
+sdl3-sys.workspace = true
+
+# Linux: build SDL3 from the vendored sources and link statically, so neither CI nor
+# users need a system SDL3. Only the video subsystem (window + events) is enabled.
+[target.'cfg(target_os = "linux")'.dependencies]
+sdl3-sys = { workspace = true, features = ["build-from-source-static", "no-default-subsystems", "sdl-video"] }
+
+# Windows: link against an SDL3 found by pkg-config, else by name.
+[target.'cfg(windows)'.dependencies]
+sdl3-sys = { workspace = true, features = ["use-pkg-config"] }
+
+[dev-dependencies]
+slam-testkit = { path = "../slam-testkit" }
 
 [lints]
 workspace = true
