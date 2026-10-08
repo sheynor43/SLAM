@@ -13,6 +13,7 @@ fmt-check:
 
 clippy:
     cargo clippy --workspace --all-targets -- -D warnings
+    cargo clippy --workspace --all-targets --target x86_64-pc-windows-gnu -- -D warnings
 
 # Тесты с коротким выводом
 test *ARGS:

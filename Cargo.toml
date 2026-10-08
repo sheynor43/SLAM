@@ -10,6 +10,9 @@ repository = "https://github.com/sheynor43/SLAM"
 publish = false
 
 [workspace.dependencies]
+libc = "0.2.190"
+thiserror = "2.0.21"
+windows-sys = { version = "0.61.2", features = ["Win32_Foundation", "Win32_Security", "Win32_System_Threading"] }
 
 [workspace.lints.rust]
 unsafe_op_in_unsafe_fn = "deny"
