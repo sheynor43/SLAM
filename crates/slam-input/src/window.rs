@@ -13,7 +13,7 @@ use sdl3_sys::video::{
 };
 
 use crate::gl::{self, GlContext, PixelSize};
-use crate::{EventSink, InputEvent, TickMapper, convert};
+use crate::{EventSink, InputCounters, InputEvent, TickMapper, convert};
 
 /// SDL supports a single initialisation per process at a time.
 static SDL_ACTIVE: AtomicBool = AtomicBool::new(false);
@@ -48,6 +48,7 @@ pub struct InputWindow {
     /// Drawable size for the draw thread, updated by [`InputWindow::run`]. Shared with
     /// the [`GlContext`], if any: a strong count above one means the context is alive.
     size: Arc<PixelSize>,
+    counters: Arc<InputCounters>,
 }
 
 impl InputWindow {
@@ -113,6 +114,7 @@ impl InputWindow {
             window,
             opengl,
             size,
+            counters: Arc::default(),
         })
     }
 
@@ -130,6 +132,12 @@ impl InputWindow {
         // the thread that initialised SDL.
         unsafe { GlContext::create(self.window, Arc::clone(&self.size)) }
             .map_err(WindowError::GlContext)
+    }
+
+    /// Counters updated by [`InputWindow::run`]; share them with the thread that shows
+    /// them.
+    pub fn counters(&self) -> &Arc<InputCounters> {
+        &self.counters
     }
 
     /// Blocks on OS events until the window is closed. Keyboard and mouse events are
@@ -152,6 +160,7 @@ impl InputWindow {
             if !unsafe { SDL_WaitEvent(&mut event) } {
                 return Err(WindowError::WaitEvent(sdl_error()));
             }
+            self.counters.record_poll();
             // SAFETY: `type` is the common prefix of every SDL_Event variant.
             match SDL_EventType(unsafe { event.r#type }) {
                 SDL_EVENT_QUIT => return Ok(()),
@@ -161,7 +170,9 @@ impl InputWindow {
                     self.size.store(window.data1, window.data2);
                 }
                 _ => {
-                    dispatch(&event, sink, mapper);
+                    if dispatch(&event, sink, mapper) {
+                        self.counters.record_queued();
+                    }
                 }
             }
         }

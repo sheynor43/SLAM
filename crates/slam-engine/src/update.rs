@@ -182,6 +182,7 @@ impl<U: Update> UpdateLoop<U> {
         // At least one tick even without input; more while the ring holds more than
         // a batch.
         loop {
+            crate::zone!("update tick");
             self.drain();
             // After the drain, so no event is newer than the tick.
             info.now_ns = clock::now_ns();

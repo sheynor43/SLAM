@@ -11,6 +11,7 @@ use crate::limiter::{
     DEFAULT_SPIN_THRESHOLD_NS, FrameLimiter, InvalidRate, LimiterMode, SystemTimer, is_valid_hz,
 };
 use crate::snapshot::triple_buffer;
+use crate::stats::EngineCounters;
 use crate::update::{InvalidUpdateConfig, Update, UpdateLoop, UpdateStats, validate_hz};
 use crate::wake::{Waker, wake_pair};
 
@@ -57,6 +58,7 @@ type DrawHandle<U, D> = JoinHandle<DrawLoop<<U as Update>::Snapshot, D, SystemTi
 pub struct Engine<U: Update, D: Draw<U::Snapshot>> {
     stop: Arc<AtomicBool>,
     rates: Arc<Rates>,
+    counters: Arc<EngineCounters>,
     waker: Waker,
     update: Option<UpdateHandle<U>>,
     draw: Option<DrawHandle<U, D>>,
@@ -79,6 +81,22 @@ impl<U: Update, D: Draw<U::Snapshot>> Engine<U, D> {
         draw: D,
         initial: U::Snapshot,
         source: EventSource,
+    ) -> Result<Self, EngineError>
+    where
+        U::Snapshot: Clone,
+    {
+        Self::spawn_with_counters(config, update, draw, initial, source, Arc::default())
+    }
+
+    /// [`Engine::spawn`] publishing progress into `counters`, which `draw` may hold
+    /// already (the frame-time overlay reads them).
+    pub fn spawn_with_counters(
+        config: EngineConfig,
+        update: U,
+        draw: D,
+        initial: U::Snapshot,
+        source: EventSource,
+        counters: Arc<EngineCounters>,
     ) -> Result<Self, EngineError>
     where
         U::Snapshot: Clone,
@@ -109,12 +127,14 @@ impl<U: Update, D: Draw<U::Snapshot>> Engine<U, D> {
         let mut engine = Self {
             stop: Arc::clone(&stop),
             rates: Arc::clone(&rates),
+            counters: Arc::clone(&counters),
             waker,
             update: None,
             draw: None,
         };
         engine.update = Some({
-            let (stop, rates) = (Arc::clone(&stop), Arc::clone(&rates));
+            let (stop, rates, counters) =
+                (Arc::clone(&stop), Arc::clone(&rates), Arc::clone(&counters));
             std::thread::Builder::new()
                 .name("slam-update".into())
                 .spawn(move || {
@@ -126,7 +146,9 @@ impl<U: Update, D: Draw<U::Snapshot>> Engine<U, D> {
                             let _ = update_loop.set_hz(f64::from_bits(wanted));
                             applied = wanted;
                         }
-                        update_loop.step();
+                        if update_loop.step() {
+                            counters.set_update_ticks(update_loop.stats().ticks);
+                        }
                     }
                     update_loop
                 })?
@@ -144,6 +166,7 @@ impl<U: Update, D: Draw<U::Snapshot>> Engine<U, D> {
                         applied = wanted;
                     }
                     draw_loop.step();
+                    counters.set_draw_frames(draw_loop.frames());
                 }
                 draw_loop.stop();
                 draw_loop
@@ -156,6 +179,11 @@ impl<U: Update, D: Draw<U::Snapshot>> Engine<U, D> {
     /// [`slam_input::EventSink::set_notify`].
     pub fn waker(&self) -> &Waker {
         &self.waker
+    }
+
+    /// Progress of the update and draw threads.
+    pub fn counters(&self) -> &Arc<EngineCounters> {
+        &self.counters
     }
 
     /// Changes the update rate while running. Takes effect at once: a sleeping update

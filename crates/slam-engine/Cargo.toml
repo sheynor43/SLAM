@@ -11,6 +11,12 @@ slam-input = { path = "../slam-input" }
 slam-render = { path = "../slam-render" }
 slam-audio = { path = "../slam-audio" }
 thiserror.workspace = true
+tracy-client = { workspace = true, optional = true }
+
+[features]
+# Tracy profiler zones and frame marks (development only). Off: the profiling
+# macros expand to nothing.
+tracy = ["dep:tracy-client"]
 
 [build-dependencies]
 slam-shader-build = { path = "../slam-shader-build" }

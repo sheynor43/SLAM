@@ -16,6 +16,8 @@ naga = { version = "30.0.1", default-features = false, features = ["wgsl-in", "g
 rtrb = "0.4.0"
 sdl3-sys = { version = "0.7.2", default-features = false }
 thiserror = "2.0.21"
+# Started explicitly, records only while a viewer is connected, local viewer only.
+tracy-client = { version = "0.19.0", default-features = false, features = ["enable", "manual-lifetime", "ondemand", "only-localhost"] }
 tracing = "0.1.44"
 tracing-subscriber = { version = "0.3.23", default-features = false, features = ["fmt", "ansi", "env-filter", "std"] }
 windows-sys = { version = "0.61.2", features = ["Win32_Foundation", "Win32_Security", "Win32_System_Performance", "Win32_System_Threading"] }

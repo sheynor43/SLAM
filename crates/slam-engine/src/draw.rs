@@ -57,9 +57,12 @@ impl<S, D: Draw<S>, T: Timer> DrawLoop<S, D, T> {
     /// waits for the update thread. Allocation-free.
     pub fn step(&mut self) {
         let wait = self.limiter.wait();
+        crate::zone!("draw frame");
+        crate::plot!("draw lateness (us)", wait.lateness_ns() as f64 / 1e3);
         let (snapshot, fresh) = self.reader.read();
         self.draw.frame(&FrameInfo { wait, fresh }, snapshot);
         self.frames += 1;
+        crate::profiling::frame_mark();
     }
 
     /// Changes the frame rate. The limiter schedule restarts on the next frame.
