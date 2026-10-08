@@ -1,5 +1,5 @@
 [package]
-name = "slam-render"
+name = "slam-shader-build"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
@@ -7,12 +7,8 @@ repository.workspace = true
 publish.workspace = true
 
 [dependencies]
-glow.workspace = true
+naga.workspace = true
 thiserror.workspace = true
-tracing.workspace = true
-
-[build-dependencies]
-slam-shader-build = { path = "../slam-shader-build" }
 
 [lints]
 workspace = true

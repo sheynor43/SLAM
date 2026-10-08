@@ -12,6 +12,9 @@ slam-render = { path = "../slam-render" }
 slam-audio = { path = "../slam-audio" }
 thiserror.workspace = true
 
+[build-dependencies]
+slam-shader-build = { path = "../slam-shader-build" }
+
 [lints]
 workspace = true
 

@@ -7,47 +7,19 @@ use slam_engine::gl::SdlGlSurface;
 use slam_input::InputWindow;
 use slam_render::gl::{GlDebug, GlDevice};
 use slam_render::{
-    Binding, BindingKind, Blend, BufferDesc, BufferKind, BufferUpdate, Color, DescError, Device,
-    DeviceError, DrawError, Extent, IndexFormat, PipelineDesc, RenderTargetDesc, TextureDesc,
+    Blend, BufferDesc, BufferKind, BufferUpdate, Color, DescError, Device, DeviceError, DrawError,
+    Extent, GlslShader, IndexFormat, PipelineDesc, RenderTargetDesc, Shader, TextureDesc,
     TextureFormat, TextureUsage, VertexAttribute, VertexFormat, VertexLayout,
 };
 use slam_testkit::count_allocs;
 
 slam_testkit::install_counting_allocator!();
 
-const COLOR_VS: &str = r"#version 330 core
-layout(location = 0) in vec2 position;
-layout(location = 1) in vec4 color;
-layout(std140) uniform Globals { vec4 tint; };
-out vec4 v_color;
-void main() {
-    gl_Position = vec4(position, 0.0, 1.0);
-    v_color = color * tint;
+// Generated from `shaders/*.wgsl` by the build script; holds the example shaders too.
+#[allow(dead_code)]
+mod shaders {
+    include!(concat!(env!("OUT_DIR"), "/shaders.rs"));
 }
-";
-
-const COLOR_FS: &str = r"#version 330 core
-in vec4 v_color;
-out vec4 frag;
-void main() { frag = v_color; }
-";
-
-const TEXTURED_VS: &str = r"#version 330 core
-layout(location = 0) in vec2 position;
-layout(location = 1) in vec2 uv;
-out vec2 v_uv;
-void main() {
-    gl_Position = vec4(position, 0.0, 1.0);
-    v_uv = uv;
-}
-";
-
-const TEXTURED_FS: &str = r"#version 330 core
-uniform sampler2D image;
-in vec2 v_uv;
-out vec4 frag;
-void main() { frag = texture(image, v_uv); }
-";
 
 const COLOR_ATTRIBUTES: [VertexAttribute; 2] = [
     VertexAttribute {
@@ -151,19 +123,12 @@ fn draws_through_buffers_pipelines_and_targets() {
         assert_eq!(d.draw(0..3), Err(DrawError::NoPipeline));
         assert_eq!(d.draw_indexed(0..3), Err(DrawError::NoIndexBuffer));
 
-        let globals = Binding {
-            name: "Globals",
-            kind: BindingKind::UniformBuffer,
-            slot: 2,
-        };
         let color_desc = |blend| PipelineDesc {
-            vertex_shader: COLOR_VS,
-            fragment_shader: COLOR_FS,
+            shader: &shaders::TEST_COLOR,
             layout: VertexLayout {
                 stride: 12,
                 attributes: &COLOR_ATTRIBUTES,
             },
-            bindings: std::slice::from_ref(&globals),
             blend,
         };
         let opaque = d
@@ -178,32 +143,58 @@ fn draws_through_buffers_pipelines_and_targets() {
         let additive = d
             .create_pipeline(&color_desc(Blend::Additive))
             .expect("pipeline");
-        let image = Binding {
-            name: "image",
-            kind: BindingKind::Texture,
-            slot: 3,
-        };
         let textured = d
             .create_pipeline(&PipelineDesc {
-                vertex_shader: TEXTURED_VS,
-                fragment_shader: TEXTURED_FS,
+                shader: &shaders::TEST_TEXTURED,
                 layout: VertexLayout {
                     stride: 16,
                     attributes: &TEXTURED_ATTRIBUTES,
                 },
-                bindings: std::slice::from_ref(&image),
                 blend: Blend::Replace,
             })
             .expect("textured pipeline");
 
-        // Compiler output is reported.
-        let broken = d.create_pipeline(&PipelineDesc {
-            fragment_shader: "#version 330 core\nvoid main() { undefined_call(); }",
-            ..color_desc(Blend::Replace)
-        });
-        match broken {
-            Err(DeviceError::Shader(log)) => assert!(log.starts_with("fragment shader:"), "{log}"),
-            other => panic!("expected a shader error, got {:?}", other.err()),
+        // Compiler output is reported with the shader name and stage, for each stage
+        // (a failing render target variant also cleans up the surface program).
+        const BROKEN: &str = "#version 330 core\nvoid main() { undefined_call(); }";
+        let glsl = shaders::TEST_COLOR.glsl;
+        for (broken, stage) in [
+            (
+                GlslShader {
+                    fragment: BROKEN,
+                    ..glsl
+                },
+                "fragment",
+            ),
+            (
+                GlslShader {
+                    vertex_surface: BROKEN,
+                    ..glsl
+                },
+                "surface vertex",
+            ),
+            (
+                GlslShader {
+                    vertex_target: BROKEN,
+                    ..glsl
+                },
+                "render target vertex",
+            ),
+        ] {
+            let shader = Shader {
+                name: "broken",
+                glsl: broken,
+            };
+            let result = d.create_pipeline(&PipelineDesc {
+                shader: &shader,
+                ..color_desc(Blend::Replace)
+            });
+            match result {
+                Err(DeviceError::Shader(log)) => {
+                    assert!(log.starts_with(&format!("broken: {stage}: ")), "{log}")
+                }
+                other => panic!("expected a shader error, got {:?}", other.err()),
+            }
         }
 
         let tint = d
@@ -296,7 +287,7 @@ fn draws_through_buffers_pipelines_and_targets() {
         // Writes green: drawing with it instead of `opaque` would show.
         let scratch_pipeline = d
             .create_pipeline(&PipelineDesc {
-                fragment_shader: "#version 330 core\nout vec4 frag;\nvoid main() { frag = vec4(0.0, 1.0, 0.0, 1.0); }",
+                shader: &shaders::TEST_GREEN,
                 ..color_desc(Blend::Replace)
             })
             .expect("pipeline");
@@ -370,9 +361,59 @@ fn draws_through_buffers_pipelines_and_targets() {
         let size = d.begin_frame(Color::rgb(0.0, 0.0, 1.0));
         assert!(!size.is_empty(), "drawable size {size:?}");
         d.draw_indexed(0..6).expect("draw indexed");
-        // Bottom-left surface pixel samples the target's bottom-left: green.
+        // The left of the surface samples the left half of the target: green.
         assert_near(pixel(&d, 0, 0, true), [0, 255, 0, 255]);
         d.present().expect("present");
+
+        // Coordinates (ADR-0019): v = 0 is the first uploaded row and the top of the
+        // picture, on the surface and in render targets alike. A texture with a red
+        // top row and a blue bottom row, drawn over the whole target (y up, v down).
+        let stripes = d
+            .create_texture(
+                &TextureDesc {
+                    size: Extent::new(1, 2),
+                    format: TextureFormat::Rgba8,
+                    usage: TextureUsage::SAMPLED,
+                },
+                Some(&[255, 0, 0, 255, 0, 0, 255, 255]),
+            )
+            .expect("texture");
+        let screen = d
+            .create_buffer(
+                &buffer(BufferKind::Vertex, 64),
+                Some(&floats(&[
+                    -1.0, 1.0, 0.0, 0.0, //
+                    1.0, 1.0, 1.0, 0.0, //
+                    1.0, -1.0, 1.0, 1.0, //
+                    -1.0, -1.0, 0.0, 1.0,
+                ])),
+            )
+            .expect("screen quad");
+        const RED: [u8; 4] = [255, 0, 0, 255];
+        const BLUE: [u8; 4] = [0, 0, 255, 255];
+        // The pipeline stays set across the switch between surface and target.
+        d.set_vertex_buffer(&screen, 0).expect("vertex buffer");
+        d.set_texture(3, &stripes).expect("texture");
+        d.begin_pass(Some(&target), Some(Color::BLACK));
+        d.draw_indexed(0..6).expect("draw indexed");
+        // The target's first row (read back at y = 0) is the top of the picture.
+        assert_near(pixel(&d, 8, 0, false), RED);
+        assert_near(pixel(&d, 8, 15, false), BLUE);
+        // GL reads the back buffer bottom-up.
+        let top = d.begin_frame(Color::BLACK).height as i32 - 1;
+        d.draw_indexed(0..6).expect("draw indexed");
+        assert_near(pixel(&d, 0, top, true), RED);
+        assert_near(pixel(&d, 0, 0, true), BLUE);
+        // The target drawn onto the surface keeps its orientation.
+        d.set_texture(3, d.render_target_texture(&target))
+            .expect("target texture");
+        d.begin_frame(Color::BLACK);
+        d.draw_indexed(0..6).expect("draw indexed");
+        assert_near(pixel(&d, 0, top, true), RED);
+        assert_near(pixel(&d, 0, 0, true), BLUE);
+        d.present().expect("present");
+        d.destroy_buffer(screen);
+        d.destroy_texture(stripes);
 
         // Draw-time mistakes.
         assert_eq!(
