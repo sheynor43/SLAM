@@ -3,8 +3,14 @@
 pub mod gl;
 pub mod hal;
 
+/// Shaders of this crate, translated from `shaders/*.wgsl` at build time (ADR-0019).
+pub mod shaders {
+    include!(concat!(env!("OUT_DIR"), "/shaders.rs"));
+}
+
 pub use hal::{
     Binding, BindingKind, Blend, BufferDesc, BufferKind, BufferUpdate, Color, DescError, Device,
-    DeviceError, DrawError, Extent, IndexFormat, Limits, PipelineDesc, RenderTargetDesc,
-    TextureDesc, TextureFormat, TextureUsage, VertexAttribute, VertexFormat, VertexLayout,
+    DeviceError, DrawError, Extent, GlslShader, IndexFormat, Limits, PipelineDesc,
+    RenderTargetDesc, Shader, TextureDesc, TextureFormat, TextureUsage, VertexAttribute,
+    VertexFormat, VertexLayout,
 };

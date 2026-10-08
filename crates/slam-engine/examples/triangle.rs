@@ -1,5 +1,5 @@
 //! Draws a spinning triangle from the draw thread through the OpenGL backend: vertex
-//! buffer, uniform buffer rewritten every frame, GLSL 3.30 pipeline. Prints the draw
+//! buffer, uniform buffer rewritten every frame, WGSL shader translated to GLSL 3.30. Prints the draw
 //! rate once per second.
 //!
 //! Run: `cargo run --release -p slam-engine --example triangle [draw_hz]` (default 0 =
@@ -17,29 +17,15 @@ use slam_engine::{Draw, Engine, EngineConfig, FrameInfo, TickInfo, Update};
 use slam_input::{InputEvent, InputWindow, TickMapper, event_ring, sdl_ticks_ns};
 use slam_render::gl::{GlBuffer, GlDebug, GlDevice, GlPipeline};
 use slam_render::{
-    Binding, BindingKind, Blend, BufferDesc, BufferKind, BufferUpdate, Color, Device, PipelineDesc,
-    VertexAttribute, VertexFormat, VertexLayout,
+    Blend, BufferDesc, BufferKind, BufferUpdate, Color, Device, PipelineDesc, VertexAttribute,
+    VertexFormat, VertexLayout,
 };
 
-const VERTEX_SHADER: &str = r"#version 330 core
-layout(location = 0) in vec2 position;
-layout(location = 1) in vec4 color;
-layout(std140) uniform Frame { vec4 rotation_aspect; };
-out vec4 v_color;
-void main() {
-    float c = rotation_aspect.x;
-    float s = rotation_aspect.y;
-    vec2 p = vec2(c * position.x - s * position.y, s * position.x + c * position.y);
-    gl_Position = vec4(p.x * rotation_aspect.z, p.y, 0.0, 1.0);
-    v_color = color;
+// Generated from `shaders/*.wgsl` by the build script; holds the test shaders too.
+#[allow(dead_code)]
+mod shaders {
+    include!(concat!(env!("OUT_DIR"), "/shaders.rs"));
 }
-";
-
-const FRAGMENT_SHADER: &str = r"#version 330 core
-in vec4 v_color;
-out vec4 frag;
-void main() { frag = v_color; }
-";
 
 const ATTRIBUTES: [VertexAttribute; 2] = [
     VertexAttribute {
@@ -86,17 +72,11 @@ impl Draw<()> for Triangle {
         let mut device = GlDevice::new(surface, GlDebug::for_build()).expect("GL device");
         let pipeline = device
             .create_pipeline(&PipelineDesc {
-                vertex_shader: VERTEX_SHADER,
-                fragment_shader: FRAGMENT_SHADER,
+                shader: &shaders::TRIANGLE,
                 layout: VertexLayout {
                     stride: 12,
                     attributes: &ATTRIBUTES,
                 },
-                bindings: &[Binding {
-                    name: "Frame",
-                    kind: BindingKind::UniformBuffer,
-                    slot: 0,
-                }],
                 blend: Blend::Replace,
             })
             .expect("pipeline");

@@ -351,33 +351,57 @@ pub enum BindingKind {
 }
 
 /// Connects a shader resource, by name, to a slot that buffers and textures are bound
-/// to with [`Device::set_uniform_buffer`] and [`Device::set_texture`].
+/// to with [`Device::set_uniform_buffer`] and [`Device::set_texture`]. A slot may have
+/// several names (one per shader stage).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Binding<'a> {
-    /// Uniform block or sampler name in the shader.
+    /// Generated uniform block or sampler name in the backend's shader source.
     pub name: &'a str,
     pub kind: BindingKind,
     pub slot: u32,
 }
 
-/// Shaders and fixed-function state for drawing triangle lists. Shaders are GLSL
-/// 3.30 core for now; translation through `naga` comes later.
+/// A shader written in WGSL and translated at build time by `slam-shader-build`
+/// (ADR-0019), which generates these as constants. In WGSL, `@group(0)` holds uniform
+/// buffers, `@group(1)` textures and `@group(2)` samplers; `@binding` is the slot.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Shader<'a> {
+    /// The WGSL file stem, for error messages.
+    pub name: &'a str,
+    pub glsl: GlslShader<'a>,
+}
+
+/// GLSL 3.30 core sources of a [`Shader`].
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct GlslShader<'a> {
+    /// Vertex stage for drawing to the surface.
+    pub vertex_surface: &'a str,
+    /// Vertex stage for drawing to a render target (clip-space y flipped).
+    pub vertex_target: &'a str,
+    pub fragment: &'a str,
+    pub bindings: &'a [Binding<'a>],
+}
+
+/// Shader and fixed-function state for drawing triangle lists.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct PipelineDesc<'a> {
-    pub vertex_shader: &'a str,
-    pub fragment_shader: &'a str,
+    pub shader: &'a Shader<'a>,
     pub layout: VertexLayout<'a>,
-    pub bindings: &'a [Binding<'a>],
     pub blend: Blend,
 }
 
 impl PipelineDesc<'_> {
     pub fn validate(&self, limits: &Limits) -> Result<(), DescError> {
-        if self.vertex_shader.trim().is_empty() || self.fragment_shader.trim().is_empty() {
+        let glsl = &self.shader.glsl;
+        if [glsl.vertex_surface, glsl.vertex_target, glsl.fragment]
+            .iter()
+            .any(|s| s.trim().is_empty())
+        {
             return Err(DescError::EmptyShader);
         }
         self.layout.validate()?;
-        for (i, b) in self.bindings.iter().enumerate() {
+        let bindings = glsl.bindings;
+        for (i, b) in bindings.iter().enumerate() {
             let max = match b.kind {
                 BindingKind::UniformBuffer => limits.max_uniform_buffer_slots,
                 BindingKind::Texture => limits.max_texture_slots,
@@ -389,15 +413,8 @@ impl PipelineDesc<'_> {
                     max,
                 });
             }
-            let earlier = &self.bindings[..i];
-            if b.name.is_empty() || earlier.iter().any(|e| e.name == b.name) {
+            if b.name.is_empty() || bindings[..i].iter().any(|e| e.name == b.name) {
                 return Err(DescError::BindingName);
-            }
-            if earlier.iter().any(|e| e.kind == b.kind && e.slot == b.slot) {
-                return Err(DescError::BindingSlotTaken {
-                    kind: b.kind,
-                    slot: b.slot,
-                });
             }
         }
         Ok(())
@@ -469,8 +486,6 @@ pub enum DescError {
         slot: u32,
         max: u32,
     },
-    #[error("{kind:?} slot {slot} is bound twice")]
-    BindingSlotTaken { kind: BindingKind, slot: u32 },
 }
 
 /// A draw-time mistake. Reported without allocating; the call has no effect.
@@ -521,9 +536,12 @@ pub enum DeviceError {
 /// Draw state (pipeline, buffers, textures) persists across passes and frames until
 /// replaced; a destroyed resource is unbound.
 ///
-/// Coordinates follow OpenGL for now: clip-space y points up; the first uploaded
-/// texture row is at v = 0; a render target's texture has v = 0 at the bottom of what
-/// was drawn. Other backends flip to match (to be settled with shader translation).
+/// Coordinates (ADR-0019) follow WebGPU, D3D and Metal: clip-space x points right, y up
+/// and z is in [0, 1] (there is no depth buffer); the origin of the surface and of
+/// render targets is the top left; the first uploaded texture row is at v = 0, and a
+/// render target's texture has v = 0 at the top of what was drawn. Geometry keeps z in
+/// [0, 1]: outside it, OpenGL clips on render targets only. Fragment shaders do not read
+/// their position, facing or `dpdy`.
 pub trait Device {
     type Texture;
     type Buffer;
@@ -924,20 +942,33 @@ mod tests {
         );
     }
 
-    const VS: &str = "#version 330 core\nvoid main() {}";
-    const FS: &str = "#version 330 core\nvoid main() {}";
+    const SRC: &str = "#version 330 core\nvoid main() {}";
 
-    fn pipeline<'a>(bindings: &'a [Binding<'a>]) -> PipelineDesc<'a> {
+    fn shader<'a>(bindings: &'a [Binding<'a>]) -> Shader<'a> {
+        Shader {
+            name: "test",
+            glsl: GlslShader {
+                vertex_surface: SRC,
+                vertex_target: SRC,
+                fragment: SRC,
+                bindings,
+            },
+        }
+    }
+
+    fn pipeline<'a>(shader: &'a Shader<'a>) -> PipelineDesc<'a> {
         PipelineDesc {
-            vertex_shader: VS,
-            fragment_shader: FS,
+            shader,
             layout: VertexLayout {
                 stride: 20,
                 attributes: &SPRITE,
             },
-            bindings,
             blend: Blend::Alpha,
         }
+    }
+
+    fn validate(bindings: &[Binding<'_>]) -> Result<(), DescError> {
+        pipeline(&shader(bindings)).validate(&LIMITS)
     }
 
     const fn binding(name: &str, kind: BindingKind, slot: u32) -> Binding<'_> {
@@ -951,22 +982,26 @@ mod tests {
             binding("atlas", BindingKind::Texture, 0),
             binding("mask", BindingKind::Texture, 15),
         ];
-        assert_eq!(pipeline(&bindings).validate(&LIMITS), Ok(()));
+        assert_eq!(validate(&bindings), Ok(()));
     }
 
     #[test]
     fn rejects_empty_shader() {
-        let mut d = pipeline(&[]);
-        d.fragment_shader = "  \n";
-        assert_eq!(d.validate(&LIMITS), Err(DescError::EmptyShader));
-        let mut d = pipeline(&[]);
-        d.vertex_shader = "";
-        assert_eq!(d.validate(&LIMITS), Err(DescError::EmptyShader));
+        for stage in 0..3 {
+            let mut s = shader(&[]);
+            *[
+                &mut s.glsl.vertex_surface,
+                &mut s.glsl.vertex_target,
+                &mut s.glsl.fragment,
+            ][stage] = "  \n";
+            assert_eq!(pipeline(&s).validate(&LIMITS), Err(DescError::EmptyShader));
+        }
     }
 
     #[test]
     fn pipeline_checks_layout() {
-        let mut d = pipeline(&[]);
+        let s = shader(&[]);
+        let mut d = pipeline(&s);
         d.layout.stride = 0;
         assert_eq!(
             d.validate(&LIMITS),
@@ -978,7 +1013,7 @@ mod tests {
     fn rejects_binding_slot_over_limit() {
         let b = [binding("atlas", BindingKind::Texture, 16)];
         assert_eq!(
-            pipeline(&b).validate(&LIMITS),
+            validate(&b),
             Err(DescError::BindingSlot {
                 kind: BindingKind::Texture,
                 slot: 16,
@@ -987,7 +1022,7 @@ mod tests {
         );
         let b = [binding("Globals", BindingKind::UniformBuffer, 12)];
         assert_eq!(
-            pipeline(&b).validate(&LIMITS),
+            validate(&b),
             Err(DescError::BindingSlot {
                 kind: BindingKind::UniformBuffer,
                 slot: 12,
@@ -999,33 +1034,22 @@ mod tests {
     #[test]
     fn rejects_bad_binding_names() {
         let b = [binding("", BindingKind::Texture, 0)];
-        assert_eq!(pipeline(&b).validate(&LIMITS), Err(DescError::BindingName));
+        assert_eq!(validate(&b), Err(DescError::BindingName));
         let b = [
             binding("a", BindingKind::Texture, 0),
             binding("a", BindingKind::UniformBuffer, 0),
         ];
-        assert_eq!(pipeline(&b).validate(&LIMITS), Err(DescError::BindingName));
+        assert_eq!(validate(&b), Err(DescError::BindingName));
     }
 
     #[test]
-    fn rejects_shared_slot_within_kind() {
+    fn slot_may_have_a_name_per_stage() {
         let b = [
-            binding("a", BindingKind::Texture, 3),
-            binding("b", BindingKind::Texture, 3),
+            binding("Globals_block_0Vertex", BindingKind::UniformBuffer, 3),
+            binding("Globals_block_0Fragment", BindingKind::UniformBuffer, 3),
+            binding("tex", BindingKind::Texture, 3),
         ];
-        assert_eq!(
-            pipeline(&b).validate(&LIMITS),
-            Err(DescError::BindingSlotTaken {
-                kind: BindingKind::Texture,
-                slot: 3
-            })
-        );
-        // Uniform buffers and textures have separate slots.
-        let b = [
-            binding("a", BindingKind::Texture, 3),
-            binding("B", BindingKind::UniformBuffer, 3),
-        ];
-        assert_eq!(pipeline(&b).validate(&LIMITS), Ok(()));
+        assert_eq!(validate(&b), Ok(()));
     }
 
     #[test]

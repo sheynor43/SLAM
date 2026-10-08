@@ -89,7 +89,8 @@ impl Layout {
 }
 
 pub struct GlPipeline {
-    program: glow::Program,
+    /// Linked programs indexed by [`Variant`].
+    programs: [glow::Program; 2],
     layout: Layout,
     blend: Blend,
 }
@@ -105,6 +106,24 @@ impl GlRenderTarget {
     }
 }
 
+/// Which vertex stage of a [`crate::Shader`] a program uses: GL draws to the surface
+/// as is, and to render targets with clip-space y flipped (ADR-0019).
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Variant {
+    Surface = 0,
+    Target = 1,
+}
+
+impl Variant {
+    fn of(target: Option<glow::Framebuffer>) -> Self {
+        if target.is_some() {
+            Self::Target
+        } else {
+            Self::Surface
+        }
+    }
+}
+
 #[derive(Clone, Copy, PartialEq, Eq)]
 struct BoundBuffer {
     raw: glow::Buffer,
@@ -116,7 +135,8 @@ struct BoundBuffer {
 /// layout is applied only when the pipeline or vertex buffer changes.
 struct State {
     target: Option<glow::Framebuffer>,
-    program: Option<glow::Program>,
+    /// Programs of the set pipeline; the one for the bound target is in use.
+    programs: Option<[glow::Program; 2]>,
     layout: Option<Layout>,
     blend: Blend,
     vertex: Option<BoundBuffer>,
@@ -202,7 +222,7 @@ impl<S: GlSurface> GlDevice<S> {
             vertex_array,
             state: State {
                 target: None,
-                program: None,
+                programs: None,
                 layout: None,
                 blend: Blend::Replace,
                 vertex: None,
@@ -237,14 +257,34 @@ impl<S: GlSurface> GlDevice<S> {
         &self.gl
     }
 
-    /// Binds `target` (the surface if `None`) unless already bound.
+    /// Binds `target` (the surface if `None`) unless already bound, switching the
+    /// set pipeline to the program for that kind of target.
+    ///
+    /// The render target variant reverses the winding: if face culling is ever
+    /// enabled, the front face must switch here together with the program.
     fn bind_target(&mut self, target: Option<glow::Framebuffer>) {
         if self.state.target != target {
+            let old = Variant::of(self.state.target);
+            let new = Variant::of(target);
             // SAFETY: the context is current; `target` is a live framebuffer of this
-            // device or the default one.
-            unsafe { self.gl.bind_framebuffer(glow::FRAMEBUFFER, target) };
+            // device or the default one; set programs are live and linked.
+            unsafe {
+                self.gl.bind_framebuffer(glow::FRAMEBUFFER, target);
+                if let Some(programs) = self.state.programs
+                    && old != new
+                {
+                    self.gl.use_program(Some(programs[new as usize]));
+                }
+            }
             self.state.target = target;
         }
+    }
+
+    /// The program in use, if a pipeline is set.
+    fn current_program(&self) -> Option<glow::Program> {
+        self.state
+            .programs
+            .map(|p| p[Variant::of(self.state.target) as usize])
     }
 
     fn apply_blend(&mut self, blend: Blend) {
@@ -379,28 +419,75 @@ unsafe fn gl_error(gl: &glow::Context, what: &str) -> Result<(), DeviceError> {
 /// The context must be current.
 unsafe fn compile_shader(
     gl: &glow::Context,
-    stage: u32,
+    shader: &str,
+    stage: &str,
+    kind: u32,
     source: &str,
 ) -> Result<glow::Shader, DeviceError> {
-    let name = if stage == glow::VERTEX_SHADER {
-        "vertex"
-    } else {
-        "fragment"
-    };
     // SAFETY: guaranteed by the caller; the shader is deleted on failure.
     unsafe {
-        let shader = gl.create_shader(stage).map_err(DeviceError::Backend)?;
-        gl.shader_source(shader, source);
-        gl.compile_shader(shader);
-        if !gl.get_shader_compile_status(shader) {
-            let log = gl.get_shader_info_log(shader);
-            gl.delete_shader(shader);
+        let raw = gl.create_shader(kind).map_err(DeviceError::Backend)?;
+        gl.shader_source(raw, source);
+        gl.compile_shader(raw);
+        if !gl.get_shader_compile_status(raw) {
+            let log = gl.get_shader_info_log(raw);
+            gl.delete_shader(raw);
             return Err(DeviceError::Shader(format!(
-                "{name} shader: {}",
+                "{shader}: {stage}: {}",
                 log.trim()
             )));
         }
-        Ok(shader)
+        Ok(raw)
+    }
+}
+
+/// Links `vertex` and `fragment` and binds `bindings` to their slots. The shaders stay
+/// alive; the program in use is left unchanged.
+///
+/// # Safety
+/// The context must be current; `vertex` and `fragment` must be compiled shaders.
+unsafe fn link_program(
+    gl: &glow::Context,
+    shader: &str,
+    vertex: glow::Shader,
+    fragment: glow::Shader,
+    bindings: &[crate::hal::Binding<'_>],
+    in_use: Option<glow::Program>,
+) -> Result<glow::Program, DeviceError> {
+    // SAFETY: guaranteed by the caller; the program is deleted on failure and the
+    // program in use is restored after setting sampler units.
+    unsafe {
+        let program = gl.create_program().map_err(DeviceError::Backend)?;
+        gl.attach_shader(program, vertex);
+        gl.attach_shader(program, fragment);
+        gl.link_program(program);
+        gl.detach_shader(program, vertex);
+        gl.detach_shader(program, fragment);
+        if !gl.get_program_link_status(program) {
+            let log = gl.get_program_info_log(program);
+            gl.delete_program(program);
+            return Err(DeviceError::Shader(format!(
+                "{shader}: link: {}",
+                log.trim()
+            )));
+        }
+        gl.use_program(Some(program));
+        for b in bindings {
+            // Names come from naga's reflection of one stage, so each is found in the
+            // program unless the driver dropped the resource as unused.
+            match b.kind {
+                BindingKind::UniformBuffer => match gl.get_uniform_block_index(program, b.name) {
+                    Some(index) => gl.uniform_block_binding(program, index, b.slot),
+                    None => tracing::debug!(shader, name = b.name, "uniform block not active"),
+                },
+                BindingKind::Texture => match gl.get_uniform_location(program, b.name) {
+                    Some(location) => gl.uniform_1_i32(Some(&location), b.slot as i32),
+                    None => tracing::debug!(shader, name = b.name, "sampler not active"),
+                },
+            }
+        }
+        gl.use_program(in_use);
+        Ok(program)
     }
 }
 
@@ -545,63 +632,39 @@ impl<S: GlSurface> crate::hal::Device for GlDevice<S> {
     fn create_pipeline(&mut self, desc: &PipelineDesc<'_>) -> Result<GlPipeline, DeviceError> {
         desc.validate(&self.limits)?;
         let gl = &self.gl;
-        // SAFETY: the context is current; shaders and the program are deleted on every
-        // failure path; the previously used program is restored before returning.
-        let program = unsafe {
-            let vertex = compile_shader(gl, glow::VERTEX_SHADER, desc.vertex_shader)?;
-            let fragment = match compile_shader(gl, glow::FRAGMENT_SHADER, desc.fragment_shader) {
-                Ok(fragment) => fragment,
-                Err(e) => {
-                    gl.delete_shader(vertex);
-                    return Err(e);
-                }
+        let shader = desc.shader;
+        let glsl = &shader.glsl;
+        let in_use = self.current_program();
+        // SAFETY: the context is current; every shader is deleted before returning and
+        // the surface program is deleted if the target one fails.
+        let programs = unsafe {
+            let compile =
+                |stage, kind, source| compile_shader(gl, shader.name, stage, kind, source);
+            let fragment = compile("fragment", glow::FRAGMENT_SHADER, glsl.fragment)?;
+            let link = |name, source| {
+                let vertex = compile(name, glow::VERTEX_SHADER, source)?;
+                let program =
+                    link_program(gl, shader.name, vertex, fragment, glsl.bindings, in_use);
+                gl.delete_shader(vertex);
+                program
             };
-            let program = match gl.create_program() {
-                Ok(program) => program,
-                Err(e) => {
-                    gl.delete_shader(vertex);
-                    gl.delete_shader(fragment);
-                    return Err(DeviceError::Backend(e));
+            let programs = (|| {
+                let surface = link("surface vertex", glsl.vertex_surface)?;
+                match link("render target vertex", glsl.vertex_target) {
+                    Ok(target) => Ok([surface, target]),
+                    Err(e) => {
+                        gl.delete_program(surface);
+                        Err(e)
+                    }
                 }
-            };
-            gl.attach_shader(program, vertex);
-            gl.attach_shader(program, fragment);
-            gl.link_program(program);
-            gl.detach_shader(program, vertex);
-            gl.detach_shader(program, fragment);
-            gl.delete_shader(vertex);
+            })();
             gl.delete_shader(fragment);
-            if !gl.get_program_link_status(program) {
-                let log = gl.get_program_info_log(program);
-                gl.delete_program(program);
-                return Err(DeviceError::Shader(format!("link: {}", log.trim())));
-            }
-            gl.use_program(Some(program));
-            for b in desc.bindings {
-                match b.kind {
-                    BindingKind::UniformBuffer => match gl.get_uniform_block_index(program, b.name)
-                    {
-                        Some(index) => gl.uniform_block_binding(program, index, b.slot),
-                        None => tracing::warn!(
-                            name = b.name,
-                            "uniform block not found in the linked program"
-                        ),
-                    },
-                    BindingKind::Texture => match gl.get_uniform_location(program, b.name) {
-                        Some(location) => gl.uniform_1_i32(Some(&location), b.slot as i32),
-                        None => {
-                            tracing::warn!(name = b.name, "sampler not found in the linked program")
-                        }
-                    },
-                }
-            }
-            gl.use_program(self.state.program);
-            program
+            programs?
         };
         let mut attributes = [desc.layout.attributes[0]; MAX_VERTEX_ATTRIBUTES];
         attributes[..desc.layout.attributes.len()].copy_from_slice(desc.layout.attributes);
         Ok(GlPipeline {
-            program,
+            programs,
             layout: Layout {
                 stride: desc.layout.stride,
                 attributes,
@@ -616,12 +679,14 @@ impl<S: GlSurface> crate::hal::Device for GlDevice<S> {
         // SAFETY: the context is current; the program was created by this device and
         // is consumed here. It is unbound first so it is freed right away.
         unsafe {
-            if self.state.program == Some(pipeline.program) {
+            if self.state.programs == Some(pipeline.programs) {
                 gl.use_program(None);
-                self.state.program = None;
+                self.state.programs = None;
                 self.state.layout = None;
             }
-            gl.delete_program(pipeline.program);
+            for program in pipeline.programs {
+                gl.delete_program(program);
+            }
         }
     }
 
@@ -704,10 +769,11 @@ impl<S: GlSurface> crate::hal::Device for GlDevice<S> {
     }
 
     fn set_pipeline(&mut self, pipeline: &GlPipeline) {
-        if self.state.program != Some(pipeline.program) {
+        if self.state.programs != Some(pipeline.programs) {
+            let program = pipeline.programs[Variant::of(self.state.target) as usize];
             // SAFETY: the context is current; the program is live and linked.
-            unsafe { self.gl.use_program(Some(pipeline.program)) };
-            self.state.program = Some(pipeline.program);
+            unsafe { self.gl.use_program(Some(program)) };
+            self.state.programs = Some(pipeline.programs);
             self.state.layout = Some(pipeline.layout);
             self.state.layout_dirty = true;
         }
