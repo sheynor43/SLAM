@@ -1,0 +1,5 @@
+#!/usr/bin/env bash
+# git pre-commit hook. Установка: ln -sf ../../scripts/pre-commit .git/hooks/pre-commit
+set -euo pipefail
+cargo fmt --all -- --check || { echo "Запустите: just fmt"; exit 1; }
+cargo clippy --workspace --all-targets -q -- -D warnings

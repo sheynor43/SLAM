@@ -1,0 +1,15 @@
+[package]
+name = "slam-engine"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+publish.workspace = true
+
+[dependencies]
+slam-input = { path = "../slam-input" }
+slam-render = { path = "../slam-render" }
+slam-audio = { path = "../slam-audio" }
+
+[lints]
+workspace = true

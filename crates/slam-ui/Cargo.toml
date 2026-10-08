@@ -1,0 +1,15 @@
+[package]
+name = "slam-ui"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+publish.workspace = true
+
+[dependencies]
+slam-render = { path = "../slam-render" }
+slam-skin = { path = "../slam-skin" }
+slam-text = { path = "../slam-text" }
+
+[lints]
+workspace = true

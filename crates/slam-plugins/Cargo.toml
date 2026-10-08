@@ -1,0 +1,13 @@
+[package]
+name = "slam-plugins"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+publish.workspace = true
+
+[dependencies]
+slam-osu = { path = "../slam-osu" }
+
+[lints]
+workspace = true

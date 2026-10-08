@@ -1,0 +1,27 @@
+[package]
+name = "slam-app"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+publish.workspace = true
+
+[dependencies]
+slam-formats = { path = "../slam-formats" }
+slam-osu = { path = "../slam-osu" }
+slam-input = { path = "../slam-input" }
+slam-render = { path = "../slam-render" }
+slam-text = { path = "../slam-text" }
+slam-audio = { path = "../slam-audio" }
+slam-engine = { path = "../slam-engine" }
+slam-skin = { path = "../slam-skin" }
+slam-library = { path = "../slam-library" }
+slam-plugins = { path = "../slam-plugins" }
+slam-ui = { path = "../slam-ui" }
+slam-ipc = { path = "../slam-ipc" }
+
+[lints]
+workspace = true
+
+[dev-dependencies]
+cargo_metadata = "0.23.1"
