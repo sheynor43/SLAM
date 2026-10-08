@@ -73,7 +73,10 @@ fn mode_returns_exact_rate() {
 fn invalid_rate_keeps_previous_mode() {
     let mut l = limiter(1000.0);
     assert_eq!(l.set_mode(LimiterMode::Hz(0.0)), Err(InvalidRate));
+    assert_eq!(l.set_mode(LimiterMode::Hz(0.999)), Err(InvalidRate));
+    assert_eq!(l.set_mode(LimiterMode::Hz(5e-324)), Err(InvalidRate));
     assert_eq!(l.mode(), LimiterMode::Hz(1000.0));
+    assert_eq!(l.set_mode(LimiterMode::Hz(MIN_HZ)), Ok(()));
 }
 
 #[test]

@@ -13,6 +13,15 @@ pub use sys::SystemTimer;
 /// Highest supported frame rate.
 pub const MAX_HZ: f64 = 8000.0;
 
+/// Lowest supported rate. Lower rates make deadlines overflow and a running loop
+/// unresponsive to rate changes for too long.
+pub const MIN_HZ: f64 = 1.0;
+
+/// Whether `hz` is a valid frame or update rate: finite, in `[MIN_HZ, MAX_HZ]`.
+pub fn is_valid_hz(hz: f64) -> bool {
+    hz.is_finite() && (MIN_HZ..=MAX_HZ).contains(&hz)
+}
+
 /// Default length of the busy-wait before each deadline.
 pub const DEFAULT_SPIN_THRESHOLD_NS: u64 = 200_000;
 
@@ -31,12 +40,12 @@ pub trait Timer {
 pub enum LimiterMode {
     /// `wait` returns immediately.
     Unlimited,
-    /// Fixed rate in frames per second, `0 < hz <= MAX_HZ`.
+    /// Fixed rate in frames per second, `MIN_HZ <= hz <= MAX_HZ`.
     Hz(f64),
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, thiserror::Error)]
-#[error("frame rate must be finite and in (0, {MAX_HZ}]")]
+#[error("frame rate must be finite and in [{MIN_HZ}, {MAX_HZ}]")]
 pub struct InvalidRate;
 
 /// Result of a single [`FrameLimiter::wait`].
@@ -93,7 +102,7 @@ impl<T: Timer> FrameLimiter<T> {
     pub fn set_mode(&mut self, mode: LimiterMode) -> Result<(), InvalidRate> {
         self.period_ns = match mode {
             LimiterMode::Unlimited => 0.0,
-            LimiterMode::Hz(hz) if hz.is_finite() && hz > 0.0 && hz <= MAX_HZ => NS_PER_SEC / hz,
+            LimiterMode::Hz(hz) if is_valid_hz(hz) => NS_PER_SEC / hz,
             LimiterMode::Hz(_) => return Err(InvalidRate),
         };
         self.mode = mode;
