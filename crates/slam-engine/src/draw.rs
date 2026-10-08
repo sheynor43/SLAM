@@ -5,8 +5,16 @@ use crate::snapshot::SnapshotReader;
 
 /// Rendering run by the draw thread.
 pub trait Draw<S>: Send + 'static {
+    /// Runs on the draw thread before the first frame: take over thread-bound
+    /// resources here, such as making a GL context current (ADR-0018).
+    fn start(&mut self) {}
+
     /// Draws one frame. Must not allocate, lock or do I/O.
     fn frame(&mut self, info: &FrameInfo, snapshot: &S);
+
+    /// Runs on the draw thread after the last frame, before the state is handed back
+    /// to the thread that stops the engine: release thread-bound resources here.
+    fn stop(&mut self) {}
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -33,6 +41,16 @@ impl<S, D: Draw<S>, T: Timer> DrawLoop<S, D, T> {
             limiter,
             frames: 0,
         }
+    }
+
+    /// Calls [`Draw::start`]. Run on the draw thread before the first [`DrawLoop::step`].
+    pub fn start(&mut self) {
+        self.draw.start();
+    }
+
+    /// Calls [`Draw::stop`]. Run on the draw thread after the last [`DrawLoop::step`].
+    pub fn stop(&mut self) {
+        self.draw.stop();
     }
 
     /// Waits for the frame deadline, takes the latest snapshot and draws it. Never

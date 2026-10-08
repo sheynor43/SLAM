@@ -8,6 +8,7 @@
 pub mod clock;
 mod draw;
 mod engine;
+pub mod gl;
 pub mod limiter;
 mod snapshot;
 mod update;

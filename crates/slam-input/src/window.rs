@@ -1,14 +1,18 @@
 use std::ffi::{CStr, CString};
+use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 
-use sdl3_sys::events::{SDL_EVENT_QUIT, SDL_Event, SDL_EventType, SDL_WaitEvent};
+use sdl3_sys::events::{
+    SDL_EVENT_QUIT, SDL_EVENT_WINDOW_PIXEL_SIZE_CHANGED, SDL_Event, SDL_EventType, SDL_WaitEvent,
+};
+use sdl3_sys::hints::{SDL_HINT_INVALID_PARAM_CHECKS, SDL_SetHint};
 use sdl3_sys::init::{SDL_INIT_VIDEO, SDL_Init, SDL_Quit};
-use sdl3_sys::surface::{SDL_FillSurfaceRect, SDL_MapSurfaceRGB};
 use sdl3_sys::video::{
-    SDL_CreateWindow, SDL_DestroyWindow, SDL_DestroyWindowSurface, SDL_GetWindowSurface,
-    SDL_UpdateWindowSurface, SDL_WINDOW_HIGH_PIXEL_DENSITY, SDL_WINDOW_RESIZABLE, SDL_Window,
+    SDL_CreateWindow, SDL_DestroyWindow, SDL_GetWindowSizeInPixels, SDL_WINDOW_HIGH_PIXEL_DENSITY,
+    SDL_WINDOW_OPENGL, SDL_WINDOW_RESIZABLE, SDL_Window, SDL_WindowFlags,
 };
 
+use crate::gl::{self, GlContext, PixelSize};
 use crate::{EventSink, InputEvent, TickMapper, convert};
 
 /// SDL supports a single initialisation per process at a time.
@@ -26,8 +30,12 @@ pub enum WindowError {
     CreateWindow(String),
     #[error("SDL_WaitEvent failed: {0}")]
     WaitEvent(String),
-    #[error("window surface fill failed: {0}")]
-    Fill(String),
+    #[error("the window was not created with OpenGL support")]
+    NotOpenGl,
+    #[error("a GlContext for this window already exists")]
+    GlContextExists,
+    #[error("OpenGL context creation failed: {0}")]
+    GlContext(String),
 }
 
 /// The SDL window and its event loop. Must be created and run on the OS main thread:
@@ -36,16 +44,42 @@ pub enum WindowError {
 /// to the thread that initialised SDL.
 pub struct InputWindow {
     window: *mut SDL_Window,
-    /// A software surface from [`InputWindow::fill_placeholder`] is attached.
-    has_surface: bool,
+    opengl: bool,
+    /// Drawable size for the draw thread, updated by [`InputWindow::run`]. Shared with
+    /// the [`GlContext`], if any: a strong count above one means the context is alive.
+    size: Arc<PixelSize>,
 }
 
 impl InputWindow {
+    /// A window without a GPU surface. A Wayland compositor does not show it (and so
+    /// delivers it no input) until a frame is attached; use
+    /// [`InputWindow::new_opengl`] for a window the renderer draws into.
     pub fn new(title: &str, width: i32, height: i32) -> Result<Self, WindowError> {
+        Self::create(title, width, height, SDL_WindowFlags(0))
+    }
+
+    /// A window for the OpenGL 3.3 core renderer; create its context with
+    /// [`InputWindow::create_gl_context`].
+    pub fn new_opengl(title: &str, width: i32, height: i32) -> Result<Self, WindowError> {
+        Self::create(title, width, height, SDL_WINDOW_OPENGL)
+    }
+
+    fn create(
+        title: &str,
+        width: i32,
+        height: i32,
+        extra: SDL_WindowFlags,
+    ) -> Result<Self, WindowError> {
         let title = CString::new(title).map_err(|_| WindowError::InvalidTitle)?;
         if SDL_ACTIVE.swap(true, Ordering::AcqRel) {
             return Err(WindowError::AlreadyActive);
         }
+        // Fast parameter checks only: full checks validate every window pointer in a
+        // global registry under an rwlock, on each frame's swap (ADR-0018). Our
+        // pointers are valid by construction. SDL_Quit resets hints, so set it on
+        // every initialisation.
+        // SAFETY: valid C strings; hints may be set before SDL_Init.
+        unsafe { SDL_SetHint(SDL_HINT_INVALID_PARAM_CHECKS, c"1".as_ptr()) };
         // SAFETY: SDL is not initialised (guarded by `SDL_ACTIVE`).
         if !unsafe { SDL_Init(SDL_INIT_VIDEO) } {
             let err = WindowError::Init(sdl_error());
@@ -54,7 +88,12 @@ impl InputWindow {
             SDL_ACTIVE.store(false, Ordering::Release);
             return Err(err);
         }
-        let flags = SDL_WINDOW_RESIZABLE | SDL_WINDOW_HIGH_PIXEL_DENSITY;
+        let opengl = extra.0 & SDL_WINDOW_OPENGL.0 != 0;
+        if opengl {
+            // Attributes pick the EGL/GLX config at window creation, so set them first.
+            gl::set_attributes();
+        }
+        let flags = SDL_WINDOW_RESIZABLE | SDL_WINDOW_HIGH_PIXEL_DENSITY | extra;
         // SAFETY: SDL video is initialised; `title` is a valid C string.
         let window = unsafe { SDL_CreateWindow(title.as_ptr(), width, height, flags) };
         if window.is_null() {
@@ -64,45 +103,33 @@ impl InputWindow {
             SDL_ACTIVE.store(false, Ordering::Release);
             return Err(err);
         }
+        let size = Arc::new(PixelSize::default());
+        let (mut w, mut h) = (0, 0);
+        // SAFETY: `window` is valid; `w` and `h` are valid out pointers.
+        if unsafe { SDL_GetWindowSizeInPixels(window, &mut w, &mut h) } {
+            size.store(w, h);
+        }
         Ok(Self {
             window,
-            has_surface: false,
+            opengl,
+            size,
         })
     }
 
-    /// Fills the window with a solid colour through SDL's software surface.
-    ///
-    /// Temporary, until the renderer owns the window: a Wayland compositor does not
-    /// map (show) a window, and so delivers it no input, before a frame is attached.
-    /// SDL forbids mixing this surface with 3D APIs on one window: the renderer must
-    /// call [`InputWindow::release_placeholder`] before creating its GPU surface.
-    pub fn fill_placeholder(&mut self, r: u8, g: u8, b: u8) -> Result<(), WindowError> {
-        // SAFETY: `window` is valid; the surface belongs to it and is used immediately.
-        unsafe {
-            let surface = SDL_GetWindowSurface(self.window);
-            self.has_surface |= !surface.is_null();
-            if surface.is_null()
-                || !SDL_FillSurfaceRect(
-                    surface,
-                    std::ptr::null(),
-                    SDL_MapSurfaceRGB(surface, r, g, b),
-                )
-                || !SDL_UpdateWindowSurface(self.window)
-            {
-                return Err(WindowError::Fill(sdl_error()));
-            }
+    /// Creates the window's OpenGL 3.3 core context (with the debug flag in debug
+    /// builds) and sets swap interval 0. The context is left current on no thread:
+    /// the draw thread takes it over (ADR-0018). One context per window.
+    pub fn create_gl_context(&mut self) -> Result<GlContext, WindowError> {
+        if !self.opengl {
+            return Err(WindowError::NotOpenGl);
         }
-        Ok(())
-    }
-
-    /// Detaches the software surface created by [`InputWindow::fill_placeholder`], if
-    /// any, so a GPU surface can be created on the window.
-    pub fn release_placeholder(&mut self) {
-        if self.has_surface {
-            // SAFETY: `window` is valid and has a window surface attached.
-            unsafe { SDL_DestroyWindowSurface(self.window) };
-            self.has_surface = false;
+        if Arc::get_mut(&mut self.size).is_none() {
+            return Err(WindowError::GlContextExists);
         }
+        // SAFETY: `window` is valid, was created with SDL_WINDOW_OPENGL, and this is
+        // the thread that initialised SDL.
+        unsafe { GlContext::create(self.window, Arc::clone(&self.size)) }
+            .map_err(WindowError::GlContext)
     }
 
     /// Blocks on OS events until the window is closed. Keyboard and mouse events are
@@ -126,10 +153,17 @@ impl InputWindow {
                 return Err(WindowError::WaitEvent(sdl_error()));
             }
             // SAFETY: `type` is the common prefix of every SDL_Event variant.
-            if SDL_EventType(unsafe { event.r#type }) == SDL_EVENT_QUIT {
-                return Ok(());
+            match SDL_EventType(unsafe { event.r#type }) {
+                SDL_EVENT_QUIT => return Ok(()),
+                SDL_EVENT_WINDOW_PIXEL_SIZE_CHANGED => {
+                    // SAFETY: the event type says this is a window event.
+                    let window = unsafe { event.window };
+                    self.size.store(window.data1, window.data2);
+                }
+                _ => {
+                    dispatch(&event, sink, mapper);
+                }
             }
-            dispatch(&event, sink, mapper);
         }
     }
 }
@@ -157,6 +191,13 @@ where
 
 impl Drop for InputWindow {
     fn drop(&mut self) {
+        // `get_mut` synchronises with the drop of a GlContext on another thread, so
+        // its SDL calls happen before the teardown below.
+        if Arc::get_mut(&mut self.size).is_none() {
+            // A GlContext still points at the window, possibly current on the draw
+            // thread: leak the window and SDL rather than destroy them under it.
+            return;
+        }
         // SAFETY: `window` was created by `new` and is destroyed exactly once, on the
         // thread that owns SDL.
         unsafe {
@@ -167,7 +208,7 @@ impl Drop for InputWindow {
     }
 }
 
-fn sdl_error() -> String {
+pub(crate) fn sdl_error() -> String {
     let ptr = sdl3_sys::error::SDL_GetError();
     if ptr.is_null() {
         return String::new();

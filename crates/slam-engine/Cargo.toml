@@ -22,4 +22,6 @@ libc.workspace = true
 windows-sys.workspace = true
 
 [dev-dependencies]
+glow.workspace = true
+tracing-subscriber.workspace = true
 slam-testkit = { path = "../slam-testkit" }
