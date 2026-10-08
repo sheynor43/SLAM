@@ -11,6 +11,9 @@ glow.workspace = true
 thiserror.workspace = true
 tracing.workspace = true
 
+[dev-dependencies]
+slam-testkit = { path = "../slam-testkit" }
+
 [build-dependencies]
 slam-shader-build = { path = "../slam-shader-build" }
 

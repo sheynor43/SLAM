@@ -584,6 +584,7 @@ version = "0.1.0"
 dependencies = [
  "glow",
  "slam-shader-build",
+ "slam-testkit",
  "thiserror",
  "tracing",
 ]

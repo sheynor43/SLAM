@@ -15,6 +15,7 @@ pub struct Color {
 
 impl Color {
     pub const BLACK: Self = Self::rgb(0.0, 0.0, 0.0);
+    pub const WHITE: Self = Self::rgb(1.0, 1.0, 1.0);
 
     pub const fn rgb(r: f32, g: f32, b: f32) -> Self {
         Self { r, g, b, a: 1.0 }
@@ -131,6 +132,46 @@ impl TextureDesc {
             }
         }
         Ok(())
+    }
+
+    /// Checks a write of `size` pixels at `origin` with `len` bytes of tightly packed
+    /// rows: the texture must be `COPY_DST`, the region non-empty, inside the texture
+    /// and matching `len`.
+    pub fn check_write(&self, origin: Origin, size: Extent, len: usize) -> Result<(), DescError> {
+        if !self.usage.contains(TextureUsage::COPY_DST) {
+            return Err(DescError::NotCopyDst);
+        }
+        let inside = |start: u32, extent: u32, limit: u32| {
+            start.checked_add(extent).is_some_and(|end| end <= limit)
+        };
+        if size.is_empty()
+            || !inside(origin.x, size.width, self.size.width)
+            || !inside(origin.y, size.height, self.size.height)
+        {
+            return Err(DescError::TextureWriteOutOfBounds { origin, size });
+        }
+        let expected = (u64::from(size.width) * u64::from(size.height))
+            * u64::from(self.format.bytes_per_pixel());
+        if len as u64 != expected {
+            return Err(DescError::DataSize {
+                expected,
+                actual: len as u64,
+            });
+        }
+        Ok(())
+    }
+}
+
+/// Top-left corner of a texture region, in pixels.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct Origin {
+    pub x: u32,
+    pub y: u32,
+}
+
+impl Origin {
+    pub const fn new(x: u32, y: u32) -> Self {
+        Self { x, y }
     }
 }
 
@@ -464,6 +505,10 @@ pub enum DescError {
     UniformTooLarge { size: u64, max: u32 },
     #[error("uniform buffer size {size} is not a multiple of 16")]
     UniformSize { size: u64 },
+    #[error("texture is not COPY_DST")]
+    NotCopyDst,
+    #[error("texture write of {size:?} at {origin:?} is empty or outside the texture")]
+    TextureWriteOutOfBounds { origin: Origin, size: Extent },
     #[error("write of {len} bytes at {offset} is outside the {size}-byte buffer")]
     WriteOutOfBounds { offset: u64, len: u64, size: u64 },
     #[error("vertex stride {stride} is zero, over 2048 or not a multiple of 4")]
@@ -558,6 +603,18 @@ pub trait Device {
     ) -> Result<Self::Texture, DeviceError>;
 
     fn destroy_texture(&mut self, texture: Self::Texture);
+
+    /// Overwrites the `size` pixels at `origin` of a `COPY_DST` texture with `data`
+    /// (tightly packed rows, top row first; see [`TextureDesc::check_write`]). The
+    /// upload is done before later draws read the texture; draws already issued this
+    /// frame may see either contents, so write regions they do not read.
+    fn write_texture(
+        &mut self,
+        texture: &Self::Texture,
+        origin: Origin,
+        size: Extent,
+        data: &[u8],
+    ) -> Result<(), DescError>;
 
     /// Creates a buffer filled from `data`, or with undefined contents (see
     /// [`BufferDesc::validate`]).
@@ -716,6 +773,41 @@ mod tests {
                 actual: 6
             })
         );
+    }
+
+    #[test]
+    fn checks_texture_writes() {
+        let mut d = desc(8, 4, TextureFormat::Rgba8);
+        let size = Extent::new(2, 3);
+        assert_eq!(
+            d.check_write(Origin::new(0, 0), size, 24),
+            Err(DescError::NotCopyDst)
+        );
+        d.usage = TextureUsage::SAMPLED | TextureUsage::COPY_DST;
+        assert_eq!(d.check_write(Origin::new(6, 1), size, 24), Ok(()));
+        for (origin, size) in [
+            (Origin::new(7, 1), size),
+            (Origin::new(6, 2), size),
+            (Origin::new(0, 0), Extent::new(0, 1)),
+            (Origin::new(u32::MAX, 0), Extent::new(1, 1)),
+        ] {
+            assert_eq!(
+                d.check_write(origin, size, 24),
+                Err(DescError::TextureWriteOutOfBounds { origin, size })
+            );
+        }
+        assert_eq!(
+            d.check_write(Origin::new(0, 0), size, 23),
+            Err(DescError::DataSize {
+                expected: 24,
+                actual: 23
+            })
+        );
+        let r8 = TextureDesc {
+            format: TextureFormat::R8,
+            ..d
+        };
+        assert_eq!(r8.check_write(Origin::new(0, 0), size, 6), Ok(()));
     }
 
     #[test]
