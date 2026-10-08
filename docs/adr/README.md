@@ -22,6 +22,7 @@
 | [0016](0016-testkit-alloc-counter.md) | Dev-only крейт `slam-testkit` и счётчик аллокаций | Принято |
 | [0017](0017-update-wakeup-and-snapshots.md) | Пробуждение update, свой тройной буфер, порядок событий ввода | Принято |
 | [0018](0018-gl-context-on-draw-thread.md) | GL-контекст в потоке draw, поверхность через трейт, хуки потока draw | Принято |
+| [0019](0019-wgsl-shaders-and-coordinates.md) | Шейдеры на WGSL с трансляцией при сборке, соглашение о координатах HAL | Принято |
 
 ## Шаблон
 
