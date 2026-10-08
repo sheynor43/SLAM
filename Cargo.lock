@@ -155,6 +155,7 @@ dependencies = [
  "slam-audio",
  "slam-input",
  "slam-render",
+ "slam-testkit",
  "thiserror",
  "windows-sys",
 ]
@@ -206,6 +207,10 @@ version = "0.1.0"
 dependencies = [
  "slam-formats",
 ]
+
+[[package]]
+name = "slam-testkit"
+version = "0.1.0"
 
 [[package]]
 name = "slam-text"
