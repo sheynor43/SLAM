@@ -36,9 +36,10 @@ fn run_delivers_events_and_stops_on_quit() {
         Err(WindowError::AlreadyActive)
     ));
 
-    window
-        .fill_placeholder(20, 20, 30)
-        .expect("placeholder fill");
+    assert!(matches!(
+        window.create_gl_context(),
+        Err(WindowError::NotOpenGl)
+    ));
 
     let mut mapper = TickMapper::new(
         || 1_000_000 + slam_input::sdl_ticks_ns(),

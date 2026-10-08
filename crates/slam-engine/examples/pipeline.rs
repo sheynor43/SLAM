@@ -1,18 +1,23 @@
-//! Runs the input, update and draw threads together. Prints once per second the
-//! update and draw rates and the delay from an input event's timestamp to the tick
-//! that received it.
+//! Runs the input, update and draw threads together. The draw thread clears the
+//! window through the OpenGL backend with a colour that follows the cursor. Prints
+//! once per second the update and draw rates and the delay from an input event's
+//! timestamp to the tick that received it.
 //!
 //! Run: `cargo run --release -p slam-engine --example pipeline [update_hz] [draw_hz]`
-//! (defaults 1000 and 240; draw_hz 0 = unlimited). Close the window to exit.
+//! (defaults 1000 and 240; draw_hz 0 = unlimited). Close the window to exit. GL debug
+//! output (debug builds) is logged; filter with `RUST_LOG`.
 
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::time::Duration;
 
 use slam_engine::clock::now_ns;
+use slam_engine::gl::SdlGlSurface;
 use slam_engine::limiter::LimiterMode;
 use slam_engine::{Draw, Engine, EngineConfig, FrameInfo, TickInfo, Update};
 use slam_input::{InputEvent, InputKind, InputWindow, TickMapper, event_ring, sdl_ticks_ns};
+use slam_render::gl::{GlDebug, GlDevice};
+use slam_render::{Color, Device};
 
 #[derive(Default)]
 struct Counters {
@@ -21,6 +26,7 @@ struct Counters {
     frames: AtomicU64,
     events: AtomicU64,
     max_delay_ns: AtomicU64,
+    present_errors: AtomicU64,
 }
 
 #[derive(Clone, Copy, Default)]
@@ -54,12 +60,38 @@ impl Update for Game {
     }
 }
 
-struct Frames(Arc<Counters>);
+/// Owns the GL surface; the device exists between `start` and `stop`, on the draw
+/// thread.
+struct Frames {
+    counters: Arc<Counters>,
+    surface: Option<SdlGlSurface>,
+    device: Option<GlDevice<SdlGlSurface>>,
+}
 
 impl Draw<Snap> for Frames {
+    fn start(&mut self) {
+        let surface = self.surface.take().expect("surface is set before start");
+        self.device = Some(GlDevice::new(surface, GlDebug::for_build()).expect("GL device"));
+    }
+
     fn frame(&mut self, _: &FrameInfo, snapshot: &Snap) {
-        std::hint::black_box(snapshot.cursor);
-        self.0.frames.fetch_add(1, Ordering::Relaxed);
+        let device = self.device.as_mut().expect("started");
+        let (x, y) = snapshot.cursor;
+        let clear = Color::rgb(
+            (x / 2560.0).clamp(0.0, 0.6),
+            0.08,
+            (y / 1440.0).clamp(0.0, 0.6),
+        );
+        device.begin_frame(clear);
+        if device.present().is_err() {
+            self.counters.present_errors.fetch_add(1, Ordering::Relaxed);
+        }
+        self.counters.frames.fetch_add(1, Ordering::Relaxed);
+    }
+
+    fn stop(&mut self) {
+        let device = self.device.take().expect("started");
+        self.surface = Some(device.into_surface().expect("release GL context"));
     }
 }
 
@@ -75,6 +107,15 @@ fn main() {
         LimiterMode::Hz(draw_hz)
     };
 
+    tracing_subscriber::fmt()
+        .with_env_filter(tracing_subscriber::EnvFilter::from_default_env())
+        .init();
+
+    // The window and its GL context are created on the main thread; the draw thread
+    // takes the context over (ADR-0018).
+    let mut window = InputWindow::new_opengl("SLAM pipeline", 1280, 720).expect("window");
+    let surface = SdlGlSurface(window.create_gl_context().expect("GL context"));
+
     let counters = Arc::new(Counters::default());
     let (mut sink, source) = event_ring(1024);
     let game = Game {
@@ -89,7 +130,11 @@ fn main() {
     let engine = Engine::spawn(
         config,
         game,
-        Frames(Arc::clone(&counters)),
+        Frames {
+            counters: Arc::clone(&counters),
+            surface: Some(surface),
+            device: None,
+        },
         Snap::default(),
         source,
     )
@@ -103,25 +148,25 @@ fn main() {
             while !done.load(Ordering::Acquire) {
                 std::thread::sleep(Duration::from_secs(1));
                 println!(
-                    "update {:>5}/s (by input {:>5})  draw {:>5}/s  events {:>5}  max input→tick {:>7.1} us",
+                    "update {:>5}/s (by input {:>5})  draw {:>5}/s  events {:>5}  max input→tick {:>7.1} us  present errors {}",
                     c.ticks.swap(0, Ordering::Relaxed),
                     c.input_ticks.swap(0, Ordering::Relaxed),
                     c.frames.swap(0, Ordering::Relaxed),
                     c.events.swap(0, Ordering::Relaxed),
                     c.max_delay_ns.swap(0, Ordering::Relaxed) as f64 / 1e3,
+                    c.present_errors.swap(0, Ordering::Relaxed),
                 );
             }
         })
     };
 
-    let mut window = InputWindow::new("SLAM pipeline", 1280, 720).expect("window");
-    // No renderer yet; without a frame a Wayland window is never shown.
-    window.fill_placeholder(20, 20, 30).expect("fill");
     let mut mapper = TickMapper::new(now_ns, sdl_ticks_ns);
     window.run(&mut sink, &mut mapper).expect("event loop");
-    drop(window);
 
+    // Stop drawing and destroy the GL context before the window.
     let stopped = engine.shutdown();
+    drop(stopped.draw);
+    drop(window);
     done.store(true, Ordering::Release);
     reporter.join().unwrap();
     println!(

@@ -9,7 +9,10 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Duration;
 
 use slam_engine::clock::now_ns;
+use slam_engine::gl::SdlGlSurface;
 use slam_input::{InputWindow, TickMapper, event_ring, sdl_ticks_ns};
+use slam_render::gl::{GlDebug, GlDevice};
+use slam_render::{Color, Device};
 
 fn main() {
     let (mut sink, mut source) = event_ring(1024);
@@ -33,9 +36,13 @@ fn main() {
         })
     };
 
-    let mut window = InputWindow::new("SLAM input echo", 1280, 720).expect("window");
-    // No renderer yet; without a frame a Wayland window is never shown.
-    window.fill_placeholder(20, 20, 30).expect("fill");
+    let mut window = InputWindow::new_opengl("SLAM input echo", 1280, 720).expect("window");
+    // Without a frame a Wayland window is never shown: present one cleared frame.
+    let surface = SdlGlSurface(window.create_gl_context().expect("GL context"));
+    let mut device = GlDevice::new(surface, GlDebug::Off).expect("GL device");
+    device.begin_frame(Color::rgb(0.08, 0.08, 0.12));
+    device.present().expect("present");
+    let surface = device.into_surface().expect("release GL context");
     let mut mapper = TickMapper::new(now_ns, sdl_ticks_ns);
     println!(
         "clock offset {} ns, uncertainty {} ns",
@@ -43,6 +50,7 @@ fn main() {
         mapper.uncertainty_ns()
     );
     window.run(&mut sink, &mut mapper).expect("event loop");
+    drop(surface);
     drop(window);
 
     done.store(true, Ordering::Release);

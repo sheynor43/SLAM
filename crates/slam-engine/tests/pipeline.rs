@@ -362,3 +362,84 @@ fn a_rate_set_right_after_spawn_is_applied() {
     assert!(stopped.update.ticks > 300, "{} ticks", stopped.update.ticks);
     assert!(drawn > 100, "{drawn} frames");
 }
+
+/// Records the thread and frame count of each hook.
+#[derive(Default)]
+struct Hooks {
+    frames: u64,
+    started: Option<(String, u64)>,
+    stopped: Option<(String, u64)>,
+}
+
+fn thread_name() -> String {
+    std::thread::current().name().unwrap_or_default().to_owned()
+}
+
+impl Draw<Snap> for Hooks {
+    fn start(&mut self) {
+        self.started = Some((thread_name(), self.frames));
+    }
+
+    fn frame(&mut self, _: &FrameInfo, _: &Snap) {
+        self.frames += 1;
+    }
+
+    fn stop(&mut self) {
+        self.stopped = Some((thread_name(), self.frames));
+    }
+}
+
+#[test]
+fn draw_hooks_run_on_the_draw_thread_around_frames() {
+    let (_sink, source) = event_ring(64);
+    let engine = Engine::spawn(
+        config(100.0, LimiterMode::Hz(1000.0)),
+        Recorder::default(),
+        Hooks::default(),
+        0,
+        source,
+    )
+    .unwrap();
+    std::thread::sleep(Duration::from_millis(20));
+    let hooks = engine.shutdown().draw;
+    assert!(hooks.frames > 0);
+    assert_eq!(hooks.started, Some(("slam-draw".to_owned(), 0)));
+    assert_eq!(hooks.stopped, Some(("slam-draw".to_owned(), hooks.frames)));
+}
+
+/// Hooks that report through shared state, so they are visible after a drop.
+struct SharedHooks(Arc<std::sync::Mutex<Hooks>>);
+
+impl Draw<Snap> for SharedHooks {
+    fn start(&mut self) {
+        self.0.lock().unwrap().start();
+    }
+
+    fn frame(&mut self, info: &FrameInfo, snapshot: &Snap) {
+        self.0.lock().unwrap().frame(info, snapshot);
+    }
+
+    fn stop(&mut self) {
+        self.0.lock().unwrap().stop();
+    }
+}
+
+#[test]
+fn dropping_the_engine_runs_the_stop_hook_on_the_draw_thread() {
+    let (_sink, source) = event_ring(64);
+    let hooks = Arc::new(std::sync::Mutex::new(Hooks::default()));
+    let engine = Engine::spawn(
+        config(100.0, LimiterMode::Hz(1000.0)),
+        Recorder::default(),
+        SharedHooks(Arc::clone(&hooks)),
+        0,
+        source,
+    )
+    .unwrap();
+    std::thread::sleep(Duration::from_millis(20));
+    drop(engine);
+    let hooks = hooks.lock().unwrap();
+    assert!(hooks.frames > 0);
+    assert_eq!(hooks.started, Some(("slam-draw".to_owned(), 0)));
+    assert_eq!(hooks.stopped, Some(("slam-draw".to_owned(), hooks.frames)));
+}

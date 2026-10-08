@@ -135,6 +135,7 @@ impl<U: Update, D: Draw<U::Snapshot>> Engine<U, D> {
         engine.draw = Some(std::thread::Builder::new().name("slam-draw".into()).spawn(
             move || {
                 let mut applied = initial_draw;
+                draw_loop.start();
                 while !stop.load(Ordering::Acquire) {
                     let wanted = rates.draw.load(Ordering::Relaxed);
                     if wanted != applied {
@@ -144,6 +145,7 @@ impl<U: Update, D: Draw<U::Snapshot>> Engine<U, D> {
                     }
                     draw_loop.step();
                 }
+                draw_loop.stop();
                 draw_loop
             },
         )?);
