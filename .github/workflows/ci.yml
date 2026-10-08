@@ -38,6 +38,8 @@ jobs:
         run: cargo fmt --all -- --check
       - name: Clippy
         run: cargo clippy --workspace --all-targets -- -D warnings
+      - name: Clippy (Tracy)
+        run: cargo clippy -p slam-engine --all-targets --features tracy -- -D warnings
       - name: Clippy (Windows)
         run: cargo clippy --workspace --all-targets --target x86_64-pc-windows-gnu -- -D warnings
       - name: Test

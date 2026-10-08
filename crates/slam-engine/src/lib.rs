@@ -10,12 +10,16 @@ mod draw;
 mod engine;
 pub mod gl;
 pub mod limiter;
+pub mod overlay;
+pub mod profiling;
 mod snapshot;
+pub mod stats;
 mod update;
 mod wake;
 
 pub use draw::{Draw, DrawLoop, FrameInfo};
 pub use engine::{Engine, EngineConfig, EngineError, RATE_PRESETS, Stopped};
 pub use snapshot::{SnapshotReader, SnapshotWriter, triple_buffer};
+pub use stats::{EngineCounters, FrameSummary, FrameTimes, RateMeter};
 pub use update::{InvalidUpdateConfig, MAX_UPDATE_HZ, TickInfo, Update, UpdateLoop, UpdateStats};
 pub use wake::{Parker, Waker, wake_pair};
