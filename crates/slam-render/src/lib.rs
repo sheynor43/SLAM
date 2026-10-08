@@ -1,7 +1,12 @@
 //! Rendering HAL and backends, sprite batcher, slider meshes, render targets.
 
+pub mod atlas;
+#[cfg(test)]
+mod fake_device;
 pub mod gl;
 pub mod hal;
+pub mod sprite;
+pub mod textures;
 
 /// Shaders of this crate, translated from `shaders/*.wgsl` at build time (ADR-0019).
 pub mod shaders {
@@ -10,7 +15,7 @@ pub mod shaders {
 
 pub use hal::{
     Binding, BindingKind, Blend, BufferDesc, BufferKind, BufferUpdate, Color, DescError, Device,
-    DeviceError, DrawError, Extent, GlslShader, IndexFormat, Limits, PipelineDesc,
+    DeviceError, DrawError, Extent, GlslShader, IndexFormat, Limits, Origin, PipelineDesc,
     RenderTargetDesc, Shader, TextureDesc, TextureFormat, TextureUsage, VertexAttribute,
     VertexFormat, VertexLayout,
 };

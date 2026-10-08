@@ -8,8 +8,9 @@ use glow::HasContext;
 
 use crate::hal::{
     BindingKind, Blend, BufferDesc, BufferKind, BufferUpdate, Color, DescError, DeviceError,
-    DrawError, Extent, IndexFormat, Limits, MAX_VERTEX_ATTRIBUTES, PipelineDesc, RenderTargetDesc,
-    TextureDesc, TextureFormat, TextureUsage, VERTEX_ALIGNMENT, VertexAttribute, VertexFormat,
+    DrawError, Extent, IndexFormat, Limits, MAX_VERTEX_ATTRIBUTES, Origin, PipelineDesc,
+    RenderTargetDesc, TextureDesc, TextureFormat, TextureUsage, VERTEX_ALIGNMENT, VertexAttribute,
+    VertexFormat,
 };
 
 /// A window's OpenGL context as seen by the renderer. Implemented outside this crate
@@ -378,6 +379,15 @@ impl<S: GlSurface> GlDevice<S> {
     }
 }
 
+/// Internal and pixel-transfer formats of a texture format.
+fn gl_format(format: TextureFormat) -> (u32, u32) {
+    match format {
+        TextureFormat::Rgba8 => (glow::RGBA8, glow::RGBA),
+        TextureFormat::Rgba8Srgb => (glow::SRGB8_ALPHA8, glow::RGBA),
+        TextureFormat::R8 => (glow::R8, glow::RED),
+    }
+}
+
 fn check_kind(buffer: &GlBuffer, expected: BufferKind) -> Result<(), DrawError> {
     if buffer.desc.kind == expected {
         Ok(())
@@ -507,11 +517,7 @@ impl<S: GlSurface> crate::hal::Device for GlDevice<S> {
         data: Option<&[u8]>,
     ) -> Result<GlTexture, DeviceError> {
         desc.validate(&self.limits, data)?;
-        let (internal, format) = match desc.format {
-            TextureFormat::Rgba8 => (glow::RGBA8, glow::RGBA),
-            TextureFormat::Rgba8Srgb => (glow::SRGB8_ALPHA8, glow::RGBA),
-            TextureFormat::R8 => (glow::R8, glow::RED),
-        };
+        let (internal, format) = gl_format(desc.format);
         let gl = &self.gl;
         // SAFETY: the context is current on this thread; `validate` checked that the
         // size is within GL limits and that `data` holds exactly the texture's pixels,
@@ -555,6 +561,39 @@ impl<S: GlSurface> crate::hal::Device for GlDevice<S> {
         // SAFETY: the context is current; the texture was created by this device and
         // is consumed here, so it is deleted once. GL unbinds it from all units.
         unsafe { self.gl.delete_texture(texture.raw) };
+    }
+
+    fn write_texture(
+        &mut self,
+        texture: &GlTexture,
+        origin: Origin,
+        size: Extent,
+        data: &[u8],
+    ) -> Result<(), DescError> {
+        texture.desc.check_write(origin, size, data.len())?;
+        let format = gl_format(texture.desc.format).1;
+        let gl = &self.gl;
+        // SAFETY: the context is current; `check_write` keeps the region inside the
+        // texture (whose size is within GL limits) and `data` exactly the region's
+        // pixels, tightly packed (unpack alignment 1). The upload unit is reserved.
+        unsafe {
+            gl.active_texture(glow::TEXTURE0 + self.limits.max_texture_slots);
+            gl.bind_texture(glow::TEXTURE_2D, Some(texture.raw));
+            gl.pixel_store_i32(glow::UNPACK_ALIGNMENT, 1);
+            gl.tex_sub_image_2d(
+                glow::TEXTURE_2D,
+                0,
+                origin.x as i32,
+                origin.y as i32,
+                size.width as i32,
+                size.height as i32,
+                format,
+                glow::UNSIGNED_BYTE,
+                glow::PixelUnpackData::Slice(Some(data)),
+            );
+            gl.bind_texture(glow::TEXTURE_2D, None);
+        }
+        Ok(())
     }
 
     fn create_buffer(

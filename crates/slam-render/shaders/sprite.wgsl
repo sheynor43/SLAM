@@ -1,6 +1,7 @@
 // Textured, tinted sprite. Colour is straight alpha and multiplies the texel, as the
-// plain (unmasked) path of osu-framework's sh_Texture2D.vs / sh_Texture.fs. Texture
-// rectangles, wrap modes and masking come with the sprite batcher.
+// plain (unmasked) path of osu-framework's sh_Texture2D.vs / sh_Texture.fs. Vertices
+// come from the sprite batcher (`src/sprite.rs`, ADR-0020) with atlas UVs baked in;
+// wrap modes and masking are not supported yet.
 
 struct Globals {
     // Maps positions to clip space (y up, z in [0, 1]).
