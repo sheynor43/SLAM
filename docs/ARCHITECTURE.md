@@ -138,7 +138,7 @@ graph TD
 
 ### Лимитер кадров
 
-- Дедлайны абсолютные: `next = prev_deadline + period` (без дрейфа).
+- Дедлайны абсолютные: дедлайн n-го кадра = `epoch + n·period` (без дрейфа, ошибка округления не накапливается). Пропуск дедлайна на целый период и больше перезапускает отсчёт от текущего момента, без догоняющих кадров.
 - Сон: Windows — high-resolution waitable timer; Linux — `clock_nanosleep(CLOCK_MONOTONIC, TIMER_ABSTIME)`; последние ~200 мкс — активное ожидание.
 - Режимы: без лимита; кратный частоте монитора; произвольный до 8000.
 - Present без ожидания: DXGI flip model с тирингом на Windows, IMMEDIATE в Vulkan, swap interval 0 в OpenGL.

@@ -10,6 +10,13 @@ publish.workspace = true
 slam-input = { path = "../slam-input" }
 slam-render = { path = "../slam-render" }
 slam-audio = { path = "../slam-audio" }
+thiserror.workspace = true
 
 [lints]
 workspace = true
+
+[target.'cfg(target_os = "linux")'.dependencies]
+libc.workspace = true
+
+[target.'cfg(windows)'.dependencies]
+windows-sys.workspace = true
