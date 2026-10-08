@@ -2,10 +2,15 @@
 //! made current on the draw thread and released there before shutdown (ADR-0018).
 
 use std::ffi::{CStr, c_void};
+use std::ops::Range;
 
 use glow::HasContext;
 
-use crate::hal::{Color, DeviceError, Extent, Limits, TextureDesc, TextureFormat};
+use crate::hal::{
+    BindingKind, Blend, BufferDesc, BufferKind, BufferUpdate, Color, DescError, DeviceError,
+    DrawError, Extent, IndexFormat, Limits, MAX_VERTEX_ATTRIBUTES, PipelineDesc, RenderTargetDesc,
+    TextureDesc, TextureFormat, TextureUsage, VERTEX_ALIGNMENT, VertexAttribute, VertexFormat,
+};
 
 /// A window's OpenGL context as seen by the renderer. Implemented outside this crate
 /// (for SDL3, by `slam-input` with glue in `slam-engine`), so `slam-render` does not
@@ -58,13 +63,83 @@ impl GlTexture {
     }
 }
 
+pub struct GlBuffer {
+    raw: glow::Buffer,
+    desc: BufferDesc,
+}
+
+impl GlBuffer {
+    pub fn desc(&self) -> &BufferDesc {
+        &self.desc
+    }
+}
+
+/// A pipeline's vertex layout, stored inline so that binding it does not allocate.
+#[derive(Clone, Copy)]
+struct Layout {
+    stride: u32,
+    attributes: [VertexAttribute; MAX_VERTEX_ATTRIBUTES],
+    count: usize,
+}
+
+impl Layout {
+    fn attributes(&self) -> &[VertexAttribute] {
+        &self.attributes[..self.count]
+    }
+}
+
+pub struct GlPipeline {
+    program: glow::Program,
+    layout: Layout,
+    blend: Blend,
+}
+
+pub struct GlRenderTarget {
+    framebuffer: glow::Framebuffer,
+    texture: GlTexture,
+}
+
+impl GlRenderTarget {
+    pub fn size(&self) -> Extent {
+        self.texture.desc.size
+    }
+}
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+struct BoundBuffer {
+    raw: glow::Buffer,
+    size: u64,
+    offset: u64,
+}
+
+/// Draw state as last sent to GL, so redundant calls are skipped and the vertex
+/// layout is applied only when the pipeline or vertex buffer changes.
+struct State {
+    target: Option<glow::Framebuffer>,
+    program: Option<glow::Program>,
+    layout: Option<Layout>,
+    blend: Blend,
+    vertex: Option<BoundBuffer>,
+    index: Option<(BoundBuffer, IndexFormat)>,
+    layout_dirty: bool,
+    /// Bit `n` set: attribute array `n` is enabled.
+    enabled_attributes: u32,
+}
+
 /// OpenGL 3.3 core device. Created, used and released on the draw thread.
+///
+/// One vertex array object stays bound for the device's life; vertex attribute
+/// pointers are re-specified at draw time when the pipeline or vertex buffer changed.
+/// Texture unit [`Limits::max_texture_slots`] (one past the last slot) is reserved for
+/// uploads so they do not disturb bound textures.
 pub struct GlDevice<S: GlSurface> {
     /// Declared before `surface`: on unwind it drops first, while the context is
     /// still current (see `into_surface`).
     gl: glow::Context,
     surface: S,
     limits: Limits,
+    vertex_array: glow::VertexArray,
+    state: State,
 }
 
 impl<S: GlSurface> GlDevice<S> {
@@ -94,22 +169,61 @@ impl<S: GlSurface> GlDevice<S> {
         if debug == GlDebug::On {
             enable_debug_output(&mut gl);
         }
-        // SAFETY: the context is current; plain state query.
-        let max_texture_size = unsafe { gl.get_parameter_i32(glow::MAX_TEXTURE_SIZE) };
+        // SAFETY: the context is current; plain state queries.
+        let query = |name| unsafe { gl.get_parameter_i32(name) }.max(0) as u32;
+        let limits = Limits {
+            max_texture_size: query(glow::MAX_TEXTURE_SIZE),
+            max_uniform_block_size: query(glow::MAX_UNIFORM_BLOCK_SIZE),
+            // GL counts bindings for all stages; 12 per stage is what GL 3.3, D3D11 and
+            // Vulkan all guarantee.
+            max_uniform_buffer_slots: query(glow::MAX_UNIFORM_BUFFER_BINDINGS).min(12),
+            // The last unit is reserved for uploads.
+            max_texture_slots: query(glow::MAX_TEXTURE_IMAGE_UNITS).saturating_sub(1),
+        };
+        // SAFETY: the context is current.
+        let vertex_array = match unsafe { gl.create_vertex_array() } {
+            Ok(vertex_array) => vertex_array,
+            Err(e) => {
+                drop(gl);
+                let _ = surface.release_current();
+                return Err(DeviceError::Backend(e));
+            }
+        };
+        // SAFETY: the context is current; `vertex_array` was just created. Blending
+        // starts disabled, matching `State::blend`.
+        unsafe {
+            gl.bind_vertex_array(Some(vertex_array));
+            gl.disable(glow::BLEND);
+        }
         Ok(Self {
             gl,
             surface,
-            limits: Limits {
-                max_texture_size: max_texture_size.max(0) as u32,
+            limits,
+            vertex_array,
+            state: State {
+                target: None,
+                program: None,
+                layout: None,
+                blend: Blend::Replace,
+                vertex: None,
+                index: None,
+                layout_dirty: false,
+                enabled_attributes: 0,
             },
         })
     }
 
-    /// Detaches the context from this thread and returns the surface.
+    /// Detaches the context from this thread and returns the surface. Resources not
+    /// destroyed by then are freed with the context.
     pub fn into_surface(self) -> Result<S, DeviceError> {
         let Self {
-            gl, mut surface, ..
+            gl,
+            mut surface,
+            vertex_array,
+            ..
         } = self;
+        // SAFETY: the context is current; the vertex array is owned by the device.
+        unsafe { gl.delete_vertex_array(vertex_array) };
         // While the context is still current: glow's Drop unsets the debug callback
         // before freeing it, and that call needs the context.
         drop(gl);
@@ -122,10 +236,179 @@ impl<S: GlSurface> GlDevice<S> {
     pub fn gl(&self) -> &glow::Context {
         &self.gl
     }
+
+    /// Binds `target` (the surface if `None`) unless already bound.
+    fn bind_target(&mut self, target: Option<glow::Framebuffer>) {
+        if self.state.target != target {
+            // SAFETY: the context is current; `target` is a live framebuffer of this
+            // device or the default one.
+            unsafe { self.gl.bind_framebuffer(glow::FRAMEBUFFER, target) };
+            self.state.target = target;
+        }
+    }
+
+    fn apply_blend(&mut self, blend: Blend) {
+        if self.state.blend == blend {
+            return;
+        }
+        let gl = &self.gl;
+        // SAFETY: the context is current; valid blend enums.
+        unsafe {
+            match blend {
+                Blend::Replace => gl.disable(glow::BLEND),
+                Blend::Alpha => {
+                    gl.enable(glow::BLEND);
+                    gl.blend_func_separate(
+                        glow::SRC_ALPHA,
+                        glow::ONE_MINUS_SRC_ALPHA,
+                        glow::ONE,
+                        glow::ONE,
+                    );
+                }
+                Blend::Premultiplied => {
+                    gl.enable(glow::BLEND);
+                    gl.blend_func(glow::ONE, glow::ONE_MINUS_SRC_ALPHA);
+                }
+                Blend::Additive => {
+                    gl.enable(glow::BLEND);
+                    gl.blend_func_separate(glow::SRC_ALPHA, glow::ONE, glow::ONE, glow::ONE);
+                }
+            }
+        }
+        self.state.blend = blend;
+    }
+
+    /// Checks that a pipeline and a vertex buffer are set and that `vertices` fit in
+    /// the buffer, then applies the vertex layout if it changed.
+    fn prepare_vertices(&mut self, vertices: Range<u32>) -> Result<(), DrawError> {
+        let out_of_range = DrawError::OutOfRange {
+            start: vertices.start,
+            end: vertices.end,
+        };
+        let layout = self.state.layout.ok_or(DrawError::NoPipeline)?;
+        let vertex = self.state.vertex.ok_or(DrawError::NoVertexBuffer)?;
+        let end = u64::from(vertices.end)
+            .checked_mul(u64::from(layout.stride))
+            .and_then(|bytes| bytes.checked_add(vertex.offset));
+        if vertices.start > vertices.end || end.is_none_or(|end| end > vertex.size) {
+            return Err(out_of_range);
+        }
+        if !self.state.layout_dirty {
+            return Ok(());
+        }
+        let gl = &self.gl;
+        let mut enabled = 0u32;
+        // SAFETY: the context is current with the device's vertex array bound; the
+        // buffer is live (destroying it clears `state.vertex`); offsets are computed in
+        // `u64` and clamped to `i32` (an attribute past the end of the buffer can only
+        // be read through out-of-range indices, which the caller rules out); locations
+        // are below 16 and the stride at most 2048 (`VertexLayout::validate`).
+        unsafe {
+            gl.bind_buffer(glow::ARRAY_BUFFER, Some(vertex.raw));
+            for a in layout.attributes() {
+                let (components, kind, normalized) = match a.format {
+                    VertexFormat::Float32x2 => (2, glow::FLOAT, false),
+                    VertexFormat::Float32x3 => (3, glow::FLOAT, false),
+                    VertexFormat::Float32x4 => (4, glow::FLOAT, false),
+                    VertexFormat::Unorm8x4 => (4, glow::UNSIGNED_BYTE, true),
+                };
+                gl.vertex_attrib_pointer_f32(
+                    a.location,
+                    components,
+                    kind,
+                    normalized,
+                    layout.stride as i32,
+                    (vertex.offset + u64::from(a.offset)).min(i32::MAX as u64) as i32,
+                );
+                enabled |= 1 << a.location;
+            }
+            let previous = self.state.enabled_attributes;
+            for location in 0..MAX_VERTEX_ATTRIBUTES as u32 {
+                let bit = 1 << location;
+                if enabled & bit != 0 && previous & bit == 0 {
+                    gl.enable_vertex_attrib_array(location);
+                } else if enabled & bit == 0 && previous & bit != 0 {
+                    gl.disable_vertex_attrib_array(location);
+                }
+            }
+        }
+        self.state.enabled_attributes = enabled;
+        self.state.layout_dirty = false;
+        Ok(())
+    }
+}
+
+fn check_kind(buffer: &GlBuffer, expected: BufferKind) -> Result<(), DrawError> {
+    if buffer.desc.kind == expected {
+        Ok(())
+    } else {
+        Err(DrawError::BufferKind {
+            expected,
+            actual: buffer.desc.kind,
+        })
+    }
+}
+
+/// Drops errors left by earlier calls, so a later `gl_error` sees only new ones.
+///
+/// # Safety
+/// The context must be current.
+unsafe fn clear_errors(gl: &glow::Context) {
+    // Bounded: after a context loss some drivers report errors forever.
+    for _ in 0..32 {
+        // SAFETY: guaranteed by the caller.
+        if unsafe { gl.get_error() } == glow::NO_ERROR {
+            break;
+        }
+    }
+}
+
+/// # Safety
+/// The context must be current.
+unsafe fn gl_error(gl: &glow::Context, what: &str) -> Result<(), DeviceError> {
+    // SAFETY: guaranteed by the caller.
+    match unsafe { gl.get_error() } {
+        glow::NO_ERROR => Ok(()),
+        error => Err(DeviceError::Backend(format!(
+            "{what} failed: GL error 0x{error:x}"
+        ))),
+    }
+}
+
+/// # Safety
+/// The context must be current.
+unsafe fn compile_shader(
+    gl: &glow::Context,
+    stage: u32,
+    source: &str,
+) -> Result<glow::Shader, DeviceError> {
+    let name = if stage == glow::VERTEX_SHADER {
+        "vertex"
+    } else {
+        "fragment"
+    };
+    // SAFETY: guaranteed by the caller; the shader is deleted on failure.
+    unsafe {
+        let shader = gl.create_shader(stage).map_err(DeviceError::Backend)?;
+        gl.shader_source(shader, source);
+        gl.compile_shader(shader);
+        if !gl.get_shader_compile_status(shader) {
+            let log = gl.get_shader_info_log(shader);
+            gl.delete_shader(shader);
+            return Err(DeviceError::Shader(format!(
+                "{name} shader: {}",
+                log.trim()
+            )));
+        }
+        Ok(shader)
+    }
 }
 
 impl<S: GlSurface> crate::hal::Device for GlDevice<S> {
     type Texture = GlTexture;
+    type Buffer = GlBuffer;
+    type Pipeline = GlPipeline;
+    type RenderTarget = GlRenderTarget;
 
     fn limits(&self) -> Limits {
         self.limits
@@ -145,11 +428,12 @@ impl<S: GlSurface> crate::hal::Device for GlDevice<S> {
         let gl = &self.gl;
         // SAFETY: the context is current on this thread; `validate` checked that the
         // size is within GL limits and that `data` holds exactly the texture's pixels,
-        // tightly packed (unpack alignment 1).
+        // tightly packed (unpack alignment 1). The upload unit is reserved, so no
+        // texture bound by `set_texture` is replaced.
         unsafe {
-            // Drop errors left by earlier calls, so the check below sees only ours.
-            while gl.get_error() != glow::NO_ERROR {}
+            clear_errors(gl);
             let raw = gl.create_texture().map_err(DeviceError::Backend)?;
+            gl.active_texture(glow::TEXTURE0 + self.limits.max_texture_slots);
             gl.bind_texture(glow::TEXTURE_2D, Some(raw));
             gl.pixel_store_i32(glow::UNPACK_ALIGNMENT, 1);
             gl.tex_image_2d(
@@ -172,12 +456,9 @@ impl<S: GlSurface> crate::hal::Device for GlDevice<S> {
                 gl.tex_parameter_i32(glow::TEXTURE_2D, param, value as i32);
             }
             gl.bind_texture(glow::TEXTURE_2D, None);
-            let error = gl.get_error();
-            if error != glow::NO_ERROR {
+            if let Err(e) = gl_error(gl, "texture upload") {
                 gl.delete_texture(raw);
-                return Err(DeviceError::Backend(format!(
-                    "texture upload failed: GL error 0x{error:x}"
-                )));
+                return Err(e);
             }
             Ok(GlTexture { raw, desc: *desc })
         }
@@ -185,21 +466,381 @@ impl<S: GlSurface> crate::hal::Device for GlDevice<S> {
 
     fn destroy_texture(&mut self, texture: GlTexture) {
         // SAFETY: the context is current; the texture was created by this device and
-        // is consumed here, so it is deleted once.
+        // is consumed here, so it is deleted once. GL unbinds it from all units.
         unsafe { self.gl.delete_texture(texture.raw) };
     }
 
+    fn create_buffer(
+        &mut self,
+        desc: &BufferDesc,
+        data: Option<&[u8]>,
+    ) -> Result<GlBuffer, DeviceError> {
+        desc.validate(&self.limits, data)?;
+        let Ok(size) = i32::try_from(desc.size) else {
+            return Err(DeviceError::Unsupported(format!(
+                "buffer of {} bytes is larger than i32::MAX",
+                desc.size
+            )));
+        };
+        let usage = match desc.update {
+            BufferUpdate::Static => glow::STATIC_DRAW,
+            BufferUpdate::Dynamic => glow::DYNAMIC_DRAW,
+        };
+        let gl = &self.gl;
+        // SAFETY: the context is current; `size` is positive and `data`, if given,
+        // holds exactly `size` bytes (`validate`). The copy-write target is used so
+        // that the vertex array's index binding is left alone.
+        unsafe {
+            clear_errors(gl);
+            let raw = gl.create_buffer().map_err(DeviceError::Backend)?;
+            gl.bind_buffer(glow::COPY_WRITE_BUFFER, Some(raw));
+            match data {
+                Some(data) => gl.buffer_data_u8_slice(glow::COPY_WRITE_BUFFER, data, usage),
+                None => gl.buffer_data_size(glow::COPY_WRITE_BUFFER, size, usage),
+            }
+            gl.bind_buffer(glow::COPY_WRITE_BUFFER, None);
+            if let Err(e) = gl_error(gl, "buffer creation") {
+                gl.delete_buffer(raw);
+                return Err(e);
+            }
+            Ok(GlBuffer { raw, desc: *desc })
+        }
+    }
+
+    fn destroy_buffer(&mut self, buffer: GlBuffer) {
+        let state = &mut self.state;
+        if state.vertex.is_some_and(|v| v.raw == buffer.raw) {
+            state.vertex = None;
+            state.layout_dirty = true;
+        }
+        if state.index.is_some_and(|(i, _)| i.raw == buffer.raw) {
+            state.index = None;
+        }
+        // SAFETY: the context is current; the buffer was created by this device and
+        // is consumed here. GL unbinds it from the bound vertex array and all targets.
+        unsafe { self.gl.delete_buffer(buffer.raw) };
+    }
+
+    fn write_buffer(
+        &mut self,
+        buffer: &GlBuffer,
+        offset: u64,
+        data: &[u8],
+    ) -> Result<(), DescError> {
+        buffer.desc.check_write(offset, data.len())?;
+        if data.is_empty() {
+            return Ok(());
+        }
+        let gl = &self.gl;
+        // SAFETY: the context is current; the range is inside the buffer (checked
+        // above), whose size fits in `i32` (`create_buffer`).
+        unsafe {
+            gl.bind_buffer(glow::COPY_WRITE_BUFFER, Some(buffer.raw));
+            gl.buffer_sub_data_u8_slice(glow::COPY_WRITE_BUFFER, offset as i32, data);
+            gl.bind_buffer(glow::COPY_WRITE_BUFFER, None);
+        }
+        Ok(())
+    }
+
+    fn create_pipeline(&mut self, desc: &PipelineDesc<'_>) -> Result<GlPipeline, DeviceError> {
+        desc.validate(&self.limits)?;
+        let gl = &self.gl;
+        // SAFETY: the context is current; shaders and the program are deleted on every
+        // failure path; the previously used program is restored before returning.
+        let program = unsafe {
+            let vertex = compile_shader(gl, glow::VERTEX_SHADER, desc.vertex_shader)?;
+            let fragment = match compile_shader(gl, glow::FRAGMENT_SHADER, desc.fragment_shader) {
+                Ok(fragment) => fragment,
+                Err(e) => {
+                    gl.delete_shader(vertex);
+                    return Err(e);
+                }
+            };
+            let program = match gl.create_program() {
+                Ok(program) => program,
+                Err(e) => {
+                    gl.delete_shader(vertex);
+                    gl.delete_shader(fragment);
+                    return Err(DeviceError::Backend(e));
+                }
+            };
+            gl.attach_shader(program, vertex);
+            gl.attach_shader(program, fragment);
+            gl.link_program(program);
+            gl.detach_shader(program, vertex);
+            gl.detach_shader(program, fragment);
+            gl.delete_shader(vertex);
+            gl.delete_shader(fragment);
+            if !gl.get_program_link_status(program) {
+                let log = gl.get_program_info_log(program);
+                gl.delete_program(program);
+                return Err(DeviceError::Shader(format!("link: {}", log.trim())));
+            }
+            gl.use_program(Some(program));
+            for b in desc.bindings {
+                match b.kind {
+                    BindingKind::UniformBuffer => match gl.get_uniform_block_index(program, b.name)
+                    {
+                        Some(index) => gl.uniform_block_binding(program, index, b.slot),
+                        None => tracing::warn!(
+                            name = b.name,
+                            "uniform block not found in the linked program"
+                        ),
+                    },
+                    BindingKind::Texture => match gl.get_uniform_location(program, b.name) {
+                        Some(location) => gl.uniform_1_i32(Some(&location), b.slot as i32),
+                        None => {
+                            tracing::warn!(name = b.name, "sampler not found in the linked program")
+                        }
+                    },
+                }
+            }
+            gl.use_program(self.state.program);
+            program
+        };
+        let mut attributes = [desc.layout.attributes[0]; MAX_VERTEX_ATTRIBUTES];
+        attributes[..desc.layout.attributes.len()].copy_from_slice(desc.layout.attributes);
+        Ok(GlPipeline {
+            program,
+            layout: Layout {
+                stride: desc.layout.stride,
+                attributes,
+                count: desc.layout.attributes.len(),
+            },
+            blend: desc.blend,
+        })
+    }
+
+    fn destroy_pipeline(&mut self, pipeline: GlPipeline) {
+        let gl = &self.gl;
+        // SAFETY: the context is current; the program was created by this device and
+        // is consumed here. It is unbound first so it is freed right away.
+        unsafe {
+            if self.state.program == Some(pipeline.program) {
+                gl.use_program(None);
+                self.state.program = None;
+                self.state.layout = None;
+            }
+            gl.delete_program(pipeline.program);
+        }
+    }
+
+    fn create_render_target(
+        &mut self,
+        desc: &RenderTargetDesc,
+    ) -> Result<GlRenderTarget, DeviceError> {
+        desc.validate(&self.limits)?;
+        let texture = self.create_texture(&desc.texture_desc(), None)?;
+        let gl = &self.gl;
+        // SAFETY: the context is current; the texture is live and colour-renderable
+        // (all `TextureFormat`s are in GL 3.3). The framebuffer binding is restored to
+        // `state.target` before returning.
+        unsafe {
+            let framebuffer = match gl.create_framebuffer() {
+                Ok(framebuffer) => framebuffer,
+                Err(e) => {
+                    gl.delete_texture(texture.raw);
+                    return Err(DeviceError::Backend(e));
+                }
+            };
+            gl.bind_framebuffer(glow::FRAMEBUFFER, Some(framebuffer));
+            gl.framebuffer_texture_2d(
+                glow::FRAMEBUFFER,
+                glow::COLOR_ATTACHMENT0,
+                glow::TEXTURE_2D,
+                Some(texture.raw),
+                0,
+            );
+            let status = gl.check_framebuffer_status(glow::FRAMEBUFFER);
+            gl.bind_framebuffer(glow::FRAMEBUFFER, self.state.target);
+            if status != glow::FRAMEBUFFER_COMPLETE {
+                gl.delete_framebuffer(framebuffer);
+                gl.delete_texture(texture.raw);
+                return Err(DeviceError::Backend(format!(
+                    "render target incomplete: status 0x{status:x}"
+                )));
+            }
+            Ok(GlRenderTarget {
+                framebuffer,
+                texture,
+            })
+        }
+    }
+
+    fn destroy_render_target(&mut self, target: GlRenderTarget) {
+        if self.state.target == Some(target.framebuffer) {
+            self.bind_target(None);
+        }
+        // SAFETY: the context is current; the framebuffer was created by this device,
+        // is no longer bound and is consumed here.
+        unsafe { self.gl.delete_framebuffer(target.framebuffer) };
+        self.destroy_texture(target.texture);
+    }
+
+    fn render_target_texture<'a>(&self, target: &'a GlRenderTarget) -> &'a GlTexture {
+        &target.texture
+    }
+
     fn begin_frame(&mut self, clear: Color) -> Extent {
-        let size = self.surface.size_in_pixels();
+        self.begin_pass(None, Some(clear))
+    }
+
+    fn begin_pass(&mut self, target: Option<&GlRenderTarget>, clear: Option<Color>) -> Extent {
+        let size = match target {
+            Some(t) => t.size(),
+            None => self.surface.size_in_pixels(),
+        };
+        self.bind_target(target.map(|t| t.framebuffer));
         let gl = &self.gl;
         // SAFETY: the context is current; state calls with valid enums.
         unsafe {
-            gl.bind_framebuffer(glow::FRAMEBUFFER, None);
             gl.viewport(0, 0, size.width as i32, size.height as i32);
-            gl.clear_color(clear.r, clear.g, clear.b, clear.a);
-            gl.clear(glow::COLOR_BUFFER_BIT);
+            if let Some(c) = clear {
+                gl.clear_color(c.r, c.g, c.b, c.a);
+                gl.clear(glow::COLOR_BUFFER_BIT);
+            }
         }
         size
+    }
+
+    fn set_pipeline(&mut self, pipeline: &GlPipeline) {
+        if self.state.program != Some(pipeline.program) {
+            // SAFETY: the context is current; the program is live and linked.
+            unsafe { self.gl.use_program(Some(pipeline.program)) };
+            self.state.program = Some(pipeline.program);
+            self.state.layout = Some(pipeline.layout);
+            self.state.layout_dirty = true;
+        }
+        self.apply_blend(pipeline.blend);
+    }
+
+    fn set_vertex_buffer(&mut self, buffer: &GlBuffer, offset: u64) -> Result<(), DrawError> {
+        check_kind(buffer, BufferKind::Vertex)?;
+        if !offset.is_multiple_of(u64::from(VERTEX_ALIGNMENT)) {
+            return Err(DrawError::Unaligned { offset });
+        }
+        if offset > buffer.desc.size {
+            return Err(DrawError::OffsetPastEnd {
+                offset,
+                size: buffer.desc.size,
+            });
+        }
+        let bound = Some(BoundBuffer {
+            raw: buffer.raw,
+            size: buffer.desc.size,
+            offset,
+        });
+        if self.state.vertex != bound {
+            self.state.vertex = bound;
+            self.state.layout_dirty = true;
+        }
+        Ok(())
+    }
+
+    fn set_index_buffer(
+        &mut self,
+        buffer: &GlBuffer,
+        format: IndexFormat,
+    ) -> Result<(), DrawError> {
+        check_kind(buffer, BufferKind::Index)?;
+        if self.state.index.is_none_or(|(i, _)| i.raw != buffer.raw) {
+            // SAFETY: the context is current with the device's vertex array bound, which
+            // records the binding; the buffer is live.
+            unsafe {
+                self.gl
+                    .bind_buffer(glow::ELEMENT_ARRAY_BUFFER, Some(buffer.raw))
+            };
+        }
+        self.state.index = Some((
+            BoundBuffer {
+                raw: buffer.raw,
+                size: buffer.desc.size,
+                offset: 0,
+            },
+            format,
+        ));
+        Ok(())
+    }
+
+    fn set_uniform_buffer(&mut self, slot: u32, buffer: &GlBuffer) -> Result<(), DrawError> {
+        check_kind(buffer, BufferKind::Uniform)?;
+        let max = self.limits.max_uniform_buffer_slots;
+        if slot >= max {
+            return Err(DrawError::Slot { slot, max });
+        }
+        // SAFETY: the context is current; the slot is below the binding limit and the
+        // buffer is live.
+        unsafe {
+            self.gl
+                .bind_buffer_base(glow::UNIFORM_BUFFER, slot, Some(buffer.raw))
+        };
+        Ok(())
+    }
+
+    fn set_texture(&mut self, slot: u32, texture: &GlTexture) -> Result<(), DrawError> {
+        if !texture.desc.usage.contains(TextureUsage::SAMPLED) {
+            return Err(DrawError::NotSampled);
+        }
+        let max = self.limits.max_texture_slots;
+        if slot >= max {
+            return Err(DrawError::Slot { slot, max });
+        }
+        // SAFETY: the context is current; the unit is below the limit and the texture
+        // is live.
+        unsafe {
+            self.gl.active_texture(glow::TEXTURE0 + slot);
+            self.gl.bind_texture(glow::TEXTURE_2D, Some(texture.raw));
+        }
+        Ok(())
+    }
+
+    fn draw(&mut self, vertices: Range<u32>) -> Result<(), DrawError> {
+        self.prepare_vertices(vertices.clone())?;
+        if vertices.is_empty() {
+            return Ok(());
+        }
+        // SAFETY: the context is current; a pipeline and vertex buffer are bound and
+        // the range is inside the buffer, so it fits in `i32`.
+        unsafe {
+            self.gl.draw_arrays(
+                glow::TRIANGLES,
+                vertices.start as i32,
+                vertices.len() as i32,
+            );
+        }
+        Ok(())
+    }
+
+    fn draw_indexed(&mut self, indices: Range<u32>) -> Result<(), DrawError> {
+        let out_of_range = DrawError::OutOfRange {
+            start: indices.start,
+            end: indices.end,
+        };
+        let (index, format) = self.state.index.ok_or(DrawError::NoIndexBuffer)?;
+        let size = u64::from(format.size());
+        if indices.start > indices.end || u64::from(indices.end) * size > index.size {
+            return Err(out_of_range);
+        }
+        self.prepare_vertices(0..0)?;
+        if indices.is_empty() {
+            return Ok(());
+        }
+        let kind = match format {
+            IndexFormat::U16 => glow::UNSIGNED_SHORT,
+            IndexFormat::U32 => glow::UNSIGNED_INT,
+        };
+        // SAFETY: the context is current; pipeline, vertex and index buffers are bound
+        // and the index range is inside the index buffer, whose size fits in `i32`.
+        // Index values themselves are not checked (documented on the trait).
+        unsafe {
+            self.gl.draw_elements(
+                glow::TRIANGLES,
+                indices.len() as i32,
+                kind,
+                (u64::from(indices.start) * size) as i32,
+            );
+        }
+        Ok(())
     }
 
     fn present(&mut self) -> Result<(), DeviceError> {

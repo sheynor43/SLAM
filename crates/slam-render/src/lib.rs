@@ -4,5 +4,7 @@ pub mod gl;
 pub mod hal;
 
 pub use hal::{
-    Color, DescError, Device, DeviceError, Extent, Limits, TextureDesc, TextureFormat, TextureUsage,
+    Binding, BindingKind, Blend, BufferDesc, BufferKind, BufferUpdate, Color, DescError, Device,
+    DeviceError, DrawError, Extent, IndexFormat, Limits, PipelineDesc, RenderTargetDesc,
+    TextureDesc, TextureFormat, TextureUsage, VertexAttribute, VertexFormat, VertexLayout,
 };
