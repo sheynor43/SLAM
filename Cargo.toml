@@ -14,7 +14,7 @@ libc = "0.2.190"
 rtrb = "0.4.0"
 sdl3-sys = { version = "0.7.2", default-features = false }
 thiserror = "2.0.21"
-windows-sys = { version = "0.61.2", features = ["Win32_Foundation", "Win32_Security", "Win32_System_Threading"] }
+windows-sys = { version = "0.61.2", features = ["Win32_Foundation", "Win32_Security", "Win32_System_Performance", "Win32_System_Threading"] }
 
 [workspace.lints.rust]
 unsafe_op_in_unsafe_fn = "deny"

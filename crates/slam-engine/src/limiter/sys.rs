@@ -1,11 +1,11 @@
-//! Platform timers: `clock_nanosleep` on Linux, high-resolution waitable timer on
+//! Platform timers on the engine clock: `clock_nanosleep` on Linux, high-resolution waitable timer on
 //! Windows, `std::thread::sleep` elsewhere.
 
 #[cfg(target_os = "linux")]
 mod imp {
     use super::super::Timer;
 
-    /// `CLOCK_MONOTONIC` with absolute `clock_nanosleep`.
+    /// Engine clock (`CLOCK_MONOTONIC`) with absolute `clock_nanosleep`.
     pub struct SystemTimer(());
 
     impl SystemTimer {
@@ -16,14 +16,7 @@ mod imp {
 
     impl Timer for SystemTimer {
         fn now_ns(&self) -> u64 {
-            let mut ts = libc::timespec {
-                tv_sec: 0,
-                tv_nsec: 0,
-            };
-            // SAFETY: `ts` is a valid, writable timespec.
-            let rc = unsafe { libc::clock_gettime(libc::CLOCK_MONOTONIC, &mut ts) };
-            debug_assert_eq!(rc, 0);
-            ts.tv_sec as u64 * 1_000_000_000 + ts.tv_nsec as u64
+            crate::clock::now_ns()
         }
 
         fn sleep_until(&mut self, deadline_ns: u64) {
@@ -54,16 +47,14 @@ mod imp {
 #[cfg(windows)]
 mod imp {
     use super::super::Timer;
-    use std::time::Instant;
     use windows_sys::Win32::Foundation::{CloseHandle, HANDLE};
     use windows_sys::Win32::System::Threading::{
         CREATE_WAITABLE_TIMER_HIGH_RESOLUTION, CreateWaitableTimerExW, INFINITE, SetWaitableTimer,
         TIMER_ALL_ACCESS, WaitForSingleObject,
     };
 
-    /// `Instant` (QueryPerformanceCounter) with a high-resolution waitable timer.
+    /// Engine clock (QueryPerformanceCounter) with a high-resolution waitable timer.
     pub struct SystemTimer {
-        origin: Instant,
         /// Null if no high-resolution timer is available (before Windows 10 1803);
         /// `std::thread::sleep` is used then, with system timer resolution.
         handle: HANDLE,
@@ -84,16 +75,13 @@ mod imp {
                     TIMER_ALL_ACCESS,
                 )
             };
-            Self {
-                origin: Instant::now(),
-                handle,
-            }
+            Self { handle }
         }
     }
 
     impl Timer for SystemTimer {
         fn now_ns(&self) -> u64 {
-            self.origin.elapsed().as_nanos() as u64
+            crate::clock::now_ns()
         }
 
         fn sleep_until(&mut self, deadline_ns: u64) {
@@ -129,23 +117,19 @@ mod imp {
 #[cfg(not(any(target_os = "linux", windows)))]
 mod imp {
     use super::super::Timer;
-    use std::time::{Duration, Instant};
+    use std::time::Duration;
 
-    pub struct SystemTimer {
-        origin: Instant,
-    }
+    pub struct SystemTimer(());
 
     impl SystemTimer {
         pub fn new() -> Self {
-            Self {
-                origin: Instant::now(),
-            }
+            Self(())
         }
     }
 
     impl Timer for SystemTimer {
         fn now_ns(&self) -> u64 {
-            self.origin.elapsed().as_nanos() as u64
+            crate::clock::now_ns()
         }
 
         fn sleep_until(&mut self, deadline_ns: u64) {

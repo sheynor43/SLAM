@@ -1,6 +1,9 @@
 //! Input ring: order, overflow accounting, button reserve, never blocking.
 
-use slam_input::{BUTTON_RESERVE, InputEvent, InputKind, MouseButton, event_ring};
+use std::sync::Arc;
+use std::sync::atomic::{AtomicU32, Ordering};
+
+use slam_input::{BUTTON_RESERVE, InputEvent, InputKind, MouseButton, Notify, event_ring};
 
 const CAPACITY: usize = BUTTON_RESERVE + 4;
 
@@ -101,4 +104,32 @@ fn producer_and_consumer_on_different_threads() {
     }
     producer.join().unwrap();
     assert_eq!(received + source.dropped(), N);
+}
+
+#[derive(Default)]
+struct CountNotify(AtomicU32);
+
+impl Notify for CountNotify {
+    fn notify(&self) {
+        self.0.fetch_add(1, Ordering::Relaxed);
+    }
+}
+
+#[test]
+fn notify_fires_for_queued_events_only() {
+    let (mut sink, _source) = event_ring(CAPACITY);
+    let counter = Arc::new(CountNotify::default());
+    sink.set_notify(counter.clone());
+    // Moves fill everything above the reserve, the rest is dropped.
+    let mut queued = 0;
+    for t in 0..CAPACITY as u64 {
+        queued += u32::from(sink.push(mv(t)));
+    }
+    assert_eq!(queued, (CAPACITY - BUTTON_RESERVE) as u32);
+    assert_eq!(counter.0.load(Ordering::Relaxed), queued);
+    // Buttons fill the reserve; a push into the full ring does not notify.
+    for t in 0..=BUTTON_RESERVE as u64 {
+        sink.push(btn(t, true));
+    }
+    assert_eq!(counter.0.load(Ordering::Relaxed), CAPACITY as u32);
 }

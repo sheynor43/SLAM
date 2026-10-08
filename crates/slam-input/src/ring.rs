@@ -3,6 +3,12 @@ use std::sync::atomic::{AtomicU64, Ordering};
 
 use crate::{InputEvent, InputKind};
 
+/// Wakes the consumer of the ring. Called by [`EventSink::push`] on the input thread
+/// after every queued event, so it must be cheap, lock-free and allocation-free.
+pub trait Notify: Send + Sync {
+    fn notify(&self);
+}
+
 /// Free slots kept for key and button events: once no more slots than this remain,
 /// mouse moves are dropped so a press or release is never the one lost first.
 pub const BUTTON_RESERVE: usize = 16;
@@ -22,6 +28,7 @@ pub fn event_ring(capacity: usize) -> (EventSink, EventSource) {
         EventSink {
             producer,
             dropped: Arc::clone(&dropped),
+            notify: None,
         },
         EventSource { consumer, dropped },
     )
@@ -39,12 +46,19 @@ struct Dropped {
 pub struct EventSink {
     producer: rtrb::Producer<InputEvent>,
     dropped: Arc<Dropped>,
+    notify: Option<Arc<dyn Notify>>,
 }
 
 impl EventSink {
+    /// Sets the consumer wake-up called after every queued event.
+    pub fn set_notify(&mut self, notify: Arc<dyn Notify>) {
+        self.notify = Some(notify);
+    }
+
     /// Pushes an event without blocking; returns whether it was queued. Mouse moves
     /// are dropped once at most [`BUTTON_RESERVE`] slots are free, keys and buttons
-    /// only when the ring is full. Every drop is counted.
+    /// only when the ring is full. Every drop is counted. A queued event calls the
+    /// [`Notify`] set by [`EventSink::set_notify`].
     pub fn push(&mut self, event: InputEvent) -> bool {
         if matches!(event.kind, InputKind::MouseMove { .. })
             && self.producer.slots() <= BUTTON_RESERVE
@@ -53,7 +67,12 @@ impl EventSink {
             return false;
         }
         match self.producer.push(event) {
-            Ok(()) => true,
+            Ok(()) => {
+                if let Some(notify) = &self.notify {
+                    notify.notify();
+                }
+                true
+            }
             Err(_) => {
                 self.dropped.total.fetch_add(1, Ordering::Relaxed);
                 if !matches!(event.kind, InputKind::MouseMove { .. }) {
