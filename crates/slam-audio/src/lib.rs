@@ -13,7 +13,7 @@ pub use hal::{
     StreamCounters, devices, open_output,
 };
 pub use mixer::{
-    Mixer, MixerConfig, MixerHandle, MixerStats, PlayError, SAMPLE_CONCURRENCY, mixer,
+    Mixer, MixerConfig, MixerHandle, MixerStats, PlayError, SAMPLE_CONCURRENCY, VoiceStart, mixer,
 };
 pub use position::{AudioPosition, PositionSnapshot};
 pub use sample::{MAX_CHANNELS, MAX_SAMPLE_VALUES, Sample, SampleError};

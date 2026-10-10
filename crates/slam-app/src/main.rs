@@ -2,7 +2,7 @@
 
 use std::process::ExitCode;
 
-use slam_app::bench;
+use slam_app::{bench, click};
 
 fn main() -> ExitCode {
     tracing_subscriber::fmt()
@@ -21,8 +21,34 @@ fn main() -> ExitCode {
                 }
             }
         }
+        Some("click") => {
+            let result = click::Options::parse(args).and_then(|options| click::run(&options));
+            match result {
+                Ok(()) => ExitCode::SUCCESS,
+                Err(e) => {
+                    eprintln!("{e}\n{}", click::USAGE);
+                    ExitCode::FAILURE
+                }
+            }
+        }
+        Some("click-analyze") => {
+            let result = click::analyze::Options::parse(args)
+                .and_then(|options| click::analyze::run(&options));
+            match result {
+                Ok(()) => ExitCode::SUCCESS,
+                Err(e) => {
+                    eprintln!("{e}\n{}", click::analyze::USAGE);
+                    ExitCode::FAILURE
+                }
+            }
+        }
         _ => {
-            eprintln!("{}", bench::USAGE);
+            eprintln!(
+                "{}\n{}\n{}",
+                bench::USAGE,
+                click::USAGE,
+                click::analyze::USAGE
+            );
             ExitCode::from(2)
         }
     }

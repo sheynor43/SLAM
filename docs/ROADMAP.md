@@ -20,7 +20,7 @@
 Состояние критериев:
 - [x] ≥ 8000 FPS на бенчмарк-сцене — X11 ~14 400, Wayland ~12 200 ([замер](perf/2026-10-10-present-stalls.md); первый [замер](perf/2026-10-10-bench-scene.md) снят при работающей записи экрана).
 - [x] p99 джиттера лимитера < 50 мкс — ≤ 1 мкс ([изолированно](perf/2026-10-08-frame-limiter.md), [в цикле отрисовки](perf/2026-10-10-bench-scene.md)).
-- [ ] Клик → звук измерен и задокументирован — [#26](https://github.com/sheynor43/SLAM/issues/26); постановка в очередь ~12 нс измерена бенчмарком микшера.
+- [x] Клик → звук измерен и задокументирован — [#26](https://github.com/sheynor43/SLAM/issues/26), [отчёт](perf/2026-10-10-click-to-sound.md): ввод → очередь 37 мкс (p50), щелчок → звук 25.4 мс на USB-интерфейсе; задержку устройства PipeWire сообщает не полностью.
 - [x] Решение о D3D11/Vulkan — [ADR-0024](adr/0024-render-backend-per-platform.md).
 - [ ] WASAPI — [#10](https://github.com/sheynor43/SLAM/issues/10).
 - [x] Задержки `present` на Linux — [#28](https://github.com/sheynor43/SLAM/issues/28): причина — конкуренция за очередь GPU с записью экрана (OBS), прототип Vulkan не нужен ([отчёт](perf/2026-10-10-present-stalls.md)).
