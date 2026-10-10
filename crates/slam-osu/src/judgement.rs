@@ -119,6 +119,21 @@ impl HitResult {
         )
     }
 
+    /// Lazer's `Judgement.MinResult`: the result of missing a judgement whose best result is
+    /// `self`.
+    // Ported from osu!lazer 2026.1005.0-lazer: osu.Game/Rulesets/Judgements/Judgement.cs (MinResult)
+    pub fn min_result(self) -> HitResult {
+        match self {
+            HitResult::SmallBonus | HitResult::LargeBonus | HitResult::IgnoreHit => {
+                HitResult::IgnoreMiss
+            }
+            HitResult::SmallTickHit => HitResult::SmallTickMiss,
+            HitResult::LargeTickHit => HitResult::LargeTickMiss,
+            HitResult::SliderTailHit => HitResult::IgnoreMiss,
+            _ => HitResult::Miss,
+        }
+    }
+
     /// Whether the result is a hit.
     pub fn is_hit(self) -> bool {
         !matches!(
@@ -261,6 +276,23 @@ impl JudgementLog {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn min_result_matches_lazer() {
+        use HitResult::*;
+        let cases = [
+            (Great, Miss),
+            (LargeTickHit, LargeTickMiss),
+            (SmallTickHit, SmallTickMiss),
+            (SliderTailHit, IgnoreMiss),
+            (IgnoreHit, IgnoreMiss),
+            (SmallBonus, IgnoreMiss),
+            (LargeBonus, IgnoreMiss),
+        ];
+        for (max, min) in cases {
+            assert_eq!(max.min_result(), min, "{max:?}");
+        }
+    }
 
     #[test]
     fn index_matches_all() {
