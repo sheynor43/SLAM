@@ -7,8 +7,10 @@
 //! 20121008), and for lazer versions (>= 30000001) a byte array with the score-info block.
 //! Strings are a marker byte (0 is null) followed by a .NET 7-bit length prefix and UTF-8.
 //!
-//! The lazer block is kept raw (still compressed, not parsed) and any bytes after the known
-//! fields are kept in [`Replay::trailing`]. Decode followed by encode is lossless (except for
+//! The lazer block is kept raw in [`Replay::lazer_block`] (still compressed) and stays the
+//! source of truth; [`Replay::score_info`] parses it into a [`ScoreInfo`] and
+//! [`ScoreInfo::to_block`] builds one. Any bytes after the known fields are kept in
+//! [`Replay::trailing`]. Decode followed by encode is lossless (except for
 //! the exact LZMA byte stream and the string marker byte, always written as `0x0b`) only when
 //! decoding produced no warnings. Otherwise this is lost: dropped malformed or short frames,
 //! invalid or extra seeds, the seed's position (always written last), invalid UTF-8 (replaced
@@ -51,6 +53,7 @@ mod error;
 mod frames;
 mod lzma;
 mod model;
+mod score_info;
 
 pub use decode::{Decoded, decode};
 pub use encode::encode;
@@ -61,3 +64,4 @@ pub use model::{
     ButtonState, FrameData, LifeBarPoint, Replay, ReplayFrame, VERSION_LAZER_BLOCK,
     VERSION_ONLINE_ID_I32, VERSION_ONLINE_ID_I64, ticks_from_unix_millis, unix_millis_from_ticks,
 };
+pub use score_info::{ApiMod, HitResult, RawJson, ScoreInfo, ScoreRank, SettingValue};

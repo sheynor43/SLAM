@@ -32,6 +32,17 @@ pub enum OsrError {
         /// The limit that was exceeded.
         limit: usize,
     },
+    /// The score-info block is not valid JSON (or not valid UTF-8, or not an object).
+    #[error("invalid score-info JSON: {0}")]
+    InvalidScoreInfoJson(String),
+    /// A field of the score-info block has the wrong type or an out-of-range value.
+    #[error("invalid score-info field {field}: expected {expected}")]
+    InvalidScoreInfoField {
+        /// Path of the field, e.g. `mods[0].acronym`.
+        field: String,
+        /// What was expected there.
+        expected: &'static str,
+    },
 }
 
 /// Kind of a non-fatal problem.
