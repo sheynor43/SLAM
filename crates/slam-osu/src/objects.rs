@@ -86,6 +86,16 @@ impl ObjectDefaults {
     pub fn radius(&self) -> f64 {
         f64::from(OBJECT_RADIUS * self.scale)
     }
+
+    // Ported from osu!lazer 2026.1005.0-lazer: osu.Game.Rulesets.Osu/Objects/OsuHitObject.cs (StackOffset)
+    /// Lazer's `OsuHitObject.StackOffset`: how far an object with `stack_height` is drawn from
+    /// its position, up and left for positive heights. Spinners override it with zero
+    /// ([`OsuHitObject::stack_offset`]).
+    pub fn stack_offset(&self, stack_height: i32) -> Vec2 {
+        // C# converts the int height to float before multiplying.
+        let offset = stack_height as f32 * self.scale * -6.4;
+        Vec2::new(offset, offset)
+    }
 }
 
 /// The type-specific part of a [`NestedObject`].
@@ -125,11 +135,20 @@ pub struct NestedObject {
     pub start_time: f64,
     /// Position in osu!pixels (before stacking).
     pub position: Vec2,
+    /// The slider's stack height.
+    pub stack_height: i32,
     /// Timing and size.
     pub defaults: ObjectDefaults,
     /// Samples played when the object is hit. The tail has none: the slider plays its
     /// [`Slider::tail_samples`] at its end time.
     pub samples: Vec<HitSample>,
+}
+
+impl NestedObject {
+    /// Lazer's `StackedPosition`: the position shifted by the stack offset.
+    pub fn stacked_position(&self) -> Vec2 {
+        self.position + self.defaults.stack_offset(self.stack_height)
+    }
 }
 
 /// A slider.
@@ -345,6 +364,7 @@ impl Slider {
         &mut self,
         start_time: f64,
         position: Vec2,
+        stack_height: i32,
         samples: &[HitSample],
         defaults: ObjectDefaults,
     ) {
@@ -417,6 +437,7 @@ impl Slider {
                 kind,
                 start_time: time,
                 position: pos,
+                stack_height,
                 defaults,
                 samples: nested_samples,
             });
@@ -539,6 +560,10 @@ pub struct OsuHitObject {
     pub combo_offset: i32,
     /// Combo position.
     pub combo: ComboInfo,
+    /// Stack height, set by stacking ([`Beatmap::apply_stacking`](crate::Beatmap::apply_stacking)).
+    /// Change it with [`set_stack_height`](Self::set_stack_height), which also updates the
+    /// nested objects.
+    pub stack_height: i32,
     /// Timing and size. Set by [`OsuHitObject::apply_defaults`].
     pub defaults: ObjectDefaults,
     /// Resolved samples (a slider's body samples).
@@ -553,10 +578,65 @@ impl OsuHitObject {
         matches!(self.kind, OsuHitObjectKind::Spinner { .. })
     }
 
+    // Ported from osu!lazer 2026.1005.0-lazer: osu.Game/Rulesets/Objects/HitObject.cs (GetEndTime)
+    /// End time in ms: the start time for a circle.
+    pub fn end_time(&self) -> f64 {
+        match &self.kind {
+            OsuHitObjectKind::Circle => self.start_time,
+            OsuHitObjectKind::Slider(slider) => slider.end_time(self.start_time),
+            OsuHitObjectKind::Spinner { end_time } => *end_time,
+        }
+    }
+
+    // Ported from osu!lazer 2026.1005.0-lazer: osu.Game.Rulesets.Osu/Objects/Slider.cs (EndPosition)
+    /// Lazer's `EndPosition`: where the object ends, before stacking. For a slider this is the
+    /// end of its last span.
+    pub fn end_position(&self) -> Vec2 {
+        match &self.kind {
+            OsuHitObjectKind::Slider(slider) => self.position + slider.curve_position_at(1.0),
+            _ => self.position,
+        }
+    }
+
+    // Ported from osu!lazer 2026.1005.0-lazer: osu.Game.Rulesets.Osu/Objects/Spinner.cs (StackOffset)
+    /// Lazer's `StackOffset`: how far the object is drawn from its position. Spinners are never
+    /// moved, whatever their stack height.
+    pub fn stack_offset(&self) -> Vec2 {
+        if self.is_spinner() {
+            Vec2::ZERO
+        } else {
+            self.defaults.stack_offset(self.stack_height)
+        }
+    }
+
+    /// Lazer's `StackedPosition`: the position shifted by the stack offset.
+    pub fn stacked_position(&self) -> Vec2 {
+        self.position + self.stack_offset()
+    }
+
+    /// Lazer's `StackedEndPosition`: the end position shifted by the stack offset.
+    pub fn stacked_end_position(&self) -> Vec2 {
+        self.end_position() + self.stack_offset()
+    }
+
+    // Ported from osu!lazer 2026.1005.0-lazer: osu.Game.Rulesets.Osu/Objects/OsuHitObject.cs (constructor, StackHeightBindable)
+    /// Sets the stack height of the object and of its nested objects.
+    pub fn set_stack_height(&mut self, stack_height: i32) {
+        self.stack_height = stack_height;
+        if let OsuHitObjectKind::Slider(slider) = &mut self.kind {
+            for n in &mut slider.nested {
+                n.stack_height = stack_height;
+            }
+        }
+    }
+
     // Ported from osu!lazer 2026.1005.0-lazer: osu.Game/Rulesets/Objects/HitObject.cs (ApplyDefaults)
     /// Applies the difficulty settings: preempt, fade-in and scale, and for a slider its
     /// velocity, tick distance and nested objects. Can be called again after the difficulty
-    /// changes (mods); nested objects are recreated.
+    /// changes (mods); nested objects are recreated with the current stack height. Stacking
+    /// reads the preempt and the slider end times, so run
+    /// [`Beatmap::apply_stacking`](crate::Beatmap::apply_stacking) afterwards, as lazer runs
+    /// `PostProcess` after the defaults and the mods.
     ///
     /// Spinner rules (required spins, spinner ticks) are not applied yet.
     pub fn apply_defaults(&mut self, control_points: &ControlPoints, difficulty: &Difficulty) {
@@ -565,7 +645,13 @@ impl OsuHitObject {
         if let OsuHitObjectKind::Slider(slider) = &mut self.kind {
             let timing_point = control_points.timing_point_at(self.start_time);
             slider.apply_defaults_to_self(&timing_point, difficulty);
-            slider.create_nested(self.start_time, self.position, &self.samples, self.defaults);
+            slider.create_nested(
+                self.start_time,
+                self.position,
+                self.stack_height,
+                &self.samples,
+                self.defaults,
+            );
         }
     }
 }

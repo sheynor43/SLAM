@@ -5,6 +5,7 @@ use slam_formats::osu::{self as osu_file, Break, HitObjectKind};
 use crate::control_points::ControlPoints;
 use crate::dotnet::compare_f64;
 use crate::objects::{ComboInfo, ObjectDefaults, OsuHitObject, OsuHitObjectKind, Slider};
+use crate::stacking;
 
 /// Lazer's `LegacyBeatmapDecoder.CONTROL_POINT_LENIENCY`: sample points are looked up this many
 /// ms after a sample's time, so that a point placed slightly late still applies.
@@ -52,7 +53,7 @@ impl Difficulty {
 }
 
 /// A playable osu!standard beatmap: control points, difficulty, breaks and converted objects
-/// with combo information and difficulty defaults applied (no mods, no stacking yet).
+/// with combo information, difficulty defaults and stacking applied (no mods yet).
 #[derive(Debug, Clone, PartialEq)]
 pub struct Beatmap {
     /// `.osu` format version.
@@ -78,7 +79,8 @@ impl Beatmap {
     /// `OsuBeatmapProcessor.PreProcess` do: clamps the difficulty, builds the control points,
     /// sorts objects and breaks, forces new combos after breaks and spinners, resolves samples
     /// and assigns combo indices. Then applies the difficulty defaults to every object
-    /// ([`OsuHitObject::apply_defaults`]), as lazer does after `PreProcess`.
+    /// ([`OsuHitObject::apply_defaults`]), as lazer does after `PreProcess`, and stacking
+    /// ([`Beatmap::apply_stacking`]), as `PostProcess` does.
     pub fn from_file(file: osu_file::Beatmap) -> Result<Beatmap, BeatmapError> {
         if file.general.mode != 0 {
             return Err(BeatmapError::UnsupportedMode(file.general.mode));
@@ -122,14 +124,28 @@ impl Beatmap {
             obj.apply_defaults(&control_points, &difficulty);
         }
 
-        Ok(Beatmap {
+        let mut beatmap = Beatmap {
             format_version: file.format_version,
             difficulty,
             stack_leniency: file.general.stack_leniency,
             control_points,
             breaks,
             hit_objects,
-        })
+        };
+        beatmap.apply_stacking();
+        Ok(beatmap)
+    }
+
+    // Ported from osu!lazer 2026.1005.0-lazer: osu.Game.Rulesets.Osu/Beatmaps/OsuBeatmapProcessor.cs (PostProcess)
+    /// Recomputes the stack heights of all objects, as lazer's `OsuBeatmapProcessor.PostProcess`
+    /// does after the defaults and the mods are applied. Call again after changing the objects'
+    /// defaults, times or positions.
+    pub fn apply_stacking(&mut self) {
+        stacking::apply_stacking(
+            &mut self.hit_objects,
+            self.format_version,
+            self.stack_leniency,
+        );
     }
 }
 
@@ -149,10 +165,14 @@ fn convert(
         }
         // A hold has a duration, so the converter turns it into a spinner.
         HitObjectKind::Spinner { duration } | HitObjectKind::Hold { duration } => {
-            let end_time = h.start_time + duration;
+            // The decoder looks up samples at the convert's end time. The converter then sets
+            // the spinner's `EndTime` after its `StartTime`, which stores
+            // `Duration = EndTime - StartTime` and reads back `StartTime + Duration`.
+            let convert_end_time = h.start_time + duration;
+            let end_time = h.start_time + (convert_end_time - h.start_time);
             (
                 OsuHitObjectKind::Spinner { end_time },
-                end_time + CONTROL_POINT_LENIENCY,
+                convert_end_time + CONTROL_POINT_LENIENCY,
             )
         }
         HitObjectKind::Circle => (
@@ -170,6 +190,7 @@ fn convert(
         new_combo,
         combo_offset: h.combo_offset,
         combo: ComboInfo::default(),
+        stack_height: 0,
         defaults: ObjectDefaults::default(),
         samples,
         kind,

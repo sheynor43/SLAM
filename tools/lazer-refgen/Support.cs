@@ -100,10 +100,42 @@ namespace osu.Game.Rulesets.Objects.Types
     public interface IHasRepeats { int RepeatCount { get; } }
     public interface IHasSliderVelocity { double SliderVelocityMultiplier { get; } }
 
+    // Verbatim from osu.Game/Rulesets/Objects/Types/IHasDuration.cs (osu!lazer 2026.1005.0-lazer, lines 9-20, without doc comments).
+    public interface IHasDuration
+    {
+        double EndTime { get; }
+
+        double Duration { get; set; }
+    }
+
     public static class HasRepeatsExtensions
     {
         // Verbatim from osu.Game/Rulesets/Objects/Types/IHasRepeats.cs (osu!lazer 2026.1005.0-lazer, line 38).
         public static int SpanCount(this IHasRepeats obj) => obj.RepeatCount + 1;
+    }
+}
+
+namespace osu.Game.Rulesets.Objects
+{
+    using osu.Game.Rulesets.Objects.Types;
+
+    public static class HitObjectExtensions
+    {
+        // Verbatim from osu.Game/Rulesets/Objects/HitObject.cs (osu!lazer 2026.1005.0-lazer, line 258).
+        public static double GetEndTime(this HitObject hitObject) => (hitObject as IHasDuration)?.EndTime ?? hitObject.StartTime;
+    }
+}
+
+namespace osu.Game.Beatmaps
+{
+    using osu.Game.Rulesets.Objects;
+
+    // The members of osu.Game/Beatmaps/IBeatmap.cs that stacking reads.
+    public interface IBeatmap
+    {
+        IReadOnlyList<HitObject> HitObjects { get; }
+        int BeatmapVersion { get; }
+        float StackLeniency { get; }
     }
 }
 

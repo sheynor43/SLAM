@@ -194,5 +194,7 @@ static class Program
         File.WriteAllText(args[0], sb.ToString());
         if (args.Length > 1)
             File.WriteAllText(args[1], Nested.Generate());
+        if (args.Length > 2)
+            File.WriteAllText(args[2], Stacking.Generate());
     }
 }
