@@ -19,9 +19,11 @@ slam-library = { path = "../slam-library" }
 slam-plugins = { path = "../slam-plugins" }
 slam-ui = { path = "../slam-ui" }
 slam-ipc = { path = "../slam-ipc" }
+tracing-subscriber.workspace = true
 
 [lints]
 workspace = true
 
 [dev-dependencies]
 cargo_metadata = "0.23.1"
+slam-testkit = { path = "../slam-testkit" }
