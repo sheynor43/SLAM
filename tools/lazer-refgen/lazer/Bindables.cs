@@ -1,4 +1,4 @@
-// Extracted verbatim from osu-framework 2026.921.1: osu.Framework/Bindables/Bindable.cs (lines 252-303, Parse), osu.Framework/Bindables/BindableBool.cs (lines 10-25), osu.Framework/Bindables/RangeConstrainedBindable.cs (lines 45-49, 246, 256; MinValue and MaxValue as plain properties), osu.Framework/Bindables/BindableNumber.cs (lines 19-32 without the type validation, 69-90, 92-94, 97-110, 209; Precision without its event), in minimal class shells without binding, events and leases; see README.md.
+// Extracted verbatim from osu-framework 2026.921.1: osu.Framework/Bindables/Bindable.cs (lines 252-303, Parse), osu.Framework/Bindables/BindableBool.cs (lines 10-25, plus a shell of the value-changed event and BindTo), osu.Framework/Bindables/RangeConstrainedBindable.cs (lines 45-49, 246, 256; MinValue and MaxValue as plain properties), osu.Framework/Bindables/BindableNumber.cs (lines 19-32 without the type validation, 69-90, 92-94, 97-110, 209; Precision without its event), in minimal class shells without binding, events and leases (except the BindableBool shell of the value-changed event and BindTo, and BindableFloat); see README.md.
 // Copyright (c) ppy Pty Ltd <contact@ppy.sh>. Licensed under the MIT Licence.
 // See the LICENCE file in the repository root for full licence text.
 
@@ -6,6 +6,7 @@
 #pragma warning disable CS8632 // the verbatim sources carry nullable annotations
 
 using System;
+using System.Collections.Generic;
 using System.Globalization;
 using System.Numerics;
 using osu.Framework.Extensions.ObjectExtensions;
@@ -89,6 +90,38 @@ namespace osu.Framework.Bindables
         public BindableBool(bool value = false)
             : base(value)
         {
+        }
+
+        // Shell of the value-changed event and of BindTo (Bindable.cs): a changed value is
+        // reported to the subscribers and copied to the bound bindables, nothing else.
+        private readonly List<Action<bool>> valueChanged = new List<Action<bool>>();
+        private readonly List<BindableBool> bindings = new List<BindableBool>();
+
+        public override bool Value
+        {
+            get => base.Value;
+            set
+            {
+                if (base.Value == value)
+                    return;
+
+                base.Value = value;
+
+                foreach (var action in valueChanged)
+                    action(value);
+
+                foreach (var binding in bindings)
+                    binding.Value = value;
+            }
+        }
+
+        public void BindValueChanged(Action<bool> onChange) => valueChanged.Add(onChange);
+
+        public void BindTo(BindableBool them)
+        {
+            Value = them.Value;
+            bindings.Add(them);
+            them.bindings.Add(this);
         }
 
         public override void Parse(object? input, IFormatProvider provider)
@@ -220,6 +253,14 @@ namespace osu.Framework.Bindables
     public class BindableInt : BindableNumber<int>
     {
         public BindableInt(int defaultValue = 0)
+            : base(defaultValue)
+        {
+        }
+    }
+
+    public class BindableFloat : BindableNumber<float>
+    {
+        public BindableFloat(float defaultValue = 0)
             : base(defaultValue)
         {
         }

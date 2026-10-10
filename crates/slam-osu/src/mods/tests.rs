@@ -329,3 +329,178 @@ fn set_multiplier_is_the_product_in_mod_order() {
     assert_eq!(Mod::NoFail.score_multiplier(&v1), 0.5);
     assert_eq!(Mod::Easy { retries: 2 }.score_multiplier(&v1), 0.5);
 }
+
+fn da(m: &Mod) -> DifficultyAdjustSettings {
+    match m {
+        Mod::DifficultyAdjust(d) => *d,
+        _ => panic!("not DA: {m:?}"),
+    }
+}
+
+#[test]
+fn difficulty_adjust_reads_nullable_floats() {
+    let mut m = Mod::from_acronym("DA");
+    assert!(m.uses_default_configuration());
+
+    assert!(m.set_setting("circle_size", &SettingValue::Float(4.2)));
+    assert!(m.set_setting("approach_rate", &SettingValue::Int(-11)));
+    assert!(m.set_setting("drain_rate", &SettingValue::String(" 12.5 ".into())));
+    assert!(m.set_setting("overall_difficulty", &SettingValue::Bool(true)));
+    let d = da(&m);
+    assert_eq!(d.circle_size, Some(4.2_f64 as f32));
+    // Clamped to the extended bounds even without `extended_limits`.
+    assert_eq!(d.approach_rate, Some(-10.0));
+    assert_eq!(d.drain_rate, Some(11.0));
+    assert_eq!(d.overall_difficulty, Some(1.0));
+    assert!(!d.extended_limits);
+
+    // `null` and the empty string unset a value; garbage keeps it.
+    assert!(m.set_setting("circle_size", &SettingValue::Null));
+    assert!(m.set_setting("drain_rate", &SettingValue::String(String::new())));
+    assert!(!m.set_setting("approach_rate", &SettingValue::String("fast".into())));
+    let d = da(&m);
+    assert_eq!((d.circle_size, d.drain_rate), (None, None));
+    assert_eq!(d.approach_rate, Some(-10.0));
+
+    // Circle Size has no extended minimum.
+    assert!(m.set_setting("circle_size", &SettingValue::Float(-3.0)));
+    assert_eq!(da(&m).circle_size, Some(0.0));
+    assert!(m.set_setting("circle_size", &SettingValue::String("NaN".into())));
+    assert!(da(&m).circle_size.unwrap().is_nan());
+}
+
+#[test]
+fn mirror_reads_enum_names_and_numbers() {
+    let read = |v: SettingValue| {
+        let mut m = Mod::from_acronym("MR");
+        m.set_setting("reflection", &v);
+        match m {
+            Mod::Mirror { reflection } => reflection,
+            _ => unreachable!(),
+        }
+    };
+    let s = |t: &str| SettingValue::String(t.into());
+    assert_eq!(read(SettingValue::Int(1)), MirrorType::Vertical);
+    assert_eq!(read(SettingValue::Int(2)), MirrorType::Both);
+    assert_eq!(read(SettingValue::Int(7)), MirrorType::Undefined(7));
+    assert_eq!(read(SettingValue::Float(2.0)), MirrorType::Both);
+    assert_eq!(read(SettingValue::Float(1.5)), MirrorType::Horizontal);
+    assert_eq!(read(SettingValue::Bool(true)), MirrorType::Horizontal);
+    assert_eq!(read(SettingValue::Null), MirrorType::Horizontal);
+    assert_eq!(read(s("Vertical")), MirrorType::Vertical);
+    assert_eq!(read(s(" Both ")), MirrorType::Both);
+    // Names are case-sensitive; a list combines its values.
+    assert_eq!(read(s("vertical")), MirrorType::Horizontal);
+    assert_eq!(read(s("Vertical, Both")), MirrorType::Undefined(3));
+    assert_eq!(read(s(" 1 ")), MirrorType::Vertical);
+    assert_eq!(read(s("-1")), MirrorType::Undefined(-1));
+}
+
+#[test]
+fn map_mod_settings_round_trip_through_api() {
+    let mods = [
+        Mod::DifficultyAdjust(DifficultyAdjustSettings {
+            circle_size: Some(8.3),
+            approach_rate: Some(-5.5),
+            drain_rate: None,
+            overall_difficulty: Some(10.7),
+            extended_limits: true,
+        }),
+        Mod::Mirror {
+            reflection: MirrorType::Both,
+        },
+        Mod::Mirror {
+            reflection: MirrorType::Undefined(9),
+        },
+    ];
+    for m in mods {
+        let api = m.to_api();
+        assert!(!api.settings.is_empty());
+        assert_eq!(Mod::from_api(&api), m);
+    }
+
+    // A float is written as the double of its shortest text, as Newtonsoft writes it.
+    let m = Mod::DifficultyAdjust(DifficultyAdjustSettings {
+        circle_size: Some(8.3),
+        ..DifficultyAdjustSettings::default()
+    });
+    assert_eq!(
+        m.settings(),
+        [("circle_size".to_owned(), SettingValue::Float(8.3))]
+    );
+    for acronym in ["DA", "MR"] {
+        assert!(Mod::from_acronym(acronym).uses_default_configuration());
+    }
+}
+
+// Ported from osu!lazer 2026.1005.0-lazer: osu.Game.Rulesets.Osu/Mods/OsuModHardRock.cs, osu.Game.Rulesets.Osu/Mods/OsuModEasy.cs
+#[test]
+fn difficulty_mods_change_settings() {
+    let apply = |mods: &[Mod]| {
+        let mut d = difficulty();
+        for m in mods {
+            m.apply_to_difficulty(&mut d);
+        }
+        (
+            d.circle_size,
+            d.approach_rate,
+            d.drain_rate,
+            d.overall_difficulty,
+        )
+    };
+
+    assert_eq!(apply(&[Mod::HardRock]), (4.0 * 1.3, 10.0, 5.0 * 1.4, 10.0));
+    assert_eq!(apply(&[Mod::from_acronym("EZ")]), (2.0, 4.5, 2.5, 4.0));
+    // In mod order: Easy halves what Hard Rock raised.
+    assert_eq!(
+        apply(&[Mod::HardRock, Mod::from_acronym("EZ")]),
+        (4.0 * 1.3 * 0.5, 5.0, 5.0 * 1.4 * 0.5, 5.0)
+    );
+    let mut da = Mod::from_acronym("DA");
+    da.set_setting("approach_rate", &SettingValue::Float(10.5));
+    da.set_setting("drain_rate", &SettingValue::Float(2.0));
+    assert_eq!(apply(&[da.clone()]), (4.0, 10.5, 2.0, 8.0));
+    assert_eq!(
+        apply(&[da, Mod::HardRock]),
+        (4.0 * 1.3, 10.0, 2.0 * 1.4, 10.0)
+    );
+    // Mirror changes no difficulty.
+    assert_eq!(apply(&[Mod::from_acronym("MR")]), (4.0, 9.0, 5.0, 8.0));
+}
+
+#[test]
+fn difficulty_adjust_multipliers() {
+    let base = difficulty();
+    let context = |version| MultiplierContext {
+        version,
+        difficulty_without_mods: &base,
+    };
+    let m = |settings| Mod::DifficultyAdjust(settings);
+
+    let unchanged = m(DifficultyAdjustSettings::default());
+    assert_eq!(
+        unchanged.score_multiplier(&context(MultiplierVersion::V1)),
+        0.5
+    );
+    assert_eq!(
+        unchanged.score_multiplier(&context(MultiplierVersion::V2)),
+        1.0
+    );
+
+    // 0.05x per 0.1 of change, per setting.
+    let ar = m(DifficultyAdjustSettings {
+        approach_rate: Some(9.3),
+        ..DifficultyAdjustSettings::default()
+    });
+    let v2 = ar.score_multiplier(&context(MultiplierVersion::V2));
+    assert!((v2 - 0.85).abs() < 1e-6, "{v2}");
+    let far = m(DifficultyAdjustSettings {
+        circle_size: Some(11.0),
+        ..DifficultyAdjustSettings::default()
+    });
+    assert_eq!(far.score_multiplier(&context(MultiplierVersion::V2)), 0.1);
+    assert_eq!(
+        Mod::from_acronym("MR").score_multiplier(&context(MultiplierVersion::V2)),
+        1.0
+    );
+}

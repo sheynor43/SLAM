@@ -4,6 +4,7 @@ use slam_formats::osu::{self as osu_file, Break, HitObjectKind};
 
 use crate::control_points::ControlPoints;
 use crate::dotnet::compare_f64;
+use crate::mods::{GameplayMod, Mod};
 use crate::objects::{ComboInfo, ObjectDefaults, OsuHitObject, OsuHitObjectKind, Slider};
 use crate::stacking;
 
@@ -53,12 +54,12 @@ impl Difficulty {
 }
 
 /// A playable osu!standard beatmap: control points, difficulty, breaks and converted objects
-/// with combo information, difficulty defaults and stacking applied (no mods yet).
+/// with combo information, difficulty defaults, the mods' changes and stacking applied.
 #[derive(Debug, Clone, PartialEq)]
 pub struct Beatmap {
     /// `.osu` format version.
     pub format_version: i32,
-    /// Difficulty settings.
+    /// Difficulty settings, with the mods' changes.
     pub difficulty: Difficulty,
     /// Stack leniency from `[General]`.
     pub stack_leniency: f32,
@@ -71,17 +72,35 @@ pub struct Beatmap {
 }
 
 impl Beatmap {
-    // Ported from osu!lazer 2026.1005.0-lazer: osu.Game/Beatmaps/Formats/LegacyBeatmapDecoder.cs (ParseStreamInto, postProcessBreaks, applyDefaults, applySamples)
-    // Ported from osu!lazer 2026.1005.0-lazer: osu.Game.Rulesets.Osu/Beatmaps/OsuBeatmapConverter.cs
-    // Ported from osu!lazer 2026.1005.0-lazer: osu.Game.Rulesets.Osu/Beatmaps/OsuBeatmapProcessor.cs (PreProcess)
-    // Ported from osu!lazer 2026.1005.0-lazer: osu.Game/Beatmaps/WorkingBeatmap.cs (GetPlayableBeatmap)
     /// Processes a decoded `.osu` file the way lazer's decoder, `OsuBeatmapConverter` and
     /// `OsuBeatmapProcessor.PreProcess` do: clamps the difficulty, builds the control points,
     /// sorts objects and breaks, forces new combos after breaks and spinners, resolves samples
     /// and assigns combo indices. Then applies the difficulty defaults to every object
     /// ([`OsuHitObject::apply_defaults`]), as lazer does after `PreProcess`, and stacking
     /// ([`Beatmap::apply_stacking`]), as `PostProcess` does.
+    ///
+    /// This is [`Beatmap::from_file_with_mods`] without mods.
     pub fn from_file(file: osu_file::Beatmap) -> Result<Beatmap, BeatmapError> {
+        Beatmap::from_file_with_mods(file, &mut [] as &mut [Mod])
+    }
+
+    // Ported from osu!lazer 2026.1005.0-lazer: osu.Game/Beatmaps/Formats/LegacyBeatmapDecoder.cs (ParseStreamInto, postProcessBreaks, applyDefaults, applySamples)
+    // Ported from osu!lazer 2026.1005.0-lazer: osu.Game.Rulesets.Osu/Beatmaps/OsuBeatmapConverter.cs
+    // Ported from osu!lazer 2026.1005.0-lazer: osu.Game.Rulesets.Osu/Beatmaps/OsuBeatmapProcessor.cs (PreProcess)
+    // Ported from osu!lazer 2026.1005.0-lazer: osu.Game/Beatmaps/WorkingBeatmap.cs (GetPlayableBeatmap)
+    /// Builds the beatmap as [`Beatmap::from_file`] does, applying the mods' beatmap hooks in
+    /// lazer's order: every mod's [`apply_to_difficulty`](GameplayMod::apply_to_difficulty)
+    /// in mod order, the objects' defaults with the changed difficulty, each mod's
+    /// [`apply_to_hit_object`](GameplayMod::apply_to_hit_object) on every object (one mod
+    /// after another), stacking, then every mod's
+    /// [`apply_to_beatmap`](GameplayMod::apply_to_beatmap).
+    ///
+    /// Objects are converted with the difficulty of the file: lazer's decoder resolves the
+    /// samples before any mod applies.
+    pub fn from_file_with_mods<M: GameplayMod>(
+        file: osu_file::Beatmap,
+        mods: &mut [M],
+    ) -> Result<Beatmap, BeatmapError> {
         if file.general.mode != 0 {
             return Err(BeatmapError::UnsupportedMode(file.general.mode));
         }
@@ -118,10 +137,21 @@ impl Beatmap {
             ));
         }
 
+        let mut difficulty = difficulty;
+        for m in mods.iter() {
+            m.apply_to_difficulty(&mut difficulty);
+        }
+
         assign_combo_info(&mut hit_objects);
 
         for obj in &mut hit_objects {
             obj.apply_defaults(&control_points, &difficulty);
+        }
+
+        for m in mods.iter() {
+            for obj in &mut hit_objects {
+                m.apply_to_hit_object(obj);
+            }
         }
 
         let mut beatmap = Beatmap {
@@ -133,6 +163,10 @@ impl Beatmap {
             hit_objects,
         };
         beatmap.apply_stacking();
+
+        for m in mods.iter_mut() {
+            m.apply_to_beatmap(&mut beatmap);
+        }
         Ok(beatmap)
     }
 
