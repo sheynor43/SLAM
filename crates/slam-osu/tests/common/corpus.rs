@@ -14,7 +14,9 @@ use slam_formats::osr::{self, Replay, ScoreRank};
 use slam_formats::osu;
 use slam_osu::judgement::{HitResult, JudgementLog, Statistics};
 use slam_osu::mods::FIRST_LAZER_VERSION;
-use slam_osu::replay::{NoRules, ReplayInput, Rules, Simulator};
+use slam_osu::objects::OsuHitObjectKind;
+use slam_osu::replay::{ReplayInput, Rules, Simulator};
+use slam_osu::rules::OsuRules;
 use slam_osu::{Beatmap, GameplayMod, ModSet};
 
 /// The score is not compared yet.
@@ -268,11 +270,7 @@ impl fmt::Display for Report {
                     write_diffs(f, diffs)?;
                 }
                 Outcome::NotJudged { diffs } => {
-                    writeln!(
-                        f,
-                        "\n{}: not judged (rules not implemented yet (#49))",
-                        e.name
-                    )?;
+                    writeln!(f, "\n{}: not judged (rules not implemented yet)", e.name)?;
                     write_diffs(f, diffs)?;
                 }
                 Outcome::Skipped(reason) => writeln!(f, "\n{}: skipped, {reason}", e.name)?,
@@ -285,12 +283,17 @@ impl fmt::Display for Report {
 
 /// The rules the corpus is simulated with, and whether they judge.
 ///
-/// This is the single place to plug in the real osu rules (#49), which must then return
-/// `true`: while it is `false`, a lazer difference is reported as `NotJudged` and does not
-/// fail the run. The rules must honour `mods` (Classic included: stable replays get it from
+/// While a rule set is incomplete, it does not judge beatmaps that need the missing rules: a
+/// lazer difference there is reported as `NotJudged` and does not fail the run. Only hit
+/// circles are judged so far (#49); sliders (#50) and spinners (#51) still pass unjudged. The
+/// rules honour `mods` (Classic included: stable replays get it from
 /// `ModSet::from_replay_parts`).
-fn rules_for(beatmap: &Beatmap, _mods: &ModSet) -> (NoRules, bool) {
-    (NoRules::new(beatmap), false)
+fn rules_for(beatmap: &Beatmap, mods: &ModSet) -> (OsuRules, bool) {
+    let judges = beatmap
+        .hit_objects
+        .iter()
+        .all(|o| matches!(o.kind, OsuHitObjectKind::Circle));
+    (OsuRules::new(beatmap, mods), judges)
 }
 
 /// Runs the corpus under `root`. `filter` is a case-sensitive substring of an entry's `file`

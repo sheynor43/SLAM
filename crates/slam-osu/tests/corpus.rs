@@ -39,6 +39,25 @@ fn ci_sample() {
 const LAZER_VERSION: i32 = osr::VERSION_LAZER_BLOCK + 1;
 const STABLE_VERSION: i32 = 20230101;
 
+/// The map of the fixture corpora: a single spinner, which the rules do not judge yet (#51),
+/// so any replay yields no judgements and a difference is `NotJudged`.
+const FIXTURE_MAP: &str = "osu file format v14
+
+[Difficulty]
+HPDrainRate:5
+CircleSize:4
+OverallDifficulty:8
+ApproachRate:9
+SliderMultiplier:1
+SliderTickRate:1
+
+[TimingPoints]
+0,500,4,2,0,100,1,0
+
+[HitObjects]
+256,192,3000,12,0,4000
+";
+
 struct Fixture {
     root: PathBuf,
 }
@@ -54,9 +73,9 @@ impl Fixture {
         Fixture { root }
     }
 
-    /// Writes the map and returns its SHA-256.
+    /// Writes [`FIXTURE_MAP`] and returns its SHA-256.
     fn map(&self, source: &str) -> String {
-        let sha: String = Sha256::digest(common::MAP.as_bytes())
+        let sha: String = Sha256::digest(FIXTURE_MAP.as_bytes())
             .iter()
             .map(|b| format!("{b:02x}"))
             .collect();
@@ -65,7 +84,7 @@ impl Fixture {
             .join(source)
             .join("maps")
             .join(format!("{sha}.osu"));
-        std::fs::write(path, common::MAP).unwrap();
+        std::fs::write(path, FIXTURE_MAP).unwrap();
         sha
     }
 
@@ -246,7 +265,7 @@ fn lazer_difference_under_placeholder_rules_is_not_judged() {
     assert!(!report.failed());
     let text = report.to_string();
     assert!(text.contains("not judged 1"), "{text}");
-    assert!(text.contains("rules not implemented yet (#49)"), "{text}");
+    assert!(text.contains("rules not implemented yet"), "{text}");
 }
 
 #[test]
