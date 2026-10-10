@@ -164,11 +164,12 @@ graph TD
 
 ## 6. Аудио
 
-Подробности — [ADR-0004], интерфейс HAL и PipeWire — [ADR-0022](adr/0022-audio-hal-and-pipewire.md), микшер хитсаундов — [ADR-0023](adr/0023-hitsound-mixer.md), отчёты о старте голосов — [ADR-0025](adr/0025-mixer-voice-start-reports.md).
+Подробности — [ADR-0004], интерфейс HAL и PipeWire — [ADR-0022](adr/0022-audio-hal-and-pipewire.md), микшер хитсаундов — [ADR-0023](adr/0023-hitsound-mixer.md), отчёты о старте голосов — [ADR-0025](adr/0025-mixer-voice-start-reports.md), задержка драйвера ALSA под PipeWire — [ADR-0026](adr/0026-pipewire-alsa-driver-delay.md).
 
 - Свой HAL с бэкендами:
   - **Windows / WASAPI**: shared; shared low-latency (`IAudioClient3`, минимальный период драйвера); **exclusive** (обход системного микшера). ASIO — опционально, позже.
   - **Linux**: PipeWire (квантум через `node.latency`, например `128/48000`); ALSA `hw:` как запасной вариант.
+  - Задержка PipeWire не включает задержку драйвера ALSA сверх кольцевого буфера (очередь URB у USB-устройств, 10–15 мс). Бэкенд добавляет её сам: поток цикла PipeWire опрашивает `/proc/asound/.../status` синка и сглаживает значение, колбэк читает его из атомика.
 - Настройки: бэкенд, режим, устройство, размер буфера в сэмплах с подписью в мс, кнопка теста.
 - Аудиопоток с повышенным приоритетом (MMCSS «Pro Audio» на Windows). В колбэке нет аллокаций, блокировок, системных вызовов.
 - Хитсаунды декодируются заранее в PCM (`Sample`: WAV, OGG Vorbis, MP3 через `symphonia`) и пересэмплируются под частоту устройства (`rubato`).

@@ -1,5 +1,7 @@
 //! Audio HAL and backends, mixer, decoding, resampling, time-stretch, audio clock.
 
+#[cfg(target_os = "linux")]
+mod alsa_delay;
 mod hal;
 mod mixer;
 #[cfg(target_os = "linux")]
