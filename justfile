@@ -34,6 +34,10 @@ run *ARGS:
 tone *ARGS:
     cargo run -p slam-audio --release --example tone -- {{ARGS}}
 
+# Хитсаунд через микшер по Enter: just hitsound [файл] [кадры_буфера]
+hitsound *ARGS:
+    cargo run -p slam-audio --release --example hitsound -- {{ARGS}}
+
 # Корпусы реплеев (путь к корпусу: SLAM_CORPUS, по умолчанию ../slam-corpus)
 corpus *ARGS:
     cargo test -p slam-osu --release --test corpus -- --ignored {{ARGS}}
