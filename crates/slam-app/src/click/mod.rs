@@ -22,8 +22,9 @@ pub use flash::Flash;
 
 use crate::bench::{MAX_SECONDS, number};
 
-pub const USAGE: &str = "usage: slam-app click [--seconds S] [--device ID] [--buffer FRAMES] \
-                         [--tone-hz HZ] [--sample FILE] [--dump FILE.csv] | --devices";
+pub const USAGE: &str = "usage: slam-app click [--seconds S] [--backend NAME] [--device ID] \
+                         [--buffer FRAMES] [--tone-hz HZ] [--sample FILE] [--dump FILE.csv] \
+                         | [--backend NAME] --devices";
 
 /// Presses recorded at most; more are counted, not recorded.
 pub const MAX_PRESSES: usize = 100_000;
@@ -37,9 +38,11 @@ const TONE_MS: f64 = 30.0;
 pub struct Options {
     /// The window closes by itself after this long.
     pub seconds: f64,
+    /// Audio backend (`Backend::name`); `None` takes the first available.
+    pub backend: Option<Backend>,
     /// Output device id (`--devices`); `None` follows the system default.
     pub device: Option<String>,
-    /// Requested frames per audio buffer (PipeWire quantum).
+    /// Requested frames per audio buffer (PipeWire quantum, WASAPI period).
     pub buffer_frames: u32,
     /// Frequency of the generated tone burst.
     pub tone_hz: f64,
@@ -55,6 +58,7 @@ impl Default for Options {
     fn default() -> Self {
         Self {
             seconds: 60.0,
+            backend: None,
             device: None,
             buffer_frames: StreamConfig::default().buffer_frames,
             tone_hz: 1000.0,
@@ -74,6 +78,14 @@ impl Options {
             let mut value = || args.next().ok_or_else(|| format!("{flag} needs a value"));
             match flag.as_str() {
                 "--seconds" => options.seconds = number(&flag, &value()?)?,
+                "--backend" => {
+                    let name = value()?;
+                    let backend = Backend::from_name(&name).ok_or_else(|| {
+                        let names: Vec<_> = Backend::available().iter().map(|b| b.name()).collect();
+                        format!("unknown backend {name}; available: {}", names.join(", "))
+                    })?;
+                    options.backend = Some(backend);
+                }
                 "--device" => options.device = Some(value()?),
                 "--buffer" => options.buffer_frames = number(&flag, &value()?)?,
                 "--tone-hz" => options.tone_hz = number(&flag, &value()?)?,
@@ -135,9 +147,12 @@ fn load_sample(options: &Options) -> Result<Sample, String> {
 
 /// Runs the click test in a window and prints the report.
 pub fn run(options: &Options) -> Result<(), String> {
-    let backend = *Backend::available()
-        .first()
-        .ok_or("no audio backend in this build")?;
+    let backend = match options.backend {
+        Some(backend) => backend,
+        None => *Backend::available()
+            .first()
+            .ok_or("no audio backend in this build")?,
+    };
     if options.list_devices {
         for device in slam_audio::devices(backend).map_err(|e| e.to_string())? {
             println!("{}\t{}", device.id, device.name);
@@ -164,6 +179,12 @@ pub fn run(options: &Options) -> Result<(), String> {
         Box::new(mixer),
     )
     .map_err(|e| e.to_string())?;
+    println!(
+        "audio: {}, {} frames per buffer requested, {} granted",
+        stream.backend().name(),
+        options.buffer_frames,
+        stream.config().buffer_frames
+    );
 
     let mut window =
         InputWindow::new_opengl("SLAM click test", 640, 360).map_err(|e| e.to_string())?;
@@ -277,6 +298,18 @@ mod tests {
         assert!(parse(&["--tone-hz", "24000"]).is_err());
         assert!(parse(&["--buffer"]).is_err());
         assert!(parse(&["--what"]).is_err());
+    }
+
+    #[test]
+    fn backend_flag() {
+        for &backend in Backend::available() {
+            assert_eq!(
+                parse(&["--backend", backend.name()]).unwrap().backend,
+                Some(backend)
+            );
+        }
+        assert!(parse(&["--backend", "asio"]).is_err());
+        assert!(parse(&["--backend"]).is_err());
     }
 
     #[test]

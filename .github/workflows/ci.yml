@@ -50,6 +50,22 @@ jobs:
       - name: Test
         run: cargo test --workspace
 
+  windows:
+    name: clippy, test (Windows)
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v7
+      # SDL3 is built from source (sdl3-sys build-from-source-static) with the MSVC
+      # toolchain and CMake that the runner image provides.
+      - name: Install toolchain
+        run: rustup toolchain install
+      - uses: Swatinem/rust-cache@v2
+      - name: Clippy
+        run: cargo clippy --workspace --all-targets -- -D warnings
+      # Runners have no audio endpoint: the WASAPI device tests skip themselves.
+      - name: Test
+        run: cargo test --workspace
+
   deny:
     name: cargo deny
     runs-on: ubuntu-latest

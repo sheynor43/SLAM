@@ -164,10 +164,10 @@ graph TD
 
 ## 6. Аудио
 
-Подробности — [ADR-0004], интерфейс HAL и PipeWire — [ADR-0022](adr/0022-audio-hal-and-pipewire.md), микшер хитсаундов — [ADR-0023](adr/0023-hitsound-mixer.md), отчёты о старте голосов — [ADR-0025](adr/0025-mixer-voice-start-reports.md), задержка драйвера ALSA под PipeWire — [ADR-0026](adr/0026-pipewire-alsa-driver-delay.md).
+Подробности — [ADR-0004], интерфейс HAL и PipeWire — [ADR-0022](adr/0022-audio-hal-and-pipewire.md), микшер хитсаундов — [ADR-0023](adr/0023-hitsound-mixer.md), отчёты о старте голосов — [ADR-0025](adr/0025-mixer-voice-start-reports.md), задержка драйвера ALSA под PipeWire — [ADR-0026](adr/0026-pipewire-alsa-driver-delay.md), бэкенд WASAPI — [ADR-0027](adr/0027-wasapi-backend.md).
 
 - Свой HAL с бэкендами:
-  - **Windows / WASAPI**: shared; shared low-latency (`IAudioClient3`, минимальный период драйвера); **exclusive** (обход системного микшера). ASIO — опционально, позже.
+  - **Windows / WASAPI**: shared; shared low-latency (`IAudioClient3`, минимальный период драйвера); **exclusive** (обход системного микшера). Режим — часть бэкенда (`Backend::Wasapi(WasapiMode)`), неподдерживаемый откатывается exclusive → low-latency → shared, фактический режим и период сообщает открытый поток. Свой поток с MMCSS «Pro Audio», event-driven; задержка — по `IAudioClock::GetPosition` (QPC). ASIO — опционально, позже.
   - **Linux**: PipeWire (квантум через `node.latency`, например `128/48000`); ALSA `hw:` как запасной вариант.
   - Задержка PipeWire не включает задержку драйвера ALSA сверх кольцевого буфера (очередь URB у USB-устройств, 10–15 мс). Бэкенд добавляет её сам: поток цикла PipeWire опрашивает `/proc/asound/.../status` синка и сглаживает значение, колбэк читает его из атомика.
 - Настройки: бэкенд, режим, устройство, размер буфера в сэмплах с подписью в мс, кнопка теста.

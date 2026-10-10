@@ -22,7 +22,7 @@
 - [x] p99 джиттера лимитера < 50 мкс — ≤ 1 мкс ([изолированно](perf/2026-10-08-frame-limiter.md), [в цикле отрисовки](perf/2026-10-10-bench-scene.md)).
 - [x] Клик → звук измерен и задокументирован — [#26](https://github.com/sheynor43/SLAM/issues/26), [отчёт](perf/2026-10-10-click-to-sound.md): ввод → очередь 37 мкс (p50), щелчок → звук 25.4 мс на USB-интерфейсе; задержку устройства PipeWire сообщает не полностью.
 - [x] Решение о D3D11/Vulkan — [ADR-0024](adr/0024-render-backend-per-platform.md).
-- [ ] WASAPI — [#10](https://github.com/sheynor43/SLAM/issues/10).
+- [x] WASAPI — [#10](https://github.com/sheynor43/SLAM/issues/10), [ADR-0027](adr/0027-wasapi-backend.md): проверено сборкой и CI на Windows без звукового устройства; ручная проверка на Windows — [#35](https://github.com/sheynor43/SLAM/issues/35).
 - [x] Задержки `present` на Linux — [#28](https://github.com/sheynor43/SLAM/issues/28): причина — конкуренция за очередь GPU с записью экрана (OBS), прототип Vulkan не нужен ([отчёт](perf/2026-10-10-present-stalls.md)).
 
 ## M1 — Ядро без графики
