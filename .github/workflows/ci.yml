@@ -30,6 +30,11 @@ jobs:
             libxi-dev libxss-dev libxtst-dev libxkbcommon-dev \
             libwayland-dev wayland-protocols libdecor-0-dev \
             libegl1-mesa-dev libgl1-mesa-dev libgles2-mesa-dev libdrm-dev libgbm-dev
+      # slam-audio: PipeWire headers; pipewire-sys generates bindings with bindgen
+      # (libclang).
+      - name: Install PipeWire build dependencies
+        run: |
+          sudo apt-get install -y --no-install-recommends libpipewire-0.3-dev libclang-dev
       # Installs the toolchain and components pinned in rust-toolchain.toml.
       - name: Install toolchain
         run: rustup toolchain install
