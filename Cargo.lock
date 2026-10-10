@@ -1126,6 +1126,7 @@ name = "slam-osu"
 version = "0.1.0"
 dependencies = [
  "slam-formats",
+ "thiserror",
 ]
 
 [[package]]

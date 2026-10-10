@@ -8,6 +8,7 @@ publish.workspace = true
 
 [dependencies]
 slam-formats = { path = "../slam-formats" }
+thiserror.workspace = true
 
 [lints]
 workspace = true
