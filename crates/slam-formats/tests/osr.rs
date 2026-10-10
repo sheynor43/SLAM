@@ -572,3 +572,34 @@ fn timed_frame_converts_to_generated() {
         }
     );
 }
+
+#[test]
+fn lazer_score_info_full_cycle() {
+    use slam_formats::osr::{ApiMod, HitResult, ScoreInfo, ScoreRank, SettingValue};
+    let info = ScoreInfo {
+        online_id: 5,
+        mods: vec![ApiMod {
+            acronym: "DT".into(),
+            settings: vec![("speed_change".into(), SettingValue::Float(1.1))],
+            extra: vec![],
+        }],
+        statistics: vec![(HitResult::Great, 10)],
+        maximum_statistics: vec![(HitResult::Great, 10)],
+        client_version: "2026.1005.0".into(),
+        rank: Some(ScoreRank::S),
+        user_id: 7,
+        total_score_without_mods: Some(800_000),
+        pauses: vec![1234],
+        extra: vec![],
+    };
+    let replay = Replay {
+        lazer_block: Some(info.to_block()),
+        ..sample(30_000_019)
+    };
+    let decoded = decode(&encode(&replay)).unwrap();
+    assert_eq!(decoded.replay.score_info().unwrap(), Some(info));
+
+    let stable = decode(&encode(&sample(20_151_228))).unwrap();
+    assert_eq!(stable.replay.lazer_block, None);
+    assert_eq!(stable.replay.score_info(), Ok(None));
+}

@@ -19,6 +19,8 @@ lzma-rust2 = { version = "0.21.0", default-features = false, features = ["std", 
 pipewire = { version = "0.10.1", features = ["v1_0_0"] }
 naga = { version = "30.0.1", default-features = false, features = ["wgsl-in", "glsl-out"] }
 rtrb = "0.4.0"
+# JSON of the lazer score-info block in .osr replays; insertion order is kept to write fields back as read.
+serde_json = { version = "1", features = ["preserve_order", "float_roundtrip"] }
 # Offline resampling of hitsounds to the device rate.
 rubato = { version = "5.0.1", default-features = false, features = ["fft_resampler"] }
 # Hitsound formats accepted by stable: WAV (PCM, ADPCM), OGG Vorbis, MP3.
