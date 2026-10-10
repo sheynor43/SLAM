@@ -26,4 +26,4 @@ pub use counters::InputCounters;
 pub use event::{InputEvent, InputKind, MouseButton};
 pub use gl::GlContext;
 pub use ring::{BUTTON_RESERVE, EventSink, EventSource, Notify, event_ring};
-pub use window::{InputWindow, WindowError, dispatch};
+pub use window::{InputWindow, QuitHandle, WindowError, dispatch};

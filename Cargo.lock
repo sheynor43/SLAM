@@ -545,8 +545,10 @@ dependencies = [
  "slam-plugins",
  "slam-render",
  "slam-skin",
+ "slam-testkit",
  "slam-text",
  "slam-ui",
+ "tracing-subscriber",
 ]
 
 [[package]]

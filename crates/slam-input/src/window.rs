@@ -1,9 +1,10 @@
 use std::ffi::{CStr, CString};
-use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::{Arc, Mutex, PoisonError};
 
 use sdl3_sys::events::{
-    SDL_EVENT_QUIT, SDL_EVENT_WINDOW_PIXEL_SIZE_CHANGED, SDL_Event, SDL_EventType, SDL_WaitEvent,
+    SDL_EVENT_QUIT, SDL_EVENT_WINDOW_PIXEL_SIZE_CHANGED, SDL_Event, SDL_EventType, SDL_PushEvent,
+    SDL_QuitEvent, SDL_WaitEvent,
 };
 use sdl3_sys::hints::{SDL_HINT_INVALID_PARAM_CHECKS, SDL_SetHint};
 use sdl3_sys::init::{SDL_INIT_VIDEO, SDL_Init, SDL_Quit};
@@ -49,6 +50,36 @@ pub struct InputWindow {
     /// the [`GlContext`], if any: a strong count above one means the context is alive.
     size: Arc<PixelSize>,
     counters: Arc<InputCounters>,
+    /// Whether [`QuitHandle`]s may push events; cleared when the window is dropped,
+    /// before `SDL_Quit`.
+    alive: Arc<Mutex<bool>>,
+}
+
+/// Asks [`InputWindow::run`] to return, from any thread. Outliving the window is
+/// harmless: requests after the window is dropped do nothing.
+#[derive(Clone)]
+pub struct QuitHandle {
+    alive: Arc<Mutex<bool>>,
+}
+
+impl QuitHandle {
+    /// Queues a quit event, so `run` returns after the events queued before it.
+    /// Returns whether the event was queued. Takes a lock: not for hot paths.
+    pub fn request(&self) -> bool {
+        let alive = self.alive.lock().unwrap_or_else(PoisonError::into_inner);
+        if !*alive {
+            return false;
+        }
+        let mut event = SDL_Event {
+            quit: SDL_QuitEvent {
+                r#type: SDL_EVENT_QUIT,
+                ..Default::default()
+            },
+        };
+        // SAFETY: SDL is initialised while `alive` is set, and the window's drop
+        // waits for this lock before shutting SDL down. SDL_PushEvent is thread-safe.
+        unsafe { SDL_PushEvent(&mut event) }
+    }
 }
 
 impl InputWindow {
@@ -115,6 +146,7 @@ impl InputWindow {
             opengl,
             size,
             counters: Arc::default(),
+            alive: Arc::new(Mutex::new(true)),
         })
     }
 
@@ -140,7 +172,14 @@ impl InputWindow {
         &self.counters
     }
 
-    /// Blocks on OS events until the window is closed. Keyboard and mouse events are
+    /// A handle that makes [`InputWindow::run`] return as if the window was closed.
+    pub fn quit_handle(&self) -> QuitHandle {
+        QuitHandle {
+            alive: Arc::clone(&self.alive),
+        }
+    }
+
+    /// Blocks on OS events until the window is closed or a [`QuitHandle`] asks. Keyboard and mouse events are
     /// stamped with `mapper` and pushed into `sink`; when the ring is full they are
     /// dropped and counted, never waited on. No allocations per event. `mapper` is
     /// recalibrated first, since SDL re-bases its clock on every initialisation.
@@ -204,6 +243,7 @@ impl Drop for InputWindow {
     fn drop(&mut self) {
         // `get_mut` synchronises with the drop of a GlContext on another thread, so
         // its SDL calls happen before the teardown below.
+        *self.alive.lock().unwrap_or_else(PoisonError::into_inner) = false;
         if Arc::get_mut(&mut self.size).is_none() {
             // A GlContext still points at the window, possibly current on the draw
             // thread: leak the window and SDL rather than destroy them under it.

@@ -234,6 +234,18 @@ impl<S: GlSurface> GlDevice<S> {
         })
     }
 
+    /// Driver description for reports: `GL_RENDERER` and `GL_VERSION`. Allocates.
+    pub fn driver_info(&self) -> String {
+        // SAFETY: the context is current on this thread; plain string queries.
+        let (renderer, version) = unsafe {
+            (
+                self.gl.get_parameter_string(glow::RENDERER),
+                self.gl.get_parameter_string(glow::VERSION),
+            )
+        };
+        format!("{renderer}, OpenGL {version}")
+    }
+
     /// Detaches the context from this thread and returns the surface. Resources not
     /// destroyed by then are freed with the context.
     pub fn into_surface(self) -> Result<S, DeviceError> {
