@@ -1,6 +1,6 @@
 //! osu!standard hit objects after conversion.
 
-use slam_formats::osu::{PathType, Vec2};
+use slam_formats::osu::{PathControlPoint, PathType, Vec2};
 
 use crate::beatmap::{CONTROL_POINT_LENIENCY, Difficulty};
 use crate::control_points::{ControlPoints, TimingPoint};
@@ -13,6 +13,10 @@ use crate::samples::{HitSample, SampleName};
 
 /// Lazer's `OsuHitObject.OBJECT_RADIUS`: radius of an object at scale 1 in osu!pixels.
 pub const OBJECT_RADIUS: f32 = 64.0;
+
+// Ported from osu!lazer 2026.1005.0-lazer: osu.Game.Rulesets.Osu/UI/OsuPlayfield.cs (BASE_SIZE)
+/// Size of the playfield in osu!pixels.
+pub const PLAYFIELD_SIZE: Vec2 = Vec2 { x: 512.0, y: 384.0 };
 
 /// Lazer's `OsuHitObject.BASE_SCORING_DISTANCE` (a float in lazer): osu!pixels a slider
 /// travels per beat at slider multiplier 1.
@@ -457,6 +461,41 @@ impl Slider {
         self.nested = nested;
     }
 
+    // Ported from osu!lazer 2026.1005.0-lazer: osu.Game.Rulesets.Osu/Utils/OsuHitObjectGenerationUtils.cs (modifySlider)
+    // Ported from osu!lazer 2026.1005.0-lazer: osu.Game.Rulesets.Osu/Objects/Slider.cs (Path)
+    /// Changes every control point and re-evaluates the path with the same expected distance.
+    /// Velocity, tick distance and nested objects stay; call
+    /// [`update_nested_positions`](Self::update_nested_positions) afterwards.
+    fn modify_path(&mut self, modify: impl Fn(Vec2) -> Vec2) {
+        let control_points = self
+            .path
+            .control_points()
+            .iter()
+            .map(|p| PathControlPoint {
+                position: modify(p.position),
+                path_type: p.path_type,
+            })
+            .collect();
+        self.path = SliderPath::new(control_points, self.path.expected_distance(), true);
+    }
+
+    // Ported from osu!lazer 2026.1005.0-lazer: osu.Game.Rulesets.Osu/Objects/Slider.cs (updateNestedPositions)
+    /// Moves the nested objects to the slider at `position` along the current path, as lazer
+    /// does whenever the position or the path of a slider changes.
+    fn update_nested_positions(&mut self, position: Vec2) {
+        let end_position = position + self.curve_position_at(1.0);
+        for n in &mut self.nested {
+            n.position = match n.kind {
+                NestedKind::Head => position,
+                NestedKind::Tail { .. } => end_position,
+                NestedKind::Repeat { path_progress, .. }
+                | NestedKind::Tick { path_progress, .. } => {
+                    position + self.path.position_at(path_progress)
+                }
+            };
+        }
+    }
+
     // Ported from osu!lazer 2026.1005.0-lazer: osu.Game/Rulesets/Objects/Types/IHasRepeats.cs (PopulateNodeSamples)
     /// Gives nodes without samples copies of the body samples.
     fn populate_node_samples(&mut self, samples: &[HitSample]) {
@@ -627,6 +666,28 @@ impl OsuHitObject {
             for n in &mut slider.nested {
                 n.stack_height = stack_height;
             }
+        }
+    }
+
+    // Ported from osu!lazer 2026.1005.0-lazer: osu.Game.Rulesets.Osu/Utils/OsuHitObjectGenerationUtils.cs (ReflectHorizontallyAlongPlayfield)
+    /// Mirrors the object left to right across the playfield; a slider's path is mirrored
+    /// and its nested objects follow. Used by Mirror.
+    pub fn reflect_horizontally(&mut self) {
+        self.position = Vec2::new(PLAYFIELD_SIZE.x - self.position.x, self.position.y);
+        if let OsuHitObjectKind::Slider(slider) = &mut self.kind {
+            slider.modify_path(|p| Vec2::new(-p.x, p.y));
+            slider.update_nested_positions(self.position);
+        }
+    }
+
+    // Ported from osu!lazer 2026.1005.0-lazer: osu.Game.Rulesets.Osu/Utils/OsuHitObjectGenerationUtils.cs (ReflectVerticallyAlongPlayfield)
+    /// Mirrors the object top to bottom across the playfield; a slider's path is mirrored and
+    /// its nested objects follow. Used by Hard Rock and Mirror.
+    pub fn reflect_vertically(&mut self) {
+        self.position = Vec2::new(self.position.x, PLAYFIELD_SIZE.y - self.position.y);
+        if let OsuHitObjectKind::Slider(slider) = &mut self.kind {
+            slider.modify_path(|p| Vec2::new(p.x, -p.y));
+            slider.update_nested_positions(self.position);
         }
     }
 

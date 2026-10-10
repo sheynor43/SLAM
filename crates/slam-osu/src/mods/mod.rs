@@ -6,15 +6,19 @@
 //! the way lazer's `APIMod.ToMod` reads them: a value lazer cannot convert keeps the default,
 //! numbers are clamped and rounded to the setting's precision.
 //!
-//! Mods that change the beatmap (HR, EZ, DA, Mirror) apply nothing yet; see issue #64.
+//! Mods that change the beatmap (HR, EZ, DA, Mirror) do so through the beatmap hooks of
+//! [`GameplayMod`]; [`ModSet::playable_beatmap`] runs them in lazer's order.
 
 mod multiplier;
 mod setting;
 
 use slam_formats::osr::{ApiMod, OsrError, Replay, ScoreInfo, SettingValue};
+use slam_formats::osu as osu_file;
 
-use crate::beatmap::{Beatmap, Difficulty};
+use crate::beatmap::{Beatmap, BeatmapError, Difficulty};
+use crate::dotnet;
 use crate::objects::OsuHitObject;
+use setting::DifficultyRange;
 
 pub use multiplier::{MultiplierVersion, TOTAL_SCORE_VERSION_MULTIPLIER_REBALANCE};
 
@@ -155,6 +159,88 @@ fn is_default_speed(value: f64, default: f64) -> bool {
 /// `Retries` of Easy: default, minimum, maximum.
 const EASY_RETRIES: (i32, i32, i32) = (2, 0, 10);
 
+// Ported from osu!lazer 2026.1005.0-lazer: osu.Game/Rulesets/Mods/ModHardRock.cs
+/// `ADJUST_RATIO` of Hard Rock (Circle Size uses 1.3).
+const HARD_ROCK_RATIO: f32 = 1.4;
+// Ported from osu!lazer 2026.1005.0-lazer: osu.Game/Rulesets/Mods/ModEasy.cs
+/// `ADJUST_RATIO` of Easy.
+const EASY_RATIO: f32 = 0.5;
+
+// Ported from osu!lazer 2026.1005.0-lazer: osu.Game/Rulesets/Mods/ModDifficultyAdjust.cs
+// Ported from osu!lazer 2026.1005.0-lazer: osu.Game.Rulesets.Osu/Mods/OsuModDifficultyAdjust.cs
+/// Bounds of Circle Size, Drain Rate and Overall Difficulty in Difficulty Adjust.
+const DA_RANGE: DifficultyRange = DifficultyRange {
+    min: 0.0,
+    max: 10.0,
+    extended_min: None,
+    extended_max: Some(11.0),
+};
+/// Bounds of Approach Rate in Difficulty Adjust.
+const DA_AR_RANGE: DifficultyRange = DifficultyRange {
+    min: 0.0,
+    max: 10.0,
+    extended_min: Some(-10.0),
+    extended_max: Some(11.0),
+};
+
+/// Settings of Difficulty Adjust. A set value replaces the beatmap's; `None` keeps it.
+///
+/// Values are clamped to 0..=10 (Approach Rate -10..=11, the others 0..=11 with the extended
+/// limits) when read, whatever `extended_limits` says, as lazer's `DifficultyBindable` does.
+#[derive(Debug, Clone, Copy, Default, PartialEq)]
+pub struct DifficultyAdjustSettings {
+    /// `circle_size`.
+    pub circle_size: Option<f32>,
+    /// `approach_rate`.
+    pub approach_rate: Option<f32>,
+    /// `drain_rate`: HP drain.
+    pub drain_rate: Option<f32>,
+    /// `overall_difficulty`: accuracy.
+    pub overall_difficulty: Option<f32>,
+    /// `extended_limits`: whether the settings UI offers values beyond 10.
+    pub extended_limits: bool,
+}
+
+// Ported from osu!lazer 2026.1005.0-lazer: osu.Game.Rulesets.Osu/Mods/OsuModMirror.cs (MirrorType)
+/// The axes Mirror flips the objects along (lazer's `MirrorType`).
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub enum MirrorType {
+    /// Flip left and right.
+    #[default]
+    Horizontal,
+    /// Flip up and down.
+    Vertical,
+    /// Flip both.
+    Both,
+    /// A value without a name, which a score block can carry; it flips nothing.
+    Undefined(i32),
+}
+
+/// The members of `MirrorType` as `Enum.Parse` sees them.
+const MIRROR_TYPE_NAMES: [(&str, i32); 3] = [("Horizontal", 0), ("Vertical", 1), ("Both", 2)];
+
+impl MirrorType {
+    /// The enum of a raw value.
+    pub fn from_raw(value: i32) -> MirrorType {
+        match value {
+            0 => MirrorType::Horizontal,
+            1 => MirrorType::Vertical,
+            2 => MirrorType::Both,
+            v => MirrorType::Undefined(v),
+        }
+    }
+
+    /// The raw value, as lazer writes it into a score block.
+    pub fn raw(self) -> i32 {
+        match self {
+            MirrorType::Horizontal => 0,
+            MirrorType::Vertical => 1,
+            MirrorType::Both => 2,
+            MirrorType::Undefined(v) => v,
+        }
+    }
+}
+
 /// A mod with its settings.
 #[derive(Debug, Clone, PartialEq)]
 pub enum Mod {
@@ -190,6 +276,13 @@ pub enum Mod {
     Traceable,
     /// `CL`.
     Classic(ClassicSettings),
+    /// `DA`.
+    DifficultyAdjust(DifficultyAdjustSettings),
+    /// `MR`.
+    Mirror {
+        /// `reflection`: the flipped axes.
+        reflection: MirrorType,
+    },
     /// Any other acronym: kept with its raw settings, has no effect. A set with such a mod
     /// is not [`supported`](ModSet::is_supported).
     Other {
@@ -231,6 +324,10 @@ impl Mod {
             },
             "TC" => Mod::Traceable,
             "CL" => Mod::Classic(ClassicSettings::default()),
+            "DA" => Mod::DifficultyAdjust(DifficultyAdjustSettings::default()),
+            "MR" => Mod::Mirror {
+                reflection: MirrorType::default(),
+            },
             _ => Mod::Other {
                 acronym: acronym.to_owned(),
                 settings: Vec::new(),
@@ -258,10 +355,17 @@ impl Mod {
     /// Sets one setting the way lazer's bindable would: unknown keys and values lazer cannot
     /// convert are ignored, numbers are clamped and rounded to the setting's precision.
     /// Returns whether the value was accepted.
+    ///
+    /// Each setting is meant to be set once, as from a score block: a NaN Difficulty Adjust
+    /// value is kept, but lazer would stop clamping later values of that setting (see
+    /// `set_difficulty_bindable`).
     // Ported from osu-framework 2026.921.1: osu.Framework/Bindables/Bindable.cs (Parse)
     // Ported from osu-framework 2026.921.1: osu.Framework/Bindables/BindableBool.cs (Parse)
     pub fn set_setting(&mut self, key: &str, value: &SettingValue) -> bool {
-        use setting::{set_bindable_double, set_bindable_int, to_bool, to_f64, to_i32};
+        use setting::{
+            set_bindable_double, set_bindable_int, set_difficulty_bindable, to_bool, to_enum,
+            to_f64, to_i32, to_nullable_f32,
+        };
 
         let speed = |range: (f64, f64, f64)| {
             to_f64(value).and_then(|v| set_bindable_double(v, range.1, range.2, SPEED_DECIMALS))
@@ -269,6 +373,7 @@ impl Mod {
         // `BindableBool` accepts "1" and "0"; Classic's last two settings are plain `Bindable<bool>`.
         let bindable_bool = || to_bool(value, true);
         let plain_bool = || to_bool(value, false);
+        let difficulty = |range| to_nullable_f32(value).map(|v| set_difficulty_bindable(v, range));
 
         fn store<T>(slot: &mut T, new: Option<T>) -> bool {
             match new {
@@ -315,6 +420,25 @@ impl Mod {
                 store(&mut c.fade_hit_circle_early, plain_bool())
             }
             (Mod::Classic(c), "classic_health") => store(&mut c.classic_health, plain_bool()),
+            (Mod::DifficultyAdjust(d), "circle_size") => {
+                store(&mut d.circle_size, difficulty(DA_RANGE))
+            }
+            (Mod::DifficultyAdjust(d), "approach_rate") => {
+                store(&mut d.approach_rate, difficulty(DA_AR_RANGE))
+            }
+            (Mod::DifficultyAdjust(d), "drain_rate") => {
+                store(&mut d.drain_rate, difficulty(DA_RANGE))
+            }
+            (Mod::DifficultyAdjust(d), "overall_difficulty") => {
+                store(&mut d.overall_difficulty, difficulty(DA_RANGE))
+            }
+            (Mod::DifficultyAdjust(d), "extended_limits") => {
+                store(&mut d.extended_limits, bindable_bool())
+            }
+            (Mod::Mirror { reflection }, "reflection") => store(
+                reflection,
+                to_enum(value, &MIRROR_TYPE_NAMES).map(MirrorType::from_raw),
+            ),
             _ => false,
         }
     }
@@ -368,6 +492,26 @@ impl Mod {
                     }
                 }
             }
+            Mod::DifficultyAdjust(d) => {
+                // Lazer's reflection order: the osu! class's settings, then the base class's.
+                let fields = [
+                    ("circle_size", d.circle_size),
+                    ("approach_rate", d.approach_rate),
+                    ("drain_rate", d.drain_rate),
+                    ("overall_difficulty", d.overall_difficulty),
+                ];
+                for (name, value) in fields {
+                    if let Some(v) = value {
+                        push(name, SettingValue::Float(float_setting(v)));
+                    }
+                }
+                if d.extended_limits {
+                    push("extended_limits", SettingValue::Bool(true));
+                }
+            }
+            Mod::Mirror { reflection } if *reflection != MirrorType::default() => {
+                push("reflection", SettingValue::Int(i64::from(reflection.raw())));
+            }
             Mod::Other { settings, .. } => out.clone_from(settings),
             _ => {}
         }
@@ -394,6 +538,16 @@ impl Mod {
     }
 }
 
+/// A `float` setting as the `double` that Newtonsoft's text of it (the shortest round-trip
+/// form) reads back as, so a written block shows `8.3`, not `8.300000190734863`.
+fn float_setting(v: f32) -> f64 {
+    if v.is_finite() {
+        v.to_string().parse().unwrap_or(f64::from(v))
+    } else {
+        f64::from(v)
+    }
+}
+
 impl GameplayMod for Mod {
     fn acronym(&self) -> &str {
         match self {
@@ -407,7 +561,69 @@ impl GameplayMod for Mod {
             Mod::Hidden { .. } => "HD",
             Mod::Traceable => "TC",
             Mod::Classic(_) => "CL",
+            Mod::DifficultyAdjust(_) => "DA",
+            Mod::Mirror { .. } => "MR",
             Mod::Other { acronym, .. } => acronym,
+        }
+    }
+
+    // Ported from osu!lazer 2026.1005.0-lazer: osu.Game/Rulesets/Mods/ModHardRock.cs (ApplyToDifficulty)
+    // Ported from osu!lazer 2026.1005.0-lazer: osu.Game.Rulesets.Osu/Mods/OsuModHardRock.cs (ApplyToDifficulty)
+    // Ported from osu!lazer 2026.1005.0-lazer: osu.Game/Rulesets/Mods/ModEasy.cs (ApplyToDifficulty)
+    // Ported from osu!lazer 2026.1005.0-lazer: osu.Game.Rulesets.Osu/Mods/OsuModEasy.cs (ApplyToDifficulty)
+    // Ported from osu!lazer 2026.1005.0-lazer: osu.Game/Rulesets/Mods/ModDifficultyAdjust.cs (ApplySettings)
+    // Ported from osu!lazer 2026.1005.0-lazer: osu.Game.Rulesets.Osu/Mods/OsuModDifficultyAdjust.cs (ApplySettings)
+    fn apply_to_difficulty(&self, difficulty: &mut Difficulty) {
+        match self {
+            Mod::HardRock => {
+                difficulty.drain_rate =
+                    dotnet::min_f32(difficulty.drain_rate * HARD_ROCK_RATIO, 10.0);
+                difficulty.overall_difficulty =
+                    dotnet::min_f32(difficulty.overall_difficulty * HARD_ROCK_RATIO, 10.0);
+                // CS uses a custom 1.3 ratio.
+                difficulty.circle_size = dotnet::min_f32(difficulty.circle_size * 1.3, 10.0);
+                difficulty.approach_rate =
+                    dotnet::min_f32(difficulty.approach_rate * HARD_ROCK_RATIO, 10.0);
+            }
+            Mod::Easy { .. } => {
+                difficulty.circle_size *= EASY_RATIO;
+                difficulty.approach_rate *= EASY_RATIO;
+                difficulty.drain_rate *= EASY_RATIO;
+                difficulty.overall_difficulty *= EASY_RATIO;
+            }
+            Mod::DifficultyAdjust(d) => {
+                if let Some(v) = d.drain_rate {
+                    difficulty.drain_rate = v;
+                }
+                if let Some(v) = d.overall_difficulty {
+                    difficulty.overall_difficulty = v;
+                }
+                if let Some(v) = d.circle_size {
+                    difficulty.circle_size = v;
+                }
+                if let Some(v) = d.approach_rate {
+                    difficulty.approach_rate = v;
+                }
+            }
+            _ => {}
+        }
+    }
+
+    // Ported from osu!lazer 2026.1005.0-lazer: osu.Game.Rulesets.Osu/Mods/OsuModHardRock.cs (ApplyToHitObject)
+    // Ported from osu!lazer 2026.1005.0-lazer: osu.Game.Rulesets.Osu/Mods/OsuModMirror.cs (ApplyToHitObject)
+    fn apply_to_hit_object(&self, object: &mut OsuHitObject) {
+        match self {
+            Mod::HardRock => object.reflect_vertically(),
+            Mod::Mirror { reflection } => match reflection {
+                MirrorType::Horizontal => object.reflect_horizontally(),
+                MirrorType::Vertical => object.reflect_vertically(),
+                MirrorType::Both => {
+                    object.reflect_horizontally();
+                    object.reflect_vertically();
+                }
+                MirrorType::Undefined(_) => {}
+            },
+            _ => {}
         }
     }
 
@@ -455,6 +671,7 @@ impl GameplayMod for Mod {
                 Mod::HardRock => 1.06,
                 Mod::Hidden { .. } if self.uses_default_configuration() => 1.06,
                 Mod::Classic(_) => 0.96,
+                Mod::DifficultyAdjust(_) => 0.5,
                 _ => 1.0,
             },
             MultiplierVersion::V2 => match self {
@@ -471,6 +688,9 @@ impl GameplayMod for Mod {
                     only_fade_approach_circles,
                 } => hidden_v2(*only_fade_approach_circles, false),
                 Mod::Traceable => 1.02,
+                Mod::DifficultyAdjust(d) => {
+                    difficulty_adjust_v2(d, context.difficulty_without_mods)
+                }
                 Mod::Classic(c) => {
                     if c.classic_note_lock {
                         0.985
@@ -603,6 +823,14 @@ impl ModSet {
     pub fn from_replay(replay: &Replay) -> Result<ModSet, ModError> {
         let info = replay.score_info()?;
         ModSet::from_replay_parts(replay.version, replay.mods, info.as_ref())
+    }
+
+    /// The playable beatmap of a decoded `.osu` file with these mods applied, see
+    /// [`Beatmap::from_file_with_mods`]. Mods may keep state from their beatmap hooks and
+    /// [`perform_fail`](Self::perform_fail), so each play (and each retry) takes a fresh clone
+    /// of the selected set, as lazer deep-clones the mods for every `Player`.
+    pub fn playable_beatmap(&mut self, file: osu_file::Beatmap) -> Result<Beatmap, BeatmapError> {
+        Beatmap::from_file_with_mods(file, &mut self.mods)
     }
 
     /// The mods in order.

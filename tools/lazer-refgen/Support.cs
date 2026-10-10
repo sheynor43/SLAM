@@ -67,6 +67,12 @@ namespace osu.Game.Rulesets.Objects
             calculateLength();
         }
 
+        // The constructor of lazer's SliderPath taking control points and an expected distance (it does not set OptimiseCatmull).
+        public SliderPath(PathControlPoint[] controlPoints, double? expectedDistance)
+            : this(controlPoints, expectedDistance, false)
+        {
+        }
+
         public double Distance => cumulativeLength.Count == 0 ? 0 : cumulativeLength[^1];
         public double CalculatedDistance => calculatedLength;
         public IReadOnlyList<Vector2> CalculatedPath => calculatedPath;
@@ -157,5 +163,47 @@ namespace osu.Game.Rulesets.Osu
     {
         // Verbatim from osu.Game.Rulesets.Osu/OsuRuleset.cs (osu!lazer 2026.1005.0-lazer, line 65).
         public const string SHORT_NAME = "osu";
+    }
+}
+
+namespace osu.Framework.Caching
+{
+    // The slider end position is not cached in refgen, so invalidating is a no-op.
+    public class Cached
+    {
+        public void Invalidate()
+        {
+        }
+    }
+}
+
+namespace osu.Game.Beatmaps
+{
+    // The settable difficulty fields of osu.Game/Beatmaps/BeatmapDifficulty.cs that the map-changing mods touch.
+    public class BeatmapDifficulty : IBeatmapDifficultyInfo
+    {
+        public float DrainRate { get; set; } = 5;
+        public float CircleSize { get; set; } = 5;
+        public float OverallDifficulty { get; set; } = 5;
+        public float ApproachRate { get; set; } = 5;
+        public double SliderMultiplier { get; set; } = 1.4;
+        public double SliderTickRate { get; set; } = 1;
+    }
+}
+
+namespace osu.Game.Rulesets.Mods
+{
+    using osu.Game.Beatmaps;
+    using osu.Game.Rulesets.Objects;
+
+    // Stand-ins for the mod interfaces of osu.Game/Rulesets/Mods.
+    public interface IApplicableToDifficulty
+    {
+        void ApplyToDifficulty(BeatmapDifficulty difficulty);
+    }
+
+    public interface IApplicableToHitObject
+    {
+        void ApplyToHitObject(HitObject hitObject);
     }
 }

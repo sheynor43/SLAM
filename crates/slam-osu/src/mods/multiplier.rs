@@ -92,6 +92,48 @@ pub(crate) fn rate_adjust_v1(speed_change: f64) -> f64 {
     }
 }
 
+// Ported from osu!lazer 2026.1005.0-lazer: osu.Game.Rulesets.Osu/Scoring/OsuScoreMultiplierCalculatorV2.cs (difficultyAdjustMultiplier)
+pub(crate) fn difficulty_adjust_v2(
+    settings: &super::DifficultyAdjustSettings,
+    beatmap_difficulty: &crate::Difficulty,
+) -> f64 {
+    let selected_circle_size = f64::from(
+        settings
+            .circle_size
+            .unwrap_or(beatmap_difficulty.circle_size),
+    );
+    let selected_drain_rate =
+        f64::from(settings.drain_rate.unwrap_or(beatmap_difficulty.drain_rate));
+    let selected_overall_difficulty = f64::from(
+        settings
+            .overall_difficulty
+            .unwrap_or(beatmap_difficulty.overall_difficulty),
+    );
+    let selected_approach_rate = f64::from(
+        settings
+            .approach_rate
+            .unwrap_or(beatmap_difficulty.approach_rate),
+    );
+
+    let cs_difference = (selected_circle_size - f64::from(beatmap_difficulty.circle_size)).abs();
+    let hp_difference = (selected_drain_rate - f64::from(beatmap_difficulty.drain_rate)).abs();
+    let od_difference =
+        (selected_overall_difficulty - f64::from(beatmap_difficulty.overall_difficulty)).abs();
+    let ar_difference =
+        (selected_approach_rate - f64::from(beatmap_difficulty.approach_rate)).abs();
+
+    // Per parameter, reduce multiplier by 0.05x per 0.1 change.
+    let cs_multiplier = dotnet::max(0.1, 1.0 - cs_difference * 0.5);
+    let hp_multiplier = dotnet::max(0.1, 1.0 - hp_difference * 0.5);
+    let od_multiplier = dotnet::max(0.1, 1.0 - od_difference * 0.5);
+    let ar_multiplier = dotnet::max(0.1, 1.0 - ar_difference * 0.5);
+
+    dotnet::max(
+        0.1,
+        cs_multiplier * hp_multiplier * od_multiplier * ar_multiplier,
+    )
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

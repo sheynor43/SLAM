@@ -35,10 +35,14 @@ static class Stacking
     static string I(int i) => i.ToString(inv);
 
     // The `.osu` text of one case and the lazer objects built from it.
-    class Case
+    internal class Case
     {
         public int Version;
         public string Leniency, Ar, Cs, Sm, Beat;
+        // Used by MapMods only; stacking ignores them.
+        public string Hp = "5", Od = "5", Tr = "1";
+        // Whether the sliders own their path as lazer's Slider does (see Slider.OwnsPath).
+        public bool OwnSliderPath;
         public readonly List<string> Lines = new List<string>();
         public readonly List<string> TimingLines = new List<string>();
         public readonly List<OsuHitObject> Objects = new List<OsuHitObject>();
@@ -72,19 +76,45 @@ static class Stacking
         // `beatLength` is a negative beat length for a new inherited timing point at the slider's
         // start time; the caller sets the slider velocity of the point in effect.
         public Slider Slider(Vector2 pos, double time, bool perfect, Vector2[] points, int slides, double length, string beatLength = null)
+            => SliderSegments(pos, time, new[] { (perfect ? 'P' : 'L', points) }, slides, length, beatLength);
+
+        // The control points the decoder builds for a path made of explicit segments whose points are all
+        // distinct (no implicit segment splits): the first point of the path is the zero vertex, and each
+        // later segment starts at its first listed point, which carries the type.
+        public static PathControlPoint[] ControlPoints(Vector2 start, (char type, Vector2[] points)[] segments)
+        {
+            var result = new List<PathControlPoint>();
+            for (int k = 0; k < segments.Length; k++)
+            {
+                var type = segments[k].type switch
+                {
+                    'P' => PathType.PERFECT_CURVE,
+                    'L' => PathType.LINEAR,
+                    'B' => PathType.BEZIER,
+                    'C' => PathType.CATMULL,
+                    _ => throw new InvalidOperationException(),
+                };
+                if (k == 0)
+                    result.Add(new PathControlPoint(Vector2.Zero, type));
+                for (int i = 0; i < segments[k].points.Length; i++)
+                    result.Add(new PathControlPoint(new Vector2((int)segments[k].points[i].X, (int)segments[k].points[i].Y) - start, k > 0 && i == 0 ? type : null));
+            }
+
+            return result.ToArray();
+        }
+
+        public Slider SliderSegments(Vector2 pos, double time, (char type, Vector2[] points)[] segments, int slides, double length, string beatLength = null)
         {
             string x = Coordinate(pos.X), y = Coordinate(pos.Y), t = S(time), l = S(length);
-            string path = (perfect ? "P" : "L") + string.Concat(points.Select(p => $"|{I((int)p.X)}:{I((int)p.Y)}"));
+            string path = string.Join("|", segments.Select(seg => seg.type + string.Concat(seg.points.Select(p => $"|{I((int)p.X)}:{I((int)p.Y)}"))));
             Lines.Add($"{x},{y},{t},2,0,{path},{I(slides)},{l}");
 
             var start = new Vector2(Coordinate(x), Coordinate(y));
-            var controlPoints = new PathControlPoint[points.Length + 1];
-            controlPoints[0] = new PathControlPoint(Vector2.Zero, perfect ? PathType.PERFECT_CURVE : PathType.LINEAR);
-            for (int i = 0; i < points.Length; i++)
-                controlPoints[i + 1] = new PathControlPoint(new Vector2((int)points[i].X, (int)points[i].Y) - start, null);
+            var controlPoints = ControlPoints(start, segments);
 
             var slider = new Slider
             {
+                OwnsPath = OwnSliderPath,
                 StartTime = double.Parse(t, inv),
                 Position = start,
                 RepeatCount = slides - 1,

@@ -18,6 +18,17 @@ pub(crate) fn min(a: f64, b: f64) -> f64 {
     if a.is_sign_negative() { a } else { b }
 }
 
+/// .NET's `Math.Min(float, float)`, see [`min`].
+pub(crate) fn min_f32(a: f32, b: f32) -> f32 {
+    if a != b {
+        if !a.is_nan() {
+            return if a < b { a } else { b };
+        }
+        return a;
+    }
+    if a.is_sign_negative() { a } else { b }
+}
+
 /// .NET's `Math.Max(double, double)`: NaN if either argument is NaN, and 0 above -0.
 pub(crate) fn max(a: f64, b: f64) -> f64 {
     if a != b {

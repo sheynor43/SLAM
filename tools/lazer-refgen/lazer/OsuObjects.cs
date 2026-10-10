@@ -1,8 +1,8 @@
-// Method bodies extracted verbatim from osu!lazer 2026.1005.0-lazer: osu/osu.Game.Rulesets.Osu/Objects/OsuHitObject.cs (lines 19-52, 76, 80, 92, 170-183), Slider.cs (lines 28, 31-35, 88-107, 156-225, 227), Spinner.cs (lines 31-37, 59), SliderTick.cs (lines 18-32), SliderEndCircle.cs (lines 28-45),
-// osu/osu.Game/Rulesets/Objects/HitObject.cs (ApplyDefaults, lines 105-114, 130-134). The class shells around them are minimal stand-ins without Bindable, samples, judgements and hit windows; see README.md.
+// Method bodies extracted verbatim from osu!lazer 2026.1005.0-lazer: osu/osu.Game.Rulesets.Osu/Objects/OsuHitObject.cs (lines 19-52, 64-74, 76, 80, 92, 170-183), Slider.cs (lines 28, 31-35, 61-69, 88-107, 156-225, 227-254), Spinner.cs (lines 31-37, 59), SliderTick.cs (lines 18-32), SliderEndCircle.cs (lines 28-45),
+// osu/osu.Game/Rulesets/Objects/HitObject.cs (ApplyDefaults, lines 105-114, 130-134). The class shells around them are minimal stand-ins without Bindable, samples, judgements and hit windows; the shells of OsuHitObject.StackHeight (propagation to nested objects, OsuHitObject.cs lines 160-167) and of Slider.Path (the owned path, Slider.cs lines 45-57) are written out by hand; see README.md.
 // Copyright (c) ppy Pty Ltd <contact@ppy.sh>. Licensed under the MIT Licence.
 // See the LICENCE file in the repository root for full licence text.
-using System; using System.Collections.Generic; using System.Threading; using osu.Game.Beatmaps; using osu.Game.Beatmaps.ControlPoints; using osu.Game.Rulesets.Objects; using osu.Game.Rulesets.Objects.Legacy; using osu.Game.Rulesets.Objects.Types; using osuTK;
+using System; using System.Collections.Generic; using System.Linq; using System.Threading; using osu.Framework.Caching; using osu.Game.Beatmaps; using osu.Game.Beatmaps.ControlPoints; using osu.Game.Rulesets.Objects; using osu.Game.Rulesets.Objects.Legacy; using osu.Game.Rulesets.Objects.Types; using osuTK;
 namespace osu.Game.Rulesets.Objects
 {
     public abstract class HitObject
@@ -72,7 +72,37 @@ namespace osu.Game.Rulesets.Osu.Objects
         public double TimeFadeIn = 400;
         public virtual Vector2 Position { get; set; }
         public virtual Vector2 EndPosition => Position;
-        public int StackHeight { get; set; }
+        public float X
+        {
+            get => Position.X;
+            set => Position = new Vector2(value, Position.Y);
+        }
+
+        public float Y
+        {
+            get => Position.Y;
+            set => Position = new Vector2(Position.X, value);
+        }
+
+        // Shell of the bindable: a changed height is copied to the nested objects (OsuHitObject constructor).
+        private int stackHeight;
+        public int StackHeight
+        {
+            get => stackHeight;
+            set
+            {
+                if (stackHeight == value)
+                    return;
+
+                stackHeight = value;
+
+                foreach (var nested in NestedHitObjects)
+                {
+                    if (nested is OsuHitObject osuHitObject)
+                        osuHitObject.StackHeight = value;
+                }
+            }
+        }
         public float Scale { get; set; } = 1;
         public Vector2 StackedPosition => Position + StackOffset;
         public Vector2 StackedEndPosition => EndPosition + StackOffset;
@@ -171,7 +201,68 @@ namespace osu.Game.Rulesets.Osu.Objects
             set => throw new System.NotSupportedException($"Adjust via {nameof(RepeatCount)} instead"); // can be implemented if/when needed.
         }
         public override Vector2 EndPosition => Position + this.CurvePositionAt(1);
-        public SliderPath Path { get; set; }
+        private readonly Cached endPositionCache = new Cached();
+
+        // Shell of the owned path of lazer's Slider (Slider.cs lines 45-57). With OwnsPath the setter copies
+        // the control points and the expected distance into a path with OptimiseCatmull = true, as lazer does,
+        // and then recomputes the nested positions (lazer's Path.Version.ValueChanged handler). Without it the
+        // assigned path is used as it is, which is how the older generators build their sliders.
+        public bool OwnsPath;
+        private SliderPath path = new SliderPath(Array.Empty<PathControlPoint>(), null, true);
+
+        public SliderPath Path
+        {
+            get => path;
+            set
+            {
+                if (!OwnsPath)
+                {
+                    path = value;
+                    return;
+                }
+
+                path = new SliderPath(value.ControlPoints.Select(c => new PathControlPoint(c.Position, c.Type)).ToArray(), value.ExpectedDistance.Value, true);
+                updateNestedPositions();
+            }
+        }
+
+        public override Vector2 Position
+        {
+            get => base.Position;
+            set
+            {
+                base.Position = value;
+                updateNestedPositions();
+            }
+        }
+
+        private void updateNestedPositions()
+        {
+            endPositionCache.Invalidate();
+
+            foreach (var nested in NestedHitObjects)
+            {
+                switch (nested)
+                {
+                    case SliderHeadCircle headCircle:
+                        headCircle.Position = Position;
+                        break;
+
+                    case SliderTailCircle tailCircle:
+                        tailCircle.Position = EndPosition;
+                        break;
+
+                    case SliderRepeat repeat:
+                        repeat.Position = Position + Path.PositionAt(repeat.PathProgress);
+                        break;
+
+                    case SliderTick tick:
+                        tick.Position = Position + Path.PositionAt(tick.PathProgress);
+                        break;
+                }
+            }
+        }
+
         public int RepeatCount { get; set; }
         public double SliderVelocityMultiplier { get; set; } = 1;
         public bool GenerateTicks { get; set; } = true;

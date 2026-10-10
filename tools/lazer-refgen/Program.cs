@@ -198,5 +198,7 @@ static class Program
             File.WriteAllText(args[2], Stacking.Generate());
         if (args.Length > 3)
             File.WriteAllText(args[3], Mods.Generate());
+        if (args.Length > 4)
+            File.WriteAllText(args[4], MapMods.Generate());
     }
 }

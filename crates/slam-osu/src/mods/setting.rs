@@ -38,26 +38,41 @@ pub(crate) fn to_f64(value: &SettingValue) -> Option<f64> {
     }
 }
 
-fn split_sign(s: &str) -> (f64, &str) {
+fn split_sign(s: &str) -> (bool, &str) {
     match s.as_bytes().first() {
-        Some(b'-') => (-1.0, &s[1..]),
-        Some(b'+') => (1.0, &s[1..]),
-        _ => (1.0, s),
+        Some(b'-') => (true, &s[1..]),
+        Some(b'+') => (false, &s[1..]),
+        _ => (false, s),
     }
 }
 
-fn parse_f64(s: &str) -> Option<f64> {
+/// A number string as .NET's floating-point parsing reads it.
+enum FloatText {
+    Infinity {
+        negative: bool,
+    },
+    NaN,
+    /// A finite number: the sign and the text without sign, white space and group separators.
+    Finite {
+        negative: bool,
+        text: String,
+    },
+}
+
+/// The shared front end of `double.Parse` and `float.Parse` with `NumberStyles.Float |
+/// AllowThousands` and the invariant culture (see [`to_f64`]).
+fn float_text(s: &str) -> Option<FloatText> {
     // The fallback for the symbols trims with `string.Trim()`: white space, but no NULs.
-    let (sign, symbol) = split_sign(s.trim());
+    let (negative, symbol) = split_sign(s.trim());
     if symbol.eq_ignore_ascii_case("infinity") {
-        return Some(sign * f64::INFINITY);
+        return Some(FloatText::Infinity { negative });
     }
     // A signed NaN symbol is NaN as well.
     if symbol.eq_ignore_ascii_case("nan") {
-        return Some(f64::NAN);
+        return Some(FloatText::NaN);
     }
 
-    let (sign, body) = split_sign(trim_number(s));
+    let (negative, body) = split_sign(trim_number(s));
     if body.starts_with(['+', '-']) {
         return None;
     }
@@ -82,7 +97,103 @@ fn parse_f64(s: &str) -> Option<f64> {
     if !digits_ok || !has_digit {
         return None;
     }
-    text.parse::<f64>().ok().map(|v| sign * v)
+    Some(FloatText::Finite { negative, text })
+}
+
+/// `double.Parse`, see [`float_text`].
+fn parse_f64(s: &str) -> Option<f64> {
+    Some(match float_text(s)? {
+        FloatText::Infinity { negative } => {
+            if negative {
+                f64::NEG_INFINITY
+            } else {
+                f64::INFINITY
+            }
+        }
+        FloatText::NaN => f64::NAN,
+        FloatText::Finite { negative, text } => {
+            let v = text.parse::<f64>().ok()?;
+            if negative { -v } else { v }
+        }
+    })
+}
+
+/// `float.Parse`, see [`float_text`]. Since .NET Core 3.0 it rounds the decimal text directly
+/// to `float` (no double rounding through `double`), as Rust's parser does.
+fn parse_f32(s: &str) -> Option<f32> {
+    Some(match float_text(s)? {
+        FloatText::Infinity { negative } => {
+            if negative {
+                f32::NEG_INFINITY
+            } else {
+                f32::INFINITY
+            }
+        }
+        // .NET's `float.NaN` is `0.0f / 0.0f`: the x86 default NaN, with the sign bit set.
+        FloatText::NaN => f32::from_bits(0xffc0_0000),
+        FloatText::Finite { negative, text } => {
+            let v = text.parse::<f32>().ok()?;
+            if negative { -v } else { v }
+        }
+    })
+}
+
+/// `Bindable<float?>.Parse` up to the value setter: `null` and the empty string give `null`,
+/// anything else goes through `Convert.ChangeType(input, typeof(float), InvariantCulture)`.
+/// The outer `None` is where lazer throws.
+pub(crate) fn to_nullable_f32(value: &SettingValue) -> Option<Option<f32>> {
+    match value {
+        SettingValue::Null => Some(None),
+        SettingValue::String(s) if s.is_empty() => Some(None),
+        SettingValue::Bool(b) => Some(Some(if *b { 1.0 } else { 0.0 })),
+        SettingValue::Int(i) => Some(Some(*i as f32)),
+        SettingValue::Float(f) => Some(Some(*f as f32)),
+        SettingValue::String(s) => parse_f32(s).map(Some),
+        SettingValue::Raw(_) => None,
+    }
+}
+
+// Ported from osu-framework 2026.921.1: osu.Framework/Bindables/Bindable.cs (Parse, enum branch)
+/// `Bindable<TEnum>.Parse` for an `int`-backed enum: `Enum.Parse` of `input.ToString()`.
+/// `names` are the enum's member names with their values. The result may be a value without a
+/// name, as in .NET.
+pub(crate) fn to_enum(value: &SettingValue, names: &[(&str, i32)]) -> Option<i32> {
+    match value {
+        // A non-nullable value type cannot take `null`.
+        SettingValue::Null => None,
+        // `True` and `False` are no member names.
+        SettingValue::Bool(_) => None,
+        SettingValue::Int(i) => i32::try_from(*i).ok(),
+        // `double.ToString()` writes an integral value below 1e15 as plain digits (`-0` for
+        // negative zero); anything else has a point, an exponent or a symbol and fails.
+        SettingValue::Float(f) => {
+            if f.fract() == 0.0 && f.abs() < 1e15 {
+                i32::try_from(*f as i64).ok()
+            } else {
+                None
+            }
+        }
+        SettingValue::String(s) => parse_enum(s, names),
+        SettingValue::Raw(_) => None,
+    }
+}
+
+/// .NET's `Enum.Parse(Type, string)` (case-sensitive) for an `int`-backed enum: after leading
+/// white space, a digit or sign starts an integer (trailing white space allowed); otherwise the
+/// text is a comma-separated list of member names whose values are combined with `|`.
+fn parse_enum(s: &str, names: &[(&str, i32)]) -> Option<i32> {
+    let s = s.trim_start();
+    let first = s.chars().next()?;
+    if first.is_ascii_digit() || first == '-' || first == '+' {
+        return trim_number(s).parse::<i32>().ok();
+    }
+    let mut result = 0;
+    for part in s.split(',') {
+        let part = part.trim();
+        let &(_, v) = names.iter().find(|(name, _)| *name == part)?;
+        result |= v;
+    }
+    Some(result)
 }
 
 /// `Convert.ChangeType(input, typeof(bool), InvariantCulture)`. A `BindableBool` additionally
@@ -255,6 +366,33 @@ pub(crate) fn set_bindable_double(value: f64, min: f64, max: f64, decimals: u32)
 /// an integer).
 pub(crate) fn set_bindable_int(value: i32, min: i32, max: i32) -> i32 {
     value.clamp(min, max)
+}
+
+/// The bounds of a `DifficultyBindable`: `MinValue`, `MaxValue` and the extended ones.
+#[derive(Debug, Clone, Copy)]
+pub(crate) struct DifficultyRange {
+    pub min: f32,
+    pub max: f32,
+    pub extended_min: Option<f32>,
+    pub extended_max: Option<f32>,
+}
+
+// Ported from osu!lazer 2026.1005.0-lazer: osu.Game/Rulesets/Mods/DifficultyBindable.cs (Value)
+/// `DifficultyBindable.Value = value` on a freshly created bindable.
+///
+/// The setter widens the bounds of the internal `CurrentNumber` to include the value, but not
+/// beyond the extended bounds, and clamps the value to them. Whatever `ExtendedLimits` is
+/// and whether it was set first, the result is the value clamped to the extended bounds (the
+/// normal ones where a bound has no extended counterpart). `ExtendedLimits` only changes what
+/// the settings UI offers.
+///
+/// A NaN passes the clamps, as in .NET. Lazer's `CurrentNumber` then keeps NaN bounds and lets
+/// later values through unclamped; a score block sets every setting once, so that state is not
+/// modelled.
+pub(crate) fn set_difficulty_bindable(value: Option<f32>, range: DifficultyRange) -> Option<f32> {
+    let lowest = range.extended_min.unwrap_or(range.min);
+    let highest = range.extended_max.unwrap_or(range.max);
+    value.map(|v| crate::dotnet::clamp_f32(v, lowest, highest))
 }
 
 #[cfg(test)]
