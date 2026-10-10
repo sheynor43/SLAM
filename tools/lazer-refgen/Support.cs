@@ -93,3 +93,37 @@ namespace osu.Game.Rulesets.Objects
         }
     }
 }
+
+namespace osu.Game.Rulesets.Objects.Types
+{
+    public interface IHasPath { SliderPath Path { get; } }
+    public interface IHasRepeats { int RepeatCount { get; } }
+    public interface IHasSliderVelocity { double SliderVelocityMultiplier { get; } }
+
+    public static class HasRepeatsExtensions
+    {
+        // Verbatim from osu.Game/Rulesets/Objects/Types/IHasRepeats.cs (osu!lazer 2026.1005.0-lazer, line 38).
+        public static int SpanCount(this IHasRepeats obj) => obj.RepeatCount + 1;
+    }
+}
+
+namespace osu.Game.Beatmaps.ControlPoints
+{
+    // Beat length must be in 6..=60000, the range of lazer's bindable.
+    public class TimingControlPoint { public double BeatLength; }
+
+    public class ControlPointInfo
+    {
+        public TimingControlPoint Timing = new TimingControlPoint();
+        public TimingControlPoint TimingPointAt(double time) => Timing;
+    }
+}
+
+namespace osu.Game.Rulesets.Osu
+{
+    public static class OsuRuleset
+    {
+        // Verbatim from osu.Game.Rulesets.Osu/OsuRuleset.cs (osu!lazer 2026.1005.0-lazer, line 65).
+        public const string SHORT_NAME = "osu";
+    }
+}

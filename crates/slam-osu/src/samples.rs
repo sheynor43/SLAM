@@ -41,13 +41,53 @@ impl From<SampleBank> for Bank {
     }
 }
 
+/// Name of a resolved sample: one of the four hit sounds of the file, or a name lazer gives
+/// derived samples.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SampleName {
+    /// `hitnormal`.
+    Normal,
+    /// `hitwhistle`.
+    Whistle,
+    /// `hitfinish`.
+    Finish,
+    /// `hitclap`.
+    Clap,
+    /// `slidertick`: the sample of slider ticks.
+    SliderTick,
+}
+
+impl SampleName {
+    /// Lazer's sample name string.
+    pub fn as_str(self) -> &'static str {
+        match self {
+            SampleName::Normal => "hitnormal",
+            SampleName::Whistle => "hitwhistle",
+            SampleName::Finish => "hitfinish",
+            SampleName::Clap => "hitclap",
+            SampleName::SliderTick => "slidertick",
+        }
+    }
+}
+
+impl From<HitSampleName> for SampleName {
+    fn from(name: HitSampleName) -> SampleName {
+        match name {
+            HitSampleName::Normal => SampleName::Normal,
+            HitSampleName::Whistle => SampleName::Whistle,
+            HitSampleName::Finish => SampleName::Finish,
+            HitSampleName::Clap => SampleName::Clap,
+        }
+    }
+}
+
 // Ported from osu!lazer 2026.1005.0-lazer: osu.Game/Rulesets/Objects/Legacy/ConvertHitObjectParser.cs (LegacyHitSampleInfo, FileHitSampleInfo)
 /// A hit sample after its sample point was applied (lazer's `LegacyHitSampleInfo` returned by
 /// `LegacySampleControlPoint.ApplyTo`).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct HitSample {
     /// Sample name.
-    pub name: HitSampleName,
+    pub name: SampleName,
     /// Bank.
     pub bank: Bank,
     /// Lookup suffix: the custom sample bank when it is 2 or above.
@@ -69,7 +109,7 @@ impl HitSample {
     /// sample bank 1, so that beatmap samples are never replaced by the user skin.
     pub fn file(filename: String, volume: i32) -> HitSample {
         HitSample {
-            name: HitSampleName::Normal,
+            name: SampleName::Normal,
             bank: Bank::Normal,
             suffix: None,
             volume,
@@ -80,11 +120,57 @@ impl HitSample {
         }
     }
 
+    // Ported from osu!lazer 2026.1005.0-lazer: osu.Game/Rulesets/Objects/Legacy/ConvertHitObjectParser.cs (LegacyHitSampleInfo.With, FileHitSampleInfo.With)
+    /// Lazer's `With(newName)`: the same sample under another name. A file sample ignores the
+    /// name and stays a `hitnormal` file sample.
+    pub fn with_name(&self, name: SampleName) -> HitSample {
+        match &self.filename {
+            Some(filename) => HitSample::file(filename.clone(), self.volume),
+            None => HitSample {
+                name,
+                ..self.clone()
+            },
+        }
+    }
+
     /// Lazer's `LegacyHitSampleInfo.CustomSampleBank`.
     pub fn custom_sample_bank(&self) -> i32 {
         match self.suffix {
             Some(s) => s,
             None => i32::from(self.use_beatmap_samples),
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn with_name_renames_a_bank_sample() {
+        let sample = HitSample {
+            name: SampleName::Normal,
+            bank: Bank::Soft,
+            suffix: Some(3),
+            volume: 60,
+            editor_auto_bank: true,
+            use_beatmap_samples: true,
+            is_layered: true,
+            filename: None,
+        };
+        let tick = sample.with_name(SampleName::SliderTick);
+        assert_eq!(
+            tick,
+            HitSample {
+                name: SampleName::SliderTick,
+                ..sample
+            }
+        );
+    }
+
+    #[test]
+    fn with_name_keeps_a_file_sample() {
+        let sample = HitSample::file("tick.wav".to_owned(), 40);
+        assert_eq!(sample.with_name(SampleName::SliderTick), sample);
     }
 }

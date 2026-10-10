@@ -220,7 +220,7 @@ impl SamplePoint {
         };
 
         HitSample {
-            name: sample.name,
+            name: sample.name.into(),
             bank,
             suffix: (custom_sample_bank >= 2).then_some(custom_sample_bank),
             volume,

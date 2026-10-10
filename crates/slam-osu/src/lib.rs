@@ -4,6 +4,9 @@
 
 pub mod beatmap;
 pub mod control_points;
+pub mod difficulty;
+mod dotnet;
+pub mod events;
 pub mod objects;
 pub mod path;
 mod precision;
