@@ -3,10 +3,14 @@
 //! The PipeWire main loop runs on its own thread (`slam-audio-pw`). The stream uses
 //! `RT_PROCESS`, so [`process`] runs on PipeWire's real-time data thread, whose priority
 //! PipeWire itself raises (module-rt / rtkit).
+//!
+//! The reported latency adds the ALSA driver delay that PipeWire does not see
+//! (ADR-0026): the main loop polls it and [`process`] reads it from an atomic.
 
 use std::cell::RefCell;
+use std::collections::HashMap;
 use std::rc::Rc;
-use std::sync::atomic::Ordering;
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, mpsc};
 use std::thread::{self, JoinHandle};
 use std::time::Duration;
@@ -18,6 +22,7 @@ use pw::spa::param::audio::{AudioFormat, AudioInfoRaw, MAX_CHANNELS};
 use pw::spa::pod::{Object, Pod, Value, serialize::PodSerializer};
 use pw::stream::{StreamFlags, StreamState};
 
+use crate::alsa_delay::{AlsaPcm, DriverDelayTracker, POLL_INTERVAL};
 use crate::hal::{AudioCallback, AudioError, CallbackInfo, DeviceInfo, StreamConfig};
 use crate::hal::{StreamCounters, StreamHandle};
 use crate::position::{AudioPosition, PositionSnapshot};
@@ -133,7 +138,9 @@ pub(crate) fn open_output(
     let thread = thread::Builder::new()
         .name("slam-audio-pw".to_owned())
         .spawn(move || {
+            let driver_delay = Arc::new(AtomicU64::new(0));
             let state = Process {
+                driver_delay: Arc::clone(&driver_delay),
                 callback,
                 position,
                 counters: Arc::clone(&counters),
@@ -142,7 +149,8 @@ pub(crate) fn open_output(
                 channels: config.channels,
                 quantum: config.buffer_frames,
             };
-            if let Err(err) = run(&config, state, counters, quit_rx, ready_tx.clone()) {
+            let tracker = DriverDelayTracker::new(driver_delay);
+            if let Err(err) = run(&config, state, tracker, counters, quit_rx, ready_tx.clone()) {
                 let _ = ready_tx.send(Err(err));
             }
         })
@@ -172,6 +180,7 @@ pub(crate) fn open_output(
 fn run(
     config: &StreamConfig,
     state: Process,
+    tracker: DriverDelayTracker,
     counters: Arc<StreamCounters>,
     quit: pw::channel::Receiver<()>,
     ready: mpsc::SyncSender<Result<(), AudioError>>,
@@ -192,6 +201,45 @@ fn run(
     }
     let stream = pw::stream::StreamBox::new(&core, &config.name, props).map_err(unavailable)?;
 
+    // ALSA driver delay (ADR-0026): the registry tells which sink we feed, a timer polls it.
+    // Global properties of a node omit `alsa.*`, so sinks are bound for their full info.
+    let tracker = Rc::new(RefCell::new(tracker));
+    let sinks = Rc::new(RefCell::new(HashMap::new()));
+    let registry = core.get_registry_rc().map_err(unavailable)?;
+    let _registry_listener = registry
+        .add_listener_local()
+        .global({
+            let tracker = Rc::clone(&tracker);
+            let sinks = Rc::clone(&sinks);
+            // Weak: the registry owns this listener.
+            let registry = registry.downgrade();
+            move |global| match global.type_ {
+                pw::types::ObjectType::Link => track_link(&mut tracker.borrow_mut(), global),
+                pw::types::ObjectType::Node => {
+                    if let Some(registry) = registry.upgrade()
+                        && let Some(sink) = bind_sink(&registry, global, &tracker)
+                    {
+                        sinks.borrow_mut().insert(global.id, sink);
+                    }
+                }
+                _ => {}
+            }
+        })
+        .global_remove({
+            let tracker = Rc::clone(&tracker);
+            let sinks = Rc::clone(&sinks);
+            move |id| {
+                sinks.borrow_mut().remove(&id);
+                tracker.borrow_mut().remove(id);
+            }
+        })
+        .register();
+    let poll = mainloop.loop_().add_timer({
+        let tracker = Rc::clone(&tracker);
+        move |_| tracker.borrow_mut().poll()
+    });
+    let _ = poll.update_timer(Some(POLL_INTERVAL), Some(POLL_INTERVAL));
+
     // Two listeners: `process` runs on the data thread and `state_changed` on this one,
     // and the wrapper hands each callback `&mut` to its listener's whole state.
     let _process_listener = stream
@@ -202,8 +250,9 @@ fn run(
     let mut ready = Some(ready);
     let state_listener = stream
         .add_local_listener::<()>()
-        .state_changed(move |_, _, _old, new| match new {
+        .state_changed(move |stream, _, _old, new| match new {
             StreamState::Paused | StreamState::Streaming => {
+                tracker.borrow_mut().own_node = Some(stream.node_id());
                 if let Some(ready) = ready.take() {
                     let _ = ready.send(Ok(()));
                 }
@@ -253,6 +302,48 @@ fn run(
     Ok(())
 }
 
+/// Records a link between nodes for the driver delay tracker.
+fn track_link(
+    tracker: &mut DriverDelayTracker,
+    global: &pw::registry::GlobalObject<&spa::utils::dict::DictRef>,
+) {
+    let Some(props) = global.props else { return };
+    let node = |key| props.get(key).and_then(|v| v.parse().ok());
+    if let (Some(output), Some(input)) = (
+        node(*pw::keys::LINK_OUTPUT_NODE),
+        node(*pw::keys::LINK_INPUT_NODE),
+    ) {
+        tracker.links.insert(global.id, (output, input));
+    }
+}
+
+/// Binds an `Audio/Sink` node and records its ALSA PCM once its info arrives. The
+/// returned proxy and listener must stay alive to keep receiving info.
+fn bind_sink(
+    registry: &pw::registry::RegistryRc,
+    global: &pw::registry::GlobalObject<&spa::utils::dict::DictRef>,
+    tracker: &Rc<RefCell<DriverDelayTracker>>,
+) -> Option<(pw::node::Node, pw::node::NodeListener)> {
+    let props = global.props?;
+    if props.get(*pw::keys::MEDIA_CLASS) != Some("Audio/Sink") {
+        return None;
+    }
+    let node: pw::node::Node = registry.bind(global).ok()?;
+    let id = global.id;
+    let listener = node
+        .add_listener_local()
+        .info({
+            let tracker = Rc::clone(tracker);
+            move |info| {
+                if let Some(pcm) = info.props().and_then(|p| AlsaPcm::from_props(|k| p.get(k))) {
+                    tracker.borrow_mut().sinks.insert(id, pcm);
+                }
+            }
+        })
+        .register();
+    Some((node, listener))
+}
+
 /// `EnumFormat` pod offering exactly the configured format; PipeWire converts to the
 /// device format if they differ.
 fn format_pod(config: &StreamConfig) -> Result<Vec<u8>, AudioError> {
@@ -297,6 +388,8 @@ fn channel_layout(channels: u16) -> &'static [u32] {
 /// State owned by the real-time process callback.
 struct Process {
     callback: Box<dyn AudioCallback>,
+    /// ALSA driver delay in nanoseconds, published by the main loop (ADR-0026).
+    driver_delay: Arc<AtomicU64>,
     position: Arc<AudioPosition>,
     counters: Arc<StreamCounters>,
     /// Stream frames written so far.
@@ -333,7 +426,12 @@ fn process(stream: &pw::stream::Stream, st: &mut Process) {
         return;
     };
     let stride = SAMPLE_BYTES * usize::from(st.channels);
-    let timing = timing(stream, st.sample_rate);
+    let timing = timing(stream, st.sample_rate).map(|(now, latency)| {
+        (
+            now,
+            latency.saturating_add(st.driver_delay.load(Ordering::Relaxed)),
+        )
+    });
 
     let frames = match data.data() {
         Some(bytes) => {
@@ -385,8 +483,9 @@ fn process(stream: &pw::stream::Stream, st: &mut Process) {
 }
 
 /// `(timestamp_ns, latency_ns)` of the buffer being filled: when the report was taken
-/// (`CLOCK_MONOTONIC`) and how long until its first frame leaves the device. `None`
-/// until the graph reports a valid time.
+/// (`CLOCK_MONOTONIC`) and how long until its first frame leaves the ALSA ring buffer
+/// (the caller adds the driver delay past the ring). `None` until the graph
+/// reports a valid time.
 fn timing(stream: &pw::stream::Stream, sample_rate: u32) -> Option<(u64, u64)> {
     let time = stream.time().ok()?;
     let rate = time.rate();
