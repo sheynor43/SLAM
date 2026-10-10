@@ -11,13 +11,15 @@ rtrb.workspace = true
 thiserror.workspace = true
 sdl3-sys.workspace = true
 
-# Linux: build SDL3 from the vendored sources and link statically, so neither CI nor
-# users need a system SDL3. Only the video subsystem (window + events) is enabled.
-[target.'cfg(target_os = "linux")'.dependencies]
+# Linux and Windows (MSVC): build SDL3 from the vendored sources and link statically, so
+# neither CI nor users need a system SDL3. Only the video subsystem (window + events) is
+# enabled.
+[target.'cfg(any(target_os = "linux", all(windows, target_env = "msvc")))'.dependencies]
 sdl3-sys = { workspace = true, features = ["build-from-source-static", "no-default-subsystems", "sdl-video"] }
 
-# Windows: link against an SDL3 found by pkg-config, else by name.
-[target.'cfg(windows)'.dependencies]
+# Windows GNU (the cross clippy check from Linux, which has no C cross compiler): link
+# against an SDL3 found by pkg-config, else by name.
+[target.'cfg(all(windows, not(target_env = "msvc")))'.dependencies]
 sdl3-sys = { workspace = true, features = ["use-pkg-config"] }
 
 [dev-dependencies]

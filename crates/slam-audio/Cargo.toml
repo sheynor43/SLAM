@@ -23,6 +23,9 @@ workspace = true
 [target.'cfg(target_os = "linux")'.dependencies]
 pipewire.workspace = true
 
+[target.'cfg(windows)'.dependencies]
+windows.workspace = true
+
 # criterion needs a C compiler for the target (`alloca`); the Windows cross check has
 # none, so benches build on non-Windows targets only.
 [target.'cfg(not(windows))'.dev-dependencies]

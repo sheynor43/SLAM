@@ -30,7 +30,7 @@ bench *ARGS:
 run *ARGS:
     cargo run -p slam-app --release -- {{ARGS}}
 
-# Тестовый тон 440 Гц через аудио-HAL: just tone [секунды] [кадры_буфера] [устройство]
+# Тестовый тон 440 Гц через аудио-HAL: just tone [--backend ИМЯ] [секунды] [кадры_буфера] [устройство]
 tone *ARGS:
     cargo run -p slam-audio --release --example tone -- {{ARGS}}
 
