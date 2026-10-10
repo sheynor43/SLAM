@@ -6,6 +6,7 @@ use std::fmt;
 use thiserror::Error;
 
 use super::beatmap::{Beatmap, Break, Rgb, TimingPoint};
+use super::hit_object_parser::HitObjectParser;
 use super::parsing::{self, NumberError};
 
 const MAGIC: &str = "osu file format v";
@@ -47,6 +48,7 @@ const SECTION_DIFFICULTY: i32 = 3;
 const SECTION_EVENTS: i32 = 4;
 const SECTION_TIMING_POINTS: i32 = 5;
 const SECTION_COLOURS: i32 = 6;
+const SECTION_HIT_OBJECTS: i32 = 7;
 
 // Ported from osu!lazer 2026.1005.0-lazer: osu.Game/Beatmaps/Legacy/LegacyEventType.cs
 const EVENT_TYPES: &[(&str, i32)] = &[
@@ -145,6 +147,8 @@ pub enum WarningKind {
     InvalidEnumValue,
     /// The `Mode` is not one of the rulesets 0..=3.
     UnsupportedRuleset,
+    /// A hit object line whose type bits select no known object type.
+    UnknownHitObjectType,
 }
 
 impl From<NumberError> for WarningKind {
@@ -356,8 +360,10 @@ fn decode_text(text: &str, options: &DecodeOptions) -> Result<Decoded, DecodeErr
             events: Default::default(),
             timing_points: Vec::new(),
             colours: Default::default(),
+            hit_objects: Vec::new(),
         },
         offset,
+        hit_object_parser: HitObjectParser::new(offset, version),
         has_approach_rate: false,
     };
     decoder.parse_stream(text, &mut warnings);
@@ -426,17 +432,18 @@ fn lowercase_extension(path: &str) -> String {
     }
 }
 
-fn field<'a>(split: &[&'a str], i: usize) -> Result<&'a str, WarningKind> {
+pub(super) fn field<'a>(split: &[&'a str], i: usize) -> Result<&'a str, WarningKind> {
     split.get(i).copied().ok_or(WarningKind::MissingField)
 }
 
-fn num<T>(r: Result<T, NumberError>) -> Result<T, WarningKind> {
+pub(super) fn num<T>(r: Result<T, NumberError>) -> Result<T, WarningKind> {
     r.map_err(WarningKind::from)
 }
 
 struct Decoder {
     beatmap: Beatmap,
     offset: f64,
+    hit_object_parser: HitObjectParser,
     has_approach_rate: bool,
 }
 
@@ -503,7 +510,13 @@ impl Decoder {
             SECTION_EVENTS => self.handle_event(line),
             SECTION_TIMING_POINTS => self.handle_timing_point(line),
             SECTION_COLOURS => self.handle_colours(line),
-            _ => Ok(()), // [HitObjects] and other sections are not read yet
+            SECTION_HIT_OBJECTS => {
+                // Ported from osu!lazer 2026.1005.0-lazer: osu.Game/Beatmaps/Formats/LegacyBeatmapDecoder.cs
+                let object = self.hit_object_parser.parse(line)?;
+                self.beatmap.hit_objects.push(object);
+                Ok(())
+            }
+            _ => Ok(()), // other sections are not read
         }
     }
 
