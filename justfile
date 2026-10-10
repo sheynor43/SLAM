@@ -30,6 +30,10 @@ bench *ARGS:
 run *ARGS:
     cargo run -p slam-app --release -- {{ARGS}}
 
+# Тестовый тон 440 Гц через аудио-HAL: just tone [секунды] [кадры_буфера] [устройство]
+tone *ARGS:
+    cargo run -p slam-audio --release --example tone -- {{ARGS}}
+
 # Корпусы реплеев (путь к корпусу: SLAM_CORPUS, по умолчанию ../slam-corpus)
 corpus *ARGS:
     cargo test -p slam-osu --release --test corpus -- --ignored {{ARGS}}
