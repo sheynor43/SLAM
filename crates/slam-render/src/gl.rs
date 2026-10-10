@@ -246,6 +246,13 @@ impl<S: GlSurface> GlDevice<S> {
         format!("{renderer}, OpenGL {version}")
     }
 
+    /// Blocks until the GPU has finished all submitted commands (`glFinish`).
+    /// Diagnostics only: separates waiting for the GPU from the cost of `present`.
+    pub fn finish(&mut self) {
+        // SAFETY: the context is current on this thread.
+        unsafe { self.gl.finish() };
+    }
+
     /// Detaches the context from this thread and returns the surface. Resources not
     /// destroyed by then are freed with the context.
     pub fn into_surface(self) -> Result<S, DeviceError> {

@@ -4,7 +4,9 @@
 
 mod record;
 mod scene;
+mod thread;
 
+use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -14,15 +16,17 @@ use slam_engine::limiter::LimiterMode;
 use slam_engine::{Engine, EngineConfig, EngineCounters, TickInfo, Update};
 use slam_input::{InputEvent, InputWindow, TickMapper, event_ring, sdl_ticks_ns};
 
-pub use record::{FrameWork, MAX_RECORDED_FPS, Percentiles, Recorder, Report};
+pub use record::{FrameWork, MAX_RECORDED_FPS, Percentiles, Recorder, Report, Stalls};
 pub use scene::{Scene, fill};
+pub use thread::ThreadSched;
 
 /// Longest measurement or warm-up accepted: buffers for the whole window are
-/// allocated up front (16 bytes per frame at [`MAX_RECORDED_FPS`]).
+/// allocated up front (24 bytes per frame at [`MAX_RECORDED_FPS`]).
 pub const MAX_SECONDS: f64 = 300.0;
 
 pub const USAGE: &str = "usage: slam-app bench [--seconds S] [--warmup S] [--sprites N] \
-                         [--hz HZ (0 = unlimited)] [--spin-us US]";
+                         [--hz HZ (0 = unlimited)] [--spin-us US] [--fullscreen] [--finish] \
+                         [--cpu N] [--fifo PRIO] [--nice N] [--stall-us US] [--dump FILE.csv]";
 
 /// Benchmark settings.
 #[derive(Clone, Debug, PartialEq)]
@@ -36,6 +40,16 @@ pub struct Options {
     pub hz: Option<f64>,
     /// Limiter busy-wait threshold; `None` keeps the engine default.
     pub spin_us: Option<u64>,
+    /// Borderless desktop fullscreen instead of a 1280×720 window.
+    pub fullscreen: bool,
+    /// `glFinish` before `present`, to tell GPU waits from the swap itself.
+    pub finish: bool,
+    /// Scheduling of the draw thread.
+    pub sched: ThreadSched,
+    /// Frames whose work takes longer count as stalls in the report.
+    pub stall_us: u32,
+    /// Where to write per-frame samples as CSV.
+    pub dump: Option<PathBuf>,
 }
 
 impl Default for Options {
@@ -46,6 +60,11 @@ impl Default for Options {
             sprites: 500,
             hz: None,
             spin_us: None,
+            fullscreen: false,
+            finish: false,
+            sched: ThreadSched::default(),
+            stall_us: 500,
+            dump: None,
         }
     }
 }
@@ -66,10 +85,32 @@ impl Options {
                     options.hz = (hz != 0.0).then_some(hz);
                 }
                 "--spin-us" => options.spin_us = Some(number(&flag, &value()?)?),
+                "--fullscreen" => options.fullscreen = true,
+                "--finish" => options.finish = true,
+                "--cpu" => options.sched.cpu = Some(number(&flag, &value()?)?),
+                "--fifo" => {
+                    let priority = number(&flag, &value()?)?;
+                    if !(1..=99).contains(&priority) {
+                        return Err(format!("--fifo must be in [1, 99], got {priority}"));
+                    }
+                    options.sched.fifo = Some(priority);
+                }
+                "--nice" => {
+                    let nice = number(&flag, &value()?)?;
+                    if !(-20..=19).contains(&nice) {
+                        return Err(format!("--nice must be in [-20, 19], got {nice}"));
+                    }
+                    options.sched.nice = Some(nice);
+                }
+                "--stall-us" => options.stall_us = number(&flag, &value()?)?,
+                "--dump" => options.dump = Some(PathBuf::from(value()?)),
                 _ => return Err(format!("unknown argument {flag}")),
             }
         }
         let valid = |x: f64| (0.0..=MAX_SECONDS).contains(&x);
+        if options.stall_us > u32::MAX / 1000 {
+            return Err(format!("--stall-us must be at most {}", u32::MAX / 1000));
+        }
         if !valid(options.seconds) || options.seconds == 0.0 || !valid(options.warmup) {
             return Err(format!(
                 "--seconds must be in (0, {MAX_SECONDS}] and --warmup in [0, {MAX_SECONDS}]"
@@ -97,6 +138,9 @@ impl Update for Idle {
 pub fn run(options: &Options) -> Result<(), String> {
     let mut window =
         InputWindow::new_opengl("SLAM benchmark", 1280, 720).map_err(|e| e.to_string())?;
+    if options.fullscreen {
+        window.set_fullscreen(true).map_err(|e| e.to_string())?;
+    }
     let surface = SdlGlSurface(window.create_gl_context().map_err(|e| e.to_string())?);
 
     let epoch_ns = now_ns();
@@ -123,6 +167,8 @@ pub fn run(options: &Options) -> Result<(), String> {
             epoch_ns,
             recorder,
             window.quit_handle(),
+            options.finish,
+            options.sched,
         ),
         (),
         source,
@@ -146,7 +192,12 @@ pub fn run(options: &Options) -> Result<(), String> {
     // Stop drawing and destroy the GL context before the window.
     let mut stopped = engine.shutdown();
     let scene = &mut stopped.draw;
-    let report = scene.recorder.report();
+    let dumped = options.dump.as_ref().map(|path| {
+        std::fs::File::create(path)
+            .and_then(|file| scene.recorder.write_csv(std::io::BufWriter::new(file)))
+            .map_err(|e| format!("--dump {}: {e}", path.display()))
+    });
+    let report = scene.recorder.report(options.stall_us.saturating_mul(1000));
     let sprites = options.sprites;
     let mode = options
         .hz
@@ -154,7 +205,21 @@ pub fn run(options: &Options) -> Result<(), String> {
     if cfg!(debug_assertions) {
         println!("warning: debug build with GL debug output, numbers are not representative");
     }
-    println!("driver: {}", scene.driver);
+    println!("driver: {}, video: {}", scene.driver, window.video_driver());
+    let fullscreen = if options.fullscreen {
+        "fullscreen"
+    } else {
+        "windowed"
+    };
+    let finish = if options.finish {
+        ", glFinish before present"
+    } else {
+        ""
+    };
+    println!("{fullscreen}{finish}, draw thread {:?}", options.sched);
+    if let Err(e) = &scene.sched_result {
+        println!("warning: draw thread scheduling failed: {e}");
+    }
     println!(
         "{sprites} sprites, draw {mode}, {} s after {} s warm-up",
         options.seconds, options.warmup
@@ -164,7 +229,8 @@ pub fn run(options: &Options) -> Result<(), String> {
     drop(window);
     // The timer may still be sleeping if the window was closed early.
     drop(timer);
-    ran.map_err(|e| e.to_string())
+    ran.map_err(|e| e.to_string())?;
+    dumped.transpose().map(|_| ())
 }
 
 #[cfg(test)]
@@ -204,8 +270,35 @@ mod tests {
                 sprites: 0,
                 hz: Some(4000.0),
                 spin_us: Some(50),
+                ..Options::default()
             }
         );
+        let o = parse(&[
+            "--fullscreen",
+            "--finish",
+            "--cpu",
+            "3",
+            "--fifo",
+            "10",
+            "--nice",
+            "-5",
+            "--stall-us",
+            "300",
+            "--dump",
+            "frames.csv",
+        ])
+        .unwrap();
+        assert!(o.fullscreen && o.finish);
+        assert_eq!(
+            o.sched,
+            ThreadSched {
+                cpu: Some(3),
+                fifo: Some(10),
+                nice: Some(-5),
+            }
+        );
+        assert_eq!(o.stall_us, 300);
+        assert_eq!(o.dump, Some(PathBuf::from("frames.csv")));
         assert_eq!(parse(&["--hz", "0"]).unwrap().hz, None);
     }
 
@@ -220,5 +313,11 @@ mod tests {
         assert!(parse(&["--warmup", "1e12"]).is_err());
         assert!(parse(&["--warmup", "-1"]).is_err());
         assert!(parse(&["--frobnicate"]).is_err());
+        assert!(parse(&["--fifo", "0"]).is_err());
+        assert!(parse(&["--fifo", "100"]).is_err());
+        assert!(parse(&["--nice", "20"]).is_err());
+        assert!(parse(&["--cpu", "-1"]).is_err());
+        assert!(parse(&["--stall-us", "5000000"]).is_err());
+        assert!(parse(&["--dump"]).is_err());
     }
 }

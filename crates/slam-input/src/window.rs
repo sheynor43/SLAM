@@ -9,8 +9,9 @@ use sdl3_sys::events::{
 use sdl3_sys::hints::{SDL_HINT_INVALID_PARAM_CHECKS, SDL_SetHint};
 use sdl3_sys::init::{SDL_INIT_VIDEO, SDL_Init, SDL_Quit};
 use sdl3_sys::video::{
-    SDL_CreateWindow, SDL_DestroyWindow, SDL_GetWindowSizeInPixels, SDL_WINDOW_HIGH_PIXEL_DENSITY,
-    SDL_WINDOW_OPENGL, SDL_WINDOW_RESIZABLE, SDL_Window, SDL_WindowFlags,
+    SDL_CreateWindow, SDL_DestroyWindow, SDL_GetCurrentVideoDriver, SDL_GetWindowSizeInPixels,
+    SDL_SetWindowFullscreen, SDL_WINDOW_HIGH_PIXEL_DENSITY, SDL_WINDOW_OPENGL,
+    SDL_WINDOW_RESIZABLE, SDL_Window, SDL_WindowFlags,
 };
 
 use crate::gl::{self, GlContext, PixelSize};
@@ -37,6 +38,8 @@ pub enum WindowError {
     GlContextExists,
     #[error("OpenGL context creation failed: {0}")]
     GlContext(String),
+    #[error("SDL_SetWindowFullscreen failed: {0}")]
+    Fullscreen(String),
 }
 
 /// The SDL window and its event loop. Must be created and run on the OS main thread:
@@ -164,6 +167,31 @@ impl InputWindow {
         // the thread that initialised SDL.
         unsafe { GlContext::create(self.window, Arc::clone(&self.size)) }
             .map_err(WindowError::GlContext)
+    }
+
+    /// Switches between windowed and borderless desktop fullscreen. The change is
+    /// asynchronous: the new drawable size arrives through [`InputWindow::run`].
+    pub fn set_fullscreen(&mut self, fullscreen: bool) -> Result<(), WindowError> {
+        // SAFETY: `window` is valid and this is the thread that initialised SDL. No
+        // display mode is set, so fullscreen uses the desktop mode.
+        if unsafe { SDL_SetWindowFullscreen(self.window, fullscreen) } {
+            Ok(())
+        } else {
+            Err(WindowError::Fullscreen(sdl_error()))
+        }
+    }
+
+    /// Name of the SDL video driver in use (`wayland`, `x11`, `windows`, ...).
+    pub fn video_driver(&self) -> String {
+        // SAFETY: SDL video is initialised while the window exists.
+        let ptr = unsafe { SDL_GetCurrentVideoDriver() };
+        if ptr.is_null() {
+            return String::new();
+        }
+        // SAFETY: SDL returns a static NUL-terminated string.
+        unsafe { CStr::from_ptr(ptr) }
+            .to_string_lossy()
+            .into_owned()
     }
 
     /// Counters updated by [`InputWindow::run`]; share them with the thread that shows
