@@ -7,6 +7,7 @@ pub mod control_points;
 pub mod difficulty;
 mod dotnet;
 pub mod events;
+pub mod mods;
 pub mod objects;
 pub mod path;
 mod precision;
@@ -14,4 +15,5 @@ pub mod samples;
 pub mod stacking;
 
 pub use beatmap::{Beatmap, BeatmapError, Difficulty};
+pub use mods::{GameplayMod, Mod, ModSet};
 pub use path::SliderPath;
