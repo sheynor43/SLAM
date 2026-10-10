@@ -544,20 +544,10 @@ fn control_point_custom_sample_bank() {
     // expected distance. Dividing by the velocity rounds the result in binary floating point,
     // as in lazer.
     let s = slider(&objects[4]);
-    let distance = s.expected_distance.unwrap();
-    let duration = s.legacy_duration(
-        &b.control_points,
-        &b.difficulty,
-        objects[4].start_time,
-        distance,
-    );
+    assert_eq!(Some(s.legacy_distance), s.path.expected_distance());
+    let duration = s.legacy_duration(&b.control_points, &b.difficulty, objects[4].start_time);
     assert_eq!(duration, 117.18749999999999);
-    let nodes = s.resolve_node_samples(
-        &b.control_points,
-        &b.difficulty,
-        objects[4].start_time,
-        distance,
-    );
+    let nodes = s.resolve_node_samples(&b.control_points, &b.difficulty, objects[4].start_time);
     assert_eq!(lookup_name(&nodes[0][0]), "Gameplay/soft-hitnormal11");
     assert_eq!(lookup_name(&nodes[1][0]), "Gameplay/soft-hitnormal8");
 }
@@ -697,11 +687,11 @@ fn node_sample_lookup_times() {
     let obj = &b.hit_objects[0];
     let s = slider(obj);
     assert_eq!(
-        s.legacy_duration(&b.control_points, &b.difficulty, obj.start_time, 140.0),
+        s.legacy_duration(&b.control_points, &b.difficulty, obj.start_time),
         999.9999999999999
     );
 
-    let nodes = s.resolve_node_samples(&b.control_points, &b.difficulty, obj.start_time, 140.0);
+    let nodes = s.resolve_node_samples(&b.control_points, &b.difficulty, obj.start_time);
     let volumes: Vec<i32> = nodes.iter().map(|n| n[0].volume).collect();
     assert_eq!(volumes, [40, 60, 60]);
 }
@@ -709,4 +699,49 @@ fn node_sample_lookup_times() {
 #[test]
 fn beatmap_version() {
     assert_eq!(load("beatmap-version-6.osu").format_version, 6);
+}
+
+#[test]
+fn zero_length_slider_loses_its_repeats() {
+    // Three repeats on a path ending where it starts: five nodes, of which the head (whistle)
+    // and tail (clap) samples remain.
+    let b = load_text(
+        "osu file format v14\n\n[Difficulty]\nSliderMultiplier:1.4\n\n[TimingPoints]\n0,500,4,1,0,40,1,0\n\n[HitObjects]\n0,0,1000,2,0,L|0:0,4,0,2|4|4|4|8\n",
+    );
+    let s = slider(&b.hit_objects[0]);
+    assert_eq!(s.legacy_distance, 0.0);
+    assert_eq!(s.repeat_count, 0);
+    assert_eq!(s.node_samples.len(), 2);
+    let names = |node: &[slam_formats::osu::HitSample]| -> Vec<HitSampleName> {
+        node.iter().map(|sample| sample.name).collect()
+    };
+    assert!(names(&s.node_samples[0]).contains(&HitSampleName::Whistle));
+    assert!(names(&s.node_samples[1]).contains(&HitSampleName::Clap));
+}
+
+#[test]
+fn short_slider_keeps_its_repeats() {
+    let b = load_text(
+        "osu file format v14\n\n[TimingPoints]\n0,500,4,1,0,40,1,0\n\n[HitObjects]\n0,0,1000,2,0,L|1:0,4,1\n",
+    );
+    let s = slider(&b.hit_objects[0]);
+    assert_eq!(s.legacy_distance, 1.0);
+    assert_eq!(s.repeat_count, 3);
+    assert_eq!(s.node_samples.len(), 5);
+}
+
+#[test]
+fn catmull_optimisation_applies_only_to_the_gameplay_path() {
+    // Stacked knots form bulbs that the optimisation removes; the legacy path keeps them.
+    let b = load_text(
+        "osu file format v14\n\n[TimingPoints]\n0,500,4,1,0,40,1,0\n\n[HitObjects]\n0,0,1000,2,0,C|0:0|100:50|100:50|200:0,1\n",
+    );
+    let s = slider(&b.hit_objects[0]);
+    let legacy = slam_osu::SliderPath::new(
+        s.path.control_points().to_vec(),
+        s.path.expected_distance(),
+        false,
+    );
+    assert_eq!(s.legacy_distance, legacy.distance());
+    assert!(s.path.calculated_path().len() < legacy.calculated_path().len());
 }
