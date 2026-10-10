@@ -38,6 +38,6 @@ tone *ARGS:
 hitsound *ARGS:
     cargo run -p slam-audio --release --example hitsound -- {{ARGS}}
 
-# Корпусы реплеев (путь к корпусу: SLAM_CORPUS, по умолчанию ../slam-corpus)
-corpus *ARGS:
-    cargo test -p slam-osu --release --test corpus -- --ignored {{ARGS}}
+# Корпусы реплеев; FILTER - подстрока пути реплея (путь к корпусу: SLAM_CORPUS, по умолчанию ../slam-corpus)
+corpus FILTER="":
+    SLAM_CORPUS_FILTER={{quote(FILTER)}} cargo test -p slam-osu --release --test corpus -- --ignored --nocapture
