@@ -11,11 +11,16 @@ publish = false
 
 [workspace.dependencies]
 libc = "0.2.190"
+criterion = { version = "0.8.2", default-features = false, features = ["cargo_bench_support"] }
 glow = "0.18.0"
 # Linux audio backend; 1.0 is the oldest supported libpipewire (Ubuntu 24.04).
 pipewire = { version = "0.10.1", features = ["v1_0_0"] }
 naga = { version = "30.0.1", default-features = false, features = ["wgsl-in", "glsl-out"] }
 rtrb = "0.4.0"
+# Offline resampling of hitsounds to the device rate.
+rubato = { version = "5.0.1", default-features = false, features = ["fft_resampler"] }
+# Hitsound formats accepted by stable: WAV (PCM, ADPCM), OGG Vorbis, MP3.
+symphonia = { version = "0.6.1", default-features = false, features = ["wav", "pcm", "adpcm", "ogg", "vorbis", "mp3", "opt-simd"] }
 sdl3-sys = { version = "0.7.2", default-features = false }
 thiserror = "2.0.21"
 # Started explicitly, records only while a viewer is connected, local viewer only.
