@@ -196,5 +196,7 @@ static class Program
             File.WriteAllText(args[1], Nested.Generate());
         if (args.Length > 2)
             File.WriteAllText(args[2], Stacking.Generate());
+        if (args.Length > 3)
+            File.WriteAllText(args[3], Mods.Generate());
     }
 }
