@@ -192,5 +192,7 @@ static class Program
         handpicked();
         random(400);
         File.WriteAllText(args[0], sb.ToString());
+        if (args.Length > 1)
+            File.WriteAllText(args[1], Nested.Generate());
     }
 }

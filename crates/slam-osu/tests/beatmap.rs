@@ -6,10 +6,10 @@
 
 use std::path::PathBuf;
 
-use slam_formats::osu::{DecodeOptions, HitSampleName, decode_str, decode_with};
+use slam_formats::osu::{DecodeOptions, decode_str, decode_with};
 use slam_osu::control_points::{ControlPoints, TimingPoint};
 use slam_osu::objects::{OsuHitObject, OsuHitObjectKind, Slider};
-use slam_osu::samples::{Bank, HitSample};
+use slam_osu::samples::{Bank, HitSample, SampleName};
 use slam_osu::{Beatmap, BeatmapError};
 
 fn load_bytes(bytes: &[u8]) -> Beatmap {
@@ -142,7 +142,7 @@ fn renatus_timing_points() {
         objects[0]
             .samples
             .iter()
-            .any(|s| s.name == HitSampleName::Normal)
+            .any(|s| s.name == SampleName::Normal)
     );
     assert_eq!(
         (objects[1].position.x, objects[1].position.y),
@@ -153,7 +153,7 @@ fn renatus_timing_points() {
         objects[1]
             .samples
             .iter()
-            .any(|s| s.name == HitSampleName::Clap)
+            .any(|s| s.name == SampleName::Clap)
     );
 }
 
@@ -547,7 +547,7 @@ fn control_point_custom_sample_bank() {
     assert_eq!(Some(s.legacy_distance), s.path.expected_distance());
     let duration = s.legacy_duration(&b.control_points, &b.difficulty, objects[4].start_time);
     assert_eq!(duration, 117.18749999999999);
-    let nodes = s.resolve_node_samples(&b.control_points, &b.difficulty, objects[4].start_time);
+    let nodes = &s.node_samples;
     assert_eq!(lookup_name(&nodes[0][0]), "Gameplay/soft-hitnormal11");
     assert_eq!(lookup_name(&nodes[1][0]), "Gameplay/soft-hitnormal8");
 }
@@ -575,14 +575,14 @@ fn hit_object_file_samples() {
 #[test]
 fn slider_node_sample_names() {
     let objects = load("slider-samples.osu").hit_objects;
-    let names = |i: usize| -> Vec<Vec<HitSampleName>> {
+    let names = |i: usize| -> Vec<Vec<SampleName>> {
         slider(&objects[i])
             .node_samples
             .iter()
             .map(|node| node.iter().map(|s| s.name).collect())
             .collect()
     };
-    use HitSampleName::{Clap, Normal, Whistle};
+    use SampleName::{Clap, Normal, Whistle};
     assert_eq!(names(0), [vec![Normal], vec![Normal], vec![Normal]]);
     assert_eq!(
         names(1),
@@ -691,7 +691,7 @@ fn node_sample_lookup_times() {
         999.9999999999999
     );
 
-    let nodes = s.resolve_node_samples(&b.control_points, &b.difficulty, obj.start_time);
+    let nodes = &s.node_samples;
     let volumes: Vec<i32> = nodes.iter().map(|n| n[0].volume).collect();
     assert_eq!(volumes, [40, 60, 60]);
 }
@@ -712,11 +712,10 @@ fn zero_length_slider_loses_its_repeats() {
     assert_eq!(s.legacy_distance, 0.0);
     assert_eq!(s.repeat_count, 0);
     assert_eq!(s.node_samples.len(), 2);
-    let names = |node: &[slam_formats::osu::HitSample]| -> Vec<HitSampleName> {
-        node.iter().map(|sample| sample.name).collect()
-    };
-    assert!(names(&s.node_samples[0]).contains(&HitSampleName::Whistle));
-    assert!(names(&s.node_samples[1]).contains(&HitSampleName::Clap));
+    let names =
+        |node: &[HitSample]| -> Vec<SampleName> { node.iter().map(|sample| sample.name).collect() };
+    assert!(names(&s.node_samples[0]).contains(&SampleName::Whistle));
+    assert!(names(&s.node_samples[1]).contains(&SampleName::Clap));
 }
 
 #[test]

@@ -1,11 +1,10 @@
 //! A playable osu!standard beatmap built from a decoded `.osu` file.
 
-use std::cmp::Ordering;
-
 use slam_formats::osu::{self as osu_file, Break, HitObjectKind};
 
 use crate::control_points::ControlPoints;
-use crate::objects::{ComboInfo, OsuHitObject, OsuHitObjectKind, Slider};
+use crate::dotnet::compare_f64;
+use crate::objects::{ComboInfo, ObjectDefaults, OsuHitObject, OsuHitObjectKind, Slider};
 
 /// Lazer's `LegacyBeatmapDecoder.CONTROL_POINT_LENIENCY`: sample points are looked up this many
 /// ms after a sample's time, so that a point placed slightly late still applies.
@@ -53,9 +52,7 @@ impl Difficulty {
 }
 
 /// A playable osu!standard beatmap: control points, difficulty, breaks and converted objects
-/// with combo information.
-///
-/// Node samples of sliders are not resolved yet (see [`Slider::resolve_node_samples`]).
+/// with combo information and difficulty defaults applied (no mods, no stacking yet).
 #[derive(Debug, Clone, PartialEq)]
 pub struct Beatmap {
     /// `.osu` format version.
@@ -76,10 +73,12 @@ impl Beatmap {
     // Ported from osu!lazer 2026.1005.0-lazer: osu.Game/Beatmaps/Formats/LegacyBeatmapDecoder.cs (ParseStreamInto, postProcessBreaks, applyDefaults, applySamples)
     // Ported from osu!lazer 2026.1005.0-lazer: osu.Game.Rulesets.Osu/Beatmaps/OsuBeatmapConverter.cs
     // Ported from osu!lazer 2026.1005.0-lazer: osu.Game.Rulesets.Osu/Beatmaps/OsuBeatmapProcessor.cs (PreProcess)
+    // Ported from osu!lazer 2026.1005.0-lazer: osu.Game/Beatmaps/WorkingBeatmap.cs (GetPlayableBeatmap)
     /// Processes a decoded `.osu` file the way lazer's decoder, `OsuBeatmapConverter` and
     /// `OsuBeatmapProcessor.PreProcess` do: clamps the difficulty, builds the control points,
     /// sorts objects and breaks, forces new combos after breaks and spinners, resolves samples
-    /// and assigns combo indices.
+    /// and assigns combo indices. Then applies the difficulty defaults to every object
+    /// ([`OsuHitObject::apply_defaults`]), as lazer does after `PreProcess`.
     pub fn from_file(file: osu_file::Beatmap) -> Result<Beatmap, BeatmapError> {
         if file.general.mode != 0 {
             return Err(BeatmapError::UnsupportedMode(file.general.mode));
@@ -108,10 +107,20 @@ impl Beatmap {
             }
             let new_combo = h.new_combo | force_new_combo;
 
-            hit_objects.push(convert(h, new_combo, &control_points, file.format_version));
+            hit_objects.push(convert(
+                h,
+                new_combo,
+                &control_points,
+                &difficulty,
+                file.format_version,
+            ));
         }
 
         assign_combo_info(&mut hit_objects);
+
+        for obj in &mut hit_objects {
+            obj.apply_defaults(&control_points, &difficulty);
+        }
 
         Ok(Beatmap {
             format_version: file.format_version,
@@ -129,28 +138,14 @@ fn convert(
     h: osu_file::HitObject,
     new_combo: bool,
     control_points: &ControlPoints,
+    difficulty: &Difficulty,
     format_version: i32,
 ) -> OsuHitObject {
     let (kind, sample_time) = match h.kind {
         HitObjectKind::Slider(s) => {
-            // applyDefaults
-            let difficulty_point = control_points.difficulty_point_at(h.start_time);
-            // Prior to v8, speed multipliers don't adjust for how many ticks are generated over
-            // the same distance.
-            let tick_distance_multiplier = if format_version < 8 {
-                1.0 / difficulty_point.slider_velocity
-            } else {
-                1.0
-            };
-
-            let slider = Slider {
-                generate_ticks: difficulty_point.generate_ticks,
-                slider_velocity_multiplier: difficulty_point.slider_velocity,
-                tick_distance_multiplier,
-                ..Slider::new(s)
-            };
+            let slider = Slider::new(s, h.start_time, control_points, difficulty, format_version);
             let sample_time = h.start_time + CONTROL_POINT_LENIENCY + 1.0;
-            (OsuHitObjectKind::Slider(slider), sample_time)
+            (OsuHitObjectKind::Slider(Box::new(slider)), sample_time)
         }
         // A hold has a duration, so the converter turns it into a spinner.
         HitObjectKind::Spinner { duration } | HitObjectKind::Hold { duration } => {
@@ -175,6 +170,7 @@ fn convert(
         new_combo,
         combo_offset: h.combo_offset,
         combo: ComboInfo::default(),
+        defaults: ObjectDefaults::default(),
         samples,
         kind,
     }
@@ -229,12 +225,4 @@ fn update_combo_info(obj: &mut OsuHitObject, last: Option<&mut OsuHitObject>) {
         index_in_current_combo: in_current_combo,
         last_in_combo: false,
     };
-}
-
-/// .NET's `double.CompareTo`: NaN sorts before everything, and -0 equals 0.
-fn compare_f64(a: f64, b: f64) -> Ordering {
-    match a.partial_cmp(&b) {
-        Some(ordering) => ordering,
-        None => a.is_nan().cmp(&b.is_nan()).reverse(),
-    }
 }
