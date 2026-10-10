@@ -1,0 +1,40 @@
+
+
+osu file format v14
+
+[General]
+AudioFilename: ok.mp3
+AudioLeadIn: abc
+PreviewTime: 99999999999
+SampleVolume: 1.5
+Countdown: Fast
+Mode: 7
+StackLeniency: NaN
+this line has no colon
+[Bogus]
+AudioFilename: from-unknown-section.mp3
+[Difficulty]
+OverallDifficulty:7
+HPDrainRate:oops
+SliderMultiplier: 1e10
+[Events]
+2,100
+Break,1000,2000
+Video,0
+[TimingPoints]
+1000,500,4,1,0,100,1,0
+2000,NaN,4,1,0,100,1,0
+3000,NaN,4,1,0,100,0,0
+4000,abc
+5000
+6000,500,,1,0,100,1,0
+7000,500,4,1,0,100,
+8000,500,0,1,0,100,1,0
+9000,500,-3
+10000,500,4,1,0,100,1,x
+ 11000 , 250.5 ,4,2,0,70,1,0 
+[Colours]
+Combo1:1,2
+Combo2:1,2,300
+Combo3:9,8,7
+Combo9:1,2,3

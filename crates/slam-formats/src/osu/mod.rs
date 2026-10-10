@@ -1,0 +1,28 @@
+//! Decoder for the `.osu` beatmap format: header sections and timing points.
+//!
+//! The decoder returns the file's data as osu!lazer's `LegacyBeatmapDecoder` reads it, with
+//! the same number parsing rules, defaults and per-line error tolerance. It deliberately does
+//! no model-level post-processing: timing points are not merged, difficulty values are not
+//! clamped, and `[HitObjects]` lines are currently ignored.
+//!
+//! Malformed lines never abort decoding: the line is dropped and a [`Warning`] is recorded.
+//!
+//! ```
+//! let text = "osu file format v14\n\n[Metadata]\nTitle:Song\n\n[TimingPoints]\n1000,500,4,2,0,70,1,0\n";
+//! let decoded = slam_formats::osu::decode_str(text).unwrap();
+//! assert_eq!(decoded.beatmap.metadata.title, "Song");
+//! assert_eq!(decoded.beatmap.timing_points[0].beat_length, 500.0);
+//! assert!(decoded.warnings.is_empty());
+//! ```
+
+mod beatmap;
+mod decode;
+pub mod parsing;
+
+pub use beatmap::{
+    Beatmap, Break, Colours, Difficulty, Events, General, Metadata, Rgb, TimingPoint,
+};
+pub use decode::{
+    DecodeError, DecodeOptions, Decoded, Warning, WarningKind, decode, decode_str, decode_str_with,
+    decode_with,
+};

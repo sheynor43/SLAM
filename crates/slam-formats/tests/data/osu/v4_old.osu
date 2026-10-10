@@ -1,0 +1,28 @@
+osu file format v4
+
+[General]
+AudioFilename: old\song.mp3
+AudioLeadIn: 500
+PreviewTime: 30000
+SampleSet: Soft
+
+[Metadata]
+Title:Old Song
+Artist:Someone
+Creator:Mapper
+Version:Easy
+
+[Difficulty]
+HPDrainRate:3
+CircleSize:4
+OverallDifficulty:6
+SliderMultiplier:1.2
+SliderTickRate:2
+
+[Events]
+0,0,"bg.jpg",0,0
+2,1000,2500
+
+[TimingPoints]
+1000,500
+2000,-50,3,0,0,30,0,1
