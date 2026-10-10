@@ -15,9 +15,10 @@ const MAGIC: &str = "osu file format v";
 // Ported from osu!lazer 2026.1005.0-lazer: osu.Game/Beatmaps/Formats/LegacyDecoder.cs
 const LATEST_VERSION: i32 = 14;
 
-/// Offset applied to times of maps older than version 5.
+/// Offset in milliseconds applied to times of maps older than format version 5 (also to
+/// replay frame times, see [`crate::osr`]).
 // Ported from osu!lazer 2026.1005.0-lazer: osu.Game/Beatmaps/Formats/LegacyBeatmapDecoder.cs
-const EARLY_VERSION_TIMING_OFFSET: i32 = 24;
+pub const EARLY_VERSION_TIMING_OFFSET: i32 = 24;
 
 // Ported from osu!lazer 2026.1005.0-lazer: osu.Game/Beatmaps/Formats/LegacyDecoder.cs
 const MAX_COMBO_COLOUR_COUNT: i32 = 8;

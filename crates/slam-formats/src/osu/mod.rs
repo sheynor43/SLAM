@@ -32,8 +32,8 @@ pub use beatmap::{
     Beatmap, Break, Colours, Difficulty, Events, General, Metadata, Rgb, TimingPoint,
 };
 pub use decode::{
-    DecodeError, DecodeOptions, Decoded, Warning, WarningKind, decode, decode_str, decode_str_with,
-    decode_with,
+    DecodeError, DecodeOptions, Decoded, EARLY_VERSION_TIMING_OFFSET, Warning, WarningKind, decode,
+    decode_str, decode_str_with, decode_with,
 };
 pub use hit_object::{
     HitObject, HitObjectKind, HitSample, HitSampleName, PathControlPoint, PathType, SampleBank,

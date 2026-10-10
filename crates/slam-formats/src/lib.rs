@@ -2,4 +2,5 @@
 
 #![warn(missing_docs)]
 
+pub mod osr;
 pub mod osu;
