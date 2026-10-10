@@ -53,5 +53,5 @@ fn frame_fill_and_record_do_not_allocate() {
         );
     });
     assert_eq!(batch.len(), 500);
-    assert_eq!(recorder.report().unrecorded, 1);
+    assert_eq!(recorder.report(500_000).unrecorded, 1);
 }

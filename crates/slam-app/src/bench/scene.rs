@@ -12,6 +12,7 @@ use slam_render::{Color, Device, Extent, TextureFormat};
 use slam_engine::clock::now_ns;
 
 use super::record::{FrameWork, Recorder};
+use super::thread::ThreadSched;
 
 const SPRITE_SIZE: f32 = 24.0;
 
@@ -60,6 +61,11 @@ pub struct Scene {
     pub recorder: Recorder,
     /// Filled by `start`.
     pub driver: String,
+    /// Wait for the GPU (`glFinish`) before `present`; the wait counts as draw time.
+    finish: bool,
+    sched: ThreadSched,
+    /// Outcome of applying `sched` to the draw thread, set by `start`.
+    pub sched_result: Result<(), String>,
     _quit: QuitOnDrop,
 }
 
@@ -70,6 +76,8 @@ impl Scene {
         epoch_ns: u64,
         recorder: Recorder,
         quit: QuitHandle,
+        finish: bool,
+        sched: ThreadSched,
     ) -> Self {
         Self {
             surface: Some(surface),
@@ -79,6 +87,9 @@ impl Scene {
             resources: None,
             recorder,
             driver: String::new(),
+            finish,
+            sched,
+            sched_result: Ok(()),
             _quit: QuitOnDrop(quit),
         }
     }
@@ -100,6 +111,9 @@ impl Draw<()> for Scene {
             )
             .expect("square");
         let renderer = SpriteRenderer::new(&mut device, DEFAULT_SLOTS).expect("renderer");
+        // After the driver has set up its worker threads, so they do not inherit
+        // the draw thread's affinity.
+        self.sched_result = self.sched.apply();
         self.resources = Some(Resources {
             device,
             textures,
@@ -126,6 +140,9 @@ impl Draw<()> for Scene {
                 |id| textures.get(id),
             )
             .ok();
+        if self.finish {
+            r.device.finish();
+        }
         let drawn_ns = now_ns();
         let presented = r.device.present().is_ok();
         let work = FrameWork {
