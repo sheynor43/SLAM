@@ -1,4 +1,6 @@
-//! Data model of a decoded `.osu` file (header sections and timing points).
+//! Data model of a decoded `.osu` file (header sections, timing points and hit objects).
+
+use super::hit_object::HitObject;
 
 /// An opaque 8-bit RGB colour.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -224,4 +226,8 @@ pub struct Beatmap {
     pub timing_points: Vec<TimingPoint>,
     /// `[Colours]`.
     pub colours: Colours,
+    /// `[HitObjects]` in file order, as `ConvertHitObjectParser` produced them. Not applied:
+    /// sorting, `applySamples`, `postProcessBreaks`, `ApplyDefaults`, and the zero-length-slider
+    /// rule of `createSlider` (all need later steps or `SliderPath` evaluation).
+    pub hit_objects: Vec<HitObject>,
 }

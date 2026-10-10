@@ -1,9 +1,16 @@
-//! Decoder for the `.osu` beatmap format: header sections and timing points.
+//! Decoder for the `.osu` beatmap format: header sections, timing points and hit objects.
 //!
 //! The decoder returns the file's data as osu!lazer's `LegacyBeatmapDecoder` reads it, with
 //! the same number parsing rules, defaults and per-line error tolerance. It deliberately does
-//! no model-level post-processing: timing points are not merged, difficulty values are not
-//! clamped, and `[HitObjects]` lines are currently ignored.
+//! no model-level post-processing. These steps lazer applies after parsing are not done here:
+//! timing points are not merged, difficulty values are not clamped, hit objects are not sorted
+//! (file order is kept), sample banks and volumes are not resolved from the sample control
+//! points (`applySamples`), `postProcessBreaks` is not run (it forces a new combo on the first
+//! object after each break), `ApplyDefaults` is not run, and slider paths are neither
+//! evaluated nor measured, so the zero-length-slider rule of `createSlider` (repeats reset to
+//! 0, node samples trimmed to first and last) is not applied either.
+//! The rest of `ConvertHitObjectParser` is ported: combo flags, timing offset, curve
+//! segmentation, repeats, node samples and `hitSample`.
 //!
 //! Malformed lines never abort decoding: the line is dropped and a [`Warning`] is recorded.
 //!
@@ -17,6 +24,8 @@
 
 mod beatmap;
 mod decode;
+mod hit_object;
+mod hit_object_parser;
 pub mod parsing;
 
 pub use beatmap::{
@@ -25,4 +34,8 @@ pub use beatmap::{
 pub use decode::{
     DecodeError, DecodeOptions, Decoded, Warning, WarningKind, decode, decode_str, decode_str_with,
     decode_with,
+};
+pub use hit_object::{
+    HitObject, HitObjectKind, HitSample, HitSampleName, PathControlPoint, PathType, SampleBank,
+    Slider, Vec2,
 };
