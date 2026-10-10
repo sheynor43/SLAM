@@ -12,6 +12,7 @@ thiserror.workspace = true
 
 [dev-dependencies]
 proptest.workspace = true
+slam-testkit = { path = "../slam-testkit" }
 
 [lints]
 workspace = true

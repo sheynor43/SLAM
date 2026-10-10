@@ -31,6 +31,7 @@
 | [0025](0025-mixer-voice-start-reports.md) | Опциональные отчёты микшера о старте голосов (номер команды `play`, буфер, задержка выхода) | Принято |
 | [0026](0026-pipewire-alsa-driver-delay.md) | Задержка драйвера ALSA (очередь URB) в бэкенде PipeWire: опрос `/proc/asound/.../status` из потока цикла | Принято |
 | [0027](0027-wasapi-backend.md) | Бэкенд WASAPI: режимы shared/low-latency/exclusive с откатом, поток с MMCSS, задержка по `IAudioClock`, крейт `windows` | Принято |
+| [0028](0028-headless-replay-stepping.md) | Шаги симуляции реплея без графики: модель лазера с опорными часами «бесконечно впереди» | Принято |
 
 ## Шаблон
 
