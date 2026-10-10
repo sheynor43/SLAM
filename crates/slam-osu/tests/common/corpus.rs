@@ -284,15 +284,14 @@ impl fmt::Display for Report {
 /// The rules the corpus is simulated with, and whether they judge.
 ///
 /// While a rule set is incomplete, it does not judge beatmaps that need the missing rules: a
-/// lazer difference there is reported as `NotJudged` and does not fail the run. Only hit
-/// circles are judged so far (#49); sliders (#50) and spinners (#51) still pass unjudged. The
-/// rules honour `mods` (Classic included: stable replays get it from
-/// `ModSet::from_replay_parts`).
+/// lazer difference there is reported as `NotJudged` and does not fail the run. Hit circles
+/// and sliders are judged (#49, #50); spinners (#51) still pass unjudged. The rules honour
+/// `mods` (Classic included: stable replays get it from `ModSet::from_replay_parts`).
 fn rules_for(beatmap: &Beatmap, mods: &ModSet) -> (OsuRules, bool) {
     let judges = beatmap
         .hit_objects
         .iter()
-        .all(|o| matches!(o.kind, OsuHitObjectKind::Circle));
+        .all(|o| !matches!(o.kind, OsuHitObjectKind::Spinner { .. }));
     (OsuRules::new(beatmap, mods), judges)
 }
 

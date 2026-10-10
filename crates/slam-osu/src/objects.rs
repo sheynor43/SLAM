@@ -289,13 +289,7 @@ impl Slider {
     /// Position along the path relative to the slider position at `progress` of the whole
     /// slider (0 = start time, 1 = end time), following the path back and forth over the spans.
     pub fn curve_position_at(&self, progress: f64) -> Vec2 {
-        let span_count = f64::from(self.span_count());
-        let mut p = progress * span_count % 1.0;
-        // C#'s (int) cast, which saturates like `as` since .NET 9.
-        if ((progress * span_count) as i32) % 2 == 1 {
-            p = 1.0 - p;
-        }
-        self.path.position_at(p)
+        curve_position_at(&self.path, self.span_count(), progress)
     }
 
     // Ported from osu!lazer 2026.1005.0-lazer: osu.Game/Rulesets/Objects/Legacy/ConvertSlider.cs (ApplyDefaultsToSelf, Duration)
@@ -513,6 +507,18 @@ impl Slider {
             .get(index)
             .map_or_else(|| samples.to_vec(), Clone::clone)
     }
+}
+
+// Ported from osu!lazer 2026.1005.0-lazer: osu.Game/Rulesets/Objects/Types/IHasPathWithRepeats.cs (CurvePositionAt, ProgressAt, SpanAt)
+/// [`Slider::curve_position_at`] for a path with `span_count` spans.
+pub fn curve_position_at(path: &SliderPath, span_count: i32, progress: f64) -> Vec2 {
+    let span_count = f64::from(span_count);
+    let mut p = progress * span_count % 1.0;
+    // C#'s (int) cast, which saturates like `as` since .NET 9.
+    if ((progress * span_count) as i32) % 2 == 1 {
+        p = 1.0 - p;
+    }
+    path.position_at(p)
 }
 
 // Ported from osu!lazer 2026.1005.0-lazer: osu.Game/Rulesets/Objects/Legacy/LegacyRulesetExtensions.cs (GetPrecisionAdjustedBeatLength)
