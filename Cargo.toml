@@ -13,6 +13,8 @@ publish = false
 libc = "0.2.190"
 criterion = { version = "0.8.2", default-features = false, features = ["cargo_bench_support"] }
 glow = "0.18.0"
+# Raw LZMA coder for the compressed frame data of .osr replays.
+lzma-rust2 = { version = "0.21.0", default-features = false, features = ["std", "encoder", "optimization"] }
 # Linux audio backend; 1.0 is the oldest supported libpipewire (Ubuntu 24.04).
 pipewire = { version = "0.10.1", features = ["v1_0_0"] }
 naga = { version = "30.0.1", default-features = false, features = ["wgsl-in", "glsl-out"] }
