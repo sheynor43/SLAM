@@ -7,10 +7,12 @@ pub mod control_points;
 pub mod difficulty;
 mod dotnet;
 pub mod events;
+pub mod judgement;
 pub mod mods;
 pub mod objects;
 pub mod path;
 mod precision;
+pub mod replay;
 pub mod samples;
 pub mod stacking;
 
