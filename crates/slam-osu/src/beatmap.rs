@@ -55,8 +55,7 @@ impl Difficulty {
 /// A playable osu!standard beatmap: control points, difficulty, breaks and converted objects
 /// with combo information.
 ///
-/// Slider paths are not evaluated yet, so the zero-length-slider rule is not applied and node
-/// samples of sliders are not resolved (see [`Slider::resolve_node_samples`]).
+/// Node samples of sliders are not resolved yet (see [`Slider::resolve_node_samples`]).
 #[derive(Debug, Clone, PartialEq)]
 pub struct Beatmap {
     /// `.osu` format version.
@@ -145,13 +144,10 @@ fn convert(
             };
 
             let slider = Slider {
-                control_points: s.control_points,
-                expected_distance: s.expected_distance,
-                repeat_count: s.repeat_count,
-                node_samples: s.node_samples,
                 generate_ticks: difficulty_point.generate_ticks,
                 slider_velocity_multiplier: difficulty_point.slider_velocity,
                 tick_distance_multiplier,
+                ..Slider::new(s)
             };
             let sample_time = h.start_time + CONTROL_POINT_LENIENCY + 1.0;
             (OsuHitObjectKind::Slider(slider), sample_time)

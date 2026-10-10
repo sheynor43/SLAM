@@ -5,6 +5,9 @@
 pub mod beatmap;
 pub mod control_points;
 pub mod objects;
+pub mod path;
+mod precision;
 pub mod samples;
 
 pub use beatmap::{Beatmap, BeatmapError, Difficulty};
+pub use path::SliderPath;

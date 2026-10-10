@@ -23,6 +23,75 @@ impl Vec2 {
     pub const fn new(x: f32, y: f32) -> Self {
         Self { x, y }
     }
+
+    /// `X * X + Y * Y`, in `f32` (osuTK's `LengthSquared`).
+    pub fn length_squared(self) -> f32 {
+        self.x * self.x + self.y * self.y
+    }
+
+    /// The Euclidean length (osuTK's `Length`: `(float)Math.Sqrt(X * X + Y * Y)`).
+    ///
+    /// The `f64` square root of an `f32`, rounded back to `f32`, equals the `f32` square root.
+    pub fn length(self) -> f32 {
+        self.length_squared().sqrt()
+    }
+
+    /// The distance between two points (osuTK's `Vector2.Distance`).
+    pub fn distance(self, other: Vec2) -> f32 {
+        (other - self).length()
+    }
+
+    /// The dot product (osuTK's `Vector2.Dot`).
+    pub fn dot(self, other: Vec2) -> f32 {
+        self.x * other.x + self.y * other.y
+    }
+
+    /// The vector scaled to unit length (osuTK's `Normalized`: multiplies by `1 / Length`).
+    pub fn normalized(self) -> Vec2 {
+        let scale = 1.0 / self.length();
+        Vec2::new(self.x * scale, self.y * scale)
+    }
+}
+
+impl std::ops::Add for Vec2 {
+    type Output = Vec2;
+
+    fn add(self, rhs: Vec2) -> Vec2 {
+        Vec2::new(self.x + rhs.x, self.y + rhs.y)
+    }
+}
+
+impl std::ops::Sub for Vec2 {
+    type Output = Vec2;
+
+    fn sub(self, rhs: Vec2) -> Vec2 {
+        Vec2::new(self.x - rhs.x, self.y - rhs.y)
+    }
+}
+
+impl std::ops::Mul<f32> for Vec2 {
+    type Output = Vec2;
+
+    fn mul(self, scale: f32) -> Vec2 {
+        Vec2::new(self.x * scale, self.y * scale)
+    }
+}
+
+impl std::ops::Mul<Vec2> for f32 {
+    type Output = Vec2;
+
+    fn mul(self, vec: Vec2) -> Vec2 {
+        Vec2::new(self * vec.x, self * vec.y)
+    }
+}
+
+impl std::ops::Div<f32> for Vec2 {
+    type Output = Vec2;
+
+    /// Component-wise division (osuTK's `operator /(Vector2, float)`).
+    fn div(self, scale: f32) -> Vec2 {
+        Vec2::new(self.x / scale, self.y / scale)
+    }
 }
 
 // Ported from osu!lazer 2026.1005.0-lazer: osu.Game/Rulesets/Objects/Types/PathType.cs
@@ -155,8 +224,8 @@ pub struct Slider {
     /// Number of repeats: the file's slide count minus one, at least 0.
     ///
     /// Lazer additionally resets this to 0 for sliders whose evaluated path length is zero,
-    /// and trims `node_samples` to `[first, last]`; that needs the path calculation and is not
-    /// applied here.
+    /// and trims `node_samples` to `[first, last]`; that needs the path calculation and is
+    /// applied by `slam-osu`, not here.
     pub repeat_count: i32,
     /// Samples of each node (head, repeats, tail): `repeat_count + 2` entries. This holds only
     /// before the zero-length-slider rule described at [`repeat_count`](Self::repeat_count).

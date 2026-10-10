@@ -17,6 +17,8 @@ glow = "0.18.0"
 lzma-rust2 = { version = "0.21.0", default-features = false, features = ["std", "encoder", "optimization"] }
 # Linux audio backend; 1.0 is the oldest supported libpipewire (Ubuntu 24.04).
 pipewire = { version = "0.10.1", features = ["v1_0_0"] }
+# Property tests of slider geometry.
+proptest = { version = "1.11.0", default-features = false, features = ["std"] }
 naga = { version = "30.0.1", default-features = false, features = ["wgsl-in", "glsl-out"] }
 rtrb = "0.4.0"
 # JSON of the lazer score-info block in .osr replays; insertion order is kept to write fields back as read.
