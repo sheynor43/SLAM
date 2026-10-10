@@ -17,6 +17,7 @@ use slam_engine::{Engine, EngineConfig, EngineCounters, TickInfo, Update};
 use slam_input::{InputEvent, InputWindow, TickMapper, event_ring, sdl_ticks_ns};
 
 pub use record::{FrameWork, MAX_RECORDED_FPS, Percentiles, Recorder, Report, Stalls};
+pub(crate) use scene::QuitOnDrop;
 pub use scene::{Scene, fill};
 pub use thread::ThreadSched;
 
@@ -120,7 +121,7 @@ impl Options {
     }
 }
 
-fn number<T: std::str::FromStr>(flag: &str, value: &str) -> Result<T, String> {
+pub(crate) fn number<T: std::str::FromStr>(flag: &str, value: &str) -> Result<T, String> {
     value
         .parse()
         .map_err(|_| format!("{flag}: invalid value {value}"))

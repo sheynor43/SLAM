@@ -34,7 +34,7 @@ pub fn fill(batch: &mut SpriteBatch, region: &AtlasRegion, count: usize, t: f32,
 
 /// Closes the window when dropped. The draw thread drops it while unwinding from a
 /// panic, so a failed start does not leave the main thread waiting for the timer.
-struct QuitOnDrop(QuitHandle);
+pub(crate) struct QuitOnDrop(pub(crate) QuitHandle);
 
 impl Drop for QuitOnDrop {
     fn drop(&mut self) {

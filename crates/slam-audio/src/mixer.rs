@@ -33,6 +33,9 @@ pub struct MixerConfig {
     pub max_per_sample: usize,
     /// Commands that can wait for the next audio buffer.
     pub queue_capacity: usize,
+    /// Voice-start reports that can wait for [`MixerHandle::drain_started`]; 0 turns
+    /// reports off (ADR-0025).
+    pub start_reports: usize,
 }
 
 impl Default for MixerConfig {
@@ -43,6 +46,7 @@ impl Default for MixerConfig {
             max_voices: 64,
             max_per_sample: SAMPLE_CONCURRENCY,
             queue_capacity: 256,
+            start_reports: 0,
         }
     }
 }
@@ -74,6 +78,30 @@ pub struct MixerStats {
     /// Sample references leaked because the release ring was full. Must stay 0: the
     /// ring is sized so that it cannot fill.
     pub release_overflows: AtomicU64,
+    /// Voice-start reports dropped because nobody drained them in time.
+    pub start_report_overflows: AtomicU64,
+}
+
+/// When a queued `play` started to sound (ADR-0025).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct VoiceStart {
+    /// Number of the `play` command, counting from 0 every command the handle queued;
+    /// see [`MixerHandle::queued_plays`].
+    pub play: u64,
+    /// Stream frame the voice started at: the first frame of its buffer.
+    pub frame: u64,
+    /// [`CallbackInfo::timestamp_ns`] of that buffer; 0 when the backend had no timing.
+    pub timestamp_ns: u64,
+    /// [`CallbackInfo::latency_ns`] of that buffer.
+    pub latency_ns: u64,
+}
+
+impl VoiceStart {
+    /// Estimated time the first frame of the voice leaves the device, engine clock;
+    /// `None` without backend timing.
+    pub fn output_ns(&self) -> Option<u64> {
+        (self.timestamp_ns != 0).then(|| self.timestamp_ns.saturating_add(self.latency_ns))
+    }
 }
 
 enum Command {
@@ -114,10 +142,18 @@ pub fn mixer(config: &MixerConfig) -> Result<(Mixer, MixerHandle), AudioError> {
     // most `queue_capacity + max_voices + 1` references are ever outstanding, and the
     // release ring never fills (see `MixerHandle::push`).
     let (release_tx, release_rx) = rtrb::RingBuffer::new(release_capacity);
+    let (start_tx, start_rx) = if config.start_reports > 0 {
+        let (tx, rx) = rtrb::RingBuffer::new(config.start_reports);
+        (Some(tx), Some(rx))
+    } else {
+        (None, None)
+    };
     let stats = Arc::new(MixerStats::default());
     let mixer = Mixer {
         commands: command_rx,
         released: release_tx,
+        starts: start_tx,
+        plays: 0,
         voices: Vec::with_capacity(config.max_voices),
         max_voices: config.max_voices,
         max_per_sample: config.max_per_sample,
@@ -129,6 +165,8 @@ pub fn mixer(config: &MixerConfig) -> Result<(Mixer, MixerHandle), AudioError> {
     let handle = MixerHandle {
         commands: command_tx,
         released: release_rx,
+        starts: start_rx,
+        queued_plays: 0,
         sample_rate: config.sample_rate,
         channels: config.channels,
         stats,
@@ -140,6 +178,10 @@ pub fn mixer(config: &MixerConfig) -> Result<(Mixer, MixerHandle), AudioError> {
 pub struct Mixer {
     commands: rtrb::Consumer<Command>,
     released: rtrb::Producer<Arc<Sample>>,
+    starts: Option<rtrb::Producer<VoiceStart>>,
+    /// `play` commands taken from the queue; numbers them in the order the handle
+    /// counted them.
+    plays: u64,
     /// Oldest first; never longer than `max_voices`, which its capacity covers.
     voices: Vec<Voice>,
     max_voices: usize,
@@ -151,7 +193,7 @@ pub struct Mixer {
 }
 
 impl Mixer {
-    fn apply_commands(&mut self) {
+    fn apply_commands(&mut self, info: &CallbackInfo) {
         // Only the commands present now: a producer pushing during the callback cannot
         // stretch it.
         for _ in 0..self.commands.slots() {
@@ -184,6 +226,20 @@ impl Mixer {
                         gain,
                     });
                     self.stats.started_voices.fetch_add(1, Ordering::Relaxed);
+                    if let Some(starts) = &mut self.starts {
+                        let report = VoiceStart {
+                            play: self.plays,
+                            frame: info.frame,
+                            timestamp_ns: info.timestamp_ns,
+                            latency_ns: info.latency_ns,
+                        };
+                        if starts.push(report).is_err() {
+                            self.stats
+                                .start_report_overflows
+                                .fetch_add(1, Ordering::Relaxed);
+                        }
+                    }
+                    self.plays += 1;
                 }
                 Command::StopAll => {
                     for voice in self.voices.drain(..) {
@@ -199,7 +255,7 @@ impl Mixer {
 impl AudioCallback for Mixer {
     fn process(&mut self, out: &mut [f32], info: &CallbackInfo) {
         // Commands queued before this buffer start at its first frame.
-        self.apply_commands();
+        self.apply_commands(info);
         out.fill(0.0);
         if info.channels != self.channels || info.sample_rate != self.sample_rate {
             self.stats.format_mismatches.fetch_add(1, Ordering::Relaxed);
@@ -254,6 +310,8 @@ fn release(released: &mut rtrb::Producer<Arc<Sample>>, stats: &MixerStats, sampl
 pub struct MixerHandle {
     commands: rtrb::Producer<Command>,
     released: rtrb::Consumer<Arc<Sample>>,
+    starts: Option<rtrb::Consumer<VoiceStart>>,
+    queued_plays: u64,
     sample_rate: u32,
     channels: u16,
     stats: Arc<MixerStats>,
@@ -275,7 +333,25 @@ impl MixerHandle {
         self.push(Command::Play {
             sample: Arc::clone(sample),
             gain: clamp_gain(gain),
-        })
+        })?;
+        self.queued_plays += 1;
+        Ok(())
+    }
+
+    /// `play` commands queued so far (empty samples and rejected commands do not
+    /// count). The last queued one has number `queued_plays() - 1` in [`VoiceStart`].
+    pub fn queued_plays(&self) -> u64 {
+        self.queued_plays
+    }
+
+    /// Calls `f` on every voice-start report the mixer has made, oldest first. Does
+    /// nothing when [`MixerConfig::start_reports`] is 0.
+    pub fn drain_started(&mut self, mut f: impl FnMut(VoiceStart)) {
+        if let Some(starts) = &mut self.starts {
+            while let Ok(report) = starts.pop() {
+                f(report);
+            }
+        }
     }
 
     /// Silences every voice at the start of the next audio buffer.
@@ -574,6 +650,158 @@ mod tests {
         run(&mut m, 0);
         assert_eq!(m.stats.started_voices.load(Ordering::Relaxed), 1);
         assert_eq!(run(&mut m, 2), [0.5, 0.5]);
+    }
+
+    fn reporting_mixer(queue_capacity: usize, start_reports: usize) -> (Mixer, MixerHandle) {
+        mixer(&MixerConfig {
+            sample_rate: RATE,
+            channels: 1,
+            max_voices: 2,
+            queue_capacity,
+            start_reports,
+            ..Default::default()
+        })
+        .unwrap()
+    }
+
+    fn started(h: &mut MixerHandle) -> Vec<VoiceStart> {
+        let mut reports = Vec::new();
+        h.drain_started(|r| reports.push(r));
+        reports
+    }
+
+    #[test]
+    fn reports_voice_starts_with_buffer_timing() {
+        let (mut m, mut h) = reporting_mixer(8, 8);
+        let s = sample(&[0.5; 4], 1);
+        h.play(&s, 1.0).unwrap();
+        assert_eq!(h.queued_plays(), 1);
+        let timing = CallbackInfo {
+            frame: 480,
+            timestamp_ns: 1_000_000,
+            latency_ns: 250_000,
+            ..info(1)
+        };
+        m.process(&mut [0.0; 2], &timing);
+        // Two more in one buffer, one of them stealing: each still gets a report.
+        h.play(&s, 1.0).unwrap();
+        h.play(&s, 1.0).unwrap();
+        m.process(
+            &mut [0.0; 2],
+            &CallbackInfo {
+                frame: 482,
+                ..timing
+            },
+        );
+        let reports = started(&mut h);
+        assert_eq!(
+            reports
+                .iter()
+                .map(|r| (r.play, r.frame))
+                .collect::<Vec<_>>(),
+            [(0, 480), (1, 482), (2, 482)]
+        );
+        assert_eq!(reports[0].output_ns(), Some(1_250_000));
+        assert_eq!(h.queued_plays(), 3);
+        assert!(started(&mut h).is_empty());
+    }
+
+    #[test]
+    fn play_numbers_skip_rejected_and_empty_plays() {
+        let (mut m, mut h) = reporting_mixer(1, 8);
+        let s = sample(&[0.5], 1);
+        h.play(&sample(&[], 1), 1.0).unwrap();
+        h.play(&s, 1.0).unwrap();
+        assert_eq!(h.play(&s, 1.0), Err(PlayError::QueueFull));
+        assert_eq!(
+            h.play(&sample(&[0.0; 2], 2), 1.0),
+            Err(PlayError::FormatMismatch)
+        );
+        assert_eq!(h.queued_plays(), 1);
+        run(&mut m, 1);
+        h.play(&s, 1.0).unwrap();
+        run(&mut m, 1);
+        let plays: Vec<u64> = started(&mut h).iter().map(|r| r.play).collect();
+        assert_eq!(plays, [0, 1]);
+        // No backend timing yet: no output estimate.
+        assert_eq!(
+            VoiceStart {
+                play: 0,
+                frame: 0,
+                timestamp_ns: 0,
+                latency_ns: 5
+            }
+            .output_ns(),
+            None
+        );
+    }
+
+    #[test]
+    fn full_report_ring_drops_reports_not_voices() {
+        let (mut m, mut h) = reporting_mixer(8, 2);
+        let s = sample(&[0.25; 4], 1);
+        for _ in 0..3 {
+            h.play(&sample(&[0.25; 4], 1), 1.0).unwrap();
+        }
+        h.play(&s, 1.0).unwrap();
+        run(&mut m, 1);
+        assert_eq!(m.stats.started_voices.load(Ordering::Relaxed), 4);
+        assert_eq!(m.stats.start_report_overflows.load(Ordering::Relaxed), 2);
+        let plays: Vec<u64> = started(&mut h).iter().map(|r| r.play).collect();
+        assert_eq!(plays, [0, 1]);
+        // Numbering stays in step after the drops.
+        h.play(&s, 1.0).unwrap();
+        run(&mut m, 1);
+        assert_eq!(started(&mut h)[0].play, 4);
+    }
+
+    #[test]
+    fn other_commands_do_not_take_play_numbers() {
+        let (mut m, mut h) = reporting_mixer(8, 8);
+        let s = sample(&[0.5; 4], 1);
+        h.play(&s, 1.0).unwrap();
+        h.stop_all().unwrap();
+        h.play(&s, 1.0).unwrap();
+        h.set_master_gain(0.5).unwrap();
+        h.play(&s, 1.0).unwrap();
+        run(&mut m, 1);
+        let plays: Vec<u64> = started(&mut h).iter().map(|r| r.play).collect();
+        assert_eq!(plays, [0, 1, 2]);
+        assert_eq!(h.queued_plays(), 3);
+    }
+
+    #[test]
+    fn play_in_a_mismatched_buffer_is_reported_there() {
+        // ADR-0025: the report names the silent buffer; the voice sounds from the
+        // next matching one.
+        let (mut m, mut h) = reporting_mixer(8, 8);
+        h.play(&sample(&[0.5; 4], 1), 1.0).unwrap();
+        m.process(
+            &mut [0.0; 4],
+            &CallbackInfo {
+                frame: 7,
+                ..info(2)
+            },
+        );
+        let reports = started(&mut h);
+        assert_eq!(
+            reports
+                .iter()
+                .map(|r| (r.play, r.frame))
+                .collect::<Vec<_>>(),
+            [(0, 7)]
+        );
+        assert_eq!(run(&mut m, 1), [0.5]);
+    }
+
+    #[test]
+    fn reports_are_off_by_default() {
+        let (mut m, mut h) = mono_mixer(2, 2);
+        h.play(&sample(&[0.5], 1), 1.0).unwrap();
+        run(&mut m, 1);
+        assert!(started(&mut h).is_empty());
+        assert_eq!(h.queued_plays(), 1);
+        assert_eq!(m.stats.start_report_overflows.load(Ordering::Relaxed), 0);
     }
 
     #[test]

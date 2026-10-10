@@ -51,6 +51,7 @@ fn mixer_commands_and_process_do_not_allocate() {
     let (mut mixer, mut handle) = slam_audio::mixer(&MixerConfig {
         max_voices: 8,
         queue_capacity: 16,
+        start_reports: 32,
         ..MixerConfig::default()
     })
     .unwrap();
@@ -65,6 +66,7 @@ fn mixer_commands_and_process_do_not_allocate() {
         sample_rate: 48_000,
         channels: 2,
     };
+    let mut reports = 0u64;
     assert_no_alloc(|| {
         for round in 0..50 {
             // More plays than voices: steals; short voices finish inside a buffer.
@@ -81,12 +83,15 @@ fn mixer_commands_and_process_do_not_allocate() {
                 info.frame += frames as u64;
             }
             handle.collect();
+            handle.drain_started(|_| reports += 1);
         }
         // A full queue rejects without allocating or freeing.
         while handle.play(&short, 1.0).is_ok() {}
         mixer.process(&mut out, &info);
         handle.collect();
+        handle.drain_started(|_| reports += 1);
     });
+    assert_eq!(reports, handle.queued_plays());
     drop(mixer);
     handle.collect();
     assert_eq!(Arc::strong_count(&short), 1);
