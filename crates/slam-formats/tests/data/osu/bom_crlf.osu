@@ -1,0 +1,11 @@
+﻿osu file format v14
+
+[General]
+AudioFilename: a.mp3
+
+[Metadata]
+Title:Windows
+Tags:a//b
+
+[TimingPoints]
+0,600,4,1,0,100,1,0

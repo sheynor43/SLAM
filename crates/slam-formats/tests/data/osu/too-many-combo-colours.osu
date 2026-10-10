@@ -1,0 +1,17 @@
+osu file format v14
+
+[Colours]
+Combo1:10,5,254
+Combo2:20,10,253
+Combo3:30,15,252
+Combo4:40,20,251
+Combo5:50,25,250
+Combo6:60,30,249
+Combo7:70,35,248
+Combo8:80,40,247
+Combo9:90,45,246
+Combo10:100,50,245
+Combo11:110,55,244
+Combo12:120,60,243
+Combo13:130,65,242
+Combo14:140,70,241

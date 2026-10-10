@@ -1,0 +1,12 @@
+osu file format v14
+
+[Events]
+bad,event,this,should,fail
+//Background and Video events
+0,0,"bg.jpg",0,0
+//Break Periods
+2,12000,14000
+//Storyboard Layer 0 (Background)
+this,is,also,bad
+//Storyboard Sound Samples
+5,100,0,"hit.wav",70
