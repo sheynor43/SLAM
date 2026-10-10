@@ -11,6 +11,7 @@ pub mod objects;
 pub mod path;
 mod precision;
 pub mod samples;
+pub mod stacking;
 
 pub use beatmap::{Beatmap, BeatmapError, Difficulty};
 pub use path::SliderPath;

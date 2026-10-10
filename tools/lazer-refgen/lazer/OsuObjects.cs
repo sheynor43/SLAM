@@ -1,4 +1,4 @@
-// Method bodies extracted verbatim from osu!lazer 2026.1005.0-lazer: osu/osu.Game.Rulesets.Osu/Objects/OsuHitObject.cs (lines 19-52, 170-183), Slider.cs (lines 28, 88-107, 156-225, 227), SliderTick.cs (lines 18-32), SliderEndCircle.cs (lines 28-45),
+// Method bodies extracted verbatim from osu!lazer 2026.1005.0-lazer: osu/osu.Game.Rulesets.Osu/Objects/OsuHitObject.cs (lines 19-52, 76, 80, 92, 170-183), Slider.cs (lines 28, 31-35, 88-107, 156-225, 227), Spinner.cs (lines 31-37, 59), SliderTick.cs (lines 18-32), SliderEndCircle.cs (lines 28-45),
 // osu/osu.Game/Rulesets/Objects/HitObject.cs (ApplyDefaults, lines 105-114, 130-134). The class shells around them are minimal stand-ins without Bindable, samples, judgements and hit windows; see README.md.
 // Copyright (c) ppy Pty Ltd <contact@ppy.sh>. Licensed under the MIT Licence.
 // See the LICENCE file in the repository root for full licence text.
@@ -74,6 +74,9 @@ namespace osu.Game.Rulesets.Osu.Objects
         public virtual Vector2 EndPosition => Position;
         public int StackHeight { get; set; }
         public float Scale { get; set; } = 1;
+        public Vector2 StackedPosition => Position + StackOffset;
+        public Vector2 StackedEndPosition => EndPosition + StackOffset;
+        public virtual Vector2 StackOffset => new Vector2(StackHeight * Scale * -6.4f);
 
         protected override void ApplyDefaultsToSelf(ControlPointInfo controlPointInfo, IBeatmapDifficultyInfo difficulty)
         {
@@ -92,6 +95,18 @@ namespace osu.Game.Rulesets.Osu.Objects
     }
 
     public class HitCircle : OsuHitObject { }
+    public class Spinner : OsuHitObject, IHasDuration
+    {
+        public double EndTime
+        {
+            get => StartTime + Duration;
+            set => Duration = value - StartTime;
+        }
+
+        public double Duration { get; set; }
+
+        public override Vector2 StackOffset => Vector2.Zero;
+    }
     public class SliderHeadCircle : HitCircle { public bool ClassicSliderBehaviour; }
 
     public abstract class SliderEndCircle : HitCircle
@@ -147,10 +162,14 @@ namespace osu.Game.Rulesets.Osu.Objects
         }
     }
 
-    public class Slider : OsuHitObject, IHasPathWithRepeats, IHasSliderVelocity
+    public class Slider : OsuHitObject, IHasPathWithRepeats, IHasSliderVelocity, IHasDuration
     {
         public double EndTime => StartTime + this.SpanCount() * Path.Distance / Velocity;
-        public double Duration => EndTime - StartTime;
+        public double Duration
+        {
+            get => EndTime - StartTime;
+            set => throw new System.NotSupportedException($"Adjust via {nameof(RepeatCount)} instead"); // can be implemented if/when needed.
+        }
         public override Vector2 EndPosition => Position + this.CurvePositionAt(1);
         public SliderPath Path { get; set; }
         public int RepeatCount { get; set; }

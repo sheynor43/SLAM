@@ -183,6 +183,7 @@ fn apply(input: &[&str], points: Vec<PathControlPoint>) -> OsuHitObject {
         new_combo: true,
         combo_offset: 0,
         combo: ComboInfo::default(),
+        stack_height: 0,
         defaults: ObjectDefaults::default(),
         samples: Vec::new(),
         kind: OsuHitObjectKind::Slider(Box::new(slider)),
