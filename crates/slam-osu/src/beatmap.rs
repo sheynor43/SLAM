@@ -5,7 +5,7 @@ use slam_formats::osu::{self as osu_file, Break, HitObjectKind};
 use crate::control_points::ControlPoints;
 use crate::dotnet::compare_f64;
 use crate::mods::{GameplayMod, Mod};
-use crate::objects::{ComboInfo, ObjectDefaults, OsuHitObject, OsuHitObjectKind, Slider};
+use crate::objects::{ComboInfo, ObjectDefaults, OsuHitObject, OsuHitObjectKind, Slider, Spinner};
 use crate::stacking;
 
 /// Lazer's `LegacyBeatmapDecoder.CONTROL_POINT_LENIENCY`: sample points are looked up this many
@@ -203,9 +203,11 @@ fn convert(
             // the spinner's `EndTime` after its `StartTime`, which stores
             // `Duration = EndTime - StartTime` and reads back `StartTime + Duration`.
             let convert_end_time = h.start_time + duration;
-            let end_time = h.start_time + (convert_end_time - h.start_time);
             (
-                OsuHitObjectKind::Spinner { end_time },
+                OsuHitObjectKind::Spinner(Spinner::new(
+                    h.start_time,
+                    convert_end_time - h.start_time,
+                )),
                 convert_end_time + CONTROL_POINT_LENIENCY,
             )
         }

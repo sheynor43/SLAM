@@ -66,3 +66,29 @@ fn slider_steps_do_not_allocate() {
         }
     }
 }
+
+#[test]
+fn spinner_steps_do_not_allocate() {
+    // Spinners, one of them with a circle inside, between circles, spun through by the cursor.
+    let text = "osu file format v14\n\n[Difficulty]\nCircleSize:4\nOverallDifficulty:8\n\
+                ApproachRate:9\nSliderMultiplier:1.4\nSliderTickRate:1\n\n[TimingPoints]\n\
+                0,300,4,2,0,100,1,0\n\n[HitObjects]\n100,100,300,1,0\n256,192,500,12,0,2000\n\
+                300,200,2200,1,0\n256,192,2400,12,0,3900\n120,80,3000,1,0\n";
+    let map = Beatmap::from_file(decode_str(text).unwrap().beatmap).unwrap();
+    let classic = ModSet::new(vec![Mod::from_acronym("CL")]).unwrap();
+    let double_time = ModSet::new(vec![Mod::from_acronym("DT")]).unwrap();
+    for seed in [3, 7, 11] {
+        let osr = replay(&noisy_frames(seed), map.format_version);
+        let input = ReplayInput::from_replay(&osr, map.format_version);
+        for rules in [
+            OsuRules::new(&map, &ModSet::default()),
+            OsuRules::new(&map, &classic),
+            OsuRules::new(&map, &double_time),
+        ] {
+            let mut sim = Simulator::new(&map, input.clone(), rules);
+            assert_no_alloc(|| sim.run());
+            assert!(sim.is_finished());
+            assert!(!sim.log().events().is_empty());
+        }
+    }
+}

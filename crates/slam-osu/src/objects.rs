@@ -577,6 +577,98 @@ fn apply_nested_defaults(n: &mut NestedObject, slider_start_time: f64, span_dura
     }
 }
 
+/// The spins needed to clear a spinner, in rotations per minute, at OD 0, 5 and 10.
+// Ported from osu!lazer 2026.1005.0-lazer: osu.Game.Rulesets.Osu/Objects/Spinner.cs (CLEAR_RPM_RANGE)
+pub const SPINNER_CLEAR_RPM_RANGE: DifficultyRange = DifficultyRange::new(90.0, 150.0, 225.0);
+
+/// The spins needed to complete a spinner with full score, in rotations per minute, at OD 0, 5
+/// and 10.
+// Ported from osu!lazer 2026.1005.0-lazer: osu.Game.Rulesets.Osu/Objects/Spinner.cs (COMPLETE_RPM_RANGE)
+pub const SPINNER_COMPLETE_RPM_RANGE: DifficultyRange = DifficultyRange::new(250.0, 380.0, 430.0);
+
+/// The spins between clearing a spinner and the first bonus spin.
+// Ported from osu!lazer 2026.1005.0-lazer: osu.Game.Rulesets.Osu/Objects/Spinner.cs (bonus_spins_gap)
+pub const SPINNER_BONUS_SPINS_GAP: i32 = 2;
+
+// Ported from osu!lazer 2026.1005.0-lazer: osu.Game.Rulesets.Osu/Objects/Spinner.cs
+/// A spinner. Its nested objects, lazer's `SpinnerTick`s and `SpinnerBonusTick`s, are implied by
+/// the spin counts: one per whole spin up to the end of the bonus.
+#[derive(Debug, Clone, PartialEq)]
+pub struct Spinner {
+    /// End time in ms: the start time plus the duration.
+    pub end_time: f64,
+    /// Lazer's `Duration`, kept as lazer keeps it rather than taken back from the end time.
+    pub duration: f64,
+    /// Lazer's `SpinsRequired`: whole spins needed to clear
+    /// the spinner. Set by [`Spinner::apply_defaults`].
+    pub spins_required: i32,
+    /// Lazer's `MaximumBonusSpins`: spins that give bonus score, beyond
+    /// [`spins_required`](Self::spins_required) and the gap. Set by
+    /// [`Spinner::apply_defaults`].
+    pub maximum_bonus_spins: i32,
+}
+
+impl Spinner {
+    /// A spinner starting at `start_time` and lasting `duration`, with lazer's spin counts
+    /// before defaults are applied.
+    pub fn new(start_time: f64, duration: f64) -> Spinner {
+        Spinner {
+            end_time: start_time + duration,
+            duration,
+            spins_required: 1,
+            maximum_bonus_spins: 1,
+        }
+    }
+
+    /// Lazer's `SpinsRequiredForBonus`: the spin count at which the first bonus is given.
+    pub fn spins_required_for_bonus(&self) -> i32 {
+        self.spins_required.wrapping_add(SPINNER_BONUS_SPINS_GAP)
+    }
+
+    // Ported from osu!lazer 2026.1005.0-lazer: osu.Game.Rulesets.Osu/Objects/Spinner.cs (ApplyDefaultsToSelf)
+    /// Sets the spin counts from the overall difficulty and the duration.
+    pub fn apply_defaults(&mut self, difficulty: &Difficulty) {
+        let od = f64::from(difficulty.overall_difficulty);
+        let min_rps = SPINNER_CLEAR_RPM_RANGE.value(od) / 60.0;
+        let max_rps = SPINNER_COMPLETE_RPM_RANGE.value(od) / 60.0;
+        let seconds_duration = self.duration / 1000.0;
+
+        // Some leniency for spinners whose duration is a hair short of a whole spin.
+        const DURATION_ERROR: f64 = 0.0001;
+
+        // `as` matches the C# `(int)` cast (truncation; saturating since .NET 9).
+        self.spins_required = (min_rps * seconds_duration + DURATION_ERROR) as i32;
+        self.maximum_bonus_spins = 0.max(
+            ((max_rps * seconds_duration + DURATION_ERROR) as i32)
+                .wrapping_sub(self.spins_required)
+                .wrapping_sub(SPINNER_BONUS_SPINS_GAP),
+        );
+    }
+
+    /// The number of nested ticks: one per spin up to the last bonus spin.
+    pub fn tick_count(&self) -> i32 {
+        self.maximum_bonus_spins
+            .wrapping_add(self.spins_required)
+            .wrapping_add(SPINNER_BONUS_SPINS_GAP)
+    }
+
+    /// Whether tick `i` (from 0) is a bonus tick (`SpinnerBonusTick`, best result
+    /// [`LargeBonus`](crate::judgement::HitResult::LargeBonus)) rather than a plain tick
+    /// (`SpinnerTick`, [`SmallBonus`](crate::judgement::HitResult::SmallBonus)).
+    pub fn is_bonus_tick(&self, i: i32) -> bool {
+        i >= self.spins_required_for_bonus()
+    }
+
+    // Ported from osu!lazer 2026.1005.0-lazer: osu.Game.Rulesets.Osu/Objects/Spinner.cs (CreateNestedHitObjects)
+    /// The start time of tick `i` (from 0): ticks are spread evenly up to the end time. Ticks
+    /// are judged by spins, not at these times.
+    pub fn tick_time(&self, start_time: f64, i: i32) -> f64 {
+        let total_spins = self.tick_count();
+        // The fraction is a float division, as in lazer.
+        start_time + f64::from((i + 1) as f32 / total_spins as f32) * self.duration
+    }
+}
+
 /// The type-specific part of an [`OsuHitObject`].
 #[derive(Debug, Clone, PartialEq)]
 pub enum OsuHitObjectKind {
@@ -585,10 +677,7 @@ pub enum OsuHitObjectKind {
     /// A slider (boxed: it is much larger than the other kinds).
     Slider(Box<Slider>),
     /// A spinner.
-    Spinner {
-        /// End time in ms.
-        end_time: f64,
-    },
+    Spinner(Spinner),
 }
 
 // Ported from osu!lazer 2026.1005.0-lazer: osu.Game.Rulesets.Osu/Objects/OsuHitObject.cs
@@ -629,7 +718,7 @@ impl OsuHitObject {
         match &self.kind {
             OsuHitObjectKind::Circle => self.start_time,
             OsuHitObjectKind::Slider(slider) => slider.end_time(self.start_time),
-            OsuHitObjectKind::Spinner { end_time } => *end_time,
+            OsuHitObjectKind::Spinner(spinner) => spinner.end_time,
         }
     }
 
@@ -698,14 +787,12 @@ impl OsuHitObject {
     }
 
     // Ported from osu!lazer 2026.1005.0-lazer: osu.Game/Rulesets/Objects/HitObject.cs (ApplyDefaults)
-    /// Applies the difficulty settings: preempt, fade-in and scale, and for a slider its
-    /// velocity, tick distance and nested objects. Can be called again after the difficulty
+    /// Applies the difficulty settings: preempt, fade-in and scale, for a slider its velocity,
+    /// tick distance and nested objects, and for a spinner its spin counts. Can be called again after the difficulty
     /// changes (mods); nested objects are recreated with the current stack height. Stacking
     /// reads the preempt and the slider end times, so run
     /// [`Beatmap::apply_stacking`](crate::Beatmap::apply_stacking) afterwards, as lazer runs
     /// `PostProcess` after the defaults and the mods.
-    ///
-    /// Spinner rules (required spins, spinner ticks) are not applied yet.
     pub fn apply_defaults(&mut self, control_points: &ControlPoints, difficulty: &Difficulty) {
         self.defaults = ObjectDefaults::new(difficulty);
 
@@ -719,6 +806,9 @@ impl OsuHitObject {
                 &self.samples,
                 self.defaults,
             );
+        }
+        if let OsuHitObjectKind::Spinner(spinner) = &mut self.kind {
+            spinner.apply_defaults(difficulty);
         }
     }
 }

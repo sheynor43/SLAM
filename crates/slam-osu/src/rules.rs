@@ -1,14 +1,14 @@
 //! The osu!standard object rules: hit circles and slider heads judged by position and time,
-//! under a hit policy (note lock); slider ticks, repeats and tails judged by tracking.
+//! under a hit policy (note lock); slider ticks, repeats and tails judged by tracking; spinners
+//! judged by the rotation of the cursor around them.
 //!
 //! Lazer judges objects through drawables. Here every top-level object keeps the little state
 //! lazer's drawables and lifetime entries hold: its lifetime, whether it is judged, and the
-//! data the hit area and the hit policies read. Sliders keep theirs in [`slider`].
-//!
-//! Spinners are not judged yet (#51): they count as judged, without a judgement, once their end
-//! time passes. Results on beatmaps with spinners are therefore not lazer's.
+//! data the hit area and the hit policies read. Sliders keep theirs in [`slider`], spinners in
+//! [`spinner`].
 
 mod slider;
+mod spinner;
 
 use slam_formats::osu::Vec2;
 
@@ -20,6 +20,7 @@ use crate::objects::{OBJECT_RADIUS, OsuHitObjectKind};
 use crate::replay::{ActionEvent, Actions, Rules, StepInput};
 
 use slider::SliderState;
+use spinner::SpinnerState;
 
 // Ported from osu!lazer 2026.1005.0-lazer: osu.Game.Rulesets.Osu/Objects/Drawables/DrawableHitCircle.cs (UpdateHitStateTransforms)
 // Ported from osu-framework 2026.921.1: osu.Framework/Graphics/Transforms/Transformable.cs (LatestTransformEndTime)
@@ -91,6 +92,9 @@ pub struct RulesOptions {
     /// Classic's note lock on slider heads: a head that has been hit keeps taking presses away
     /// from objects under it until its slider is judged.
     pub block_input_under_slider_heads: bool,
+    /// The gameplay rate (lazer's `GetTrueGameplayRate`, see [`ModSet::true_gameplay_rate`]):
+    /// spinner rotation is scaled by it.
+    pub rate: f64,
 }
 
 impl RulesOptions {
@@ -102,15 +106,17 @@ impl RulesOptions {
             policy: HitPolicy::for_mods(mods),
             classic_slider_behaviour: classic.is_some_and(|c| c.no_slider_head_accuracy),
             block_input_under_slider_heads: classic.is_some_and(|c| c.classic_note_lock),
+            rate: mods.true_gameplay_rate(),
         }
     }
 
-    /// Options with `policy` and lazer's default slider behaviour.
+    /// Options with `policy`, lazer's default slider behaviour and no rate change.
     pub fn with_policy(policy: HitPolicy) -> RulesOptions {
         RulesOptions {
             policy,
             classic_slider_behaviour: false,
             block_input_under_slider_heads: false,
+            rate: 1.0,
         }
     }
 
@@ -147,7 +153,8 @@ enum Kind {
     Circle,
     /// A slider, with its index into `OsuRules::sliders`.
     Slider(usize),
-    Spinner,
+    /// A spinner, with its index into `OsuRules::spinners`.
+    Spinner(usize),
 }
 
 /// The state of one top-level object.
@@ -162,8 +169,8 @@ struct ObjectState {
     scale: f32,
     stack_height: i32,
     kind: Kind,
-    /// Whether the object itself is judged; a slider is judged after all its nested objects
-    /// (a spinner: whether its end time has passed).
+    /// Whether the object itself is judged; a slider or spinner is judged after all its nested
+    /// objects.
     judged: bool,
     /// Lifetime end. Lazer's lifetime entry starts with the end of the miss window, so an
     /// object skipped over never comes alive; once alive and idle, its drawable keeps it alive
@@ -191,12 +198,15 @@ impl ObjectState {
 pub struct OsuRules {
     objects: Vec<ObjectState>,
     sliders: Vec<SliderState>,
+    spinners: Vec<SpinnerState>,
     hit_windows: HitWindows,
     options: RulesOptions,
     /// Time of the last update.
     time: f64,
     /// Actions held after the last update.
     held: Actions,
+    /// The cursor position after the last update; none before the first.
+    position: Option<Vec2>,
     /// Objects before this index are dead for good: judged and expired, or never judged.
     head: usize,
     /// Objects not judged yet.
@@ -226,6 +236,7 @@ impl OsuRules {
     /// does.
     pub fn with_options(beatmap: &Beatmap, options: RulesOptions) -> OsuRules {
         let mut sliders = Vec::new();
+        let mut spinners = Vec::new();
         let objects: Vec<ObjectState> = beatmap
             .hit_objects
             .iter()
@@ -236,7 +247,10 @@ impl OsuRules {
                         sliders.push(SliderState::new(o, s, options.classic_slider_behaviour));
                         Kind::Slider(sliders.len() - 1)
                     }
-                    OsuHitObjectKind::Spinner { .. } => Kind::Spinner,
+                    OsuHitObjectKind::Spinner(s) => {
+                        spinners.push(SpinnerState::new(o, s, options.rate));
+                        Kind::Spinner(spinners.len() - 1)
+                    }
                 };
                 // Sliders and spinners have empty hit windows: their miss window is zero.
                 let miss_window = if kind == Kind::Circle {
@@ -269,10 +283,12 @@ impl OsuRules {
             remaining: objects.len(),
             objects,
             sliders,
+            spinners,
             hit_windows: HitWindows::new(beatmap.difficulty.overall_difficulty),
             options,
             time: f64::NEG_INFINITY,
             held: Actions::NONE,
+            position: None,
             head: 0,
             skipped: 0,
         }
@@ -351,7 +367,7 @@ impl OsuRules {
                             !slider.head_judged()
                         }
                 }
-                Kind::Spinner => false,
+                Kind::Spinner(_) => false,
             };
             if !can_be_hit || !hit_area_contains(o.position, o.scale, event.position) {
                 continue;
@@ -452,7 +468,7 @@ impl OsuRules {
         // object's miss window (none for sliders and spinners).
         let hit_state_time = match o.kind {
             Kind::Circle => time.min(o.end_time + MISS_WINDOW),
-            Kind::Slider(_) | Kind::Spinner => time.min(o.end_time),
+            Kind::Slider(_) | Kind::Spinner(_) => time.min(o.end_time),
         };
         o.lifetime_end = hit_state_time + lifetime;
         self.remaining -= 1;
@@ -614,14 +630,14 @@ impl OsuRules {
                     let miss = slider.head_max_result().min_result();
                     slider.judge_head(j, time, miss, MISS_LIFETIME, log);
                 }
-                Kind::Spinner => {}
+                Kind::Spinner(_) => {}
             }
         }
     }
 
     /// Updates the objects alive at `time` with `held` actions: circles and slider heads past
     /// their windows are missed, sliders track and judge their nested objects and then
-    /// themselves, spinners past their end time count as judged.
+    /// themselves, spinners accumulate rotation and are judged once their end time passes.
     // Ported from osu!lazer 2026.1005.0-lazer: osu.Game.Rulesets.Osu/Objects/Drawables/DrawableHitCircle.cs (CheckForResult, not userTriggered)
     fn update_objects(&mut self, time: f64, held: Actions, log: &mut JudgementLog) {
         while let Some(o) = self.objects.get(self.head)
@@ -650,10 +666,10 @@ impl OsuRules {
                     }
                 }
                 Kind::Slider(s) => self.update_slider(i, s, time, held, log),
-                Kind::Spinner => {
-                    if time >= o.end_time {
-                        // Placeholder until spinners are judged.
-                        self.mark_judged(i, time, HIT_LIFETIME);
+                Kind::Spinner(s) => {
+                    if let Some(result) = self.spinners[s].update(i, time, held, log) {
+                        self.mark_judged(i, time, spinner::JUDGED_LIFETIME);
+                        self.record(i, time, result, HitResult::Great, log);
                     }
                 }
             }
@@ -708,6 +724,11 @@ impl Rules for OsuRules {
                 .iter()
                 .map(SliderState::judgement_count)
                 .sum::<usize>()
+            + self
+                .spinners
+                .iter()
+                .map(SpinnerState::judgement_count)
+                .sum::<usize>()
     }
 
     fn update(&mut self, step: &StepInput<'_>, log: &mut JudgementLog) {
@@ -723,15 +744,23 @@ impl Rules for OsuRules {
         }
         self.held = step.held;
 
-        // Sliders alive at the previous update receive the cursor position every update, as
-        // osu-framework sends high-frequency mouse positions to its positional input queue.
+        // Objects alive at the previous update receive the cursor position. Sliders take it
+        // every update, as osu-framework sends high-frequency mouse positions to their input
+        // managers; spinner rotation trackers only receive mouse moves, when the position
+        // changes (the first position always counts as a change).
+        // Ported from osu-framework 2026.921.1: osu.Framework/Input/StateChanges/MousePositionAbsoluteInput.cs (Apply)
+        let moved = self.position != Some(step.position);
+        self.position = Some(step.position);
         let alive_time = self.time;
         for i in self.live_range(alive_time) {
             let o = &self.objects[i];
-            if let Kind::Slider(s) = o.kind
-                && o.is_alive(alive_time)
-            {
-                self.sliders[s].set_mouse(step.position);
+            if !o.is_alive(alive_time) {
+                continue;
+            }
+            match o.kind {
+                Kind::Slider(s) => self.sliders[s].set_mouse(step.position),
+                Kind::Spinner(s) if moved => self.spinners[s].set_mouse(step.position),
+                Kind::Spinner(_) | Kind::Circle => {}
             }
         }
 

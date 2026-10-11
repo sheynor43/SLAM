@@ -14,7 +14,6 @@ use slam_formats::osr::{self, Replay, ScoreRank};
 use slam_formats::osu;
 use slam_osu::judgement::{HitResult, JudgementLog, Statistics};
 use slam_osu::mods::FIRST_LAZER_VERSION;
-use slam_osu::objects::OsuHitObjectKind;
 use slam_osu::replay::{ReplayInput, Rules, Simulator};
 use slam_osu::rules::OsuRules;
 use slam_osu::{Beatmap, GameplayMod, ModSet};
@@ -164,10 +163,6 @@ pub enum Outcome {
     StableOutsideTolerance {
         diffs: Vec<Diff>,
     },
-    /// A lazer replay differs, but the rules in use do not judge yet (see `rules_for`).
-    NotJudged {
-        diffs: Vec<Diff>,
-    },
     /// Not comparable; the reason is shown. Never fails the run.
     Skipped(String),
     Error(String),
@@ -202,10 +197,6 @@ impl Report {
         self.count(|o| matches!(o, Outcome::Error(_)))
     }
 
-    pub fn not_judged(&self) -> usize {
-        self.count(|o| matches!(o, Outcome::NotJudged { .. }))
-    }
-
     pub fn skipped(&self) -> usize {
         self.count(|o| matches!(o, Outcome::Skipped(_)))
     }
@@ -236,14 +227,13 @@ impl fmt::Display for Report {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         writeln!(
             f,
-            "corpus: total {}, matched {}, mismatched {}, errors {}, stable within tolerance {}, stable outside tolerance {}, not judged {}, skipped {}",
+            "corpus: total {}, matched {}, mismatched {}, errors {}, stable within tolerance {}, stable outside tolerance {}, skipped {}",
             self.entries.len(),
             self.matched(),
             self.mismatched(),
             self.errors(),
             self.stable_within(),
             self.stable_outside(),
-            self.not_judged(),
             self.skipped(),
         )?;
         writeln!(f, "{SCORE_NOTE}")?;
@@ -269,10 +259,6 @@ impl fmt::Display for Report {
                     writeln!(f, "\n{}: stable, OUTSIDE tolerance", e.name)?;
                     write_diffs(f, diffs)?;
                 }
-                Outcome::NotJudged { diffs } => {
-                    writeln!(f, "\n{}: not judged (rules not implemented yet)", e.name)?;
-                    write_diffs(f, diffs)?;
-                }
                 Outcome::Skipped(reason) => writeln!(f, "\n{}: skipped, {reason}", e.name)?,
                 Outcome::Error(msg) => writeln!(f, "\n{}: ERROR {msg}", e.name)?,
             }
@@ -281,18 +267,10 @@ impl fmt::Display for Report {
     }
 }
 
-/// The rules the corpus is simulated with, and whether they judge.
-///
-/// While a rule set is incomplete, it does not judge beatmaps that need the missing rules: a
-/// lazer difference there is reported as `NotJudged` and does not fail the run. Hit circles
-/// and sliders are judged (#49, #50); spinners (#51) still pass unjudged. The rules honour
-/// `mods` (Classic included: stable replays get it from `ModSet::from_replay_parts`).
-fn rules_for(beatmap: &Beatmap, mods: &ModSet) -> (OsuRules, bool) {
-    let judges = beatmap
-        .hit_objects
-        .iter()
-        .all(|o| !matches!(o.kind, OsuHitObjectKind::Spinner { .. }));
-    (OsuRules::new(beatmap, mods), judges)
+/// The rules the corpus is simulated with. They honour `mods` (Classic included: stable
+/// replays get it from `ModSet::from_replay_parts`).
+fn rules_for(beatmap: &Beatmap, mods: &ModSet) -> OsuRules {
+    OsuRules::new(beatmap, mods)
 }
 
 /// Runs the corpus under `root`. `filter` is a case-sensitive substring of an entry's `file`
@@ -476,26 +454,24 @@ fn run_entry(dir: &Path, manifest_source: Source, entry: &RawEntry) -> Result<Ou
             unsupported.join(", ")
         )));
     }
-    let (rules, judges) = rules_for(&beatmap, &mods);
+    let rules = rules_for(&beatmap, &mods);
     let log = simulate(&beatmap, input, rules)?;
 
     match info {
-        Some(info) => lazer_outcome(&info.statistics, u32::from(replay.max_combo), &log, judges),
+        Some(info) => lazer_outcome(&info.statistics, u32::from(replay.max_combo), &log),
         None => Ok(compare_stable(&replay, &log)),
     }
 }
 
-/// The lazer verdict: `Match`, `Mismatch`, or `NotJudged` when the rules do not judge.
+/// The lazer verdict: `Match` or `Mismatch`.
 pub fn lazer_outcome(
     expected: &[(osr::HitResult, i32)],
     expected_max_combo: u32,
     log: &JudgementLog,
-    judges: bool,
 ) -> Result<Outcome, String> {
     let (diffs, divergence) = compare_lazer(expected, expected_max_combo, log)?;
     Ok(match divergence {
         None => Outcome::Match,
-        Some(_) if !judges => Outcome::NotJudged { diffs },
         Some(first_divergence) => Outcome::Mismatch {
             diffs,
             first_divergence,

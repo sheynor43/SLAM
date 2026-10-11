@@ -1078,6 +1078,7 @@ fn classic_head_pressed_too_early_is_missed() {
         policy: HitPolicy::StartTimeOrdered,
         classic_slider_behaviour: true,
         block_input_under_slider_heads: false,
+        rate: 1.0,
     };
     let j = play_from_start(&map, options, &[frame(1000.0, 0.0, 0.0, LEFT)]);
     let head = single(&j, 0, Part::Head);
