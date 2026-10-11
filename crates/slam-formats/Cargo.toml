@@ -10,6 +10,11 @@ publish.workspace = true
 lzma-rust2.workspace = true
 serde_json.workspace = true
 thiserror.workspace = true
+zip.workspace = true
+encoding_rs.workspace = true
+
+[dev-dependencies]
+crc32fast.workspace = true
 
 [lints]
 workspace = true
