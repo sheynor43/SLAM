@@ -85,7 +85,7 @@ fn setting_value(m: &Mod, key: &str) -> String {
             _ => panic!("unknown Classic setting {key}"),
         })
         .into(),
-        (Mod::Easy { retries }, _) => retries.to_string(),
+        (Mod::Easy { retries, .. }, _) => retries.to_string(),
         _ => panic!("unexpected setting case {m:?} {key}"),
     }
 }
@@ -190,6 +190,7 @@ fn mods_match_lazer() {
                     "ez2" => multiplier(
                         Mod::Easy {
                             retries: input.parse().expect("retries"),
+                            lives_used: 0,
                         },
                         MultiplierVersion::V2,
                     ),

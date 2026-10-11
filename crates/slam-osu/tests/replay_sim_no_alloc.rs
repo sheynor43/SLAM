@@ -6,7 +6,7 @@ use common::{PressRules, beatmap, noisy_frames, replay};
 use slam_formats::osu::decode_str;
 use slam_osu::replay::{NoRules, ReplayInput, Simulator};
 use slam_osu::rules::{HitPolicy, OsuRules};
-use slam_osu::{Beatmap, Mod, ModSet};
+use slam_osu::{Beatmap, HealthProcessor, Mod, ModSet};
 use slam_testkit::assert_no_alloc;
 
 slam_testkit::install_counting_allocator!();
@@ -86,6 +86,30 @@ fn spinner_steps_do_not_allocate() {
             OsuRules::new(&map, &double_time),
         ] {
             let mut sim = Simulator::new(&map, input.clone(), rules);
+            assert_no_alloc(|| sim.run());
+            assert!(sim.is_finished());
+            assert!(!sim.log().events().is_empty());
+        }
+    }
+}
+
+#[test]
+fn health_steps_do_not_allocate() {
+    // Circles, sliders and spinners, mashed through with health tracked: No Fail keeps the play
+    // going past every fail, Easy refills the health, Classic uses the legacy processor.
+    let text = "osu file format v14\n\n[Difficulty]\nHPDrainRate:9\nCircleSize:4\n\
+                OverallDifficulty:8\nApproachRate:9\nSliderMultiplier:1.4\nSliderTickRate:2\n\n\
+                [TimingPoints]\n0,300,4,2,0,100,1,0\n\n[HitObjects]\n100,100,500,1,0\n\
+                120,120,800,2,0,P|200:60|300:120,2,250\n256,192,1900,12,0,3000\n\
+                300,200,3200,5,0\n300,200,3400,2,0,L|100:200,1,150\n";
+    let map = Beatmap::from_file(decode_str(text).unwrap().beatmap).unwrap();
+    for acronyms in [&["NF"][..], &["NF", "CL"], &["EZ"], &[]] {
+        let mods = ModSet::new(acronyms.iter().map(|a| Mod::from_acronym(a)).collect()).unwrap();
+        for seed in [3, 7, 11] {
+            let osr = replay(&noisy_frames(seed), map.format_version);
+            let input = ReplayInput::from_replay(&osr, map.format_version);
+            let mut sim = Simulator::new(&map, input, OsuRules::new(&map, &mods))
+                .with_health(HealthProcessor::for_play(&map, &mods), mods.clone());
             assert_no_alloc(|| sim.run());
             assert!(sim.is_finished());
             assert!(!sim.log().events().is_empty());

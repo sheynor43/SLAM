@@ -1,16 +1,28 @@
 // Method bodies extracted verbatim from osu!lazer 2026.1005.0-lazer: osu/osu.Game.Rulesets.Osu/Objects/OsuHitObject.cs (lines 19-52, 64-74, 76, 80, 92, 170-183), Slider.cs (lines 28, 31-35, 61-69, 88-107, 156-225, 227-254), Spinner.cs (lines 31-37, 59), SliderTick.cs (lines 18-32), SliderEndCircle.cs (lines 28-45),
-// osu/osu.Game/Rulesets/Objects/HitObject.cs (ApplyDefaults, lines 105-114, 130-134). The class shells around them are minimal stand-ins without Bindable, samples, judgements and hit windows; the shells of OsuHitObject.StackHeight (propagation to nested objects, OsuHitObject.cs lines 160-167) and of Slider.Path (the owned path, Slider.cs lines 45-57) are written out by hand; see README.md.
+// osu/osu.Game/Rulesets/Objects/HitObject.cs (ApplyDefaults, lines 105-114, 130-134).; judgement members added: HitObject.cs (lines 174, 176, 185); HitCircle.cs (lines 11); SliderHeadCircle.cs (lines 17); SliderTailCircle.cs (lines 23, 25-28, 30-33); SliderEndCircle.cs (lines 49, 51-54); SliderTick.cs (lines 36); Slider.cs (lines 289-293); Spinner.cs (lines 24, 29, 42, 47, 52, 57, 61-78, 80-96, 98); SpinnerTick.cs (lines 15, 17, 21, 23-26); SpinnerBonusTick.cs (lines 11, 13-16); the sample shells (HitSampleInfo, Samples, CreateHitSampleInfo) and the hit-window-free MaximumJudgementOffset are written out by hand. The class shells around them are minimal stand-ins without Bindable, samples, judgements and hit windows; the shells of OsuHitObject.StackHeight (propagation to nested objects, OsuHitObject.cs lines 160-167) and of Slider.Path (the owned path, Slider.cs lines 45-57) are written out by hand; see README.md.
 // Copyright (c) ppy Pty Ltd <contact@ppy.sh>. Licensed under the MIT Licence.
 // See the LICENCE file in the repository root for full licence text.
-using System; using System.Collections.Generic; using System.Linq; using System.Threading; using osu.Framework.Caching; using osu.Game.Beatmaps; using osu.Game.Beatmaps.ControlPoints; using osu.Game.Rulesets.Objects; using osu.Game.Rulesets.Objects.Legacy; using osu.Game.Rulesets.Objects.Types; using osuTK;
+using System; using System.Collections.Generic; using System.Linq; using System.Threading; using osu.Framework.Caching; using osu.Game.Beatmaps; using osu.Game.Beatmaps.ControlPoints; using osu.Game.Rulesets.Objects; using osu.Game.Rulesets.Objects.Legacy; using osu.Game.Rulesets.Objects.Types; using osuTK; using osu.Game.Rulesets.Judgements; using osu.Game.Rulesets.Osu.Judgements; using osu.Game.Rulesets.Scoring;
+namespace osu.Game.Audio { public class HitSampleInfo { } }
 namespace osu.Game.Rulesets.Objects
 {
+    using osu.Game.Audio;
     public abstract class HitObject
     {
         public double StartTime { get; set; }
         private readonly List<HitObject> nestedHitObjects = new List<HitObject>();
         public IReadOnlyList<HitObject> NestedHitObjects => nestedHitObjects;
         protected void AddNested(HitObject hitObject) => nestedHitObjects.Add(hitObject);
+
+        // Shells of the samples: only Spinner.CreateNestedHitObjects assigns them.
+        public IList<HitSampleInfo> Samples { get; set; } = new List<HitSampleInfo>();
+        protected HitSampleInfo CreateHitSampleInfo(string sampleName) => new HitSampleInfo();
+
+        // The hit windows are not modelled, so MaximumJudgementOffset is 0 (the original reads the miss window).
+        public Judgement Judgement => judgement ??= CreateJudgement();
+        private Judgement judgement;
+        public virtual Judgement CreateJudgement() => new Judgement();
+        public virtual double MaximumJudgementOffset => 0;
         protected virtual void CreateNestedHitObjects(CancellationToken cancellationToken) { }
         protected virtual void ApplyDefaultsToSelf(ControlPointInfo controlPointInfo, IBeatmapDifficultyInfo difficulty) { }
 
@@ -124,7 +136,10 @@ namespace osu.Game.Rulesets.Osu.Objects
         }
     }
 
-    public class HitCircle : OsuHitObject { }
+    public class HitCircle : OsuHitObject
+    {
+        public override Judgement CreateJudgement() => new OsuJudgement();
+    }
     public class Spinner : OsuHitObject, IHasDuration
     {
         public double EndTime
@@ -136,8 +151,82 @@ namespace osu.Game.Rulesets.Osu.Objects
         public double Duration { get; set; }
 
         public override Vector2 StackOffset => Vector2.Zero;
+
+        public static readonly DifficultyRange CLEAR_RPM_RANGE = new DifficultyRange(90, 150, 225);
+        public static readonly DifficultyRange COMPLETE_RPM_RANGE = new DifficultyRange(250, 380, 430);
+
+        public int SpinsRequired { get; protected set; } = 1;
+        public int SpinsRequiredForBonus => SpinsRequired + bonus_spins_gap;
+        private const int bonus_spins_gap = 2;
+        public int MaximumBonusSpins { get; protected set; } = 1;
+
+        protected override void ApplyDefaultsToSelf(ControlPointInfo controlPointInfo, IBeatmapDifficultyInfo difficulty)
+        {
+            base.ApplyDefaultsToSelf(controlPointInfo, difficulty);
+
+            // The average RPS required over the length of the spinner to clear the spinner.
+            double minRps = IBeatmapDifficultyInfo.DifficultyRange(difficulty.OverallDifficulty, CLEAR_RPM_RANGE) / 60;
+
+            // The RPS required over the length of the spinner to receive full score (all normal + bonus ticks).
+            double maxRps = IBeatmapDifficultyInfo.DifficultyRange(difficulty.OverallDifficulty, COMPLETE_RPM_RANGE) / 60;
+
+            double secondsDuration = Duration / 1000;
+
+            // Allow a 0.1ms floating point precision error in the calculation of the duration.
+            const double duration_error = 0.0001;
+
+            SpinsRequired = (int)(minRps * secondsDuration + duration_error);
+            MaximumBonusSpins = Math.Max(0, (int)(maxRps * secondsDuration + duration_error) - SpinsRequired - bonus_spins_gap);
+        }
+
+        protected override void CreateNestedHitObjects(CancellationToken cancellationToken)
+        {
+            base.CreateNestedHitObjects(cancellationToken);
+
+            int totalSpins = MaximumBonusSpins + SpinsRequired + bonus_spins_gap;
+
+            for (int i = 0; i < totalSpins; i++)
+            {
+                cancellationToken.ThrowIfCancellationRequested();
+
+                double startTime = StartTime + (float)(i + 1) / totalSpins * Duration;
+
+                AddNested(i < SpinsRequiredForBonus
+                    ? new SpinnerTick { StartTime = startTime, SpinnerDuration = Duration }
+                    : new SpinnerBonusTick { StartTime = startTime, SpinnerDuration = Duration, Samples = new[] { CreateHitSampleInfo("spinnerbonus") } });
+            }
+        }
+
+        public override Judgement CreateJudgement() => new OsuJudgement();
     }
-    public class SliderHeadCircle : HitCircle { public bool ClassicSliderBehaviour; }
+    public class SpinnerTick : OsuHitObject
+    {
+        public double SpinnerDuration { get; set; }
+
+        public override Judgement CreateJudgement() => new OsuSpinnerTickJudgement();
+
+        public override double MaximumJudgementOffset => SpinnerDuration;
+
+        public class OsuSpinnerTickJudgement : OsuJudgement
+        {
+            public override HitResult MaxResult => HitResult.SmallBonus;
+        }
+    }
+    public class SpinnerBonusTick : SpinnerTick
+    {
+        public override Judgement CreateJudgement() => new OsuSpinnerBonusTickJudgement();
+
+        public class OsuSpinnerBonusTickJudgement : OsuSpinnerTickJudgement
+        {
+            public override HitResult MaxResult => HitResult.LargeBonus;
+        }
+    }
+    public class SliderHeadCircle : HitCircle
+    {
+        public bool ClassicSliderBehaviour;
+
+        public override Judgement CreateJudgement() => ClassicSliderBehaviour ? new SliderTickJudgement() : base.CreateJudgement();
+    }
 
     public abstract class SliderEndCircle : HitCircle
     {
@@ -164,9 +253,32 @@ namespace osu.Game.Rulesets.Osu.Objects
                 TimePreempt += StartTime - Slider.StartTime;
             }
         }
+
+        public override Judgement CreateJudgement() => new SliderEndJudgement();
+
+        public class SliderEndJudgement : OsuJudgement
+        {
+            public override HitResult MaxResult => HitResult.LargeTickHit;
+        }
     }
 
-    public class SliderTailCircle : SliderEndCircle { public bool ClassicSliderBehaviour; public SliderTailCircle(Slider slider) : base(slider) { } }
+    public class SliderTailCircle : SliderEndCircle
+    {
+        public bool ClassicSliderBehaviour;
+        public SliderTailCircle(Slider slider) : base(slider) { }
+
+        public override Judgement CreateJudgement() => ClassicSliderBehaviour ? new LegacyTailJudgement() : new TailJudgement();
+
+        public class LegacyTailJudgement : OsuJudgement
+        {
+            public override HitResult MaxResult => HitResult.SmallTickHit;
+        }
+
+        public class TailJudgement : SliderEndJudgement
+        {
+            public override HitResult MaxResult => HitResult.SliderTailHit;
+        }
+    }
     public class SliderRepeat : SliderEndCircle { public double PathProgress { get; set; } public SliderRepeat(Slider slider) : base(slider) { } }
 
     public class SliderTick : OsuHitObject
@@ -190,6 +302,8 @@ namespace osu.Game.Rulesets.Osu.Objects
 
             TimePreempt = (StartTime - SpanStartTime) / 2 + offset;
         }
+
+        public override Judgement CreateJudgement() => new SliderTickJudgement();
     }
 
     public class Slider : OsuHitObject, IHasPathWithRepeats, IHasSliderVelocity, IHasDuration
@@ -362,5 +476,11 @@ namespace osu.Game.Rulesets.Osu.Objects
             }
 
         }
+
+        public override Judgement CreateJudgement() => ClassicSliderBehaviour
+            // Final combo is provided by the slider itself - see logic in `DrawableSlider.CheckForResult()`
+            ? new OsuJudgement()
+            // Final combo is provided by the tail circle - see `SliderTailCircle`
+            : new OsuIgnoreJudgement();
     }
 }

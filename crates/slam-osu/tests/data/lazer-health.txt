@@ -1,0 +1,1868 @@
+# Generated from osu!lazer 2026.1005.0-lazer OsuHealthProcessor.cs, OsuLegacyHealthProcessor.cs, HealthProcessor.cs, DrainingHealthProcessor.cs, LegacyDrainingHealthProcessor.cs, JudgementProcessor.cs, Judgement.cs, JudgementResult.cs, HitResult.cs, the osu judgement sources, PeriodTracker.cs, BreakPeriod.cs, Slider.cs, Spinner.cs and the object and slider path sources, osu-framework 2026.921.1 SortedList.cs, on osuTK 1.0.211, .NET 10.0.12
+# case <name> <drain start time f64 bits> <classic slider behaviour 0/1>: every map is written twice, with the classic behaviour off and on
+# map <format version> <StackLeniency> <HP> <CS> <OD> <AR> <SliderMultiplier> <SliderTickRate> <beat length>
+# timing <inherited timing point line>
+# event <break line `2,<start>,<end>` of [Events], in file order>
+# object <.osu hit object line>
+# osu_drain_rate <f64 bits>: OsuHealthProcessor.DrainRate after ApplyBeatmap
+# legacy_drain_rate <f64 bits>: OsuLegacyHealthProcessor.DrainRate after ApplyBeatmap
+# legacy_hp_multiplier <f64 bits>: OsuLegacyHealthProcessor.HpMultiplierNormal after ApplyBeatmap
+# Applied as the decoder and the player do: format version 14, ApplyDefaults of every object (which creates the nested objects, with Slider.ClassicSliderBehaviour set beforehand), a break is BreakPeriod(start, max(start, end)) in a sorted list, then ApplyBeatmap of each processor with the given drain start time (the start time of the first object unless a unit test of lazer sets it).
+case circles-hp0 408f400000000000 0
+map 14 0.7 0 4 5 9 1.4 1 500
+object 60,50,1000,5,0
+object 97,103,1250,1,0
+object 134,156,1430,1,0
+object 171,209,1750,1,0
+object 208,262,2150,1,0
+object 245,315,2300,5,0
+object 282,88,2550,1,0
+object 319,141,2730,1,0
+object 356,194,3050,1,0
+object 393,247,3450,1,0
+object 430,300,3600,5,0
+object 87,73,3850,1,0
+object 124,126,4030,1,0
+object 161,179,4350,1,0
+object 198,232,4750,1,0
+object 235,285,4900,5,0
+object 272,58,5150,1,0
+object 309,111,5330,1,0
+object 346,164,5650,1,0
+object 383,217,6050,1,0
+object 420,270,6200,5,0
+object 77,323,6450,1,0
+object 114,96,6630,1,0
+object 151,149,6950,1,0
+object 188,202,7350,1,0
+object 225,255,7500,5,0
+object 262,308,7750,1,0
+object 299,81,7930,1,0
+object 336,134,8250,1,0
+object 373,187,8650,1,0
+object 410,240,8800,5,0
+object 67,293,9050,1,0
+object 104,66,9230,1,0
+object 141,119,9550,1,0
+object 178,172,9950,1,0
+object 215,225,10100,5,0
+object 252,278,10350,1,0
+object 289,51,10530,1,0
+object 326,104,10850,1,0
+object 363,157,11250,1,0
+osu_drain_rate 3f00000000000000
+legacy_drain_rate 3eebbd5027d3c9c5
+legacy_hp_multiplier 3ff75a393b2d9a57
+case circles-hp0 408f400000000000 1
+map 14 0.7 0 4 5 9 1.4 1 500
+object 60,50,1000,5,0
+object 97,103,1250,1,0
+object 134,156,1430,1,0
+object 171,209,1750,1,0
+object 208,262,2150,1,0
+object 245,315,2300,5,0
+object 282,88,2550,1,0
+object 319,141,2730,1,0
+object 356,194,3050,1,0
+object 393,247,3450,1,0
+object 430,300,3600,5,0
+object 87,73,3850,1,0
+object 124,126,4030,1,0
+object 161,179,4350,1,0
+object 198,232,4750,1,0
+object 235,285,4900,5,0
+object 272,58,5150,1,0
+object 309,111,5330,1,0
+object 346,164,5650,1,0
+object 383,217,6050,1,0
+object 420,270,6200,5,0
+object 77,323,6450,1,0
+object 114,96,6630,1,0
+object 151,149,6950,1,0
+object 188,202,7350,1,0
+object 225,255,7500,5,0
+object 262,308,7750,1,0
+object 299,81,7930,1,0
+object 336,134,8250,1,0
+object 373,187,8650,1,0
+object 410,240,8800,5,0
+object 67,293,9050,1,0
+object 104,66,9230,1,0
+object 141,119,9550,1,0
+object 178,172,9950,1,0
+object 215,225,10100,5,0
+object 252,278,10350,1,0
+object 289,51,10530,1,0
+object 326,104,10850,1,0
+object 363,157,11250,1,0
+osu_drain_rate 3f00000000000000
+legacy_drain_rate 3eebbd5027d3c9c5
+legacy_hp_multiplier 3ff75a393b2d9a57
+case circles-hp2.5 408f400000000000 0
+map 14 0.7 2.5 4 5 9 1.4 1 500
+object 60,50,1000,5,0
+object 97,103,1250,1,0
+object 134,156,1430,1,0
+object 171,209,1750,1,0
+object 208,262,2150,1,0
+object 245,315,2300,5,0
+object 282,88,2550,1,0
+object 319,141,2730,1,0
+object 356,194,3050,1,0
+object 393,247,3450,1,0
+object 430,300,3600,5,0
+object 87,73,3850,1,0
+object 124,126,4030,1,0
+object 161,179,4350,1,0
+object 198,232,4750,1,0
+object 235,285,4900,5,0
+object 272,58,5150,1,0
+object 309,111,5330,1,0
+object 346,164,5650,1,0
+object 383,217,6050,1,0
+object 420,270,6200,5,0
+object 77,323,6450,1,0
+object 114,96,6630,1,0
+object 151,149,6950,1,0
+object 188,202,7350,1,0
+object 225,255,7500,5,0
+object 262,308,7750,1,0
+object 299,81,7930,1,0
+object 336,134,8250,1,0
+object 373,187,8650,1,0
+object 410,240,8800,5,0
+object 67,293,9050,1,0
+object 104,66,9230,1,0
+object 141,119,9550,1,0
+object 178,172,9950,1,0
+object 215,225,10100,5,0
+object 252,278,10350,1,0
+object 289,51,10530,1,0
+object 326,104,10850,1,0
+object 363,157,11250,1,0
+osu_drain_rate 3f1c000000000000
+legacy_drain_rate 3f03a06383319056
+legacy_hp_multiplier 3ff52401ff354057
+case circles-hp2.5 408f400000000000 1
+map 14 0.7 2.5 4 5 9 1.4 1 500
+object 60,50,1000,5,0
+object 97,103,1250,1,0
+object 134,156,1430,1,0
+object 171,209,1750,1,0
+object 208,262,2150,1,0
+object 245,315,2300,5,0
+object 282,88,2550,1,0
+object 319,141,2730,1,0
+object 356,194,3050,1,0
+object 393,247,3450,1,0
+object 430,300,3600,5,0
+object 87,73,3850,1,0
+object 124,126,4030,1,0
+object 161,179,4350,1,0
+object 198,232,4750,1,0
+object 235,285,4900,5,0
+object 272,58,5150,1,0
+object 309,111,5330,1,0
+object 346,164,5650,1,0
+object 383,217,6050,1,0
+object 420,270,6200,5,0
+object 77,323,6450,1,0
+object 114,96,6630,1,0
+object 151,149,6950,1,0
+object 188,202,7350,1,0
+object 225,255,7500,5,0
+object 262,308,7750,1,0
+object 299,81,7930,1,0
+object 336,134,8250,1,0
+object 373,187,8650,1,0
+object 410,240,8800,5,0
+object 67,293,9050,1,0
+object 104,66,9230,1,0
+object 141,119,9550,1,0
+object 178,172,9950,1,0
+object 215,225,10100,5,0
+object 252,278,10350,1,0
+object 289,51,10530,1,0
+object 326,104,10850,1,0
+object 363,157,11250,1,0
+osu_drain_rate 3f1c000000000000
+legacy_drain_rate 3f03a06383319056
+legacy_hp_multiplier 3ff52401ff354057
+case circles-hp5 408f400000000000 0
+map 14 0.7 5 4 5 9 1.4 1 500
+object 60,50,1000,5,0
+object 97,103,1250,1,0
+object 134,156,1430,1,0
+object 171,209,1750,1,0
+object 208,262,2150,1,0
+object 245,315,2300,5,0
+object 282,88,2550,1,0
+object 319,141,2730,1,0
+object 356,194,3050,1,0
+object 393,247,3450,1,0
+object 430,300,3600,5,0
+object 87,73,3850,1,0
+object 124,126,4030,1,0
+object 161,179,4350,1,0
+object 198,232,4750,1,0
+object 235,285,4900,5,0
+object 272,58,5150,1,0
+object 309,111,5330,1,0
+object 346,164,5650,1,0
+object 383,217,6050,1,0
+object 420,270,6200,5,0
+object 77,323,6450,1,0
+object 114,96,6630,1,0
+object 151,149,6950,1,0
+object 188,202,7350,1,0
+object 225,255,7500,5,0
+object 262,308,7750,1,0
+object 299,81,7930,1,0
+object 336,134,8250,1,0
+object 373,187,8650,1,0
+object 410,240,8800,5,0
+object 67,293,9050,1,0
+object 104,66,9230,1,0
+object 141,119,9550,1,0
+object 178,172,9950,1,0
+object 215,225,10100,5,0
+object 252,278,10350,1,0
+object 289,51,10530,1,0
+object 326,104,10850,1,0
+object 363,157,11250,1,0
+osu_drain_rate 3f1f800000000000
+legacy_drain_rate 3f1004233eb71f22
+legacy_hp_multiplier 3ff3236b89144660
+case circles-hp5 408f400000000000 1
+map 14 0.7 5 4 5 9 1.4 1 500
+object 60,50,1000,5,0
+object 97,103,1250,1,0
+object 134,156,1430,1,0
+object 171,209,1750,1,0
+object 208,262,2150,1,0
+object 245,315,2300,5,0
+object 282,88,2550,1,0
+object 319,141,2730,1,0
+object 356,194,3050,1,0
+object 393,247,3450,1,0
+object 430,300,3600,5,0
+object 87,73,3850,1,0
+object 124,126,4030,1,0
+object 161,179,4350,1,0
+object 198,232,4750,1,0
+object 235,285,4900,5,0
+object 272,58,5150,1,0
+object 309,111,5330,1,0
+object 346,164,5650,1,0
+object 383,217,6050,1,0
+object 420,270,6200,5,0
+object 77,323,6450,1,0
+object 114,96,6630,1,0
+object 151,149,6950,1,0
+object 188,202,7350,1,0
+object 225,255,7500,5,0
+object 262,308,7750,1,0
+object 299,81,7930,1,0
+object 336,134,8250,1,0
+object 373,187,8650,1,0
+object 410,240,8800,5,0
+object 67,293,9050,1,0
+object 104,66,9230,1,0
+object 141,119,9550,1,0
+object 178,172,9950,1,0
+object 215,225,10100,5,0
+object 252,278,10350,1,0
+object 289,51,10530,1,0
+object 326,104,10850,1,0
+object 363,157,11250,1,0
+osu_drain_rate 3f1f800000000000
+legacy_drain_rate 3f1004233eb71f22
+legacy_hp_multiplier 3ff3236b89144660
+case circles-hp7.3 408f400000000000 0
+map 14 0.7 7.3 4 5 9 1.4 1 500
+object 60,50,1000,5,0
+object 97,103,1250,1,0
+object 134,156,1430,1,0
+object 171,209,1750,1,0
+object 208,262,2150,1,0
+object 245,315,2300,5,0
+object 282,88,2550,1,0
+object 319,141,2730,1,0
+object 356,194,3050,1,0
+object 393,247,3450,1,0
+object 430,300,3600,5,0
+object 87,73,3850,1,0
+object 124,126,4030,1,0
+object 161,179,4350,1,0
+object 198,232,4750,1,0
+object 235,285,4900,5,0
+object 272,58,5150,1,0
+object 309,111,5330,1,0
+object 346,164,5650,1,0
+object 383,217,6050,1,0
+object 420,270,6200,5,0
+object 77,323,6450,1,0
+object 114,96,6630,1,0
+object 151,149,6950,1,0
+object 188,202,7350,1,0
+object 225,255,7500,5,0
+object 262,308,7750,1,0
+object 299,81,7930,1,0
+object 336,134,8250,1,0
+object 373,187,8650,1,0
+object 410,240,8800,5,0
+object 67,293,9050,1,0
+object 104,66,9230,1,0
+object 141,119,9550,1,0
+object 178,172,9950,1,0
+object 215,225,10100,5,0
+object 252,278,10350,1,0
+object 289,51,10530,1,0
+object 326,104,10850,1,0
+object 363,157,11250,1,0
+osu_drain_rate 3f22c00000000000
+legacy_drain_rate 3f17207c5c329ead
+legacy_hp_multiplier 3ff20779aecbb247
+case circles-hp7.3 408f400000000000 1
+map 14 0.7 7.3 4 5 9 1.4 1 500
+object 60,50,1000,5,0
+object 97,103,1250,1,0
+object 134,156,1430,1,0
+object 171,209,1750,1,0
+object 208,262,2150,1,0
+object 245,315,2300,5,0
+object 282,88,2550,1,0
+object 319,141,2730,1,0
+object 356,194,3050,1,0
+object 393,247,3450,1,0
+object 430,300,3600,5,0
+object 87,73,3850,1,0
+object 124,126,4030,1,0
+object 161,179,4350,1,0
+object 198,232,4750,1,0
+object 235,285,4900,5,0
+object 272,58,5150,1,0
+object 309,111,5330,1,0
+object 346,164,5650,1,0
+object 383,217,6050,1,0
+object 420,270,6200,5,0
+object 77,323,6450,1,0
+object 114,96,6630,1,0
+object 151,149,6950,1,0
+object 188,202,7350,1,0
+object 225,255,7500,5,0
+object 262,308,7750,1,0
+object 299,81,7930,1,0
+object 336,134,8250,1,0
+object 373,187,8650,1,0
+object 410,240,8800,5,0
+object 67,293,9050,1,0
+object 104,66,9230,1,0
+object 141,119,9550,1,0
+object 178,172,9950,1,0
+object 215,225,10100,5,0
+object 252,278,10350,1,0
+object 289,51,10530,1,0
+object 326,104,10850,1,0
+object 363,157,11250,1,0
+osu_drain_rate 3f22c00000000000
+legacy_drain_rate 3f17207c5c329ead
+legacy_hp_multiplier 3ff20779aecbb247
+case circles-hp10 408f400000000000 0
+map 14 0.7 10 4 5 9 1.4 1 500
+object 60,50,1000,5,0
+object 97,103,1250,1,0
+object 134,156,1430,1,0
+object 171,209,1750,1,0
+object 208,262,2150,1,0
+object 245,315,2300,5,0
+object 282,88,2550,1,0
+object 319,141,2730,1,0
+object 356,194,3050,1,0
+object 393,247,3450,1,0
+object 430,300,3600,5,0
+object 87,73,3850,1,0
+object 124,126,4030,1,0
+object 161,179,4350,1,0
+object 198,232,4750,1,0
+object 235,285,4900,5,0
+object 272,58,5150,1,0
+object 309,111,5330,1,0
+object 346,164,5650,1,0
+object 383,217,6050,1,0
+object 420,270,6200,5,0
+object 77,323,6450,1,0
+object 114,96,6630,1,0
+object 151,149,6950,1,0
+object 188,202,7350,1,0
+object 225,255,7500,5,0
+object 262,308,7750,1,0
+object 299,81,7930,1,0
+object 336,134,8250,1,0
+object 373,187,8650,1,0
+object 410,240,8800,5,0
+object 67,293,9050,1,0
+object 104,66,9230,1,0
+object 141,119,9550,1,0
+object 178,172,9950,1,0
+object 215,225,10100,5,0
+object 252,278,10350,1,0
+object 289,51,10530,1,0
+object 326,104,10850,1,0
+object 363,157,11250,1,0
+osu_drain_rate 3f26400000000000
+legacy_drain_rate 3f2007875d654e85
+legacy_hp_multiplier 3ff153618d8ed498
+case circles-hp10 408f400000000000 1
+map 14 0.7 10 4 5 9 1.4 1 500
+object 60,50,1000,5,0
+object 97,103,1250,1,0
+object 134,156,1430,1,0
+object 171,209,1750,1,0
+object 208,262,2150,1,0
+object 245,315,2300,5,0
+object 282,88,2550,1,0
+object 319,141,2730,1,0
+object 356,194,3050,1,0
+object 393,247,3450,1,0
+object 430,300,3600,5,0
+object 87,73,3850,1,0
+object 124,126,4030,1,0
+object 161,179,4350,1,0
+object 198,232,4750,1,0
+object 235,285,4900,5,0
+object 272,58,5150,1,0
+object 309,111,5330,1,0
+object 346,164,5650,1,0
+object 383,217,6050,1,0
+object 420,270,6200,5,0
+object 77,323,6450,1,0
+object 114,96,6630,1,0
+object 151,149,6950,1,0
+object 188,202,7350,1,0
+object 225,255,7500,5,0
+object 262,308,7750,1,0
+object 299,81,7930,1,0
+object 336,134,8250,1,0
+object 373,187,8650,1,0
+object 410,240,8800,5,0
+object 67,293,9050,1,0
+object 104,66,9230,1,0
+object 141,119,9550,1,0
+object 178,172,9950,1,0
+object 215,225,10100,5,0
+object 252,278,10350,1,0
+object 289,51,10530,1,0
+object 326,104,10850,1,0
+object 363,157,11250,1,0
+osu_drain_rate 3f26400000000000
+legacy_drain_rate 3f2007875d654e85
+legacy_hp_multiplier 3ff153618d8ed498
+case circles-dense-hp0 408f400000000000 0
+map 14 0.7 0 4 5 9 1.4 1 500
+object 60,50,1000,5,0
+object 97,103,1060,1,0
+object 134,156,1140,1,0
+object 171,209,1240,1,0
+object 208,262,1300,1,0
+object 245,315,1380,5,0
+object 282,88,1480,1,0
+object 319,141,1540,1,0
+object 356,194,1620,1,0
+object 393,247,1720,1,0
+object 430,300,1780,5,0
+object 87,73,1860,1,0
+object 124,126,1960,1,0
+object 161,179,2020,1,0
+object 198,232,2100,1,0
+object 235,285,2200,5,0
+object 272,58,2260,1,0
+object 309,111,2340,1,0
+object 346,164,2440,1,0
+object 383,217,2500,1,0
+object 420,270,2580,5,0
+object 77,323,2680,1,0
+object 114,96,2740,1,0
+object 151,149,2820,1,0
+object 188,202,2920,1,0
+object 225,255,2980,5,0
+object 262,308,3060,1,0
+object 299,81,3160,1,0
+object 336,134,3220,1,0
+object 373,187,3300,1,0
+object 410,240,3400,5,0
+object 67,293,3460,1,0
+object 104,66,3540,1,0
+object 141,119,3640,1,0
+object 178,172,3700,1,0
+object 215,225,3780,5,0
+object 252,278,3880,1,0
+object 289,51,3940,1,0
+object 326,104,4020,1,0
+object 363,157,4120,1,0
+object 400,210,4180,5,0
+object 437,263,4260,1,0
+object 94,316,4360,1,0
+object 131,89,4420,1,0
+object 168,142,4500,1,0
+object 205,195,4600,5,0
+object 242,248,4660,1,0
+object 279,301,4740,1,0
+object 316,74,4840,1,0
+object 353,127,4900,1,0
+object 390,180,4980,5,0
+object 427,233,5080,1,0
+object 84,286,5140,1,0
+object 121,59,5220,1,0
+object 158,112,5320,1,0
+object 195,165,5380,5,0
+object 232,218,5460,1,0
+object 269,271,5560,1,0
+object 306,324,5620,1,0
+object 343,97,5700,1,0
+osu_drain_rate 3f20000000000000
+legacy_drain_rate 3f099b66769e2b15
+legacy_hp_multiplier 3ff796017bc51953
+case circles-dense-hp0 408f400000000000 1
+map 14 0.7 0 4 5 9 1.4 1 500
+object 60,50,1000,5,0
+object 97,103,1060,1,0
+object 134,156,1140,1,0
+object 171,209,1240,1,0
+object 208,262,1300,1,0
+object 245,315,1380,5,0
+object 282,88,1480,1,0
+object 319,141,1540,1,0
+object 356,194,1620,1,0
+object 393,247,1720,1,0
+object 430,300,1780,5,0
+object 87,73,1860,1,0
+object 124,126,1960,1,0
+object 161,179,2020,1,0
+object 198,232,2100,1,0
+object 235,285,2200,5,0
+object 272,58,2260,1,0
+object 309,111,2340,1,0
+object 346,164,2440,1,0
+object 383,217,2500,1,0
+object 420,270,2580,5,0
+object 77,323,2680,1,0
+object 114,96,2740,1,0
+object 151,149,2820,1,0
+object 188,202,2920,1,0
+object 225,255,2980,5,0
+object 262,308,3060,1,0
+object 299,81,3160,1,0
+object 336,134,3220,1,0
+object 373,187,3300,1,0
+object 410,240,3400,5,0
+object 67,293,3460,1,0
+object 104,66,3540,1,0
+object 141,119,3640,1,0
+object 178,172,3700,1,0
+object 215,225,3780,5,0
+object 252,278,3880,1,0
+object 289,51,3940,1,0
+object 326,104,4020,1,0
+object 363,157,4120,1,0
+object 400,210,4180,5,0
+object 437,263,4260,1,0
+object 94,316,4360,1,0
+object 131,89,4420,1,0
+object 168,142,4500,1,0
+object 205,195,4600,5,0
+object 242,248,4660,1,0
+object 279,301,4740,1,0
+object 316,74,4840,1,0
+object 353,127,4900,1,0
+object 390,180,4980,5,0
+object 427,233,5080,1,0
+object 84,286,5140,1,0
+object 121,59,5220,1,0
+object 158,112,5320,1,0
+object 195,165,5380,5,0
+object 232,218,5460,1,0
+object 269,271,5560,1,0
+object 306,324,5620,1,0
+object 343,97,5700,1,0
+osu_drain_rate 3f20000000000000
+legacy_drain_rate 3f099b66769e2b15
+legacy_hp_multiplier 3ff796017bc51953
+case circles-dense-hp2.5 408f400000000000 0
+map 14 0.7 2.5 4 5 9 1.4 1 500
+object 60,50,1000,5,0
+object 97,103,1090,1,0
+object 134,156,1190,1,0
+object 171,209,1300,1,0
+object 208,262,1420,1,0
+object 245,315,1510,5,0
+object 282,88,1610,1,0
+object 319,141,1720,1,0
+object 356,194,1840,1,0
+object 393,247,1930,1,0
+object 430,300,2030,5,0
+object 87,73,2140,1,0
+object 124,126,2260,1,0
+object 161,179,2350,1,0
+object 198,232,2450,1,0
+object 235,285,2560,5,0
+object 272,58,2680,1,0
+object 309,111,2770,1,0
+object 346,164,2870,1,0
+object 383,217,2980,1,0
+object 420,270,3100,5,0
+object 77,323,3190,1,0
+object 114,96,3290,1,0
+object 151,149,3400,1,0
+object 188,202,3520,1,0
+object 225,255,3610,5,0
+object 262,308,3710,1,0
+object 299,81,3820,1,0
+object 336,134,3940,1,0
+object 373,187,4030,1,0
+object 410,240,4130,5,0
+object 67,293,4240,1,0
+object 104,66,4360,1,0
+object 141,119,4450,1,0
+object 178,172,4550,1,0
+object 215,225,4660,5,0
+object 252,278,4780,1,0
+object 289,51,4870,1,0
+object 326,104,4970,1,0
+object 363,157,5080,1,0
+object 400,210,5200,5,0
+object 437,263,5290,1,0
+object 94,316,5390,1,0
+object 131,89,5500,1,0
+object 168,142,5620,1,0
+object 205,195,5710,5,0
+object 242,248,5810,1,0
+object 279,301,5920,1,0
+object 316,74,6040,1,0
+object 353,127,6130,1,0
+object 390,180,6230,5,0
+object 427,233,6340,1,0
+object 84,286,6460,1,0
+object 121,59,6550,1,0
+object 158,112,6650,1,0
+object 195,165,6760,5,0
+object 232,218,6880,1,0
+object 269,271,6970,1,0
+object 306,324,7070,1,0
+object 343,97,7180,1,0
+osu_drain_rate 3f33000000000000
+legacy_drain_rate 3f15c4695ef17214
+legacy_hp_multiplier 3ff4ee6c6ebd986a
+case circles-dense-hp2.5 408f400000000000 1
+map 14 0.7 2.5 4 5 9 1.4 1 500
+object 60,50,1000,5,0
+object 97,103,1090,1,0
+object 134,156,1190,1,0
+object 171,209,1300,1,0
+object 208,262,1420,1,0
+object 245,315,1510,5,0
+object 282,88,1610,1,0
+object 319,141,1720,1,0
+object 356,194,1840,1,0
+object 393,247,1930,1,0
+object 430,300,2030,5,0
+object 87,73,2140,1,0
+object 124,126,2260,1,0
+object 161,179,2350,1,0
+object 198,232,2450,1,0
+object 235,285,2560,5,0
+object 272,58,2680,1,0
+object 309,111,2770,1,0
+object 346,164,2870,1,0
+object 383,217,2980,1,0
+object 420,270,3100,5,0
+object 77,323,3190,1,0
+object 114,96,3290,1,0
+object 151,149,3400,1,0
+object 188,202,3520,1,0
+object 225,255,3610,5,0
+object 262,308,3710,1,0
+object 299,81,3820,1,0
+object 336,134,3940,1,0
+object 373,187,4030,1,0
+object 410,240,4130,5,0
+object 67,293,4240,1,0
+object 104,66,4360,1,0
+object 141,119,4450,1,0
+object 178,172,4550,1,0
+object 215,225,4660,5,0
+object 252,278,4780,1,0
+object 289,51,4870,1,0
+object 326,104,4970,1,0
+object 363,157,5080,1,0
+object 400,210,5200,5,0
+object 437,263,5290,1,0
+object 94,316,5390,1,0
+object 131,89,5500,1,0
+object 168,142,5620,1,0
+object 205,195,5710,5,0
+object 242,248,5810,1,0
+object 279,301,5920,1,0
+object 316,74,6040,1,0
+object 353,127,6130,1,0
+object 390,180,6230,5,0
+object 427,233,6340,1,0
+object 84,286,6460,1,0
+object 121,59,6550,1,0
+object 158,112,6650,1,0
+object 195,165,6760,5,0
+object 232,218,6880,1,0
+object 269,271,6970,1,0
+object 306,324,7070,1,0
+object 343,97,7180,1,0
+osu_drain_rate 3f33000000000000
+legacy_drain_rate 3f15c4695ef17214
+legacy_hp_multiplier 3ff4ee6c6ebd986a
+case circles-sparse-hp10 408f400000000000 0
+map 14 0.7 10 4 5 9 1.4 1 500
+object 60,50,1000,5,0
+object 97,103,2500,1,0
+object 134,156,4300,1,0
+object 171,209,6400,1,0
+object 208,262,7900,1,0
+object 245,315,9700,5,0
+object 282,88,11800,1,0
+object 319,141,13300,1,0
+object 356,194,15100,1,0
+object 393,247,17200,1,0
+object 430,300,18700,5,0
+object 87,73,20500,1,0
+osu_drain_rate 3f08000000000000
+legacy_drain_rate 3ef716b4627f98fc
+legacy_hp_multiplier 3ff385e5fdc7b407
+case circles-sparse-hp10 408f400000000000 1
+map 14 0.7 10 4 5 9 1.4 1 500
+object 60,50,1000,5,0
+object 97,103,2500,1,0
+object 134,156,4300,1,0
+object 171,209,6400,1,0
+object 208,262,7900,1,0
+object 245,315,9700,5,0
+object 282,88,11800,1,0
+object 319,141,13300,1,0
+object 356,194,15100,1,0
+object 393,247,17200,1,0
+object 430,300,18700,5,0
+object 87,73,20500,1,0
+osu_drain_rate 3f08000000000000
+legacy_drain_rate 3ef716b4627f98fc
+legacy_hp_multiplier 3ff385e5fdc7b407
+case circles-sparse-hp8 408f400000000000 0
+map 14 0.7 8 4 5 9 1.4 1 500
+object 60,50,1000,5,0
+object 97,103,3000,1,0
+object 134,156,5000,1,0
+object 171,209,7000,1,0
+object 208,262,9000,1,0
+object 245,315,11000,5,0
+object 282,88,13000,1,0
+object 319,141,15000,1,0
+object 356,194,17000,1,0
+object 393,247,19000,1,0
+object 430,300,21000,5,0
+object 87,73,23000,1,0
+osu_drain_rate 3f00800000000000
+legacy_drain_rate 3eeffaba50554fcf
+legacy_hp_multiplier 3ff385e5fdc7b407
+case circles-sparse-hp8 408f400000000000 1
+map 14 0.7 8 4 5 9 1.4 1 500
+object 60,50,1000,5,0
+object 97,103,3000,1,0
+object 134,156,5000,1,0
+object 171,209,7000,1,0
+object 208,262,9000,1,0
+object 245,315,11000,5,0
+object 282,88,13000,1,0
+object 319,141,15000,1,0
+object 356,194,17000,1,0
+object 393,247,19000,1,0
+object 430,300,21000,5,0
+object 87,73,23000,1,0
+osu_drain_rate 3f00800000000000
+legacy_drain_rate 3eeffaba50554fcf
+legacy_hp_multiplier 3ff385e5fdc7b407
+case circles-sparse-hp5 408f400000000000 0
+map 14 0.7 5 4 5 9 1.4 1 500
+object 60,50,1000,5,0
+object 97,103,3500,1,0
+object 134,156,6000,1,0
+object 171,209,8500,1,0
+object 208,262,11000,1,0
+object 245,315,13500,5,0
+object 282,88,16000,1,0
+object 319,141,18500,1,0
+object 356,194,21000,1,0
+object 393,247,23500,1,0
+object 430,300,26000,5,0
+object 87,73,28500,1,0
+osu_drain_rate 3eee000000000000
+legacy_drain_rate 3ede092a2707cc75
+legacy_hp_multiplier 3ff3b7e09c7a571c
+case circles-sparse-hp5 408f400000000000 1
+map 14 0.7 5 4 5 9 1.4 1 500
+object 60,50,1000,5,0
+object 97,103,3500,1,0
+object 134,156,6000,1,0
+object 171,209,8500,1,0
+object 208,262,11000,1,0
+object 245,315,13500,5,0
+object 282,88,16000,1,0
+object 319,141,18500,1,0
+object 356,194,21000,1,0
+object 393,247,23500,1,0
+object 430,300,26000,5,0
+object 87,73,28500,1,0
+osu_drain_rate 3eee000000000000
+legacy_drain_rate 3ede092a2707cc75
+legacy_hp_multiplier 3ff3b7e09c7a571c
+case break-single 408f400000000000 0
+map 14 0.7 5 4 5 9 1.4 1 500
+event 2,2500,7000
+object 60,50,1000,1,0
+object 97,103,1250,1,0
+object 134,156,1500,1,0
+object 171,209,1750,1,0
+object 208,262,2000,1,0
+object 245,315,2250,1,0
+object 282,88,2500,1,0
+object 319,141,2750,1,0
+object 356,194,8750,1,0
+object 393,247,9000,1,0
+object 430,300,9250,1,0
+object 87,73,9500,1,0
+object 124,126,9750,1,0
+object 161,179,10000,1,0
+object 198,232,10250,1,0
+object 235,285,10500,1,0
+osu_drain_rate 3f23800000000000
+legacy_drain_rate 3f133bc86bc03f39
+legacy_hp_multiplier 3ff385e5fdc7b407
+case break-single 408f400000000000 1
+map 14 0.7 5 4 5 9 1.4 1 500
+event 2,2500,7000
+object 60,50,1000,1,0
+object 97,103,1250,1,0
+object 134,156,1500,1,0
+object 171,209,1750,1,0
+object 208,262,2000,1,0
+object 245,315,2250,1,0
+object 282,88,2500,1,0
+object 319,141,2750,1,0
+object 356,194,8750,1,0
+object 393,247,9000,1,0
+object 430,300,9250,1,0
+object 87,73,9500,1,0
+object 124,126,9750,1,0
+object 161,179,10000,1,0
+object 198,232,10250,1,0
+object 235,285,10500,1,0
+osu_drain_rate 3f23800000000000
+legacy_drain_rate 3f133bc86bc03f39
+legacy_hp_multiplier 3ff385e5fdc7b407
+case break-overlapping 408f400000000000 0
+map 14 0.7 5 4 5 9 1.4 1 500
+event 2,2400,5000
+event 2,4000,7100
+object 60,50,1000,1,0
+object 97,103,1250,1,0
+object 134,156,1500,1,0
+object 171,209,1750,1,0
+object 208,262,2000,1,0
+object 245,315,2250,1,0
+object 282,88,2500,1,0
+object 319,141,2750,1,0
+object 356,194,8750,1,0
+object 393,247,9000,1,0
+object 430,300,9250,1,0
+object 87,73,9500,1,0
+object 124,126,9750,1,0
+object 161,179,10000,1,0
+object 198,232,10250,1,0
+object 235,285,10500,1,0
+osu_drain_rate 3f23800000000000
+legacy_drain_rate 3f133bc86bc03f39
+legacy_hp_multiplier 3ff385e5fdc7b407
+case break-overlapping 408f400000000000 1
+map 14 0.7 5 4 5 9 1.4 1 500
+event 2,2400,5000
+event 2,4000,7100
+object 60,50,1000,1,0
+object 97,103,1250,1,0
+object 134,156,1500,1,0
+object 171,209,1750,1,0
+object 208,262,2000,1,0
+object 245,315,2250,1,0
+object 282,88,2500,1,0
+object 319,141,2750,1,0
+object 356,194,8750,1,0
+object 393,247,9000,1,0
+object 430,300,9250,1,0
+object 87,73,9500,1,0
+object 124,126,9750,1,0
+object 161,179,10000,1,0
+object 198,232,10250,1,0
+object 235,285,10500,1,0
+osu_drain_rate 3f23800000000000
+legacy_drain_rate 3f133bc86bc03f39
+legacy_hp_multiplier 3ff385e5fdc7b407
+case break-sequential 408f400000000000 0
+map 14 0.7 5 4 5 9 1.4 1 500
+event 2,2500,5000
+event 2,5000,7000
+object 60,50,1000,1,0
+object 97,103,1250,1,0
+object 134,156,1500,1,0
+object 171,209,1750,1,0
+object 208,262,2000,1,0
+object 245,315,2250,1,0
+object 282,88,2500,1,0
+object 319,141,2750,1,0
+object 356,194,8750,1,0
+object 393,247,9000,1,0
+object 430,300,9250,1,0
+object 87,73,9500,1,0
+object 124,126,9750,1,0
+object 161,179,10000,1,0
+object 198,232,10250,1,0
+object 235,285,10500,1,0
+osu_drain_rate 3f23800000000000
+legacy_drain_rate 3f133bc86bc03f39
+legacy_hp_multiplier 3ff385e5fdc7b407
+case break-sequential 408f400000000000 1
+map 14 0.7 5 4 5 9 1.4 1 500
+event 2,2500,5000
+event 2,5000,7000
+object 60,50,1000,1,0
+object 97,103,1250,1,0
+object 134,156,1500,1,0
+object 171,209,1750,1,0
+object 208,262,2000,1,0
+object 245,315,2250,1,0
+object 282,88,2500,1,0
+object 319,141,2750,1,0
+object 356,194,8750,1,0
+object 393,247,9000,1,0
+object 430,300,9250,1,0
+object 87,73,9500,1,0
+object 124,126,9750,1,0
+object 161,179,10000,1,0
+object 198,232,10250,1,0
+object 235,285,10500,1,0
+osu_drain_rate 3f23800000000000
+legacy_drain_rate 3f133bc86bc03f39
+legacy_hp_multiplier 3ff385e5fdc7b407
+case break-nested 408f400000000000 0
+map 14 0.7 5 4 5 9 1.4 1 500
+event 2,2300,7200
+event 2,3000,4000
+object 60,50,1000,1,0
+object 97,103,1250,1,0
+object 134,156,1500,1,0
+object 171,209,1750,1,0
+object 208,262,2000,1,0
+object 245,315,2250,1,0
+object 282,88,2500,1,0
+object 319,141,2750,1,0
+object 356,194,8750,1,0
+object 393,247,9000,1,0
+object 430,300,9250,1,0
+object 87,73,9500,1,0
+object 124,126,9750,1,0
+object 161,179,10000,1,0
+object 198,232,10250,1,0
+object 235,285,10500,1,0
+osu_drain_rate 3f23800000000000
+legacy_drain_rate 3f133bc86bc03f39
+legacy_hp_multiplier 3ff385e5fdc7b407
+case break-nested 408f400000000000 1
+map 14 0.7 5 4 5 9 1.4 1 500
+event 2,2300,7200
+event 2,3000,4000
+object 60,50,1000,1,0
+object 97,103,1250,1,0
+object 134,156,1500,1,0
+object 171,209,1750,1,0
+object 208,262,2000,1,0
+object 245,315,2250,1,0
+object 282,88,2500,1,0
+object 319,141,2750,1,0
+object 356,194,8750,1,0
+object 393,247,9000,1,0
+object 430,300,9250,1,0
+object 87,73,9500,1,0
+object 124,126,9750,1,0
+object 161,179,10000,1,0
+object 198,232,10250,1,0
+object 235,285,10500,1,0
+osu_drain_rate 3f23800000000000
+legacy_drain_rate 3f133bc86bc03f39
+legacy_hp_multiplier 3ff385e5fdc7b407
+case break-short 408f400000000000 0
+map 14 0.7 5 4 5 9 1.4 1 500
+event 2,3000,3300
+object 60,50,1000,1,0
+object 97,103,1250,1,0
+object 134,156,1500,1,0
+object 171,209,1750,1,0
+object 208,262,2000,1,0
+object 245,315,2250,1,0
+object 282,88,2500,1,0
+object 319,141,2750,1,0
+object 356,194,8750,1,0
+object 393,247,9000,1,0
+object 430,300,9250,1,0
+object 87,73,9500,1,0
+object 124,126,9750,1,0
+object 161,179,10000,1,0
+object 198,232,10250,1,0
+object 235,285,10500,1,0
+osu_drain_rate 3f23800000000000
+legacy_drain_rate 3f133bc86bc03f39
+legacy_hp_multiplier 3ff385e5fdc7b407
+case break-short 408f400000000000 1
+map 14 0.7 5 4 5 9 1.4 1 500
+event 2,3000,3300
+object 60,50,1000,1,0
+object 97,103,1250,1,0
+object 134,156,1500,1,0
+object 171,209,1750,1,0
+object 208,262,2000,1,0
+object 245,315,2250,1,0
+object 282,88,2500,1,0
+object 319,141,2750,1,0
+object 356,194,8750,1,0
+object 393,247,9000,1,0
+object 430,300,9250,1,0
+object 87,73,9500,1,0
+object 124,126,9750,1,0
+object 161,179,10000,1,0
+object 198,232,10250,1,0
+object 235,285,10500,1,0
+osu_drain_rate 3f23800000000000
+legacy_drain_rate 3f133bc86bc03f39
+legacy_hp_multiplier 3ff385e5fdc7b407
+case break-reversed 408f400000000000 0
+map 14 0.7 5 4 5 9 1.4 1 500
+event 2,5000,3000
+object 60,50,1000,1,0
+object 97,103,1250,1,0
+object 134,156,1500,1,0
+object 171,209,1750,1,0
+object 208,262,2000,1,0
+object 245,315,2250,1,0
+object 282,88,2500,1,0
+object 319,141,2750,1,0
+object 356,194,8750,1,0
+object 393,247,9000,1,0
+object 430,300,9250,1,0
+object 87,73,9500,1,0
+object 124,126,9750,1,0
+object 161,179,10000,1,0
+object 198,232,10250,1,0
+object 235,285,10500,1,0
+osu_drain_rate 3f23800000000000
+legacy_drain_rate 3f133bc86bc03f39
+legacy_hp_multiplier 3ff385e5fdc7b407
+case break-reversed 408f400000000000 1
+map 14 0.7 5 4 5 9 1.4 1 500
+event 2,5000,3000
+object 60,50,1000,1,0
+object 97,103,1250,1,0
+object 134,156,1500,1,0
+object 171,209,1750,1,0
+object 208,262,2000,1,0
+object 245,315,2250,1,0
+object 282,88,2500,1,0
+object 319,141,2750,1,0
+object 356,194,8750,1,0
+object 393,247,9000,1,0
+object 430,300,9250,1,0
+object 87,73,9500,1,0
+object 124,126,9750,1,0
+object 161,179,10000,1,0
+object 198,232,10250,1,0
+object 235,285,10500,1,0
+osu_drain_rate 3f23800000000000
+legacy_drain_rate 3f133bc86bc03f39
+legacy_hp_multiplier 3ff385e5fdc7b407
+case break-two-gaps 408f400000000000 0
+map 14 0.7 6 4 5 9 1.4 1 500
+event 2,3600,5700
+event 2,8700,10800
+object 60,50,1000,1,0
+object 97,103,1300,1,0
+object 134,156,1600,1,0
+object 171,209,1900,1,0
+object 208,262,2200,1,0
+object 245,315,2500,1,0
+object 282,88,2800,1,0
+object 319,141,3100,1,0
+object 356,194,3400,1,0
+object 393,247,3700,1,0
+object 430,300,8700,1,0
+object 87,73,9000,1,0
+object 124,126,9300,1,0
+object 161,179,9600,1,0
+object 198,232,9900,1,0
+object 235,285,10200,1,0
+object 272,58,10500,1,0
+object 309,111,10800,1,0
+object 346,164,11100,1,0
+object 383,217,11400,1,0
+object 420,270,16400,1,0
+object 77,323,16700,1,0
+object 114,96,17000,1,0
+object 151,149,17300,1,0
+object 188,202,17600,1,0
+object 225,255,17900,1,0
+object 262,308,18200,1,0
+object 299,81,18500,1,0
+object 336,134,18800,1,0
+object 373,187,19100,1,0
+osu_drain_rate 3f04000000000000
+legacy_drain_rate 3f04e11829866df8
+legacy_hp_multiplier 3ff1ac883ff14422
+case break-two-gaps 408f400000000000 1
+map 14 0.7 6 4 5 9 1.4 1 500
+event 2,3600,5700
+event 2,8700,10800
+object 60,50,1000,1,0
+object 97,103,1300,1,0
+object 134,156,1600,1,0
+object 171,209,1900,1,0
+object 208,262,2200,1,0
+object 245,315,2500,1,0
+object 282,88,2800,1,0
+object 319,141,3100,1,0
+object 356,194,3400,1,0
+object 393,247,3700,1,0
+object 430,300,8700,1,0
+object 87,73,9000,1,0
+object 124,126,9300,1,0
+object 161,179,9600,1,0
+object 198,232,9900,1,0
+object 235,285,10200,1,0
+object 272,58,10500,1,0
+object 309,111,10800,1,0
+object 346,164,11100,1,0
+object 383,217,11400,1,0
+object 420,270,16400,1,0
+object 77,323,16700,1,0
+object 114,96,17000,1,0
+object 151,149,17300,1,0
+object 188,202,17600,1,0
+object 225,255,17900,1,0
+object 262,308,18200,1,0
+object 299,81,18500,1,0
+object 336,134,18800,1,0
+object 373,187,19100,1,0
+osu_drain_rate 3f04000000000000
+legacy_drain_rate 3f04e11829866df8
+legacy_hp_multiplier 3ff1ac883ff14422
+case break-before-first 40b3880000000000 0
+map 14 0.7 5 4 5 9 1.4 1 500
+event 2,0,4000
+object 60,50,5000,5,0
+object 97,103,5300,1,0
+object 134,156,5600,1,0
+object 171,209,5900,1,0
+object 208,262,6200,1,0
+object 245,315,6500,5,0
+object 282,88,6800,1,0
+object 319,141,7100,1,0
+object 356,194,7400,1,0
+object 393,247,7700,1,0
+osu_drain_rate 3f20800000000000
+legacy_drain_rate 3f0ffdbf07720d00
+legacy_hp_multiplier 3ff3ea5b2d67156c
+case break-before-first 40b3880000000000 1
+map 14 0.7 5 4 5 9 1.4 1 500
+event 2,0,4000
+object 60,50,5000,5,0
+object 97,103,5300,1,0
+object 134,156,5600,1,0
+object 171,209,5900,1,0
+object 208,262,6200,1,0
+object 245,315,6500,5,0
+object 282,88,6800,1,0
+object 319,141,7100,1,0
+object 356,194,7400,1,0
+object 393,247,7700,1,0
+osu_drain_rate 3f20800000000000
+legacy_drain_rate 3f0ffdbf07720d00
+legacy_hp_multiplier 3ff3ea5b2d67156c
+case break-before-first-early-drain 408f400000000000 0
+map 14 0.7 5 4 5 9 1.4 1 500
+event 2,1500,4500
+object 60,50,5000,5,0
+object 97,103,5300,1,0
+object 134,156,5600,1,0
+object 171,209,5900,1,0
+object 208,262,6200,1,0
+object 245,315,6500,5,0
+object 282,88,6800,1,0
+object 319,141,7100,1,0
+object 356,194,7400,1,0
+object 393,247,7700,1,0
+osu_drain_rate 3f20800000000000
+legacy_drain_rate 3f0ffdbf07720d00
+legacy_hp_multiplier 3ff3ea5b2d67156c
+case break-before-first-early-drain 408f400000000000 1
+map 14 0.7 5 4 5 9 1.4 1 500
+event 2,1500,4500
+object 60,50,5000,5,0
+object 97,103,5300,1,0
+object 134,156,5600,1,0
+object 171,209,5900,1,0
+object 208,262,6200,1,0
+object 245,315,6500,5,0
+object 282,88,6800,1,0
+object 319,141,7100,1,0
+object 356,194,7400,1,0
+object 393,247,7700,1,0
+osu_drain_rate 3f20800000000000
+legacy_drain_rate 3f0ffdbf07720d00
+legacy_hp_multiplier 3ff3ea5b2d67156c
+case break-after-last 408f400000000000 0
+map 14 0.7 5 4 5 9 1.4 1 500
+event 2,4500,8000
+object 60,50,1000,5,0
+object 97,103,1300,1,0
+object 134,156,1600,1,0
+object 171,209,1900,1,0
+object 208,262,2200,1,0
+object 245,315,2500,5,0
+object 282,88,2800,1,0
+object 319,141,3100,1,0
+object 356,194,3400,1,0
+object 393,247,3700,1,0
+osu_drain_rate 3f20800000000000
+legacy_drain_rate 3f0ffdbf07720d00
+legacy_hp_multiplier 3ff3ea5b2d67156c
+case break-after-last 408f400000000000 1
+map 14 0.7 5 4 5 9 1.4 1 500
+event 2,4500,8000
+object 60,50,1000,5,0
+object 97,103,1300,1,0
+object 134,156,1600,1,0
+object 171,209,1900,1,0
+object 208,262,2200,1,0
+object 245,315,2500,5,0
+object 282,88,2800,1,0
+object 319,141,3100,1,0
+object 356,194,3400,1,0
+object 393,247,3700,1,0
+osu_drain_rate 3f20800000000000
+legacy_drain_rate 3f0ffdbf07720d00
+legacy_hp_multiplier 3ff3ea5b2d67156c
+case break-at-object-times 408f400000000000 0
+map 14 0.7 5 4 5 9 1.4 1 500
+event 2,2750,7000
+object 60,50,1000,1,0
+object 97,103,1250,1,0
+object 134,156,1500,1,0
+object 171,209,1750,1,0
+object 208,262,2000,1,0
+object 245,315,2250,1,0
+object 282,88,2500,1,0
+object 319,141,2750,1,0
+object 356,194,8750,1,0
+object 393,247,9000,1,0
+object 430,300,9250,1,0
+object 87,73,9500,1,0
+object 124,126,9750,1,0
+object 161,179,10000,1,0
+object 198,232,10250,1,0
+object 235,285,10500,1,0
+osu_drain_rate 3f23800000000000
+legacy_drain_rate 3f133bc86bc03f39
+legacy_hp_multiplier 3ff385e5fdc7b407
+case break-at-object-times 408f400000000000 1
+map 14 0.7 5 4 5 9 1.4 1 500
+event 2,2750,7000
+object 60,50,1000,1,0
+object 97,103,1250,1,0
+object 134,156,1500,1,0
+object 171,209,1750,1,0
+object 208,262,2000,1,0
+object 245,315,2250,1,0
+object 282,88,2500,1,0
+object 319,141,2750,1,0
+object 356,194,8750,1,0
+object 393,247,9000,1,0
+object 430,300,9250,1,0
+object 87,73,9500,1,0
+object 124,126,9750,1,0
+object 161,179,10000,1,0
+object 198,232,10250,1,0
+object 235,285,10500,1,0
+osu_drain_rate 3f23800000000000
+legacy_drain_rate 3f133bc86bc03f39
+legacy_hp_multiplier 3ff385e5fdc7b407
+case break-dense 408f400000000000 0
+map 14 0.7 5 4 5 9 1.4 1 500
+event 2,1600,2100
+object 60,50,1000,5,0
+object 97,103,1250,1,0
+object 134,156,1500,1,0
+object 171,209,1750,1,0
+object 208,262,2000,1,0
+object 245,315,2250,5,0
+object 282,88,2500,1,0
+object 319,141,2750,1,0
+object 356,194,3000,1,0
+object 393,247,3250,1,0
+object 430,300,3500,5,0
+object 87,73,3750,1,0
+osu_drain_rate 3f25000000000000
+legacy_drain_rate 3f14dea578790bb4
+legacy_hp_multiplier 3ff3b7e09c7a571c
+case break-dense 408f400000000000 1
+map 14 0.7 5 4 5 9 1.4 1 500
+event 2,1600,2100
+object 60,50,1000,5,0
+object 97,103,1250,1,0
+object 134,156,1500,1,0
+object 171,209,1750,1,0
+object 208,262,2000,1,0
+object 245,315,2250,5,0
+object 282,88,2500,1,0
+object 319,141,2750,1,0
+object 356,194,3000,1,0
+object 393,247,3250,1,0
+object 430,300,3500,5,0
+object 87,73,3750,1,0
+osu_drain_rate 3f25000000000000
+legacy_drain_rate 3f14dea578790bb4
+legacy_hp_multiplier 3ff3b7e09c7a571c
+case sliders-sv1.4-tr1 408f400000000000 0
+map 14 0.7 5 4 5 9 1.4 1 500
+object 60,50,1000,1,0
+object 100,100,1400,2,0,L|300:100,1,200
+object 97,103,2600,5,0
+object 300,200,3000,2,0,P|380:260|300:320,3,160
+object 134,156,5200,1,0
+object 60,300,5600,2,0,L|200:300|200:160,2,330
+object 400,60,8200,2,0,L|400:330,4,270
+object 171,209,11000,5,0
+object 120,120,11500,2,0,L|220:120|220:220,1,640
+object 208,262,14000,1,0
+osu_drain_rate 3f0c000000000000
+legacy_drain_rate 3f0912d454258a30
+legacy_hp_multiplier 3ff153618d8ed498
+case sliders-sv1.4-tr1 408f400000000000 1
+map 14 0.7 5 4 5 9 1.4 1 500
+object 60,50,1000,1,0
+object 100,100,1400,2,0,L|300:100,1,200
+object 97,103,2600,5,0
+object 300,200,3000,2,0,P|380:260|300:320,3,160
+object 134,156,5200,1,0
+object 60,300,5600,2,0,L|200:300|200:160,2,330
+object 400,60,8200,2,0,L|400:330,4,270
+object 171,209,11000,5,0
+object 120,120,11500,2,0,L|220:120|220:220,1,640
+object 208,262,14000,1,0
+osu_drain_rate 3f0e000000000000
+legacy_drain_rate 3f0ce7edb0ad3625
+legacy_hp_multiplier 3ff127776622f5f9
+case sliders-sv2-tr2-inherited 408f400000000000 0
+map 14 0.7 6 4 5 9 2 2 450
+timing 3000,-50,4,2,0,100,0,0
+timing 5600,-200,4,2,0,100,0,0
+timing 11500,-75,4,2,0,100,0,0
+object 60,50,1000,1,0
+object 100,100,1400,2,0,L|300:100,1,200
+object 97,103,2600,5,0
+object 300,200,3000,2,0,P|380:260|300:320,3,160
+object 134,156,5200,1,0
+object 60,300,5600,2,0,L|200:300|200:160,2,330
+object 400,60,8200,2,0,L|400:330,4,270
+object 171,209,11000,5,0
+object 120,120,11500,2,0,L|220:120|220:220,1,640
+object 208,262,14000,1,0
+osu_drain_rate 3f16000000000000
+legacy_drain_rate 3f13a48b52cf3b1d
+legacy_hp_multiplier 3ff0fbfc8dae0548
+case sliders-sv2-tr2-inherited 408f400000000000 1
+map 14 0.7 6 4 5 9 2 2 450
+timing 3000,-50,4,2,0,100,0,0
+timing 5600,-200,4,2,0,100,0,0
+timing 11500,-75,4,2,0,100,0,0
+object 60,50,1000,1,0
+object 100,100,1400,2,0,L|300:100,1,200
+object 97,103,2600,5,0
+object 300,200,3000,2,0,P|380:260|300:320,3,160
+object 134,156,5200,1,0
+object 60,300,5600,2,0,L|200:300|200:160,2,330
+object 400,60,8200,2,0,L|400:330,4,270
+object 171,209,11000,5,0
+object 120,120,11500,2,0,L|220:120|220:220,1,640
+object 208,262,14000,1,0
+osu_drain_rate 3f17000000000000
+legacy_drain_rate 3f155051d7a1bfb3
+legacy_hp_multiplier 3ff0fbfc8dae0548
+case sliders-sv0.8-tr3-inherited 408f400000000000 0
+map 14 0.7 4 4 5 9 0.8 3 600
+timing 3000,-50,4,2,0,100,0,0
+timing 5600,-200,4,2,0,100,0,0
+timing 11500,-75,4,2,0,100,0,0
+object 60,50,1000,1,0
+object 100,100,1400,2,0,L|300:100,1,200
+object 97,103,2600,5,0
+object 300,200,3000,2,0,P|380:260|300:320,3,160
+object 134,156,5200,1,0
+object 60,300,5600,2,0,L|200:300|200:160,2,330
+object 400,60,8200,2,0,L|400:330,4,270
+object 171,209,11000,5,0
+object 120,120,11500,2,0,L|220:120|220:220,1,640
+object 208,262,14000,1,0
+osu_drain_rate 3f15800000000000
+legacy_drain_rate 3f179e741ccc351e
+legacy_hp_multiplier 3ff0000000000000
+case sliders-sv0.8-tr3-inherited 408f400000000000 1
+map 14 0.7 4 4 5 9 0.8 3 600
+timing 3000,-50,4,2,0,100,0,0
+timing 5600,-200,4,2,0,100,0,0
+timing 11500,-75,4,2,0,100,0,0
+object 60,50,1000,1,0
+object 100,100,1400,2,0,L|300:100,1,200
+object 97,103,2600,5,0
+object 300,200,3000,2,0,P|380:260|300:320,3,160
+object 134,156,5200,1,0
+object 60,300,5600,2,0,L|200:300|200:160,2,330
+object 400,60,8200,2,0,L|400:330,4,270
+object 171,209,11000,5,0
+object 120,120,11500,2,0,L|220:120|220:220,1,640
+object 208,262,14000,1,0
+osu_drain_rate 3f15800000000000
+legacy_drain_rate 3f189a639dff61ff
+legacy_hp_multiplier 3ff0000000000000
+case sliders-hp9 408f400000000000 0
+map 14 0.7 9 4 5 9 1.4 2 500
+timing 3000,-50,4,2,0,100,0,0
+timing 5600,-200,4,2,0,100,0,0
+timing 11500,-75,4,2,0,100,0,0
+object 60,50,1000,1,0
+object 100,100,1400,2,0,L|300:100,1,200
+object 97,103,2600,5,0
+object 300,200,3000,2,0,P|380:260|300:320,3,160
+object 134,156,5200,1,0
+object 60,300,5600,2,0,L|200:300|200:160,2,330
+object 400,60,8200,2,0,L|400:330,4,270
+object 171,209,11000,5,0
+object 120,120,11500,2,0,L|220:120|220:220,1,640
+object 208,262,14000,1,0
+osu_drain_rate 3f1c800000000000
+legacy_drain_rate 3f1ab2308937548f
+legacy_hp_multiplier 3ff07c1ce6c093d9
+case sliders-hp9 408f400000000000 1
+map 14 0.7 9 4 5 9 1.4 2 500
+timing 3000,-50,4,2,0,100,0,0
+timing 5600,-200,4,2,0,100,0,0
+timing 11500,-75,4,2,0,100,0,0
+object 60,50,1000,1,0
+object 100,100,1400,2,0,L|300:100,1,200
+object 97,103,2600,5,0
+object 300,200,3000,2,0,P|380:260|300:320,3,160
+object 134,156,5200,1,0
+object 60,300,5600,2,0,L|200:300|200:160,2,330
+object 400,60,8200,2,0,L|400:330,4,270
+object 171,209,11000,5,0
+object 120,120,11500,2,0,L|220:120|220:220,1,640
+object 208,262,14000,1,0
+osu_drain_rate 3f1d800000000000
+legacy_drain_rate 3f1cf791ff8e426b
+legacy_hp_multiplier 3ff0525460aa64c3
+case sliders-hp0 408f400000000000 0
+map 14 0.7 0 4 5 9 2.4 1 400
+object 60,50,1000,1,0
+object 100,100,1400,2,0,L|300:100,1,200
+object 97,103,2600,5,0
+object 300,200,3000,2,0,P|380:260|300:320,3,160
+object 134,156,5200,1,0
+object 60,300,5600,2,0,L|200:300|200:160,2,330
+object 400,60,8200,2,0,L|400:330,4,270
+object 171,209,11000,5,0
+object 120,120,11500,2,0,L|220:120|220:220,1,640
+object 208,262,14000,1,0
+osu_drain_rate 3ee0000000000000
+legacy_drain_rate 3ef102a476fc5b7a
+legacy_hp_multiplier 3ff0000000000000
+case sliders-hp0 408f400000000000 1
+map 14 0.7 0 4 5 9 2.4 1 400
+object 60,50,1000,1,0
+object 100,100,1400,2,0,L|300:100,1,200
+object 97,103,2600,5,0
+object 300,200,3000,2,0,P|380:260|300:320,3,160
+object 134,156,5200,1,0
+object 60,300,5600,2,0,L|200:300|200:160,2,330
+object 400,60,8200,2,0,L|400:330,4,270
+object 171,209,11000,5,0
+object 120,120,11500,2,0,L|220:120|220:220,1,640
+object 208,262,14000,1,0
+osu_drain_rate 3ee0000000000000
+legacy_drain_rate 3ef102a476fc5b7a
+legacy_hp_multiplier 3ff0000000000000
+case sliders-with-break 408f400000000000 0
+map 14 0.7 5 4 5 9 1.4 1 500
+timing 3000,-50,4,2,0,100,0,0
+timing 5600,-200,4,2,0,100,0,0
+timing 11500,-75,4,2,0,100,0,0
+event 2,6000,8000
+object 60,50,1000,1,0
+object 100,100,1400,2,0,L|300:100,1,200
+object 97,103,2600,5,0
+object 300,200,3000,2,0,P|380:260|300:320,3,160
+object 134,156,5200,1,0
+object 60,300,5600,2,0,L|200:300|200:160,2,330
+object 400,60,8200,2,0,L|400:330,4,270
+object 171,209,11000,5,0
+object 120,120,11500,2,0,L|220:120|220:220,1,640
+object 208,262,14000,1,0
+osu_drain_rate 3f07000000000000
+legacy_drain_rate 3f08952f2a31710a
+legacy_hp_multiplier 3ff127776622f5f9
+case sliders-with-break 408f400000000000 1
+map 14 0.7 5 4 5 9 1.4 1 500
+timing 3000,-50,4,2,0,100,0,0
+timing 5600,-200,4,2,0,100,0,0
+timing 11500,-75,4,2,0,100,0,0
+event 2,6000,8000
+object 60,50,1000,1,0
+object 100,100,1400,2,0,L|300:100,1,200
+object 97,103,2600,5,0
+object 300,200,3000,2,0,P|380:260|300:320,3,160
+object 134,156,5200,1,0
+object 60,300,5600,2,0,L|200:300|200:160,2,330
+object 400,60,8200,2,0,L|400:330,4,270
+object 171,209,11000,5,0
+object 120,120,11500,2,0,L|220:120|220:220,1,640
+object 208,262,14000,1,0
+osu_drain_rate 3f07000000000000
+legacy_drain_rate 3f0c57142d1bfc70
+legacy_hp_multiplier 3ff0d0efea0f262e
+case long-slider-hp10 408f400000000000 0
+map 14 0.7 10 4 5 9 1 2 600
+timing 2000,-200,4,2,0,100,0,0
+object 60,50,1000,1,0
+object 97,103,1400,1,0
+object 60,200,2000,2,0,L|460:200,4,400
+object 134,156,12000,1,0
+object 171,209,12400,1,0
+osu_drain_rate 3f15000000000000
+legacy_drain_rate 3f15c4695ef17214
+legacy_hp_multiplier 3ff0000000000000
+case long-slider-hp10 408f400000000000 1
+map 14 0.7 10 4 5 9 1 2 600
+timing 2000,-200,4,2,0,100,0,0
+object 60,50,1000,1,0
+object 97,103,1400,1,0
+object 60,200,2000,2,0,L|460:200,4,400
+object 134,156,12000,1,0
+object 171,209,12400,1,0
+osu_drain_rate 3f15000000000000
+legacy_drain_rate 3f15c4695ef17214
+legacy_hp_multiplier 3ff0000000000000
+case long-slider-hp8 408f400000000000 0
+map 14 0.7 8 4 5 9 1 1 500
+timing 1500,-300,4,2,0,100,0,0
+object 60,50,1000,1,0
+object 60,200,1500,2,0,P|260:100|460:200,2,600
+object 97,103,11000,1,0
+object 134,156,11300,1,0
+osu_drain_rate 3f0b000000000000
+legacy_drain_rate 3f0e262b40543d92
+legacy_hp_multiplier 3ff0000000000000
+case long-slider-hp8 408f400000000000 1
+map 14 0.7 8 4 5 9 1 1 500
+timing 1500,-300,4,2,0,100,0,0
+object 60,50,1000,1,0
+object 60,200,1500,2,0,P|260:100|460:200,2,600
+object 97,103,11000,1,0
+object 134,156,11300,1,0
+osu_drain_rate 3f0b000000000000
+legacy_drain_rate 3f0e262b40543d92
+legacy_hp_multiplier 3ff0000000000000
+case spinner-short-od5 408f400000000000 0
+map 14 0.7 5 4 5 9 1.4 1 500
+object 60,50,1000,1,0
+object 97,103,1300,1,0
+object 256,192,2000,8,0,2400
+object 134,156,3000,1,0
+object 171,209,3300,1,0
+osu_drain_rate 3f14000000000000
+legacy_drain_rate 3f0a9b047b0af25b
+legacy_hp_multiplier 3ff3ea5b2d67156c
+case spinner-short-od5 408f400000000000 1
+map 14 0.7 5 4 5 9 1.4 1 500
+object 60,50,1000,1,0
+object 97,103,1300,1,0
+object 256,192,2000,8,0,2400
+object 134,156,3000,1,0
+object 171,209,3300,1,0
+osu_drain_rate 3f14000000000000
+legacy_drain_rate 3f0a9b047b0af25b
+legacy_hp_multiplier 3ff3ea5b2d67156c
+case spinner-long-od5 408f400000000000 0
+map 14 0.7 5 4 5 9 1.4 1 500
+object 60,50,1000,1,0
+object 97,103,1300,1,0
+object 256,192,2000,8,0,8000
+object 134,156,9000,1,0
+object 171,209,9300,1,0
+osu_drain_rate 3ef0000000000000
+legacy_drain_rate 3efce1d033c41df8
+legacy_hp_multiplier 3ff20779aecbb247
+case spinner-long-od5 408f400000000000 1
+map 14 0.7 5 4 5 9 1.4 1 500
+object 60,50,1000,1,0
+object 97,103,1300,1,0
+object 256,192,2000,8,0,8000
+object 134,156,9000,1,0
+object 171,209,9300,1,0
+osu_drain_rate 3ef0000000000000
+legacy_drain_rate 3efce1d033c41df8
+legacy_hp_multiplier 3ff20779aecbb247
+case spinner-short-od10 408f400000000000 0
+map 14 0.7 5 4 10 9 1.4 1 500
+object 60,50,1000,1,0
+object 97,103,1300,1,0
+object 256,192,2000,8,0,2400
+object 134,156,3000,1,0
+object 171,209,3300,1,0
+osu_drain_rate 3f14000000000000
+legacy_drain_rate 3f0a9b047b0af25b
+legacy_hp_multiplier 3ff3ea5b2d67156c
+case spinner-short-od10 408f400000000000 1
+map 14 0.7 5 4 10 9 1.4 1 500
+object 60,50,1000,1,0
+object 97,103,1300,1,0
+object 256,192,2000,8,0,2400
+object 134,156,3000,1,0
+object 171,209,3300,1,0
+osu_drain_rate 3f14000000000000
+legacy_drain_rate 3f0a9b047b0af25b
+legacy_hp_multiplier 3ff3ea5b2d67156c
+case spinner-long-od10 408f400000000000 0
+map 14 0.7 5 4 10 9 1.4 1 500
+object 60,50,1000,1,0
+object 97,103,1300,1,0
+object 256,192,2000,8,0,8000
+object 134,156,9000,1,0
+object 171,209,9300,1,0
+osu_drain_rate 3ef0000000000000
+legacy_drain_rate 3f01b6022549ced6
+legacy_hp_multiplier 3ff1d9c70d61c241
+case spinner-long-od10 408f400000000000 1
+map 14 0.7 5 4 10 9 1.4 1 500
+object 60,50,1000,1,0
+object 97,103,1300,1,0
+object 256,192,2000,8,0,8000
+object 134,156,9000,1,0
+object 171,209,9300,1,0
+osu_drain_rate 3ef0000000000000
+legacy_drain_rate 3f01b6022549ced6
+legacy_hp_multiplier 3ff1d9c70d61c241
+case spinner-only-hp7 408f400000000000 0
+map 14 0.7 7 4 5 9 1.4 1 500
+object 256,192,1000,8,0,5000
+object 256,192,6000,8,0,6700
+osu_drain_rate 3f0e000000000000
+legacy_drain_rate 3f033165a4f996fa
+legacy_hp_multiplier 3ff450d54760ae9c
+case spinner-only-hp7 408f400000000000 1
+map 14 0.7 7 4 5 9 1.4 1 500
+object 256,192,1000,8,0,5000
+object 256,192,6000,8,0,6700
+osu_drain_rate 3f0e000000000000
+legacy_drain_rate 3f033165a4f996fa
+legacy_hp_multiplier 3ff450d54760ae9c
+case mixed 4092c00000000000 0
+map 14 0.7 6 4 5 9 1.6 2 480
+timing 3700,-60,4,2,0,100,0,0
+timing 9000,-120,4,2,0,100,0,0
+event 2,6000,9000
+object 60,50,1200,5,0
+object 97,103,1500,1,0
+object 100,100,1900,2,0,L|260:100,2,300
+object 134,156,3300,5,0
+object 300,250,3700,2,0,P|360:300|300:340,1,150
+object 256,192,5000,8,0,7500
+object 171,209,8200,5,0
+object 208,262,8500,1,0
+object 60,60,9000,2,0,L|260:60|260:200,3,520
+object 245,315,13000,5,0
+object 282,88,13300,1,0
+object 319,141,13600,1,0
+osu_drain_rate 3f0c000000000000
+legacy_drain_rate 3f121a4e6de788cf
+legacy_hp_multiplier 3ff127776622f5f9
+case mixed 4092c00000000000 1
+map 14 0.7 6 4 5 9 1.6 2 480
+timing 3700,-60,4,2,0,100,0,0
+timing 9000,-120,4,2,0,100,0,0
+event 2,6000,9000
+object 60,50,1200,5,0
+object 97,103,1500,1,0
+object 100,100,1900,2,0,L|260:100,2,300
+object 134,156,3300,5,0
+object 300,250,3700,2,0,P|360:300|300:340,1,150
+object 256,192,5000,8,0,7500
+object 171,209,8200,5,0
+object 208,262,8500,1,0
+object 60,60,9000,2,0,L|260:60|260:200,3,520
+object 245,315,13000,5,0
+object 282,88,13300,1,0
+object 319,141,13600,1,0
+osu_drain_rate 3f0c000000000000
+legacy_drain_rate 3f13421cf7a49c6f
+legacy_hp_multiplier 3ff0fbfc8dae0548
+case single-circle 408f400000000000 0
+map 14 0.7 5 4 5 9 1.4 1 500
+object 60,50,1000,5,0
+osu_drain_rate 0000000000000000
+legacy_drain_rate 3f30624dd2f1a9fc
+legacy_hp_multiplier 3ff0000000000000
+case single-circle 408f400000000000 1
+map 14 0.7 5 4 5 9 1.4 1 500
+object 60,50,1000,5,0
+osu_drain_rate 0000000000000000
+legacy_drain_rate 3f30624dd2f1a9fc
+legacy_hp_multiplier 3ff0000000000000
+case single-slider 408f400000000000 0
+map 14 0.7 5 4 5 9 1.4 1 500
+object 100,100,1000,2,0,L|300:100,2,200
+osu_drain_rate 3f1c000000000000
+legacy_drain_rate 3f138ac4712b096d
+legacy_hp_multiplier 3ff484d7695f16c1
+case single-slider 408f400000000000 1
+map 14 0.7 5 4 5 9 1.4 1 500
+object 100,100,1000,2,0,L|300:100,2,200
+osu_drain_rate 3f1c000000000000
+legacy_drain_rate 3f168ed7258209be
+legacy_hp_multiplier 3ff3ea5b2d67156c
+case single-spinner 408f400000000000 0
+map 14 0.7 5 4 5 9 1.4 1 500
+object 256,192,1000,8,0,4000
+osu_drain_rate 0000000000000000
+legacy_drain_rate 3f0578ba4d039c65
+legacy_hp_multiplier 3ff670f490db876a
+case single-spinner 408f400000000000 1
+map 14 0.7 5 4 5 9 1.4 1 500
+object 256,192,1000,8,0,4000
+osu_drain_rate 0000000000000000
+legacy_drain_rate 3f0578ba4d039c65
+legacy_hp_multiplier 3ff670f490db876a
+case two-circles 408f400000000000 0
+map 14 0.7 5 4 5 9 1.4 1 500
+object 60,50,1000,5,0
+object 97,103,2000,1,0
+osu_drain_rate 3f18000000000000
+legacy_drain_rate 3f06191f45f63a62
+legacy_hp_multiplier 3ff670f490db876a
+case two-circles 408f400000000000 1
+map 14 0.7 5 4 5 9 1.4 1 500
+object 60,50,1000,5,0
+object 97,103,2000,1,0
+osu_drain_rate 3f18000000000000
+legacy_drain_rate 3f06191f45f63a62
+legacy_hp_multiplier 3ff670f490db876a
+case two-circles-hp10 408f400000000000 0
+map 14 0.7 10 4 5 9 1.4 1 500
+object 60,50,1000,5,0
+object 97,103,4000,1,0
+osu_drain_rate 3f2a000000000000
+legacy_drain_rate 3f00528ac8a99a2d
+legacy_hp_multiplier 3ff9cbad92567905
+case two-circles-hp10 408f400000000000 1
+map 14 0.7 10 4 5 9 1.4 1 500
+object 60,50,1000,5,0
+object 97,103,4000,1,0
+osu_drain_rate 3f2a000000000000
+legacy_drain_rate 3f00528ac8a99a2d
+legacy_hp_multiplier 3ff9cbad92567905
+case circle-and-slider 408f400000000000 0
+map 14 0.7 7 4 5 9 1.4 1 500
+object 60,50,1000,1,0
+object 100,100,2000,2,0,L|300:100,3,200
+osu_drain_rate 3f21000000000000
+legacy_drain_rate 3f10408f8847c606
+legacy_hp_multiplier 3ff55a20bca3dd25
+case circle-and-slider 408f400000000000 1
+map 14 0.7 7 4 5 9 1.4 1 500
+object 60,50,1000,1,0
+object 100,100,2000,2,0,L|300:100,3,200
+osu_drain_rate 3f21000000000000
+legacy_drain_rate 3f12028ce673d92c
+legacy_hp_multiplier 3ff4ee6c6ebd986a
+case lazer-unit-no-break c08f400000000000 0
+map 14 0.7 5 5 5 5 1.4 1 500
+object 60,50,0,1,0
+object 97,103,2000,1,0
+osu_drain_rate 3f08000000000000
+legacy_drain_rate 3eef3b994239eb03
+legacy_hp_multiplier 3ff71f08819000bb
+case lazer-unit-no-break c08f400000000000 1
+map 14 0.7 5 5 5 5 1.4 1 500
+object 60,50,0,1,0
+object 97,103,2000,1,0
+osu_drain_rate 3f08000000000000
+legacy_drain_rate 3eef3b994239eb03
+legacy_hp_multiplier 3ff71f08819000bb
+case lazer-unit-single-break c08f400000000000 0
+map 14 0.7 5 5 5 5 1.4 1 500
+event 2,500,1500
+object 60,50,0,1,0
+object 97,103,2000,1,0
+osu_drain_rate 3f18000000000000
+legacy_drain_rate 3f0698ea0ea2ecfc
+legacy_hp_multiplier 3ff6aa67a6c93e87
+case lazer-unit-single-break c08f400000000000 1
+map 14 0.7 5 5 5 5 1.4 1 500
+event 2,500,1500
+object 60,50,0,1,0
+object 97,103,2000,1,0
+osu_drain_rate 3f18000000000000
+legacy_drain_rate 3f0698ea0ea2ecfc
+legacy_hp_multiplier 3ff6aa67a6c93e87
+case lazer-unit-overlapping-break c08f400000000000 0
+map 14 0.7 5 5 5 5 1.4 1 500
+event 2,500,1400
+event 2,750,1500
+object 60,50,0,1,0
+object 97,103,2000,1,0
+osu_drain_rate 3f18000000000000
+legacy_drain_rate 3f0698ea0ea2ecfc
+legacy_hp_multiplier 3ff6aa67a6c93e87
+case lazer-unit-overlapping-break c08f400000000000 1
+map 14 0.7 5 5 5 5 1.4 1 500
+event 2,500,1400
+event 2,750,1500
+object 60,50,0,1,0
+object 97,103,2000,1,0
+osu_drain_rate 3f18000000000000
+legacy_drain_rate 3f0698ea0ea2ecfc
+legacy_hp_multiplier 3ff6aa67a6c93e87
+case lazer-unit-sequential-break c08f400000000000 0
+map 14 0.7 5 5 5 5 1.4 1 500
+event 2,500,1000
+event 2,1000,1500
+object 60,50,0,1,0
+object 97,103,2000,1,0
+osu_drain_rate 3f18000000000000
+legacy_drain_rate 3f0698ea0ea2ecfc
+legacy_hp_multiplier 3ff6aa67a6c93e87
+case lazer-unit-sequential-break c08f400000000000 1
+map 14 0.7 5 5 5 5 1.4 1 500
+event 2,500,1000
+event 2,1000,1500
+object 60,50,0,1,0
+object 97,103,2000,1,0
+osu_drain_rate 3f18000000000000
+legacy_drain_rate 3f0698ea0ea2ecfc
+legacy_hp_multiplier 3ff6aa67a6c93e87

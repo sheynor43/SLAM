@@ -6,6 +6,8 @@
     <AllowUnsafeBlocks>true</AllowUnsafeBlocks>
     <ImplicitUsings>disable</ImplicitUsings>
     <LangVersion>latest</LangVersion>
+    <!-- The verbatim lazer sources carry nullable annotations. -->
+    <NoWarn>CS8632</NoWarn>
   </PropertyGroup>
   <ItemGroup>
     <PackageReference Include="ppy.osuTK.NS20" Version="1.0.211" />

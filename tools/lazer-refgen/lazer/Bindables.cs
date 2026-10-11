@@ -289,6 +289,9 @@ namespace osu.Framework.Extensions.TypeExtensions
     {
         public static bool IsNullable(this Type type) => type.GetUnderlyingNullableType() != null;
 
+        // Stand-in: only used in an error message of JudgementProcessor.SimulateAutoplay.
+        public static string ReadableName(this Type type) => type.Name;
+
         // The runtime cache of the original is left out.
         public static Type GetUnderlyingNullableType(this Type type)
         {

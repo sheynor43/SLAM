@@ -1,0 +1,12 @@
+// Extracted verbatim from osu!lazer 2026.1005.0-lazer: osu/osu.Game.Rulesets.Osu/Judgements/SliderTickJudgement.cs (lines 1-12); Doc comments are removed. See README.md.
+// Copyright (c) ppy Pty Ltd <contact@ppy.sh>. Licensed under the MIT Licence.
+// See the LICENCE file in the repository root for full licence text.
+using osu.Game.Rulesets.Scoring;
+
+namespace osu.Game.Rulesets.Osu.Judgements
+{
+    public class SliderTickJudgement : OsuJudgement
+    {
+        public override HitResult MaxResult => HitResult.LargeTickHit;
+    }
+}

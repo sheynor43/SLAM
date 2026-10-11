@@ -22,6 +22,9 @@ class StackingBeatmap : IBeatmap
     public IReadOnlyList<HitObject> HitObjects => Objects;
     public int BeatmapVersion { get; set; }
     public float StackLeniency { get; set; }
+    // Not read by stacking.
+    public BeatmapDifficulty Difficulty { get; set; } = new BeatmapDifficulty();
+    public osu.Framework.Lists.SortedList<osu.Game.Beatmaps.Timing.BreakPeriod> Breaks { get; set; } = new osu.Framework.Lists.SortedList<osu.Game.Beatmaps.Timing.BreakPeriod>();
 }
 
 static class Stacking

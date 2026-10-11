@@ -119,6 +119,12 @@ impl HitResult {
         )
     }
 
+    // Ported from osu!lazer 2026.1005.0-lazer: osu.Game/Rulesets/Scoring/HitResult.cs (IsBonus)
+    /// Whether the result is a bonus.
+    pub fn is_bonus(self) -> bool {
+        matches!(self, HitResult::SmallBonus | HitResult::LargeBonus)
+    }
+
     /// Lazer's `Judgement.MinResult`: the result of missing a judgement whose best result is
     /// `self`.
     // Ported from osu!lazer 2026.1005.0-lazer: osu.Game/Rulesets/Judgements/Judgement.cs (MinResult)
