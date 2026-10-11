@@ -92,9 +92,9 @@ pub trait GameplayMod {
     }
 
     /// Called when the player would fail; `false` prevents the fail (lazer's
-    /// `IApplicableFailOverride.PerformFail`). May change the mod's state, e.g. use up a
-    /// life.
-    fn perform_fail(&mut self) -> bool {
+    /// `IApplicableFailOverride.PerformFail`). May change the mod's state and the current
+    /// `health` (0..=1), e.g. use up a life and refill the health.
+    fn perform_fail(&mut self, _health: &mut f64) -> bool {
         true
     }
 
@@ -250,6 +250,9 @@ pub enum Mod {
     Easy {
         /// `retries`: extra lives.
         retries: i32,
+        /// Extra lives used up in this play: state of the play, not a setting, so it stays out
+        /// of the settings and the score multiplier (lazer's private `retries` counter).
+        lives_used: i32,
     },
     /// `HT`, speed 0.5..=0.99.
     HalfTime(RateAdjust),
@@ -303,6 +306,7 @@ impl Mod {
             "NF" => Mod::NoFail,
             "EZ" => Mod::Easy {
                 retries: EASY_RETRIES.0,
+                lives_used: 0,
             },
             "HT" => Mod::HalfTime(RateAdjust {
                 speed_change: SPEED_DOWN.0,
@@ -386,7 +390,7 @@ impl Mod {
         }
 
         match (self, key) {
-            (Mod::Easy { retries }, "retries") => store(
+            (Mod::Easy { retries, .. }, "retries") => store(
                 retries,
                 to_i32(value).map(|v| set_bindable_int(v, EASY_RETRIES.1, EASY_RETRIES.2)),
             ),
@@ -449,7 +453,7 @@ impl Mod {
         let mut out = Vec::new();
         let mut push = |name: &str, v: SettingValue| out.push((name.to_owned(), v));
         match self {
-            Mod::Easy { retries } => {
+            Mod::Easy { retries, .. } => {
                 if *retries != EASY_RETRIES.0 {
                     push("retries", SettingValue::Int(i64::from(*retries)));
                 }
@@ -650,10 +654,25 @@ impl GameplayMod for Mod {
     }
 
     // Ported from osu!lazer 2026.1005.0-lazer: osu.Game/Rulesets/Mods/ModNoFail.cs (PerformFail)
-    // Easy's extra lives (`ModEasyWithExtraLives.PerformFail`) refill the health and belong to
-    // the health processor (issue #52); until then Easy lets the player fail.
-    fn perform_fail(&mut self) -> bool {
-        !matches!(self, Mod::NoFail)
+    // Ported from osu!lazer 2026.1005.0-lazer: osu.Game/Rulesets/Mods/ModEasyWithExtraLives.cs (PerformFail)
+    fn perform_fail(&mut self, health: &mut f64) -> bool {
+        match self {
+            Mod::NoFail => false,
+            Mod::Easy {
+                retries,
+                lives_used,
+            } => {
+                // Lazer counts a copy of `retries` down to 0; `retries` is never negative.
+                if *lives_used >= *retries {
+                    return true;
+                }
+
+                *health = 1.0;
+                *lives_used += 1;
+                false
+            }
+            _ => true,
+        }
     }
 
     // Ported from osu!lazer 2026.1005.0-lazer: osu.Game.Rulesets.Osu/Scoring/OsuScoreMultiplierCalculatorV1.cs
@@ -675,7 +694,7 @@ impl GameplayMod for Mod {
                 _ => 1.0,
             },
             MultiplierVersion::V2 => match self {
-                Mod::Easy { retries } => easy_v2(*retries, EASY_RETRIES.0),
+                Mod::Easy { retries, .. } => easy_v2(*retries, EASY_RETRIES.0),
                 Mod::NoFail => 0.5,
                 Mod::HalfTime(RateAdjust { speed_change, .. }) | Mod::Daycore { speed_change } => {
                     half_time_v2(*speed_change)
@@ -886,11 +905,22 @@ impl ModSet {
         1.0 * frequency * tempo
     }
 
+    /// Clears the state a play leaves in the mods (Easy's used lives), as lazer's deep clone
+    /// for a new `Player` copies only the settings.
+    pub fn reset_play_state(&mut self) {
+        for m in &mut self.mods {
+            if let Mod::Easy { lives_used, .. } = m {
+                *lives_used = 0;
+            }
+        }
+    }
+
     // Ported from osu!lazer 2026.1005.0-lazer: osu.Game/Screens/Play/Player.cs (CheckModsAllowFailure)
     /// Asks the mods in order whether the player fails; stops at the first that prevents it,
-    /// so later mods keep their state (lazer's `All(m => m.PerformFail())`).
-    pub fn perform_fail(&mut self) -> bool {
-        self.mods.iter_mut().all(GameplayMod::perform_fail)
+    /// so later mods keep their state (lazer's `All(m => m.PerformFail())`). Mods may change
+    /// the current `health`.
+    pub fn perform_fail(&mut self, health: &mut f64) -> bool {
+        self.mods.iter_mut().all(|m| m.perform_fail(health))
     }
 
     // Ported from osu!lazer 2026.1005.0-lazer: osu.Game/Rulesets/Scoring/ScoreMultiplierCalculator.cs (CalculateFor)

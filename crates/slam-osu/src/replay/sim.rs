@@ -3,7 +3,9 @@
 //! records their judgements.
 
 use crate::beatmap::Beatmap;
+use crate::health::HealthProcessor;
 use crate::judgement::JudgementLog;
+use crate::mods::ModSet;
 
 use slam_formats::osu::Vec2;
 
@@ -93,6 +95,15 @@ pub fn gameplay_start_time(beatmap: &Beatmap) -> f64 {
     }
 }
 
+/// The health of a simulated play and the mods that may prevent failing.
+#[derive(Debug, Clone)]
+struct Health {
+    processor: HealthProcessor,
+    mods: ModSet,
+    /// Judgements of the log already applied.
+    applied: usize,
+}
+
 /// Runs a replay through the rules.
 ///
 /// Everything is allocated by [`Simulator::new`]; [`Simulator::step`] does not allocate as long
@@ -104,6 +115,7 @@ pub struct Simulator<R> {
     gameplay_start_time: f64,
     rules: R,
     log: JudgementLog,
+    health: Option<Health>,
     events: [ActionEvent; MAX_STEP_EVENTS],
     started: bool,
     finished: bool,
@@ -119,6 +131,7 @@ impl<R: Rules> Simulator<R> {
             input,
             cursor: ReplayCursor::new(),
             rules,
+            health: None,
             events: [ActionEvent {
                 time: 0.0,
                 position: Vec2::ZERO,
@@ -131,9 +144,26 @@ impl<R: Rules> Simulator<R> {
         }
     }
 
+    /// Tracks health with `processor` from the first step on; `mods` decide whether the player
+    /// fails, starting with no Easy lives used ([`ModSet::reset_play_state`]).
+    ///
+    /// The play is simulated as lazer's `Player` plays it, not as its `ReplayPlayer` replays
+    /// it: replaying, lazer does not let a play fail before its last frame. A failed play
+    /// finishes at the failing step; lazer concludes it a scheduled frame later, which depends
+    /// on real frames.
+    pub fn with_health(mut self, processor: HealthProcessor, mut mods: ModSet) -> Simulator<R> {
+        mods.reset_play_state();
+        self.health = Some(Health {
+            processor,
+            mods,
+            applied: 0,
+        });
+        self
+    }
+
     /// Advances by one step. Returns `false`, doing nothing, once the simulation is finished:
     /// every object is judged (lazer's `ScoreProcessor.HasCompleted`), whether or not frames
-    /// remain.
+    /// remain, or the player has failed.
     pub fn step(&mut self) -> bool {
         if self.finished {
             return false;
@@ -167,10 +197,25 @@ impl<R: Rules> Simulator<R> {
             held: state.held,
             events: state.events(time, &mut self.events),
         };
+        // Ported from osu!lazer 2026.1005.0-lazer: osu.Game/Screens/Play/Player.cs (LoadComponents)
+        // The health processor is a frame-stable component ahead of the playfield: it drains
+        // first, then takes the step's judgements as they come.
+        if let Some(health) = &mut self.health {
+            health.processor.update(time);
+        }
         self.rules.update(&step, &mut self.log);
         self.steps += 1;
 
-        self.finished = self.rules.is_complete();
+        let mut failed = false;
+        if let Some(health) = &mut self.health {
+            for judgement in self.log.events_since(health.applied) {
+                health.processor.apply(judgement, &mut health.mods);
+            }
+            health.applied = self.log.events().len();
+            failed = health.processor.has_failed();
+        }
+
+        self.finished = failed || self.rules.is_complete();
         true
     }
 
@@ -197,6 +242,11 @@ impl<R: Rules> Simulator<R> {
     /// The judgements and statistics so far.
     pub fn log(&self) -> &JudgementLog {
         &self.log
+    }
+
+    /// The health, if tracked (see [`Simulator::with_health`]).
+    pub fn health(&self) -> Option<&HealthProcessor> {
+        self.health.as_ref().map(|h| &h.processor)
     }
 
     /// The rules.

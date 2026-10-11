@@ -12,6 +12,9 @@ namespace osu.Framework.Utils
         public const double DOUBLE_EPSILON = 1e-7;
         public static bool AlmostEquals(float value1, float value2, float acceptableDifference = FLOAT_EPSILON) => Math.Abs(value1 - value2) <= acceptableDifference;
         public static bool AlmostEquals(double value1, double value2, double acceptableDifference = DOUBLE_EPSILON) => Math.Abs(value1 - value2) <= acceptableDifference;
+        // Verbatim from osu.Framework/Utils/Precision.cs (2026.921.1, lines 50 and 59).
+        public static bool AlmostBigger(float value1, float value2, float acceptableDifference = FLOAT_EPSILON) => value1 > value2 - acceptableDifference;
+        public static bool AlmostBigger(double value1, double value2, double acceptableDifference = DOUBLE_EPSILON) => value1 > value2 - acceptableDifference;
     }
 }
 
@@ -136,12 +139,17 @@ namespace osu.Game.Beatmaps
 {
     using osu.Game.Rulesets.Objects;
 
-    // The members of osu.Game/Beatmaps/IBeatmap.cs that stacking reads.
+    using osu.Framework.Lists;
+    using osu.Game.Beatmaps.Timing;
+
+    // The members of osu.Game/Beatmaps/IBeatmap.cs that stacking and the health processors read.
     public interface IBeatmap
     {
         IReadOnlyList<HitObject> HitObjects { get; }
         int BeatmapVersion { get; }
         float StackLeniency { get; }
+        BeatmapDifficulty Difficulty { get; }
+        SortedList<BreakPeriod> Breaks { get; }
     }
 }
 
@@ -205,5 +213,16 @@ namespace osu.Game.Rulesets.Mods
     public interface IApplicableToHitObject
     {
         void ApplyToHitObject(HitObject hitObject);
+    }
+}
+
+namespace osu.Game.Rulesets.Objects.Types
+{
+    // The members of osu.Game/Rulesets/Objects/Types/IHasComboInformation.cs that OsuHealthProcessor reads.
+    // OsuHitObject does not implement it here: OsuHealthProcessor never reads it while simulating autoplay.
+    public interface IHasComboInformation
+    {
+        bool NewCombo { get; }
+        bool LastInCombo { get; }
     }
 }

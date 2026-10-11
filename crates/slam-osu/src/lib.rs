@@ -7,6 +7,7 @@ pub mod control_points;
 pub mod difficulty;
 mod dotnet;
 pub mod events;
+pub mod health;
 pub mod hit_windows;
 pub mod judgement;
 pub mod mods;
@@ -19,5 +20,6 @@ pub mod samples;
 pub mod stacking;
 
 pub use beatmap::{Beatmap, BeatmapError, Difficulty};
+pub use health::HealthProcessor;
 pub use mods::{GameplayMod, Mod, ModSet};
 pub use path::SliderPath;

@@ -121,7 +121,10 @@ fn settings_round_trip_through_api() {
             adjust_pitch: true,
         }),
         Mod::Nightcore { speed_change: 1.2 },
-        Mod::Easy { retries: 0 },
+        Mod::Easy {
+            retries: 0,
+            lives_used: 0,
+        },
         Mod::Hidden {
             only_fade_approach_circles: true,
         },
@@ -228,9 +231,34 @@ fn rate_and_pitch() {
 
 #[test]
 fn no_fail_prevents_failing() {
-    assert!(!ModSet::from_legacy(legacy::NO_FAIL | legacy::HIDDEN).perform_fail());
-    assert!(ModSet::from_legacy(legacy::HIDDEN | legacy::EASY).perform_fail());
-    assert!(ModSet::default().perform_fail());
+    let mut health = 0.0;
+    assert!(!ModSet::from_legacy(legacy::NO_FAIL | legacy::HIDDEN).perform_fail(&mut health));
+    assert_eq!(health, 0.0);
+    assert!(ModSet::default().perform_fail(&mut health));
+}
+
+#[test]
+fn easy_refills_health_with_each_extra_life() {
+    let mut mods = ModSet::from_legacy(legacy::HIDDEN | legacy::EASY);
+    let before = mods.clone();
+    for _ in 0..2 {
+        let mut health = 0.0;
+        assert!(!mods.perform_fail(&mut health));
+        assert_eq!(health, 1.0);
+    }
+    let mut health = 0.0;
+    assert!(mods.perform_fail(&mut health));
+    assert_eq!(health, 0.0);
+
+    // Used lives are not a setting: the API form and the score multiplier stay the same.
+    assert_eq!(mods.to_api(), before.to_api());
+
+    let mut none = ModSet::new(vec![Mod::Easy {
+        retries: 0,
+        lives_used: 0,
+    }])
+    .expect("one mod");
+    assert!(none.perform_fail(&mut health));
 }
 
 #[test]
@@ -327,7 +355,14 @@ fn set_multiplier_is_the_product_in_mod_order() {
     assert_eq!(Mod::Traceable.score_multiplier(&v1), 1.0);
     assert_eq!(Mod::Traceable.score_multiplier(&v2), 1.02);
     assert_eq!(Mod::NoFail.score_multiplier(&v1), 0.5);
-    assert_eq!(Mod::Easy { retries: 2 }.score_multiplier(&v1), 0.5);
+    assert_eq!(
+        Mod::Easy {
+            retries: 2,
+            lives_used: 0
+        }
+        .score_multiplier(&v1),
+        0.5
+    );
 }
 
 fn da(m: &Mod) -> DifficultyAdjustSettings {

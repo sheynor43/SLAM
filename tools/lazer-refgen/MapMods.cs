@@ -148,7 +148,8 @@ static class MapMods
               .Append(' ').Append(F(h.StackedEndPosition.X)).Append(' ').Append(F(h.StackedEndPosition.Y))
               .Append(' ').Append(D(h.GetEndTime())).Append(' ').Append(h is Slider sd ? D(sd.Path.Distance) : "-").Append('\n');
 
-            foreach (var n in h.NestedHitObjects)
+            // Spinners have nested ticks now; the fixture lists the nested objects of sliders only.
+            foreach (var n in h is Slider ? h.NestedHitObjects : Array.Empty<HitObject>())
             {
                 var o = (OsuHitObject)n;
                 string kind = n switch
