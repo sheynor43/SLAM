@@ -269,10 +269,21 @@ fn remix(data: &[f32], from: u16, to: u16) -> Vec<f32> {
     if from == to {
         return data.to_vec();
     }
+    let mut out = Vec::with_capacity(data.len() / usize::from(from) * usize::from(to));
+    remix_into(data, from, to, &mut out);
+    out
+}
+
+/// Appends `data` (interleaved, `from` channels) to `out` with `to` channels: mono is
+/// copied to every channel, anything down-mixes to mono by averaging, otherwise
+/// channels map by index.
+pub(crate) fn remix_into(data: &[f32], from: u16, to: u16, out: &mut Vec<f32>) {
+    if from == to {
+        out.extend_from_slice(data);
+        return;
+    }
     let (from, to) = (usize::from(from), usize::from(to));
-    let frames = data.chunks_exact(from);
-    let mut out = Vec::with_capacity(frames.len() * to);
-    for frame in frames {
+    for frame in data.chunks_exact(from) {
         if from == 1 {
             out.extend(std::iter::repeat_n(frame[0], to));
         } else if to == 1 {
@@ -281,14 +292,10 @@ fn remix(data: &[f32], from: u16, to: u16) -> Vec<f32> {
             out.extend((0..to).map(|c| frame.get(c).copied().unwrap_or(0.0)));
         }
     }
-    out
 }
 
-fn resample(data: &[f32], channels: u16, from: u32, to: u32) -> Result<Vec<f32>, SampleError> {
-    let channels = usize::from(channels);
-    let frames = data.len() / channels;
-    let err = |e: &dyn std::fmt::Display| SampleError::Resample(e.to_string());
-    let input = InterleavedSlice::new(data, channels, frames).map_err(|e| err(&e))?;
+/// Whether [`new_resampler`] picks the FFT resampler for this pair of rates.
+fn uses_fft(from: u32, to: u32) -> bool {
     let gcd = {
         let (mut a, mut b) = (from, to);
         while b != 0 {
@@ -296,31 +303,50 @@ fn resample(data: &[f32], channels: u16, from: u32, to: u32) -> Result<Vec<f32>,
         }
         a
     };
-    let mut resampler: Box<dyn Resampler<f32>> =
-        if from / gcd <= MAX_FFT_RATIO_TERM && to / gcd <= MAX_FFT_RATIO_TERM {
-            Box::new(
-                Fft::<f32>::new(
-                    from as usize,
-                    to as usize,
-                    RESAMPLE_CHUNK,
-                    channels,
-                    FixedSync::Both,
-                )
-                .map_err(|e| err(&e))?,
+    from / gcd <= MAX_FFT_RATIO_TERM && to / gcd <= MAX_FFT_RATIO_TERM
+}
+
+/// A resampler from `from` to `to` Hz with fixed input and output chunks: the FFT
+/// resampler for convenient ratios, the sinc resampler otherwise (see
+/// `MAX_FFT_RATIO_TERM`).
+pub(crate) fn new_resampler(
+    from: u32,
+    to: u32,
+    channels: usize,
+) -> Result<Box<dyn Resampler<f32>>, SampleError> {
+    let err = |e: &dyn std::fmt::Display| SampleError::Resample(e.to_string());
+    Ok(if uses_fft(from, to) {
+        Box::new(
+            Fft::<f32>::new(
+                from as usize,
+                to as usize,
+                RESAMPLE_CHUNK,
+                channels,
+                FixedSync::Both,
             )
-        } else {
-            Box::new(
-                Async::<f32>::new_sinc(
-                    f64::from(to) / f64::from(from),
-                    1.0,
-                    &SincInterpolationParameters::default(),
-                    RESAMPLE_CHUNK,
-                    channels,
-                    FixedAsync::Input,
-                )
-                .map_err(|e| err(&e))?,
+            .map_err(|e| err(&e))?,
+        )
+    } else {
+        Box::new(
+            Async::<f32>::new_sinc(
+                f64::from(to) / f64::from(from),
+                1.0,
+                &SincInterpolationParameters::default(),
+                RESAMPLE_CHUNK,
+                channels,
+                FixedAsync::Input,
             )
-        };
+            .map_err(|e| err(&e))?,
+        )
+    })
+}
+
+fn resample(data: &[f32], channels: u16, from: u32, to: u32) -> Result<Vec<f32>, SampleError> {
+    let channels = usize::from(channels);
+    let frames = data.len() / channels;
+    let err = |e: &dyn std::fmt::Display| SampleError::Resample(e.to_string());
+    let input = InterleavedSlice::new(data, channels, frames).map_err(|e| err(&e))?;
+    let mut resampler = new_resampler(from, to, channels)?;
     // `process_all` trims the resampler delay and the padding of the last chunk.
     let output = resampler
         .process_all(&input, frames, None)

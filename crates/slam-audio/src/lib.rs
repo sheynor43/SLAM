@@ -4,10 +4,12 @@
 mod alsa_delay;
 mod hal;
 mod mixer;
+mod music;
 #[cfg(target_os = "linux")]
 mod pipewire;
 mod position;
 mod sample;
+mod seqlock;
 mod tone;
 mod wasapi;
 
@@ -17,6 +19,10 @@ pub use hal::{
 };
 pub use mixer::{
     Mixer, MixerConfig, MixerHandle, MixerStats, PlayError, SAMPLE_CONCURRENCY, VoiceStart, mixer,
+};
+pub use music::{
+    MUSIC_FADE_MS, MusicConfig, MusicError, MusicEvent, MusicPlayer, MusicPosition, MusicSnapshot,
+    MusicSource, MusicStats, TrackSource, music,
 };
 pub use position::{AudioPosition, PositionSnapshot};
 pub use sample::{MAX_CHANNELS, MAX_SAMPLE_VALUES, Sample, SampleError};

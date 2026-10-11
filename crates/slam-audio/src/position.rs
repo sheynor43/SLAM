@@ -1,14 +1,7 @@
-//! Playback position published by the audio thread for the update thread (ADR-0022).
-//!
-//! A single-writer seqlock over atomics: neither side blocks, the reader retries while a
-//! write is in progress. All fields are atomics, so a torn read is detected, never UB.
-//!
-//! The reader is lock-free, not wait-free: if the writer is preempted between its two
-//! sequence stores (no real-time priority), a reader spins until it resumes. The
-//! stress test runs on x86 (TSO) only and cannot catch an ordering regression on
-//! weaker memory models; there is no loom model yet.
+//! Playback position published by the audio thread for the update thread (ADR-0022),
+//! through a single-writer seqlock (see `seqlock`).
 
-use std::sync::atomic::{AtomicU64, Ordering, fence};
+use crate::seqlock::SeqLock;
 
 /// One consistent position report.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -37,14 +30,10 @@ impl PositionSnapshot {
 }
 
 /// Seqlock-protected [`PositionSnapshot`]. Writer: the audio callback. Readers: any thread.
+/// Readers never block; they spin only while a write is in progress.
 #[derive(Debug, Default)]
 pub struct AudioPosition {
-    /// Even: stable; odd: write in progress; zero: nothing published yet.
-    seq: AtomicU64,
-    frame: AtomicU64,
-    timestamp_ns: AtomicU64,
-    latency_ns: AtomicU64,
-    sample_rate: AtomicU64,
+    lock: SeqLock<4>,
 }
 
 impl AudioPosition {
@@ -57,44 +46,25 @@ impl AudioPosition {
     /// Must only be called from one thread at a time (the audio callback); concurrent
     /// writers corrupt the sequence.
     pub fn publish(&self, snapshot: PositionSnapshot) {
-        let seq = self.seq.load(Ordering::Relaxed);
-        self.seq.store(seq.wrapping_add(1), Ordering::Relaxed);
-        // Orders the odd sequence before the field stores below.
-        fence(Ordering::Release);
-        self.frame.store(snapshot.frame, Ordering::Relaxed);
-        self.timestamp_ns
-            .store(snapshot.timestamp_ns, Ordering::Relaxed);
-        self.latency_ns
-            .store(snapshot.latency_ns, Ordering::Relaxed);
-        self.sample_rate
-            .store(u64::from(snapshot.sample_rate), Ordering::Relaxed);
-        self.seq.store(seq.wrapping_add(2), Ordering::Release);
+        self.lock.write([
+            snapshot.frame,
+            snapshot.timestamp_ns,
+            snapshot.latency_ns,
+            u64::from(snapshot.sample_rate),
+        ]);
     }
 
     /// Latest consistent report, or `None` before the first one. Allocation-free and
     /// lock-free; spins only while a write is in progress (a few stores).
     pub fn read(&self) -> Option<PositionSnapshot> {
-        loop {
-            let before = self.seq.load(Ordering::Acquire);
-            if before == 0 {
-                return None;
-            }
-            if before & 1 == 1 {
-                std::hint::spin_loop();
-                continue;
-            }
-            let snapshot = PositionSnapshot {
-                frame: self.frame.load(Ordering::Relaxed),
-                timestamp_ns: self.timestamp_ns.load(Ordering::Relaxed),
-                latency_ns: self.latency_ns.load(Ordering::Relaxed),
-                sample_rate: self.sample_rate.load(Ordering::Relaxed) as u32,
-            };
-            // Orders the field loads before the sequence re-check.
-            fence(Ordering::Acquire);
-            if self.seq.load(Ordering::Relaxed) == before {
-                return Some(snapshot);
-            }
-        }
+        self.lock
+            .read()
+            .map(|[frame, timestamp_ns, latency_ns, rate]| PositionSnapshot {
+                frame,
+                timestamp_ns,
+                latency_ns,
+                sample_rate: rate as u32,
+            })
     }
 }
 
@@ -102,7 +72,7 @@ impl AudioPosition {
 mod tests {
     use super::*;
     use std::sync::Arc;
-    use std::sync::atomic::AtomicBool;
+    use std::sync::atomic::{AtomicBool, Ordering};
 
     #[test]
     fn empty_until_first_publish() {
