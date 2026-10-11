@@ -5,7 +5,7 @@ use std::f64::consts::PI;
 use slam_formats::osu::Vec2;
 
 use super::approximator::CIRCULAR_ARC_TOLERANCE;
-use crate::precision;
+use crate::{math, precision};
 
 // Ported from osu!lazer 2026.1005.0-lazer: osu.Framework/Utils/CircularArcProperties.cs
 /// The circular arc through three points.
@@ -57,8 +57,8 @@ impl CircularArcProperties {
 
         let radius = d_a.length();
 
-        let theta_start = f64::from(d_a.y).atan2(f64::from(d_a.x));
-        let mut theta_end = f64::from(d_c.y).atan2(f64::from(d_c.x));
+        let theta_start = math::atan2(f64::from(d_a.y), f64::from(d_a.x));
+        let mut theta_end = math::atan2(f64::from(d_c.y), f64::from(d_c.x));
 
         while theta_end < theta_start {
             theta_end += 2.0 * PI;
@@ -95,7 +95,7 @@ impl CircularArcProperties {
             return 2;
         }
 
-        let step = 2.0 * f64::from(1.0 - CIRCULAR_ARC_TOLERANCE / self.radius).acos();
+        let step = 2.0 * math::acos(f64::from(1.0 - CIRCULAR_ARC_TOLERANCE / self.radius));
         // `as` saturates and maps NaN to 0, like the double-to-int conversion of .NET 9+.
         ((self.theta_range / step).ceil() as i32).max(2)
     }

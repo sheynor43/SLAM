@@ -10,6 +10,8 @@ repository = "https://github.com/sheynor43/SLAM"
 publish = false
 
 [workspace.dependencies]
+# Correctly rounded transcendental functions for gameplay (ADR-0031); pinned exactly.
+pxfm = "=0.1.30"
 # Corpus harness manifests (slam-osu tests).
 toml = { version = "1.1.8", default-features = false, features = ["parse", "serde"] }
 serde = { version = "1", features = ["derive"] }

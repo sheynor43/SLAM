@@ -193,10 +193,6 @@ fn apply(input: &[&str], points: Vec<PathControlPoint>) -> OsuHitObject {
 }
 
 #[test]
-#[cfg_attr(
-    not(all(target_os = "linux", target_env = "gnu")),
-    ignore = "fixture computed with glibc libm (issue #60)"
-)]
 fn slider_defaults_and_nested_objects_match_lazer() {
     let mut cases = 0;
     let mut lines = FIXTURE

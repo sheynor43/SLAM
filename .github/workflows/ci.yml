@@ -49,6 +49,13 @@ jobs:
         run: cargo clippy --workspace --all-targets --target x86_64-pc-windows-gnu -- -D warnings
       - name: Test
         run: cargo test --workspace
+      # Gameplay math compiles other code paths with the fma target feature (as on aarch64);
+      # its results must not change (ADR-0031).
+      - name: Test gameplay with FMA
+        run: cargo test -p slam-osu --release
+        env:
+          RUSTFLAGS: -D warnings -C target-feature=+fma
+          CARGO_TARGET_DIR: target/fma
 
   windows:
     name: clippy, test (Windows)

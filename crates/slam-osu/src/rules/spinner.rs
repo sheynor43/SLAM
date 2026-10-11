@@ -10,6 +10,7 @@ use slam_formats::osu::Vec2;
 
 use crate::dotnet;
 use crate::judgement::{HitResult, Judgement, JudgementLog, ObjectRef};
+use crate::math;
 use crate::objects::{OsuHitObject, Spinner};
 use crate::replay::Actions;
 
@@ -220,7 +221,7 @@ impl SpinnerState {
         };
         let offset = mouse - self.position;
         // `MathF.Atan2(x, y)`: the angle from the downward axis.
-        let this_angle = -radians_to_degrees(offset.x.atan2(offset.y));
+        let this_angle = -radians_to_degrees(math::atan2f(offset.x, offset.y));
 
         let mut delta = match self.last_angle {
             None => 0.0,

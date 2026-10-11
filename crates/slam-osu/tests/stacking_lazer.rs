@@ -89,10 +89,6 @@ fn check_case(name: &str, map: &str, timing: &[&str], objects: &[Expected]) {
 }
 
 #[test]
-#[cfg_attr(
-    not(all(target_os = "linux", target_env = "gnu")),
-    ignore = "fixture computed with glibc libm (issue #60)"
-)]
 fn stacking_matches_lazer() {
     let mut cases = 0;
     let mut nonzero = 0;

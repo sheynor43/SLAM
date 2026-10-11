@@ -207,10 +207,6 @@ fn check_case(c: &Case, failures: &mut Vec<String>) {
 }
 
 #[test]
-#[cfg_attr(
-    not(all(target_os = "linux", target_env = "gnu")),
-    ignore = "fixture computed with glibc libm (issue #60)"
-)]
 fn map_mods_match_lazer() {
     let mut cases = 0;
     let mut sliders = 0;
