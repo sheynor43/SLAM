@@ -15,7 +15,7 @@ mod bench {
     use std::time::{Duration, Instant};
 
     use criterion::{BenchmarkId, Criterion, criterion_group};
-    use slam_audio::{AudioCallback, CallbackInfo, MixerConfig, Sample};
+    use slam_audio::{AudioCallback, CallbackInfo, MixerConfig, MusicConfig, Sample, TrackSource};
 
     const RATE: u32 = 48_000;
     const BUFFER_FRAMES: usize = 128;
@@ -104,7 +104,88 @@ mod bench {
         group.finish();
     }
 
-    criterion_group!(benches, enqueue, process);
+    /// A 48 kHz stereo float WAV of `seconds` of noise-like PCM, in memory.
+    fn track(seconds: usize) -> TrackSource {
+        let values = 2 * RATE as usize * seconds;
+        let mut b = Vec::with_capacity(44 + 4 * values);
+        let bytes = (4 * values) as u32;
+        b.extend_from_slice(b"RIFF");
+        b.extend_from_slice(&(36 + bytes).to_le_bytes());
+        b.extend_from_slice(b"WAVEfmt ");
+        b.extend_from_slice(&16u32.to_le_bytes());
+        b.extend_from_slice(&3u16.to_le_bytes());
+        b.extend_from_slice(&2u16.to_le_bytes());
+        b.extend_from_slice(&RATE.to_le_bytes());
+        b.extend_from_slice(&(RATE * 8).to_le_bytes());
+        b.extend_from_slice(&8u16.to_le_bytes());
+        b.extend_from_slice(&32u16.to_le_bytes());
+        b.extend_from_slice(b"data");
+        b.extend_from_slice(&bytes.to_le_bytes());
+        for i in 0..values {
+            let v = ((i * 7_919) % 2_001) as f32 / 2_000.0 - 0.5;
+            b.extend_from_slice(&(v * 0.5).to_le_bytes());
+        }
+        TrackSource::Memory {
+            bytes: b.into(),
+            extension: Some("wav".into()),
+        }
+    }
+
+    /// Mixing with the music track playing (ADR-0033). The decoder refills the pool
+    /// between untimed pauses, so the timed buffers always have audio.
+    fn process_with_music(c: &mut Criterion) {
+        let sample = sample();
+        let mut group = c.benchmark_group("mixer/process_128_frames_with_music");
+        for voices in [0usize, 32] {
+            let (mut mixer, mut handle) = slam_audio::mixer(&MixerConfig::default()).unwrap();
+            let (music, mut player) = slam_audio::music(&MusicConfig {
+                blocks: 32,
+                ..MusicConfig::default()
+            })
+            .unwrap();
+            mixer.set_music(music).unwrap();
+            player.load(track(10)).unwrap();
+            player.play().unwrap();
+            let mut out = vec![0.0f32; 2 * BUFFER_FRAMES];
+            group.bench_with_input(
+                BenchmarkId::from_parameter(voices),
+                &voices,
+                |b, &voices| {
+                    b.iter_custom(|iters| {
+                        let mut total = Duration::ZERO;
+                        // 200 buffers use 25 600 of the 32 768 frames decoded ahead.
+                        for chunk_start in (0..iters).step_by(200) {
+                            handle.stop_all().unwrap();
+                            for _ in 0..voices {
+                                handle.play(&sample, 0.1).unwrap();
+                            }
+                            player.seek(0).unwrap();
+                            mixer.process(&mut out, &info());
+                            std::thread::sleep(Duration::from_millis(20));
+                            let n = (iters - chunk_start).min(200);
+                            let start = Instant::now();
+                            for _ in 0..n {
+                                mixer.process(black_box(&mut out), &info());
+                            }
+                            total += start.elapsed();
+                        }
+                        total
+                    });
+                },
+            );
+            let underruns = player
+                .stats()
+                .underruns
+                .load(std::sync::atomic::Ordering::Relaxed);
+            if underruns > 0 {
+                eprintln!("warning: {underruns} music underruns while measuring");
+            }
+            handle.collect();
+        }
+        group.finish();
+    }
+
+    criterion_group!(benches, enqueue, process, process_with_music);
 }
 
 // What `criterion_main!` expands to; the macro cannot sit inside the module.

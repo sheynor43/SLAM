@@ -10,6 +10,7 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicU32, AtomicU64, Ordering};
 
 use crate::hal::{AudioCallback, AudioError, CallbackInfo};
+use crate::music::MusicSource;
 use crate::sample::Sample;
 
 /// Copies of one sample that sound at once in lazer: further plays replace the
@@ -160,6 +161,7 @@ pub fn mixer(config: &MixerConfig) -> Result<(Mixer, MixerHandle), AudioError> {
         master_gain: 1.0,
         sample_rate: config.sample_rate,
         channels: config.channels,
+        music: None,
         stats: Arc::clone(&stats),
     };
     let handle = MixerHandle {
@@ -189,10 +191,25 @@ pub struct Mixer {
     master_gain: f32,
     sample_rate: u32,
     channels: u16,
+    /// The track, mixed under the voices (ADR-0033).
+    music: Option<MusicSource>,
     stats: Arc<MixerStats>,
 }
 
 impl Mixer {
+    /// Mixes `music` with the voices from now on. Call before handing the mixer to the
+    /// stream; a source attached before replaces it (dropped here, not on the audio
+    /// thread). The music must have the mixer's rate and channels.
+    pub fn set_music(&mut self, music: MusicSource) -> Result<(), AudioError> {
+        if music.format() != (self.sample_rate, self.channels) {
+            return Err(AudioError::InvalidConfig(
+                "music format differs from the mixer",
+            ));
+        }
+        self.music = Some(music);
+        Ok(())
+    }
+
     fn apply_commands(&mut self, info: &CallbackInfo) {
         // Only the commands present now: a producer pushing during the callback cannot
         // stretch it.
@@ -257,6 +274,11 @@ impl AudioCallback for Mixer {
         // Commands queued before this buffer start at its first frame.
         self.apply_commands(info);
         out.fill(0.0);
+        // Before the format check: the music applies its commands and counts its own
+        // mismatches.
+        if let Some(music) = &mut self.music {
+            music.mix_into(out, info);
+        }
         if info.channels != self.channels || info.sample_rate != self.sample_rate {
             self.stats.format_mismatches.fetch_add(1, Ordering::Relaxed);
             return;
@@ -802,6 +824,30 @@ mod tests {
         assert!(started(&mut h).is_empty());
         assert_eq!(h.queued_plays(), 1);
         assert_eq!(m.stats.start_report_overflows.load(Ordering::Relaxed), 0);
+    }
+
+    #[test]
+    fn music_is_mixed_under_the_voices_and_clipped_with_them() {
+        use crate::music::{MusicConfig, music};
+        let (mut m, mut h) = mono_mixer(4, 4);
+        let (source, mut player) = music(&MusicConfig {
+            sample_rate: RATE,
+            channels: 1,
+            ..Default::default()
+        })
+        .unwrap();
+        m.set_music(source).unwrap();
+        // Without a track the music adds nothing but still publishes its position.
+        h.play(&sample(&[0.5, 0.75], 1), 1.0).unwrap();
+        assert_eq!(run(&mut m, 3), [0.5, 0.75, 0.0]);
+        assert!(player.position().read().is_some());
+        player.play().unwrap();
+        // Stream format differs from both: silent, counted by both.
+        let mut out = [9.0; 4];
+        m.process(&mut out, &info(2));
+        assert_eq!(out, [0.0; 4]);
+        assert_eq!(m.stats.format_mismatches.load(Ordering::Relaxed), 1);
+        assert_eq!(player.stats().format_mismatches.load(Ordering::Relaxed), 1);
     }
 
     #[test]

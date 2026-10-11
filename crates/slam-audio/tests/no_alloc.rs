@@ -4,7 +4,8 @@
 use std::sync::Arc;
 
 use slam_audio::{
-    AudioCallback, AudioPosition, CallbackInfo, MixerConfig, PositionSnapshot, Sample, SineTone,
+    AudioCallback, AudioPosition, CallbackInfo, MixerConfig, MusicConfig, MusicEvent,
+    PositionSnapshot, Sample, SineTone, TrackSource,
 };
 use slam_testkit::assert_no_alloc;
 
@@ -96,4 +97,63 @@ fn mixer_commands_and_process_do_not_allocate() {
     handle.collect();
     assert_eq!(Arc::strong_count(&short), 1);
     assert_eq!(Arc::strong_count(&long), 1);
+}
+
+#[test]
+fn music_commands_and_mixing_do_not_allocate() {
+    let (mut mixer, mut handle) = slam_audio::mixer(&MixerConfig::default()).unwrap();
+    let (music, mut player) = slam_audio::music(&MusicConfig {
+        block_frames: 256,
+        blocks: 4,
+        ..MusicConfig::default()
+    })
+    .unwrap();
+    mixer.set_music(music).unwrap();
+    let path = format!(
+        "{}/tests/data/tone-vorbis-stereo.ogg",
+        env!("CARGO_MANIFEST_DIR")
+    );
+    let generation = player.load(TrackSource::File(path.into())).unwrap();
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+    while !matches!(player.poll_event(), Some(MusicEvent::Loaded { generation: g, .. }) if g == generation)
+    {
+        assert!(std::time::Instant::now() < deadline, "track did not load");
+        std::thread::sleep(std::time::Duration::from_millis(1));
+    }
+    let hit = Arc::new(Sample::from_interleaved(vec![0.25; 2 * 100], 48_000, 2).unwrap());
+    let mut out = vec![0.0f32; 2 * 1024];
+    let mut info = CallbackInfo {
+        frame: 0,
+        timestamp_ns: 0,
+        latency_ns: 0,
+        sample_rate: 48_000,
+        channels: 2,
+    };
+    // The decoder thread allocates freely; only this thread is counted.
+    assert_no_alloc(|| {
+        for round in 0..200u64 {
+            match round % 5 {
+                0 => player.play().unwrap(),
+                1 => player.seek(round * 37 % 4_000).unwrap(),
+                2 => player.set_volume(0.5).unwrap(),
+                3 => player.pause().unwrap(),
+                _ => handle.play(&hit, 0.5).unwrap(),
+            }
+            for frames in [1usize, 64, 128, 1024] {
+                mixer.process(&mut out[..2 * frames], &info);
+                info.frame += frames as u64;
+            }
+            player.position().read();
+            handle.collect();
+            // Give the decoder a moment, as a real callback period would.
+            std::thread::yield_now();
+        }
+    });
+    let stats = player.stats();
+    assert_eq!(
+        stats
+            .leaked_blocks
+            .load(std::sync::atomic::Ordering::Relaxed),
+        0
+    );
 }
