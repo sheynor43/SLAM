@@ -61,6 +61,10 @@ pub struct Beatmap {
     pub format_version: i32,
     /// Difficulty settings, with the mods' changes.
     pub difficulty: Difficulty,
+    /// Difficulty settings as the file gives them (clamped), before the mods: lazer's
+    /// `BeatmapInfo.Difficulty`, which mods do not change. Difficulty Adjust's score
+    /// multiplier compares against it.
+    pub difficulty_without_mods: Difficulty,
     /// Stack leniency from `[General]`.
     pub stack_leniency: f32,
     /// Control points.
@@ -137,6 +141,7 @@ impl Beatmap {
             ));
         }
 
+        let difficulty_without_mods = difficulty;
         let mut difficulty = difficulty;
         for m in mods.iter() {
             m.apply_to_difficulty(&mut difficulty);
@@ -157,6 +162,7 @@ impl Beatmap {
         let mut beatmap = Beatmap {
             format_version: file.format_version,
             difficulty,
+            difficulty_without_mods,
             stack_leniency: file.general.stack_leniency,
             control_points,
             breaks,

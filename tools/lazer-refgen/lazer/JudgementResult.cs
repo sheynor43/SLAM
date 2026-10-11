@@ -1,4 +1,4 @@
-// Extracted verbatim from osu!lazer 2026.1005.0-lazer: osu/osu.Game/Rulesets/Judgements/JudgementResult.cs (lines 19, 24, 29, 38, 43-47, 85, 90, 100, 105, 112-115, 117); only the members the health processors read: Type, HitObject, Judgement, RawTime, TimeOffset, HealthAtJudgement, FailedAtJudgement, IsHit, HealthIncrease and the constructor without the Reset call. See README.md.
+// Extracted verbatim from osu!lazer 2026.1005.0-lazer: osu/osu.Game/Rulesets/Judgements/JudgementResult.cs (lines 19, 24, 29, 38, 43-47, 65, 70, 75, 80, 85, 90, 100, 105, 112-115, 117); only the members the health and score processors read: Type, HitObject, Judgement, RawTime, TimeOffset, ComboAtJudgement, ComboAfterJudgement, HighestComboAtJudgement, HighestComboAfterJudgement, HealthAtJudgement, FailedAtJudgement (internal setter, which the generator, in the same assembly, uses to mark failed judgements), IsHit, HealthIncrease and the constructor without the Reset call. See README.md.
 // Copyright (c) ppy Pty Ltd <contact@ppy.sh>. Licensed under the MIT Licence.
 // See the LICENCE file in the repository root for full licence text.
 using System;
@@ -18,6 +18,10 @@ namespace osu.Game.Rulesets.Judgements
             get => RawTime != null ? Math.Min(RawTime.Value - HitObject.GetEndTime(), HitObject.MaximumJudgementOffset) : 0;
             internal set => RawTime = HitObject.GetEndTime() + value;
         }
+        public int ComboAtJudgement { get; internal set; }
+        public int ComboAfterJudgement { get; internal set; }
+        public int HighestComboAtJudgement { get; internal set; }
+        public int HighestComboAfterJudgement { get; internal set; }
         public double HealthAtJudgement { get; internal set; }
         public bool FailedAtJudgement { get; internal set; }
         public bool IsHit => Type.IsHit();

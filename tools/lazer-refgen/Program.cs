@@ -202,5 +202,7 @@ static class Program
             File.WriteAllText(args[4], MapMods.Generate());
         if (args.Length > 5)
             File.WriteAllText(args[5], Health.Generate());
+        if (args.Length > 6)
+            File.WriteAllText(args[6], Scoring.Generate());
     }
 }

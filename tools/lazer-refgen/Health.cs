@@ -149,13 +149,13 @@ static class Health
         }
     }
 
-    static Stacking.Case newCase(string hp = "5", string od = "5", string cs = "4", string ar = "9", string sm = "1.4", string tr = "1", string beat = "500")
+    internal static Stacking.Case newCase(string hp = "5", string od = "5", string cs = "4", string ar = "9", string sm = "1.4", string tr = "1", string beat = "500")
         => new Stacking.Case { Version = 14, Leniency = "0.7", Hp = hp, Od = od, Cs = cs, Ar = ar, Sm = sm, Tr = tr, Beat = beat };
 
     static Vector2 pos(int i) => new Vector2(60 + i * 37 % 380, 50 + i * 53 % 280);
 
     // New combos only change the type bits of the line; lazer's decoder reads them, the health processors do not.
-    static void circle(Stacking.Case c, int i, double time, bool newCombo = false)
+    internal static void circle(Stacking.Case c, int i, double time, bool newCombo = false)
     {
         var p = pos(i);
         c.Lines.Add($"{I((int)p.X)},{I((int)p.Y)},{S(time)},{(newCombo ? 5 : 1)},0");
@@ -164,7 +164,7 @@ static class Health
 
     static double[] gaps = { 250, 180, 320, 400, 150 };
 
-    static Stacking.Case circles(string hp, int count, double start, Func<int, double> gap)
+    internal static Stacking.Case circles(string hp, int count, double start, Func<int, double> gap)
     {
         var c = newCase(hp);
         double time = start;
@@ -178,7 +178,7 @@ static class Health
     }
 
     // Eight circles, a gap of 6 seconds and eight more circles.
-    static Stacking.Case gapped()
+    internal static Stacking.Case gapped()
     {
         var c = newCase();
         double time = 1000;
@@ -191,7 +191,7 @@ static class Health
         return c;
     }
 
-    static Stacking.Case sliders(string sm, string tr, string beat, string hp, bool withVelocity)
+    internal static Stacking.Case sliders(string sm, string tr, string beat, string hp, bool withVelocity)
     {
         var c = newCase(hp, sm: sm, tr: tr, beat: beat);
         circle(c, 0, 1000);

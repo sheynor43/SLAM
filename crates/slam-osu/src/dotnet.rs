@@ -7,6 +7,15 @@
 
 use std::cmp::Ordering;
 
+/// .NET's `Math.Pow(double, double)`: the platform's `pow`, called as such.
+///
+/// Rust's `powf` with a constant exponent is folded by LLVM in optimised builds
+/// (`pow(x, 0.5)` becomes `sqrt(x)`, which differs from `pow` in the last bit for some `x`),
+/// so debug and release builds would disagree. Hiding the exponent keeps the libm call.
+pub(crate) fn pow(x: f64, y: f64) -> f64 {
+    x.powf(std::hint::black_box(y))
+}
+
 /// .NET's `Math.Min(double, double)`: NaN if either argument is NaN, and -0 below 0.
 pub(crate) fn min(a: f64, b: f64) -> f64 {
     if a != b {
@@ -237,6 +246,23 @@ fn insertion_sort<T>(keys: &mut [T], compare: &mut impl FnMut(&T, &T) -> Orderin
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// `pow(x, 0.5)` must stay the libm call (as `Math.Pow`) in every build: folded to `sqrt`
+    /// it differs from glibc's `pow` in the last bit at 2921, the first such integer. Run with
+    /// `--release` to check the folding.
+    #[test]
+    #[cfg_attr(
+        not(all(target_os = "linux", target_env = "gnu")),
+        ignore = "glibc's pow (issue #60)"
+    )]
+    fn pow_is_not_folded_to_sqrt() {
+        let x = std::hint::black_box(2921.0);
+        assert_ne!(pow(x, 0.5).to_bits(), x.sqrt().to_bits());
+        assert_eq!(
+            pow(x, 0.5).to_bits(),
+            x.powf(std::hint::black_box(0.5)).to_bits()
+        );
+    }
 
     #[test]
     fn min_max_propagate_nan_and_order_zeros() {

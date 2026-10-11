@@ -6,7 +6,7 @@ use common::{PressRules, beatmap, noisy_frames, replay};
 use slam_formats::osu::decode_str;
 use slam_osu::replay::{NoRules, ReplayInput, Simulator};
 use slam_osu::rules::{HitPolicy, OsuRules};
-use slam_osu::{Beatmap, HealthProcessor, Mod, ModSet};
+use slam_osu::{Beatmap, HealthProcessor, Mod, ModSet, ScoreProcessor};
 use slam_testkit::assert_no_alloc;
 
 slam_testkit::install_counting_allocator!();
@@ -95,7 +95,7 @@ fn spinner_steps_do_not_allocate() {
 
 #[test]
 fn health_steps_do_not_allocate() {
-    // Circles, sliders and spinners, mashed through with health tracked: No Fail keeps the play
+    // Circles, sliders and spinners, mashed through with health and score tracked: No Fail keeps the play
     // going past every fail, Easy refills the health, Classic uses the legacy processor.
     let text = "osu file format v14\n\n[Difficulty]\nHPDrainRate:9\nCircleSize:4\n\
                 OverallDifficulty:8\nApproachRate:9\nSliderMultiplier:1.4\nSliderTickRate:2\n\n\
@@ -109,7 +109,8 @@ fn health_steps_do_not_allocate() {
             let osr = replay(&noisy_frames(seed), map.format_version);
             let input = ReplayInput::from_replay(&osr, map.format_version);
             let mut sim = Simulator::new(&map, input, OsuRules::new(&map, &mods))
-                .with_health(HealthProcessor::for_play(&map, &mods), mods.clone());
+                .with_health(HealthProcessor::for_play(&map, &mods), mods.clone())
+                .with_scoring(ScoreProcessor::for_play(&map, &mods));
             assert_no_alloc(|| sim.run());
             assert!(sim.is_finished());
             assert!(!sim.log().events().is_empty());

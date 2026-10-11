@@ -1,4 +1,4 @@
-// Extracted verbatim from osu-framework 2026.921.1: osu.Framework/Bindables/Bindable.cs (lines 252-303, Parse), osu.Framework/Bindables/BindableBool.cs (lines 10-25, plus a shell of the value-changed event and BindTo), osu.Framework/Bindables/RangeConstrainedBindable.cs (lines 45-49, 246, 256; MinValue and MaxValue as plain properties), osu.Framework/Bindables/BindableNumber.cs (lines 19-32 without the type validation, 69-90, 92-94, 97-110, 209; Precision without its event), in minimal class shells without binding, events and leases (except the BindableBool shell of the value-changed event and BindTo, and BindableFloat); see README.md.
+// Extracted verbatim from osu-framework 2026.921.1: osu.Framework/Bindables/Bindable.cs (lines 252-303, Parse), osu.Framework/Bindables/BindableBool.cs (lines 10-25, plus a shell of the value-changed event and BindTo), osu.Framework/Bindables/RangeConstrainedBindable.cs (lines 45-49, 246, 256; MinValue and MaxValue as plain properties), osu.Framework/Bindables/BindableNumber.cs (lines 19-32 without the type validation, 69-90, 92-94, 97-110, 209; Precision without its event) and the BindableLong declaration, and the value-changed event of Bindable<T> (see the comment at its Value) and the IBindable<T> interface of Bindable<T>, in minimal class shells without binding, events and leases (except the BindableBool shell of the value-changed event and BindTo, and BindableFloat); see README.md.
 // Copyright (c) ppy Pty Ltd <contact@ppy.sh>. Licensed under the MIT Licence.
 // See the LICENCE file in the repository root for full licence text.
 
@@ -14,16 +14,26 @@ using osu.Framework.Extensions.TypeExtensions;
 
 namespace osu.Framework.Bindables
 {
-    public class Bindable<T>
+    public class Bindable<T> : IBindable<T>
     {
         public T Default;
 
         private T value;
 
+        // Bindable.cs (lines 88-103, 105-109 with the disabled check and the lease removed): an equal value is
+        // ignored, a changed one is stored and reported. The event is Action<T> instead of Action<ValueChangedEvent<T>>.
+        public event Action<T> ValueChanged;
+
         public virtual T Value
         {
             get => value;
-            set => this.value = value;
+            set
+            {
+                if (EqualityComparer<T>.Default.Equals(this.value, value)) return;
+
+                this.value = value;
+                ValueChanged?.Invoke(value);
+            }
         }
 
         public Bindable(T defaultValue = default)
@@ -253,6 +263,14 @@ namespace osu.Framework.Bindables
     public class BindableInt : BindableNumber<int>
     {
         public BindableInt(int defaultValue = 0)
+            : base(defaultValue)
+        {
+        }
+    }
+
+    public class BindableLong : BindableNumber<long>
+    {
+        public BindableLong(long defaultValue = 0)
             : base(defaultValue)
         {
         }

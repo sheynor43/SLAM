@@ -262,7 +262,6 @@ fn judging_rules_mismatch_fails() {
     let text = report.to_string();
     assert!(text.contains("earliest provable divergence"), "{text}");
     assert!(text.contains("no object exceeds"), "{text}");
-    assert!(text.contains("score: not computed"), "{text}");
 }
 
 #[test]
@@ -469,6 +468,94 @@ fn api_mod(acronym: &str) -> ApiMod {
 }
 
 #[test]
+fn lazer_score_is_compared() {
+    // The fixture map has no objects: the score is 0 and the rank SS.
+    let f = Fixture::new("score");
+    let sha = f.map("lazer");
+    let scored = |info: ScoreInfo| Replay {
+        version: harness::FIRST_COMBO_EXPONENT_VERSION,
+        ..lazer_replay_with(info)
+    };
+    let matching = ScoreInfo {
+        rank: Some(ScoreRank::X),
+        ..Default::default()
+    };
+    f.replay("lazer", "replays/a.osr", &scored(matching));
+    let wrong_rank = ScoreInfo {
+        rank: Some(ScoreRank::S),
+        ..Default::default()
+    };
+    f.replay("lazer", "replays/b.osr", &scored(wrong_rank));
+    let wrong_score = Replay {
+        total_score: 5,
+        ..scored(ScoreInfo::default())
+    };
+    f.replay("lazer", "replays/c.osr", &wrong_score);
+    // Before the combo exponent the score is not compared.
+    let old_score = Replay {
+        total_score: 5,
+        version: harness::FIRST_COMBO_EXPONENT_VERSION - 1,
+        ..lazer_replay_with(ScoreInfo::default())
+    };
+    f.replay("lazer", "replays/d.osr", &old_score);
+    f.manifest(
+        "lazer",
+        &[
+            entry("replays/a.osr", &sha, "lazer", ""),
+            entry("replays/b.osr", &sha, "lazer", ""),
+            entry("replays/c.osr", &sha, "lazer", ""),
+            entry("replays/d.osr", &sha, "lazer", ""),
+        ]
+        .concat(),
+    );
+    let report = f.run("", false);
+    assert_eq!(report.entries[0].outcome, Outcome::Match);
+    let Outcome::Mismatch {
+        diffs,
+        first_divergence,
+    } = &report.entries[1].outcome
+    else {
+        panic!("{:?}", report.entries[1].outcome)
+    };
+    assert_eq!(*first_divergence, Divergence::ScoreOnly);
+    assert_eq!(diffs[0].name, "rank (expected S, got X)");
+    let Outcome::Mismatch { diffs, .. } = &report.entries[2].outcome else {
+        panic!("{:?}", report.entries[2].outcome)
+    };
+    assert_eq!(
+        (diffs[0].name.as_str(), diffs[0].expected, diffs[0].got),
+        ("total score", 5, 0)
+    );
+    assert_eq!(report.entries[3].outcome, Outcome::Match);
+    assert!(report.failed());
+    assert!(report.to_string().contains("score only"), "{report}");
+}
+
+#[test]
+fn score_diffs_join_count_diffs() {
+    let log = JudgementLog::with_capacity(0);
+    let counts = harness::lazer_outcome(&[(osr::HitResult::Great, 1)], 0, &log).unwrap();
+    let score = vec![harness::Diff {
+        name: "total score".into(),
+        expected: 1,
+        got: 0,
+    }];
+    let Outcome::Mismatch {
+        diffs,
+        first_divergence,
+    } = harness::with_score_diffs(counts, score)
+    else {
+        panic!()
+    };
+    assert_eq!(first_divergence, Divergence::Undershoot);
+    assert_eq!(diffs.len(), 2);
+    assert_eq!(
+        harness::with_score_diffs(Outcome::Match, Vec::new()),
+        Outcome::Match
+    );
+}
+
+#[test]
 fn failed_play_is_skipped() {
     let f = Fixture::new("failed");
     let sha = f.map("lazer");
@@ -585,10 +672,17 @@ impl Rules for Never {
 fn step_cap_stops_endless_rules() {
     let beatmap = common::beatmap();
     let input = slam_osu::replay::ReplayInput::from_replay(&common::replay(&[], 14), 14);
-    let e = harness::simulate(&beatmap, input, Never).unwrap_err();
+    let e = harness::simulate(&beatmap, input, Never, None).unwrap_err();
     assert!(e.contains("did not finish"), "{e}");
 
     let input = slam_osu::replay::ReplayInput::from_replay(&common::replay(&[], 14), 14);
-    let log = harness::simulate(&beatmap, input, slam_osu::replay::NoRules::new(&beatmap)).unwrap();
+    let (log, score) = harness::simulate(
+        &beatmap,
+        input,
+        slam_osu::replay::NoRules::new(&beatmap),
+        None,
+    )
+    .unwrap();
     assert!(log.events().is_empty());
+    assert!(score.is_none());
 }

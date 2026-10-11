@@ -6,12 +6,13 @@
 
 use std::ops::Range;
 
+use crate::autoplay::{self, Target};
 use crate::beatmap::Beatmap;
 use crate::difficulty::DifficultyRange;
 use crate::dotnet;
 use crate::judgement::{HitResult, Judgement};
 use crate::mods::{Mod, ModSet};
-use crate::objects::{NestedKind, OsuHitObject, OsuHitObjectKind};
+use crate::objects::{OsuHitObject, OsuHitObjectKind};
 use crate::precision::DOUBLE_EPSILON;
 use crate::rules::RulesOptions;
 
@@ -87,20 +88,6 @@ impl HealthOptions {
             drain_start_time: beatmap.hit_objects.first().map_or(0.0, |o| o.start_time),
         }
     }
-}
-
-/// What a judgement judged, as far as health cares.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum Target {
-    Circle,
-    Slider,
-    Spinner,
-    SliderHead,
-    SliderTick,
-    SliderRepeat,
-    SliderTail,
-    SpinnerTick,
-    SpinnerBonusTick,
 }
 
 /// A top-level object, as far as health cares.
@@ -215,12 +202,7 @@ impl HealthProcessor {
                     OsuHitObjectKind::Circle => ObjectKind::Circle,
                     OsuHitObjectKind::Slider(slider) => {
                         let start = nested.len() as u32;
-                        nested.extend(slider.nested.iter().map(|n| match n.kind {
-                            NestedKind::Head => Target::SliderHead,
-                            NestedKind::Tick { .. } => Target::SliderTick,
-                            NestedKind::Repeat { .. } => Target::SliderRepeat,
-                            NestedKind::Tail { .. } => Target::SliderTail,
-                        }));
+                        nested.extend(slider.nested.iter().map(|n| Target::of_nested(&n.kind)));
                         ObjectKind::Slider(start..nested.len() as u32)
                     }
                     OsuHitObjectKind::Spinner(spinner) => ObjectKind::Spinner {
@@ -515,40 +497,13 @@ impl HealthProcessor {
     fn simulate_autoplay(&self, beatmap: &Beatmap, options: HealthOptions) -> Vec<(f64, f64)> {
         let classic = options.classic_slider_behaviour;
         let mut increases = Vec::new();
-        let mut push = |time: f64, target: Target| {
-            let result = max_result(target, classic);
+        autoplay::for_each_judgement(beatmap, |time, target| {
+            let result = target.max_result(classic);
             if !result.is_bonus() {
                 // While simulating, the combo is not tracked.
                 increases.push((time, self.standard_increase(target, result)));
             }
-        };
-
-        for (object, info) in beatmap.hit_objects.iter().zip(&self.objects) {
-            match (&object.kind, &info.kind) {
-                (OsuHitObjectKind::Slider(slider), ObjectKind::Slider(range)) => {
-                    for (n, &target) in slider
-                        .nested
-                        .iter()
-                        .zip(&self.nested[range.start as usize..range.end as usize])
-                    {
-                        push(n.start_time, target);
-                    }
-                    push(object.end_time(), Target::Slider);
-                }
-                (OsuHitObjectKind::Spinner(spinner), _) => {
-                    for i in 0..spinner.tick_count().max(0) {
-                        let target = if spinner.is_bonus_tick(i) {
-                            Target::SpinnerBonusTick
-                        } else {
-                            Target::SpinnerTick
-                        };
-                        push(spinner.tick_time(object.start_time, i), target);
-                    }
-                    push(object.end_time(), Target::Spinner);
-                }
-                _ => push(object.end_time(), Target::Circle),
-            }
-        }
+        });
         increases
     }
 
@@ -582,7 +537,7 @@ impl HealthProcessor {
             };
             let increase_hp = |target: Target, hp: &mut f64, uncapped: &mut f64| {
                 let amount =
-                    legacy_increase(hp_setting, multiplier, target, max_result(target, classic));
+                    legacy_increase(hp_setting, multiplier, target, target.max_result(classic));
                 *uncapped += amount;
                 *hp = dotnet::max(0.0, dotnet::min(1.0, *hp + amount));
             };
@@ -812,25 +767,6 @@ fn base_health_increase(result: HitResult) -> f64 {
         HitResult::SmallBonus => DEFAULT_MAX_HEALTH_INCREASE * 0.5,
         HitResult::LargeBonus => DEFAULT_MAX_HEALTH_INCREASE,
         _ => 0.0,
-    }
-}
-
-// Ported from osu!lazer 2026.1005.0-lazer: osu.Game.Rulesets.Osu/Objects/Slider.cs (CreateJudgement)
-// Ported from osu!lazer 2026.1005.0-lazer: osu.Game.Rulesets.Osu/Objects/SliderHeadCircle.cs (CreateJudgement)
-// Ported from osu!lazer 2026.1005.0-lazer: osu.Game.Rulesets.Osu/Objects/SliderTailCircle.cs (CreateJudgement)
-/// The best result of an object, which a perfect play gets.
-fn max_result(target: Target, classic_slider_behaviour: bool) -> HitResult {
-    match target {
-        Target::Circle | Target::Spinner => HitResult::Great,
-        Target::Slider if classic_slider_behaviour => HitResult::Great,
-        Target::Slider => HitResult::IgnoreHit,
-        Target::SliderHead if classic_slider_behaviour => HitResult::LargeTickHit,
-        Target::SliderHead => HitResult::Great,
-        Target::SliderTick | Target::SliderRepeat => HitResult::LargeTickHit,
-        Target::SliderTail if classic_slider_behaviour => HitResult::SmallTickHit,
-        Target::SliderTail => HitResult::SliderTailHit,
-        Target::SpinnerTick => HitResult::SmallBonus,
-        Target::SpinnerBonusTick => HitResult::LargeBonus,
     }
 }
 

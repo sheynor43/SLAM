@@ -6,6 +6,7 @@ use crate::beatmap::Beatmap;
 use crate::health::HealthProcessor;
 use crate::judgement::JudgementLog;
 use crate::mods::ModSet;
+use crate::scoring::ScoreProcessor;
 
 use slam_formats::osu::Vec2;
 
@@ -100,8 +101,6 @@ pub fn gameplay_start_time(beatmap: &Beatmap) -> f64 {
 struct Health {
     processor: HealthProcessor,
     mods: ModSet,
-    /// Judgements of the log already applied.
-    applied: usize,
 }
 
 /// Runs a replay through the rules.
@@ -116,6 +115,9 @@ pub struct Simulator<R> {
     rules: R,
     log: JudgementLog,
     health: Option<Health>,
+    score: Option<ScoreProcessor>,
+    /// Judgements of the log already given to the health and score processors.
+    applied: usize,
     events: [ActionEvent; MAX_STEP_EVENTS],
     started: bool,
     finished: bool,
@@ -132,6 +134,8 @@ impl<R: Rules> Simulator<R> {
             cursor: ReplayCursor::new(),
             rules,
             health: None,
+            score: None,
+            applied: 0,
             events: [ActionEvent {
                 time: 0.0,
                 position: Vec2::ZERO,
@@ -152,12 +156,18 @@ impl<R: Rules> Simulator<R> {
     /// finishes at the failing step; lazer concludes it a scheduled frame later, which depends
     /// on real frames.
     pub fn with_health(mut self, processor: HealthProcessor, mut mods: ModSet) -> Simulator<R> {
+        debug_assert_eq!(self.steps, 0, "health tracked from the first step");
         mods.reset_play_state();
-        self.health = Some(Health {
-            processor,
-            mods,
-            applied: 0,
-        });
+        self.health = Some(Health { processor, mods });
+        self
+    }
+
+    /// Scores the play with `processor` from the first step on. With health tracked, the
+    /// health processor takes each judgement first, and judgements after a fail score
+    /// nothing; a failed play is marked failed (rank F).
+    pub fn with_scoring(mut self, processor: ScoreProcessor) -> Simulator<R> {
+        debug_assert_eq!(self.steps, 0, "score tracked from the first step");
+        self.score = Some(processor);
         self
     }
 
@@ -206,13 +216,27 @@ impl<R: Rules> Simulator<R> {
         self.rules.update(&step, &mut self.log);
         self.steps += 1;
 
-        let mut failed = false;
-        if let Some(health) = &mut self.health {
-            for judgement in self.log.events_since(health.applied) {
+        // Ported from osu!lazer 2026.1005.0-lazer: osu.Game/Screens/Play/Player.cs (LoadComponents)
+        // Each judgement goes to the health processor, then to the score processor.
+        // Ported from osu!lazer 2026.1005.0-lazer: osu.Game/Rulesets/Scoring/HealthProcessor.cs (ApplyResultInternal)
+        // A judgement is `FailedAtJudgement` if the player failed before it.
+        for judgement in self.log.events_since(self.applied) {
+            let mut failed_before = false;
+            if let Some(health) = &mut self.health {
+                failed_before = health.processor.has_failed();
                 health.processor.apply(judgement, &mut health.mods);
             }
-            health.applied = self.log.events().len();
-            failed = health.processor.has_failed();
+            if let Some(score) = &mut self.score {
+                score.apply(judgement, failed_before);
+            }
+        }
+        self.applied = self.log.events().len();
+        let failed = self
+            .health
+            .as_ref()
+            .is_some_and(|h| h.processor.has_failed());
+        if failed && let Some(score) = &mut self.score {
+            score.fail();
         }
 
         self.finished = failed || self.rules.is_complete();
@@ -247,6 +271,11 @@ impl<R: Rules> Simulator<R> {
     /// The health, if tracked (see [`Simulator::with_health`]).
     pub fn health(&self) -> Option<&HealthProcessor> {
         self.health.as_ref().map(|h| &h.processor)
+    }
+
+    /// The score, if tracked (see [`Simulator::with_scoring`]).
+    pub fn score(&self) -> Option<&ScoreProcessor> {
+        self.score.as_ref()
     }
 
     /// The rules.

@@ -2,6 +2,7 @@
 
 #![warn(missing_docs)]
 
+mod autoplay;
 pub mod beatmap;
 pub mod control_points;
 pub mod difficulty;
@@ -17,9 +18,11 @@ mod precision;
 pub mod replay;
 pub mod rules;
 pub mod samples;
+pub mod scoring;
 pub mod stacking;
 
 pub use beatmap::{Beatmap, BeatmapError, Difficulty};
 pub use health::HealthProcessor;
 pub use mods::{GameplayMod, Mod, ModSet};
 pub use path::SliderPath;
+pub use scoring::ScoreProcessor;
