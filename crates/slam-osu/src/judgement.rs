@@ -43,7 +43,8 @@ pub enum HitResult {
     ComboBreak,
     /// A hit slider tail.
     SliderTailHit,
-    /// Increases the combo without other effects (classic slider ticks).
+    /// Increases the combo without other effects. Pads the maximum statistics of legacy scores
+    /// to their max combo; rulesets never produce it, and lazer rejects it as a judgement.
     LegacyComboIncrease,
 }
 

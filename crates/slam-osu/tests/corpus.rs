@@ -5,6 +5,8 @@ mod common;
 #[path = "common/corpus.rs"]
 mod harness;
 
+slam_testkit::install_counting_allocator!();
+
 use std::path::{Path, PathBuf};
 
 use harness::{Divergence, Outcome, Report, corpus_root, run_corpus};
@@ -405,7 +407,9 @@ fn compare_flags_results_the_replay_lacks() {
     log.apply(judgement(0, Some(0), 120.0, HitResult::LargeTickHit));
     log.apply(judgement(1, None, 200.0, HitResult::IgnoreHit));
     let expected = [(osr::HitResult::Great, 1)];
-    let Outcome::Mismatch { diffs, .. } = harness::lazer_outcome(&expected, 2, &log).unwrap()
+    // One tolerated result over is within tolerance, and still shown.
+    let Outcome::LazerWithinTolerance { diffs, .. } =
+        harness::lazer_outcome(&expected, 2, &log).unwrap()
     else {
         panic!()
     };
@@ -548,16 +552,224 @@ fn score_diffs_join_count_diffs() {
     let Outcome::Mismatch {
         diffs,
         first_divergence,
-    } = harness::with_score_diffs(counts, score)
+    } = harness::with_score_diffs(counts, score, true)
     else {
         panic!()
     };
     assert_eq!(first_divergence, Divergence::Undershoot);
     assert_eq!(diffs.len(), 2);
     assert_eq!(
-        harness::with_score_diffs(Outcome::Match, Vec::new()),
+        harness::with_score_diffs(Outcome::Match, Vec::new(), true),
         Outcome::Match
     );
+}
+
+#[test]
+fn tolerated_results_are_compared_within_tolerance() {
+    // Ten circles hit and ten sliders: heads hit, tails as given.
+    let log_with = |tails_hit: u32| {
+        let mut log = JudgementLog::with_capacity(40);
+        for i in 0..10 {
+            log.apply(judgement(i, None, f64::from(i), HitResult::Great));
+        }
+        for i in 10..20 {
+            log.apply(judgement(i, Some(0), f64::from(i), HitResult::Great));
+            let tail = if i - 10 < tails_hit {
+                HitResult::SliderTailHit
+            } else {
+                HitResult::IgnoreMiss
+            };
+            log.apply(judgement(i, Some(1), f64::from(i), tail));
+        }
+        log
+    };
+    let expected = |tails_hit: i32| {
+        [
+            (osr::HitResult::Great, 20),
+            (osr::HitResult::SliderTailHit, tails_hit),
+            (osr::HitResult::IgnoreMiss, 10 - tails_hit),
+        ]
+    };
+    let within = |o: &Outcome| matches!(o, Outcome::LazerWithinTolerance { .. });
+    let mismatch = |o: &Outcome| matches!(o, Outcome::Mismatch { .. });
+
+    // Combo is broken by nothing: 20 + the tails hit, all in a row only with every tail hit.
+    assert_eq!(
+        harness::lazer_outcome(&expected(10), 30, &log_with(10)).unwrap(),
+        Outcome::Match
+    );
+    // Two tails off: within max(2, 0.5 %).
+    let o = harness::lazer_outcome(&expected(10), 30, &log_with(8)).unwrap();
+    assert!(within(&o), "{o:?}");
+    // Three off: outside.
+    let o = harness::lazer_outcome(&expected(10), 30, &log_with(7)).unwrap();
+    assert!(mismatch(&o), "{o:?}");
+    // A circle off is a mismatch whatever the tails do.
+    let mut circle_expected = expected(9).to_vec();
+    circle_expected[0].1 = 21;
+    let o = harness::lazer_outcome(&circle_expected, 29, &log_with(9)).unwrap();
+    assert!(mismatch(&o), "{o:?}");
+
+    // Equal counts with another max combo: the tail missed may be another one.
+    let o = harness::lazer_outcome(&expected(9), 5, &log_with(9)).unwrap();
+    assert!(within(&o), "{o:?}");
+    // Without a tolerated miss the order is pinned down: a combo difference is a mismatch,
+    // tails or not.
+    let o = harness::lazer_outcome(&expected(10), 5, &log_with(10)).unwrap();
+    assert!(mismatch(&o), "{o:?}");
+    assert!(!harness::has_tolerated_misses(&log_with(10)));
+    assert!(harness::has_tolerated_misses(&log_with(9)));
+
+    // A score-only difference follows the same rule.
+    let score = || {
+        vec![harness::Diff {
+            name: "total score".into(),
+            expected: 1,
+            got: 0,
+        }]
+    };
+    assert!(within(&harness::with_score_diffs(
+        Outcome::Match,
+        score(),
+        true
+    )));
+    assert!(mismatch(&harness::with_score_diffs(
+        Outcome::Match,
+        score(),
+        false
+    )));
+}
+
+#[test]
+fn tolerated_counts_are_bounded_in_sum() {
+    // Two sliders with a tick and a bonus each, all hit.
+    let mut log = JudgementLog::with_capacity(8);
+    for i in 0..2 {
+        log.apply(judgement(i, Some(1), 0.0, HitResult::SliderTailHit));
+        log.apply(judgement(i, Some(2), 0.0, HitResult::LargeTickHit));
+        log.apply(judgement(i, Some(3), 0.0, HitResult::LargeBonus));
+    }
+    // One tail and one tick missed in lazer: four counts one off, 4 in sum: within.
+    let expected = [
+        (osr::HitResult::SliderTailHit, 1),
+        (osr::HitResult::IgnoreMiss, 1),
+        (osr::HitResult::LargeTickHit, 1),
+        (osr::HitResult::LargeTickMiss, 1),
+        (osr::HitResult::LargeBonus, 2),
+    ];
+    let o = harness::lazer_outcome(&expected, 6, &log).unwrap();
+    assert!(matches!(o, Outcome::LazerWithinTolerance { .. }), "{o:?}");
+    // Both missed: each count two off, still within on its own, 8 in sum: a mismatch.
+    let expected = [
+        (osr::HitResult::IgnoreMiss, 2),
+        (osr::HitResult::LargeTickMiss, 2),
+        (osr::HitResult::LargeBonus, 2),
+    ];
+    let o = harness::lazer_outcome(&expected, 6, &log).unwrap();
+    assert!(matches!(o, Outcome::Mismatch { .. }), "{o:?}");
+    assert_eq!(harness::total_tolerance(0), 4);
+    assert_eq!(harness::total_tolerance(1600), 4);
+    assert_eq!(harness::total_tolerance(1601), 5);
+}
+
+#[test]
+fn too_many_within_tolerance_fails_the_run() {
+    let entry = |outcome: Outcome| harness::EntryReport {
+        name: "lazer/a.osr".into(),
+        outcome,
+    };
+    let within = || Outcome::LazerWithinTolerance {
+        diffs: Vec::new(),
+        first_divergence: Divergence::ScoreOnly,
+    };
+    // Three of twelve: a quarter, not more.
+    let mut report = Report::default();
+    report.entries.extend((0..9).map(|_| entry(Outcome::Match)));
+    report.entries.extend((0..3).map(|_| entry(within())));
+    assert!(!report.failed(), "{report}");
+    // Three of eleven: more than a quarter.
+    report.entries.remove(0);
+    assert!(report.failed());
+    assert!(report.to_string().contains("TOO MANY"), "{report}");
+    // A small sample is not judged by its share.
+    let report = Report {
+        entries: vec![entry(within()), entry(within())],
+    };
+    assert!(!report.failed());
+}
+
+#[test]
+fn tolerance_grows_with_the_count() {
+    assert_eq!(harness::tolerance(0), 2);
+    assert_eq!(harness::tolerance(400), 2);
+    assert_eq!(harness::tolerance(401), 3);
+    assert_eq!(harness::tolerance(1000), 5);
+    assert!(harness::is_tolerated(HitResult::SliderTailHit));
+    assert!(harness::is_tolerated(HitResult::LargeBonus));
+    for strict in [
+        HitResult::Great,
+        HitResult::Ok,
+        HitResult::Meh,
+        HitResult::Miss,
+    ] {
+        assert!(!harness::is_tolerated(strict));
+    }
+}
+
+#[test]
+fn known_divergence_marks_a_mismatch_and_must_stay_current() {
+    let diff = |name: &str, expected, got| harness::Diff {
+        name: name.into(),
+        expected,
+        got,
+    };
+    let mismatch = |meh: i64| Outcome::Mismatch {
+        diffs: vec![
+            diff("Meh", 3, meh),
+            diff("max combo", 10, 9),
+            diff("total score", 5, 4),
+        ],
+        first_divergence: Divergence::Undershoot,
+    };
+    let known = harness::KnownDivergence {
+        reason: "why".into(),
+        counts: [("Meh".to_string(), [3, 6])].into(),
+    };
+    let Outcome::KnownDivergence { reason, .. } =
+        harness::with_known_divergence(mismatch(6), Some(&known)).unwrap()
+    else {
+        panic!()
+    };
+    assert_eq!(reason, "why");
+    assert_eq!(
+        harness::with_known_divergence(mismatch(6), None).unwrap(),
+        mismatch(6)
+    );
+    // Another divergence on the same replay is not hidden.
+    let e = harness::with_known_divergence(mismatch(7), Some(&known)).unwrap_err();
+    assert!(e.contains("changed"), "{e}");
+    assert!(harness::with_known_divergence(Outcome::Match, Some(&known)).is_err());
+
+    let report = Report {
+        entries: vec![harness::EntryReport {
+            name: "lazer/a.osr".into(),
+            outcome: harness::with_known_divergence(mismatch(6), Some(&known)).unwrap(),
+        }],
+    };
+    assert!(!report.failed());
+    assert_eq!(report.known(), 1);
+    assert!(
+        report.to_string().contains("known divergence, why"),
+        "{report}"
+    );
+
+    // The manifest field is accepted.
+    let entries = harness::parse_manifest(
+        "[[replay]]\nfile = \"a.osr\"\nmap_sha256 = \"ab\"\nsource = \"lazer\"\n\
+         known_divergence = { reason = \"why\", counts = { Meh = [3, 6] } }\n",
+    )
+    .unwrap();
+    assert_eq!(entries[0].known_divergence.as_ref(), Some(&known));
 }
 
 #[test]

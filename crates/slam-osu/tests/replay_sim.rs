@@ -7,8 +7,8 @@ use slam_formats::osr::GeneratedFrame;
 use slam_formats::osu::Vec2;
 use slam_osu::judgement::{HitResult, JudgementLog};
 use slam_osu::replay::{
-    ActionEvent, Actions, InputFrame, NoRules, ReplayInput, Rules, SIXTY_FRAME_TIME, Simulator,
-    StepInput, gameplay_start_time,
+    ActionEvent, Actions, InputFrame, NoRules, ReplayInput, Rules, Simulator, StepInput,
+    UPDATE_INTERVAL, gameplay_start_time,
 };
 
 /// An owned copy of one [`StepInput`].
@@ -90,18 +90,17 @@ fn gameplay_starts_two_seconds_before_first_object() {
 }
 
 #[test]
-fn steps_visit_every_frame_and_cap_at_sixty_fps() {
-    let s = SIXTY_FRAME_TIME;
+fn steps_visit_every_frame_and_cap_at_the_live_update_rate() {
+    let s = UPDATE_INTERVAL;
     let input = ReplayInput::new([
         frame(0.0, 0.0, Actions::NONE),
         frame(500.0, 1.0, Actions::NONE),
-        frame(1010.0, 2.0, Actions::NONE),
-        frame(1020.0, 3.0, Actions::NONE),
-        frame(1060.0, 4.0, Actions::NONE),
-        frame(1060.0, 5.0, Actions::NONE),
-        frame(1100.0, 6.0, Actions::NONE),
+        frame(1002.0, 2.0, Actions::NONE),
+        frame(1003.5, 3.0, Actions::NONE),
+        frame(1003.5, 4.0, Actions::NONE),
+        frame(1005.0, 5.0, Actions::NONE),
     ]);
-    let steps = record(input, 1150.0);
+    let steps = record(input, 1007.0);
     let times: Vec<f64> = steps.iter().map(|s| s.time).collect();
     assert_eq!(
         times,
@@ -111,25 +110,23 @@ fn steps_visit_every_frame_and_cap_at_sixty_fps() {
             // Before gameplay start the clock jumps to it, stopping at each frame on the way.
             500.0,
             1000.0,
-            // From gameplay start on, at most one sixty-fps frame per step, never past a frame.
-            1010.0,
-            1020.0,
-            1020.0 + s,
-            1020.0 + s + s,
-            1060.0,
+            // From gameplay start on, at most one live update per step, never past a frame.
+            1000.0 + s,
+            // Two updates land exactly on the frame: it is that step, not one more.
+            1002.0,
+            1002.0 + s,
+            1003.5,
             // Equal frame times still get their own step.
-            1060.0,
-            1060.0 + s,
-            1060.0 + s + s,
-            1100.0,
+            1003.5,
+            1003.5 + s,
+            1005.0,
             // After the last frame time keeps going until the rules are done.
-            1100.0 + s,
-            1100.0 + s + s,
-            1100.0 + s + s + s,
+            1005.0 + s,
+            1005.0 + s + s,
         ]
     );
-    // The second frame with time 1060 is the current one at its step.
-    assert_eq!(steps[8].position, Vec2::new(5.0, 0.0));
+    // The second frame with time 1003.5 is the current one at its step.
+    assert_eq!(steps[7].position, Vec2::new(4.0, 0.0));
 }
 
 #[test]
@@ -138,30 +135,29 @@ fn input_is_interpolated_and_presses_are_reported_once() {
     let r = Actions::RIGHT;
     let input = ReplayInput::new([
         frame(1000.0, 0.0, Actions::NONE),
-        frame(1050.0, 100.0, l),
-        frame(1060.0, 100.0, l | r),
-        frame(1070.0, 100.0, r),
-        frame(1080.0, 100.0, Actions::NONE),
+        frame(1002.5, 100.0, l),
+        frame(1003.0, 100.0, l | r),
+        frame(1004.0, 100.0, r),
+        frame(1005.0, 100.0, Actions::NONE),
     ]);
-    let steps = record(input, 1080.0);
+    let steps = record(input, 1005.0);
     let got: Vec<_> = steps
         .iter()
         .map(|s| (s.time, s.position.x, s.changed(true), s.changed(false)))
         .collect();
-    let s = SIXTY_FRAME_TIME;
+    let s = UPDATE_INTERVAL;
     let n = Actions::NONE;
-    let x = |t: f64| ((t - 1000.0) as f32 / 50.0) * 100.0;
+    let x = |t: f64| ((t - 1000.0) as f32 / 2.5) * 100.0;
     assert_eq!(
         got,
         [
             (1000.0, 0.0, n, n),
             (1000.0 + s, x(1000.0 + s), n, n),
             (1000.0 + s + s, x(1000.0 + s + s), n, n),
-            // 1000 + 3 * (1000 / 60) rounds to exactly 1050: the frame's own step.
-            (1050.0, 100.0, l, n),
-            (1060.0, 100.0, r, n),
-            (1070.0, 100.0, n, l),
-            (1080.0, 100.0, n, r),
+            (1002.5, 100.0, l, n),
+            (1003.0, 100.0, r, n),
+            (1004.0, 100.0, n, l),
+            (1005.0, 100.0, n, r),
         ]
     );
 }
@@ -251,7 +247,7 @@ fn rules_judgements_build_statistics() {
     assert_eq!(results[1], (1, 3290.0, HitResult::Meh));
     assert_eq!(results[2].0, 2);
     assert_eq!(results[2].2, HitResult::Miss);
-    assert!(results[2].1 > 3700.0 && results[2].1 <= 3700.0 + SIXTY_FRAME_TIME);
+    assert!(results[2].1 > 3700.0 && results[2].1 <= 3700.0 + UPDATE_INTERVAL);
     let stats = log.statistics();
     assert_eq!(stats.count(HitResult::Great), 1);
     assert_eq!(stats.count(HitResult::Meh), 1);
@@ -266,7 +262,7 @@ fn no_rules_finish_after_last_object() {
     let input = ReplayInput::new([frame(0.0, 0.0, Actions::NONE)]);
     let mut sim = Simulator::new(&map, input, NoRules::new(&map));
     sim.run();
-    assert!(sim.time() >= 3600.0 && sim.time() < 3600.0 + SIXTY_FRAME_TIME);
+    assert!(sim.time() >= 3600.0 && sim.time() < 3600.0 + UPDATE_INTERVAL);
     assert!(sim.log().events().is_empty());
 }
 
@@ -277,7 +273,7 @@ fn empty_replay_starts_at_gameplay_start() {
     assert!(sim.step());
     assert_eq!(sim.time(), 1000.0);
     assert!(sim.step());
-    assert_eq!(sim.time(), 1000.0 + SIXTY_FRAME_TIME);
+    assert_eq!(sim.time(), 1000.0 + UPDATE_INTERVAL);
     sim.run();
     assert!(sim.is_finished());
 }
@@ -312,7 +308,7 @@ fn two_runs_are_identical() {
 
 #[test]
 fn frame_on_gameplay_start_is_not_doubled() {
-    let s = SIXTY_FRAME_TIME;
+    let s = UPDATE_INTERVAL;
     let input = ReplayInput::new([
         frame(0.0, 0.0, Actions::NONE),
         frame(1000.0, 1.0, Actions::NONE),
@@ -335,7 +331,7 @@ fn simulation_ends_when_rules_finish_even_with_frames_left() {
     ]);
     let steps = record(input, 1050.0);
     let last = steps.last().unwrap().time;
-    assert!((1050.0..1050.0 + SIXTY_FRAME_TIME).contains(&last));
+    assert!((1050.0..1050.0 + UPDATE_INTERVAL).contains(&last));
 }
 
 #[test]
