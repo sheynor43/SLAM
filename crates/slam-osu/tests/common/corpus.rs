@@ -13,13 +13,11 @@ use sha2::{Digest, Sha256};
 use slam_formats::osr::{self, Replay, ScoreRank};
 use slam_formats::osu;
 use slam_osu::judgement::{HitResult, JudgementLog, Statistics};
-use slam_osu::mods::FIRST_LAZER_VERSION;
+use slam_osu::mods::{FIRST_LAZER_VERSION, MultiplierVersion};
 use slam_osu::replay::{ReplayInput, Rules, Simulator};
 use slam_osu::rules::OsuRules;
+use slam_osu::scoring::{ScoreProcessor, ScoringOptions};
 use slam_osu::{Beatmap, GameplayMod, ModSet};
-
-/// The score is not compared yet.
-const SCORE_NOTE: &str = "score: not computed (scoring lands in #53)";
 
 /// Steps allowed on top of the replay's frames and twice the 60 Hz steps of the map's length.
 ///
@@ -32,6 +30,12 @@ const STEP_CAP_SLACK: u64 = 100_000;
 /// (`LegacyScoreDecoder`): their statistics are not lazer's own, so they cannot be a lazer
 /// reference.
 const LAST_CONVERTED_LAZER_VERSION: i32 = FIRST_LAZER_VERSION + 1;
+
+/// Lazer's total score version that introduced the combo exponent in osu!standard
+/// (`LegacyScoreEncoder`): lazer scores set before it used another formula and were not
+/// recomputed, so their scores are not compared.
+// Ported from osu!lazer 2026.1005.0-lazer: osu.Game/Scoring/Legacy/LegacyScoreEncoder.cs (version 30000005)
+pub const FIRST_COMBO_EXPONENT_VERSION: i32 = 30_000_005;
 
 /// The corpus directory: `$SLAM_CORPUS`, else `slam-corpus` next to the SLAM repository.
 /// `None` if it does not exist.
@@ -85,7 +89,7 @@ pub fn parse_manifest(text: &str) -> Result<Vec<RawEntry>, String> {
         .map_err(|e| e.to_string())
 }
 
-/// One differing count: `name` is a result name, or `max combo`.
+/// One differing value: `name` is a result name, `max combo`, or a score field.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Diff {
     pub name: String,
@@ -114,6 +118,8 @@ pub enum Divergence {
     ComboOnlyUndershoot,
     /// Counts too low, nothing exceeded.
     Undershoot,
+    /// Counts and max combo match; only the score, its rank or both differ.
+    ScoreOnly,
 }
 
 impl fmt::Display for Divergence {
@@ -146,6 +152,7 @@ impl fmt::Display for Divergence {
             Divergence::Undershoot => {
                 f.write_str("undershoot, no object exceeds its expected count")
             }
+            Divergence::ScoreOnly => f.write_str("score only: counts and max combo match"),
         }
     }
 }
@@ -236,7 +243,6 @@ impl fmt::Display for Report {
             self.stable_outside(),
             self.skipped(),
         )?;
-        writeln!(f, "{SCORE_NOTE}")?;
         for e in &self.entries {
             match &e.outcome {
                 Outcome::Match => {}
@@ -351,13 +357,18 @@ pub fn prepare(replay: &Replay, map_bytes: &[u8]) -> Result<Prepared, String> {
 }
 
 /// Steps the simulation to its end, failing if it does not finish within a generous cap.
+/// Scores the play with `score` if given.
 pub fn simulate<R: Rules>(
     beatmap: &Beatmap,
     input: ReplayInput,
     rules: R,
-) -> Result<JudgementLog, String> {
+    score: Option<ScoreProcessor>,
+) -> Result<(JudgementLog, Option<ScoreProcessor>), String> {
     let frames = input.frames().len() as u64;
     let mut sim = Simulator::new(beatmap, input, rules);
+    if let Some(score) = score {
+        sim = sim.with_scoring(score);
+    }
     // Every frame, twice the 60 Hz steps of the whole map, and a fixed slack.
     let end_time = beatmap
         .hit_objects
@@ -370,7 +381,7 @@ pub fn simulate<R: Rules>(
             return Err(format!("simulation did not finish within {cap} steps"));
         }
     }
-    Ok(sim.log().clone())
+    Ok((sim.log().clone(), sim.score().cloned()))
 }
 
 fn run_entry(dir: &Path, manifest_source: Source, entry: &RawEntry) -> Result<Outcome, String> {
@@ -455,11 +466,102 @@ fn run_entry(dir: &Path, manifest_source: Source, entry: &RawEntry) -> Result<Ou
         )));
     }
     let rules = rules_for(&beatmap, &mods);
-    let log = simulate(&beatmap, input, rules)?;
+    // Stable replays carry a ScoreV1 score, which SLAM does not compute.
+    let compare_score_of = info
+        .as_ref()
+        .filter(|_| replay.version >= FIRST_COMBO_EXPONENT_VERSION);
+    let score = compare_score_of.map(|_| {
+        // The score was set with the multipliers of its total score version.
+        let version = MultiplierVersion::for_total_score_version(Some(replay.version));
+        ScoreProcessor::new(
+            &beatmap,
+            ScoringOptions::with_multipliers(&beatmap, &mods, version),
+        )
+    });
+    let (log, score) = simulate(&beatmap, input, rules, score)?;
 
     match info {
-        Some(info) => lazer_outcome(&info.statistics, u32::from(replay.max_combo), &log),
+        Some(info) => {
+            let outcome = lazer_outcome(&info.statistics, u32::from(replay.max_combo), &log)?;
+            let score_diffs = score.map_or_else(Vec::new, |score| {
+                compare_score(&replay, &info, &score, &mods)
+            });
+            Ok(with_score_diffs(outcome, score_diffs))
+        }
         None => Ok(compare_stable(&replay, &log)),
+    }
+}
+
+/// Exact comparison of the score: `TotalScore` (stored as `int` in the replay header),
+/// `TotalScoreWithoutMods` and the rank when the score-info block has them.
+// Ported from osu!lazer 2026.1005.0-lazer: osu.Game/Scoring/Legacy/LegacyScoreEncoder.cs (Encode)
+pub fn compare_score(
+    replay: &Replay,
+    info: &osr::ScoreInfo,
+    score: &ScoreProcessor,
+    mods: &ModSet,
+) -> Vec<Diff> {
+    let mut diffs = Vec::new();
+    let mut check = |name: String, expected: i64, got: i64| {
+        if expected != got {
+            diffs.push(Diff {
+                name,
+                expected,
+                got,
+            });
+        }
+    };
+    check(
+        "total score".into(),
+        i64::from(replay.total_score),
+        // Lazer writes `(int)TotalScore`.
+        i64::from(score.total_score() as i32),
+    );
+    if let Some(expected) = info.total_score_without_mods {
+        check(
+            "total score without mods".into(),
+            expected,
+            score.total_score_without_mods(),
+        );
+    }
+    if let Some(expected) = &info.rank {
+        let got = score.rank(mods).to_score_key();
+        if *expected != got {
+            check(
+                format!(
+                    "rank (expected {}, got {})",
+                    expected.as_str(),
+                    got.as_str()
+                ),
+                0,
+                1,
+            );
+        }
+    }
+    diffs
+}
+
+/// Adds the score's diffs to the verdict on the counts.
+pub fn with_score_diffs(outcome: Outcome, score_diffs: Vec<Diff>) -> Outcome {
+    if score_diffs.is_empty() {
+        return outcome;
+    }
+    match outcome {
+        Outcome::Match => Outcome::Mismatch {
+            diffs: score_diffs,
+            first_divergence: Divergence::ScoreOnly,
+        },
+        Outcome::Mismatch {
+            mut diffs,
+            first_divergence,
+        } => {
+            diffs.extend(score_diffs);
+            Outcome::Mismatch {
+                diffs,
+                first_divergence,
+            }
+        }
+        other => other,
     }
 }
 

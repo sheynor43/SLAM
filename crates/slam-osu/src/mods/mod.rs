@@ -18,6 +18,7 @@ use slam_formats::osu as osu_file;
 use crate::beatmap::{Beatmap, BeatmapError, Difficulty};
 use crate::dotnet;
 use crate::objects::OsuHitObject;
+use crate::scoring::ScoreRank;
 use setting::DifficultyRange;
 
 pub use multiplier::{MultiplierVersion, TOTAL_SCORE_VERSION_MULTIPLIER_REBALANCE};
@@ -101,6 +102,12 @@ pub trait GameplayMod {
     /// The score multiplier when this mod is the only one of its combination.
     fn score_multiplier(&self, _context: &MultiplierContext<'_>) -> f64 {
         1.0
+    }
+
+    /// Adjusts the rank of a play that has not failed, given its `accuracy` (lazer's
+    /// `IApplicableToScoreProcessor.AdjustRank`).
+    fn adjust_rank(&self, rank: ScoreRank, _accuracy: f64) -> ScoreRank {
+        rank
     }
 }
 
@@ -672,6 +679,15 @@ impl GameplayMod for Mod {
                 false
             }
             _ => true,
+        }
+    }
+
+    // Ported from osu!lazer 2026.1005.0-lazer: osu.Game/Rulesets/Mods/ModHidden.cs (AdjustRank)
+    fn adjust_rank(&self, rank: ScoreRank, _accuracy: f64) -> ScoreRank {
+        match (self, rank) {
+            (Mod::Hidden { .. }, ScoreRank::X) => ScoreRank::XH,
+            (Mod::Hidden { .. }, ScoreRank::S) => ScoreRank::SH,
+            _ => rank,
         }
     }
 
