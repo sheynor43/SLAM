@@ -1,5 +1,6 @@
 //! Headless replay simulation: steps time like lazer's `FrameStabilityContainer` playing a
-//! replay while catching up with its clock (ADR-0028), feeds the input to the rules and
+//! replay while catching up with its clock (ADR-0028), at the update rate of lazer's live play
+//! between frames (ADR-0029), feeds the input to the rules and
 //! records their judgements.
 
 use crate::beatmap::Beatmap;
@@ -12,9 +13,11 @@ use slam_formats::osu::Vec2;
 
 use super::input::{ActionEvent, Actions, MAX_STEP_EVENTS, ReplayCursor, ReplayInput};
 
-/// The longest step: one frame at 60 fps.
-// Ported from osu!lazer 2026.1005.0-lazer: osu.Game/Rulesets/UI/FrameStabilityContainer.cs (applyFrameStability)
-pub const SIXTY_FRAME_TIME: f64 = 1000.0 / 60.0;
+/// The longest step: one update of lazer's live play at its highest update rate, 1000 Hz
+/// (ADR-0029). Lazer's 1 ms is real time; this one is track time at any rate, a deliberate
+/// simplification (no difference on the corpus).
+// Ported from osu-framework 2026.921.1: osu.Framework/Threading/GameThread.cs (DEFAULT_ACTIVE_HZ)
+pub const UPDATE_INTERVAL: f64 = 1.0;
 
 /// The input of one update of the rules.
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -186,7 +189,7 @@ impl<R: Rules> Simulator<R> {
 
         // Ported from osu!lazer 2026.1005.0-lazer: osu.Game/Rulesets/UI/FrameStabilityContainer.cs (applyFrameStability)
         // The reference clock is infinitely far ahead (ADR-0028), so outside the first step and
-        // the pre-gameplay jump the proposed time is always one sixty-fps frame ahead.
+        // the pre-gameplay jump the proposed time is always one live update ahead (ADR-0029).
         let proposed = if !self.started {
             self.started = true;
             if self.input.frames().is_empty() {
@@ -199,7 +202,7 @@ impl<R: Rules> Simulator<R> {
         } else if current < self.gameplay_start_time {
             self.gameplay_start_time
         } else {
-            current + SIXTY_FRAME_TIME
+            current + UPDATE_INTERVAL
         };
 
         let time = self.cursor.set_frame_from_time(&self.input, proposed);

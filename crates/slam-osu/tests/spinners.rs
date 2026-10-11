@@ -316,16 +316,21 @@ fn hit_everything_gives_max_results() {
 fn ticks_are_judged_on_whole_spins() {
     let map = spinner_map(JUDGEMENT_START, JUDGEMENT_END);
     let j = play_from_start(&map, lazer(), &judgement_replay(5));
-    // Five spins over two seconds: one every 400 ms or so, from the start.
+    // Five spins (and the generator's extra 22.5°) over two seconds at a steady pace: each tick
+    // is hit at the first step after its whole spin.
     let times: Vec<f64> = j
         .iter()
         .filter(|x| x.tick.is_some() && x.result.is_hit())
         .map(|x| x.time)
         .collect();
     assert_eq!(times.len(), 5);
+    let duration = JUDGEMENT_END - JUDGEMENT_START;
     for (k, t) in times.iter().enumerate() {
-        let expected = JUDGEMENT_START + 400.0 * (k + 1) as f64;
-        assert!((t - expected).abs() <= 20.0, "spin {k} at {t}");
+        let expected = JUDGEMENT_START + duration * 360.0 * (k + 1) as f64 / (5.0 * 360.0 + 22.5);
+        assert!(
+            (t - expected).abs() <= 2.0,
+            "spin {k} at {t}, expected {expected}"
+        );
     }
 }
 
@@ -540,9 +545,9 @@ fn spinners_do_not_block_later_hits() {
 #[test]
 fn a_still_cursor_reaches_the_spinner_only_once_it_moves() {
     // The rotation tracker only receives mouse moves: a cursor still since before the spinner
-    // gives it no position, so the first move of the spin turns nothing. 362.5° in 50 moves of
-    // 7.25°: without the first, 355.25° is short of a spin.
-    let frames = SpinFrames::new(INPUT_START).spin(340.0, 500.0).build();
+    // gives it no position, so the first move of the spin turns nothing. 360.3° over 500 ms,
+    // 0.72° per millisecond step: without the first step's move, 359.58° is short of a spin.
+    let frames = SpinFrames::new(INPUT_START).spin(337.8, 500.0).build();
     let j = play_from_start(&input_map(), lazer(), &frames);
     assert_eq!(ticks_hit(&j, 0), 0);
 
@@ -555,14 +560,15 @@ fn a_still_cursor_reaches_the_spinner_only_once_it_moves() {
 
 #[test]
 fn spinning_stops_at_the_end_time() {
-    // 467.5° in 50 moves of 9.35°, 400 ms of which fall within the spinner. The first move
-    // reaches the tracker as its first position and the update at the end time no longer
-    // spins, which leaves 38 moves: 355.3°, short of the one spin required. The move at the
-    // end time would make it 364.65° and the spinner a Great (though its tick would still be
-    // missed, as the remaining ticks are missed before whole spins turn into hits).
+    // 451.7° over 500 ms, 0.9034° per millisecond step, 400 ms of which fall within the
+    // spinner. The first step's move reaches the tracker as its first position and the update
+    // at the end time no longer spins, which leaves 398 steps: 359.55°, short of the one spin
+    // required. The move at the end time would make it 360.46° and the spinner a Great (though
+    // its tick would still be missed, as the remaining ticks are missed before whole spins
+    // turn into hits).
     let map = spinner_map(INPUT_START, INPUT_START + 400.0);
     assert_eq!(spinner(&map, 0).spins_required, 1);
-    let frames = SpinFrames::new(INPUT_START).spin(445.0, 500.0).build();
+    let frames = SpinFrames::new(INPUT_START).spin(429.2, 500.0).build();
     let j = play_from_start(&map, lazer(), &frames);
     assert_eq!(ticks_hit(&j, 0), 0);
     let spinner = result(&j, 0);

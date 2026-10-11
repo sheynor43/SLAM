@@ -10,7 +10,7 @@ use slam_osu::Beatmap;
 use slam_osu::hit_windows::HitWindows;
 use slam_osu::judgement::{HitResult, JudgementLog, Statistics};
 use slam_osu::replay::{ActionEvent, Rules, StepInput};
-use slam_osu::replay::{Actions, InputFrame, ReplayInput, Simulator};
+use slam_osu::replay::{Actions, InputFrame, ReplayInput, Simulator, UPDATE_INTERVAL};
 use slam_osu::rules::{HitPolicy, OsuRules};
 use slam_osu::{Mod, ModSet};
 
@@ -337,7 +337,7 @@ fn unhit_circle_is_missed_on_the_first_step_after_its_meh_window() {
     let map = circles(&[(1000.0, 100, 100)]);
     let j = play(&map, ORDERED, &[]);
     assert_eq!(j.len(), 1);
-    assert!(j[0].2 > MEH && j[0].2 <= MEH + 1000.0 / 60.0, "{j:?}");
+    assert!(j[0].2 > MEH && j[0].2 <= MEH + UPDATE_INTERVAL, "{j:?}");
 }
 
 #[test]
@@ -359,17 +359,17 @@ fn stacked_circle_is_hit_at_its_stacked_position() {
 
 #[test]
 fn circles_timing_out_in_one_step_are_recorded_earliest_first() {
-    // Both windows end between the steps at 1190 and 1206.67.
-    let map = circles(&[(1000.0, 100, 100), (1005.0, 300, 300)]);
-    let frames = [frame(1190.0, 0.0, 0.0, NONE), frame(1210.0, 0.0, 0.0, NONE)];
-    let step = 1190.0 + 1000.0 / 60.0;
+    // Both windows end between the steps at 1199.3 and 1200.3.
+    let map = circles(&[(1000.0, 100, 100), (1000.5, 300, 300)]);
+    let frames = [frame(1199.3, 0.0, 0.0, NONE), frame(1210.0, 0.0, 0.0, NONE)];
+    let step = 1199.3 + UPDATE_INTERVAL;
     // The later circle times out first, and its HandleHit misses the earlier one before its own
     // result is recorded.
     let j = play(&map, ORDERED, &frames);
-    assert_eq!(j, [(0, Miss, step - 1000.0), (1, Miss, step - 1005.0)]);
+    assert_eq!(j, [(0, Miss, step - 1000.0), (1, Miss, step - 1000.5)]);
     // The legacy policy has no HandleHit: the update order shows.
     let j = play(&map, LEGACY, &frames);
-    assert_eq!(j, [(1, Miss, step - 1005.0), (0, Miss, step - 1000.0)]);
+    assert_eq!(j, [(1, Miss, step - 1000.5), (0, Miss, step - 1000.0)]);
 }
 
 #[test]

@@ -1137,11 +1137,13 @@ fn judgement_log_order_around_heads() {
     let j = late_test(&map, &late_frames(149.0, LATE_END_X));
     let order: Vec<Part> = j.iter().take(4).map(|j| j.part).collect();
     assert_eq!(order, [Part::Head, Part::Tick, Part::Tick, Part::Tick]);
-    // The ticks passed are judged by the press, after their start times.
+    // The ticks passed are judged by the press, at or after their start times: the third tick
+    // starts exactly at the press (1149 ms).
     assert_eq!(j[0].offset, 149.0);
+    assert_eq!(j[3].offset, 0.0);
     for tick in &j[1..4] {
         assert_eq!(tick.result, LargeTickHit);
-        assert!(tick.offset > 0.0);
+        assert!(tick.offset >= 0.0, "{j:?}");
     }
 }
 
