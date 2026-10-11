@@ -39,8 +39,7 @@ fn ci_sample() {
 const LAZER_VERSION: i32 = osr::VERSION_LAZER_BLOCK + 1;
 const STABLE_VERSION: i32 = 20230101;
 
-/// The map of the fixture corpora: a single spinner, which the rules do not judge yet (#51),
-/// so any replay yields no judgements and a difference is `NotJudged`.
+/// The map of the fixture corpora: no objects, so any replay yields no judgements.
 const FIXTURE_MAP: &str = "osu file format v14
 
 [Difficulty]
@@ -55,7 +54,6 @@ SliderTickRate:1
 0,500,4,2,0,100,1,0
 
 [HitObjects]
-256,192,3000,12,0,4000
 ";
 
 struct Fixture {
@@ -244,37 +242,12 @@ fn lazer_exact_match() {
 }
 
 #[test]
-fn lazer_difference_under_placeholder_rules_is_not_judged() {
-    let f = Fixture::new("lazer-notjudged");
-    let sha = f.map("lazer");
-    f.replay(
-        "lazer",
-        "replays/a.osr",
-        &lazer_replay(vec![(osr::HitResult::Great, 3)], 3),
-    );
-    f.manifest("lazer", &entry("replays/a.osr", &sha, "lazer", ""));
-    let report = f.run("", false);
-    let Outcome::NotJudged { diffs } = &report.entries[0].outcome else {
-        panic!("{report}");
-    };
-    assert!(
-        diffs
-            .iter()
-            .any(|d| d.name == "Great" && d.expected == 3 && d.got == 0)
-    );
-    assert!(!report.failed());
-    let text = report.to_string();
-    assert!(text.contains("not judged 1"), "{text}");
-    assert!(text.contains("rules not implemented yet"), "{text}");
-}
-
-#[test]
 fn judging_rules_mismatch_fails() {
     let log = JudgementLog::with_capacity(0);
     let expected = [(osr::HitResult::Great, 3)];
     let Outcome::Mismatch {
         first_divergence, ..
-    } = harness::lazer_outcome(&expected, 3, &log, true).unwrap()
+    } = harness::lazer_outcome(&expected, 3, &log).unwrap()
     else {
         panic!()
     };
@@ -282,7 +255,7 @@ fn judging_rules_mismatch_fails() {
     let report = Report {
         entries: vec![harness::EntryReport {
             name: "x".into(),
-            outcome: harness::lazer_outcome(&expected, 3, &log, true).unwrap(),
+            outcome: harness::lazer_outcome(&expected, 3, &log).unwrap(),
         }],
     };
     assert!(report.failed());
@@ -290,10 +263,6 @@ fn judging_rules_mismatch_fails() {
     assert!(text.contains("earliest provable divergence"), "{text}");
     assert!(text.contains("no object exceeds"), "{text}");
     assert!(text.contains("score: not computed"), "{text}");
-    assert!(matches!(
-        harness::lazer_outcome(&expected, 3, &log, false).unwrap(),
-        Outcome::NotJudged { .. }
-    ));
 }
 
 #[test]
@@ -432,7 +401,7 @@ fn compare_flags_results_the_replay_lacks() {
     log.apply(judgement(0, Some(0), 120.0, HitResult::LargeTickHit));
     log.apply(judgement(1, None, 200.0, HitResult::IgnoreHit));
     let expected = [(osr::HitResult::Great, 1)];
-    let Outcome::Mismatch { diffs, .. } = harness::lazer_outcome(&expected, 2, &log, true).unwrap()
+    let Outcome::Mismatch { diffs, .. } = harness::lazer_outcome(&expected, 2, &log).unwrap()
     else {
         panic!()
     };

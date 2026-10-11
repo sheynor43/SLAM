@@ -867,6 +867,25 @@ impl ModSet {
         rate
     }
 
+    // Ported from osu!lazer 2026.1005.0-lazer: osu.Game/Screens/Play/GameplayClockExtensions.cs (GetTrueGameplayRate)
+    // Ported from osu!lazer 2026.1005.0-lazer: osu.Game/Rulesets/Mods/ModNightcore.cs (ApplyToTrack)
+    /// The gameplay rate at full playback speed, as lazer's gameplay clock reports it: the
+    /// product of the track's frequency adjustments times the product of its tempo adjustments.
+    /// It equals [`ModSet::rate`] but for rounding, which this reproduces.
+    pub fn true_gameplay_rate(&self) -> f64 {
+        let mut frequency = 1.0;
+        let mut tempo = 1.0;
+        for change in self.mods.iter().filter_map(GameplayMod::rate) {
+            frequency *= change.frequency;
+            // Each mod's tempo adjustment is the speed over its frequency adjustment: the speed
+            // for Double Time without pitch, 1 with it, the speed over the default for
+            // Nightcore and Daycore.
+            tempo *= change.rate / change.frequency;
+        }
+        // The clock runs forwards: the sign of its rate is 1.
+        1.0 * frequency * tempo
+    }
+
     // Ported from osu!lazer 2026.1005.0-lazer: osu.Game/Screens/Play/Player.cs (CheckModsAllowFailure)
     /// Asks the mods in order whether the player fails; stops at the first that prevents it,
     /// so later mods keep their state (lazer's `All(m => m.PerformFail())`).

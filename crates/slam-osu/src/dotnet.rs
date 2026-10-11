@@ -40,6 +40,17 @@ pub(crate) fn max(a: f64, b: f64) -> f64 {
     if b.is_sign_negative() { a } else { b }
 }
 
+/// .NET's `Math.Max(float, float)`, see [`max`].
+pub(crate) fn max_f32(a: f32, b: f32) -> f32 {
+    if a != b {
+        if !a.is_nan() {
+            return if b < a { a } else { b };
+        }
+        return a;
+    }
+    if b.is_sign_negative() { a } else { b }
+}
+
 /// .NET's `Math.Clamp(double, double, double)` without its `min > max` exception: a NaN value
 /// stays NaN, and a NaN bound is ignored.
 pub(crate) fn clamp(value: f64, min: f64, max: f64) -> f64 {

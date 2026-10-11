@@ -509,17 +509,18 @@ fn slider_difficulty_fields() {
 #[test]
 fn spinner_end_time() {
     let b = load_text("osu file format v14\n\n[HitObjects]\n256,192,1000,12,0,3500\n");
-    assert_eq!(
-        b.hit_objects[0].kind,
-        OsuHitObjectKind::Spinner { end_time: 3500.0 }
-    );
+    let OsuHitObjectKind::Spinner(spinner) = &b.hit_objects[0].kind else {
+        panic!("not a spinner");
+    };
+    assert_eq!(spinner.end_time, 3500.0);
 }
 
 #[test]
 fn hold_becomes_spinner() {
     let b = load_text("osu file format v14\n\n[HitObjects]\n64,192,1000,128,0,1500:0:0:0:0:\n");
     let obj = &b.hit_objects[0];
-    assert_eq!(obj.kind, OsuHitObjectKind::Spinner { end_time: 1500.0 });
+    assert_eq!(obj.end_time(), 1500.0);
+    assert!(obj.is_spinner());
     assert_eq!((obj.position.x, obj.position.y), (64.0, 192.0));
 }
 
