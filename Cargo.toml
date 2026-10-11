@@ -34,6 +34,12 @@ rubato = { version = "5.0.1", default-features = false, features = ["fft_resampl
 symphonia = { version = "0.6.1", default-features = false, features = ["wav", "pcm", "adpcm", "ogg", "vorbis", "mp3", "opt-simd"] }
 sdl3-sys = { version = "0.7.2", default-features = false }
 thiserror = "2.0.21"
+# .osz/.osk archives: deflate in pure Rust plus deflate64 from old Windows Explorer archives (ADR-0030).
+zip = { version = "9.0.1", default-features = false, features = ["deflate-flate2-zlib-rs", "deflate64"] }
+# Shift-JIS (CP932) decoding of file names in stable archives.
+encoding_rs = "0.8.42"
+# Checksums of hand-built zip archives in slam-formats tests.
+crc32fast = "1.5.0"
 # Started explicitly, records only while a viewer is connected, local viewer only.
 tracy-client = { version = "0.19.0", default-features = false, features = ["enable", "manual-lifetime", "ondemand", "only-localhost"] }
 tracing = "0.1.44"
