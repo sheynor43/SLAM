@@ -1,0 +1,19 @@
+[package]
+name = "slam-play"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+publish.workspace = true
+
+[dependencies]
+slam-osu = { path = "../slam-osu" }
+slam-ui = { path = "../slam-ui" }
+slam-render = { path = "../slam-render" }
+slam-skin = { path = "../slam-skin" }
+slam-text = { path = "../slam-text" }
+slam-input = { path = "../slam-input" }
+slam-audio = { path = "../slam-audio" }
+
+[lints]
+workspace = true

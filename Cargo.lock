@@ -1269,6 +1269,7 @@ dependencies = [
  "slam-ipc",
  "slam-library",
  "slam-osu",
+ "slam-play",
  "slam-plugins",
  "slam-render",
  "slam-skin",
@@ -1360,6 +1361,19 @@ dependencies = [
  "slam-testkit",
  "thiserror",
  "toml",
+]
+
+[[package]]
+name = "slam-play"
+version = "0.1.0"
+dependencies = [
+ "slam-audio",
+ "slam-input",
+ "slam-osu",
+ "slam-render",
+ "slam-skin",
+ "slam-text",
+ "slam-ui",
 ]
 
 [[package]]
