@@ -67,6 +67,8 @@
 
 ## 3. Обзор системы и крейты
 
+Крейт игрового процесса `slam-play` — [ADR-0032](adr/0032-play-crate.md).
+
 ```mermaid
 graph TD
   app[slam-app] --> ui[slam-ui]
@@ -76,6 +78,7 @@ graph TD
   ui --> render[slam-render]
   ui --> skin[slam-skin]
   ui --> text[slam-text]
+  text --> render
   engine --> render
   engine --> audio[slam-audio]
   engine --> input[slam-input]
@@ -86,6 +89,14 @@ graph TD
   osu --> formats
   app --> ipc[slam-ipc]
   ipc --> osu
+  app --> play[slam-play]
+  play --> osu
+  play --> ui
+  play --> render
+  play --> skin
+  play --> text
+  play --> input
+  play --> audio
 ```
 
 | Крейт | Ответственность | Может зависеть от |
@@ -101,12 +112,13 @@ graph TD
 | `slam-library` | Хранилище, SQLite, снапшот, импорт, поиск и сортировка, кеш звёзд и миниатюр, профили | `slam-formats`, `slam-osu` |
 | `slam-plugins` | Luau-рантайм, песочница, права, адаптеры хуков, API для скриптов, генерация типов и документации | `slam-osu` |
 | `slam-ui` | Экраны, виджеты, HUD и его редактор, темы, анимации переходов | `slam-render`, `slam-skin`, `slam-text` |
+| `slam-play` | Игровой процесс: раскладка поля, отрисовка объектов и курсора из скина, живой ввод в правила, хитсаунды, экран игры и данные HUD ([ADR-0032](adr/0032-play-crate.md)) | `slam-osu`, `slam-ui`, `slam-render`, `slam-skin`, `slam-text`, `slam-input` (только типы событий), `slam-audio` |
 | `slam-ipc` | JSON-RPC для внешнего редактора | `slam-osu` |
 | `slam-app` | Точка входа, сборка всего вместе, настройки | всё |
 | `slam-shader-build` | Только сборка (`[build-dependencies]`): трансляция WGSL через `naga` в языки бэкендов и генерация таблиц привязок ([ADR-0019](adr/0019-wgsl-shaders-and-coordinates.md)) | — |
 | `slam-testkit` | Только тесты (`[dev-dependencies]`): счётчик аллокаций `assert_no_alloc` ([ADR-0016](adr/0016-testkit-alloc-counter.md)) | — |
 
-Правила зависимостей проверяются в CI (например, через `cargo deny` или отдельный тест на граф зависимостей). Нарушение правил — ошибка сборки.
+Правила зависимостей проверяются тестом `crates/slam-app/tests/dependency_rules.rs`: прямые зависимости каждого крейта workspace на другие крейты workspace должны входить в эту таблицу (это касается и dev- и build-зависимостей). Служебные `slam-shader-build` и `slam-testkit` допустимы в любом крейте, но только как build- и dev-зависимость соответственно. `slam-formats` и `slam-osu` не должны даже транзитивно зависеть от движка, окна, GPU и аудио. Нарушение правил — ошибка сборки.
 
 Дополнительно: `tools/lazer-export` — небольшая утилита на .NET для чтения `client.realm` лазера (раздел 8).
 
@@ -180,7 +192,7 @@ graph TD
 
 ## 7. Геймплей (крейт `slam-osu`)
 
-Подробности — [ADR-0005], [ADR-0010], [ADR-0031].
+Подробности — [ADR-0005], [ADR-0010], [ADR-0031]. Отрисовка игры и живой ввод — в крейте `slam-play` ([ADR-0032](adr/0032-play-crate.md)).
 
 ### Источник правил
 
