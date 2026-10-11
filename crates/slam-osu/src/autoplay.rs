@@ -2,22 +2,8 @@
 //! their maxima (`JudgementProcessor.SimulateAutoplay`).
 
 use crate::beatmap::Beatmap;
-use crate::judgement::HitResult;
+use crate::judgement::{HitResult, Target};
 use crate::objects::{NestedKind, OsuHitObjectKind};
-
-/// What a judgement judged, as far as the judgement processors care.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) enum Target {
-    Circle,
-    Slider,
-    Spinner,
-    SliderHead,
-    SliderTick,
-    SliderRepeat,
-    SliderTail,
-    SpinnerTick,
-    SpinnerBonusTick,
-}
 
 impl Target {
     /// The target of a slider's nested object.

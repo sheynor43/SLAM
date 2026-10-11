@@ -17,7 +17,7 @@ use slam_osu::mods::{FIRST_LAZER_VERSION, MultiplierVersion};
 use slam_osu::replay::{ReplayInput, Rules, Simulator};
 use slam_osu::rules::OsuRules;
 use slam_osu::scoring::{ScoreProcessor, ScoringOptions};
-use slam_osu::{Beatmap, GameplayMod, ModSet};
+use slam_osu::{Beatmap, GameplayMod, HealthProcessor, ModSet};
 
 /// Steps allowed on top of the replay's frames and twice the 60 Hz steps of the map's length.
 ///
@@ -356,16 +356,31 @@ pub fn prepare(replay: &Replay, map_bytes: &[u8]) -> Result<Prepared, String> {
     })
 }
 
+/// The result of [`simulate`].
+#[derive(Debug)]
+pub struct Simulated {
+    pub log: JudgementLog,
+    pub score: Option<ScoreProcessor>,
+    /// Time of the failing judgement, if the play failed.
+    pub failed_at: Option<f64>,
+}
+
 /// Steps the simulation to its end, failing if it does not finish within a generous cap.
-/// Scores the play with `score` if given.
+/// Tracks health with `health` (the processor and the mods deciding the fail) and scores the
+/// play with `score` if given. The log holds the judgements the play counts: those up to the
+/// fail for a failed play. The time of the failing judgement is returned for a failed play.
 pub fn simulate<R: Rules>(
     beatmap: &Beatmap,
     input: ReplayInput,
     rules: R,
+    health: Option<(HealthProcessor, ModSet)>,
     score: Option<ScoreProcessor>,
-) -> Result<(JudgementLog, Option<ScoreProcessor>), String> {
+) -> Result<Simulated, String> {
     let frames = input.frames().len() as u64;
     let mut sim = Simulator::new(beatmap, input, rules);
+    if let Some((processor, mods)) = health {
+        sim = sim.with_health(processor, mods);
+    }
     if let Some(score) = score {
         sim = sim.with_scoring(score);
     }
@@ -381,7 +396,21 @@ pub fn simulate<R: Rules>(
             return Err(format!("simulation did not finish within {cap} steps"));
         }
     }
-    Ok((sim.log().clone(), sim.score().cloned()))
+    let counted = sim.counted_judgements();
+    let mut log = JudgementLog::with_capacity(counted.len());
+    for &judgement in counted {
+        log.apply(judgement);
+    }
+    let failed_at = sim
+        .health()
+        .filter(|h| h.has_failed())
+        .and_then(|_| counted.last())
+        .map(|j| j.time);
+    Ok(Simulated {
+        log,
+        score: sim.score().cloned(),
+        failed_at,
+    })
 }
 
 fn run_entry(dir: &Path, manifest_source: Source, entry: &RawEntry) -> Result<Outcome, String> {
@@ -442,12 +471,6 @@ fn run_entry(dir: &Path, manifest_source: Source, entry: &RawEntry) -> Result<Ou
         ),
         Source::Stable => None,
     };
-    if let Some(info) = &info
-        && info.rank == Some(ScoreRank::F)
-    {
-        return Ok(Outcome::Skipped("failed play: health not simulated".into()));
-    }
-
     let Prepared {
         beatmap,
         mods,
@@ -478,7 +501,27 @@ fn run_entry(dir: &Path, manifest_source: Source, entry: &RawEntry) -> Result<Ou
             ScoringOptions::with_multipliers(&beatmap, &mods, version),
         )
     });
-    let (log, score) = simulate(&beatmap, input, rules, score)?;
+    // A lazer score was played by lazer's `Player`, which fails as soon as a fail condition
+    // is met: its statistics stop at the fail. Stable never saves a failed play, and its
+    // health differs from lazer's legacy processor, so stable replays run without health.
+    let health = info
+        .as_ref()
+        .map(|_| (HealthProcessor::for_play(&beatmap, &mods), mods.clone()));
+    let Simulated {
+        log,
+        score,
+        failed_at,
+    } = simulate(&beatmap, input, rules, health, score)?;
+    // A wrong fail cuts the log short; name it rather than leave only the count diffs.
+    if let (Some(info), Some(time)) = (&info, failed_at)
+        && let Some(rank) = &info.rank
+        && *rank != ScoreRank::F
+    {
+        return Err(format!(
+            "simulated fail at {time:.1} ms in a play lazer passed with rank {}",
+            rank.as_str()
+        ));
+    }
 
     match info {
         Some(info) => {

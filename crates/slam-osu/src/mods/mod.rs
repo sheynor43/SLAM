@@ -17,6 +17,7 @@ use slam_formats::osu as osu_file;
 
 use crate::beatmap::{Beatmap, BeatmapError, Difficulty};
 use crate::dotnet;
+use crate::judgement::{HitResult, Judgement, Target};
 use crate::objects::OsuHitObject;
 use crate::scoring::ScoreRank;
 use setting::DifficultyRange;
@@ -97,6 +98,19 @@ pub trait GameplayMod {
     /// `health` (0..=1), e.g. use up a life and refill the health.
     fn perform_fail(&mut self, _health: &mut f64) -> bool {
         true
+    }
+
+    /// Whether `judgement` of a `target` fails the play, besides running out of health
+    /// (lazer's `ModFailCondition.FailCondition`). Called for every judgement until the play
+    /// fails; a met condition still goes through [`perform_fail`](Self::perform_fail).
+    fn fail_condition(&self, _judgement: &Judgement, _target: Target) -> bool {
+        false
+    }
+
+    /// Whether the beatmap restarts when the play fails (lazer's
+    /// `IApplicableFailOverride.RestartOnFail`).
+    fn restart_on_fail(&self) -> bool {
+        false
     }
 
     /// The score multiplier when this mod is the only one of its combination.
@@ -293,6 +307,18 @@ pub enum Mod {
         /// `reflection`: the flipped axes.
         reflection: MirrorType,
     },
+    /// `SD`: a combo break fails the play.
+    SuddenDeath {
+        /// `restart`: restart the beatmap on failing.
+        restart: bool,
+        /// `fail_on_slider_tail`: missing a slider's tail fails the play too.
+        fail_on_slider_tail: bool,
+    },
+    /// `PF`: any result short of the best fails the play.
+    Perfect {
+        /// `restart`: restart the beatmap on failing (on by default).
+        restart: bool,
+    },
     /// Any other acronym: kept with its raw settings, has no effect. A set with such a mod
     /// is not [`supported`](ModSet::is_supported).
     Other {
@@ -339,6 +365,11 @@ impl Mod {
             "MR" => Mod::Mirror {
                 reflection: MirrorType::default(),
             },
+            "SD" => Mod::SuddenDeath {
+                restart: false,
+                fail_on_slider_tail: false,
+            },
+            "PF" => Mod::Perfect { restart: true },
             _ => Mod::Other {
                 acronym: acronym.to_owned(),
                 settings: Vec::new(),
@@ -450,6 +481,16 @@ impl Mod {
                 reflection,
                 to_enum(value, &MIRROR_TYPE_NAMES).map(MirrorType::from_raw),
             ),
+            (Mod::SuddenDeath { restart, .. } | Mod::Perfect { restart }, "restart") => {
+                store(restart, bindable_bool())
+            }
+            (
+                Mod::SuddenDeath {
+                    fail_on_slider_tail,
+                    ..
+                },
+                "fail_on_slider_tail",
+            ) => store(fail_on_slider_tail, bindable_bool()),
             _ => false,
         }
     }
@@ -523,6 +564,19 @@ impl Mod {
             Mod::Mirror { reflection } if *reflection != MirrorType::default() => {
                 push("reflection", SettingValue::Int(i64::from(reflection.raw())));
             }
+            Mod::SuddenDeath {
+                restart,
+                fail_on_slider_tail,
+            } => {
+                // Lazer's reflection order: the osu! class's settings, then the base class's.
+                if *fail_on_slider_tail {
+                    push("fail_on_slider_tail", SettingValue::Bool(true));
+                }
+                if *restart {
+                    push("restart", SettingValue::Bool(true));
+                }
+            }
+            Mod::Perfect { restart: false } => push("restart", SettingValue::Bool(false)),
             Mod::Other { settings, .. } => out.clone_from(settings),
             _ => {}
         }
@@ -574,6 +628,8 @@ impl GameplayMod for Mod {
             Mod::Classic(_) => "CL",
             Mod::DifficultyAdjust(_) => "DA",
             Mod::Mirror { .. } => "MR",
+            Mod::SuddenDeath { .. } => "SD",
+            Mod::Perfect { .. } => "PF",
             Mod::Other { acronym, .. } => acronym,
         }
     }
@@ -679,6 +735,38 @@ impl GameplayMod for Mod {
                 false
             }
             _ => true,
+        }
+    }
+
+    // Ported from osu!lazer 2026.1005.0-lazer: osu.Game/Rulesets/Mods/ModSuddenDeath.cs (FailCondition)
+    // Ported from osu!lazer 2026.1005.0-lazer: osu.Game.Rulesets.Osu/Mods/OsuModSuddenDeath.cs (FailCondition)
+    // Ported from osu!lazer 2026.1005.0-lazer: osu.Game/Rulesets/Mods/ModPerfect.cs (FailCondition)
+    fn fail_condition(&self, judgement: &Judgement, target: Target) -> bool {
+        let result = judgement.result;
+        match *self {
+            Mod::SuddenDeath {
+                fail_on_slider_tail,
+                ..
+            } => {
+                if result.affects_combo() && !result.is_hit() {
+                    return true;
+                }
+                fail_on_slider_tail && target == Target::SliderTail && !result.is_hit()
+            }
+            Mod::Perfect { .. } => {
+                let relevant = |r: HitResult| r.affects_accuracy() || r.affects_combo();
+                let max = judgement.max_result;
+                (relevant(max.min_result()) || relevant(max) || relevant(result)) && result != max
+            }
+            _ => false,
+        }
+    }
+
+    // Ported from osu!lazer 2026.1005.0-lazer: osu.Game/Rulesets/Mods/ModFailCondition.cs (RestartOnFail)
+    fn restart_on_fail(&self) -> bool {
+        match *self {
+            Mod::SuddenDeath { restart, .. } | Mod::Perfect { restart } => restart,
+            _ => false,
         }
     }
 
@@ -937,6 +1025,20 @@ impl ModSet {
     /// the current `health`.
     pub fn perform_fail(&mut self, health: &mut f64) -> bool {
         self.mods.iter_mut().all(|m| m.perform_fail(health))
+    }
+
+    // Ported from osu!lazer 2026.1005.0-lazer: osu.Game/Rulesets/Scoring/HealthProcessor.cs (meetsAnyFailCondition)
+    /// Whether any mod's [fail condition](GameplayMod::fail_condition) is met by `judgement`.
+    pub fn meets_fail_condition(&self, judgement: &Judgement, target: Target) -> bool {
+        self.mods
+            .iter()
+            .any(|m| m.fail_condition(judgement, target))
+    }
+
+    // Ported from osu!lazer 2026.1005.0-lazer: osu.Game/Screens/Play/Player.cs (PerformFail)
+    /// Whether a failed play restarts the beatmap: any mod asks for it.
+    pub fn restart_on_fail(&self) -> bool {
+        self.mods.iter().any(GameplayMod::restart_on_fail)
     }
 
     // Ported from osu!lazer 2026.1005.0-lazer: osu.Game/Rulesets/Scoring/ScoreMultiplierCalculator.cs (CalculateFor)
