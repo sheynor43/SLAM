@@ -206,7 +206,9 @@ impl SpinFrames {
 
 fn offset_at(p: f64, start_angle: f32, end_angle: f32) -> Vec2 {
     let angle = start_angle + (end_angle - start_angle) * p as f32;
-    Vec2::new(256.0, 192.0) + Vec2::new(angle.cos(), angle.sin()) * CENTRE_SPIN_OFFSET
+    // Correctly rounded, so the input is the same on every platform (ADR-0031).
+    Vec2::new(256.0, 192.0)
+        + Vec2::new(pxfm::f_cosf(angle), pxfm::f_sinf(angle)) * CENTRE_SPIN_OFFSET
 }
 
 // ---- Spin counts ----

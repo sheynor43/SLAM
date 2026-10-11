@@ -5,6 +5,7 @@
 use slam_formats::osu::Vec2;
 
 use super::circular_arc::CircularArcProperties;
+use crate::math;
 
 /// `PathApproximator.BEZIER_TOLERANCE`.
 const BEZIER_TOLERANCE: f32 = 0.25;
@@ -156,7 +157,7 @@ pub fn circular_arc_to_piecewise_linear(control_points: &[Vec2]) -> Vec<Vec2> {
     for i in 0..amount_points {
         let fract = f64::from(i) / f64::from(amount_points - 1);
         let theta = pr.theta_start + pr.direction * fract * pr.theta_range;
-        let o = Vec2::new(theta.cos() as f32, theta.sin() as f32) * pr.radius;
+        let o = Vec2::new(math::cos(theta) as f32, math::sin(theta) as f32) * pr.radius;
         output.push(pr.centre + o);
     }
 

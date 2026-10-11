@@ -102,10 +102,6 @@ fn state(i: usize, p: &ScoreProcessor, mods: &ModSet) -> String {
 }
 
 #[test]
-#[cfg_attr(
-    not(all(target_os = "linux", target_env = "gnu")),
-    ignore = "slider arcs of the fixture computed with glibc libm (issue #60)"
-)]
 fn scores_match_lazer() {
     let mut lines = FIXTURE
         .lines()

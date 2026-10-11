@@ -53,10 +53,6 @@ fn beatmap(name: &str, map: &str, timing: &[&str], events: &[&str], objects: &[&
 }
 
 #[test]
-#[cfg_attr(
-    not(all(target_os = "linux", target_env = "gnu")),
-    ignore = "slider arcs of the fixture computed with glibc libm (issue #60)"
-)]
 fn drain_rates_match_lazer() {
     let mut lines = FIXTURE
         .lines()

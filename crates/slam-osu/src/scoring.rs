@@ -7,6 +7,7 @@ use crate::autoplay;
 use crate::beatmap::Beatmap;
 use crate::dotnet;
 use crate::judgement::{HitResult, Judgement, Statistics};
+use crate::math;
 use crate::mods::{GameplayMod, ModSet, MultiplierContext, MultiplierVersion};
 use crate::rules::RulesOptions;
 
@@ -274,7 +275,7 @@ impl ScoreProcessor {
         } else if result.is_scorable() {
             // Ported from osu!lazer 2026.1005.0-lazer: osu.Game/Rulesets/Scoring/ScoreProcessor.cs (GetComboScoreChange)
             self.current_combo_portion += f64::from(max_result.base_score())
-                * dotnet::pow(f64::from(self.statistics.combo), COMBO_EXPONENT);
+                * math::pow(f64::from(self.statistics.combo), COMBO_EXPONENT);
         }
     }
 
@@ -311,7 +312,7 @@ impl ScoreProcessor {
         };
 
         let total = 500_000.0 * self.accuracy * combo_progress
-            + 500_000.0 * dotnet::pow(self.accuracy, 5.0) * accuracy_progress
+            + 500_000.0 * math::pow(self.accuracy, 5.0) * accuracy_progress
             + self.current_bonus_portion;
         self.total_score_without_mods = round_to_long(total).max(0);
         self.total_score =
