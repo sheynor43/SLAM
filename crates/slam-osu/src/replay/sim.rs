@@ -4,7 +4,7 @@
 
 use crate::beatmap::Beatmap;
 use crate::health::HealthProcessor;
-use crate::judgement::JudgementLog;
+use crate::judgement::{Judgement, JudgementLog};
 use crate::mods::ModSet;
 use crate::scoring::ScoreProcessor;
 
@@ -118,6 +118,8 @@ pub struct Simulator<R> {
     score: Option<ScoreProcessor>,
     /// Judgements of the log already given to the health and score processors.
     applied: usize,
+    /// Judgements of the log made before the player failed (all while not failed).
+    counted: usize,
     events: [ActionEvent; MAX_STEP_EVENTS],
     started: bool,
     finished: bool,
@@ -136,6 +138,7 @@ impl<R: Rules> Simulator<R> {
             health: None,
             score: None,
             applied: 0,
+            counted: 0,
             events: [ActionEvent {
                 time: 0.0,
                 position: Vec2::ZERO,
@@ -229,6 +232,9 @@ impl<R: Rules> Simulator<R> {
             if let Some(score) = &mut self.score {
                 score.apply(judgement, failed_before);
             }
+            if !failed_before {
+                self.counted += 1;
+            }
         }
         self.applied = self.log.events().len();
         let failed = self
@@ -266,6 +272,13 @@ impl<R: Rules> Simulator<R> {
     /// The judgements and statistics so far.
     pub fn log(&self) -> &JudgementLog {
         &self.log
+    }
+
+    /// The judgements the play counts, in order: lazer's judgements that are not
+    /// `FailedAtJudgement`. All of the log unless the player failed; then those up to and
+    /// including the failing one, as the rules keep judging within the failing step.
+    pub fn counted_judgements(&self) -> &[Judgement] {
+        &self.log.events()[..self.counted]
     }
 
     /// The health, if tracked (see [`Simulator::with_health`]).

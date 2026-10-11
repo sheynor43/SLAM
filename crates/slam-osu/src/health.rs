@@ -6,11 +6,11 @@
 
 use std::ops::Range;
 
-use crate::autoplay::{self, Target};
+use crate::autoplay;
 use crate::beatmap::Beatmap;
 use crate::difficulty::DifficultyRange;
 use crate::dotnet;
-use crate::judgement::{HitResult, Judgement};
+use crate::judgement::{HitResult, Judgement, Target};
 use crate::mods::{Mod, ModSet};
 use crate::objects::{OsuHitObject, OsuHitObjectKind};
 use crate::precision::DOUBLE_EPSILON;
@@ -334,17 +334,25 @@ impl HealthProcessor {
 
     // Ported from osu!lazer 2026.1005.0-lazer: osu.Game/Rulesets/Scoring/HealthProcessor.cs (ApplyResultInternal, TriggerFailure)
     // Ported from osu!lazer 2026.1005.0-lazer: osu.Game/Screens/Play/Player.cs (onFail)
-    /// Applies a judgement; if it meets a fail condition, asks the mods whether the player fails
+    /// Applies a judgement; if it meets a fail condition (no health left or a mod's
+    /// [`fail_condition`](crate::GameplayMod::fail_condition)), asks the mods whether the player fails
     /// ([`ModSet::perform_fail`]). Once failed, judgements change nothing.
     pub fn apply(&mut self, judgement: &Judgement, mods: &mut ModSet) {
         if self.has_failed {
             return;
         }
 
-        let increase = self.health_increase_for(judgement);
+        let (target, info) = self.target(judgement);
+        // Nested objects have the combo information interface too, but never start or end a
+        // combo.
+        let combo = info.map_or((false, false), |i| (i.new_combo, i.last_in_combo));
+        let increase = self.health_increase_for(judgement.result, target, combo);
         self.set_health(self.health + increase);
 
-        if self.check_default_fail_condition(judgement) {
+        // Ported from osu!lazer 2026.1005.0-lazer: osu.Game/Rulesets/Scoring/HealthProcessor.cs (meetsAnyFailCondition)
+        if self.check_default_fail_condition(judgement)
+            || mods.meets_fail_condition(judgement, target)
+        {
             self.trigger_failure(mods);
         }
     }
@@ -399,22 +407,17 @@ impl HealthProcessor {
     }
 
     /// The health change of a judgement in play.
-    fn health_increase_for(&mut self, judgement: &Judgement) -> f64 {
-        let (target, info) = self.target(judgement);
+    fn health_increase_for(
+        &mut self,
+        result: HitResult,
+        target: Target,
+        (new_combo, last_in_combo): (bool, bool),
+    ) -> f64 {
         match self.kind {
             HealthKind::Standard => {
-                // Nested objects have the combo information interface too, but never start or
-                // end a combo.
-                let (new_combo, last_in_combo) =
-                    info.map_or((false, false), |i| (i.new_combo, i.last_in_combo));
-                self.standard_increase_with_combo(
-                    target,
-                    judgement.result,
-                    new_combo,
-                    last_in_combo,
-                )
+                self.standard_increase_with_combo(target, result, new_combo, last_in_combo)
             }
-            HealthKind::Legacy => self.legacy_increase(target, judgement.result),
+            HealthKind::Legacy => self.legacy_increase(target, result),
         }
     }
 

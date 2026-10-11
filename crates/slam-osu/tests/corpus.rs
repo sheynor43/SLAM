@@ -9,7 +9,7 @@ use std::path::{Path, PathBuf};
 
 use harness::{Divergence, Outcome, Report, corpus_root, run_corpus};
 use sha2::{Digest, Sha256};
-use slam_formats::osr::{self, ApiMod, Replay, ScoreInfo, ScoreRank};
+use slam_formats::osr::{self, ApiMod, GeneratedFrame, Replay, ScoreInfo, ScoreRank};
 use slam_osu::judgement::{HitResult, Judgement, JudgementLog, ObjectRef};
 use slam_osu::replay::{Rules, StepInput};
 
@@ -73,7 +73,12 @@ impl Fixture {
 
     /// Writes [`FIXTURE_MAP`] and returns its SHA-256.
     fn map(&self, source: &str) -> String {
-        let sha: String = Sha256::digest(FIXTURE_MAP.as_bytes())
+        self.map_text(source, FIXTURE_MAP)
+    }
+
+    /// Writes the map `text` and returns its SHA-256.
+    fn map_text(&self, source: &str, text: &str) -> String {
+        let sha: String = Sha256::digest(text.as_bytes())
             .iter()
             .map(|b| format!("{b:02x}"))
             .collect();
@@ -82,7 +87,7 @@ impl Fixture {
             .join(source)
             .join("maps")
             .join(format!("{sha}.osu"));
-        std::fs::write(path, FIXTURE_MAP).unwrap();
+        std::fs::write(path, text).unwrap();
         sha
     }
 
@@ -556,22 +561,65 @@ fn score_diffs_join_count_diffs() {
 }
 
 #[test]
-fn failed_play_is_skipped() {
+fn failed_play_is_compared_up_to_the_fail() {
+    // Three circles, a replay that never presses: Sudden Death and Perfect fail on the first
+    // miss, and lazer's statistics stop there.
     let f = Fixture::new("failed");
-    let sha = f.map("lazer");
-    let info = ScoreInfo {
-        rank: Some(ScoreRank::F),
-        ..Default::default()
+    let sha = f.map_text("lazer", common::MAP);
+    let idle: Vec<GeneratedFrame> = (0..300)
+        .map(|i| GeneratedFrame {
+            time: f64::from(i) * 16.0,
+            x: 0.0,
+            y: 0.0,
+            buttons: 0,
+        })
+        .collect();
+    let played = |acronym: &str, misses: i32, rank: ScoreRank| Replay {
+        version: harness::FIRST_COMBO_EXPONENT_VERSION,
+        lazer_block: Some(
+            ScoreInfo {
+                mods: vec![api_mod(acronym)],
+                statistics: vec![(osr::HitResult::Miss, misses)],
+                rank: Some(rank),
+                ..Default::default()
+            }
+            .to_block(),
+        ),
+        ..common::replay(&idle, 14)
     };
-    f.replay("lazer", "replays/a.osr", &lazer_replay_with(info));
-    f.manifest("lazer", &entry("replays/a.osr", &sha, "lazer", ""));
+    let failed = |acronym: &str, misses: i32| played(acronym, misses, ScoreRank::F);
+    f.replay("lazer", "replays/sd.osr", &failed("SD", 1));
+    f.replay("lazer", "replays/pf.osr", &failed("PF", 1));
+    f.replay("lazer", "replays/all.osr", &failed("SD", 3));
+    // Lazer says the play passed: our fail is named, not left to the count diffs.
+    f.replay(
+        "lazer",
+        "replays/passed.osr",
+        &played("SD", 3, ScoreRank::D),
+    );
+    f.manifest(
+        "lazer",
+        &[
+            entry("replays/sd.osr", &sha, "lazer", ""),
+            entry("replays/pf.osr", &sha, "lazer", ""),
+            entry("replays/all.osr", &sha, "lazer", ""),
+            entry("replays/passed.osr", &sha, "lazer", ""),
+        ]
+        .concat(),
+    );
     let report = f.run("", false);
-    assert!(matches!(&report.entries[0].outcome, Outcome::Skipped(m) if m.contains("failed play")));
-    assert!(!report.failed());
-    let text = report.to_string();
+    assert_eq!(report.entries[0].outcome, Outcome::Match, "{report}");
+    assert_eq!(report.entries[1].outcome, Outcome::Match, "{report}");
+    let Outcome::Mismatch { diffs, .. } = &report.entries[2].outcome else {
+        panic!("{report}")
+    };
+    assert_eq!(
+        (diffs[0].name.as_str(), diffs[0].expected, diffs[0].got),
+        ("Miss", 3, 1)
+    );
     assert!(
-        text.contains("skipped 1") && text.contains("health not simulated"),
-        "{text}"
+        matches!(&report.entries[3].outcome, Outcome::Error(e) if e.contains("simulated fail")),
+        "{report}"
     );
 }
 
@@ -672,14 +720,15 @@ impl Rules for Never {
 fn step_cap_stops_endless_rules() {
     let beatmap = common::beatmap();
     let input = slam_osu::replay::ReplayInput::from_replay(&common::replay(&[], 14), 14);
-    let e = harness::simulate(&beatmap, input, Never, None).unwrap_err();
+    let e = harness::simulate(&beatmap, input, Never, None, None).unwrap_err();
     assert!(e.contains("did not finish"), "{e}");
 
     let input = slam_osu::replay::ReplayInput::from_replay(&common::replay(&[], 14), 14);
-    let (log, score) = harness::simulate(
+    let harness::Simulated { log, score, .. } = harness::simulate(
         &beatmap,
         input,
         slam_osu::replay::NoRules::new(&beatmap),
+        None,
         None,
     )
     .unwrap();

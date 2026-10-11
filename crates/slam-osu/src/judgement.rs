@@ -187,6 +187,30 @@ pub struct ObjectRef {
     pub nested: Option<u32>,
 }
 
+/// What a judgement judged, as far as the judgement processors and the mods' fail conditions
+/// care (lazer's hit object types).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Target {
+    /// A hit circle (`HitCircle`).
+    Circle,
+    /// A slider as a whole (`Slider`).
+    Slider,
+    /// A spinner as a whole (`Spinner`).
+    Spinner,
+    /// A slider's head (`SliderHeadCircle`).
+    SliderHead,
+    /// A slider's tick (`SliderTick`).
+    SliderTick,
+    /// A slider's repeat (`SliderRepeat`).
+    SliderRepeat,
+    /// A slider's tail (`SliderTailCircle`).
+    SliderTail,
+    /// A spinner's tick (`SpinnerTick`).
+    SpinnerTick,
+    /// A spinner's bonus tick (`SpinnerBonusTick`).
+    SpinnerBonusTick,
+}
+
 /// One judgement produced by the rules.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct Judgement {
