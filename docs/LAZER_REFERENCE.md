@@ -6,9 +6,11 @@ SLAM сверяет правила геймплея, формулы и обра�
 |---|---|---|---|
 | [ppy/osu](https://github.com/ppy/osu) | `2026.1005.0-lazer` | `9a10d935b05a3b896f4bd811d620f2023331db93` | `../slam-refs/osu` |
 | [ppy/osu-framework](https://github.com/ppy/osu-framework) | `2026.921.1` | `37c3e328c8cc7a018234ec78982ea12d3712096a` | `../slam-refs/osu-framework` |
+| [ppy/osu-resources](https://github.com/ppy/osu-resources) | `2026.918.0` | `d481bc98f2603348ee81c15174cd72604286310d` | `../slam-refs/osu-resources` |
 
 - Дата фиксации эталона: 2026-10-08.
 - Версия `osu-framework` взята из `osu.Game/osu.Game.csproj` (`ppy.osu.Framework` `2026.921.1`), тег совпадает точно.
+- Версия `osu-resources` взята оттуда же (`ppy.osu.Game.Resources` `2026.918.0`). Это источник дефолтного скина (`osu.Game.Resources/Skins/Legacy`), лицензия CC-BY-NC 4.0 (`LICENCE.md`).
 - Метка в портированном коде: `// Ported from osu!lazer 2026.1005.0-lazer: <path>`.
 
 ## Восстановление
@@ -16,6 +18,7 @@ SLAM сверяет правила геймплея, формулы и обра�
 ```sh
 git clone --depth 1 --branch 2026.1005.0-lazer https://github.com/ppy/osu ../slam-refs/osu
 git clone --depth 1 --branch 2026.921.1 https://github.com/ppy/osu-framework ../slam-refs/osu-framework
+git clone --depth 1 --branch 2026.918.0 https://github.com/ppy/osu-resources ../slam-refs/osu-resources
 ```
 
 ## Правило обновления
