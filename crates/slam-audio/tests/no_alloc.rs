@@ -4,8 +4,8 @@
 use std::sync::Arc;
 
 use slam_audio::{
-    AudioCallback, AudioPosition, CallbackInfo, MixerConfig, MusicConfig, MusicEvent,
-    PositionSnapshot, Sample, SineTone, TrackSource,
+    AudioCallback, AudioPosition, CallbackInfo, ClockError, GameClock, MixerConfig, MusicConfig,
+    MusicEvent, PlayError, PositionSnapshot, Sample, SineTone, TrackSource,
 };
 use slam_testkit::assert_no_alloc;
 
@@ -156,4 +156,65 @@ fn music_commands_and_mixing_do_not_allocate() {
             .load(std::sync::atomic::Ordering::Relaxed),
         0
     );
+}
+
+#[test]
+fn game_clock_does_not_allocate() {
+    let (mut mixer, _handle) = slam_audio::mixer(&MixerConfig::default()).unwrap();
+    let (music, mut player) = slam_audio::music(&MusicConfig {
+        block_frames: 256,
+        blocks: 4,
+        ..MusicConfig::default()
+    })
+    .unwrap();
+    mixer.set_music(music).unwrap();
+    let path = format!(
+        "{}/tests/data/tone-vorbis-stereo.ogg",
+        env!("CARGO_MANIFEST_DIR")
+    );
+    player.load(TrackSource::File(path.into())).unwrap();
+    let mut clock = GameClock::new(&player);
+    let mut out = vec![0.0f32; 2 * 256];
+    let mut info = CallbackInfo {
+        frame: 0,
+        timestamp_ns: 1_000_000_000,
+        latency_ns: 5_000_000,
+        sample_rate: 48_000,
+        channels: 2,
+    };
+    let mut time = 0.0;
+    assert_no_alloc(|| {
+        for round in 0..2_000u64 {
+            mixer.process(&mut out, &info);
+            let report = PositionSnapshot {
+                frame: info.frame,
+                timestamp_ns: info.timestamp_ns,
+                latency_ns: info.latency_ns,
+                sample_rate: info.sample_rate,
+            };
+            let now = info.timestamp_ns + 1_000_000;
+            if let Some(s) = clock.update(now, Some(report), player.position().read()) {
+                time += s.track_time_at(now - 500_000);
+                let result = match round % 50 {
+                    1 => clock.seek(now, -100.0, &mut player),
+                    2 => clock.start(now, &mut player),
+                    20 => clock.stop(now, &mut player),
+                    21 => clock.seek(now, 500.0, &mut player),
+                    22 => clock.set_rate(now, 1.5, &mut player),
+                    23 => clock.start(now, &mut player),
+                    _ => Ok(()),
+                };
+                // A full queue (the decoder lagging behind the test's pace) is fine.
+                match result {
+                    Ok(()) | Err(ClockError::Track(PlayError::QueueFull)) => {}
+                    Err(e) => panic!("round {round}: {e:?}"),
+                }
+            }
+            info.frame += 256;
+            info.timestamp_ns += 5_333_333;
+            // Let the decoder take its seeks, as real ticks would.
+            std::thread::sleep(std::time::Duration::from_micros(100));
+        }
+    });
+    assert!(time.is_finite());
 }
