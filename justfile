@@ -41,3 +41,7 @@ hitsound *ARGS:
 # Корпусы реплеев; FILTER - подстрока пути реплея (путь к корпусу: SLAM_CORPUS, по умолчанию ../slam-corpus)
 corpus FILTER="":
     SLAM_CORPUS_FILTER={{quote(FILTER)}} cargo test -p slam-osu --release --test corpus -- --ignored --nocapture
+
+# Проверка локализации встроенных языков: just i18n check
+i18n *ARGS:
+    cargo run -p slam-app -- i18n {{ARGS}}

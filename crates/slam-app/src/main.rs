@@ -2,7 +2,7 @@
 
 use std::process::ExitCode;
 
-use slam_app::{bench, click};
+use slam_app::{bench, click, i18n};
 
 fn main() -> ExitCode {
     tracing_subscriber::fmt()
@@ -42,12 +42,21 @@ fn main() -> ExitCode {
                 }
             }
         }
+        Some("i18n") => match i18n::run(args) {
+            Ok(true) => ExitCode::SUCCESS,
+            Ok(false) => ExitCode::FAILURE,
+            Err(e) => {
+                eprintln!("{e}\n{}", i18n::USAGE);
+                ExitCode::FAILURE
+            }
+        },
         _ => {
             eprintln!(
-                "{}\n{}\n{}",
+                "{}\n{}\n{}\n{}",
                 bench::USAGE,
                 click::USAGE,
-                click::analyze::USAGE
+                click::analyze::USAGE,
+                i18n::USAGE
             );
             ExitCode::from(2)
         }

@@ -2,3 +2,4 @@
 
 pub mod bench;
 pub mod click;
+pub mod i18n;

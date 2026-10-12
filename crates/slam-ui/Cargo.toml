@@ -10,6 +10,10 @@ publish.workspace = true
 slam-render = { path = "../slam-render" }
 slam-skin = { path = "../slam-skin" }
 slam-text = { path = "../slam-text" }
+fluent-bundle.workspace = true
+fluent-syntax.workspace = true
+unic-langid.workspace = true
+tracing.workspace = true
 
 [lints]
 workspace = true
