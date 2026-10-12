@@ -18,6 +18,8 @@ pub struct Fake {
     pub live_pipelines: Vec<u32>,
     /// Resource creations left before one fails; `None` never fails.
     pub fail_after: Option<u32>,
+    /// Texture writes left before one fails; `None` never fails.
+    pub fail_writes_after: Option<u32>,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -131,6 +133,12 @@ impl Device for Fake {
             .find(|(id, _)| id == texture)
             .expect("live texture");
         desc.check_write(origin, size, data.len())?;
+        if let Some(left) = &mut self.fail_writes_after {
+            if *left == 0 {
+                return Err(DescError::NotCopyDst);
+            }
+            *left -= 1;
+        }
         self.log.push(Call::WriteTexture {
             texture: *texture,
             origin,

@@ -8,6 +8,8 @@ publish.workspace = true
 
 [dependencies]
 glow.workspace = true
+png.workspace = true
+rtrb.workspace = true
 thiserror.workspace = true
 tracing.workspace = true
 

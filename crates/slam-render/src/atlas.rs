@@ -246,7 +246,7 @@ impl Atlas {
 }
 
 /// Writes `pixels` into `out` with a `border` of repeated edge pixels on every side.
-fn extrude(out: &mut Vec<u8>, pixels: &[u8], size: Extent, border: u32, bpp: usize) {
+pub(crate) fn extrude(out: &mut Vec<u8>, pixels: &[u8], size: Extent, border: u32, bpp: usize) {
     let (w, h, b) = (size.width as usize, size.height as usize, border as usize);
     let row = (w + 2 * b) * bpp;
     out.clear();
