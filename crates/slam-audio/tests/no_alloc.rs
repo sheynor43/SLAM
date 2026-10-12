@@ -99,6 +99,14 @@ fn mixer_commands_and_process_do_not_allocate() {
     assert_eq!(Arc::strong_count(&long), 1);
 }
 
+/// Accepts a command result where only a full queue may fail it.
+fn queued(result: Result<(), PlayError>) {
+    assert!(
+        matches!(result, Ok(()) | Err(PlayError::QueueFull)),
+        "{result:?}"
+    );
+}
+
 #[test]
 fn music_commands_and_mixing_do_not_allocate() {
     let (mut mixer, mut handle) = slam_audio::mixer(&MixerConfig::default()).unwrap();
@@ -132,11 +140,14 @@ fn music_commands_and_mixing_do_not_allocate() {
     // The decoder thread allocates freely; only this thread is counted.
     assert_no_alloc(|| {
         for round in 0..200u64 {
-            match round % 5 {
+            match round % 6 {
                 0 => player.play().unwrap(),
-                1 => player.seek(round * 37 % 4_000).unwrap(),
+                // The decoder may lag behind this burst of commands: a full queue
+                // is a valid answer, not an allocation.
+                1 => queued(player.seek(round * 37 % 4_000)),
                 2 => player.set_volume(0.5).unwrap(),
                 3 => player.pause().unwrap(),
+                4 => queued(player.set_rate(if round % 12 == 4 { 1.5 } else { 1.0 })),
                 _ => handle.play(&hit, 0.5).unwrap(),
             }
             for frames in [1usize, 64, 128, 1024] {

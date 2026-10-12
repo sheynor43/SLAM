@@ -62,6 +62,10 @@ pub enum PlayError {
     /// The sample was not converted to the mixer's rate and channels.
     #[error("sample format does not match the mixer")]
     FormatMismatch,
+    /// The track rate is not finite or outside
+    /// [`MIN_MUSIC_RATE`](crate::MIN_MUSIC_RATE)..=[`MAX_MUSIC_RATE`](crate::MAX_MUSIC_RATE).
+    #[error("track rate out of range")]
+    InvalidRate,
 }
 
 /// Mixer counters, written by the audio thread (relaxed), read by anyone.

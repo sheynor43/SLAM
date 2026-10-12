@@ -279,6 +279,7 @@ impl Update for Clicker {
                 Err(PlayError::QueueFull) => self.clicks.rejected += 1,
                 // `run` converts the sample to the mixer format before starting.
                 Err(PlayError::FormatMismatch) => unreachable!("sample format checked"),
+                Err(PlayError::InvalidRate) => unreachable!("plays have no rate"),
             }
         }
         let clicks = &mut self.clicks;

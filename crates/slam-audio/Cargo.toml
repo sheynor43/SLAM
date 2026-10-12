@@ -9,6 +9,7 @@ publish.workspace = true
 [dependencies]
 rtrb.workspace = true
 rubato.workspace = true
+signalsmith-stretch.workspace = true
 symphonia.workspace = true
 thiserror.workspace = true
 tracing.workspace = true
