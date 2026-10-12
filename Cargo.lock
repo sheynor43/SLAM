@@ -1697,6 +1697,8 @@ name = "slam-skin"
 version = "0.1.0"
 dependencies = [
  "slam-formats",
+ "thiserror",
+ "tracing",
 ]
 
 [[package]]
