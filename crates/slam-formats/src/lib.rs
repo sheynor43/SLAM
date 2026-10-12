@@ -6,3 +6,5 @@ pub mod archive;
 pub mod osr;
 pub mod osu;
 pub mod osz;
+pub mod skin_ini;
+mod text;
