@@ -26,6 +26,15 @@ impl<T> Textures<T> {
         Self::default()
     }
 
+    /// Room for `n` textures (and as many removals), so that inserting and removing
+    /// them does not allocate.
+    pub fn with_capacity(n: usize) -> Self {
+        Self {
+            slots: Vec::with_capacity(n),
+            free: Vec::with_capacity(n),
+        }
+    }
+
     pub fn insert(&mut self, texture: T) -> TextureId {
         match self.free.pop() {
             Some(index) => {

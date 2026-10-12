@@ -5,8 +5,10 @@ pub mod atlas;
 mod fake_device;
 pub mod gl;
 pub mod hal;
+pub mod image;
 pub mod sprite;
 pub mod textures;
+pub mod upload;
 
 /// Shaders of this crate, translated from `shaders/*.wgsl` at build time (ADR-0019).
 pub mod shaders {
