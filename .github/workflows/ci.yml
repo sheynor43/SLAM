@@ -35,6 +35,11 @@ jobs:
       - name: Install PipeWire build dependencies
         run: |
           sudo apt-get install -y --no-install-recommends libpipewire-0.3-dev libclang-dev
+      # slam-audio: signalsmith-stretch is C++; the Windows clippy check runs its build
+      # script for x86_64-pc-windows-gnu, which needs the MinGW-w64 compiler.
+      - name: Install MinGW-w64
+        run: |
+          sudo apt-get install -y --no-install-recommends g++-mingw-w64-x86-64
       # Installs the toolchain and components pinned in rust-toolchain.toml.
       - name: Install toolchain
         run: rustup toolchain install

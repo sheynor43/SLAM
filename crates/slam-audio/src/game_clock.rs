@@ -25,6 +25,8 @@ pub trait TrackControl {
     fn pause(&mut self) -> Result<(), PlayError>;
     /// Moves to track frame `frame` at the stream rate, keeping play or pause.
     fn seek(&mut self, frame: u64) -> Result<(), PlayError>;
+    /// Sets the track rate (see [`MusicPlayer::set_rate`]).
+    fn set_rate(&mut self, rate: f64) -> Result<(), PlayError>;
     /// Generation of the last load or seek, as in [`MusicSnapshot::generation`].
     fn generation(&self) -> u32;
 }
@@ -46,6 +48,10 @@ impl TrackControl for MusicPlayer {
         MusicPlayer::seek(self, frame)
     }
 
+    fn set_rate(&mut self, rate: f64) -> Result<(), PlayError> {
+        MusicPlayer::set_rate(self, rate)
+    }
+
     fn generation(&self) -> u32 {
         MusicPlayer::generation(self)
     }
@@ -64,8 +70,9 @@ pub enum ClockError {
     /// A seek target that is not finite.
     #[error("seek time must be finite")]
     InvalidTime,
-    /// The rate is not finite and positive.
-    #[error("clock rate must be finite and positive")]
+    /// The rate is not finite or outside
+    /// [`MIN_MUSIC_RATE`](crate::MIN_MUSIC_RATE)..=[`MAX_MUSIC_RATE`](crate::MAX_MUSIC_RATE).
+    #[error("clock rate out of range")]
     InvalidRate,
 }
 
@@ -357,19 +364,21 @@ impl GameClock {
         Ok(())
     }
 
-    /// Sets the clock rate (finite, positive): how fast time runs off the track, and
-    /// the factor of real-time offsets. Track speed itself comes from the music
-    /// position. A queued lead-in start is rescheduled.
+    /// Sets the rate of the clock and the track: how fast time runs off the track,
+    /// and the factor of real-time offsets. The track takes it when the change is
+    /// heard; on the track, time follows the music position. A queued lead-in start is
+    /// rescheduled. If that fails, the track already has the new rate: repeat the call.
     pub fn set_rate(
         &mut self,
         now_ns: u64,
         rate: f64,
         track: &mut impl TrackControl,
     ) -> Result<(), ClockError> {
-        if !(rate.is_finite() && rate > 0.0) {
+        if !(crate::MIN_MUSIC_RATE..=crate::MAX_MUSIC_RATE).contains(&rate) {
             return Err(ClockError::InvalidRate);
         }
         let frame = self.now_frame(now_ns)?;
+        track.set_rate(rate)?;
         if let Mode::Free { lead_in, .. } = self.mode {
             let time_ms = self.free_time(frame);
             if lead_in == Some(true) {
@@ -484,7 +493,7 @@ impl GameClock {
             Mode::Track { .. } if music.ended && anchor.speed == 0.0 && heard => {
                 self.mode = Mode::Free {
                     origin: anchor.device_frame as f64,
-                    time_ms: anchor.track_frame as f64 * model.ms_per_frame(),
+                    time_ms: anchor.track_frame * model.ms_per_frame(),
                     lead_in: None,
                 };
             }
@@ -549,6 +558,7 @@ mod tests {
         PlayAt(u64),
         Pause,
         Seek(u64),
+        Rate(f64),
     }
 
     #[derive(Default)]
@@ -590,6 +600,10 @@ mod tests {
             self.send(Command::Seek(frame))?;
             self.generation += 1;
             Ok(())
+        }
+
+        fn set_rate(&mut self, rate: f64) -> Result<(), PlayError> {
+            self.send(Command::Rate(rate))
         }
 
         fn generation(&self) -> u32 {
@@ -676,7 +690,7 @@ mod tests {
     fn playing_from(device_frame: u64, track_frame: u64, speed: f64) -> MusicSnapshot {
         let anchor = MusicAnchor {
             device_frame,
-            track_frame,
+            track_frame: track_frame as f64,
             speed,
         };
         MusicSnapshot {
@@ -696,7 +710,7 @@ mod tests {
         MusicSnapshot {
             anchor: MusicAnchor {
                 device_frame,
-                track_frame,
+                track_frame: track_frame as f64,
                 speed,
             },
             previous: music.anchor,
@@ -1103,12 +1117,13 @@ mod tests {
         let idle = playing_from(0, 0, 0.0);
         let (_, mut clock, mut track) = settled(100, idle);
         let now = 1_100 * MS;
-        for bad in [0.0, -1.0, f64::NAN, f64::INFINITY] {
+        for bad in [0.0, -1.0, 0.04, 4.5, f64::NAN, f64::INFINITY] {
             assert_eq!(
                 clock.set_rate(now, bad, &mut track),
                 Err(ClockError::InvalidRate)
             );
         }
+        assert!(track.commands.is_empty());
         clock.seek(now, -1_000.0, &mut track).unwrap();
         clock.start(now, &mut track).unwrap();
         assert_eq!(
@@ -1116,9 +1131,10 @@ mod tests {
             Some(&Command::PlayAt(4_800 + 48_000))
         );
         clock.set_rate(now, 2.0, &mut track).unwrap();
+        let n = track.commands.len();
         assert_eq!(
-            track.commands.last(),
-            Some(&Command::PlayAt(4_800 + 24_000))
+            track.commands[n - 2..],
+            [Command::Rate(2.0), Command::PlayAt(4_800 + 24_000)]
         );
     }
 

@@ -12,6 +12,11 @@
 //! the track position, as in lazer. Fades (5 ms) only shape what is heard: a pause or
 //! seek plays a copied tail of the old audio fading out without moving the track, and
 //! audio fades in when it resumes.
+//!
+//! The track rate (ADR-0036) is applied by the decoder with a pitch-preserving
+//! time-stretch. A rate change re-renders the track from the start of a block a little
+//! ahead of the callback, in a new epoch; the callback drops the replaced blocks and
+//! carries on into the new ones without a gap.
 
 use std::io::Cursor;
 use std::path::PathBuf;
@@ -22,6 +27,7 @@ use std::time::Duration;
 
 use rubato::audioadapter_buffers::direct::InterleavedSlice;
 use rubato::{Indexing, Resampler};
+use signalsmith_stretch::Stretch;
 use symphonia::core::codecs::audio::{AudioDecoder, AudioDecoderOptions};
 use symphonia::core::errors::Error as SymphoniaError;
 use symphonia::core::formats::probe::Hint;
@@ -48,6 +54,26 @@ const IDLE_POLL: Duration = Duration::from_millis(50);
 /// Decoder events that can wait for [`MusicPlayer::poll_event`].
 const EVENT_CAPACITY: usize = 16;
 
+/// Slowest track rate. Lazer's `TrackBass` rejects tempos below 0.05.
+pub const MIN_MUSIC_RATE: f64 = 0.05;
+/// Fastest track rate. Lazer sets no limit; its rate mods reach 2.
+pub const MAX_MUSIC_RATE: f64 = 4.0;
+
+/// A rate change replaces blocks from at least this long after the block the callback
+/// plays (and at least two blocks on): time for the decoder to seek and render the
+/// first new block, milliseconds.
+const SPLICE_LEAD_MS: u64 = 40;
+
+/// Blocks beyond the configured pool that the decoder fills only while a rate change
+/// is in flight, when the queue is still full of blocks about to be replaced.
+const SPLICE_RESERVE: usize = 4;
+
+/// Output frames the time-stretch renders per call.
+const STRETCH_CHUNK: usize = 1_024;
+
+/// Track frames within which two positions count as the same (rounding of `f64`).
+const FRAME_EPSILON: f64 = 1e-3;
+
 /// Music stream parameters. Rate and channels must match the output stream.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct MusicConfig {
@@ -59,7 +85,7 @@ pub struct MusicConfig {
     pub block_frames: usize,
     /// Blocks in the pool: `blocks · block_frames` frames are decoded ahead.
     pub blocks: usize,
-    /// Commands that can wait for the audio callback and for the decoder each.
+    /// Commands that can wait for the audio callback and for the decoder each, 2..=255.
     pub queue_capacity: usize,
 }
 
@@ -130,6 +156,9 @@ pub struct MusicStats {
     pub dropped_events: AtomicU64,
     /// Blocks leaked because a ring was full. Must stay 0: rings hold the whole pool.
     pub leaked_blocks: AtomicU64,
+    /// Rate changes whose first block came after the callback had passed its start:
+    /// the callback skipped ahead in the new blocks (a short fade-in, no time jump).
+    pub late_splices: AtomicU64,
 }
 
 /// A stretch of the track timeline: from stream frame `device_frame` on, the track
@@ -139,15 +168,17 @@ pub struct MusicAnchor {
     /// Stream frame where the stretch starts, on the axis of [`CallbackInfo::frame`] and
     /// [`PositionSnapshot::frame`](crate::PositionSnapshot::frame).
     pub device_frame: u64,
-    /// Track frame (at the stream rate) at `device_frame`.
-    pub track_frame: u64,
-    /// 1 while playing; 0 while paused, waiting for decoded audio or ended.
+    /// Track frame (at the stream rate) at `device_frame`; fractional when the track
+    /// rate is not 1.
+    pub track_frame: f64,
+    /// The track rate while playing; 0 while paused, waiting for decoded audio or
+    /// ended.
     pub speed: f64,
 }
 
 impl MusicAnchor {
     fn at(&self, device_frame: f64) -> f64 {
-        self.track_frame as f64 + (device_frame - self.device_frame as f64) * self.speed
+        self.track_frame + (device_frame - self.device_frame as f64) * self.speed
     }
 }
 
@@ -185,7 +216,7 @@ impl MusicSnapshot {
         } else if device_frame >= self.previous.device_frame as f64 {
             self.previous.at(device_frame)
         } else {
-            self.previous.track_frame as f64
+            self.previous.track_frame
         }
     }
 }
@@ -200,10 +231,10 @@ impl MusicPosition {
     fn publish(&self, s: MusicSnapshot) {
         self.lock.write([
             s.anchor.device_frame,
-            s.anchor.track_frame,
+            s.anchor.track_frame.to_bits(),
             s.anchor.speed.to_bits(),
             s.previous.device_frame,
-            s.previous.track_frame,
+            s.previous.track_frame.to_bits(),
             s.previous.speed.to_bits(),
             u64::from(s.generation) | u64::from(s.ended) << 32,
         ]);
@@ -215,12 +246,12 @@ impl MusicPosition {
         self.lock.read().map(|w| MusicSnapshot {
             anchor: MusicAnchor {
                 device_frame: w[0],
-                track_frame: w[1],
+                track_frame: f64::from_bits(w[1]),
                 speed: f64::from_bits(w[2]),
             },
             previous: MusicAnchor {
                 device_frame: w[3],
-                track_frame: w[4],
+                track_frame: f64::from_bits(w[4]),
                 speed: f64::from_bits(w[5]),
             },
             generation: w[6] as u32,
@@ -235,9 +266,66 @@ struct Block {
     data: Box<[f32]>,
     frames: usize,
     generation: u32,
-    start: u64,
+    /// Restart of the decoder (load, seek or rate change) that rendered the block.
+    epoch: u32,
+    /// Position in the generation: rate changes replace blocks from a given one on.
+    seq: u32,
+    /// Track frame of the first frame.
+    start: f64,
+    /// Track frames per frame.
+    rate: f64,
     /// No blocks of this generation follow.
     end: bool,
+}
+
+/// Where the callback and the decoder are, for rate changes. Single atomic words
+/// ([`Mark`]): the callback never waits for the decoder.
+#[derive(Debug, Default)]
+struct Splices {
+    /// Written by the callback: the block it plays.
+    cursor: AtomicU64,
+    /// Written by the decoder: blocks of the generation from `seq` on, of epochs older
+    /// than `epoch`, are replaced.
+    splice: AtomicU64,
+}
+
+/// Block numbers wrap at 24 bits: one generation (load or seek) must not outlast 2^24
+/// blocks, 97 hours of 1024-frame blocks at 48 kHz.
+const SEQ_MASK: u32 = (1 << 24) - 1;
+
+/// A block position in one word: epoch (32 bits), low 8 bits of the generation, `seq`
+/// (24 bits). Epochs grow across generations; the generation bits keep a splice of a
+/// newer generation (its flush still queued) off the blocks being played.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct Mark {
+    epoch: u32,
+    generation: u8,
+    seq: u32,
+}
+
+impl Mark {
+    fn new(epoch: u32, generation: u32, seq: u32) -> Self {
+        Self {
+            epoch,
+            generation: generation as u8,
+            seq: seq & SEQ_MASK,
+        }
+    }
+
+    fn store(self, word: &AtomicU64) {
+        let w =
+            u64::from(self.epoch) << 32 | u64::from(self.generation) << 24 | u64::from(self.seq);
+        word.store(w, Ordering::Release);
+    }
+
+    fn load(word: &AtomicU64) -> Self {
+        let w = word.load(Ordering::Acquire);
+        Self {
+            epoch: (w >> 32) as u32,
+            generation: (w >> 24) as u8,
+            seq: w as u32 & SEQ_MASK,
+        }
+    }
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -267,6 +355,7 @@ enum DecoderCommand {
     Unload {
         generation: u32,
     },
+    Rate(f64),
 }
 
 /// Creates the music source for the audio stream and its player for the update thread,
@@ -293,9 +382,12 @@ fn parts(config: &MusicConfig) -> Result<(MusicSource, MusicPlayer, Decoder), Au
             "music needs a rate in 1000..=384000 and 1..=8 channels",
         ));
     }
-    if config.block_frames == 0 || config.blocks == 0 || config.queue_capacity < 2 {
+    // At most 255 queued commands: a rate change tells generations apart by their
+    // low 8 bits, and the decoder can run ahead of the callback by that many seeks.
+    if config.block_frames == 0 || config.blocks == 0 || !(2..=255).contains(&config.queue_capacity)
+    {
         return Err(AudioError::InvalidConfig(
-            "music needs blocks and room for two queued commands",
+            "music needs blocks and room for 2..=255 queued commands",
         ));
     }
     let channels = usize::from(config.channels);
@@ -305,14 +397,18 @@ fn parts(config: &MusicConfig) -> Result<(MusicSource, MusicPlayer, Decoder), Au
         .ok_or(AudioError::InvalidConfig("music block too large"))?;
     // Every block is in exactly one place (a ring, the callback, the decoder), so rings
     // as large as the pool never fill.
-    let (filled_tx, filled_rx) = rtrb::RingBuffer::new(config.blocks);
-    let (mut free_tx, free_rx) = rtrb::RingBuffer::new(config.blocks);
-    for _ in 0..config.blocks {
+    let pool = config.blocks + SPLICE_RESERVE;
+    let (filled_tx, filled_rx) = rtrb::RingBuffer::new(pool);
+    let (mut free_tx, free_rx) = rtrb::RingBuffer::new(pool);
+    for _ in 0..pool {
         let block = Block {
             data: vec![0.0; block_values].into_boxed_slice(),
             frames: 0,
             generation: 0,
-            start: 0,
+            epoch: 0,
+            seq: 0,
+            start: 0.0,
+            rate: 1.0,
             end: false,
         };
         if free_tx.push(block).is_err() {
@@ -325,6 +421,7 @@ fn parts(config: &MusicConfig) -> Result<(MusicSource, MusicPlayer, Decoder), Au
     let stats = Arc::new(MusicStats::default());
     let position = Arc::new(MusicPosition::default());
     let quit = Arc::new(AtomicBool::new(false));
+    let splices = Arc::new(Splices::default());
     let fade_frames =
         (u64::from(config.sample_rate) * u64::from(MUSIC_FADE_MS) / 1_000).max(1) as usize;
 
@@ -338,7 +435,22 @@ fn parts(config: &MusicConfig) -> Result<(MusicSource, MusicPlayer, Decoder), Au
         sample_rate: config.sample_rate,
         channels: config.channels,
         generation: 0,
+        epoch: 0,
+        generation_epoch: 0,
+        seq: 0,
+        starts: vec![0.0; pool].into_boxed_slice(),
+        next_start: 0.0,
+        rate: 1.0,
+        target_rate: 1.0,
+        splicing: false,
+        // ≥ 2 blocks and ≥ SPLICE_LEAD_MS.
+        splice_lead: (u64::from(config.sample_rate) * SPLICE_LEAD_MS / 1_000)
+            .div_ceil(config.block_frames as u64)
+            .clamp(2, u64::from(SEQ_MASK / 2)) as u32,
+        splices: Arc::clone(&splices),
         stream: None,
+        stretcher: None,
+        finished: false,
         pending_end: false,
         block: None,
     };
@@ -350,7 +462,8 @@ fn parts(config: &MusicConfig) -> Result<(MusicSource, MusicPlayer, Decoder), Au
         current: None,
         cursor: 0,
         generation: 0,
-        track_frame: 0,
+        epoch: None,
+        track_frame: 0.0,
         playing: false,
         start_at: None,
         ended: false,
@@ -368,6 +481,7 @@ fn parts(config: &MusicConfig) -> Result<(MusicSource, MusicPlayer, Decoder), Au
         sample_rate: config.sample_rate,
         channels: config.channels,
         position: Arc::clone(&position),
+        splices,
         stats: Arc::clone(&stats),
     };
     let player = MusicPlayer {
@@ -379,6 +493,7 @@ fn parts(config: &MusicConfig) -> Result<(MusicSource, MusicPlayer, Decoder), Au
         generation: 0,
         loaded: 0,
         length: None,
+        rate: 1.0,
         stop_reported: false,
         sample_rate: config.sample_rate,
         position,
@@ -412,8 +527,10 @@ pub struct MusicSource {
     /// Next frame of `current`.
     cursor: usize,
     generation: u32,
+    /// Epoch of the blocks being played; `None` until the generation's first block.
+    epoch: Option<u32>,
     /// Track frame of the next frame to play.
-    track_frame: u64,
+    track_frame: f64,
     playing: bool,
     /// Stream frame a pending [`AudioCommand::PlayAt`] starts the track at.
     start_at: Option<u64>,
@@ -436,6 +553,7 @@ pub struct MusicSource {
     sample_rate: u32,
     channels: u16,
     position: Arc<MusicPosition>,
+    splices: Arc<Splices>,
     stats: Arc<MusicStats>,
 }
 
@@ -490,7 +608,8 @@ impl MusicSource {
         while self.playing && i < frames {
             match self.ready() {
                 Ready::Data => {
-                    self.mark(info.frame + i as u64, 1.0);
+                    let rate = self.current.as_ref().map_or(1.0, |b| b.rate);
+                    self.mark(info.frame + i as u64, rate);
                     let Some(block) = &self.current else { break };
                     let n = (frames - i).min(block.frames - self.cursor);
                     if self.env == 1.0 && self.gain == self.target_gain {
@@ -517,7 +636,7 @@ impl MusicSource {
                         }
                     }
                     self.cursor += n;
-                    self.track_frame += n as u64;
+                    self.track_frame = block.start + self.cursor as f64 * rate;
                     i += n;
                 }
                 ready @ (Ready::Wait | Ready::Pending) => {
@@ -556,10 +675,9 @@ impl MusicSource {
     /// describes the track there.
     fn mark(&mut self, device_frame: u64, speed: f64) {
         let a = self.anchor;
-        // Exact for speeds 0 and 1 only; time-stretch (#86) needs a fractional check.
         let continues = a.speed == speed
             && device_frame >= a.device_frame
-            && a.track_frame + (device_frame - a.device_frame) * speed as u64 == self.track_frame;
+            && (a.at(device_frame as f64) - self.track_frame).abs() <= FRAME_EPSILON;
         if !continues {
             self.previous = a;
             self.anchor = MusicAnchor {
@@ -612,7 +730,8 @@ impl MusicSource {
                         self.recycle(block);
                     }
                     self.generation = generation;
-                    self.track_frame = frame;
+                    self.epoch = None;
+                    self.track_frame = frame as f64;
                     self.ended = false;
                     self.primed = false;
                 }
@@ -678,17 +797,80 @@ impl MusicSource {
                 }
                 // Newer: the flush for it is still in the command queue.
                 Ok(block) if block.generation != self.generation => return Ready::Pending,
-                Ok(block) => {
-                    debug_assert!(
-                        block.frames == 0 || block.start == self.track_frame,
-                        "decoder and callback disagree on the track frame"
-                    );
-                    self.current = self.filled.pop().ok();
-                    self.cursor = 0;
+                Ok(block) if self.replaced(block) => {
+                    if let Ok(block) = self.filled.pop() {
+                        self.recycle(block);
+                    }
+                }
+                Ok(_) => {
+                    let Ok(block) = self.filled.pop() else {
+                        unreachable!("peeked above");
+                    };
+                    if !self.enter(&block) {
+                        // Wholly behind the track: a late rate change.
+                        self.recycle(block);
+                        continue;
+                    }
+                    self.current = Some(block);
                     self.primed = true;
                 }
             }
         }
+    }
+
+    /// `block` (of the current generation) was rendered before a rate change that
+    /// replaces it, or belongs to an epoch the callback has left.
+    fn replaced(&self, block: &Block) -> bool {
+        if self.epoch.is_some_and(|e| is_older(block.epoch, e)) {
+            return true;
+        }
+        let s = Mark::load(&self.splices.splice);
+        s.generation == self.generation as u8
+            && is_older(block.epoch, s.epoch)
+            && block.seq >= s.seq
+    }
+
+    /// Starts playing `block` where the track is: false if the track has already
+    /// passed all of it.
+    fn enter(&mut self, block: &Block) -> bool {
+        self.cursor = 0;
+        // A rate change is rendered from a whole frame at or after the replaced block's
+        // start, so the track continues forward by under a frame. A late one starts
+        // behind the track: skip ahead to it.
+        let behind = self.track_frame - block.start;
+        if self.epoch.is_some() && behind > FRAME_EPSILON && block.frames > 0 {
+            let skip = (behind / block.rate).ceil();
+            if self.epoch != Some(block.epoch) {
+                self.stats.late_splices.fetch_add(1, Ordering::Relaxed);
+            }
+            self.epoch = Some(block.epoch);
+            self.env = 0.0;
+            if skip < block.frames as f64 {
+                self.cursor = skip as usize;
+            } else if block.end {
+                // Past the end: stay on the end block so the track reads as ended.
+                self.cursor = block.frames;
+                self.publish_cursor(block);
+                return true;
+            } else {
+                return false;
+            }
+        } else {
+            debug_assert!(
+                block.frames == 0
+                    || self.epoch != Some(block.epoch)
+                    || behind.abs() <= FRAME_EPSILON,
+                "decoder and callback disagree on the track frame"
+            );
+        }
+        self.epoch = Some(block.epoch);
+        self.track_frame = block.start + self.cursor as f64 * block.rate;
+        self.publish_cursor(block);
+        true
+    }
+
+    fn publish_cursor(&self, block: &Block) {
+        Mark::new(block.epoch, self.generation, block.seq).store(&self.splices.cursor);
     }
 
     fn recycle(&mut self, block: Block) {
@@ -734,6 +916,7 @@ pub struct MusicPlayer {
     /// Generation of the last load: its `Loaded` event carries the length.
     loaded: u32,
     length: Option<u64>,
+    rate: f64,
     /// The decoder thread's death was reported.
     stop_reported: bool,
     sample_rate: u32,
@@ -813,6 +996,28 @@ impl MusicPlayer {
         )?;
         self.generation = generation;
         Ok(())
+    }
+
+    /// Sets the track rate: track frames per output frame, with the pitch kept
+    /// (lazer's `Tempo`). It stays across loads and seeks.
+    ///
+    /// The decoder re-renders the track from a block at least 40 ms (and two blocks)
+    /// ahead of the one playing, so the change is heard some 40–60 ms later, without a
+    /// gap; [`MusicSnapshot`] anchors carry the rate from
+    /// the frame it is heard. While an earlier change is still on its way, the latest
+    /// rate waits for it.
+    pub fn set_rate(&mut self, rate: f64) -> Result<(), PlayError> {
+        if !(MIN_MUSIC_RATE..=MAX_MUSIC_RATE).contains(&rate) {
+            return Err(PlayError::InvalidRate);
+        }
+        self.send(&[], Some(DecoderCommand::Rate(rate)))?;
+        self.rate = rate;
+        Ok(())
+    }
+
+    /// The last rate set with [`set_rate`](Self::set_rate).
+    pub fn rate(&self) -> f64 {
+        self.rate
     }
 
     /// Sets the track volume, linear, clamped to 0..=1 (non-finite counts as 0).
@@ -931,10 +1136,35 @@ struct Decoder {
     sample_rate: u32,
     channels: u16,
     generation: u32,
+    /// Restarts so far (wrapping): loads, seeks, unloads and rate changes.
+    epoch: u32,
+    /// Epoch the current generation started with.
+    generation_epoch: u32,
+    /// `seq` of the next block.
+    seq: u32,
+    /// Track frame of block `seq` at `seq % len`, valid for the blocks in flight.
+    starts: Box<[f64]>,
+    /// Track frame of the next block.
+    next_start: f64,
+    /// Rate being rendered.
+    rate: f64,
+    /// Rate asked for; differs from `rate` until the change can be spliced in.
+    target_rate: f64,
+    /// A rate change was spliced in and the callback has not reached it yet: the
+    /// reserve blocks may be filled, and the next change waits.
+    splicing: bool,
+    /// Blocks between the one the callback plays and the first one a rate change
+    /// replaces.
+    splice_lead: u32,
+    splices: Arc<Splices>,
     stream: Option<Stream>,
+    /// Time-stretch stage, created for the first rate other than 1.
+    stretcher: Option<Stretcher>,
+    /// The end block of the current epoch was queued.
+    finished: bool,
     /// Queue an empty end block (the track failed to open).
     pending_end: bool,
-    /// Block being filled.
+    /// Block rendered but not queued yet.
     block: Option<Block>,
 }
 
@@ -944,9 +1174,11 @@ impl Decoder {
             while let Ok(command) = self.commands.pop() {
                 self.handle(command);
             }
+            self.splice();
             if !self.fill() {
-                let decoding = self.stream.as_ref().is_some_and(|s| !s.finished);
-                std::thread::park_timeout(if decoding { DECODER_POLL } else { IDLE_POLL });
+                let busy =
+                    (self.stream.is_some() && !self.finished) || self.rate != self.target_rate;
+                std::thread::park_timeout(if busy { DECODER_POLL } else { IDLE_POLL });
             }
         }
     }
@@ -954,35 +1186,132 @@ impl Decoder {
     fn handle(&mut self, command: DecoderCommand) {
         match command {
             DecoderCommand::Load { generation, source } => {
-                self.generation = generation;
+                self.begin(generation);
                 self.stream = None;
                 self.pending_end = false;
                 match Stream::open(source, self.sample_rate, self.channels) {
                     Ok(stream) => {
                         let length = stream.length;
                         self.stream = Some(stream);
+                        // A fresh stream already stands at frame 0.
+                        self.restart(0, false);
                         self.event(MusicEvent::Loaded { generation, length });
                     }
                     Err(error) => {
+                        self.restart(0, false);
                         self.pending_end = true;
                         self.event(MusicEvent::Failed { generation, error });
                     }
                 }
             }
             DecoderCommand::Seek { generation, frame } => {
-                self.generation = generation;
-                match &mut self.stream {
-                    Some(stream) => stream.seek(frame),
-                    // Failed or unloaded: the new generation ends at once.
-                    None => self.pending_end = true,
+                self.begin(generation);
+                self.restart(frame, true);
+                // Failed or unloaded: the new generation ends at once.
+                if self.stream.is_none() {
+                    self.pending_end = true;
                 }
             }
             DecoderCommand::Unload { generation } => {
-                self.generation = generation;
+                self.begin(generation);
                 self.stream = None;
                 self.pending_end = false;
+                self.restart(0, false);
+            }
+            DecoderCommand::Rate(rate) => self.target_rate = rate,
+        }
+    }
+
+    /// Starts generation `generation` from its first block, at the asked rate.
+    fn begin(&mut self, generation: u32) {
+        self.generation = generation;
+        self.epoch = self.epoch.wrapping_add(1);
+        self.generation_epoch = self.epoch;
+        self.seq = 0;
+        self.splicing = false;
+        self.rate = self.target_rate;
+    }
+
+    /// Renders from track frame `frame` at `rate` on; `seek` moves the stream there.
+    fn restart(&mut self, frame: u64, seek: bool) {
+        self.finished = false;
+        self.next_start = frame as f64;
+        let Some(stream) = &mut self.stream else {
+            return;
+        };
+        if seek {
+            stream.seek(frame);
+        }
+        if self.rate != 1.0 {
+            let (channels, rate) = (self.channels, self.sample_rate);
+            self.stretcher
+                .get_or_insert_with(|| Stretcher::new(channels, rate))
+                .restart(frame, self.rate);
+        }
+    }
+
+    /// Splices in a rate change (ADR-0036): re-renders from a block a little ahead of
+    /// the callback, in a new epoch. Waits while an earlier change is on its way.
+    fn splice(&mut self) {
+        if self.rate == self.target_rate {
+            return;
+        }
+        if self.stream.is_none() {
+            // Nothing rendered at a rate: the next load or seek uses it.
+            self.rate = self.target_rate;
+            return;
+        }
+        if self.block.is_some() {
+            // A rendered block waits for room in the ring (never: it holds the pool).
+            return;
+        }
+        let cursor = Mark::load(&self.splices.cursor);
+        // Epochs grow across generations: an older one is a generation the callback
+        // has not left yet.
+        let entered = !is_older(cursor.epoch, self.generation_epoch);
+        if self.splicing {
+            if entered && cursor.epoch == self.epoch {
+                self.splicing = false;
+            } else {
+                return;
             }
         }
+        let seq = if !entered {
+            // The callback has not reached this generation: replace all of it.
+            0
+        } else if cursor.epoch == self.epoch {
+            cursor.seq + self.splice_lead
+        } else {
+            return;
+        };
+        if seq >= self.seq && self.finished {
+            // Everything to the end is queued at the old rate and plays before it.
+            self.rate = self.target_rate;
+            return;
+        }
+        if self.free.is_empty() {
+            // The first new block could not be rendered before announcing the change;
+            // try again once the callback returns blocks.
+            return;
+        }
+        let seq = seq.min(self.seq);
+        let start = if seq == self.seq {
+            self.next_start
+        } else {
+            self.starts[seq as usize % self.starts.len()]
+        };
+        self.epoch = self.epoch.wrapping_add(1);
+        self.seq = seq;
+        self.rate = self.target_rate;
+        self.splicing = true;
+        // From a whole frame at or after the replaced block: the track moves on by
+        // under a frame where the callback joins the new blocks.
+        self.restart(start.ceil() as u64, true);
+        // Render the first new block before announcing the change: until then the
+        // callback keeps playing the old blocks rather than running dry.
+        self.render();
+        Mark::new(self.epoch, self.generation, seq).store(&self.splices.splice);
+        self.queue();
     }
 
     fn event(&mut self, event: MusicEvent) {
@@ -993,51 +1322,228 @@ impl Decoder {
 
     /// Fills and queues one block; false when there is nothing to do or no free block.
     fn fill(&mut self) -> bool {
-        let active = self.stream.as_ref().is_some_and(|s| !s.finished) || self.pending_end;
-        if !active {
+        (self.block.is_some() || self.render()) && self.queue()
+    }
+
+    /// Renders the next block into `block`; false when there is nothing to do or no
+    /// free block.
+    fn render(&mut self) -> bool {
+        let active = (self.stream.is_some() && !self.finished) || self.pending_end;
+        if !active || self.block.is_some() {
             return false;
         }
-        let Some(mut block) = self.block.take().or_else(|| self.free.pop().ok()) else {
+        if !self.splicing && self.free.slots() <= SPLICE_RESERVE {
+            // The reserve is for rate changes.
+            return false;
+        }
+        let Ok(mut block) = self.free.pop() else {
             return false;
         };
-        let ch = usize::from(self.channels);
         block.generation = self.generation;
+        block.epoch = self.epoch;
+        block.seq = self.seq;
         block.frames = 0;
+        block.start = self.next_start;
+        block.rate = self.rate;
         block.end = false;
         match &mut self.stream {
             Some(stream) if !self.pending_end => {
-                block.start = stream.next_frame;
-                let capacity = block.data.len() / ch;
-                while block.frames < capacity {
-                    match stream.read(&mut block.data[block.frames * ch..], &self.stats) {
-                        Ok(0) => {
-                            block.end = true;
-                            break;
-                        }
-                        Ok(n) => block.frames += n,
-                        Err(error) => {
-                            block.end = true;
-                            stream.finished = true;
-                            let generation = self.generation;
-                            self.event(MusicEvent::Failed { generation, error });
-                            break;
-                        }
+                let result = match &mut self.stretcher {
+                    Some(stretcher) if self.rate != 1.0 => {
+                        stretcher.fill(stream, &mut block, &self.stats)
                     }
+                    _ => fill_plain(stream, &mut block, usize::from(self.channels), &self.stats),
+                };
+                if let Err(error) = result {
+                    block.end = true;
+                    stream.finished = true;
+                    let generation = self.generation;
+                    self.event(MusicEvent::Failed { generation, error });
                 }
             }
             _ => {
-                block.start = 0;
                 block.end = true;
                 self.pending_end = false;
             }
         }
+        self.block = Some(block);
+        true
+    }
+
+    /// Queues the rendered block; false if there is none or the ring is full.
+    fn queue(&mut self) -> bool {
+        let Some(block) = self.block.take() else {
+            return false;
+        };
+        let (start, frames, rate, end) = (block.start, block.frames, block.rate, block.end);
         if let Err(rtrb::PushError::Full(block)) = self.filled.push(block) {
             // Unreachable: the ring holds the whole pool. Keep it for the next round.
             self.block = Some(block);
             return false;
         }
+        self.starts[self.seq as usize % self.starts.len()] = start;
+        self.seq = (self.seq + 1) & SEQ_MASK;
+        self.next_start = start + frames as f64 * rate;
+        self.finished = end;
         self.stats.decoded_blocks.fetch_add(1, Ordering::Relaxed);
         true
+    }
+}
+
+/// Fills `block` with the stream's audio as it is (rate 1).
+fn fill_plain(
+    stream: &mut Stream,
+    block: &mut Block,
+    ch: usize,
+    stats: &MusicStats,
+) -> Result<(), MusicError> {
+    block.start = stream.next_frame as f64;
+    let capacity = block.data.len() / ch;
+    while block.frames < capacity {
+        match stream.read(&mut block.data[block.frames * ch..], stats)? {
+            0 => {
+                block.end = true;
+                break;
+            }
+            n => block.frames += n,
+        }
+    }
+    Ok(())
+}
+
+/// Pitch-preserving time-stretch of the stream (rates other than 1).
+///
+/// After a restart at track frame `origin`, the stretch is primed with its input
+/// latency of audio from `origin` and its output latency is dropped: kept output frame
+/// `k` is then centred on track frame `origin + k · rate`. Input is fed cumulatively
+/// (`round(rendered · rate)` frames for `rendered` output frames) so no rounding
+/// builds up; past the end it is silence, up to `ceil(remaining / rate)` output frames.
+struct Stretcher {
+    stretch: Stretch,
+    channels: usize,
+    rate: f64,
+    /// Track frame of the restart.
+    origin: f64,
+    /// The input latency has been fed.
+    primed: bool,
+    /// Output frames still to drop: the output latency.
+    drop: usize,
+    /// Output frames rendered since the restart, dropped ones included.
+    rendered: u64,
+    /// Output frames kept since the restart.
+    kept: u64,
+    /// Track frames read from `origin` on.
+    read: u64,
+    /// The stream ended after `read` frames.
+    ended: bool,
+    input: Vec<f32>,
+    output: Vec<f32>,
+}
+
+impl Stretcher {
+    fn new(channels: u16, sample_rate: u32) -> Self {
+        Self {
+            stretch: Stretch::preset_default(u32::from(channels), sample_rate),
+            channels: usize::from(channels),
+            rate: 1.0,
+            origin: 0.0,
+            primed: false,
+            drop: 0,
+            rendered: 0,
+            kept: 0,
+            read: 0,
+            ended: false,
+            input: Vec::new(),
+            output: Vec::new(),
+        }
+    }
+
+    /// Starts over at track frame `origin` (where the stream now stands) at `rate`.
+    fn restart(&mut self, origin: u64, rate: f64) {
+        self.stretch.reset();
+        self.rate = rate;
+        self.origin = origin as f64;
+        self.primed = false;
+        self.drop = self.stretch.output_latency();
+        self.rendered = 0;
+        self.kept = 0;
+        self.read = 0;
+        self.ended = false;
+    }
+
+    /// Output frames from the restart to the end of the track, once it is known.
+    fn total(&self) -> Option<u64> {
+        self.ended
+            .then(|| (self.read as f64 / self.rate).ceil() as u64)
+    }
+
+    /// Reads `frames` input frames into `input`, silence after the end.
+    fn take(
+        &mut self,
+        stream: &mut Stream,
+        frames: usize,
+        stats: &MusicStats,
+    ) -> Result<(), MusicError> {
+        let ch = self.channels;
+        self.input.clear();
+        self.input.resize(frames * ch, 0.0);
+        let mut got = 0;
+        while !self.ended && got < frames {
+            match stream.read(&mut self.input[got * ch..], stats)? {
+                0 => self.ended = true,
+                n => got += n,
+            }
+        }
+        self.read += got as u64;
+        Ok(())
+    }
+
+    fn fill(
+        &mut self,
+        stream: &mut Stream,
+        block: &mut Block,
+        stats: &MusicStats,
+    ) -> Result<(), MusicError> {
+        let ch = self.channels;
+        block.start = self.origin + self.kept as f64 * self.rate;
+        if !self.primed {
+            self.take(stream, self.stretch.input_latency(), stats)?;
+            self.stretch.seek(&self.input, self.rate);
+            self.primed = true;
+        }
+        let capacity = block.data.len() / ch;
+        while block.frames < capacity {
+            let left = self.total().map(|t| t.saturating_sub(self.kept));
+            if left == Some(0) {
+                block.end = true;
+                break;
+            }
+            let mut want = (capacity - block.frames + self.drop).min(STRETCH_CHUNK);
+            if let Some(left) = left {
+                want = want.min(self.drop.saturating_add(left as usize));
+            }
+            let fed = (self.rendered as f64 * self.rate).round() as u64;
+            let rendered = self.rendered + want as u64;
+            let feed = (rendered as f64 * self.rate).round() as u64 - fed;
+            self.take(stream, feed as usize, stats)?;
+            self.output.clear();
+            self.output.resize(want * ch, 0.0);
+            self.stretch.process(&self.input, &mut self.output);
+            self.rendered = rendered;
+            let dropped = self.drop.min(want);
+            self.drop -= dropped;
+            let mut keep = want - dropped;
+            if let Some(total) = self.total() {
+                // The end may have come up in this read.
+                keep = keep.min(total.saturating_sub(self.kept) as usize);
+            }
+            let at = block.frames * ch;
+            block.data[at..at + keep * ch]
+                .copy_from_slice(&self.output[dropped * ch..(dropped + keep) * ch]);
+            block.frames += keep;
+            self.kept += keep as u64;
+        }
+        Ok(())
     }
 }
 
@@ -1319,6 +1825,12 @@ impl Stream {
             }
             let keep = (self.output.len() / ch).min(room as usize);
             self.output.truncate(keep * ch);
+            if keep as u64 == room {
+                // Nothing more may follow: without this, a length cap that bites
+                // before `emitted` reaches the computed length would resample silence
+                // forever.
+                self.finished = true;
+            }
         }
         self.emitted += (self.output.len() / ch) as u64;
         Ok(())
@@ -1470,6 +1982,7 @@ mod tests {
                 while let Ok(command) = self.decoder.commands.pop() {
                     self.decoder.handle(command);
                 }
+                self.decoder.splice();
                 if !self.decoder.fill() {
                     break;
                 }
@@ -1489,7 +2002,11 @@ mod tests {
             self.source.process(&mut out, &info);
             self.frame += frames as u64;
             for frame in out.as_chunks::<2>().0 {
-                assert_eq!(frame[0], frame[1], "mono must reach both channels");
+                // The time-stretch processes channels jointly: not bit-identical.
+                assert!(
+                    (frame[0] - frame[1]).abs() <= 1e-3,
+                    "mono must reach both channels: {frame:?}"
+                );
             }
             out.iter().step_by(2).copied().collect()
         }
@@ -1528,7 +2045,7 @@ mod tests {
                 rig.snapshot().anchor.track_frame,
                 rig.snapshot().anchor.speed
             ),
-            (0, 0.0)
+            (0.0, 0.0)
         );
         rig.player.play().unwrap();
         let out = rig.run(1_000);
@@ -1539,7 +2056,7 @@ mod tests {
         let s = rig.snapshot();
         assert_eq!(
             (s.anchor.device_frame, s.anchor.track_frame, s.anchor.speed),
-            (64, 0, 1.0)
+            (64, 0.0, 1.0)
         );
         assert_eq!(s.track_frame_at(64.0 + 1_000.0), 1_000.0);
         assert!(!s.ended);
@@ -1559,7 +2076,7 @@ mod tests {
         let out = rig.run(512);
         let s = rig.snapshot();
         assert_eq!(s.generation, rig.player.generation());
-        assert_eq!((s.anchor.track_frame, s.anchor.speed), (50_000, 0.0));
+        assert_eq!((s.anchor.track_frame, s.anchor.speed), (50_000.0, 0.0));
         assert!(rig.source.stats.discarded_blocks.load(Ordering::Relaxed) > 0);
         // The tail continues the old audio from frame 1024, fading out.
         for (f, &v) in out[..FADE].iter().enumerate() {
@@ -1578,7 +2095,7 @@ mod tests {
         let s = rig.snapshot();
         assert_eq!(
             (s.anchor.device_frame, s.anchor.track_frame, s.anchor.speed),
-            (1_536, 50_000, 1.0)
+            (1_536, 50_000.0, 1.0)
         );
     }
 
@@ -1619,7 +2136,7 @@ mod tests {
         let s = rig.snapshot();
         assert_eq!(
             (s.anchor.device_frame, s.anchor.track_frame, s.anchor.speed),
-            (512, 512, 0.0)
+            (512, 512.0, 0.0)
         );
         for (f, &v) in out[..FADE].iter().enumerate() {
             assert_eq!(v, ramp(512 + f) * (1.0 - f as f32 / FADE as f32));
@@ -1630,7 +2147,7 @@ mod tests {
         for (f, &v) in out.iter().enumerate() {
             assert_eq!(v, ramp(512 + f) * env(f), "frame {f}");
         }
-        assert_eq!(rig.snapshot().anchor.track_frame, 512);
+        assert_eq!(rig.snapshot().anchor.track_frame, 512.0);
     }
 
     #[test]
@@ -1651,7 +2168,7 @@ mod tests {
         let s = rig.snapshot();
         assert_eq!(
             (s.anchor.device_frame, s.anchor.track_frame, s.anchor.speed),
-            (700, 0, 1.0)
+            (700, 0.0, 1.0)
         );
         assert_eq!(s.track_frame_at(1_000.0), 300.0);
         assert_eq!(s.track_frame_at(600.0), 0.0);
@@ -1669,7 +2186,7 @@ mod tests {
         let s = rig.snapshot();
         assert_eq!(
             (s.anchor.device_frame, s.anchor.track_frame, s.anchor.speed),
-            (512, 0, 1.0)
+            (512, 0.0, 1.0)
         );
     }
 
@@ -1724,7 +2241,7 @@ mod tests {
         let s = rig.snapshot();
         assert_eq!(
             (s.anchor.device_frame, s.anchor.track_frame, s.anchor.speed),
-            (512, 512, 0.0)
+            (512, 512.0, 0.0)
         );
         // The audio comes back where it stopped, fading in.
         rig.pump();
@@ -1747,7 +2264,7 @@ mod tests {
         let s = rig.snapshot();
         assert_eq!(
             (s.anchor.device_frame, s.anchor.track_frame, s.anchor.speed),
-            (1_000, 1_000, 0.0)
+            (1_000, 1_000.0, 0.0)
         );
         assert!(s.ended);
         assert_eq!(rig.source.stats.underruns.load(Ordering::Relaxed), 0);
@@ -1758,7 +2275,7 @@ mod tests {
         let s = rig.snapshot();
         assert_eq!(
             (s.anchor.track_frame, s.anchor.speed, s.ended),
-            (1_000, 0.0, true)
+            (1_000.0, 0.0, true)
         );
 
         // Seeking back plays again.
@@ -1780,7 +2297,7 @@ mod tests {
         let s = rig.snapshot();
         assert_eq!(
             (s.anchor.device_frame, s.anchor.track_frame, s.anchor.speed),
-            (1_024, 1_024, 0.0)
+            (1_024, 1_024.0, 0.0)
         );
         assert!(s.ended);
     }
@@ -1859,7 +2376,7 @@ mod tests {
         }
         let s = rig.snapshot();
         assert!(s.ended);
-        assert_eq!(s.anchor.track_frame, 3 * u64::from(RATE));
+        assert_eq!(s.anchor.track_frame, 3.0 * f64::from(RATE));
     }
 
     #[test]
@@ -1970,6 +2487,10 @@ mod tests {
                 queue_capacity: 1,
                 ..Default::default()
             },
+            MusicConfig {
+                queue_capacity: 256,
+                ..Default::default()
+            },
         ] {
             assert!(matches!(parts(&config), Err(AudioError::InvalidConfig(_))));
         }
@@ -2026,7 +2547,7 @@ mod tests {
         rig.pump();
         rig.run(64);
         let s = rig.snapshot();
-        assert_eq!((s.anchor.track_frame, s.ended), (1_000, true));
+        assert_eq!((s.anchor.track_frame, s.ended), (1_000.0, true));
     }
 
     #[test]
@@ -2080,7 +2601,7 @@ mod tests {
             );
         }
         let s = rig.snapshot();
-        assert_eq!((s.anchor.track_frame, s.anchor.speed), (7_000, 0.0));
+        assert_eq!((s.anchor.track_frame, s.anchor.speed), (7_000.0, 0.0));
     }
 
     #[test]
@@ -2093,7 +2614,7 @@ mod tests {
         rig.pump();
         rig.run(64);
         let s = rig.snapshot();
-        assert_eq!((s.anchor.track_frame, s.ended), (1_000, true));
+        assert_eq!((s.anchor.track_frame, s.ended), (1_000.0, true));
     }
 
     #[test]
@@ -2114,7 +2635,7 @@ mod tests {
             },
         );
         assert_eq!(out[2 * 299], ramp(299));
-        assert_eq!(rig.source.track_frame, 300);
+        assert_eq!(rig.source.track_frame, 300.0);
     }
 
     /// Seeks a 440 Hz sine of `src_rate` Hz and returns, per target, the lag (output
@@ -2179,5 +2700,371 @@ mod tests {
         for (target, lag) in targets.iter().zip(lags) {
             assert!(lag.abs() <= 0.55, "{target}: lag {lag}");
         }
+    }
+
+    /// Mono sine of `period` frames.
+    fn sine(frames: usize, period: f32) -> Vec<f32> {
+        (0..frames)
+            .map(|f| (f as f32 / period * std::f32::consts::TAU).sin() * 0.5)
+            .collect()
+    }
+
+    /// Silence with a decaying 2 kHz burst starting at `at`.
+    fn burst_track(frames: usize, at: usize) -> TrackSource {
+        let mut data = vec![0.0; frames];
+        for (i, v) in data[at..at + 480].iter_mut().enumerate() {
+            let t = i as f32 / RATE as f32;
+            *v = (t * 2_000.0 * std::f32::consts::TAU).sin() * (1.0 - i as f32 / 480.0);
+        }
+        wav(RATE, &data)
+    }
+
+    /// Plays the loaded track from stream frame 0 in buffers of 256 frames until it
+    /// ends; returns the left channel and the snapshot after each buffer.
+    fn play_out(rig: &mut Rig) -> (Vec<f32>, Vec<MusicSnapshot>) {
+        rig.player.play().unwrap();
+        let (mut out, mut snaps) = (Vec::new(), Vec::new());
+        while !rig.snapshot_or_none().is_some_and(|s| s.ended) {
+            rig.pump();
+            out.extend(rig.run(256));
+            snaps.push(rig.snapshot());
+            assert!(out.len() < 10 * RATE as usize, "track does not end");
+        }
+        (out, snaps)
+    }
+
+    impl Rig {
+        fn snapshot_or_none(&self) -> Option<MusicSnapshot> {
+            self.player.position().read()
+        }
+    }
+
+    /// Track frame heard at the loudest output frame of a burst track.
+    fn burst_position(rig: &mut Rig) -> f64 {
+        let (out, _) = play_out(rig);
+        let peak = (0..out.len())
+            .max_by(|&a, &b| out[a].abs().total_cmp(&out[b].abs()))
+            .unwrap();
+        // The whole track plays in one stretch: the anchor before the end holds it.
+        let s = rig.snapshot();
+        s.previous.at(peak as f64)
+    }
+
+    #[test]
+    fn stretched_track_keeps_pitch_and_ends_after_length_over_rate() {
+        for rate in [0.75, 1.5, 2.0] {
+            let mut rig = Rig::new(1_024, 8);
+            rig.player.set_rate(rate).unwrap();
+            rig.player.load(wav(RATE, &sine(96_000, 100.0))).unwrap();
+            let (out, snaps) = play_out(&mut rig);
+            let end = rig.snapshot();
+            assert_eq!(end.anchor.track_frame, 96_000.0, "rate {rate}");
+            let played = (96_000.0 / rate).ceil() as u64;
+            assert_eq!(end.anchor.device_frame, played, "rate {rate}");
+            assert!(
+                snaps
+                    .iter()
+                    .all(|s| s.anchor.speed == rate || s.anchor.speed == 0.0)
+            );
+            // Pitch: rising zero crossings 100 frames apart, as in the source.
+            let mid = &out[out.len() / 4..out.len() / 2];
+            let rising: Vec<usize> = (1..mid.len())
+                .filter(|&i| mid[i - 1] < 0.0 && mid[i] >= 0.0)
+                .collect();
+            let period = (rising[rising.len() - 1] - rising[0]) as f64 / (rising.len() - 1) as f64;
+            assert!((period - 100.0).abs() < 0.5, "rate {rate}: period {period}");
+            assert_eq!(rig.player.stats().underruns.load(Ordering::Relaxed), 0);
+        }
+    }
+
+    #[test]
+    fn stretched_audio_lines_up_with_the_track_position() {
+        for rate in [0.75, 1.5] {
+            let mut rig = Rig::new(1_024, 8);
+            rig.player.set_rate(rate).unwrap();
+            rig.player.load(burst_track(96_000, 60_000)).unwrap();
+            let at = burst_position(&mut rig);
+            // The burst decays from its start: its peak is heard within 2 ms of it.
+            assert!(
+                (60_000.0..60_096.0).contains(&at),
+                "rate {rate}: heard at {at}"
+            );
+        }
+    }
+
+    #[test]
+    fn seek_while_stretched_lines_up() {
+        let mut rig = Rig::new(1_024, 8);
+        rig.player.set_rate(1.5).unwrap();
+        rig.player.load(burst_track(96_000, 60_000)).unwrap();
+        rig.player.seek(41_001).unwrap();
+        let (out, _) = play_out(&mut rig);
+        let s = rig.snapshot();
+        assert_eq!(s.previous.track_frame, 41_001.0);
+        let peak = (0..out.len())
+            .max_by(|&a, &b| out[a].abs().total_cmp(&out[b].abs()))
+            .unwrap();
+        let at = s.previous.at(peak as f64);
+        assert!((60_000.0..60_096.0).contains(&at), "heard at {at}");
+    }
+
+    /// Plays `buffers` buffers of 256 frames, checking that the written track position
+    /// moves on without gaps or steps back; returns the speeds seen.
+    fn play_continuously(rig: &mut Rig, buffers: usize, last: &mut f64) -> Vec<f64> {
+        let mut speeds = Vec::new();
+        for _ in 0..buffers {
+            rig.pump();
+            let frame = rig.frame as f64;
+            rig.run(256);
+            let s = rig.snapshot();
+            let at = s.track_frame_at(frame);
+            assert!(
+                at >= *last - FRAME_EPSILON && at <= *last + 1.0,
+                "track jumps from {last} to {at}"
+            );
+            *last = s.track_frame_at(frame + 256.0);
+            speeds.push(s.anchor.speed);
+        }
+        speeds
+    }
+
+    #[test]
+    fn rate_changes_while_playing_join_without_a_gap() {
+        let mut rig = Rig::new(1_024, 8);
+        rig.player.load(ramp_track(400_000)).unwrap();
+        rig.pump();
+        rig.player.play().unwrap();
+        let mut last = 0.0;
+        play_continuously(&mut rig, 20, &mut last);
+        rig.player.set_rate(1.5).unwrap();
+        let speeds = play_continuously(&mut rig, 30, &mut last);
+        // Heard from the block after next: within three blocks of 4 buffers.
+        let switched = speeds.iter().position(|&s| s == 1.5).unwrap();
+        assert!(switched <= 12, "rate 1.5 after {switched} buffers");
+        assert!(speeds[switched..].iter().all(|&s| s == 1.5));
+        rig.player.set_rate(1.0).unwrap();
+        let speeds = play_continuously(&mut rig, 30, &mut last);
+        assert_eq!(speeds.last(), Some(&1.0));
+        // Back at rate 1 the track plays exactly again.
+        let frame = rig.frame as f64;
+        let out = rig.run(256);
+        let start = rig.snapshot().track_frame_at(frame);
+        assert_eq!(start.fract(), 0.0);
+        for (i, v) in out.iter().enumerate() {
+            assert_eq!(*v, ramp(start as usize + i));
+        }
+        let stats = rig.player.stats();
+        assert_eq!(stats.underruns.load(Ordering::Relaxed), 0);
+        assert_eq!(stats.late_splices.load(Ordering::Relaxed), 0);
+        assert_eq!(stats.leaked_blocks.load(Ordering::Relaxed), 0);
+    }
+
+    #[test]
+    fn rate_set_before_playing_replaces_the_whole_generation() {
+        let mut rig = Rig::new(1_024, 8);
+        rig.player.load(ramp_track(48_000)).unwrap();
+        rig.pump();
+        rig.player.set_rate(2.0).unwrap();
+        rig.player.play().unwrap();
+        let mut last = 0.0;
+        let speeds = play_continuously(&mut rig, 4, &mut last);
+        assert!(speeds.iter().all(|&s| s == 2.0), "{speeds:?}");
+    }
+
+    #[test]
+    fn rate_changes_wait_for_the_previous_one() {
+        let mut rig = Rig::new(1_024, 8);
+        rig.player.load(ramp_track(400_000)).unwrap();
+        rig.pump();
+        rig.player.play().unwrap();
+        let mut last = 0.0;
+        play_continuously(&mut rig, 4, &mut last);
+        rig.player.set_rate(1.5).unwrap();
+        rig.pump();
+        rig.player.set_rate(0.75).unwrap();
+        rig.pump();
+        assert_eq!(rig.decoder.rate, 1.5, "second change waits");
+        let speeds = play_continuously(&mut rig, 40, &mut last);
+        assert!(speeds.contains(&1.5));
+        assert_eq!(speeds.last(), Some(&0.75));
+        assert_eq!(rig.player.stats().late_splices.load(Ordering::Relaxed), 0);
+    }
+
+    #[test]
+    fn late_rate_change_skips_ahead_without_stepping_back() {
+        let mut rig = Rig::new(1_024, 8);
+        rig.player.load(ramp_track(400_000)).unwrap();
+        rig.pump();
+        rig.player.play().unwrap();
+        let mut last = 0.0;
+        play_continuously(&mut rig, 20, &mut last);
+        // The decoder reads a cursor three blocks old: it splices at a block the
+        // callback has already started.
+        let mut stale = Mark::load(&rig.source.splices.cursor);
+        stale.seq -= 3;
+        stale.store(&rig.source.splices.cursor);
+        rig.player.set_rate(1.5).unwrap();
+        rig.pump();
+        let speeds = play_continuously(&mut rig, 30, &mut last);
+        assert_eq!(speeds.last(), Some(&1.5));
+        assert_eq!(rig.player.stats().late_splices.load(Ordering::Relaxed), 1);
+    }
+
+    #[test]
+    fn rejects_rates_out_of_range() {
+        let mut rig = Rig::new(256, 4);
+        for bad in [0.0, 0.049, 4.01, f64::NAN, f64::INFINITY] {
+            assert_eq!(rig.player.set_rate(bad), Err(PlayError::InvalidRate));
+        }
+        assert_eq!(rig.player.rate(), 1.0);
+        rig.player.set_rate(MAX_MUSIC_RATE).unwrap();
+        assert_eq!(rig.player.rate(), MAX_MUSIC_RATE);
+    }
+
+    /// Seeks and restarts near the end of a resampled track used to leave the stream
+    /// resampling silence forever once the length cap bit (a hang, not a failure).
+    #[test]
+    fn seeks_and_rate_changes_on_a_vorbis_track_keep_decoding() {
+        let path = format!(
+            "{}/tests/data/tone-vorbis-stereo.ogg",
+            env!("CARGO_MANIFEST_DIR")
+        );
+        let mut rig = Rig::new(256, 4);
+        rig.player.load(TrackSource::File(path.into())).unwrap();
+        rig.pump();
+        for round in 0..200u64 {
+            match round % 6 {
+                0 => rig.player.play().unwrap(),
+                1 => rig.player.seek(round * 37 % 4_000).unwrap(),
+                3 => rig.player.pause().unwrap(),
+                4 => rig
+                    .player
+                    .set_rate(if round % 12 == 4 { 1.5 } else { 1.0 })
+                    .unwrap(),
+                _ => {}
+            }
+            rig.pump();
+            rig.run(1_217);
+        }
+    }
+
+    #[test]
+    fn the_first_new_block_is_ready_when_a_rate_change_is_announced() {
+        let mut rig = Rig::new(1_024, 8);
+        rig.player.load(ramp_track(400_000)).unwrap();
+        rig.pump();
+        rig.player.play().unwrap();
+        let mut last = 0.0;
+        play_continuously(&mut rig, 10, &mut last);
+        rig.player.set_rate(1.5).unwrap();
+        // The decoder splices but fills nothing more: the callback plays on through
+        // the lead blocks into the first new one without running dry.
+        while let Ok(command) = rig.decoder.commands.pop() {
+            rig.decoder.handle(command);
+        }
+        rig.decoder.splice();
+        let mut speeds = Vec::new();
+        for _ in 0..8 {
+            let frame = rig.frame as f64;
+            rig.run(256);
+            let s = rig.snapshot();
+            assert!(s.track_frame_at(frame) >= last - FRAME_EPSILON);
+            last = s.track_frame_at(frame + 256.0);
+            speeds.push(s.anchor.speed);
+        }
+        assert_eq!(speeds.last(), Some(&1.5), "{speeds:?}");
+        assert_eq!(rig.player.stats().underruns.load(Ordering::Relaxed), 0);
+    }
+
+    #[test]
+    fn late_rate_change_at_the_very_end_still_ends() {
+        // 48 full blocks and an empty end block: the callback stands at the end when
+        // the replaced end block is dropped, and every new block lies behind it.
+        let mut rig = Rig::new(1_024, 8);
+        rig.player.load(ramp_track(48 * 1_024)).unwrap();
+        rig.pump();
+        rig.player.play().unwrap();
+        while rig.source.track_frame < 47.0 * 1_024.0 {
+            rig.pump();
+            rig.run(256);
+        }
+        let mut stale = Mark::load(&rig.source.splices.cursor);
+        stale.seq -= 3;
+        stale.store(&rig.source.splices.cursor);
+        rig.player.set_rate(1.5).unwrap();
+        rig.pump();
+        for _ in 0..40 {
+            rig.pump();
+            rig.run(256);
+        }
+        let s = rig.snapshot();
+        assert!(s.ended);
+        assert!(s.anchor.track_frame >= 48.0 * 1_024.0 - FRAME_EPSILON);
+        assert_eq!(rig.player.stats().late_splices.load(Ordering::Relaxed), 1);
+    }
+
+    #[test]
+    fn rate_change_while_paused_is_heard_after_resuming() {
+        let mut rig = Rig::new(1_024, 8);
+        rig.player.load(ramp_track(400_000)).unwrap();
+        rig.pump();
+        rig.player.play().unwrap();
+        let mut last = 0.0;
+        play_continuously(&mut rig, 10, &mut last);
+        rig.player.pause().unwrap();
+        play_continuously(&mut rig, 4, &mut last);
+        rig.player.set_rate(0.75).unwrap();
+        play_continuously(&mut rig, 4, &mut last);
+        rig.player.play().unwrap();
+        let speeds = play_continuously(&mut rig, 20, &mut last);
+        assert_eq!(speeds.last(), Some(&0.75));
+        let stats = rig.player.stats();
+        assert_eq!(stats.underruns.load(Ordering::Relaxed), 0);
+        assert_eq!(stats.late_splices.load(Ordering::Relaxed), 0);
+    }
+
+    #[test]
+    fn seek_during_a_rate_change_plays_at_the_new_rate() {
+        let mut rig = Rig::new(1_024, 8);
+        rig.player.load(ramp_track(400_000)).unwrap();
+        rig.pump();
+        rig.player.play().unwrap();
+        let mut last = 0.0;
+        play_continuously(&mut rig, 10, &mut last);
+        rig.player.set_rate(1.5).unwrap();
+        rig.pump();
+        rig.player.seek(200_000).unwrap();
+        rig.pump();
+        assert!(!rig.decoder.splicing);
+        rig.run(256);
+        let mut last = rig.snapshot().track_frame_at(rig.frame as f64);
+        let speeds = play_continuously(&mut rig, 20, &mut last);
+        assert!(speeds.iter().all(|&s| s == 1.5), "{speeds:?}");
+        assert!(last > 200_000.0);
+        assert_eq!(rig.player.stats().underruns.load(Ordering::Relaxed), 0);
+    }
+
+    #[test]
+    fn rate_change_waits_for_a_free_block_to_render_into() {
+        let mut rig = Rig::new(1_024, 8);
+        rig.player.load(ramp_track(400_000)).unwrap();
+        rig.pump();
+        rig.player.play().unwrap();
+        let mut last = 0.0;
+        play_continuously(&mut rig, 10, &mut last);
+        let mut taken = Vec::new();
+        while let Ok(block) = rig.decoder.free.pop() {
+            taken.push(block);
+        }
+        rig.player.set_rate(1.5).unwrap();
+        rig.pump();
+        assert_eq!(rig.decoder.rate, 1.0, "no block to render the change into");
+        assert_eq!(Mark::load(&rig.source.splices.splice).epoch, 0);
+        for block in taken {
+            assert!(rig.source.free.push(block).is_ok());
+        }
+        let speeds = play_continuously(&mut rig, 30, &mut last);
+        assert_eq!(speeds.last(), Some(&1.5));
+        assert_eq!(rig.player.stats().underruns.load(Ordering::Relaxed), 0);
     }
 }

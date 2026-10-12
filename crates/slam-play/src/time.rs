@@ -57,6 +57,9 @@ mod tests {
         fn seek(&mut self, _: u64) -> Result<(), PlayError> {
             Ok(())
         }
+        fn set_rate(&mut self, _: f64) -> Result<(), PlayError> {
+            Ok(())
+        }
         fn generation(&self) -> u32 {
             0
         }
@@ -66,7 +69,7 @@ mod tests {
     fn clock(rate: f64, speed: f64) -> ClockSnapshot {
         let anchor = MusicAnchor {
             device_frame: 0,
-            track_frame: 0,
+            track_frame: 0.0,
             speed,
         };
         let music = MusicSnapshot {

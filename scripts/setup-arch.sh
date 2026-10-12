@@ -12,6 +12,7 @@ CHECK_ONLY=0
 REQUIRED=(
   base-devel git git-lfs github-cli rustup clang cmake pkgconf just
   sdl3 pipewire alsa-lib mesa libglvnd zip unzip
+  mingw-w64-gcc
 )
 # Нужны позже (M0+ Vulkan, M4 lazer-export, профилировщик) — не критично
 OPTIONAL=(vulkan-icd-loader vulkan-headers dotnet-sdk tracy)
