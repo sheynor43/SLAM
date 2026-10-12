@@ -49,6 +49,10 @@ crc32fast = "1.5.0"
 # Started explicitly, records only while a viewer is connected, local viewer only.
 tracy-client = { version = "0.19.0", default-features = false, features = ["enable", "manual-lifetime", "ondemand", "only-localhost"] }
 tracing = "0.1.44"
+# Fluent localization (ADR-0011); the concurrent bundle keeps the localizer Send + Sync.
+fluent-bundle = "0.16.0"
+fluent-syntax = "0.12.0"
+unic-langid = "0.9.6"
 tracing-subscriber = { version = "0.3.23", default-features = false, features = ["fmt", "ansi", "env-filter", "std"] }
 # COM interfaces for the WASAPI backend (windows-sys has no COM wrappers).
 windows = { version = "0.62.2", features = ["Win32_Devices_FunctionDiscovery", "Win32_Foundation", "Win32_Media_Audio", "Win32_Media_KernelStreaming", "Win32_Media_Multimedia", "Win32_Security", "Win32_System_Com", "Win32_System_Com_StructuredStorage", "Win32_System_Performance", "Win32_System_Threading", "Win32_System_Variant", "Win32_UI_Shell_PropertiesSystem"] }
