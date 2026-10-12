@@ -14,7 +14,7 @@
 ## Лицензия
 Код распространяется по лицензии MIT или Apache-2.0 на выбор.
 
-Дефолтный скин в `assets/default-skin/` взят из [osu-resources](https://github.com/ppy/osu-resources) и распространяется по лицензии CC-BY-NC 4.0 — его нельзя использовать в коммерческих целях. Коммерческим форкам нужно заменить скин.
+Дефолтный скин в `assets/default-skin/` взят из [osu-resources](https://github.com/ppy/osu-resources) и распространяется по лицензии CC-BY-NC 4.0, а не MIT/Apache-2.0, — его нельзя использовать в коммерческих целях. Коммерческим форкам нужно заменить скин. Атрибуция — в [`assets/default-skin/README.md`](assets/default-skin/README.md).
 
 Часть логики геймплея портирована из [osu!lazer](https://github.com/ppy/osu) (MIT), см. `THIRD_PARTY_NOTICES`.
 

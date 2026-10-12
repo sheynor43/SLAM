@@ -76,3 +76,24 @@ AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
 LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
 OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
+
+################################################################################
+Assets
+################################################################################
+
+SLAM also distributes the following third-party assets. They are NOT covered
+by the MIT / Apache-2.0 licence of the SLAM source code.
+
+================================================================================
+osu-resources (https://github.com/ppy/osu-resources), tag 2026.918.0
+================================================================================
+
+Files: assets/default-skin/ (classic osu! skin from
+osu.Game.Resources/Skins/Legacy, osu!standard files only, unmodified).
+
+Copyright (c) ppy Pty Ltd <contact@ppy.sh>.
+
+Licensed under Creative Commons Attribution-NonCommercial 4.0 International
+(CC-BY-NC 4.0): https://creativecommons.org/licenses/by-nc/4.0/legalcode
+The full licence text is in assets/default-skin/LICENCE.md. Commercial use is
+not permitted; a commercial fork must replace the default skin.
