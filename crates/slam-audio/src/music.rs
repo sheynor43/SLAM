@@ -243,6 +243,8 @@ struct Block {
 #[derive(Debug, Clone, Copy)]
 enum AudioCommand {
     Play,
+    /// Play from this stream frame on; at once if it has passed.
+    PlayAt(u64),
     Pause,
     Volume(f32),
     /// Drop audio of older generations and stand at `frame` until blocks of
@@ -350,6 +352,7 @@ fn parts(config: &MusicConfig) -> Result<(MusicSource, MusicPlayer, Decoder), Au
         generation: 0,
         track_frame: 0,
         playing: false,
+        start_at: None,
         ended: false,
         primed: false,
         env: 0.0,
@@ -412,6 +415,8 @@ pub struct MusicSource {
     /// Track frame of the next frame to play.
     track_frame: u64,
     playing: bool,
+    /// Stream frame a pending [`AudioCommand::PlayAt`] starts the track at.
+    start_at: Option<u64>,
     ended: bool,
     /// A block of the current generation arrived: running dry now is an underrun.
     primed: bool,
@@ -473,6 +478,15 @@ impl MusicSource {
             self.mark(info.frame, 0.0);
         }
         let mut i = 0;
+        if let Some(at) = self.start_at
+            && !self.playing
+            && at < info.frame + frames as u64
+        {
+            // Scheduled start inside this buffer, or at once if the frame has passed.
+            self.start_at = None;
+            self.playing = true;
+            i = at.saturating_sub(info.frame) as usize;
+        }
         while self.playing && i < frames {
             match self.ready() {
                 Ready::Data => {
@@ -573,8 +587,17 @@ impl MusicSource {
                 break;
             };
             match command {
-                AudioCommand::Play => self.playing = true,
+                AudioCommand::Play => {
+                    self.playing = true;
+                    self.start_at = None;
+                }
+                AudioCommand::PlayAt(frame) => {
+                    if !self.playing {
+                        self.start_at = Some(frame);
+                    }
+                }
                 AudioCommand::Pause => {
+                    self.start_at = None;
                     if self.playing {
                         self.cut_tail();
                         self.playing = false;
@@ -762,6 +785,16 @@ impl MusicPlayer {
     /// Plays from the current position from the next audio buffer.
     pub fn play(&mut self) -> Result<(), PlayError> {
         self.send(&[AudioCommand::Play], None)
+    }
+
+    /// Plays from the current position starting exactly at stream frame `device_frame`
+    /// (the axis of [`CallbackInfo::frame`]), or from the next audio buffer if that frame
+    /// has passed. Ignored while playing; [`pause`](Self::pause) and
+    /// [`play`](Self::play) cancel it, a [`seek`](Self::seek) keeps it. Starting inside the
+    /// buffer that applies a seek sets two anchors at once, so the stretch before the
+    /// seek drops out of [`MusicSnapshot::previous`].
+    pub fn play_at(&mut self, device_frame: u64) -> Result<(), PlayError> {
+        self.send(&[AudioCommand::PlayAt(device_frame)], None)
     }
 
     /// Stops at the current position from the next audio buffer.
@@ -1598,6 +1631,82 @@ mod tests {
             assert_eq!(v, ramp(512 + f) * env(f), "frame {f}");
         }
         assert_eq!(rig.snapshot().anchor.track_frame, 512);
+    }
+
+    #[test]
+    fn play_at_starts_the_track_on_that_stream_frame() {
+        let mut rig = Rig::new(256, 8);
+        rig.player.load(ramp_track(20_000)).unwrap();
+        rig.pump();
+        rig.loaded();
+        rig.player.play_at(700).unwrap();
+        // Not yet: the buffer ends before frame 700.
+        assert_eq!(rig.run(512), [0.0; 512]);
+        assert_eq!(rig.snapshot().anchor.speed, 0.0);
+        let out = rig.run(512);
+        assert_eq!(out[..700 - 512], [0.0; 700 - 512]);
+        for (f, &v) in out[700 - 512..].iter().enumerate() {
+            assert_eq!(v, ramp(f) * env(f), "frame {f}");
+        }
+        let s = rig.snapshot();
+        assert_eq!(
+            (s.anchor.device_frame, s.anchor.track_frame, s.anchor.speed),
+            (700, 0, 1.0)
+        );
+        assert_eq!(s.track_frame_at(1_000.0), 300.0);
+        assert_eq!(s.track_frame_at(600.0), 0.0);
+    }
+
+    #[test]
+    fn play_at_a_passed_frame_starts_with_the_next_buffer() {
+        let mut rig = Rig::new(256, 8);
+        rig.player.load(ramp_track(20_000)).unwrap();
+        rig.pump();
+        rig.loaded();
+        rig.run(512);
+        rig.player.play_at(100).unwrap();
+        rig.run(512);
+        let s = rig.snapshot();
+        assert_eq!(
+            (s.anchor.device_frame, s.anchor.track_frame, s.anchor.speed),
+            (512, 0, 1.0)
+        );
+    }
+
+    #[test]
+    fn play_at_before_the_first_block_is_not_an_underrun() {
+        let mut rig = Rig::new(256, 8);
+        rig.player.load(ramp_track(20_000)).unwrap();
+        rig.player.play_at(100).unwrap();
+        rig.run(512);
+        assert_eq!(rig.player.stats().underruns.load(Ordering::Relaxed), 0);
+        rig.pump();
+        rig.loaded();
+        let out = rig.run(512);
+        assert_eq!(out[0], ramp(0) * env(0));
+        assert_eq!(rig.player.stats().underruns.load(Ordering::Relaxed), 0);
+    }
+
+    #[test]
+    fn pause_and_play_cancel_play_at() {
+        let mut rig = Rig::new(256, 8);
+        rig.player.load(ramp_track(20_000)).unwrap();
+        rig.pump();
+        rig.loaded();
+        rig.player.play_at(600).unwrap();
+        rig.player.pause().unwrap();
+        rig.run(1_024);
+        assert_eq!(rig.snapshot().anchor.speed, 0.0);
+
+        rig.player.play_at(2_000).unwrap();
+        rig.player.play().unwrap();
+        rig.run(512);
+        let s = rig.snapshot();
+        assert_eq!((s.anchor.device_frame, s.anchor.speed), (1_024, 1.0));
+        // Ignored while playing.
+        rig.player.play_at(5_000).unwrap();
+        rig.run(512);
+        assert_eq!(rig.snapshot().anchor.device_frame, 1_024);
     }
 
     #[test]
