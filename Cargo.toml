@@ -53,6 +53,12 @@ tracing = "0.1.44"
 fluent-bundle = "0.16.0"
 fluent-syntax = "0.12.0"
 unic-langid = "0.9.6"
+# Text shaping (ADR-0037).
+harfrust = "0.14.0"
+# Font tables, metrics, charmap and variations (ADR-0037); re-exports read-fonts.
+skrifa = "0.48.0"
+# UAX #14 line break opportunities for text layout (ADR-0037).
+unicode-linebreak = "0.1.5"
 tracing-subscriber = { version = "0.3.23", default-features = false, features = ["fmt", "ansi", "env-filter", "std"] }
 # COM interfaces for the WASAPI backend (windows-sys has no COM wrappers).
 windows = { version = "0.62.2", features = ["Win32_Devices_FunctionDiscovery", "Win32_Foundation", "Win32_Media_Audio", "Win32_Media_KernelStreaming", "Win32_Media_Multimedia", "Win32_Security", "Win32_System_Com", "Win32_System_Com_StructuredStorage", "Win32_System_Performance", "Win32_System_Threading", "Win32_System_Variant", "Win32_UI_Shell_PropertiesSystem"] }
