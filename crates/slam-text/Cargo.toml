@@ -8,13 +8,27 @@ publish.workspace = true
 
 [dependencies]
 slam-render = { path = "../slam-render" }
+fdsm = { workspace = true }
 harfrust = { workspace = true }
+image = { workspace = true }
+nalgebra = { workspace = true }
+rtrb = { workspace = true }
 skrifa = { workspace = true }
 unicode-linebreak = { workspace = true }
 thiserror = { workspace = true }
+tracing = { workspace = true }
 
 [dev-dependencies]
 slam-testkit = { path = "../slam-testkit" }
+
+# criterion needs a C compiler for the target (`alloca`); the Windows cross check has
+# none, so benches build on non-Windows targets only.
+[target.'cfg(not(windows))'.dev-dependencies]
+criterion = { workspace = true }
+
+[[bench]]
+name = "msdf"
+harness = false
 
 [lints]
 workspace = true

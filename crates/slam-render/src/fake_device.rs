@@ -50,6 +50,7 @@ pub struct FakeBuffer {
 pub struct FakePipeline {
     id: u32,
     blend: Blend,
+    pub shader: String,
 }
 
 pub const LIMITS: Limits = Limits {
@@ -183,6 +184,7 @@ impl Device for Fake {
         Ok(FakePipeline {
             id,
             blend: desc.blend,
+            shader: desc.shader.name.to_owned(),
         })
     }
 
