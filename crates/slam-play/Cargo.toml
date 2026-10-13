@@ -17,3 +17,6 @@ slam-audio = { path = "../slam-audio" }
 
 [lints]
 workspace = true
+
+[dev-dependencies]
+slam-testkit = { path = "../slam-testkit" }
