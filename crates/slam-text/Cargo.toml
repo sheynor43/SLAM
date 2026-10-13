@@ -8,6 +8,13 @@ publish.workspace = true
 
 [dependencies]
 slam-render = { path = "../slam-render" }
+harfrust = { workspace = true }
+skrifa = { workspace = true }
+unicode-linebreak = { workspace = true }
+thiserror = { workspace = true }
+
+[dev-dependencies]
+slam-testkit = { path = "../slam-testkit" }
 
 [lints]
 workspace = true
