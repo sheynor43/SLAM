@@ -5,7 +5,7 @@ use std::sync::Arc;
 
 use slam_audio::{
     AudioCallback, AudioPosition, CallbackInfo, ClockError, GameClock, MixerConfig, MusicConfig,
-    MusicEvent, PlayError, PositionSnapshot, Sample, SineTone, TrackSource,
+    MusicEvent, PlayError, PositionSnapshot, Sample, SineTone, TrackSource, VoiceId, VoiceParams,
 };
 use slam_testkit::assert_no_alloc;
 
@@ -93,6 +93,66 @@ fn mixer_commands_and_process_do_not_allocate() {
         handle.drain_started(|_| reports += 1);
     });
     assert_eq!(reports, handle.queued_plays());
+    drop(mixer);
+    handle.collect();
+    assert_eq!(Arc::strong_count(&short), 1);
+    assert_eq!(Arc::strong_count(&long), 1);
+}
+
+#[test]
+fn voice_controls_do_not_allocate() {
+    let (mut mixer, mut handle) = slam_audio::mixer(&MixerConfig {
+        max_voices: 8,
+        queue_capacity: 64,
+        ..MixerConfig::default()
+    })
+    .unwrap();
+    let short = Arc::new(Sample::from_interleaved(vec![0.25; 2 * 100], 48_000, 2).unwrap());
+    let long = Arc::new(Sample::from_interleaved(vec![0.25; 2 * 5_000], 48_000, 2).unwrap());
+    let empty = Arc::new(Sample::from_interleaved(Vec::new(), 48_000, 2).unwrap());
+    let mut out = vec![0.0f32; 2 * 1024];
+    let info = CallbackInfo {
+        frame: 0,
+        timestamp_ns: 0,
+        latency_ns: 0,
+        sample_rate: 48_000,
+        channels: 2,
+    };
+    let mut voices = [VoiceId::NONE; 12];
+    assert_no_alloc(|| {
+        for round in 0..50 {
+            // More voices than the pool: earlier ids go stale by stealing or ending.
+            for (i, voice) in voices.iter_mut().enumerate() {
+                let sample = match i % 3 {
+                    0 => &short,
+                    1 => &long,
+                    _ => &empty,
+                };
+                let params = VoiceParams {
+                    gain: 0.5,
+                    balance: -0.4,
+                    rate: 0.5 + i as f64 * 0.25,
+                    looping: i % 2 == 1,
+                };
+                *voice = handle.play_voice(sample, params).unwrap();
+            }
+            for (i, &voice) in voices.iter().enumerate() {
+                match (round + i) % 4 {
+                    0 => handle.set_voice_gain(voice, 1.0, 5.0).unwrap(),
+                    1 => handle.set_voice_balance(voice, 0.7).unwrap(),
+                    2 => handle.set_voice_rate(voice, 1.0).unwrap(),
+                    _ => handle.stop_voice(voice).unwrap(),
+                }
+            }
+            for frames in [1usize, 64, 128, 1024] {
+                mixer.process(&mut out[..2 * frames], &info);
+            }
+            handle.collect();
+        }
+        handle.stop_all().unwrap();
+        mixer.process(&mut out, &info);
+        handle.collect();
+    });
     drop(mixer);
     handle.collect();
     assert_eq!(Arc::strong_count(&short), 1);
