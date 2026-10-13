@@ -27,3 +27,5 @@ pub use health::HealthProcessor;
 pub use mods::{GameplayMod, Mod, ModSet};
 pub use path::SliderPath;
 pub use scoring::ScoreProcessor;
+/// Positions in osu!pixels, as gameplay uses them.
+pub use slam_formats::osu::Vec2;

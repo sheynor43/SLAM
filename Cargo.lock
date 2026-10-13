@@ -1983,6 +1983,7 @@ dependencies = [
  "slam-osu",
  "slam-render",
  "slam-skin",
+ "slam-testkit",
  "slam-text",
  "slam-ui",
 ]

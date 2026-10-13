@@ -18,6 +18,9 @@ pub enum BeatmapError {
     /// The map is for another ruleset (`Mode` in `[General]`); only osu!standard (0) is played.
     #[error("beatmap mode {0} is not osu!standard")]
     UnsupportedMode(i32),
+    /// The `.osu` file could not be decoded.
+    #[error(transparent)]
+    Decode(#[from] osu_file::DecodeError),
 }
 
 // Ported from osu!lazer 2026.1005.0-lazer: osu.Game/Beatmaps/BeatmapDifficulty.cs
@@ -76,6 +79,12 @@ pub struct Beatmap {
 }
 
 impl Beatmap {
+    /// Decodes `.osu` bytes with default options and builds the beatmap without mods
+    /// ([`Beatmap::from_file`]). Decoding warnings are dropped.
+    pub fn decode(bytes: &[u8]) -> Result<Beatmap, BeatmapError> {
+        Beatmap::from_file(osu_file::decode(bytes)?.beatmap)
+    }
+
     /// Processes a decoded `.osu` file the way lazer's decoder, `OsuBeatmapConverter` and
     /// `OsuBeatmapProcessor.PreProcess` do: clamps the difficulty, builds the control points,
     /// sorts objects and breaks, forces new combos after breaks and spinners, resolves samples

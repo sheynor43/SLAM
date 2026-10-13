@@ -6,7 +6,7 @@
 
 use std::path::PathBuf;
 
-use slam_formats::osu::{DecodeOptions, decode_str, decode_with};
+use slam_formats::osu::{DecodeError, DecodeOptions, decode_str, decode_with};
 use slam_osu::control_points::{ControlPoints, TimingPoint};
 use slam_osu::objects::{OsuHitObject, OsuHitObjectKind, Slider};
 use slam_osu::samples::{Bank, HitSample, SampleName};
@@ -345,6 +345,21 @@ fn other_modes_are_rejected() {
     assert_eq!(
         Beatmap::from_file(decoded.beatmap),
         Err(BeatmapError::UnsupportedMode(3))
+    );
+}
+
+#[test]
+fn decode_builds_from_bytes() {
+    let map = Beatmap::decode(b"osu file format v14\n\n[HitObjects]\n100,100,500,1,0\n").unwrap();
+    assert_eq!(map.format_version, 14);
+    assert_eq!(map.hit_objects.len(), 1);
+    assert_eq!(
+        Beatmap::decode(b"\n \n"),
+        Err(BeatmapError::Decode(DecodeError::NoContent))
+    );
+    assert_eq!(
+        Beatmap::decode(b"osu file format v14\n\n[General]\nMode: 1\n"),
+        Err(BeatmapError::UnsupportedMode(1))
     );
 }
 
