@@ -107,6 +107,13 @@ impl VoiceId {
     /// A voice that never sounds (an empty sample); commands for it are not queued.
     pub const NONE: Self = Self(u64::MAX);
 
+    /// The voice of `play` command number `play`, for code that stands in for the mixer
+    /// (recorders in tests). `u64::MAX` is [`VoiceId::NONE`].
+    #[doc(hidden)]
+    pub fn from_play(play: u64) -> Self {
+        Self(play)
+    }
+
     /// Number of the `play` command, as in [`VoiceStart::play`]; `None` for
     /// [`VoiceId::NONE`].
     pub fn play(self) -> Option<u64> {
