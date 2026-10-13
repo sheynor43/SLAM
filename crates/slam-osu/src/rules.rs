@@ -198,6 +198,22 @@ pub struct LiveSlider {
     pub tracking: bool,
 }
 
+/// A spinner alive at the last update of [`OsuRules`].
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct LiveSpinner {
+    /// Object index in the beatmap.
+    pub index: u32,
+    /// Lazer's `SpinnerRotationTracker.IsSpinning`: whether the spinner is being spun fast
+    /// enough to play its spinning sample. False once its end time has passed.
+    pub is_spinning: bool,
+    /// Lazer's `progressUnclamped`: the fraction of the required spins done, past 1 once spun
+    /// beyond them. The spinning sample's frequency follows it.
+    pub progress_unclamped: f32,
+    /// Whole spins completed after the spinner's last tick was judged, each of which plays
+    /// `spinnerbonus-max`; 0 for a spinner without ticks.
+    pub bonus_max_spins: u32,
+}
+
 /// The osu!standard rules of a play.
 ///
 /// Within an update, presses are handled first against the objects alive at the previous
@@ -340,6 +356,29 @@ impl OsuRules {
                     index: i as u32,
                     tracking: self.sliders[s].drawable_tracking(),
                 }),
+                _ => None,
+            }
+        })
+    }
+
+    /// The spinners alive at the last update, in start time order: what lazer's
+    /// `DrawableSpinner` reads to play its spinning and bonus-max samples. A judged spinner stays
+    /// alive while it fades out, with the state it had when judged.
+    pub fn live_spinners(&self) -> impl Iterator<Item = LiveSpinner> + '_ {
+        let time = self.time;
+        self.live_range(time).filter_map(move |i| {
+            let o = &self.objects[i];
+            match o.kind {
+                Kind::Spinner(s) if o.is_alive(time) => {
+                    let spinner = &self.spinners[s];
+                    Some(LiveSpinner {
+                        // Beatmap object counts fit in `u32`, as `ObjectRef::index` assumes.
+                        index: i as u32,
+                        is_spinning: spinner.is_spinning(),
+                        progress_unclamped: spinner.progress_unclamped(),
+                        bonus_max_spins: spinner.bonus_max_spins(),
+                    })
+                }
                 _ => None,
             }
         })
@@ -677,7 +716,7 @@ impl OsuRules {
     /// their windows are missed, sliders track and judge their nested objects and then
     /// themselves, spinners accumulate rotation and are judged once their end time passes.
     // Ported from osu!lazer 2026.1005.0-lazer: osu.Game.Rulesets.Osu/Objects/Drawables/DrawableHitCircle.cs (CheckForResult, not userTriggered)
-    fn update_objects(&mut self, time: f64, held: Actions, log: &mut JudgementLog) {
+    fn update_objects(&mut self, time: f64, elapsed: f64, held: Actions, log: &mut JudgementLog) {
         while let Some(o) = self.objects.get(self.head)
             && o.lifetime_end <= time
         {
@@ -711,7 +750,7 @@ impl OsuRules {
                 }
                 Kind::Slider(s) => self.update_slider(i, s, time, held, log),
                 Kind::Spinner(s) => {
-                    if let Some(result) = self.spinners[s].update(i, time, held, log) {
+                    if let Some(result) = self.spinners[s].update(i, time, elapsed, held, log) {
                         self.mark_judged(i, time, spinner::JUDGED_LIFETIME);
                         self.record(i, time, result, HitResult::Great, log);
                     }
@@ -809,8 +848,9 @@ impl Rules for OsuRules {
             }
         }
 
+        let elapsed = step.time - self.time;
         self.time = step.time;
-        self.update_objects(step.time, step.held, log);
+        self.update_objects(step.time, elapsed, step.held, log);
     }
 
     fn is_complete(&self) -> bool {

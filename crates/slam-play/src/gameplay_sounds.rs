@@ -18,8 +18,17 @@
 //! playfield space rather than through lazer's screen space round trip, which can move a
 //! balance by 0.01 where it rounds at a midpoint.
 //!
-//! The spinner's spinning and bonus-max sounds are not played yet; its bonus ticks are,
-//! through their judgements.
+//! A spinner plays its bonus ticks through their judgements, and
+//! (`DrawableSpinner.updateSpinningSample`, `Update`, `updateBonusScore`,
+//! `UpdateHitStateTransforms`):
+//! - `spinnerspin` in a loop from when it is first spun, fading in over 300 ms whenever the
+//!   rotation tracker reports it spinning and out over 240 ms when it stops, until 240 ms after
+//!   its judgement; its frequency follows the progress of the previous update;
+//! - `spinnerbonus-max` for each whole spin after its last tick, restarting the sample rather
+//!   than layering it.
+//!
+//! Neither is panned: lazer pans only a drawable's own samples. Fades are in gameplay time,
+//! queued in real time (divided by the gameplay rate).
 
 use std::sync::Arc;
 
@@ -40,6 +49,18 @@ pub const DEFAULT_POSITIONAL_LEVEL: f32 = 0.2;
 /// Most looping samples of one slider: `sliderslide` and `sliderwhistle`.
 const MAX_SLIDING_SAMPLES: usize = 2;
 
+// Ported from osu!lazer 2026.1005.0-lazer: osu.Game.Rulesets.Osu/Objects/Drawables/DrawableSpinner.cs (spinning_sample_*, fade_out_duration, updateSpinningSample)
+/// Frequency of `spinnerspin` at no progress, relative to the sample's.
+const SPINNING_BASE_FREQUENCY: f32 = 20_000.0 / 44_100.0;
+/// Frequency `spinnerspin` gains per required spins done.
+const SPINNING_MODULATION_RATIO: f32 = 40_000.0 / 44_100.0;
+/// Highest frequency of `spinnerspin`.
+const SPINNING_MAX_FREQUENCY: f32 = 100_000.0 / 44_100.0;
+/// Fade-in of `spinnerspin` when spinning starts, in gameplay ms.
+const SPINNING_FADE_IN: f64 = 300.0;
+/// Fade-out of `spinnerspin` when spinning stops, and of the judged spinner, in gameplay ms.
+const SPINNER_FADE_OUT: f64 = 240.0;
+
 /// Where gameplay sounds go: the mixer, or a recorder in tests.
 pub trait VoiceSink {
     /// Starts a voice (see [`MixerHandle::play_voice`]).
@@ -52,6 +73,11 @@ pub trait VoiceSink {
     fn stop_voice(&mut self, voice: VoiceId) -> Result<(), PlayError>;
     /// Sets the balance of a voice (see [`MixerHandle::set_voice_balance`]).
     fn set_voice_balance(&mut self, voice: VoiceId, balance: f32) -> Result<(), PlayError>;
+    /// Moves the gain of a voice over `ramp_ms` of real time (see
+    /// [`MixerHandle::set_voice_gain`]).
+    fn set_voice_gain(&mut self, voice: VoiceId, gain: f32, ramp_ms: f64) -> Result<(), PlayError>;
+    /// Sets the rate of a voice (see [`MixerHandle::set_voice_rate`]).
+    fn set_voice_rate(&mut self, voice: VoiceId, rate: f64) -> Result<(), PlayError>;
 }
 
 impl VoiceSink for MixerHandle {
@@ -70,6 +96,14 @@ impl VoiceSink for MixerHandle {
     fn set_voice_balance(&mut self, voice: VoiceId, balance: f32) -> Result<(), PlayError> {
         MixerHandle::set_voice_balance(self, voice, balance)
     }
+
+    fn set_voice_gain(&mut self, voice: VoiceId, gain: f32, ramp_ms: f64) -> Result<(), PlayError> {
+        MixerHandle::set_voice_gain(self, voice, gain, ramp_ms)
+    }
+
+    fn set_voice_rate(&mut self, voice: VoiceId, rate: f64) -> Result<(), PlayError> {
+        MixerHandle::set_voice_rate(self, voice, rate)
+    }
 }
 
 /// Settings of gameplay sounds.
@@ -80,11 +114,18 @@ pub struct SoundSettings {
     /// Classic's `AlwaysPlayTailSample`: a hit slider plays its tail samples even if its tail
     /// was missed.
     pub always_play_tail_sample: bool,
+    /// The gameplay rate (lazer's `GetTrueGameplayRate`), above 0: fades are in gameplay
+    /// time, the mixer's in real time.
+    pub rate: f64,
+    /// The skin's `SpinnerFrequencyModulate`: whether `spinnerspin` rises in pitch with the
+    /// spinner's progress.
+    pub spinner_frequency_modulate: bool,
 }
 
 impl SoundSettings {
     // Ported from osu!lazer 2026.1005.0-lazer: osu.Game.Rulesets.Osu/Mods/OsuModClassic.cs (ApplyToDrawableHitObject)
-    /// The settings for a play with `mods`, at lazer's default positional level.
+    /// The settings for a play with `mods`, at lazer's default positional level, with the
+    /// skin's default spinner frequency modulation (on).
     pub fn for_mods(mods: &ModSet) -> SoundSettings {
         SoundSettings {
             positional_level: DEFAULT_POSITIONAL_LEVEL,
@@ -92,6 +133,8 @@ impl SoundSettings {
                 Mod::Classic(c) => c.always_play_tail_sample,
                 _ => false,
             }),
+            rate: mods.true_gameplay_rate(),
+            spinner_frequency_modulate: true,
         }
     }
 }
@@ -162,6 +205,8 @@ struct ObjectInfo {
     nested_len: u32,
     /// Index into `GameplaySounds::balls` of a slider.
     ball: Option<u32>,
+    /// Index into `GameplaySounds::spinners` of a spinner.
+    spinner: Option<u32>,
 }
 
 /// The sliding samples of a slider that plays them.
@@ -174,6 +219,49 @@ struct Sliding {
     balance: f32,
     /// Whether the slider was found alive in the current update.
     alive: bool,
+}
+
+/// The sound state of a spinner.
+#[derive(Debug, Clone, Copy)]
+struct SpinnerSounds {
+    /// `progressUnclamped` as of the previous update, which sets the frequency of this one.
+    progress: f32,
+    /// `IsSpinning` as last seen.
+    spinning: bool,
+    /// Lazer's `RequestedPlaying` of `spinnerspin`: started (or to be started), not stopped.
+    requested: bool,
+    /// The `spinnerspin` voice; none until it starts, or again after `stop_all`.
+    voice: VoiceId,
+    /// The rate last set on `voice`; NaN when none was.
+    rate: f64,
+    /// The fade of `voice` is still to be queued.
+    fade_pending: bool,
+    /// The spinner's end time.
+    end_time: f64,
+    /// When `spinnerspin` stops: 240 ms after the judgement, as lazer times it.
+    stop_at: f64,
+    /// Bonus-max spins played so far.
+    bonus_max: u32,
+    /// The last `spinnerbonus-max` voice, stopped before the next starts.
+    bonus_voice: VoiceId,
+    /// Whether the spinner was found alive in the current update.
+    alive: bool,
+}
+
+impl SpinnerSounds {
+    const NEW: SpinnerSounds = SpinnerSounds {
+        progress: 0.0,
+        spinning: false,
+        requested: false,
+        voice: VoiceId::NONE,
+        rate: f64::NAN,
+        fade_pending: false,
+        end_time: f64::INFINITY,
+        stop_at: f64::INFINITY,
+        bonus_max: 0,
+        bonus_voice: VoiceId::NONE,
+        alive: false,
+    };
 }
 
 /// The sounds of a play: call [`GameplaySounds::update`] once per update tick, after the
@@ -189,10 +277,14 @@ pub struct GameplaySounds {
     balls: Vec<Ball>,
     /// Sliders playing their sliding samples; never more than the beatmap's sliders.
     sliding: Vec<Sliding>,
+    /// The sound state of every spinner, in beatmap order.
+    spinners: Vec<SpinnerSounds>,
+    /// Indices into `spinners` whose `spinnerspin` is requested.
+    spinning: Vec<u32>,
     /// Looping voices whose stop failed, tried again every update and in `stop_all`; a
-    /// looping voice left playing would never end. Holds two per slider of the beatmap, enough
-    /// unless tracking keeps being lost and regained while the queue stays full; voices beyond
-    /// that are left playing (counted in `failed`).
+    /// looping voice left playing would never end. Holds two per slider and one per spinner of
+    /// the beatmap, enough unless tracking keeps being lost and regained while the queue stays
+    /// full; voices beyond that are left playing (counted in `failed`).
     pending_stops: Vec<VoiceId>,
     /// Judgements of the log already played.
     seen: usize,
@@ -210,6 +302,7 @@ impl GameplaySounds {
         let mut objects = Vec::with_capacity(beatmap.hit_objects.len());
         let mut nested = Vec::new();
         let mut balls = Vec::new();
+        let mut spinners = 0;
         for object in &beatmap.hit_objects {
             let info = match &object.kind {
                 OsuHitObjectKind::Slider(slider) => {
@@ -234,15 +327,27 @@ impl GameplaySounds {
                         nested_start: nested_start as u32,
                         nested_len: (nested.len() - nested_start) as u32,
                         ball: Some((balls.len() - 1) as u32),
+                        spinner: None,
                     }
                 }
-                // A spinner and its ticks are centred on its position.
-                OsuHitObjectKind::Circle | OsuHitObjectKind::Spinner(_) => ObjectInfo {
+                OsuHitObjectKind::Circle => ObjectInfo {
                     hit: playback_position(object.stacked_position().x),
                     nested_start: 0,
                     nested_len: 0,
                     ball: None,
+                    spinner: None,
                 },
+                // A spinner and its ticks are centred on its position.
+                OsuHitObjectKind::Spinner(_) => {
+                    spinners += 1;
+                    ObjectInfo {
+                        hit: playback_position(object.stacked_position().x),
+                        nested_start: 0,
+                        nested_len: 0,
+                        ball: None,
+                        spinner: Some(spinners - 1),
+                    }
+                }
             };
             objects.push(info);
         }
@@ -252,7 +357,21 @@ impl GameplaySounds {
             objects,
             nested,
             sliding: Vec::with_capacity(balls.len()),
-            pending_stops: Vec::with_capacity(balls.len() * MAX_SLIDING_SAMPLES),
+            spinners: beatmap
+                .hit_objects
+                .iter()
+                .filter_map(|o| match &o.kind {
+                    OsuHitObjectKind::Spinner(spinner) => Some(SpinnerSounds {
+                        end_time: spinner.end_time,
+                        ..SpinnerSounds::NEW
+                    }),
+                    _ => None,
+                })
+                .collect(),
+            spinning: Vec::with_capacity(spinners as usize),
+            pending_stops: Vec::with_capacity(
+                balls.len() * MAX_SLIDING_SAMPLES + spinners as usize,
+            ),
             balls,
             seen: 0,
             previous_time: f64::NEG_INFINITY,
@@ -272,7 +391,8 @@ impl GameplaySounds {
     }
 
     /// Plays the sounds of an update at `time`: the judgements `rules` added to `log` since the
-    /// previous update, then the sliding samples of the sliders `rules` has alive.
+    /// previous update, then the sliding samples of the sliders `rules` has alive, then the
+    /// spinning and bonus-max samples of its alive spinners.
     pub fn update(
         &mut self,
         time: f64,
@@ -286,12 +406,14 @@ impl GameplaySounds {
         }
         self.seen = log.events().len();
         self.update_sliding(time, rules, sink);
+        self.update_spinners(time, rules, sink);
         self.previous_time = time;
     }
 
     /// Stops every looping sample, as when gameplay pauses or ends; the next update starts
-    /// the sliding samples of tracked sliders again. Returns whether every stop went through;
-    /// if not, call it again (or keep updating) until it does.
+    /// the sliding samples of tracked sliders again, and the spinning samples of spinners
+    /// that still play them (from silence, fading in again if spinning). Returns whether every
+    /// stop went through; if not, call it again (or keep updating) until it does.
     pub fn stop_all(&mut self, sink: &mut impl VoiceSink) -> bool {
         self.retry_stops(sink);
         for k in 0..self.sliding.len() {
@@ -299,6 +421,15 @@ impl GameplaySounds {
             self.stop(&sliding, sink);
         }
         self.sliding.clear();
+        for k in 0..self.spinning.len() {
+            let s = self.spinning[k] as usize;
+            let voice = self.spinners[s].voice;
+            self.stop_looping(voice, sink);
+            let spinner = &mut self.spinners[s];
+            spinner.voice = VoiceId::NONE;
+            spinner.rate = f64::NAN;
+            spinner.fade_pending = true;
+        }
         self.pending_stops.is_empty()
     }
 
@@ -311,11 +442,16 @@ impl GameplaySounds {
     /// Stops the voices of `sliding`; a failed stop is kept to be tried again.
     fn stop(&mut self, sliding: &Sliding, sink: &mut impl VoiceSink) {
         for &voice in &sliding.voices {
-            if voice != VoiceId::NONE && sink.stop_voice(voice).is_err() {
-                self.failed += 1;
-                if self.pending_stops.len() < self.pending_stops.capacity() {
-                    self.pending_stops.push(voice);
-                }
+            self.stop_looping(voice, sink);
+        }
+    }
+
+    /// Stops a looping voice, if any; a failed stop is kept to be tried again.
+    fn stop_looping(&mut self, voice: VoiceId, sink: &mut impl VoiceSink) {
+        if voice != VoiceId::NONE && sink.stop_voice(voice).is_err() {
+            self.failed += 1;
+            if self.pending_stops.len() < self.pending_stops.capacity() {
+                self.pending_stops.push(voice);
             }
         }
     }
@@ -328,14 +464,25 @@ impl GameplaySounds {
         rules: &OsuRules,
         sink: &mut impl VoiceSink,
     ) {
-        let sounds = self.hitsounds.for_judgement(judgement);
-        if sounds.is_empty() {
-            return;
-        }
         let object = judgement.object;
         let Some(info) = self.objects.get(object.index as usize) else {
             return;
         };
+        if let (Some(s), None) = (info.spinner, object.nested) {
+            // Ported from osu!lazer 2026.1005.0-lazer: osu.Game.Rulesets.Osu/Objects/Drawables/DrawableSpinner.cs (UpdateHitStateTransforms)
+            // Ported from osu!lazer 2026.1005.0-lazer: osu.Game/Rulesets/Judgements/JudgementResult.cs (TimeAbsolute)
+            // The judged spinner fades out and stops `spinnerspin` once it has; its spinning
+            // state is triggered again, which restarts the fade-out. Both run from the hit
+            // state time: the judgement's, but at most the end time (a spinner's judgement has
+            // no offset).
+            let spinner = &mut self.spinners[s as usize];
+            spinner.stop_at = judgement.time.min(spinner.end_time) + SPINNER_FADE_OUT;
+            spinner.fade_pending = true;
+        }
+        let sounds = self.hitsounds.for_judgement(judgement);
+        if sounds.is_empty() {
+            return;
+        }
         let position = match object.nested {
             Some(k) if k < info.nested_len => self.nested[(info.nested_start + k) as usize],
             // A spinner's ticks.
@@ -445,6 +592,155 @@ impl GameplaySounds {
                 self.stop(&sliding, sink);
             }
         }
+    }
+
+    // Ported from osu!lazer 2026.1005.0-lazer: osu.Game.Rulesets.Osu/Objects/Drawables/DrawableSpinner.cs (Update, updateSpinningSample, updateBonusScore, StopAllSamples)
+    // Ported from osu!lazer 2026.1005.0-lazer: osu.Game/Skinning/PausableSkinnableSound.cs (Play, Stop)
+    /// The spinning and bonus-max samples of the alive spinners, in the drawable's order:
+    /// the frequency from the previous update's progress, then the tracker's spinning state,
+    /// then the bonus spins. Spinners that expired or faded out after their judgement stop
+    /// `spinnerspin`.
+    fn update_spinners(&mut self, time: f64, rules: &OsuRules, sink: &mut impl VoiceSink) {
+        for &s in &self.spinning {
+            self.spinners[s as usize].alive = false;
+        }
+        for live in rules.live_spinners() {
+            let Some(s) = self
+                .objects
+                .get(live.index as usize)
+                .and_then(|info| info.spinner)
+            else {
+                continue;
+            };
+            let spinner = &mut self.spinners[s as usize];
+            spinner.alive = true;
+
+            let rate = spinning_rate(spinner.progress, self.settings.spinner_frequency_modulate);
+            spinner.progress = live.progress_unclamped;
+
+            if live.is_spinning != spinner.spinning {
+                spinner.spinning = live.is_spinning;
+                spinner.fade_pending = true;
+                if live.is_spinning && !spinner.requested && time < spinner.stop_at {
+                    spinner.requested = true;
+                    self.spinning.push(s);
+                }
+            }
+
+            let faded_out = time >= spinner.stop_at;
+            if spinner.requested && !faded_out {
+                let sounds = self.hitsounds.get(live.index, Sound::Spinning);
+                // A spinner has one spinning sample, or none without samples of its own.
+                debug_assert!(sounds.len() <= 1);
+                if let Some(sound) = sounds.first() {
+                    if spinner.voice == VoiceId::NONE {
+                        // `spinningSample` starts silent: its volume transform is the fade.
+                        let params = VoiceParams {
+                            gain: 0.0,
+                            rate,
+                            looping: true,
+                            ..VoiceParams::default()
+                        };
+                        match sink.play_voice(&sound.sample, params) {
+                            Ok(voice) => {
+                                spinner.voice = voice;
+                                spinner.rate = rate;
+                            }
+                            Err(_) => self.failed += 1,
+                        }
+                    }
+                    if spinner.voice != VoiceId::NONE {
+                        if spinner.rate != rate {
+                            match sink.set_voice_rate(spinner.voice, rate) {
+                                Ok(()) => spinner.rate = rate,
+                                Err(_) => self.failed += 1,
+                            }
+                        }
+                        if spinner.fade_pending {
+                            let (gain, fade) = if spinner.spinning {
+                                (sound.gain, SPINNING_FADE_IN)
+                            } else if spinner.stop_at.is_finite() {
+                                // The judged spinner's fade-out ends when it stops. Lazer starts
+                                // it in the past from the current volume, so it jumps to where
+                                // it would be by now; here it fades from the current volume.
+                                (0.0, spinner.stop_at - time)
+                            } else {
+                                (0.0, SPINNER_FADE_OUT)
+                            };
+                            match sink.set_voice_gain(
+                                spinner.voice,
+                                gain,
+                                fade / self.settings.rate,
+                            ) {
+                                Ok(()) => spinner.fade_pending = false,
+                                Err(_) => self.failed += 1,
+                            }
+                        }
+                    }
+                }
+            }
+
+            if live.bonus_max_spins > spinner.bonus_max {
+                spinner.bonus_max = live.bonus_max_spins;
+                // Played again within one update, the sample restarts each time: only the
+                // last one is heard.
+                if spinner.bonus_voice != VoiceId::NONE
+                    && sink.stop_voice(spinner.bonus_voice).is_err()
+                {
+                    self.failed += 1;
+                }
+                spinner.bonus_voice = VoiceId::NONE;
+                for sound in self.hitsounds.get(live.index, Sound::SpinnerBonusMax) {
+                    let params = VoiceParams {
+                        gain: sound.gain,
+                        ..VoiceParams::default()
+                    };
+                    match sink.play_voice(&sound.sample, params) {
+                        Ok(voice) => spinner.bonus_voice = voice,
+                        Err(_) => self.failed += 1,
+                    }
+                }
+            }
+
+            if faded_out {
+                spinner.alive = false;
+            }
+        }
+        // Spinners that expired, or faded out after their judgement.
+        let mut k = 0;
+        while k < self.spinning.len() {
+            let s = self.spinning[k] as usize;
+            if self.spinners[s].alive {
+                k += 1;
+            } else {
+                self.spinning.swap_remove(k);
+                let voice = self.spinners[s].voice;
+                self.stop_looping(voice, sink);
+                let spinner = &mut self.spinners[s];
+                spinner.voice = VoiceId::NONE;
+                spinner.requested = false;
+            }
+        }
+    }
+}
+
+// Ported from osu!lazer 2026.1005.0-lazer: osu.Game.Rulesets.Osu/Objects/Drawables/DrawableSpinner.cs (Update)
+// Ported from osu-framework 2026.921.1: osu.Framework/Audio/BassRelativeFrequencyHandler.cs (setFrequency)
+/// The rate of `spinnerspin` at `progress` (`progressUnclamped`), relative to the sample's.
+///
+/// The framework floors the channel frequency at 100 Hz, which this never reaches: the rate
+/// is at least 20000/44100 and samples run at 1000 Hz at least. Its truncation to whole hertz
+/// of the file's own rate is not reproduced, as samples are converted to the device's rate
+/// on load: the pitch differs by less than 1 Hz.
+fn spinning_rate(progress: f32, modulate: bool) -> f64 {
+    if modulate {
+        // `Math.Min(float, float)`; the frequency bindable widens it to double.
+        f64::from(
+            SPINNING_MAX_FREQUENCY
+                .min(SPINNING_BASE_FREQUENCY + progress * SPINNING_MODULATION_RATIO),
+        )
+    } else {
+        1.0
     }
 }
 
