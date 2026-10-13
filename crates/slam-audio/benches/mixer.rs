@@ -15,7 +15,9 @@ mod bench {
     use std::time::{Duration, Instant};
 
     use criterion::{BenchmarkId, Criterion, criterion_group};
-    use slam_audio::{AudioCallback, CallbackInfo, MixerConfig, MusicConfig, Sample, TrackSource};
+    use slam_audio::{
+        AudioCallback, CallbackInfo, MixerConfig, MusicConfig, Sample, TrackSource, VoiceParams,
+    };
 
     const RATE: u32 = 48_000;
     const BUFFER_FRAMES: usize = 128;
@@ -87,6 +89,58 @@ mod bench {
                             handle.stop_all().unwrap();
                             for _ in 0..voices {
                                 handle.play(&sample, 0.1).unwrap();
+                            }
+                            let n = (iters - chunk_start).min(500);
+                            let start = Instant::now();
+                            for _ in 0..n {
+                                mixer.process(black_box(&mut out), &info());
+                            }
+                            total += start.elapsed();
+                        }
+                        total
+                    });
+                },
+            );
+            handle.collect();
+        }
+        group.finish();
+    }
+
+    /// Voices on the general path (ADR-0039): looping at a fractional rate, with
+    /// balance and a gain ramp that lasts the whole measurement.
+    fn process_controlled(c: &mut Criterion) {
+        let sample = sample();
+        let mut group = c.benchmark_group("mixer/process_128_frames_controlled");
+        for voices in [1usize, 8, 32, 64] {
+            let (mut mixer, mut handle) = slam_audio::mixer(&MixerConfig {
+                // One sample for every voice: lift the per-sample limit.
+                max_per_sample: 64,
+                ..MixerConfig::default()
+            })
+            .unwrap();
+            let mut out = vec![0.0f32; 2 * BUFFER_FRAMES];
+            group.bench_with_input(
+                BenchmarkId::from_parameter(voices),
+                &voices,
+                |b, &voices| {
+                    b.iter_custom(|iters| {
+                        let mut total = Duration::ZERO;
+                        // 500 buffers are ~1.3 s; the ramp is longer.
+                        for chunk_start in (0..iters).step_by(500) {
+                            handle.stop_all().unwrap();
+                            for i in 0..voices {
+                                let voice = handle
+                                    .play_voice(
+                                        &sample,
+                                        VoiceParams {
+                                            gain: 0.0,
+                                            balance: 0.3,
+                                            rate: 1.37 + i as f64 * 0.01,
+                                            looping: true,
+                                        },
+                                    )
+                                    .unwrap();
+                                handle.set_voice_gain(voice, 0.1, 2_000.0).unwrap();
                             }
                             let n = (iters - chunk_start).min(500);
                             let start = Instant::now();
@@ -185,7 +239,13 @@ mod bench {
         group.finish();
     }
 
-    criterion_group!(benches, enqueue, process, process_with_music);
+    criterion_group!(
+        benches,
+        enqueue,
+        process,
+        process_controlled,
+        process_with_music
+    );
 }
 
 // What `criterion_main!` expands to; the macro cannot sit inside the module.
