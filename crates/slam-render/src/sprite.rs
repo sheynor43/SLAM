@@ -8,7 +8,7 @@ use std::mem::size_of;
 use crate::atlas::UvRect;
 use crate::hal::{
     Blend, BufferDesc, BufferKind, BufferUpdate, Color, DescError, Device, DeviceError, DrawError,
-    Extent, IndexFormat, PipelineDesc, VertexAttribute, VertexFormat, VertexLayout,
+    Extent, IndexFormat, PipelineDesc, Shader, VertexAttribute, VertexFormat, VertexLayout,
 };
 use crate::shaders;
 use crate::textures::TextureId;
@@ -247,7 +247,8 @@ struct Slot<B> {
     globals: B,
 }
 
-/// Draws [`SpriteBatch`]es with `shaders/sprite.wgsl`. Each draw uses the next of a
+/// Draws [`SpriteBatch`]es with `shaders/sprite.wgsl`, or another shader with the same
+/// vertices and bindings (`shaders/msdf.wgsl` for text). Each draw uses the next of a
 /// ring of `slots` buffer sets, continuing across frames (ADR-0020). At most `slots`
 /// draws are allowed between [`SpriteRenderer::begin_frame`] calls, so no buffer is
 /// written twice in a frame (the `write_buffer` contract); spare slots space out
@@ -286,9 +287,15 @@ fn quad_indices(quads: u32) -> Vec<u8> {
 impl<D: Device> SpriteRenderer<D> {
     /// Creates the pipelines and buffers; on failure, frees what was created.
     pub fn new(device: &mut D, slots: usize) -> Result<Self, DeviceError> {
+        Self::with_shader(device, slots, &shaders::SPRITE)
+    }
+
+    /// Like [`SpriteRenderer::new`], drawing with `shader`, which takes
+    /// [`SPRITE_LAYOUT`] vertices and the bindings of `shaders/sprite.wgsl`.
+    pub fn with_shader(device: &mut D, slots: usize, shader: &Shader) -> Result<Self, DeviceError> {
         let mut pipelines = Vec::with_capacity(4);
         let mut buffers = Vec::with_capacity(slots.max(1) + 1);
-        match Self::create(device, slots.max(1), &mut pipelines, &mut buffers) {
+        match Self::create(device, shader, slots.max(1), &mut pipelines, &mut buffers) {
             Ok(()) => {}
             Err(e) => {
                 pipelines
@@ -322,6 +329,7 @@ impl<D: Device> SpriteRenderer<D> {
     /// one uniform buffer per slot.
     fn create(
         device: &mut D,
+        shader: &Shader,
         slots: usize,
         pipelines: &mut Vec<D::Pipeline>,
         buffers: &mut Vec<D::Buffer>,
@@ -334,7 +342,7 @@ impl<D: Device> SpriteRenderer<D> {
         ] {
             debug_assert_eq!(blend_index(blend), pipelines.len());
             pipelines.push(device.create_pipeline(&PipelineDesc {
-                shader: &shaders::SPRITE,
+                shader,
                 layout: SPRITE_LAYOUT,
                 blend,
             })?);
@@ -856,6 +864,18 @@ mod tests {
             })
             .collect();
         assert_eq!(offsets, [0, 1, 1 + u64::from(MAX_QUADS_PER_DRAW)]);
+    }
+
+    #[test]
+    fn every_shader_of_the_crate_fits_the_sprite_pipelines() {
+        for shader in shaders::ALL {
+            let mut d = Fake::default();
+            let r = SpriteRenderer::with_shader(&mut d, 1, shader).expect("renderer");
+            assert!(r.pipelines.iter().all(|p| p.shader == shader.name));
+            // The batcher binds what `sprite.wgsl` declares, at the same slots.
+            assert_eq!(shader.glsl.bindings, shaders::SPRITE.glsl.bindings);
+            r.destroy(&mut d);
+        }
     }
 
     #[test]

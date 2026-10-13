@@ -1,6 +1,7 @@
 //! Texture loading (ADR-0034): images are decoded and laid out in atlas pages on the
 //! loader thread `slam-texture-load`; the draw thread uploads them in strips of rows,
-//! at most a byte budget per frame, without allocating.
+//! at most a byte budget per frame, without allocating. Pixels made elsewhere (MSDF
+//! glyphs, ADR-0038) take the same path without the decoding step.
 //!
 //! [`texture_loader`] returns [`TextureRequests`] for the thread that asks for
 //! textures and [`TextureUploads`] for the draw thread. Every request travels the same
@@ -15,7 +16,7 @@ use std::time::Duration;
 
 use crate::atlas::{Atlas, AtlasRegion, ShelfPacker, UvRect, extrude};
 use crate::hal::{Device, Extent, Limits, Origin, TextureDesc, TextureFormat, TextureUsage};
-use crate::image::{ImageError, ImageLimits, decode_png};
+use crate::image::{Image, ImageError, ImageLimits, decode_png};
 use crate::textures::{TextureId, Textures};
 
 /// How long the loader sleeps when it has nothing to do or the draw thread is behind.
@@ -109,12 +110,13 @@ pub enum RejectReason {
     NoFreeHandles,
 }
 
-/// A load that was not queued; the caller gets its bytes back.
+/// A load that was not queued; the caller gets its input back (the PNG bytes or the
+/// [`Image`]).
 #[derive(Debug, thiserror::Error)]
 #[error("{reason}")]
-pub struct Rejected {
+pub struct Rejected<T = Vec<u8>> {
     pub reason: RejectReason,
-    pub bytes: Vec<u8>,
+    pub input: T,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, thiserror::Error)]
@@ -128,6 +130,7 @@ pub enum ReleaseError {
 /// Counters for the debug overlay; written by the loader thread.
 #[derive(Debug, Default)]
 pub struct LoaderStats {
+    /// Images accepted for upload: decoded PNGs and valid ready pixels.
     pub decoded: AtomicU64,
     pub failed: AtomicU64,
 }
@@ -135,10 +138,15 @@ pub struct LoaderStats {
 enum Command {
     Load {
         handle: TextureHandle,
-        bytes: Vec<u8>,
+        source: Source,
         kind: TextureKind,
     },
     Release(TextureHandle),
+}
+
+enum Source {
+    Png(Vec<u8>),
+    Pixels(Image),
 }
 
 /// Pixels for one texture region, tightly packed `Rgba8` rows.
@@ -246,12 +254,38 @@ impl TextureRequests {
     /// Queues a PNG to load and returns its handle at once; the draw thread sees it
     /// as [`TextureState::Pending`] until it is uploaded.
     pub fn load(&mut self, bytes: Vec<u8>, kind: TextureKind) -> Result<TextureHandle, Rejected> {
-        let reject = |reason, bytes| Err(Rejected { reason, bytes });
+        self.enqueue(Source::Png(bytes), kind)
+            .map_err(|(reason, source)| match source {
+                Source::Png(input) => Rejected { reason, input },
+                Source::Pixels(_) => unreachable!("the source is handed back unchanged"),
+            })
+    }
+
+    /// Queues pixels made elsewhere (`Rgba8`, tight rows, top row first) like a
+    /// decoded PNG: the same size limits, atlas layout and uploads apply. A buffer
+    /// that does not match `image.size` fails the handle with [`LoadError::Decode`].
+    pub fn load_pixels(
+        &mut self,
+        image: Image,
+        kind: TextureKind,
+    ) -> Result<TextureHandle, Rejected<Image>> {
+        self.enqueue(Source::Pixels(image), kind)
+            .map_err(|(reason, source)| match source {
+                Source::Pixels(input) => Rejected { reason, input },
+                Source::Png(_) => unreachable!("the source is handed back unchanged"),
+            })
+    }
+
+    fn enqueue(
+        &mut self,
+        source: Source,
+        kind: TextureKind,
+    ) -> Result<TextureHandle, (RejectReason, Source)> {
         if self.commands.is_full() {
-            return reject(RejectReason::QueueFull, bytes);
+            return Err((RejectReason::QueueFull, source));
         }
         let Some(index) = self.free.pop() else {
-            return reject(RejectReason::NoFreeHandles, bytes);
+            return Err((RejectReason::NoFreeHandles, source));
         };
         let i = index as usize;
         self.generations[i] = self.generations[i].wrapping_add(1);
@@ -264,7 +298,7 @@ impl TextureRequests {
             .commands
             .push(Command::Load {
                 handle,
-                bytes,
+                source,
                 kind,
             })
             .is_err()
@@ -372,10 +406,10 @@ impl Loader {
         match self.commands.pop() {
             Ok(Command::Load {
                 handle,
-                bytes,
+                source,
                 kind,
             }) => {
-                self.load(handle, &bytes, kind);
+                self.load(handle, source, kind);
                 Step::Busy
             }
             Ok(Command::Release(handle)) => {
@@ -387,18 +421,27 @@ impl Loader {
         }
     }
 
-    fn load(&mut self, handle: TextureHandle, bytes: &[u8], kind: TextureKind) {
-        let image = match decode_png(bytes, self.image_limits) {
-            Ok(image) => image,
-            Err(e) => {
-                tracing::warn!("texture {handle:?}: {e}");
-                self.stats.failed.fetch_add(1, Ordering::Relaxed);
-                let error = match e {
-                    ImageError::TooLarge { .. } => LoadError::TooLarge,
-                    ImageError::Png(_) | ImageError::FrameMismatch => LoadError::Decode,
-                };
-                self.outbox.push_back(Job::Failed(handle, error));
-                return;
+    fn load(&mut self, handle: TextureHandle, source: Source, kind: TextureKind) {
+        let image = match source {
+            Source::Png(bytes) => match decode_png(&bytes, self.image_limits) {
+                Ok(image) => image,
+                Err(e) => {
+                    tracing::warn!("texture {handle:?}: {e}");
+                    let error = match e {
+                        ImageError::TooLarge { .. } => LoadError::TooLarge,
+                        ImageError::Png(_) | ImageError::FrameMismatch => LoadError::Decode,
+                    };
+                    self.fail(handle, error);
+                    return;
+                }
+            },
+            Source::Pixels(image) => {
+                if let Err(error) = self.check_pixels(&image) {
+                    tracing::warn!("texture {handle:?}: {error} ({:?})", image.size);
+                    self.fail(handle, error);
+                    return;
+                }
+                image
             }
         };
         self.stats.decoded.fetch_add(1, Ordering::Relaxed);
@@ -441,9 +484,7 @@ impl Loader {
             }
             None => {
                 tracing::warn!("texture {handle:?}: the atlas is full");
-                self.stats.failed.fetch_add(1, Ordering::Relaxed);
-                self.outbox
-                    .push_back(Job::Failed(handle, LoadError::AtlasFull));
+                self.fail(handle, LoadError::AtlasFull);
                 return;
             }
         };
@@ -458,6 +499,30 @@ impl Loader {
             texture_size: self.page_size,
             pixels,
         }));
+    }
+
+    /// The limits a decoded PNG is held to, and a buffer matching its size.
+    fn check_pixels(&self, image: &Image) -> Result<(), LoadError> {
+        let Extent { width, height } = image.size;
+        let max_side = self.image_limits.max_side;
+        if width > max_side || height > max_side {
+            return Err(LoadError::TooLarge);
+        }
+        // In u64 and after the side check: two u32 sides times 4 overflow even u64,
+        // and the product overflows usize on 32-bit targets.
+        let bytes = u64::from(width) * u64::from(height) * u64::from(BPP);
+        if bytes > self.image_limits.max_bytes as u64 {
+            return Err(LoadError::TooLarge);
+        }
+        if width == 0 || height == 0 || image.pixels.len() as u64 != bytes {
+            return Err(LoadError::Decode);
+        }
+        Ok(())
+    }
+
+    fn fail(&mut self, handle: TextureHandle, error: LoadError) {
+        self.stats.failed.fetch_add(1, Ordering::Relaxed);
+        self.outbox.push_back(Job::Failed(handle, error));
     }
 }
 
@@ -1024,6 +1089,106 @@ mod tests {
     }
 
     #[test]
+    fn ready_pixels_take_the_png_path_without_decoding() {
+        let mut rig = Rig::new(config(1 << 20));
+        let src: Vec<u8> = (0..8u8).collect();
+        let image = Image {
+            size: Extent::new(2, 1),
+            pixels: src.clone(),
+        };
+        let h = rig.requests.load_pixels(image, TextureKind::Atlas).unwrap();
+        pump(&mut rig.loader);
+        let jobs: Vec<_> = std::iter::from_fn(|| rig.uploads.jobs.pop().ok()).collect();
+        let Some(Job::Upload(u)) = jobs.last() else {
+            panic!("no upload")
+        };
+        let mut expected = Vec::new();
+        extrude(&mut expected, &src, Extent::new(2, 1), 1, 4);
+        assert_eq!(
+            (u.handle, u.page, u.size, &u.pixels),
+            (h, Some(0), Extent::new(4, 3), &expected)
+        );
+        assert_eq!(rig.requests.stats().decoded.load(Ordering::Relaxed), 1);
+    }
+
+    #[test]
+    fn ready_pixels_are_held_to_the_size_limits() {
+        let mut rig = Rig::new(config(1 << 20));
+        let image = |width, height, len| Image {
+            size: Extent::new(width, height),
+            pixels: vec![0; len],
+        };
+        let side = LIMITS.max_texture_size + 1;
+        let huge = rig
+            .requests
+            .load_pixels(image(side, 1, side as usize * 4), TextureKind::Standalone)
+            .unwrap();
+        // Sides that overflow any byte count, and too many bytes within the sides.
+        let absurd = rig
+            .requests
+            .load_pixels(image(u32::MAX, u32::MAX, 0), TextureKind::Standalone)
+            .unwrap();
+        let short = rig
+            .requests
+            .load_pixels(image(2, 2, 15), TextureKind::Atlas)
+            .unwrap();
+        let empty = rig
+            .requests
+            .load_pixels(image(0, 3, 0), TextureKind::Atlas)
+            .unwrap();
+        let good = rig
+            .requests
+            .load_pixels(image(3, 3, 36), TextureKind::Atlas)
+            .unwrap();
+        rig.settle();
+        assert_eq!(
+            [huge, absurd, short, empty].map(|h| rig.uploads.get(h)),
+            [
+                TextureState::Failed(LoadError::TooLarge),
+                TextureState::Failed(LoadError::TooLarge),
+                TextureState::Failed(LoadError::Decode),
+                TextureState::Failed(LoadError::Decode),
+            ]
+        );
+        assert_eq!(rig.ready(good).size, Extent::new(3, 3));
+        assert_eq!(rig.requests.stats().failed.load(Ordering::Relaxed), 4);
+
+        let mut rig = Rig::new(TextureLoaderConfig {
+            max_image_bytes: 15,
+            ..config(1 << 20)
+        });
+        let over = rig
+            .requests
+            .load_pixels(image(2, 2, 16), TextureKind::Atlas)
+            .unwrap();
+        rig.settle();
+        assert_eq!(
+            rig.uploads.get(over),
+            TextureState::Failed(LoadError::TooLarge)
+        );
+    }
+
+    #[test]
+    fn rejected_pixels_are_handed_back() {
+        let mut rig = Rig::new(TextureLoaderConfig {
+            request_capacity: 1,
+            ..config(1 << 20)
+        });
+        let image = Image {
+            size: Extent::new(1, 1),
+            pixels: vec![1, 2, 3, 4],
+        };
+        rig.requests
+            .load_pixels(image.clone(), TextureKind::Atlas)
+            .unwrap();
+        let e = rig
+            .requests
+            .load_pixels(image.clone(), TextureKind::Atlas)
+            .unwrap_err();
+        assert_eq!((e.reason, e.input), (RejectReason::QueueFull, image));
+    }
+
+    #[test]
     fn broken_and_oversized_files_fail_their_handle_only() {
         let mut rig = Rig::new(config(1 << 20));
         let bad = rig
@@ -1128,7 +1293,7 @@ mod tests {
         rig.requests.load(vec![1], TextureKind::Atlas).unwrap();
         rig.requests.load(vec![2], TextureKind::Atlas).unwrap();
         let e = rig.requests.load(vec![3], TextureKind::Atlas).unwrap_err();
-        assert_eq!((e.reason, e.bytes), (RejectReason::NoFreeHandles, vec![3]));
+        assert_eq!((e.reason, e.input), (RejectReason::NoFreeHandles, vec![3]));
 
         let mut rig = Rig::new(TextureLoaderConfig {
             request_capacity: 1,
