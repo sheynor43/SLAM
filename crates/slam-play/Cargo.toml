@@ -14,6 +14,7 @@ slam-skin = { path = "../slam-skin" }
 slam-text = { path = "../slam-text" }
 slam-input = { path = "../slam-input" }
 slam-audio = { path = "../slam-audio" }
+tracing.workspace = true
 
 [lints]
 workspace = true

@@ -105,28 +105,53 @@ impl Skin {
     /// A missing or unreadable `skin.ini` means the latest version, like lazer's `Skin` constructor. Parse
     /// warnings are logged and kept in [`Skin::warnings`].
     pub fn load(dir: impl AsRef<Path>) -> Result<Self, LoadError> {
-        let root = dir.as_ref();
+        Self::load_with(dir.as_ref(), None)
+    }
+
+    /// Loads a beatmap folder as the beatmap's skin (`LegacyBeatmapSkin`): all files of the
+    /// folder are indexed and the configuration is read from the `.osu` file's bytes, which
+    /// lazer decodes as a `skin.ini`.
+    ///
+    /// Only sample lookups and configuration follow `LegacyBeatmapSkin` so far; its texture rules
+    /// (no `@2x` sprites, no `Version`) are not applied.
+    // Ported from osu!lazer 2026.1005.0-lazer: osu.Game/Skinning/LegacyBeatmapSkin.cs
+    pub fn load_beatmap(dir: impl AsRef<Path>, osu: &[u8]) -> Result<Self, LoadError> {
+        Self::load_with(dir.as_ref(), Some(osu))
+    }
+
+    /// Indexes `root` and reads the configuration from `config`, or from the folder's
+    /// `skin.ini` when it is `None`.
+    fn load_with(root: &Path, config: Option<&[u8]>) -> Result<Self, LoadError> {
         if !root.is_dir() {
             return Err(LoadError::NotADirectory(root.to_path_buf()));
         }
         let mut files = HashMap::new();
         index_dir(root, root, &mut files)?;
 
-        let (ini, has_ini, warnings) = match files.get("skin.ini") {
-            Some(path) => match fs::read(path) {
-                Ok(bytes) => {
-                    let decoded = skin_ini::decode(&bytes);
-                    (decoded.skin, true, decoded.warnings)
-                }
-                Err(e) => {
-                    tracing::warn!(path = %path.display(), "cannot read skin.ini: {e}");
-                    (missing_ini(), false, Vec::new())
-                }
+        let (ini, has_ini, warnings) = match config {
+            Some(bytes) => {
+                let decoded = skin_ini::decode(bytes);
+                (decoded.skin, true, decoded.warnings)
+            }
+            None => match files.get("skin.ini") {
+                Some(path) => match fs::read(path) {
+                    Ok(bytes) => {
+                        let decoded = skin_ini::decode(&bytes);
+                        (decoded.skin, true, decoded.warnings)
+                    }
+                    Err(e) => {
+                        tracing::warn!(path = %path.display(), "cannot read skin.ini: {e}");
+                        (missing_ini(), false, Vec::new())
+                    }
+                },
+                None => (missing_ini(), false, Vec::new()),
             },
-            None => (missing_ini(), false, Vec::new()),
         };
-        for w in &warnings {
-            tracing::warn!(skin = %root.display(), "skin.ini: {w}");
+        // A beatmap's own lines are not skin settings; only real skin.ini warnings are logged.
+        if config.is_none() {
+            for w in &warnings {
+                tracing::warn!(skin = %root.display(), "skin.ini: {w}");
+            }
         }
         let skin = Self {
             root: root.to_path_buf(),
@@ -170,7 +195,8 @@ impl Skin {
         &self.ini
     }
 
-    /// Whether the folder has a `skin.ini`.
+    /// Whether a configuration was read: the folder's `skin.ini`, or the `.osu` file of a
+    /// beatmap skin.
     pub fn has_ini(&self) -> bool {
         self.has_ini
     }

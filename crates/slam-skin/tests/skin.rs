@@ -553,3 +553,18 @@ fn texture_name_that_is_only_2x_is_empty() {
     let dir = TempSkin::new().with(&[".png"]);
     assert!(dir.load().texture("@2x").is_none());
 }
+
+#[test]
+fn beatmap_skin_reads_configuration_from_the_osu_file() {
+    let dir = TempSkin::new()
+        .with(&["normal-hitnormal2.wav", "sub/Hit.OGG"])
+        .ini("[General]\nLayeredHitSounds: 1\n");
+    let osu = b"osu file format v14\n\n[General]\nAudioFilename: a.mp3\nLayeredHitSounds: 0\n";
+    let skin = Skin::load_beatmap(&dir.0, osu).unwrap();
+    assert!(!skin.layered_hit_sounds());
+    assert!(skin.sample("Gameplay/normal-hitnormal2").is_some());
+    assert!(skin.sample("sub/hit").is_some());
+
+    let plain = Skin::load_beatmap(&dir.0, b"osu file format v14\n").unwrap();
+    assert!(plain.layered_hit_sounds());
+}
