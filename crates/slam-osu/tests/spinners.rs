@@ -12,7 +12,7 @@ use slam_osu::Beatmap;
 use slam_osu::judgement::HitResult;
 use slam_osu::objects::{OsuHitObjectKind, Spinner};
 use slam_osu::replay::{Actions, InputFrame, ReplayInput, Rules, Simulator};
-use slam_osu::rules::{HitPolicy, OsuRules, RulesOptions};
+use slam_osu::rules::{HitPolicy, LiveSpinner, OsuRules, RulesOptions};
 use slam_osu::{Mod, ModSet};
 
 use HitResult::{Great, IgnoreMiss, LargeBonus, Meh, Miss, Ok, SmallBonus};
@@ -610,4 +610,101 @@ fn rate_mods_set_the_rate() {
     assert!(nightcore.set_setting("speed_change", &SettingValue::Float(1.51)));
     let set = ModSet::new(vec![nightcore]).unwrap();
     assert_eq!(set.true_gameplay_rate(), 1.0 * 1.5 * (1.51 / 1.5));
+}
+
+// ---- Sample state ----
+
+/// The state of spinner 0 after every step of a play from the start, while it is alive.
+fn live_states(map: &Beatmap, frames: &[InputFrame]) -> Vec<(f64, LiveSpinner)> {
+    let mut all = vec![frame(0.0, frames[0].position.x, frames[0].position.y, NONE)];
+    all.extend_from_slice(frames);
+    let rules = OsuRules::with_options(map, lazer());
+    let mut sim = Simulator::new(map, ReplayInput::new(all), rules);
+    let mut states = Vec::new();
+    while sim.step() {
+        if let Some(live) = sim.rules().live_spinners().next() {
+            states.push((sim.time(), live));
+        }
+    }
+    states
+}
+
+#[test]
+fn spinning_follows_the_drawn_rotation() {
+    // Three spins in a second, then the cursor rests until the end time.
+    let map = spinner_map(JUDGEMENT_START, JUDGEMENT_END);
+    let frames = SpinFrames::new(JUDGEMENT_START)
+        .spin(1080.0, 1000.0)
+        .build();
+    let states = live_states(&map, &frames);
+    let spinning = |from: f64, to: f64| {
+        states
+            .iter()
+            .filter(|(t, _)| (from..to).contains(t))
+            .map(|(_, s)| s.is_spinning)
+            .collect::<Vec<_>>()
+    };
+    // Alive before its start time, but not spinnable.
+    assert!(states[0].0 < JUDGEMENT_START);
+    assert!(
+        spinning(f64::NEG_INFINITY, JUDGEMENT_START)
+            .iter()
+            .all(|&s| !s)
+    );
+    // At about 1°/ms, the drawn rotation settles about 100° behind (it closes 1% of the gap
+    // per millisecond): spinning soon after the start, throughout.
+    let first = states.iter().find(|(_, s)| s.is_spinning).unwrap().0;
+    assert!(first < JUDGEMENT_START + 30.0, "spinning from {first}");
+    assert!(spinning(first, JUDGEMENT_START + 1000.0).iter().all(|&s| s));
+    // Once the cursor rests, the gap shrinks by 1% per millisecond: below 10° within about
+    // 230 ms.
+    let last = states.iter().rfind(|(_, s)| s.is_spinning).unwrap().0;
+    assert!(
+        (JUDGEMENT_START + 1150.0..JUDGEMENT_START + 1300.0).contains(&last),
+        "spinning until {last}"
+    );
+    assert!(spinning(last + 1.0, f64::INFINITY).iter().all(|&s| !s));
+    // The simulation ends with the spinner's judgement at its end time.
+    let (end, live) = *states.last().unwrap();
+    assert_eq!((end, live.is_spinning), (JUDGEMENT_END, false));
+}
+
+#[test]
+fn slow_spinning_is_not_spinning() {
+    // 30°/s: the drawn rotation keeps within 3° of the rotation added. The rotation still
+    // counts towards the progress.
+    let map = spinner_map(JUDGEMENT_START, JUDGEMENT_END);
+    let frames = SpinFrames::new(JUDGEMENT_START).spin(60.0, 2000.0).build();
+    let states = live_states(&map, &frames);
+    assert!(states.iter().all(|(_, s)| !s.is_spinning));
+    let progress = states.last().unwrap().1.progress_unclamped;
+    assert!(progress > 0.0, "{progress}");
+}
+
+#[test]
+fn spins_past_the_last_tick_are_counted_for_the_bonus_max_sample() {
+    // Twenty spins: the 12 ticks (7 plain, 5 bonus) take the first twelve, the remaining
+    // eight each play the bonus-max sample, one per whole spin as it completes.
+    let map = spinner_map(JUDGEMENT_START, JUDGEMENT_END);
+    let states = live_states(&map, &judgement_replay(20));
+    let mut counts: Vec<u32> = states.iter().map(|(_, s)| s.bonus_max_spins).collect();
+    assert!(counts.windows(2).all(|w| w[1] == w[0] || w[1] == w[0] + 1));
+    counts.dedup();
+    assert_eq!(counts, (0..=8).collect::<Vec<_>>());
+    // Spun past the five spins required: 20 spins over five, short of the generator's last
+    // 22.5°, which the end time cuts off.
+    let progress = states.last().unwrap().1.progress_unclamped;
+    assert!(
+        (4.0..(20.0 * 360.0 + 22.5) / 360.0 / 5.0).contains(&progress),
+        "{progress}"
+    );
+
+    // Without ticks (a spinner too short for any), no spin plays it.
+    let map = beatmap(5.0, "256,192,1000,12,0,1000\n");
+    let frames = SpinFrames::new(900.0).spin(720.0, 100.0).build();
+    assert!(
+        live_states(&map, &frames)
+            .iter()
+            .all(|(_, s)| s.bonus_max_spins == 0)
+    );
 }

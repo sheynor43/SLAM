@@ -127,6 +127,15 @@ pub(super) struct SpinnerState {
     history: SpinHistory,
     /// `completedFullSpins`: the whole spins already turned into ticks.
     completed_full_spins: i32,
+    /// Whole spins completed after the last tick was judged, each of which plays
+    /// `spinnerbonus-max` in lazer.
+    bonus_max_spins: u32,
+    /// The tracker's `currentRotation`: the rotation added so far, signed.
+    current_rotation: f32,
+    /// The tracker's `Rotation`: the drawn rotation, damped towards `current_rotation`.
+    rotation: f32,
+    /// The tracker's `IsSpinning`, as of the last update.
+    is_spinning: bool,
     tracking: bool,
     /// The last cursor position the tracker received; none before it has seen input.
     mouse: Option<Vec2>,
@@ -147,6 +156,10 @@ impl SpinnerState {
             rate,
             history: SpinHistory::new(),
             completed_full_spins: 0,
+            bonus_max_spins: 0,
+            current_rotation: 0.0,
+            rotation: 0.0,
+            is_spinning: false,
             tracking: false,
             mouse: None,
             last_angle: None,
@@ -173,26 +186,45 @@ impl SpinnerState {
         self.start_time <= time && self.end_time > time
     }
 
-    // Ported from osu!lazer 2026.1005.0-lazer: osu.Game.Rulesets.Osu/Objects/Drawables/DrawableSpinner.cs (Progress, progressUnclamped)
-    /// The fraction of the required spins done, from 0 to 1.
-    fn progress(&self) -> f32 {
-        let unclamped = if self.spins_required == 0 {
+    // Ported from osu!lazer 2026.1005.0-lazer: osu.Game.Rulesets.Osu/Objects/Drawables/DrawableSpinner.cs (progressUnclamped)
+    /// The fraction of the required spins done, past 1 once spun beyond them.
+    pub(super) fn progress_unclamped(&self) -> f32 {
+        if self.spins_required == 0 {
             // Spinners too short to require a whole spin are implicitly hit.
             1.0
         } else {
             self.total_rotation() / 360.0 / self.spins_required as f32
-        };
-        dotnet::clamp_f32(unclamped, 0.0, 1.0)
+        }
     }
 
-    /// Updates the alive, unjudged spinner (object `index`) at `time` with `held` actions, in
-    /// its drawable order: tracking, then the rotation tracker, then the judgement and the
-    /// ticks of the whole spins. Returns the spinner's result once it is judged.
+    // Ported from osu!lazer 2026.1005.0-lazer: osu.Game.Rulesets.Osu/Objects/Drawables/DrawableSpinner.cs (Progress)
+    /// The fraction of the required spins done, from 0 to 1.
+    fn progress(&self) -> f32 {
+        dotnet::clamp_f32(self.progress_unclamped(), 0.0, 1.0)
+    }
+
+    /// Whether the tracker considers the spinner spun (lazer's `IsSpinning`): the drawn
+    /// rotation lags more than 10° behind the rotation added.
+    pub(super) fn is_spinning(&self) -> bool {
+        self.is_spinning
+    }
+
+    /// The whole spins completed after the last tick, which play `spinnerbonus-max`; always 0
+    /// for a spinner without ticks.
+    pub(super) fn bonus_max_spins(&self) -> u32 {
+        self.bonus_max_spins
+    }
+
+    /// Updates the alive, unjudged spinner (object `index`) at `time`, `elapsed` after the
+    /// previous update, with `held` actions, in its drawable order: tracking, then the rotation
+    /// tracker, then the judgement and the ticks of the whole spins. Returns the spinner's
+    /// result once it is judged.
     // Ported from osu!lazer 2026.1005.0-lazer: osu.Game.Rulesets.Osu/Objects/Drawables/DrawableSpinner.cs (Update, correctButtonPressed, UpdateAfterChildren)
     pub(super) fn update(
         &mut self,
         index: usize,
         time: f64,
+        elapsed: f64,
         held: Actions,
         log: &mut JudgementLog,
     ) -> Option<HitResult> {
@@ -200,7 +232,7 @@ impl SpinnerState {
         self.tracking = self.is_spinnable_time(time)
             && (held.contains(Actions::LEFT) || held.contains(Actions::RIGHT));
 
-        self.update_tracker(time);
+        self.update_tracker(time, elapsed);
 
         // `DrawableHitObject.UpdateAfterChildren` checks for a result before the bonus.
         let result = self.check_for_result(index, time, log);
@@ -210,12 +242,26 @@ impl SpinnerState {
 
     // Ported from osu!lazer 2026.1005.0-lazer: osu.Game.Rulesets.Osu/Skinning/Default/SpinnerRotationTracker.cs (Update)
     /// The tracker's update: the angle the cursor moved through around the centre since the
-    /// last update, taken the short way round, is added while tracking.
+    /// last update, taken the short way round, is added while tracking; then the drawn rotation
+    /// follows it, and the spinner counts as spinning while it lags far enough behind.
     ///
     /// Lazer takes the cursor in the local space of a square container centred on the spinner;
     /// here the angle is taken from playfield positions directly, without the round trip through
     /// screen space (ADR-0028).
-    fn update_tracker(&mut self, time: f64) {
+    fn update_tracker(&mut self, time: f64, elapsed: f64) {
+        self.track_cursor(time);
+
+        self.is_spinning =
+            self.is_spinnable_time(time) && (self.current_rotation - self.rotation).abs() > 10.0;
+        // Ported from osu-framework 2026.921.1: osu.Framework/Utils/Interpolation.cs (Damp, Lerp)
+        // In double precision, stored back as float.
+        let amount = 1.0 - math::pow(0.99, elapsed.abs());
+        let start = f64::from(self.rotation);
+        self.rotation = (start + (f64::from(self.current_rotation) - start) * amount) as f32;
+    }
+
+    /// The tracker's handling of the cursor position, if it has received one.
+    fn track_cursor(&mut self, time: f64) {
         let Some(mouse) = self.mouse else {
             return;
         };
@@ -249,8 +295,11 @@ impl SpinnerState {
         if !self.is_spinnable_time(time) {
             return;
         }
+        // Lazer first moves `currentRotation` to the drawn `Rotation`, which has followed it
+        // and so is still 0 here.
         // Spinning at a faster rate covers less gameplay time, so the rotation is scaled up.
         let delta = (f64::from(delta) * self.rate.abs()) as f32;
+        self.current_rotation += delta;
         self.history.report_delta(time, delta);
     }
 
@@ -289,7 +338,7 @@ impl SpinnerState {
 
     // Ported from osu!lazer 2026.1005.0-lazer: osu.Game.Rulesets.Osu/Objects/Drawables/DrawableSpinner.cs (updateBonusScore)
     /// Judges a tick hit for every whole spin since the last update. Spins past the last tick
-    /// only play a sample.
+    /// only play a sample: they are counted in `bonus_max_spins`.
     fn update_bonus_score(&mut self, index: usize, time: f64, log: &mut JudgementLog) {
         if self.tick_count == 0 {
             return;
@@ -307,6 +356,8 @@ impl SpinnerState {
         while self.completed_full_spins != spins {
             if self.ticks_judged < self.tick_count {
                 self.judge_tick(index, time, true, log);
+            } else {
+                self.bonus_max_spins += 1;
             }
             self.completed_full_spins += 1;
         }

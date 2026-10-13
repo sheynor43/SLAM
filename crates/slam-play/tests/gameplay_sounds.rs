@@ -64,6 +64,24 @@ enum Command {
         voice: u64,
         balance: f32,
     },
+    /// A `spinnerspin` start, with the gain and rate other samples always have at 1.
+    Spin {
+        time: f64,
+        voice: u64,
+        gain: f32,
+        rate: f64,
+    },
+    Gain {
+        time: f64,
+        voice: u64,
+        gain: f32,
+        ramp_ms: f64,
+    },
+    Rate {
+        time: f64,
+        voice: u64,
+        rate: f64,
+    },
 }
 
 /// Records commands with the sample names they play.
@@ -113,10 +131,21 @@ impl VoiceSink for Recorder {
             .find(|(_, s)| Arc::ptr_eq(s, sample))
             .map(|&(name, _)| name)
             .expect("a known sample");
-        assert_eq!(params.gain, 1.0);
-        assert_eq!(params.rate, 1.0);
         let voice = self.plays;
         self.plays += 1;
+        if name.ends_with("spinnerspin.wav") {
+            assert!(params.looping);
+            assert_eq!(params.balance, 0.0);
+            self.commands.push(Command::Spin {
+                time: self.time,
+                voice,
+                gain: params.gain,
+                rate: params.rate,
+            });
+            return Ok(VoiceId::from_play(voice));
+        }
+        assert_eq!(params.gain, 1.0);
+        assert_eq!(params.rate, 1.0);
         self.commands.push(Command::Play {
             time: self.time,
             sample: name,
@@ -142,6 +171,27 @@ impl VoiceSink for Recorder {
             time: self.time,
             voice: voice.play().unwrap(),
             balance,
+        });
+        Ok(())
+    }
+
+    fn set_voice_gain(&mut self, voice: VoiceId, gain: f32, ramp_ms: f64) -> Result<(), PlayError> {
+        self.check()?;
+        self.commands.push(Command::Gain {
+            time: self.time,
+            voice: voice.play().unwrap(),
+            gain,
+            ramp_ms,
+        });
+        Ok(())
+    }
+
+    fn set_voice_rate(&mut self, voice: VoiceId, rate: f64) -> Result<(), PlayError> {
+        self.check()?;
+        self.commands.push(Command::Rate {
+            time: self.time,
+            voice: voice.play().unwrap(),
+            rate,
         });
         Ok(())
     }
@@ -370,7 +420,7 @@ fn losing_tracking_stops_the_sliding_sample_until_it_is_regained() {
         .filter(|c| match c {
             Command::Play { sample, .. } => *sample == "normal-sliderslide.wav",
             Command::Stop { .. } => true,
-            Command::Balance { .. } => false,
+            _ => false,
         })
         .collect();
     assert_eq!(
@@ -474,6 +524,7 @@ fn updates_do_not_allocate() {
         "soft-sliderslide.wav",
         "soft-slidertick.wav",
         "soft-spinnerbonus.wav",
+        "soft-spinnerspin.wav",
     ];
     let (sounds, samples) = hitsounds(&map, &names);
     let mut sounds = GameplaySounds::new(&map, sounds, SoundSettings::for_mods(&ModSet::default()));
@@ -494,5 +545,386 @@ fn updates_do_not_allocate() {
             .iter()
             .any(|c| matches!(c, Command::Play { looping: true, .. }))
     );
+    assert!(
+        recorder
+            .commands
+            .iter()
+            .any(|c| matches!(c, Command::Spin { .. }))
+    );
     assert!(recorder.commands.len() < recorder.commands.capacity());
+}
+
+// ---- Spinners ----
+
+/// A spinner at the centre from 1000 to 3000 ms (five spins required, twelve ticks: the last
+/// five bonus ticks), then a circle that is never hit, so that the play goes on.
+const SPINNER_MAP: &str = "osu file format v14
+
+[Difficulty]
+HPDrainRate:5
+CircleSize:4
+OverallDifficulty:5
+ApproachRate:9
+SliderMultiplier:1.92
+SliderTickRate:1
+
+[TimingPoints]
+0,500,4,1,0,100,1,0
+
+[HitObjects]
+256,192,1000,12,0,3000
+256,192,4000,1,0
+";
+
+const SPINNER_SAMPLES: [&str; 3] = [
+    "normal-hitnormal.wav",
+    "normal-spinnerspin.wav",
+    "normal-spinnerbonus.wav",
+];
+
+const SPINNER_START: f64 = 1000.0;
+const SPINNER_END: f64 = 3000.0;
+
+/// Frames every millisecond to 4300 ms: the cursor circles the spinner 50 px out at
+/// `degrees_per_ms` with the left button held from the spinner's start to `stop`, and rests
+/// after.
+fn spinning_until(stop: f64, degrees_per_ms: f32) -> ReplayInput {
+    let frames: Vec<InputFrame> = (0..=4300)
+        .map(|t| {
+            let time = f64::from(t);
+            let spun: f32 =
+                (time.clamp(SPINNER_START, stop) - SPINNER_START) as f32 * degrees_per_ms;
+            let angle = spun.to_radians();
+            InputFrame {
+                time,
+                position: Vec2::new(256.0 + 50.0 * angle.sin(), 192.0 - 50.0 * angle.cos()),
+                actions: if (SPINNER_START..stop).contains(&time) {
+                    Actions::LEFT
+                } else {
+                    Actions::NONE
+                },
+            }
+        })
+        .collect();
+    ReplayInput::new(frames)
+}
+
+/// The commands of a play of the spinner map with `settings`, updating through `pause_at` and
+/// then pausing (`stop_all`) before the next update; every command fails in `failing`.
+fn run_spinner(
+    input: ReplayInput,
+    settings: SoundSettings,
+    mods: &ModSet,
+    pause_at: Option<f64>,
+    failing: &[(f64, f64)],
+) -> (Vec<Command>, u64) {
+    let map = Beatmap::decode(SPINNER_MAP.as_bytes()).unwrap();
+    let (sounds, samples) = hitsounds(&map, &SPINNER_SAMPLES);
+    let mut sounds = GameplaySounds::new(&map, sounds, settings);
+    let mut recorder = Recorder::new(samples, 0);
+    recorder.failing = failing.to_vec();
+    let mut sim = Simulator::new(&map, input, OsuRules::new(&map, mods));
+    while sim.step() {
+        recorder.time = sim.time();
+        sounds.update(sim.time(), sim.log(), sim.rules(), &mut recorder);
+        if pause_at == Some(sim.time()) {
+            assert!(sounds.stop_all(&mut recorder));
+        }
+    }
+    assert!(sounds.stop_all(&mut recorder));
+    (recorder.commands, sounds.failed_commands())
+}
+
+fn spinner_run(input: ReplayInput) -> Vec<Command> {
+    let (commands, failed) = run_spinner(
+        input,
+        SoundSettings::for_mods(&ModSet::default()),
+        &ModSet::default(),
+        None,
+        &[],
+    );
+    assert_eq!(failed, 0);
+    commands
+}
+
+/// The commands other than rate changes.
+fn without_rates(commands: &[Command]) -> Vec<Command> {
+    commands
+        .iter()
+        .filter(|c| !matches!(c, Command::Rate { .. }))
+        .cloned()
+        .collect()
+}
+
+/// The rates `voice` was set to, in order.
+fn rates(commands: &[Command], voice: u64) -> Vec<f64> {
+    commands
+        .iter()
+        .filter_map(|c| match *c {
+            Command::Rate { voice: v, rate, .. } if v == voice => Some(rate),
+            _ => None,
+        })
+        .collect()
+}
+
+/// The time of the first command matching `f`.
+fn time_of(commands: &[Command], f: impl Fn(&Command) -> bool) -> f64 {
+    match *commands.iter().find(|&c| f(c)).expect("a matching command") {
+        Command::Play { time, .. }
+        | Command::Stop { time, .. }
+        | Command::Balance { time, .. }
+        | Command::Spin { time, .. }
+        | Command::Gain { time, .. }
+        | Command::Rate { time, .. } => time,
+    }
+}
+
+const BASE_RATE: f64 = (20_000.0f32 / 44_100.0) as f64;
+const MAX_RATE: f64 = (100_000.0f32 / 44_100.0) as f64;
+
+#[test]
+fn spinning_fades_in_rises_in_pitch_and_stops_after_the_judgement() {
+    // Fifteen and a half spins in 1.55 s (3.6°/ms), then the cursor rests: the twelve ticks
+    // take the first twelve spins (the last five play `spinnerbonus`), the other three play
+    // `spinnerbonus-max`, which falls back to `spinnerbonus`.
+    let commands = spinner_run(spinning_until(2550.0, 3.6));
+    let spin_start = time_of(&commands, |c| matches!(c, Command::Spin { .. }));
+    assert!(
+        (SPINNER_START..SPINNER_START + 10.0).contains(&spin_start),
+        "{spin_start}"
+    );
+    let stopped_spinning = time_of(
+        &commands,
+        |c| matches!(c, Command::Gain { gain, .. } if *gain == 0.0),
+    );
+    // At 3.6°/ms the drawn rotation lags about 356° behind; once the cursor rests, the lag
+    // shrinks by 1% per millisecond and falls below 10° about 355 ms later.
+    assert!(
+        (2890.0..2920.0).contains(&stopped_spinning),
+        "{stopped_spinning}"
+    );
+
+    // The rotation tracker reports spinning once the drawn rotation lags 10° behind, by
+    // when the spinner has turned a little: the frequency is a little above its base.
+    let Some(&Command::Spin {
+        rate: start_rate, ..
+    }) = commands.iter().find(|c| matches!(c, Command::Spin { .. }))
+    else {
+        unreachable!()
+    };
+    assert!(
+        (BASE_RATE..BASE_RATE + 0.01).contains(&start_rate),
+        "{start_rate}"
+    );
+    let mut expected = vec![
+        // Silent, at the frequency of the progress before this update, then faded in.
+        Command::Spin {
+            time: spin_start,
+            voice: 0,
+            gain: 0.0,
+            rate: start_rate,
+        },
+        Command::Gain {
+            time: spin_start,
+            voice: 0,
+            gain: 1.0,
+            ramp_ms: 300.0,
+        },
+    ];
+    let others: Vec<Command> = commands
+        .iter()
+        .filter(|c| matches!(c, Command::Play { .. } | Command::Stop { .. }))
+        .cloned()
+        .collect();
+    // Five bonus ticks, then three bonus-max spins, each stopping the one before, all at the
+    // centre; the spinner's own sample at its judgement; `spinnerspin` stopped 240 ms after.
+    let shape: Vec<(&str, f32)> = others
+        .iter()
+        .map(|c| match *c {
+            Command::Play {
+                sample, balance, ..
+            } => (sample, balance),
+            _ => ("stop", 0.0),
+        })
+        .collect();
+    let b = ("normal-spinnerbonus.wav", 0.0);
+    let stop = ("stop", 0.0);
+    assert_eq!(
+        shape,
+        [
+            b,
+            b,
+            b,
+            b,
+            b,
+            b,
+            stop,
+            b,
+            stop,
+            b,
+            ("normal-hitnormal.wav", 0.0),
+            stop
+        ]
+    );
+    for k in [6, 8] {
+        let (
+            Command::Play { voice, .. },
+            Command::Stop {
+                time,
+                voice: stopped,
+            },
+            Command::Play { time: next, .. },
+        ) = (&others[k - 1], &others[k], &others[k + 1])
+        else {
+            unreachable!()
+        };
+        assert_eq!((stopped, time), (voice, next));
+    }
+    assert!(matches!(
+        others[10],
+        Command::Play {
+            time: SPINNER_END,
+            ..
+        }
+    ));
+    assert_eq!(
+        others[11],
+        Command::Stop {
+            time: SPINNER_END + 240.0,
+            voice: 0
+        }
+    );
+
+    expected.extend([
+        Command::Gain {
+            time: stopped_spinning,
+            voice: 0,
+            gain: 0.0,
+            ramp_ms: 240.0,
+        },
+        // The judgement triggers the spinning state again: the fade-out restarts.
+        Command::Gain {
+            time: SPINNER_END,
+            voice: 0,
+            gain: 0.0,
+            ramp_ms: 240.0,
+        },
+    ]);
+    let fades: Vec<Command> = commands
+        .iter()
+        .filter(|c| matches!(c, Command::Spin { .. } | Command::Gain { .. }))
+        .cloned()
+        .collect();
+    assert_eq!(fades, expected);
+
+    // The pitch rises with the progress, a step behind it, to its limit at two required
+    // spins' worth of progress past none (ten spins).
+    let r = rates(&commands, 0);
+    assert!(r.windows(2).all(|w| w[0] < w[1]), "{r:?}");
+    assert!(r[0] > BASE_RATE);
+    assert_eq!(*r.last().unwrap(), MAX_RATE);
+}
+
+#[test]
+fn slow_spinning_plays_no_spinning_sample() {
+    // 0.03°/ms: the tracker never reports spinning.
+    let commands = spinner_run(spinning_until(SPINNER_END, 0.03));
+    assert!(!commands.iter().any(|c| matches!(
+        c,
+        Command::Spin { .. } | Command::Gain { .. } | Command::Rate { .. }
+    )));
+}
+
+#[test]
+fn spinning_fades_in_real_time_and_keeps_its_pitch_without_modulation() {
+    let mods = ModSet::new(vec![Mod::from_acronym("DT")]).unwrap();
+    let settings = SoundSettings {
+        spinner_frequency_modulate: false,
+        ..SoundSettings::for_mods(&mods)
+    };
+    assert_eq!(settings.rate, 1.5);
+    let (commands, failed) = run_spinner(spinning_until(2500.0, 3.6), settings, &mods, None, &[]);
+    assert_eq!(failed, 0);
+    let fades: Vec<(f32, f64)> = commands
+        .iter()
+        .filter_map(|c| match *c {
+            Command::Spin { rate, gain, .. } => {
+                assert_eq!(rate, 1.0);
+                Some((gain, 0.0))
+            }
+            Command::Gain { gain, ramp_ms, .. } => Some((gain, ramp_ms)),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(
+        fades,
+        [(0.0, 0.0), (1.0, 200.0), (0.0, 160.0), (0.0, 160.0)]
+    );
+    assert!(rates(&commands, 0).is_empty());
+}
+
+#[test]
+fn a_paused_spinner_starts_its_spinning_sample_again() {
+    let (commands, failed) = run_spinner(
+        spinning_until(2500.0, 3.6),
+        SoundSettings::for_mods(&ModSet::default()),
+        &ModSet::default(),
+        Some(1500.0),
+        &[],
+    );
+    assert_eq!(failed, 0);
+    let around: Vec<Command> = without_rates(&commands)
+        .into_iter()
+        .filter(|c| !matches!(c, Command::Play { .. }))
+        .skip(2)
+        .take(3)
+        .collect();
+    let restart = time_of(
+        &commands,
+        |c| matches!(c, Command::Spin { voice, .. } if *voice > 0),
+    );
+    assert_eq!(restart, 1501.0);
+    let Command::Spin { voice, rate, .. } = around[1] else {
+        panic!("{around:?}");
+    };
+    assert!(rate > BASE_RATE);
+    assert_eq!(
+        around,
+        [
+            Command::Stop {
+                time: 1500.0,
+                voice: 0
+            },
+            Command::Spin {
+                time: 1501.0,
+                voice,
+                gain: 0.0,
+                rate
+            },
+            Command::Gain {
+                time: 1501.0,
+                voice,
+                gain: 1.0,
+                ramp_ms: 300.0
+            },
+        ]
+    );
+}
+
+#[test]
+fn failed_spinning_commands_are_tried_again() {
+    let (commands, failed) = run_spinner(
+        spinning_until(2500.0, 3.6),
+        SoundSettings::for_mods(&ModSet::default()),
+        &ModSet::default(),
+        None,
+        // From the first update on, through the start of spinning; then around the stop.
+        &[(0.0, 1020.0), (SPINNER_END + 240.0, SPINNER_END + 243.0)],
+    );
+    assert!(failed > 0);
+    let spin = time_of(&commands, |c| matches!(c, Command::Spin { .. }));
+    let fade_in = time_of(&commands, |c| matches!(c, Command::Gain { .. }));
+    assert_eq!((spin, fade_in), (1020.0, 1020.0));
+    let stop = time_of(&commands, |c| matches!(c, Command::Stop { voice: 0, .. }));
+    assert_eq!(stop, SPINNER_END + 243.0);
 }
