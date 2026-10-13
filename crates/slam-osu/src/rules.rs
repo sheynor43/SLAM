@@ -187,6 +187,17 @@ impl ObjectState {
     }
 }
 
+/// A slider alive at the last update of [`OsuRules`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct LiveSlider {
+    /// Object index in the beatmap.
+    pub index: u32,
+    /// Whether the slider is tracked, as lazer's `DrawableSlider.Update` sees
+    /// `SliderInputManager.Tracking`: as of the previous update, changed only by presses since
+    /// (a parent updates before its children).
+    pub tracking: bool,
+}
+
 /// The osu!standard rules of a play.
 ///
 /// Within an update, presses are handled first against the objects alive at the previous
@@ -314,6 +325,33 @@ impl OsuRules {
     /// The hit windows of circles and slider heads.
     pub fn hit_windows(&self) -> &HitWindows {
         &self.hit_windows
+    }
+
+    /// The sliders alive at the last update, in start time order, with their tracking state:
+    /// what lazer's `DrawableSlider` reads to play its sliding samples. Sliders not alive (not
+    /// yet in their lifetime, or expired after their judgement) are left out.
+    pub fn live_sliders(&self) -> impl Iterator<Item = LiveSlider> + '_ {
+        let time = self.time;
+        self.live_range(time).filter_map(move |i| {
+            let o = &self.objects[i];
+            match o.kind {
+                Kind::Slider(s) if o.is_alive(time) => Some(LiveSlider {
+                    // Beatmap object counts fit in `u32`, as `ObjectRef::index` assumes.
+                    index: i as u32,
+                    tracking: self.sliders[s].drawable_tracking(),
+                }),
+                _ => None,
+            }
+        })
+    }
+
+    /// Whether the tail of the slider with object index `index` is judged as a hit; false for
+    /// other objects.
+    pub fn slider_tail_hit(&self, index: u32) -> bool {
+        match self.objects.get(index as usize).map(|o| o.kind) {
+            Some(Kind::Slider(s)) => self.sliders[s].tail_hit(),
+            _ => false,
+        }
     }
 
     /// The live objects that may be alive at `time`, in start time order: lifetimes start in
@@ -654,7 +692,13 @@ impl OsuRules {
 
         for i in self.live_range(time).rev() {
             let o = &mut self.objects[i];
-            if o.judged || !o.is_alive(time) {
+            if !o.is_alive(time) {
+                continue;
+            }
+            if o.judged {
+                if let Kind::Slider(s) = o.kind {
+                    self.sliders[s].update_judged(time);
+                }
                 continue;
             }
             // An alive, idle drawable has no lifetime end.
@@ -689,6 +733,7 @@ impl OsuRules {
         held: Actions,
         log: &mut JudgementLog,
     ) {
+        self.sliders[s].begin_update();
         self.sliders[s].update_nested(i, time, held, false, log);
 
         let slider = &self.sliders[s];

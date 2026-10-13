@@ -79,6 +79,10 @@ pub(super) struct SliderState {
     /// hit, whether or not the press judged it.
     head_hit_action: Option<Actions>,
     tracking: bool,
+    /// Tracking as lazer's `DrawableSlider.Update` reads it: the parent updates before its
+    /// `SliderInputManager` child, so it sees tracking from the previous update, changed only
+    /// by presses since.
+    drawable_tracking: bool,
     time_to_accept_any_key_after: Option<f64>,
     /// The actions held at the previous tracking update.
     last_pressed: Actions,
@@ -140,6 +144,7 @@ impl SliderState {
             head_lifetime_end: f64::INFINITY,
             head_hit_action: None,
             tracking: false,
+            drawable_tracking: false,
             time_to_accept_any_key_after: None,
             last_pressed: Actions::NONE,
             mouse: None,
@@ -161,6 +166,34 @@ impl SliderState {
 
     pub(super) fn tail_judged(&self) -> bool {
         self.nested[self.tail].judged()
+    }
+
+    /// Whether the tail is judged as a hit.
+    pub(super) fn tail_hit(&self) -> bool {
+        self.nested[self.tail].result.is_hit()
+    }
+
+    /// Tracking as the slider drawable saw it at its last update (see `drawable_tracking`).
+    pub(super) fn drawable_tracking(&self) -> bool {
+        self.drawable_tracking
+    }
+
+    /// Records the tracking the drawable sees in this update, before the input manager
+    /// updates; call it first in every update of a live slider.
+    pub(super) fn begin_update(&mut self) {
+        self.drawable_tracking = self.tracking;
+    }
+
+    // Ported from osu!lazer 2026.1005.0-lazer: osu.Game.Rulesets.Osu/Objects/Drawables/SliderInputManager.cs (updateTracking)
+    /// An update at `time` of a slider already judged, which is otherwise not updated: its
+    /// input manager still is, and tracking needs `!Judged || Time <= EndTime`. A slider is
+    /// judged at its end time or later, so the cursor and actions of its judgement update
+    /// stand for those of this one. They differ only for an update at exactly the end time
+    /// after a judgement at that same time, where lazer would check the cursor and actions
+    /// again.
+    pub(super) fn update_judged(&mut self, time: f64) {
+        self.begin_update();
+        self.tracking = self.tracking && time <= self.end_time;
     }
 
     /// Whether the head drawable is alive at `time`, given that the slider is.

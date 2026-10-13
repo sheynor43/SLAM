@@ -11,9 +11,9 @@
 use slam_formats::osu::{PathControlPoint, PathType, Vec2, decode_str};
 use slam_osu::Beatmap;
 use slam_osu::SliderPath;
-use slam_osu::judgement::HitResult;
+use slam_osu::judgement::{HitResult, JudgementLog};
 use slam_osu::objects::{NestedKind, OsuHitObjectKind, Slider};
-use slam_osu::replay::{Actions, InputFrame, ReplayInput, Rules, Simulator};
+use slam_osu::replay::{Actions, InputFrame, ReplayInput, Rules, Simulator, StepInput};
 use slam_osu::rules::{HitPolicy, OsuRules, RulesOptions};
 use slam_osu::{Mod, ModSet};
 
@@ -1178,4 +1178,86 @@ fn zero_length_slider_is_judged() {
         assert_eq!(single(&j, 0, Part::Slider).part, Part::Slider);
         assert!(single(&j, 0, Part::Head).result.is_hit());
     }
+}
+
+// Sound state
+
+/// Steps `sim` until its time reaches `time`.
+fn step_to(sim: &mut Simulator<OsuRules>, time: f64) {
+    while sim.time() < time {
+        assert!(sim.step(), "the play ended before {time}");
+    }
+}
+
+/// The tracking state of slider 0 at the last update; none if it is not alive.
+fn live_tracking(sim: &Simulator<OsuRules>) -> Option<bool> {
+    let live: Vec<_> = sim.rules().live_sliders().collect();
+    assert!(live.len() <= 1, "{live:?}");
+    live.first().map(|s| {
+        assert_eq!(s.index, 0);
+        s.tracking
+    })
+}
+
+#[test]
+fn live_sliders_report_tracking_until_the_slider_expires() {
+    let map = input_slider();
+    let frames = [
+        frame(0.0, 0.0, 0.0, NONE),
+        frame(TIME_SLIDER_START, 0.0, 0.0, LEFT),
+        frame(TIME_DURING_SLIDE_2, 0.0, 0.0, NONE),
+    ];
+    let rules = OsuRules::with_options(&map, lazer(HitPolicy::StartTimeOrdered));
+    let mut sim = Simulator::new(&map, ReplayInput::new(frames.to_vec()), rules);
+
+    // Alive from the start of its preempt (1200 ms at AR 5).
+    step_to(&mut sim, 200.0);
+    assert_eq!(live_tracking(&sim), None);
+    step_to(&mut sim, 400.0);
+    assert_eq!(live_tracking(&sim), Some(false));
+    step_to(&mut sim, TIME_DURING_SLIDE_1);
+    assert_eq!(live_tracking(&sim), Some(true));
+    step_to(&mut sim, TIME_DURING_SLIDE_3);
+    assert_eq!(live_tracking(&sim), Some(false));
+    assert!(!sim.rules().slider_tail_hit(0));
+
+    // Judged at its end, which ends the play; the slider then stays alive for its fade out.
+    sim.run();
+    assert!(!sim.rules().slider_tail_hit(0));
+    let mut rules = sim.rules().clone();
+    let mut log = JudgementLog::with_capacity(rules.max_judgements());
+    let mut update = |rules: &mut OsuRules, time| {
+        let step = StepInput {
+            time,
+            position: Vec2::new(0.0, 0.0),
+            held: NONE,
+            events: &[],
+        };
+        rules.update(&step, &mut log);
+    };
+    update(&mut rules, TIME_SLIDER_END + 100.0);
+    assert_eq!(
+        rules.live_sliders().map(|s| s.tracking).collect::<Vec<_>>(),
+        [false]
+    );
+    update(&mut rules, TIME_SLIDER_END + 300.0);
+    assert_eq!(rules.live_sliders().count(), 0);
+}
+
+#[test]
+fn slider_tail_hit_follows_the_tail_judgement() {
+    let map = input_slider();
+    let frames = [
+        frame(0.0, 0.0, 0.0, NONE),
+        frame(TIME_SLIDER_START, 0.0, 0.0, LEFT),
+        frame(TIME_SLIDER_END + 100.0, 0.0, 0.0, NONE),
+    ];
+    let rules = OsuRules::with_options(&map, lazer(HitPolicy::StartTimeOrdered));
+    let mut sim = Simulator::new(&map, ReplayInput::new(frames.to_vec()), rules);
+    step_to(&mut sim, TIME_DURING_SLIDE_4);
+    assert!(!sim.rules().slider_tail_hit(0));
+    sim.run();
+    assert!(sim.rules().slider_tail_hit(0));
+    // Not a slider index.
+    assert!(!sim.rules().slider_tail_hit(1));
 }

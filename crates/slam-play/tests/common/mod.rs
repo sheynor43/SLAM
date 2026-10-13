@@ -2,6 +2,8 @@
 
 #![allow(dead_code)]
 
+pub mod skin;
+
 use slam_input::{InputEvent, InputKind, MouseButton};
 use slam_osu::replay::{Actions, InputFrame, ReplayInput, gameplay_start_time};
 use slam_osu::{Beatmap, Vec2};
