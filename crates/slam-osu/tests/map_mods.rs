@@ -218,3 +218,27 @@ fn easy_lowers_difficulty() {
         b.hit_objects
     });
 }
+
+/// Hidden shortens the fade-in of everything but sliders themselves to 0.4 of the preempt,
+/// nested slider objects included (`OsuModHidden.ApplyToBeatmap`).
+#[test]
+fn hidden_shortens_fade_in_except_slider_bodies() {
+    let plain = load(vec![]);
+    let hidden = load(vec![Mod::from_acronym("HD")]);
+    for (p, h) in plain.hit_objects.iter().zip(&hidden.hit_objects) {
+        assert_eq!(h.defaults.time_preempt, p.defaults.time_preempt);
+        match (&p.kind, &h.kind) {
+            (OsuHitObjectKind::Slider(ps), OsuHitObjectKind::Slider(hs)) => {
+                assert_eq!(h.defaults.time_fade_in, p.defaults.time_fade_in);
+                for n in &hs.nested {
+                    assert_eq!(n.defaults.time_fade_in, n.defaults.time_preempt * 0.4);
+                }
+                assert_eq!(ps.nested.len(), hs.nested.len());
+            }
+            _ => assert_eq!(h.defaults.time_fade_in, h.defaults.time_preempt * 0.4),
+        }
+    }
+    // AR 9: preempt 600 ms, so 240 ms instead of the plain 400 ms.
+    assert_eq!(hidden.hit_objects[1].defaults.time_fade_in, 240.0);
+    assert_eq!(plain.hit_objects[1].defaults.time_fade_in, 400.0);
+}

@@ -18,7 +18,7 @@ use slam_formats::osu as osu_file;
 use crate::beatmap::{Beatmap, BeatmapError, Difficulty};
 use crate::dotnet;
 use crate::judgement::{HitResult, Judgement, Target};
-use crate::objects::OsuHitObject;
+use crate::objects::{ObjectDefaults, OsuHitObject, OsuHitObjectKind};
 use crate::scoring::ScoreRank;
 use setting::DifficultyRange;
 
@@ -169,6 +169,17 @@ const SPEED_UP: (f64, f64, f64) = (1.5, 1.01, 2.0);
 const SPEED_DOWN: (f64, f64, f64) = (0.75, 0.5, 0.99);
 /// `Precision = 0.01` of every `SpeedChange`, as decimal places.
 const SPEED_DECIMALS: u32 = 2;
+
+/// Hidden's fade-in, as a fraction of the preempt (`OsuModHidden.FADE_IN_DURATION_MULTIPLIER`).
+pub const HIDDEN_FADE_IN_MULTIPLIER: f64 = 0.4;
+
+/// Hidden's fade-out, as a fraction of the preempt (`OsuModHidden.FADE_OUT_DURATION_MULTIPLIER`).
+pub const HIDDEN_FADE_OUT_MULTIPLIER: f64 = 0.3;
+
+// Ported from osu!lazer 2026.1005.0-lazer: osu.Game.Rulesets.Osu/Mods/OsuModHidden.cs (applyFadeInAdjustment)
+fn hidden_fade_in(defaults: &mut ObjectDefaults) {
+    defaults.time_fade_in = defaults.time_preempt * HIDDEN_FADE_IN_MULTIPLIER;
+}
 
 // Ported from osu-framework 2026.921.1: osu.Framework/Bindables/BindableNumber.cs (IsDefault)
 /// `IsDefault` of a speed setting: within half the precision of the default.
@@ -691,6 +702,23 @@ impl GameplayMod for Mod {
                 MirrorType::Undefined(_) => {}
             },
             _ => {}
+        }
+    }
+
+    // Ported from osu!lazer 2026.1005.0-lazer: osu.Game.Rulesets.Osu/Mods/OsuModHidden.cs (ApplyToBeatmap)
+    fn apply_to_beatmap(&mut self, beatmap: &mut Beatmap) {
+        if let Mod::Hidden { .. } = self {
+            for object in &mut beatmap.hit_objects {
+                // Sliders keep their default fade-in to match stable; their nested objects do not.
+                match &mut object.kind {
+                    OsuHitObjectKind::Slider(slider) => {
+                        for nested in &mut slider.nested {
+                            hidden_fade_in(&mut nested.defaults);
+                        }
+                    }
+                    _ => hidden_fade_in(&mut object.defaults),
+                }
+            }
         }
     }
 

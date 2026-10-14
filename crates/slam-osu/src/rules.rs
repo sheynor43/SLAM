@@ -172,6 +172,11 @@ struct ObjectState {
     /// Whether the object itself is judged; a slider or spinner is judged after all its nested
     /// objects.
     judged: bool,
+    /// Lazer's `HitStateUpdateTime` once judged: the judgement time, clamped to the end of the
+    /// object's windows.
+    hit_state_time: f64,
+    /// The object's own result once judged.
+    result: Option<HitResult>,
     /// Lifetime end. Lazer's lifetime entry starts with the end of the miss window, so an
     /// object skipped over never comes alive; once alive and idle, its drawable keeps it alive
     /// indefinitely; a judgement sets the end of the judged transforms.
@@ -196,6 +201,25 @@ pub struct LiveSlider {
     /// `SliderInputManager.Tracking`: as of the previous update, changed only by presses since
     /// (a parent updates before its children).
     pub tracking: bool,
+}
+
+/// A hit circle alive at the last update of [`OsuRules`].
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct LiveCircle {
+    /// Object index in the beatmap.
+    pub index: u32,
+    /// The circle's judgement, once judged.
+    pub judgement: Option<CircleJudgement>,
+}
+
+/// How a hit circle was judged, as its drawable sees it.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct CircleJudgement {
+    /// Lazer's `HitStateUpdateTime`: when the judged transforms start. The judgement time,
+    /// clamped to the end of the miss window.
+    pub time: f64,
+    /// The result.
+    pub result: HitResult,
 }
 
 /// A spinner alive at the last update of [`OsuRules`].
@@ -294,6 +318,8 @@ impl OsuRules {
                     stack_height: o.stack_height,
                     kind,
                     judged: false,
+                    hit_state_time: f64::NAN,
+                    result: None,
                     lifetime_end: o.end_time() + miss_window,
                 }
             })
@@ -355,6 +381,26 @@ impl OsuRules {
                     // Beatmap object counts fit in `u32`, as `ObjectRef::index` assumes.
                     index: i as u32,
                     tracking: self.sliders[s].drawable_tracking(),
+                }),
+                _ => None,
+            }
+        })
+    }
+
+    /// The hit circles alive at the last update, in start time order, with their judgements:
+    /// what lazer's `DrawableHitCircle` shows. A judged circle stays alive while it fades out.
+    pub fn live_circles(&self) -> impl Iterator<Item = LiveCircle> + '_ {
+        let time = self.time;
+        self.live_range(time).filter_map(move |i| {
+            let o = &self.objects[i];
+            match o.kind {
+                Kind::Circle if o.is_alive(time) => Some(LiveCircle {
+                    // Beatmap object counts fit in `u32`, as `ObjectRef::index` assumes.
+                    index: i as u32,
+                    judgement: o.result.map(|result| CircleJudgement {
+                        time: o.hit_state_time,
+                        result,
+                    }),
                 }),
                 _ => None,
             }
@@ -547,6 +593,7 @@ impl OsuRules {
             Kind::Circle => time.min(o.end_time + MISS_WINDOW),
             Kind::Slider(_) | Kind::Spinner(_) => time.min(o.end_time),
         };
+        o.hit_state_time = hit_state_time;
         o.lifetime_end = hit_state_time + lifetime;
         self.remaining -= 1;
     }
@@ -559,6 +606,7 @@ impl OsuRules {
         max_result: HitResult,
         log: &mut JudgementLog,
     ) {
+        self.objects[i].result = Some(result);
         log.apply(Judgement {
             object: ObjectRef {
                 index: i as u32,
