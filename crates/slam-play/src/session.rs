@@ -2,8 +2,8 @@
 //! and sounds and writes a [`PlaySnapshot`]; the draw side turns the snapshot into sprites.
 //!
 //! The update side is lazer's `Player` for one play: pausing and resuming, failing, restarting
-//! and quitting, driven by the global actions of [`crate::hotkeys`]. No breaks overlay or HUD
-//! yet.
+//! and quitting, driven by the global actions of [`crate::hotkeys`]. No breaks overlay yet;
+//! the HUD's numbers go out in [`HudValues`].
 
 use slam_audio::{ClockError, GameClock, MusicSnapshot, PositionSnapshot, TrackControl};
 use slam_input::InputEvent;
@@ -11,7 +11,11 @@ use slam_osu::judgement::JudgementLog;
 use slam_osu::lead_in::{IntroSkip, earliest_start_time, gameplay_start_time};
 use slam_osu::replay::{Actions, Rules};
 use slam_osu::rules::OsuRules;
+use slam_osu::scoring::ScoreProcessor;
 use slam_osu::{Beatmap, HealthProcessor, ModSet, Vec2};
+use slam_render::Extent;
+use slam_render::atlas::AtlasRegion;
+use slam_render::image::Image;
 use slam_render::sprite::{Sprite, SpriteBatch};
 use slam_render::upload::{
     TextureHandle, TextureKind, TextureRequests, TextureState, TextureUploads,
@@ -36,7 +40,7 @@ pub const FAIL_ANIMATION_NS: u64 = 2_500_000_000;
 
 // Ported from osu!lazer 2026.1005.0-lazer: osu.Game.Rulesets.Osu/UI/Cursor/OsuCursor.cs (SIZE)
 /// Size of the click-to-resume cursor's hit area, in osu!pixels.
-const RESUME_CURSOR_SIZE: f32 = 28.0;
+pub(crate) const RESUME_CURSOR_SIZE: f32 = 28.0;
 
 // Ported from osu!lazer 2026.1005.0-lazer: osu.Game/Beatmaps/Timing/BreakPeriod.cs (MIN_BREAK_DURATION)
 /// Breaks shorter than this have no effect.
@@ -65,6 +69,37 @@ pub enum PlayState {
     Exited,
 }
 
+/// The numbers of the HUD: lazer's score processor as the HUD counters bind it.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct HudValues {
+    /// Total score with the mods' multiplier (`TotalScore`).
+    pub score: i64,
+    /// Accuracy, 0..=1 (`Accuracy`).
+    pub accuracy: f64,
+    /// Current combo (`Combo`).
+    pub combo: u32,
+}
+
+impl Default for HudValues {
+    fn default() -> Self {
+        HudValues {
+            score: 0,
+            accuracy: 1.0,
+            combo: 0,
+        }
+    }
+}
+
+impl HudValues {
+    fn of(score: &ScoreProcessor) -> HudValues {
+        HudValues {
+            score: score.total_score(),
+            accuracy: score.accuracy(),
+            combo: score.statistics().combo,
+        }
+    }
+}
+
 /// What the draw side needs of one update tick. Fixed size, copied into a buffer slot with
 /// `clone_from` without allocations.
 #[derive(Debug, Clone)]
@@ -80,6 +115,7 @@ pub struct PlaySnapshot {
     pub skip_available: bool,
     /// Health, 0..=1.
     pub health: f64,
+    pub hud: HudValues,
     /// Where to click to resume, in osu!pixels ([`PlayState::Resuming`]).
     pub resume_target: Vec2,
     /// How far quick retry is held, 0..=1.
@@ -100,6 +136,7 @@ impl Default for PlaySnapshot {
             cursor: Vec2::ZERO,
             skip_available: false,
             health: 1.0,
+            hud: HudValues::default(),
             resume_target: Vec2::ZERO,
             retry_progress: 0.0,
             exit_progress: 0.0,
@@ -133,6 +170,7 @@ enum Phase {
 struct Initial {
     rules: OsuRules,
     health: HealthProcessor,
+    score: ScoreProcessor,
     mods: ModSet,
     skip: IntroSkip,
 }
@@ -160,9 +198,10 @@ pub struct PlaySession {
     rules: OsuRules,
     log: JudgementLog,
     health: HealthProcessor,
+    score: ScoreProcessor,
     /// The mods' state for the health processor (lives of Easy).
     mods: ModSet,
-    /// Judgements of the log the health processor took.
+    /// Judgements of the log the health and score processors took.
     applied: usize,
     /// Judgements made before failing: those that count.
     failed_at: Option<usize>,
@@ -195,6 +234,7 @@ impl PlaySession {
         let rules = OsuRules::new(beatmap, mods);
         let log = JudgementLog::with_capacity(rules.max_judgements());
         let health = HealthProcessor::for_play(beatmap, mods);
+        let score = ScoreProcessor::for_play(beatmap, mods);
         // No storyboards yet.
         let start_time = earliest_start_time(beatmap, None);
         let gameplay_start_time = gameplay_start_time(beatmap);
@@ -224,12 +264,14 @@ impl PlaySession {
             initial: Initial {
                 rules: rules.clone(),
                 health: health.clone(),
+                score: score.clone(),
                 mods: mods.clone(),
                 skip,
             },
             rules,
             log,
             health,
+            score,
             mods: mods.clone(),
             applied: 0,
             failed_at: None,
@@ -261,6 +303,10 @@ impl PlaySession {
 
     pub fn health(&self) -> &HealthProcessor {
         &self.health
+    }
+
+    pub fn score(&self) -> &ScoreProcessor {
+        &self.score
     }
 
     pub fn input(&self) -> &LiveInput {
@@ -464,8 +510,12 @@ impl PlaySession {
         self.health.update(step_time);
         self.rules.update(&step, &mut self.log);
         self.sounds.update(step_time, &self.log, &self.rules, sink);
+        // Ported from osu!lazer 2026.1005.0-lazer: osu.Game/Screens/Play/Player.cs (LoadComponents)
+        // Each judgement goes to the health processor, then to the score processor.
         for (index, judgement) in self.log.events().iter().enumerate().skip(self.applied) {
+            let failed_before = self.health.has_failed();
             self.health.apply(judgement, &mut self.mods);
+            self.score.apply(judgement, failed_before);
             // Ported from osu!lazer 2026.1005.0-lazer: osu.Game/Rulesets/Scoring/HealthProcessor.cs (ApplyResultInternal)
             // The judgement that fails still counts; later ones are `FailedAtJudgement`.
             if self.failed_at.is_none() && self.health.has_failed() {
@@ -473,6 +523,9 @@ impl PlaySession {
             }
         }
         self.applied = self.log.events().len();
+        if self.health.has_failed() {
+            self.score.fail();
+        }
         self.last_time = step_time;
 
         // Ported from osu!lazer 2026.1005.0-lazer: osu.Game/Screens/Play/Player.cs (onFail, PerformFail)
@@ -570,6 +623,7 @@ impl PlaySession {
     fn restart(&mut self, sink: &mut impl VoiceSink, quick: bool) {
         self.rules = self.initial.rules.clone();
         self.health = self.initial.health.clone();
+        self.score = self.initial.score.clone();
         self.mods = self.initial.mods.clone();
         self.log = JudgementLog::with_capacity(self.rules.max_judgements());
         self.skip = self.initial.skip;
@@ -625,6 +679,7 @@ impl PlaySession {
         snapshot.cursor = self.input.position();
         snapshot.skip_available = false;
         snapshot.health = self.health.health();
+        snapshot.hud = HudValues::of(&self.score);
         snapshot.resume_target = Vec2::ZERO;
         snapshot.retry_progress = 0.0;
         snapshot.exit_progress = 0.0;
@@ -635,6 +690,7 @@ impl PlaySession {
     /// Fills the fields every gameplay tick writes alike.
     fn fill(&self, snapshot: &mut PlaySnapshot, now_ns: u64) {
         snapshot.health = self.health.health();
+        snapshot.hud = HudValues::of(&self.score);
         snapshot.resume_target = self.resume_target;
         snapshot.retry_progress = self.hotkeys.retry_progress(now_ns);
         snapshot.exit_progress = self.hotkeys.exit_progress(now_ns);
@@ -701,17 +757,24 @@ pub enum RequestError {
     },
     #[error("texture request rejected: {0}")]
     Rejected(#[from] slam_render::upload::Rejected),
+    #[error("white texture request rejected: {0}")]
+    PixelsRejected(#[from] slam_render::upload::Rejected<Image>),
 }
+
+/// Side of the white image the HUD's rectangles tint: the atlas border keeps its edge
+/// texels white, a few pixels keep filtering inside.
+const WHITE_SIDE: u32 = 4;
 
 /// The skin textures of a play: requested once, looked up every frame.
 #[derive(Debug, Clone)]
 pub struct PlayTextures {
     requested: [Option<Requested>; ELEMENTS.len()],
+    white: TextureHandle,
 }
 
 impl PlayTextures {
     /// Reads the textures of hit circles and the cursor from `skins` and queues them for
-    /// upload. Missing ones are not drawn. Does file I/O: call it off the hot paths.
+    /// upload with a white image for the HUD. Missing ones are not drawn. Does file I/O: call it off the hot paths.
     pub fn request(
         skins: &SkinChain,
         requests: &mut TextureRequests,
@@ -743,12 +806,26 @@ impl PlayTextures {
                 scale: found.value.scale,
             });
         }
-        Ok(PlayTextures { requested })
+        let side = WHITE_SIDE as usize;
+        let white = requests.load_pixels(
+            Image {
+                size: Extent {
+                    width: WHITE_SIDE,
+                    height: WHITE_SIDE,
+                },
+                pixels: vec![u8::MAX; side * side * 4],
+            },
+            TextureKind::Atlas,
+        )?;
+        Ok(PlayTextures { requested, white })
     }
 
     /// The textures uploaded by this frame; pending and failed ones are `None`.
     pub fn resolve(&self, uploads: &TextureUploads) -> FrameTextures {
         let mut frame = FrameTextures::default();
+        if let TextureState::Ready(region) = uploads.get(self.white) {
+            frame.white = Some(region);
+        }
         for (requested, element) in self.requested.iter().zip(ELEMENTS) {
             let Some(r) = requested else { continue };
             let TextureState::Ready(region) = uploads.get(r.handle) else {
@@ -782,6 +859,8 @@ impl PlayTextures {
 pub struct FrameTextures {
     pub circles: CircleTextures,
     pub cursor: Option<SkinSprite>,
+    /// An opaque white image.
+    pub white: Option<AtlasRegion>,
 }
 
 /// The draw side of a play.
@@ -791,8 +870,9 @@ pub struct PlayView {
 }
 
 impl PlayView {
-    /// Writes the sprites of `snapshot` drawn at engine time `now_ns` on a surface laid out
-    /// by `layout`. Allocation-free once `batch` has room.
+    /// Writes the playfield's sprites of `snapshot` drawn at engine time `now_ns` on a
+    /// surface laid out by `layout`; the cursor goes on top of the HUD with
+    /// [`PlayView::push_cursor`]. Allocation-free once `batch` has room.
     pub fn push(
         &self,
         batch: &mut SpriteBatch,
@@ -811,6 +891,16 @@ impl PlayView {
                 &textures.circles,
             );
         }
+    }
+
+    /// Writes the cursor of `snapshot`. Allocation-free once `batch` has room.
+    pub fn push_cursor(
+        &self,
+        batch: &mut SpriteBatch,
+        layout: &PlayfieldLayout,
+        snapshot: &PlaySnapshot,
+        textures: &FrameTextures,
+    ) {
         // A stand-in for the skinned cursor and its trail.
         if let Some(t) = &textures.cursor {
             let centre = layout.to_window(snapshot.cursor);

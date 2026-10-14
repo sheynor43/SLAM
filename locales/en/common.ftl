@@ -7,3 +7,4 @@ song-select-beatmap-count =
         [one] { $count } beatmap
        *[other] { $count } beatmaps
     }
+play-skip-button = Skip
