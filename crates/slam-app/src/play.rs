@@ -39,8 +39,11 @@ use slam_ui::i18n::Localizer;
 
 use crate::bench::number;
 
+mod perf;
+use perf::{FramePerf, ReportSources, SharedFrameTimes};
+
 pub const USAGE: &str = "usage: slam-app play MAP.osu [--skin DIR] [--backend NAME] \
-                         [--device ID] [--buffer FRAMES]";
+                         [--device ID] [--buffer FRAMES] [--no-stats]";
 
 const SAMPLE_RATE: u32 = 48_000;
 const CHANNELS: u16 = 2;
@@ -73,6 +76,8 @@ pub struct Options {
     pub device: Option<String>,
     /// Requested frames per audio buffer.
     pub buffer_frames: u32,
+    /// Print the once-a-second performance line to stderr; on by default.
+    pub stats: bool,
 }
 
 impl Options {
@@ -85,6 +90,7 @@ impl Options {
             backend: None,
             device: None,
             buffer_frames: StreamConfig::default().buffer_frames,
+            stats: true,
         };
         let mut args = args.into_iter();
         while let Some(arg) = args.next() {
@@ -99,6 +105,7 @@ impl Options {
                     );
                 }
                 "--device" => options.device = Some(value()?),
+                "--no-stats" => options.stats = false,
                 "--buffer" => {
                     let frames: f64 = number(&arg, &value()?)?;
                     if frames < 1.0 || frames.fract() != 0.0 || frames > 8192.0 {
@@ -197,6 +204,8 @@ struct View {
     cursor: SpriteBatch,
     /// Read by the update thread for the input layout.
     surface_size: Arc<AtomicU64>,
+    /// Frame times for the console report; `None` with `--no-stats`.
+    perf: Option<FramePerf>,
     _quit: crate::bench::QuitOnDrop,
 }
 
@@ -229,6 +238,9 @@ impl Draw<PlaySnapshot> for View {
     }
 
     fn frame(&mut self, info: &FrameInfo, snapshot: &PlaySnapshot) {
+        if let Some(perf) = &mut self.perf {
+            perf.record(info.wait.woke_ns);
+        }
         let r = self.resources.as_mut().expect("started");
         let size = r.device.begin_frame(Color::rgb(0.0, 0.0, 0.0));
         self.surface_size
@@ -458,6 +470,8 @@ pub fn run(options: &Options) -> Result<(), String> {
         ..MusicConfig::default()
     })
     .map_err(|e| e.to_string())?;
+    let mixer_stats = Arc::clone(mixer_handle.stats());
+    let music_stats = Arc::clone(player.stats());
     mixer.set_music(music).map_err(|e| e.to_string())?;
     load_track(&mut player, &loaded.audio)?;
     let stream = slam_audio::open_output(
@@ -524,6 +538,7 @@ pub fn run(options: &Options) -> Result<(), String> {
         player,
         mixer: mixer_handle,
     };
+    let frame_times = options.stats.then(|| Arc::new(SharedFrameTimes::default()));
     let draw = View {
         surface: Some(surface),
         resources: None,
@@ -538,6 +553,9 @@ pub fn run(options: &Options) -> Result<(), String> {
         text: SpriteBatch::with_capacity(MAX_GLYPH_SPRITES),
         cursor: SpriteBatch::with_capacity(1),
         surface_size,
+        perf: frame_times
+            .as_ref()
+            .map(|shared| FramePerf::new(Arc::clone(shared))),
         _quit: crate::bench::QuitOnDrop(window.quit_handle()),
     };
     let (mut sink, source) = event_ring(1024);
@@ -578,10 +596,28 @@ pub fn run(options: &Options) -> Result<(), String> {
             }
         })
     };
+    let reporter = frame_times.map(|frame_times| {
+        let sources = ReportSources {
+            engine: Arc::clone(engine.counters()),
+            input: Arc::clone(window.counters()),
+            stream: Arc::clone(stream.counters()),
+            position: Arc::clone(stream.position()),
+            mixer: mixer_stats,
+            music: music_stats,
+            frame_times,
+            buffer_frames: stream.config().buffer_frames,
+            sample_rate: stream.config().sample_rate,
+        };
+        let closed = Arc::clone(&closed);
+        std::thread::spawn(move || perf::report(&sources, &closed))
+    });
     let mut mapper = TickMapper::new(now_ns, sdl_ticks_ns);
     let ran = window.run(&mut sink, &mut mapper);
     closed.store(true, Ordering::Relaxed);
     let _ = watcher.join();
+    if let Some(reporter) = reporter {
+        let _ = reporter.join();
+    }
 
     let slam_engine::Stopped {
         update: mut gameplay,
@@ -681,6 +717,8 @@ mod tests {
             (None, None, None)
         );
         assert_eq!(o.buffer_frames, StreamConfig::default().buffer_frames);
+        assert!(o.stats);
+        assert!(!parse(&["--no-stats", "map.osu"]).unwrap().stats);
 
         let o = parse(&[
             "--skin", "s", "map.osu", "--device", "out", "--buffer", "64",
