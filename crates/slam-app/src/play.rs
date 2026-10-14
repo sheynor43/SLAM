@@ -1,0 +1,489 @@
+//! Plays a beatmap given on the command line: hit circles, a stand-in cursor, music and
+//! hitsounds, no menus. Developer command until the screen stack and song select exist:
+//! its console output is not localised.
+
+use std::path::{Path, PathBuf};
+use std::sync::Arc;
+use std::sync::atomic::{AtomicU64, Ordering};
+use std::time::{Duration, Instant};
+
+use slam_audio::{
+    AudioPosition, Backend, MixerConfig, MixerHandle, MusicConfig, MusicEvent, MusicPlayer,
+    MusicPosition, StreamConfig, TrackSource,
+};
+use slam_engine::clock::now_ns;
+use slam_engine::gl::SdlGlSurface;
+use slam_engine::{Draw, Engine, EngineConfig, FrameInfo, TickInfo, Update};
+use slam_input::{InputEvent, InputWindow, TickMapper, event_ring, sdl_ticks_ns};
+use slam_osu::judgement::HitResult;
+use slam_osu::{Beatmap, ModSet};
+use slam_play::circles::{
+    CircleMods, CircleSettings, CircleSkinConfig, CircleStyle, CircleVisuals, HitCircles,
+};
+use slam_play::{
+    Bindings, GameplaySounds, Hitsounds, LiveInput, Offsets, PlaySession, PlaySnapshot,
+    PlayTextures, PlayView, PlayfieldLayout, SampleCache, SampleSkins, SoundSettings,
+};
+use slam_render::gl::{GlDebug, GlDevice, GlTexture};
+use slam_render::sprite::{DEFAULT_SLOTS, Projection, SpriteBatch, SpriteRenderer};
+use slam_render::textures::Textures;
+use slam_render::upload::{TextureLoaderConfig, TextureRequests, TextureUploads, texture_loader};
+use slam_render::{Color, Device};
+use slam_skin::{Skin, SkinChain};
+
+use crate::bench::number;
+
+pub const USAGE: &str = "usage: slam-app play MAP.osu [--skin DIR] [--backend NAME] \
+                         [--device ID] [--buffer FRAMES]";
+
+const SAMPLE_RATE: u32 = 48_000;
+const CHANNELS: u16 = 2;
+const WINDOW: (i32, i32) = (1280, 720);
+/// How long the track may take to open.
+const LOAD_TIMEOUT: Duration = Duration::from_secs(10);
+/// Sprites of one frame: every live circle's pieces, numbers and approach circle.
+const MAX_SPRITES: usize = 4096;
+/// Textures of the draw thread: atlas pages and images too large for a page.
+const MAX_TEXTURES: usize = 64;
+
+/// The bundled default skin, in the source tree.
+fn default_skin_dir() -> PathBuf {
+    Path::new(env!("CARGO_MANIFEST_DIR")).join("../../assets/default-skin")
+}
+
+#[derive(Clone, Debug, PartialEq)]
+pub struct Options {
+    pub map: PathBuf,
+    /// User skin folder; without it, the default skin.
+    pub skin: Option<PathBuf>,
+    /// Audio backend (`Backend::name`); `None` takes the first available.
+    pub backend: Option<Backend>,
+    /// Output device id; `None` follows the system default.
+    pub device: Option<String>,
+    /// Requested frames per audio buffer.
+    pub buffer_frames: u32,
+}
+
+impl Options {
+    /// Parses the arguments after `play`.
+    pub fn parse<I: IntoIterator<Item = String>>(args: I) -> Result<Self, String> {
+        let mut map = None;
+        let mut options = Self {
+            map: PathBuf::new(),
+            skin: None,
+            backend: None,
+            device: None,
+            buffer_frames: StreamConfig::default().buffer_frames,
+        };
+        let mut args = args.into_iter();
+        while let Some(arg) = args.next() {
+            let mut value = || args.next().ok_or_else(|| format!("{arg} needs a value"));
+            match arg.as_str() {
+                "--skin" => options.skin = Some(value()?.into()),
+                "--backend" => {
+                    let name = value()?;
+                    options.backend = Some(
+                        Backend::from_name(&name)
+                            .ok_or_else(|| format!("unknown audio backend {name}"))?,
+                    );
+                }
+                "--device" => options.device = Some(value()?),
+                "--buffer" => {
+                    let frames: f64 = number(&arg, &value()?)?;
+                    if frames < 1.0 || frames.fract() != 0.0 || frames > 8192.0 {
+                        return Err("--buffer must be a whole number in [1, 8192]".into());
+                    }
+                    options.buffer_frames = frames as u32;
+                }
+                flag if flag.starts_with("--") => return Err(format!("unknown flag {flag}")),
+                _ if map.is_none() => map = Some(PathBuf::from(arg)),
+                _ => return Err(format!("unexpected argument {arg}")),
+            }
+        }
+        options.map = map.ok_or("no beatmap given")?;
+        Ok(options)
+    }
+}
+
+/// The update thread's side.
+struct Gameplay {
+    session: PlaySession,
+    player: MusicPlayer,
+    mixer: MixerHandle,
+    output: Arc<AudioPosition>,
+    music: Arc<MusicPosition>,
+    /// Surface size the draw thread last drew at, see [`pack_size`].
+    surface: Arc<AtomicU64>,
+    /// The size the input layout was made for.
+    layout_size: u64,
+    /// Input arrives in window points, the surface is in pixels.
+    points_per_pixel: f32,
+}
+
+fn pack_size(width: u32, height: u32) -> u64 {
+    (u64::from(width) << 32) | u64::from(height)
+}
+
+impl Update for Gameplay {
+    type Snapshot = PlaySnapshot;
+
+    fn tick(&mut self, info: &TickInfo, events: &[InputEvent], snapshot: &mut PlaySnapshot) {
+        // Music events are not read here: dropping a failure frees its message. A full
+        // event queue only counts the events it drops.
+        let size = self.surface.load(Ordering::Relaxed);
+        // A minimised window may report 0×0: keep the last layout.
+        if size != self.layout_size && size >> 32 != 0 && size & 0xffff_ffff != 0 {
+            self.layout_size = size;
+            let (w, h) = ((size >> 32) as f32, (size & 0xffff_ffff) as f32);
+            let ppp = self.points_per_pixel;
+            self.session
+                .set_layout(PlayfieldLayout::new(w * ppp, h * ppp));
+        }
+        let (output, music) = (self.output.read(), self.music.read());
+        self.session.tick(
+            info.now_ns,
+            events,
+            output,
+            music,
+            &mut self.player,
+            &mut self.mixer,
+            snapshot,
+        );
+    }
+}
+
+struct Resources {
+    device: GlDevice<SdlGlSurface>,
+    textures: Textures<GlTexture>,
+    renderer: SpriteRenderer<GlDevice<SdlGlSurface>>,
+}
+
+/// The draw thread's side. The device and its resources exist between `start` and
+/// `stop`, on the draw thread.
+struct View {
+    surface: Option<SdlGlSurface>,
+    resources: Option<Resources>,
+    uploads: TextureUploads,
+    textures: PlayTextures,
+    view: PlayView,
+    batch: SpriteBatch,
+    /// Read by the update thread for the input layout.
+    surface_size: Arc<AtomicU64>,
+    _quit: crate::bench::QuitOnDrop,
+}
+
+impl Draw<PlaySnapshot> for View {
+    fn start(&mut self) {
+        // The window thread made the context and released it (ADR-0018).
+        let surface = self.surface.take().expect("surface is set before start");
+        // The same context made a device in `device_limits` already; failing now is a
+        // driver fault this developer command does not recover from.
+        let mut device = GlDevice::new(surface, GlDebug::for_build()).expect("GL device");
+        let renderer = SpriteRenderer::new(&mut device, DEFAULT_SLOTS).expect("renderer");
+        self.resources = Some(Resources {
+            device,
+            textures: Textures::with_capacity(MAX_TEXTURES),
+            renderer,
+        });
+    }
+
+    fn frame(&mut self, info: &FrameInfo, snapshot: &PlaySnapshot) {
+        let r = self.resources.as_mut().expect("started");
+        let size = r.device.begin_frame(Color::rgb(0.0, 0.0, 0.0));
+        self.surface_size
+            .store(pack_size(size.width, size.height), Ordering::Relaxed);
+        self.uploads.process(&mut r.device, &mut r.textures);
+        let textures = self.textures.resolve(&self.uploads);
+        let layout = PlayfieldLayout::new(size.width as f32, size.height as f32);
+        self.batch.clear();
+        self.view.push(
+            &mut self.batch,
+            &layout,
+            snapshot,
+            info.wait.woke_ns,
+            &textures,
+        );
+        r.renderer.begin_frame();
+        let gpu_textures = &r.textures;
+        // A failed draw or present loses one frame; the next one tries again.
+        let _ = r.renderer.draw(
+            &mut r.device,
+            &self.batch,
+            &Projection::pixels(size),
+            |id| gpu_textures.get(id),
+        );
+        let _ = r.device.present();
+    }
+
+    fn stop(&mut self) {
+        let Resources {
+            mut device,
+            mut textures,
+            renderer,
+        } = self.resources.take().expect("started");
+        renderer.destroy(&mut device);
+        for texture in textures.drain() {
+            device.destroy_texture(texture);
+        }
+        self.surface = Some(device.into_surface().expect("release GL context"));
+    }
+}
+
+/// Everything loaded before the threads start.
+struct Loaded {
+    beatmap: Beatmap,
+    audio: PathBuf,
+    beatmap_skin: Skin,
+    skins: SkinChain,
+}
+
+fn load(options: &Options) -> Result<Loaded, String> {
+    let map = &options.map;
+    let bytes = std::fs::read(map).map_err(|e| format!("{}: {e}", map.display()))?;
+    let file = slam_formats::osu::decode(&bytes)
+        .map_err(|e| format!("{}: {e}", map.display()))?
+        .beatmap;
+    let dir = map.parent().unwrap_or(Path::new("."));
+    let audio = dir.join(&file.general.audio_filename);
+    let beatmap = Beatmap::from_file(file).map_err(|e| format!("{}: {e}", map.display()))?;
+    let beatmap_skin = Skin::load_beatmap(dir, &bytes).map_err(|e| format!("beatmap skin: {e}"))?;
+    let default = Skin::load_default(default_skin_dir())
+        .map_err(|e| format!("default skin {}: {e}", default_skin_dir().display()))?;
+    let user = options
+        .skin
+        .as_ref()
+        .map(|dir| Skin::load(dir).map_err(|e| format!("--skin {}: {e}", dir.display())))
+        .transpose()?;
+    Ok(Loaded {
+        beatmap,
+        audio,
+        beatmap_skin,
+        skins: SkinChain::new(user, default),
+    })
+}
+
+/// Opens the track and waits until it is ready to play.
+fn load_track(player: &mut MusicPlayer, path: &Path) -> Result<(), String> {
+    let generation = player
+        .load(TrackSource::File(path.to_owned()))
+        .map_err(|e| format!("{}: {e}", path.display()))?;
+    let deadline = Instant::now() + LOAD_TIMEOUT;
+    while Instant::now() < deadline {
+        match player.poll_event() {
+            Some(MusicEvent::Loaded { generation: g, .. }) if g == generation => return Ok(()),
+            Some(MusicEvent::Failed {
+                generation: g,
+                error,
+            }) if g == generation => return Err(format!("{}: {error}", path.display())),
+            Some(_) => {}
+            None => std::thread::sleep(Duration::from_millis(5)),
+        }
+    }
+    Err(format!("{}: not opened in time", path.display()))
+}
+
+/// The device limits the texture loader needs; the context is released again for the
+/// draw thread.
+fn device_limits(surface: SdlGlSurface) -> Result<(SdlGlSurface, slam_render::Limits), String> {
+    let device = GlDevice::new(surface, GlDebug::for_build()).map_err(|e| e.to_string())?;
+    let limits = device.limits();
+    let surface = device.into_surface().map_err(|e| e.to_string())?;
+    Ok((surface, limits))
+}
+
+/// Plays the beatmap in a window until it is closed and prints the judgements.
+pub fn run(options: &Options) -> Result<(), String> {
+    let loaded = load(options)?;
+    let mods = ModSet::default();
+    let beatmap = &loaded.beatmap;
+
+    let mut cache = SampleCache::new(SAMPLE_RATE, CHANNELS);
+    let hitsounds = Hitsounds::new(
+        beatmap,
+        SampleSkins {
+            beatmap: Some(&loaded.beatmap_skin),
+            chain: &loaded.skins,
+        },
+        &mut cache,
+    );
+    let sounds = GameplaySounds::new(beatmap, hitsounds, SoundSettings::for_mods(&mods));
+    let circle_mods = CircleMods::new(&mods);
+    let windows = slam_osu::hit_windows::HitWindows::new(beatmap.difficulty.overall_difficulty);
+    let view = PlayView {
+        circles: HitCircles {
+            visuals: CircleVisuals::new(
+                beatmap,
+                circle_mods,
+                CircleSettings::default(),
+                Some(&loaded.beatmap_skin),
+                &loaded.skins,
+            ),
+            style: CircleStyle::new(circle_mods, &windows, &loaded.skins),
+            config: CircleSkinConfig::new(&loaded.skins),
+        },
+    };
+
+    let backend = match options.backend {
+        Some(backend) => backend,
+        None => *Backend::available()
+            .first()
+            .ok_or("no audio backend in this build")?,
+    };
+    let (mut mixer, mixer_handle) = slam_audio::mixer(&MixerConfig {
+        sample_rate: SAMPLE_RATE,
+        channels: CHANNELS,
+        ..MixerConfig::default()
+    })
+    .map_err(|e| e.to_string())?;
+    let (music, mut player) = slam_audio::music(&MusicConfig {
+        sample_rate: SAMPLE_RATE,
+        channels: CHANNELS,
+        ..MusicConfig::default()
+    })
+    .map_err(|e| e.to_string())?;
+    mixer.set_music(music).map_err(|e| e.to_string())?;
+    load_track(&mut player, &loaded.audio)?;
+    let stream = slam_audio::open_output(
+        backend,
+        StreamConfig {
+            device: options.device.clone(),
+            sample_rate: SAMPLE_RATE,
+            channels: CHANNELS,
+            buffer_frames: options.buffer_frames,
+            name: "SLAM".to_owned(),
+        },
+        Box::new(mixer),
+    )
+    .map_err(|e| e.to_string())?;
+
+    let mut window =
+        InputWindow::new_opengl("SLAM", WINDOW.0, WINDOW.1).map_err(|e| e.to_string())?;
+    let surface = SdlGlSurface(window.create_gl_context().map_err(|e| e.to_string())?);
+    let (pixels_w, pixels_h) = surface.0.size_in_pixels();
+    let points_per_pixel = if pixels_w > 0 {
+        WINDOW.0 as f32 / pixels_w as f32
+    } else {
+        1.0
+    };
+    let initial_size = pack_size(pixels_w, pixels_h);
+    let surface_size = Arc::new(AtomicU64::new(initial_size));
+    let (surface, limits) = device_limits(surface)?;
+    let (mut requests, uploads): (TextureRequests, TextureUploads) =
+        texture_loader(&TextureLoaderConfig::new(limits)).map_err(|e| e.to_string())?;
+    let textures =
+        PlayTextures::request(&loaded.skins, &mut requests).map_err(|e| e.to_string())?;
+
+    let input = LiveInput::new(
+        Bindings::default(),
+        PlayfieldLayout::new(
+            pixels_w as f32 * points_per_pixel,
+            pixels_h as f32 * points_per_pixel,
+        ),
+    );
+    let session = PlaySession::new(beatmap, &mods, &player, input, sounds, Offsets::default());
+    let gameplay = Gameplay {
+        session,
+        output: Arc::clone(stream.position()),
+        surface: Arc::clone(&surface_size),
+        layout_size: initial_size,
+        points_per_pixel,
+        music: Arc::clone(player.position()),
+        player,
+        mixer: mixer_handle,
+    };
+    let draw = View {
+        surface: Some(surface),
+        resources: None,
+        uploads,
+        textures,
+        view,
+        batch: SpriteBatch::with_capacity(MAX_SPRITES),
+        surface_size,
+        _quit: crate::bench::QuitOnDrop(window.quit_handle()),
+    };
+    let (mut sink, source) = event_ring(1024);
+    let engine = Engine::spawn(
+        EngineConfig::default(),
+        gameplay,
+        draw,
+        PlaySnapshot::default(),
+        source,
+    )
+    .map_err(|e| e.to_string())?;
+    sink.set_notify(engine.waker().as_notify());
+
+    println!(
+        "playing {} ({} objects), audio: {}; close the window to stop",
+        options.map.display(),
+        beatmap.hit_objects.len(),
+        stream.backend().name()
+    );
+    let mut mapper = TickMapper::new(now_ns, sdl_ticks_ns);
+    let ran = window.run(&mut sink, &mut mapper);
+
+    let slam_engine::Stopped {
+        update: mut gameplay,
+        draw,
+        ..
+    } = engine.shutdown();
+    // The GL context goes before the window.
+    drop(draw);
+    let deadline = Instant::now() + Duration::from_secs(1);
+    while !gameplay.session.stop_sounds(&mut gameplay.mixer) && Instant::now() < deadline {
+        std::thread::sleep(Duration::from_millis(5));
+    }
+    drop(stream);
+    drop(requests);
+
+    let statistics = gameplay.session.log().statistics();
+    println!(
+        "300: {}, 100: {}, 50: {}, miss: {}, max combo: {}",
+        statistics.count(HitResult::Great),
+        statistics.count(HitResult::Ok),
+        statistics.count(HitResult::Meh),
+        statistics.count(HitResult::Miss),
+        statistics.max_combo
+    );
+    drop(window);
+    ran.map_err(|e| e.to_string())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn parse(args: &[&str]) -> Result<Options, String> {
+        Options::parse(args.iter().map(|s| s.to_string()))
+    }
+
+    #[test]
+    fn flags() {
+        let o = parse(&["map.osu"]).unwrap();
+        assert_eq!(o.map, PathBuf::from("map.osu"));
+        assert_eq!(
+            (o.skin.as_ref(), o.backend, o.device.as_ref()),
+            (None, None, None)
+        );
+        assert_eq!(o.buffer_frames, StreamConfig::default().buffer_frames);
+
+        let o = parse(&[
+            "--skin", "s", "map.osu", "--device", "out", "--buffer", "64",
+        ])
+        .unwrap();
+        assert_eq!(o.skin, Some(PathBuf::from("s")));
+        assert_eq!(o.device.as_deref(), Some("out"));
+        assert_eq!(o.buffer_frames, 64);
+
+        assert!(parse(&[]).is_err());
+        assert!(parse(&["a.osu", "b.osu"]).is_err());
+        assert!(parse(&["map.osu", "--skin"]).is_err());
+        assert!(parse(&["map.osu", "--buffer", "0"]).is_err());
+        assert!(parse(&["map.osu", "--what"]).is_err());
+        assert!(parse(&["map.osu", "--backend", "asio"]).is_err());
+    }
+
+    #[test]
+    fn the_default_skin_is_in_the_source_tree() {
+        assert!(Skin::load_default(default_skin_dir()).is_ok());
+    }
+}

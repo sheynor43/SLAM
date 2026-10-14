@@ -27,8 +27,9 @@ deny:
 bench *ARGS:
     cargo bench --workspace {{ARGS}}
 
+[positional-arguments]
 run *ARGS:
-    cargo run -p slam-app --release -- {{ARGS}}
+    cargo run -p slam-app --release -- "$@"
 
 # Тестовый тон 440 Гц через аудио-HAL: just tone [--backend ИМЯ] [секунды] [кадры_буфера] [устройство]
 tone *ARGS:

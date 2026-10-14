@@ -100,6 +100,12 @@ impl LiveCircles {
         }
     }
 
+    /// Empties the snapshot.
+    pub fn clear(&mut self) {
+        self.len = 0;
+        self.dropped = 0;
+    }
+
     /// The circles, in start time order.
     pub fn as_slice(&self) -> &[LiveCircle] {
         &self.circles[..self.len]
