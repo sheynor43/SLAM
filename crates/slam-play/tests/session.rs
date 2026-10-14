@@ -13,9 +13,10 @@ use slam_audio::{
     VoiceParams,
 };
 use slam_input::{InputEvent, InputKind, MouseButton};
-use slam_osu::judgement::JudgementLog;
+use slam_osu::judgement::{HitResult, JudgementLog};
 use slam_osu::replay::{Actions, Rules};
 use slam_osu::rules::OsuRules;
+use slam_osu::scoring::ScoreProcessor;
 use slam_osu::{Beatmap, ModSet, Vec2};
 use slam_play::circles::{
     CircleMods, CircleSettings, CircleSkinConfig, CircleStyle, CircleVisuals, HitCircles,
@@ -24,8 +25,15 @@ use slam_play::{
     Bindings, FrameTextures, GameTime, GameplaySounds, LiveInput, Offsets, PlaySession,
     PlaySnapshot, PlayState, PlayView, SoundSettings, VoiceSink,
 };
+use slam_play::{HudValues, HudView};
+use slam_render::Extent;
+use slam_render::Limits;
+use slam_render::Origin;
+use slam_render::atlas::{AtlasRegion, UvRect};
 use slam_render::sprite::SpriteBatch;
+use slam_render::textures::TextureId;
 use slam_testkit::assert_no_alloc;
+use slam_text::{FontRegistry, GlyphAtlasConfig, glyph_atlas};
 
 slam_testkit::install_counting_allocator!();
 
@@ -403,6 +411,14 @@ fn ticks_and_frames_do_not_allocate() {
     let textures = FrameTextures::default();
     let mut batch = SpriteBatch::with_capacity(4096);
     let mut drawn = 0;
+    // The HUD's glyphs are only requested here: without a device they stay pending.
+    let registry = Arc::new(FontRegistry::with_builtin());
+    let mut glyphs = glyph_atlas(Arc::clone(&registry), &GlyphAtlasConfig::new(LIMITS)).unwrap();
+    let mut hud = HudView::new(registry, "Пропустить");
+    hud.request_glyphs(&mut glyphs);
+    let mut text = SpriteBatch::with_capacity(256);
+    let mut pending = 0;
+    let white = WHITE;
 
     assert_no_alloc(|| {
         let mut next = 0;
@@ -423,13 +439,80 @@ fn ticks_and_frames_do_not_allocate() {
                 &mut snapshot,
             );
             batch.clear();
+            text.clear();
             view.push(&mut batch, &layout(), &snapshot, now + MS / 2, &textures);
+            hud.update(1280.0, 720.0, &snapshot.hud);
+            hud.push_shapes(&mut batch, &layout(), &snapshot, white);
+            pending += hud.push_text(&mut text, &snapshot, &mut glyphs).pending;
+            view.push_cursor(&mut batch, &layout(), &snapshot, &textures);
             drawn += snapshot.circles.as_slice().len();
             now += 4 * MS;
         }
     });
     assert_eq!(snapshot.state, PlayState::Finished);
     assert!(drawn > 0);
+    assert!(pending > 0);
+    assert!(snapshot.hud.score > 0);
+    assert_eq!(hud.texts()[0], format!("{:06}", snapshot.hud.score));
+}
+
+const LIMITS: Limits = Limits {
+    max_texture_size: 4096,
+    max_uniform_block_size: 16384,
+    max_uniform_buffer_slots: 8,
+    max_texture_slots: 8,
+};
+
+const WHITE: AtlasRegion = AtlasRegion {
+    texture: TextureId(0),
+    origin: Origin { x: 0, y: 0 },
+    size: Extent {
+        width: 4,
+        height: 4,
+    },
+    uv: UvRect::FULL,
+};
+
+/// A score processor of the sessions' No Fail play that took `log`'s judgements, as
+/// lazer's HUD binds it.
+fn scored(map: &Beatmap, log: &[slam_osu::judgement::Judgement]) -> HudValues {
+    let mut score = ScoreProcessor::for_play(map, &mods(vec![slam_osu::mods::Mod::NoFail]));
+    for judgement in log {
+        score.apply(judgement, false);
+    }
+    HudValues {
+        score: score.total_score(),
+        accuracy: score.accuracy(),
+        combo: score.statistics().combo,
+    }
+}
+
+#[test]
+fn the_hud_shows_the_score_of_the_play() {
+    let map = beatmap();
+    let track = Track::default();
+    let end = end_ns(&map, session(&map, &track).start_time());
+    let mut first_judged = None;
+    let mut seen = 0;
+    let (session, _, _) = run(&map, MS, end, |s| {
+        seen += 1;
+        if first_judged.is_none() && s.hud != HudValues::default() {
+            first_judged = Some(s.hud);
+        }
+    });
+    assert!(seen > 0);
+    let events = session.log().events();
+    assert!(!events.is_empty());
+    let first = first_judged.expect("the play scores");
+    assert_eq!(first, scored(&map, &events[..1]));
+    let last = HudValues {
+        score: session.score().total_score(),
+        accuracy: session.score().accuracy(),
+        combo: session.score().statistics().combo,
+    };
+    assert_eq!(last, scored(&map, events));
+    assert!(last.score > 0);
+    assert_eq!(last.combo, session.log().statistics().combo);
 }
 
 fn view(map: &Beatmap) -> PlayView {
@@ -1088,8 +1171,20 @@ fn running_out_of_health_fails_and_stops_after_the_fail_animation() {
     let mut d = Driver::new(&map, ModSet::default());
     d.run_until(10_000, |s| s.state == PlayState::Failing);
     let time = d.snapshot.time;
+    let hud = d.snapshot.hud;
+    // The judgement that fails scores; the score is failed.
+    let score = d.session.score();
+    assert!(score.has_failed());
+    let scored: u32 = HitResult::ALL
+        .iter()
+        .map(|&r| score.statistics().count(r))
+        .sum();
+    assert_eq!(scored as usize, failed_at);
     d.run(2_490);
     assert_eq!(d.state(), PlayState::Failing);
+    // Judgements after the fail do not score: the misses leave the accuracy.
+    assert_eq!(d.snapshot.hud, hud);
+    assert!(d.session.log().events().len() > failed_at);
     assert!(d.snapshot.time > time + 2_400.0);
     assert_eq!(d.session.counted_judgements(), failed_at);
     d.run(20);
@@ -1146,6 +1241,7 @@ fn holding_quick_retry_restarts_from_the_start() {
     assert_eq!(d.snapshot.retry_progress, 0.0);
     assert_eq!(d.snapshot.restarts, 1);
     assert!(d.session.log().events().is_empty());
+    assert_eq!(d.snapshot.hud, HudValues::default());
     let seek = d
         .track
         .commands
@@ -1259,4 +1355,50 @@ fn failing_comes_before_a_pause_in_the_same_tick() {
     assert_eq!(d.state(), PlayState::Failed);
     d.tap(ESCAPE);
     assert_eq!(d.state(), PlayState::Exited);
+}
+
+#[test]
+fn hud_updates_and_frames_do_not_allocate() {
+    let registry = Arc::new(FontRegistry::with_builtin());
+    let mut glyphs = glyph_atlas(Arc::clone(&registry), &GlyphAtlasConfig::new(LIMITS)).unwrap();
+    let mut hud = HudView::new(registry, "Пропустить");
+    hud.request_glyphs(&mut glyphs);
+    let mut text = SpriteBatch::with_capacity(256);
+    let mut batch = SpriteBatch::with_capacity(256);
+    let mut snapshot = PlaySnapshot {
+        skip_available: true,
+        state: PlayState::Resuming,
+        ..PlaySnapshot::default()
+    };
+    let values = [
+        HudValues::default(),
+        HudValues {
+            score: 1_234_567,
+            accuracy: 0.987_65,
+            combo: 1234,
+        },
+        HudValues {
+            score: i64::MAX,
+            accuracy: f64::NAN,
+            combo: u32::MAX,
+        },
+        HudValues {
+            score: -1,
+            accuracy: 0.0,
+            combo: 0,
+        },
+    ];
+    assert_no_alloc(|| {
+        for (index, values) in values.iter().cycle().take(16).enumerate() {
+            let height = [720.0, 1080.0, 1.0, 0.0][index % 4];
+            hud.update(1280.0, height, values);
+            snapshot.hud = *values;
+            batch.clear();
+            text.clear();
+            hud.push_shapes(&mut batch, &layout(), &snapshot, WHITE);
+            hud.push_text(&mut text, &snapshot, &mut glyphs);
+        }
+    });
+    // Health bar (two), skip button and resume target.
+    assert_eq!(batch.len(), 4);
 }

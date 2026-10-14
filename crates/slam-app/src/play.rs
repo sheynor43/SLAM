@@ -1,5 +1,5 @@
-//! Plays a beatmap given on the command line: hit circles, a stand-in cursor, music and
-//! hitsounds, no menus. Developer command until the screen stack and song select exist:
+//! Plays a beatmap given on the command line: hit circles, a stand-in cursor and HUD, music
+//! and hitsounds, no menus. Developer command until the screen stack and song select exist:
 //! its console output is not localised.
 
 use std::path::{Path, PathBuf};
@@ -21,15 +21,17 @@ use slam_play::circles::{
     CircleMods, CircleSettings, CircleSkinConfig, CircleStyle, CircleVisuals, HitCircles,
 };
 use slam_play::{
-    Bindings, GameplaySounds, Hitsounds, LiveInput, Offsets, PlaySession, PlaySnapshot,
+    Bindings, GameplaySounds, Hitsounds, HudView, LiveInput, Offsets, PlaySession, PlaySnapshot,
     PlayTextures, PlayView, PlayfieldLayout, SampleCache, SampleSkins, SoundSettings,
 };
 use slam_render::gl::{GlDebug, GlDevice, GlTexture};
 use slam_render::sprite::{DEFAULT_SLOTS, Projection, SpriteBatch, SpriteRenderer};
 use slam_render::textures::Textures;
 use slam_render::upload::{TextureLoaderConfig, TextureRequests, TextureUploads, texture_loader};
-use slam_render::{Color, Device};
+use slam_render::{Color, Device, shaders};
 use slam_skin::{Skin, SkinChain};
+use slam_text::{FontRegistry, GlyphAtlasConfig, GlyphCache, glyph_atlas};
+use slam_ui::i18n::Localizer;
 
 use crate::bench::number;
 
@@ -43,8 +45,13 @@ const WINDOW: (i32, i32) = (1280, 720);
 const LOAD_TIMEOUT: Duration = Duration::from_secs(10);
 /// Sprites of one frame: every live circle's pieces, numbers and approach circle.
 const MAX_SPRITES: usize = 4096;
-/// Textures of the draw thread: atlas pages and images too large for a page.
+/// Textures of the draw thread: atlas pages of the skin and the glyphs, and images too
+/// large for a page.
 const MAX_TEXTURES: usize = 64;
+/// Glyph sprites of one frame: the HUD's numbers and the skip button.
+const MAX_GLYPH_SPRITES: usize = 256;
+/// How long the draw thread waits for the HUD's glyphs before the first frame.
+const GLYPH_WARM_TIMEOUT: Duration = Duration::from_secs(1);
 
 /// The bundled default skin, in the source tree.
 fn default_skin_dir() -> PathBuf {
@@ -161,6 +168,8 @@ struct Resources {
     device: GlDevice<SdlGlSurface>,
     textures: Textures<GlTexture>,
     renderer: SpriteRenderer<GlDevice<SdlGlSurface>>,
+    /// Draws MSDF glyphs.
+    text_renderer: SpriteRenderer<GlDevice<SdlGlSurface>>,
 }
 
 /// The draw thread's side. The device and its resources exist between `start` and
@@ -170,8 +179,15 @@ struct View {
     resources: Option<Resources>,
     uploads: TextureUploads,
     textures: PlayTextures,
+    glyphs: GlyphCache,
     view: PlayView,
+    hud: HudView,
+    /// The playfield and the HUD's shapes.
     batch: SpriteBatch,
+    /// The HUD's text.
+    text: SpriteBatch,
+    /// The cursor, on top of the HUD.
+    cursor: SpriteBatch,
     /// Read by the update thread for the input layout.
     surface_size: Arc<AtomicU64>,
     _quit: crate::bench::QuitOnDrop,
@@ -184,11 +200,24 @@ impl Draw<PlaySnapshot> for View {
         // The same context made a device in `device_limits` already; failing now is a
         // driver fault this developer command does not recover from.
         let mut device = GlDevice::new(surface, GlDebug::for_build()).expect("GL device");
-        let renderer = SpriteRenderer::new(&mut device, DEFAULT_SLOTS).expect("renderer");
+        // Two draws a frame (playfield and HUD, cursor), each with its spare slots.
+        let renderer = SpriteRenderer::new(&mut device, 2 * DEFAULT_SLOTS).expect("renderer");
+        let text_renderer = SpriteRenderer::with_shader(&mut device, DEFAULT_SLOTS, &shaders::MSDF)
+            .expect("text renderer");
+        let mut textures = Textures::with_capacity(MAX_TEXTURES);
+        // The HUD's glyphs are made before the first frame: a glyph takes several frames
+        // to appear. The update thread does not wait for this (the lead-in runs on); late
+        // glyphs show when ready.
+        let deadline = Instant::now() + GLYPH_WARM_TIMEOUT;
+        while self.hud.request_glyphs(&mut self.glyphs) > 0 && Instant::now() < deadline {
+            self.glyphs.process(&mut device, &mut textures);
+            std::thread::sleep(Duration::from_millis(1));
+        }
         self.resources = Some(Resources {
             device,
-            textures: Textures::with_capacity(MAX_TEXTURES),
+            textures,
             renderer,
+            text_renderer,
         });
     }
 
@@ -198,9 +227,14 @@ impl Draw<PlaySnapshot> for View {
         self.surface_size
             .store(pack_size(size.width, size.height), Ordering::Relaxed);
         self.uploads.process(&mut r.device, &mut r.textures);
+        self.glyphs.process(&mut r.device, &mut r.textures);
         let textures = self.textures.resolve(&self.uploads);
-        let layout = PlayfieldLayout::new(size.width as f32, size.height as f32);
+        let (width, height) = (size.width as f32, size.height as f32);
+        let layout = PlayfieldLayout::new(width, height);
+        self.hud.update(width, height, &snapshot.hud);
         self.batch.clear();
+        self.text.clear();
+        self.cursor.clear();
         self.view.push(
             &mut self.batch,
             &layout,
@@ -208,15 +242,29 @@ impl Draw<PlaySnapshot> for View {
             info.wait.woke_ns,
             &textures,
         );
+        if let Some(white) = textures.white {
+            self.hud
+                .push_shapes(&mut self.batch, &layout, snapshot, white);
+        }
+        self.hud
+            .push_text(&mut self.text, snapshot, &mut self.glyphs);
+        self.view
+            .push_cursor(&mut self.cursor, &layout, snapshot, &textures);
         r.renderer.begin_frame();
+        r.text_renderer.begin_frame();
         let gpu_textures = &r.textures;
+        let projection = Projection::pixels(size);
         // A failed draw or present loses one frame; the next one tries again.
-        let _ = r.renderer.draw(
-            &mut r.device,
-            &self.batch,
-            &Projection::pixels(size),
-            |id| gpu_textures.get(id),
-        );
+        let texture = |id| gpu_textures.get(id);
+        let _ = r
+            .renderer
+            .draw(&mut r.device, &self.batch, &projection, texture);
+        let _ = r
+            .text_renderer
+            .draw(&mut r.device, &self.text, &projection, texture);
+        let _ = r
+            .renderer
+            .draw(&mut r.device, &self.cursor, &projection, texture);
         let _ = r.device.present();
     }
 
@@ -225,8 +273,10 @@ impl Draw<PlaySnapshot> for View {
             mut device,
             mut textures,
             renderer,
+            text_renderer,
         } = self.resources.take().expect("started");
         renderer.destroy(&mut device);
+        text_renderer.destroy(&mut device);
         for texture in textures.drain() {
             device.destroy_texture(texture);
         }
@@ -377,6 +427,12 @@ pub fn run(options: &Options) -> Result<(), String> {
         texture_loader(&TextureLoaderConfig::new(limits)).map_err(|e| e.to_string())?;
     let textures =
         PlayTextures::request(&loaded.skins, &mut requests).map_err(|e| e.to_string())?;
+    let registry = Arc::new(FontRegistry::with_builtin());
+    let glyphs = glyph_atlas(Arc::clone(&registry), &GlyphAtlasConfig::new(limits))
+        .map_err(|e| e.to_string())?;
+    // English until the language setting exists (#98).
+    let localizer = Localizer::builtin().map_err(|e| e.to_string())?;
+    let hud = HudView::new(registry, &localizer.format("play-skip-button", None));
 
     let input = LiveInput::new(
         Bindings::default(),
@@ -403,8 +459,12 @@ pub fn run(options: &Options) -> Result<(), String> {
         resources: None,
         uploads,
         textures,
+        glyphs,
         view,
+        hud,
         batch: SpriteBatch::with_capacity(MAX_SPRITES),
+        text: SpriteBatch::with_capacity(MAX_GLYPH_SPRITES),
+        cursor: SpriteBatch::with_capacity(1),
         surface_size,
         _quit: crate::bench::QuitOnDrop(window.quit_handle()),
     };

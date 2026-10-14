@@ -9,3 +9,4 @@ song-select-beatmap-count =
         [many] { $count } карт
        *[other] { $count } карты
     }
+play-skip-button = Пропустить
