@@ -1313,3 +1313,62 @@ fn a_missed_head_is_reported_at_the_end_of_its_miss_window() {
     assert_eq!(head.result, Miss);
     assert!(head.time <= TIME_SLIDER_START + 400.0, "{head:?}");
 }
+
+#[test]
+fn nested_judgements_follow_the_beatmap_order_with_hit_state_times() {
+    let map = input_slider();
+    let OsuHitObjectKind::Slider(slider) = &map.hit_objects[0].kind else {
+        panic!("not a slider");
+    };
+    let nested = slider.nested.clone();
+    assert!(
+        nested
+            .iter()
+            .filter(|n| matches!(n.kind, NestedKind::Tick { .. }))
+            .count()
+            >= 2,
+        "{nested:?}"
+    );
+    // Tracked until the second slide time, released after.
+    let frames = [
+        frame(0.0, 0.0, 0.0, NONE),
+        frame(TIME_SLIDER_START, 0.0, 0.0, LEFT),
+        frame(TIME_DURING_SLIDE_2, 0.0, 0.0, NONE),
+    ];
+    let rules = OsuRules::with_options(&map, lazer(HitPolicy::StartTimeOrdered));
+    let mut sim = Simulator::new(&map, ReplayInput::new(frames.to_vec()), rules);
+
+    step_to(&mut sim, TIME_SLIDER_START - 1.0);
+    let judgements: Vec<_> = sim.rules().nested_judgements(0).collect();
+    assert_eq!(judgements.len(), nested.len());
+    assert!(judgements.iter().all(Option::is_none), "{judgements:?}");
+
+    sim.run();
+    let judgements: Vec<_> = sim.rules().nested_judgements(0).collect();
+    for (n, j) in nested.iter().zip(&judgements) {
+        let j = j.expect("every nested object is judged by the end");
+        match n.kind {
+            NestedKind::Head => assert_eq!((j.time, j.result), (TIME_SLIDER_START, Great)),
+            NestedKind::Tick { .. } => {
+                // Judged once their time is reached, reported at their start time.
+                assert_eq!(j.time, n.start_time);
+                assert_eq!(
+                    j.result.is_hit(),
+                    n.start_time < TIME_DURING_SLIDE_2,
+                    "{n:?}"
+                );
+            }
+            NestedKind::Repeat { .. } | NestedKind::Tail { .. } => {
+                assert!(j.time <= n.start_time, "{n:?} {j:?}");
+                assert!(!j.result.is_hit(), "{n:?}");
+            }
+        }
+    }
+    // The same as the head and tail of the live slider.
+    let live = live_slider(sim.rules());
+    assert_eq!(judgements.first().copied().flatten(), live.head);
+    assert_eq!(judgements.last().copied().flatten(), live.tail);
+    // Not a slider: nothing.
+    assert_eq!(sim.rules().nested_judgements(1).count(), 0);
+    assert_eq!(sim.rules().nested_judgements(u32::MAX).count(), 0);
+}

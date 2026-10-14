@@ -22,7 +22,7 @@ use slam_play::circles::{
     CircleMods, CircleSettings, CircleSkinConfig, CircleStyle, CircleVisuals, HitCircles,
 };
 use slam_play::slider_body::Snaking;
-use slam_play::sliders::{HitSliders, MAX_LIVE_SLIDERS, SliderBodies, SliderVisuals};
+use slam_play::sliders::{ArrowStyle, HitSliders, MAX_LIVE_SLIDERS, SliderBodies, SliderVisuals};
 use slam_play::{
     BackgroundSettings, BackgroundView, Bindings, GameplaySounds, Hitsounds, HudView, LiveInput,
     Offsets, PlaySession, PlaySnapshot, PlayTextures, PlayView, PlayfieldLayout, SampleCache,
@@ -55,8 +55,9 @@ const CHANNELS: u16 = 2;
 const WINDOW: (i32, i32) = (1280, 720);
 /// How long the track may take to open.
 const LOAD_TIMEOUT: Duration = Duration::from_secs(10);
-/// Sprites of one frame: every live circle's pieces, numbers and approach circle.
-const MAX_SPRITES: usize = 4096;
+/// Sprites of one frame: every live circle's pieces, numbers and approach circle, slider
+/// ticks (up to `MAX_LIVE_NESTED`) and repeats.
+const MAX_SPRITES: usize = 8192;
 /// Textures of the draw thread: atlas pages of the skin and the glyphs, and images too
 /// large for a page.
 const MAX_TEXTURES: usize = 64;
@@ -556,6 +557,7 @@ pub fn run(options: &Options) -> Result<(), String> {
                 &loaded.skins,
             ),
             snaking: Snaking::default(),
+            arrows: ArrowStyle::new(&loaded.skins),
         },
     };
 

@@ -406,6 +406,23 @@ impl OsuRules {
         })
     }
 
+    /// The judgements of the nested objects of the slider with object index `index`, as their
+    /// drawables see them, in the beatmap's order (`Slider::nested`): `None` for the ones not
+    /// judged yet. Empty for an index that is not a slider's.
+    pub fn nested_judgements(
+        &self,
+        index: u32,
+    ) -> impl Iterator<Item = Option<CircleJudgement>> + '_ {
+        let slider = match self.objects.get(index as usize).map(|o| o.kind) {
+            Some(Kind::Slider(s)) => Some(&self.sliders[s]),
+            _ => None,
+        };
+        slider.into_iter().flat_map(|s| {
+            s.nested_judgements()
+                .map(|j| j.map(|(time, result)| CircleJudgement { time, result }))
+        })
+    }
+
     /// The hit circles alive at the last update, in start time order, with their judgements:
     /// what lazer's `DrawableHitCircle` shows. A judged circle stays alive while it fades out.
     pub fn live_circles(&self) -> impl Iterator<Item = LiveCircle> + '_ {

@@ -184,8 +184,26 @@ impl SliderState {
     // Ported from osu!lazer 2026.1005.0-lazer: osu.Game.Rulesets.Osu/Objects/SliderEndCircle.cs (CreateHitWindows)
     // Ported from osu!lazer 2026.1005.0-lazer: osu.Game/Rulesets/Judgements/JudgementResult.cs (TimeAbsolute)
     pub(super) fn tail_judgement(&self) -> Option<(f64, HitResult)> {
-        let n = &self.nested[self.tail];
+        self.nested_judgement(self.tail)
+    }
+
+    /// The hit state time and result of nested object `k`, once judged. Ticks, repeats and the
+    /// tail have no hit windows: their judgement time is clamped to their start time.
+    // Ported from osu!lazer 2026.1005.0-lazer: osu.Game.Rulesets.Osu/Objects/SliderTick.cs (CreateHitWindows)
+    // Ported from osu!lazer 2026.1005.0-lazer: osu.Game.Rulesets.Osu/Objects/SliderEndCircle.cs (CreateHitWindows)
+    // Ported from osu!lazer 2026.1005.0-lazer: osu.Game/Rulesets/Judgements/JudgementResult.cs (TimeAbsolute)
+    fn nested_judgement(&self, k: usize) -> Option<(f64, HitResult)> {
+        if k == self.head {
+            return self.head_judgement();
+        }
+        let n = &self.nested[k];
         n.judged().then(|| (n.time.min(n.start_time), n.result))
+    }
+
+    /// The hit state times and results of the nested objects, in the beatmap's order
+    /// (`Slider::nested`); `None` for those not judged yet.
+    pub(super) fn nested_judgements(&self) -> impl Iterator<Item = Option<(f64, HitResult)>> + '_ {
+        (0..self.nested.len()).map(|k| self.nested_judgement(k))
     }
 
     /// Whether the tail is judged as a hit.

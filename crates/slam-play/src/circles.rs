@@ -300,6 +300,48 @@ pub(crate) enum Easing {
     None,
     /// osu-framework's `Easing.Out` (quadratic).
     Out,
+    OutQuint,
+    OutElasticHalf,
+}
+
+impl Easing {
+    // Ported from osu-framework 2026.921.1: osu.Framework/Graphics/Transforms/DefaultEasingFunction.cs (ApplyEasing)
+    pub(crate) fn apply(self, t: f64) -> f64 {
+        const ELASTIC_CONST: f64 = 2.0 * std::f64::consts::PI / 0.3;
+        const ELASTIC_CONST2: f64 = 0.3 / 4.0;
+        match self {
+            Easing::None => t,
+            Easing::Out => t * (2.0 - t),
+            Easing::OutQuint => {
+                let t = t - 1.0;
+                t * t * t * t * t + 1.0
+            }
+            Easing::OutElasticHalf => {
+                let offset = 2f64.powi(-10) * ((0.5 - ELASTIC_CONST2) * ELASTIC_CONST).sin();
+                2f64.powf(-10.0 * t) * ((0.5 * t - ELASTIC_CONST2) * ELASTIC_CONST).sin() + 1.0
+                    - offset * t
+            }
+        }
+    }
+}
+
+/// osu-framework's `Interpolation.ValueAt` of a `float` (interpolated in `double`), without
+/// clamping `time` to the range.
+// Ported from osu-framework 2026.921.1: osu.Framework/Utils/Interpolation.cs (ValueAt)
+pub(crate) fn value_at(time: f64, from: f32, to: f32, start: f64, end: f64, easing: Easing) -> f32 {
+    let (from, to) = (f64::from(from), f64::from(to));
+    if from == to {
+        return from as f32;
+    }
+    let current = time - start;
+    let duration = end - start;
+    if current == 0.0 {
+        return from as f32;
+    }
+    if duration == 0.0 {
+        return to as f32;
+    }
+    (from + easing.apply(current / duration) * (to - from)) as f32
 }
 
 /// One transform of a single property.
@@ -322,10 +364,7 @@ impl Tween {
     }
 
     fn ease(&self, t: f64) -> f64 {
-        match self.easing {
-            Easing::None => t,
-            Easing::Out => t * (2.0 - t),
-        }
+        self.easing.apply(t)
     }
 
     /// The value at `time` (not before the start) when starting from `from`, interpolated as
@@ -779,7 +818,17 @@ fn push_circles(
     for c in live.iter().rev() {
         if let Some(circle) = circles.visuals.get(c.index) {
             let pose = circle_pose(circle, c.judgement, time, &circles.style);
-            circles.push_piece(batch, layout, circle, &pose, 1.0, textures.into(), textures);
+            let all = PieceLayers::All;
+            circles.push_piece(
+                batch,
+                layout,
+                circle,
+                &pose,
+                1.0,
+                textures.into(),
+                textures,
+                all,
+            );
         }
     }
     let Some(approach) = &textures.approach else {
@@ -809,9 +858,21 @@ impl From<&CircleTextures> for PieceTextures {
     }
 }
 
+/// Which layers of a circle piece to write.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum PieceLayers {
+    All,
+    /// The circle sprite only.
+    Circle,
+    /// The overlay and the combo number only: `LegacyMainCirclePiece.OverlayLayer`, which a
+    /// slider head proxies above its reverse arrows.
+    Overlay,
+}
+
 impl HitCircles {
-    /// Writes the circle piece of `circle` in `pose` (its circle, overlay and combo number),
-    /// within a parent of `parent_alpha` (a slider, for its head). Digits come from `textures`.
+    /// Writes the `layers` of the circle piece of `circle` in `pose` (its circle, overlay and
+    /// combo number), within a parent of `parent_alpha` (a slider, for its head). Digits come
+    /// from `textures`.
     #[allow(clippy::too_many_arguments)]
     pub(crate) fn push_piece(
         &self,
@@ -822,6 +883,7 @@ impl HitCircles {
         parent_alpha: f32,
         piece: PieceTextures,
         textures: &CircleTextures,
+        layers: PieceLayers,
     ) {
         let alpha = parent_alpha * pose.object_alpha * pose.piece_alpha;
         if alpha <= 0.0 {
@@ -833,10 +895,15 @@ impl HitCircles {
         let sprite_scale = object_scale * pose.sprite_scale;
         let sprite_alpha = alpha * pose.sprite_alpha;
 
-        if let Some(t) = &piece.circle {
+        if layers != PieceLayers::Overlay
+            && let Some(t) = &piece.circle
+        {
             let size = Vec2::new(t.size.x * sprite_scale, t.size.y * sprite_scale);
             let colour = tint(circle.colour, pose.brightness, sprite_alpha);
             batch.push(&centred(t, centre, size, colour));
+        }
+        if layers == PieceLayers::Circle {
+            return;
         }
         let overlay = |batch: &mut SpriteBatch| {
             if let Some(t) = &piece.overlay {
