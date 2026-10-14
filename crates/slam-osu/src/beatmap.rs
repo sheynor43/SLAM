@@ -70,6 +70,9 @@ pub struct Beatmap {
     pub difficulty_without_mods: Difficulty,
     /// Stack leniency from `[General]`.
     pub stack_leniency: f32,
+    /// `AudioLeadIn` from `[General]`: how long before the first object, in ms, the play
+    /// should start at least ([`crate::lead_in::earliest_start_time`]).
+    pub audio_lead_in: f64,
     /// Control points.
     pub control_points: ControlPoints,
     /// Breaks sorted by start, then end time.
@@ -173,6 +176,7 @@ impl Beatmap {
             difficulty,
             difficulty_without_mods,
             stack_leniency: file.general.stack_leniency,
+            audio_lead_in: file.general.audio_lead_in,
             control_points,
             breaks,
             hit_objects,

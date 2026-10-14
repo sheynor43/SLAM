@@ -6,9 +6,10 @@ use common::{PressRules, beatmap, noisy_frames, replay};
 use slam_formats::osr::GeneratedFrame;
 use slam_formats::osu::Vec2;
 use slam_osu::judgement::{HitResult, JudgementLog};
+use slam_osu::lead_in::gameplay_start_time;
 use slam_osu::replay::{
     ActionEvent, Actions, InputFrame, NoRules, ReplayInput, Rules, Simulator, StepInput,
-    UPDATE_INTERVAL, gameplay_start_time,
+    UPDATE_INTERVAL,
 };
 
 /// An owned copy of one [`StepInput`].
