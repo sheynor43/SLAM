@@ -4,6 +4,7 @@
 
 mod autoplay;
 pub mod beatmap;
+pub mod breaks;
 pub mod control_points;
 pub mod difficulty;
 mod dotnet;

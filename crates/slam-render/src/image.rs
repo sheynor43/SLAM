@@ -1,7 +1,13 @@
-//! Image decoding into `Rgba8` pixels for textures (ADR-0034). Runs on any thread;
-//! the draw thread only uploads the result.
+//! Image decoding into `Rgba8` pixels for textures (ADR-0034, ADR-0040). Runs on any
+//! thread; the draw thread only uploads the result.
 
 use std::io::Cursor;
+
+use zune_jpeg::JpegDecoder;
+use zune_jpeg::errors::DecodeErrors;
+use zune_jpeg::zune_core::bytestream::ZCursor;
+use zune_jpeg::zune_core::colorspace::ColorSpace;
+use zune_jpeg::zune_core::options::DecoderOptions;
 
 use crate::hal::Extent;
 
@@ -41,6 +47,81 @@ pub enum ImageError {
     FrameMismatch,
     #[error("invalid PNG: {0}")]
     Png(#[source] png::DecodingError),
+    #[error("invalid JPEG: {0}")]
+    Jpeg(#[source] zune_jpeg::errors::DecodeErrors),
+    #[error("unsupported image format")]
+    Unsupported,
+}
+
+const PNG_SIGNATURE: [u8; 8] = [0x89, b'P', b'N', b'G', 0x0D, 0x0A, 0x1A, 0x0A];
+const JPEG_SIGNATURE: [u8; 3] = [0xFF, 0xD8, 0xFF];
+
+/// Decodes a PNG or a JPEG, chosen by the file signature and not by the extension
+/// (ADR-0040); anything else is [`ImageError::Unsupported`].
+pub fn decode_image(bytes: &[u8], limits: ImageLimits) -> Result<Image, ImageError> {
+    if bytes.starts_with(&PNG_SIGNATURE) {
+        decode_png(bytes, limits)
+    } else if bytes.starts_with(&JPEG_SIGNATURE) {
+        decode_jpeg(bytes, limits)
+    } else {
+        Err(ImageError::Unsupported)
+    }
+}
+
+/// Decodes a baseline or progressive JPEG of any colour space (grey, YCbCr, CMYK,
+/// YCCK) into `Rgba8` with opaque alpha. EXIF orientation and ICC profiles are
+/// ignored. The header is read first, so an oversized image is rejected before any
+/// pixel memory is allocated.
+pub fn decode_jpeg(bytes: &[u8], limits: ImageLimits) -> Result<Image, ImageError> {
+    // JPEG dimensions are at most 65535; the limits are checked here so that the
+    // error is `TooLarge` and not a decoder-specific one.
+    let options = DecoderOptions::default()
+        .set_max_width(usize::from(u16::MAX))
+        .set_max_height(usize::from(u16::MAX))
+        .jpeg_set_out_colorspace(ColorSpace::RGBA);
+    let mut decoder = JpegDecoder::new_with_options(ZCursor::new(bytes), options);
+    decoder.decode_headers().map_err(ImageError::Jpeg)?;
+    // Set by a successful `decode_headers`; a missing one is treated as a broken file.
+    let info = decoder
+        .info()
+        .ok_or(ImageError::Jpeg(DecodeErrors::FormatStatic(
+            "no JPEG header",
+        )))?;
+    let (width, height) = (u32::from(info.width), u32::from(info.height));
+    let rgba_len = u64::from(width) * u64::from(height) * 4;
+    if width > limits.max_side || height > limits.max_side || rgba_len > limits.max_bytes as u64 {
+        return Err(ImageError::TooLarge { width, height });
+    }
+    let four_components = matches!(
+        decoder.input_colorspace(),
+        Some(ColorSpace::CMYK | ColorSpace::YCCK)
+    );
+    if four_components {
+        // zune-jpeg 0.5.15 writes garbage for CMYK/YCCK straight into RGBA (it
+        // steps its output by 3 bytes), so these are decoded to RGB and widened.
+        decoder.set_options(options.jpeg_set_out_colorspace(ColorSpace::RGB));
+    }
+    let len = decoder
+        .output_buffer_size()
+        .ok_or(ImageError::TooLarge { width, height })?;
+    let channels = if four_components { 3 } else { 4 };
+    if len as u64 != u64::from(width) * u64::from(height) * channels {
+        // The decoder did not honour the requested output colour space.
+        return Err(ImageError::FrameMismatch);
+    }
+    let mut pixels = vec![0; len];
+    decoder.decode_into(&mut pixels).map_err(ImageError::Jpeg)?;
+    if four_components {
+        let mut rgba = Vec::with_capacity(rgba_len as usize);
+        for px in pixels.as_chunks::<3>().0 {
+            rgba.extend_from_slice(&[px[0], px[1], px[2], 255]);
+        }
+        pixels = rgba;
+    }
+    Ok(Image {
+        size: Extent::new(width, height),
+        pixels,
+    })
 }
 
 /// Decodes a PNG of any colour type and bit depth into `Rgba8`: palettes and `tRNS`
@@ -317,6 +398,145 @@ mod tests {
                     assert_eq!(img.pixels.len(), width as usize * height as usize * 4);
                 }
             }
+        }
+    }
+
+    const RGB_JPEG: &[u8] = include_bytes!("../tests/data/rgb-32x16.jpg");
+    const GRAY_JPEG: &[u8] = include_bytes!("../tests/data/gray-32x16.jpg");
+    const PROGRESSIVE_JPEG: &[u8] = include_bytes!("../tests/data/progressive-32x16.jpg");
+    const CMYK_JPEG: &[u8] = include_bytes!("../tests/data/cmyk-32x16.jpg");
+
+    fn decode_jpeg_ok(bytes: &[u8]) -> Image {
+        decode_jpeg(bytes, ImageLimits::default()).unwrap()
+    }
+
+    fn pixel(img: &Image, x: usize, y: usize) -> [u8; 4] {
+        let i = (y * img.size.width as usize + x) * 4;
+        img.pixels[i..i + 4].try_into().unwrap()
+    }
+
+    fn assert_near(actual: [u8; 4], expected: [u8; 3], tolerance: u8) {
+        assert_eq!(actual[3], 255, "alpha of {actual:?}");
+        for c in 0..3 {
+            assert!(
+                actual[c].abs_diff(expected[c]) <= tolerance,
+                "{actual:?} is not near {expected:?}"
+            );
+        }
+    }
+
+    // Fixtures: two solid halves, (200, 50, 30) and (20, 120, 220), made with PIL at
+    // quality 90 (4:4:4 for the colour ones).
+    const LEFT: [u8; 3] = [200, 50, 30];
+    const RIGHT: [u8; 3] = [20, 120, 220];
+
+    #[test]
+    fn baseline_jpeg_decodes_to_opaque_rgba() {
+        let img = decode_jpeg_ok(RGB_JPEG);
+        assert_eq!(img.size, Extent::new(32, 16));
+        assert_eq!(img.pixels.len(), 32 * 16 * 4);
+        assert_near(pixel(&img, 4, 8), LEFT, 3);
+        assert_near(pixel(&img, 27, 8), RIGHT, 3);
+    }
+
+    #[test]
+    fn progressive_jpeg_matches_the_baseline_colours() {
+        let img = decode_jpeg_ok(PROGRESSIVE_JPEG);
+        assert_eq!(img.size, Extent::new(32, 16));
+        assert_near(pixel(&img, 4, 8), LEFT, 3);
+        assert_near(pixel(&img, 27, 8), RIGHT, 3);
+    }
+
+    #[test]
+    fn grey_jpeg_spreads_to_rgb() {
+        let img = decode_jpeg_ok(GRAY_JPEG);
+        assert_eq!(img.size, Extent::new(32, 16));
+        // BT.601 luma of the two halves: 92.6 and 101.5.
+        let left = pixel(&img, 4, 8);
+        let right = pixel(&img, 27, 8);
+        assert_near(left, [93, 93, 93], 3);
+        assert_near(right, [101, 101, 101], 3);
+    }
+
+    #[test]
+    fn cmyk_jpeg_converts_to_rgb() {
+        let img = decode_jpeg_ok(CMYK_JPEG);
+        assert_eq!(img.size, Extent::new(32, 16));
+        assert_near(pixel(&img, 4, 8), LEFT, 6);
+        assert_near(pixel(&img, 27, 8), RIGHT, 6);
+    }
+
+    #[test]
+    fn jpeg_sizes_over_the_limits_are_rejected() {
+        let limits = ImageLimits {
+            max_side: 31,
+            ..ImageLimits::default()
+        };
+        assert!(matches!(
+            decode_jpeg(RGB_JPEG, limits),
+            Err(ImageError::TooLarge {
+                width: 32,
+                height: 16
+            })
+        ));
+        let limits = ImageLimits {
+            max_bytes: 32 * 16 * 4 - 1,
+            ..ImageLimits::default()
+        };
+        assert!(matches!(
+            decode_jpeg(RGB_JPEG, limits),
+            Err(ImageError::TooLarge { .. })
+        ));
+        let exact = ImageLimits {
+            max_side: 32,
+            max_bytes: 32 * 16 * 4,
+        };
+        assert!(decode_jpeg(RGB_JPEG, exact).is_ok());
+    }
+
+    #[test]
+    fn broken_jpegs_are_errors_not_panics() {
+        let limits = ImageLimits::default();
+        assert!(decode_jpeg(&[], limits).is_err());
+        assert!(decode_jpeg(&[0xff, 0xd8, 0xff], limits).is_err());
+        // Pseudo-random bytes after the signature.
+        let mut garbage = vec![0xff, 0xd8, 0xff];
+        let mut x = 12345u32;
+        for _ in 0..512 {
+            x = x.wrapping_mul(1664525).wrapping_add(1013904223);
+            garbage.push((x >> 24) as u8);
+        }
+        assert!(decode_jpeg(&garbage, limits).is_err());
+        // Truncated at every length: never a panic, and a decoded image is whole.
+        for bytes in [RGB_JPEG, PROGRESSIVE_JPEG, GRAY_JPEG, CMYK_JPEG] {
+            for len in 0..bytes.len() {
+                if let Ok(img) = decode_jpeg(&bytes[..len], limits) {
+                    let Extent { width, height } = img.size;
+                    assert_eq!(img.pixels.len(), width as usize * height as usize * 4);
+                }
+            }
+        }
+        assert!(decode_jpeg(&RGB_JPEG[..RGB_JPEG.len() / 2], limits).is_err());
+        // Every byte corrupted in turn.
+        for i in 0..RGB_JPEG.len() {
+            let mut bad = RGB_JPEG.to_vec();
+            bad[i] ^= 0xff;
+            let _ = decode_jpeg(&bad, limits);
+        }
+    }
+
+    #[test]
+    fn decode_image_picks_the_decoder_by_signature() {
+        let limits = ImageLimits::default();
+        let png = Png::new(1, 1, png::ColorType::Rgba).encode(&[1, 2, 3, 4]);
+        assert_eq!(decode_image(&png, limits).unwrap().pixels, [1, 2, 3, 4]);
+        let jpeg = decode_image(RGB_JPEG, limits).unwrap();
+        assert_eq!(jpeg.size, Extent::new(32, 16));
+        for bytes in [&b"GIF89a"[..], b"", b"\xff\xd8", b"BM"] {
+            assert!(matches!(
+                decode_image(bytes, limits),
+                Err(ImageError::Unsupported)
+            ));
         }
     }
 }

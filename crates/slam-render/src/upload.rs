@@ -16,7 +16,7 @@ use std::time::Duration;
 
 use crate::atlas::{Atlas, AtlasRegion, ShelfPacker, UvRect, extrude};
 use crate::hal::{Device, Extent, Limits, Origin, TextureDesc, TextureFormat, TextureUsage};
-use crate::image::{Image, ImageError, ImageLimits, decode_png};
+use crate::image::{Image, ImageError, ImageLimits, decode_image};
 use crate::textures::{TextureId, Textures};
 
 /// How long the loader sleeps when it has nothing to do or the draw thread is behind.
@@ -145,7 +145,7 @@ enum Command {
 }
 
 enum Source {
-    Png(Vec<u8>),
+    Encoded(Vec<u8>),
     Pixels(Image),
 }
 
@@ -251,12 +251,12 @@ pub struct TextureRequests {
 }
 
 impl TextureRequests {
-    /// Queues a PNG to load and returns its handle at once; the draw thread sees it
-    /// as [`TextureState::Pending`] until it is uploaded.
+    /// Queues an encoded image (PNG or JPEG) to load and returns its handle at once; the
+    /// draw thread sees it as [`TextureState::Pending`] until it is uploaded.
     pub fn load(&mut self, bytes: Vec<u8>, kind: TextureKind) -> Result<TextureHandle, Rejected> {
-        self.enqueue(Source::Png(bytes), kind)
+        self.enqueue(Source::Encoded(bytes), kind)
             .map_err(|(reason, source)| match source {
-                Source::Png(input) => Rejected { reason, input },
+                Source::Encoded(input) => Rejected { reason, input },
                 Source::Pixels(_) => unreachable!("the source is handed back unchanged"),
             })
     }
@@ -272,7 +272,7 @@ impl TextureRequests {
         self.enqueue(Source::Pixels(image), kind)
             .map_err(|(reason, source)| match source {
                 Source::Pixels(input) => Rejected { reason, input },
-                Source::Png(_) => unreachable!("the source is handed back unchanged"),
+                Source::Encoded(_) => unreachable!("the source is handed back unchanged"),
             })
     }
 
@@ -423,13 +423,16 @@ impl Loader {
 
     fn load(&mut self, handle: TextureHandle, source: Source, kind: TextureKind) {
         let image = match source {
-            Source::Png(bytes) => match decode_png(&bytes, self.image_limits) {
+            Source::Encoded(bytes) => match decode_image(&bytes, self.image_limits) {
                 Ok(image) => image,
                 Err(e) => {
                     tracing::warn!("texture {handle:?}: {e}");
                     let error = match e {
                         ImageError::TooLarge { .. } => LoadError::TooLarge,
-                        ImageError::Png(_) | ImageError::FrameMismatch => LoadError::Decode,
+                        ImageError::Png(_)
+                        | ImageError::Jpeg(_)
+                        | ImageError::FrameMismatch
+                        | ImageError::Unsupported => LoadError::Decode,
                     };
                     self.fail(handle, error);
                     return;
@@ -1186,6 +1189,20 @@ mod tests {
             .load_pixels(image.clone(), TextureKind::Atlas)
             .unwrap_err();
         assert_eq!((e.reason, e.input), (RejectReason::QueueFull, image));
+    }
+
+    #[test]
+    fn jpeg_files_load_like_png_files() {
+        let mut rig = Rig::new(config(1 << 20));
+        let h = rig
+            .requests
+            .load(
+                include_bytes!("../tests/data/rgb-32x16.jpg").to_vec(),
+                TextureKind::Atlas,
+            )
+            .unwrap();
+        rig.settle();
+        assert_eq!(rig.ready(h).size, Extent::new(32, 16));
     }
 
     #[test]

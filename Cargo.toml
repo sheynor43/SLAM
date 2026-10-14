@@ -30,6 +30,8 @@ naga = { version = "30.0.1", default-features = false, features = ["wgsl-in", "g
 rtrb = "0.4.0"
 # Skin and background images (ADR-0034).
 png = "0.18.1"
+# JPEG backgrounds and skin images (ADR-0040).
+zune-jpeg = "0.5.15"
 # JSON of the lazer score-info block in .osr replays; insertion order is kept to write fields back as read.
 serde_json = { version = "1", features = ["preserve_order", "float_roundtrip"] }
 # Offline resampling of hitsounds to the device rate.

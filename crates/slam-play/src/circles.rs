@@ -379,7 +379,7 @@ enum Kind {
 const GAMMA: f32 = 2.4;
 
 // Ported from osu-framework 2026.921.1: osu.Framework/Extensions/Color4Extensions/Color4Extensions.cs (ToLinear)
-fn to_linear(colour: f32) -> f32 {
+pub(crate) fn to_linear(colour: f32) -> f32 {
     if colour == 1.0 {
         1.0
     } else if colour <= 0.04045 {
@@ -390,7 +390,7 @@ fn to_linear(colour: f32) -> f32 {
 }
 
 // Ported from osu-framework 2026.921.1: osu.Framework/Extensions/Color4Extensions/Color4Extensions.cs (ToSRGB)
-fn to_srgb(colour: f32) -> f32 {
+pub(crate) fn to_srgb(colour: f32) -> f32 {
     if colour == 1.0 {
         1.0
     } else if colour < 0.003_130_8 {

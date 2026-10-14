@@ -2,7 +2,7 @@
 //! and hitsounds, no menus. Developer command until the screen stack and song select exist:
 //! its console output is not localised.
 
-use std::path::{Path, PathBuf};
+use std::path::{Component, Path, PathBuf};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::time::{Duration, Instant};
@@ -21,13 +21,17 @@ use slam_play::circles::{
     CircleMods, CircleSettings, CircleSkinConfig, CircleStyle, CircleVisuals, HitCircles,
 };
 use slam_play::{
-    Bindings, GameplaySounds, Hitsounds, HudView, LiveInput, Offsets, PlaySession, PlaySnapshot,
-    PlayTextures, PlayView, PlayfieldLayout, SampleCache, SampleSkins, SoundSettings,
+    BackgroundSettings, BackgroundView, Bindings, GameplaySounds, Hitsounds, HudView, LiveInput,
+    Offsets, PlaySession, PlaySnapshot, PlayTextures, PlayView, PlayfieldLayout, SampleCache,
+    SampleSkins, SoundSettings,
 };
 use slam_render::gl::{GlDebug, GlDevice, GlTexture};
 use slam_render::sprite::{DEFAULT_SLOTS, Projection, SpriteBatch, SpriteRenderer};
 use slam_render::textures::Textures;
-use slam_render::upload::{TextureLoaderConfig, TextureRequests, TextureUploads, texture_loader};
+use slam_render::upload::{
+    TextureHandle, TextureKind, TextureLoaderConfig, TextureRequests, TextureState, TextureUploads,
+    texture_loader,
+};
 use slam_render::{Color, Device, shaders};
 use slam_skin::{Skin, SkinChain};
 use slam_text::{FontRegistry, GlyphAtlasConfig, GlyphCache, glyph_atlas};
@@ -182,7 +186,10 @@ struct View {
     glyphs: GlyphCache,
     view: PlayView,
     hud: HudView,
-    /// The playfield and the HUD's shapes.
+    /// The beatmap's background, if it has one.
+    background: Option<TextureHandle>,
+    background_view: BackgroundView,
+    /// The background, the playfield and the HUD's shapes.
     batch: SpriteBatch,
     /// The HUD's text.
     text: SpriteBatch,
@@ -235,6 +242,20 @@ impl Draw<PlaySnapshot> for View {
         self.batch.clear();
         self.text.clear();
         self.cursor.clear();
+        let background = self
+            .background
+            .and_then(|handle| match self.uploads.get(handle) {
+                TextureState::Ready(region) => Some(region),
+                _ => None,
+            });
+        self.background_view.push(
+            &mut self.batch,
+            width,
+            height,
+            snapshot,
+            info.wait.woke_ns,
+            background,
+        );
         self.view.push(
             &mut self.batch,
             &layout,
@@ -290,6 +311,9 @@ struct Loaded {
     audio: PathBuf,
     beatmap_skin: Skin,
     skins: SkinChain,
+    /// The background image's name and bytes; `None` when the beatmap names none or it
+    /// cannot be read.
+    background: Option<(String, Vec<u8>)>,
 }
 
 fn load(options: &Options) -> Result<Loaded, String> {
@@ -300,6 +324,13 @@ fn load(options: &Options) -> Result<Loaded, String> {
         .beatmap;
     let dir = map.parent().unwrap_or(Path::new("."));
     let audio = dir.join(&file.general.audio_filename);
+    let background = file.events.background.as_deref().and_then(|name| {
+        let bytes = find_beatmap_file(dir, name).and_then(|path| std::fs::read(path).ok());
+        if bytes.is_none() {
+            tracing::warn!("background {name}: not found or unreadable");
+        }
+        bytes.map(|bytes| (name.to_owned(), bytes))
+    });
     let beatmap = Beatmap::from_file(file).map_err(|e| format!("{}: {e}", map.display()))?;
     let beatmap_skin = Skin::load_beatmap(dir, &bytes).map_err(|e| format!("beatmap skin: {e}"))?;
     let default = Skin::load_default(default_skin_dir())
@@ -314,7 +345,38 @@ fn load(options: &Options) -> Result<Loaded, String> {
         audio,
         beatmap_skin,
         skins: SkinChain::new(user, default),
+        background,
     })
+}
+
+/// Finds a file of the beatmap's folder by its name in the `.osu` file (with `/`), matching
+/// each part without regard to case as lazer's file lookup does; the exact name wins, then
+/// the smallest matching name. `None` when it is missing or the name leaves the folder
+/// (absolute, empty, `.` or `..` parts): lazer only looks among the set's files.
+fn find_beatmap_file(dir: &Path, name: &str) -> Option<PathBuf> {
+    let mut path = dir.to_path_buf();
+    for part in name.split('/') {
+        let mut components = Path::new(part).components();
+        if !matches!(
+            (components.next(), components.next()),
+            (Some(Component::Normal(_)), None)
+        ) {
+            return None;
+        }
+        let exact = path.join(part);
+        path = if exact.exists() {
+            exact
+        } else {
+            let lower = part.to_lowercase();
+            std::fs::read_dir(&path)
+                .ok()?
+                .filter_map(Result::ok)
+                .filter(|entry| entry.file_name().to_string_lossy().to_lowercase() == lower)
+                .map(|entry| entry.path())
+                .min()?
+        };
+    }
+    Some(path)
 }
 
 /// Opens the track and waits until it is ready to play.
@@ -427,6 +489,14 @@ pub fn run(options: &Options) -> Result<(), String> {
         texture_loader(&TextureLoaderConfig::new(limits)).map_err(|e| e.to_string())?;
     let textures =
         PlayTextures::request(&loaded.skins, &mut requests).map_err(|e| e.to_string())?;
+    let background_name = loaded.background.as_ref().map(|(name, _)| name.clone());
+    // The background is optional: a refused request plays without it.
+    let background = loaded.background.and_then(|(name, bytes)| {
+        requests
+            .load(bytes, TextureKind::Standalone)
+            .inspect_err(|e| tracing::warn!("background {name}: {e}"))
+            .ok()
+    });
     let registry = Arc::new(FontRegistry::with_builtin());
     let glyphs = glyph_atlas(Arc::clone(&registry), &GlyphAtlasConfig::new(limits))
         .map_err(|e| e.to_string())?;
@@ -462,6 +532,8 @@ pub fn run(options: &Options) -> Result<(), String> {
         glyphs,
         view,
         hud,
+        background,
+        background_view: BackgroundView::new(BackgroundSettings::default()),
         batch: SpriteBatch::with_capacity(MAX_SPRITES),
         text: SpriteBatch::with_capacity(MAX_GLYPH_SPRITES),
         cursor: SpriteBatch::with_capacity(1),
@@ -480,10 +552,12 @@ pub fn run(options: &Options) -> Result<(), String> {
     sink.set_notify(engine.waker().as_notify());
 
     println!(
-        "playing {} ({} objects), audio: {}; Escape pauses, hold ` to retry, Ctrl+` to quit",
+        "playing {} ({} objects), audio: {}, background: {}; Escape pauses, hold ` to retry, \
+         Ctrl+` to quit",
         options.map.display(),
         beatmap.hit_objects.len(),
-        stream.backend().name()
+        stream.backend().name(),
+        background_name.as_deref().unwrap_or("none")
     );
     // The update thread must not take the window's lock: a watcher closes the window
     // once the player quits.
@@ -543,6 +617,47 @@ pub fn run(options: &Options) -> Result<(), String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A fresh directory under the system temp directory, removed on drop.
+    struct TempDir(PathBuf);
+
+    impl TempDir {
+        fn new(name: &str) -> TempDir {
+            let dir = std::env::temp_dir().join(format!("slam-play-{name}-{}", std::process::id()));
+            let _ = std::fs::remove_dir_all(&dir);
+            std::fs::create_dir_all(&dir).unwrap();
+            TempDir(dir)
+        }
+    }
+
+    impl Drop for TempDir {
+        fn drop(&mut self) {
+            let _ = std::fs::remove_dir_all(&self.0);
+        }
+    }
+
+    #[test]
+    fn beatmap_files_are_found_without_regard_to_case_inside_the_folder() {
+        let tmp = TempDir::new("find");
+        let set = tmp.0.join("set");
+        std::fs::create_dir_all(set.join("SB")).unwrap();
+        std::fs::write(set.join("BG.jpg"), b"a").unwrap();
+        std::fs::write(set.join("SB").join("Back.PNG"), b"b").unwrap();
+        std::fs::write(tmp.0.join("outside.jpg"), b"c").unwrap();
+
+        assert_eq!(find_beatmap_file(&set, "BG.jpg"), Some(set.join("BG.jpg")));
+        assert_eq!(find_beatmap_file(&set, "bg.JPG"), Some(set.join("BG.jpg")));
+        assert_eq!(
+            find_beatmap_file(&set, "sb/back.png"),
+            Some(set.join("SB").join("Back.PNG"))
+        );
+        assert_eq!(find_beatmap_file(&set, "missing.jpg"), None);
+        assert_eq!(find_beatmap_file(&set, "../outside.jpg"), None);
+        assert_eq!(find_beatmap_file(&set, "./BG.jpg"), None);
+        assert_eq!(find_beatmap_file(&set, "SB//Back.PNG"), None);
+        let absolute = tmp.0.join("outside.jpg");
+        assert_eq!(find_beatmap_file(&set, absolute.to_str().unwrap()), None);
+    }
 
     fn parse(args: &[&str]) -> Result<Options, String> {
         Options::parse(args.iter().map(|s| s.to_string()))
