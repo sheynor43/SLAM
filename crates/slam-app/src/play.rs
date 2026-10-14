@@ -645,12 +645,13 @@ mod tests {
         std::fs::write(set.join("SB").join("Back.PNG"), b"b").unwrap();
         std::fs::write(tmp.0.join("outside.jpg"), b"c").unwrap();
 
-        assert_eq!(find_beatmap_file(&set, "BG.jpg"), Some(set.join("BG.jpg")));
-        assert_eq!(find_beatmap_file(&set, "bg.JPG"), Some(set.join("BG.jpg")));
-        assert_eq!(
-            find_beatmap_file(&set, "sb/back.png"),
-            Some(set.join("SB").join("Back.PNG"))
-        );
+        // Compared by contents: on a case-insensitive file system (Windows) the path keeps
+        // the asked case.
+        let read =
+            |name: &str| find_beatmap_file(&set, name).map(|path| std::fs::read(path).unwrap());
+        assert_eq!(read("BG.jpg"), Some(b"a".to_vec()));
+        assert_eq!(read("bg.JPG"), Some(b"a".to_vec()));
+        assert_eq!(read("sb/back.png"), Some(b"b".to_vec()));
         assert_eq!(find_beatmap_file(&set, "missing.jpg"), None);
         assert_eq!(find_beatmap_file(&set, "../outside.jpg"), None);
         assert_eq!(find_beatmap_file(&set, "./BG.jpg"), None);
