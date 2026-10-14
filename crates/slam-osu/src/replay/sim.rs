@@ -6,6 +6,7 @@
 use crate::beatmap::Beatmap;
 use crate::health::HealthProcessor;
 use crate::judgement::{Judgement, JudgementLog};
+use crate::lead_in::gameplay_start_time;
 use crate::mods::ModSet;
 use crate::scoring::ScoreProcessor;
 
@@ -86,16 +87,6 @@ impl Rules for NoRules {
 
     fn is_complete(&self) -> bool {
         self.time >= self.end_time
-    }
-}
-
-/// The time from which gameplay steps are limited to [`SIXTY_FRAME_TIME`]: the first object's
-/// start minus `max(2000, preempt)`, or 0 for an empty beatmap.
-// Ported from osu!lazer 2026.1005.0-lazer: osu.Game.Rulesets.Osu/UI/DrawableOsuRuleset.cs (GameplayStartTime)
-pub fn gameplay_start_time(beatmap: &Beatmap) -> f64 {
-    match beatmap.hit_objects.first() {
-        Some(first) => first.start_time - first.defaults.time_preempt.max(2000.0),
-        None => 0.0,
     }
 }
 

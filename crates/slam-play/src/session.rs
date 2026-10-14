@@ -1,12 +1,13 @@
 //! A play from start to end: the update side runs the game clock, live input, rules and
 //! sounds and writes a [`PlaySnapshot`]; the draw side turns the snapshot into sprites.
 //!
-//! No pause, breaks, skip, failing or HUD yet: the clock starts once the output stream
-//! reports its position and runs until the window closes.
+//! No pause, breaks, failing or HUD yet: the clock starts once the output stream reports its
+//! position and runs until the window closes.
 
 use slam_audio::{ClockError, GameClock, MusicSnapshot, PositionSnapshot, TrackControl};
-use slam_input::InputEvent;
+use slam_input::{InputEvent, InputKind, MouseButton};
 use slam_osu::judgement::JudgementLog;
+use slam_osu::lead_in::{IntroSkip, earliest_start_time, gameplay_start_time};
 use slam_osu::replay::Rules;
 use slam_osu::rules::OsuRules;
 use slam_osu::{Beatmap, ModSet, Vec2};
@@ -22,9 +23,8 @@ use crate::input::{ClockTime, GameTime, LiveInput};
 use crate::playfield::PlayfieldLayout;
 use crate::time::Offsets;
 
-/// Lead-in before the first object appears. A stand-in until lazer's lead-in
-/// (`AudioLeadIn`, `GameplayClockContainer` start time) is ported.
-const MIN_LEAD_IN_MS: f64 = 1000.0;
+/// `SDL_SCANCODE_SPACE`.
+const SCANCODE_SPACE: u16 = 44;
 
 /// Where a play is.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -47,6 +47,8 @@ pub struct PlaySnapshot {
     pub clock: Option<ClockTime>,
     /// Cursor position in osu!pixels.
     pub cursor: Vec2,
+    /// Whether the intro can be skipped now.
+    pub skip_available: bool,
     pub circles: LiveCircles,
 }
 
@@ -57,6 +59,7 @@ impl Default for PlaySnapshot {
             time: 0.0,
             clock: None,
             cursor: Vec2::ZERO,
+            skip_available: false,
             circles: LiveCircles::new(),
         }
     }
@@ -76,6 +79,9 @@ pub struct PlaySession {
     clock: GameClock,
     offsets: Offsets,
     start_time: f64,
+    skip: IntroSkip,
+    /// A skip target whose seek failed; retried on the next tick.
+    pending_skip: Option<f64>,
     started: bool,
     input: LiveInput,
     rules: OsuRules,
@@ -98,10 +104,15 @@ impl PlaySession {
     ) -> PlaySession {
         let rules = OsuRules::new(beatmap, mods);
         let log = JudgementLog::with_capacity(rules.max_judgements());
+        // No storyboards yet.
+        let start_time = earliest_start_time(beatmap, None);
         PlaySession {
             clock: GameClock::new(track),
             offsets,
-            start_time: start_time(beatmap),
+            start_time,
+            // The skip overlay appears with the clock at the start.
+            skip: IntroSkip::new(gameplay_start_time(beatmap), start_time, start_time),
+            pending_skip: None,
             started: false,
             input,
             rules,
@@ -111,7 +122,8 @@ impl PlaySession {
         }
     }
 
-    /// Game time the clock starts at: before the first object's fade-in.
+    /// Game time the clock starts at: 0, or earlier for the first object's fade-in and the
+    /// beatmap's lead-in ([`earliest_start_time`]).
     pub fn start_time(&self) -> f64 {
         self.start_time
     }
@@ -172,6 +184,28 @@ impl PlaySession {
         self.rules.update(&step, &mut self.log);
         self.sounds.update(step_time, &self.log, &self.rules, sink);
 
+        // The skip seeks after this tick's step: the next tick runs from the target. The
+        // skip period is checked at the tick's time; lazer checks the button enabled by the
+        // previous frame, which differs only on the period's last millisecond.
+        let current = time.game_time(now_ns);
+        if events.iter().any(requests_skip)
+            && let Some(target) = self.skip.target(current, false)
+        {
+            // Ported from osu!lazer 2026.1005.0-lazer: osu.Game/Screens/Play/Player.cs (PerformIntroSkip)
+            // Lazer stops the samples by disabling their playback around the seek. Nothing
+            // loops before gameplay starts; a stop that did not queue is not retried.
+            self.sounds.stop_all(sink);
+            self.pending_skip = Some(target);
+        }
+        // The clock moves to the target on the next tick: the skip is gone already.
+        let skipping = self.pending_skip.is_some();
+        if let Some(target) = self.pending_skip {
+            match self.seek_and_run(now_ns, target, track) {
+                Ok(()) => self.pending_skip = None,
+                Err(_) => self.clock_errors += 1,
+            }
+        }
+
         snapshot.state = if self.rules.is_complete() {
             PlayState::Finished
         } else {
@@ -180,6 +214,7 @@ impl PlaySession {
         snapshot.time = step_time;
         snapshot.clock = Some(time);
         snapshot.cursor = self.input.position();
+        snapshot.skip_available = !skipping && self.skip.is_available(current);
         snapshot.circles.capture(&self.rules);
     }
 
@@ -190,9 +225,20 @@ impl PlaySession {
     }
 
     fn start(&mut self, now_ns: u64, track: &mut impl TrackControl) -> Result<(), ClockError> {
-        // Game time includes the offsets; the clock runs in track time. Rate 1: the clock
-        // is new and no rate mods exist yet (take the clock's rate once they do).
-        let track_time = crate::time::track_time_for(self.start_time, 1.0, &self.offsets);
+        self.seek_and_run(now_ns, self.start_time, track)
+    }
+
+    /// Seeks the clock to game time `target` and starts it; a failed seek may leave it
+    /// stopped, so both are repeated on a retry.
+    fn seek_and_run(
+        &mut self,
+        now_ns: u64,
+        target: f64,
+        track: &mut impl TrackControl,
+    ) -> Result<(), ClockError> {
+        // Game time includes the offsets; the clock runs in track time. Rate 1: no rate mods
+        // exist yet (take the clock's rate once they do).
+        let track_time = crate::time::track_time_for(target, 1.0, &self.offsets);
         self.clock.seek(now_ns, track_time, track)?;
         self.clock.start(now_ns, track)
     }
@@ -203,15 +249,24 @@ fn waiting(snapshot: &mut PlaySnapshot, start_time: f64, input: &LiveInput) {
     snapshot.time = start_time;
     snapshot.clock = None;
     snapshot.cursor = input.position();
+    snapshot.skip_available = false;
     snapshot.circles.clear();
 }
 
-/// The time a play starts at: 0, or earlier so that the first object's fade-in starts
-/// [`MIN_LEAD_IN_MS`] after the start.
-fn start_time(beatmap: &Beatmap) -> f64 {
-    beatmap.hit_objects.first().map_or(0.0, |first| {
-        (first.start_time - first.defaults.time_preempt - MIN_LEAD_IN_MS).min(0.0)
-    })
+/// Whether `event` presses a key of lazer's default `GlobalAction.SkipCutscene` bindings:
+/// space or the second extra mouse button.
+// Ported from osu!lazer 2026.1005.0-lazer: osu.Game/Input/Bindings/GlobalActionContainer.cs (InGameKeyBindings)
+fn requests_skip(event: &InputEvent) -> bool {
+    matches!(
+        event.kind,
+        InputKind::Key {
+            scancode: SCANCODE_SPACE,
+            down: true,
+        } | InputKind::MouseButton {
+            button: MouseButton::X2,
+            down: true,
+        }
+    )
 }
 
 // ---- Draw side ----

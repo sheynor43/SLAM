@@ -7,4 +7,4 @@ pub mod sim;
 pub use input::{
     ActionEvent, Actions, InputFrame, InputState, MAX_STEP_EVENTS, ReplayCursor, ReplayInput,
 };
-pub use sim::{NoRules, Rules, Simulator, StepInput, UPDATE_INTERVAL, gameplay_start_time};
+pub use sim::{NoRules, Rules, Simulator, StepInput, UPDATE_INTERVAL};

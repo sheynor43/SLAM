@@ -11,7 +11,7 @@ use slam_audio::{
     MusicAnchor, MusicSnapshot, PlayError, PositionSnapshot, Sample, TrackControl, VoiceId,
     VoiceParams,
 };
-use slam_input::InputEvent;
+use slam_input::{InputEvent, InputKind, MouseButton};
 use slam_osu::judgement::JudgementLog;
 use slam_osu::replay::Rules;
 use slam_osu::rules::OsuRules;
@@ -47,6 +47,8 @@ struct Track {
     generation: u32,
     /// Refuse the next `play_at` once.
     refuse_play_at: bool,
+    /// Refuse one `seek` once this many commands are logged.
+    refuse_seek_after: Option<usize>,
 }
 
 impl TrackControl for Track {
@@ -69,6 +71,13 @@ impl TrackControl for Track {
     }
 
     fn seek(&mut self, frame: u64) -> Result<(), PlayError> {
+        if self
+            .refuse_seek_after
+            .is_some_and(|after| self.commands.len() >= after)
+        {
+            self.refuse_seek_after = None;
+            return Err(PlayError::QueueFull);
+        }
         self.commands.push(Command::Seek(frame));
         self.generation += 1;
         Ok(())
@@ -243,8 +252,8 @@ fn the_clock_starts_on_the_first_report_before_the_first_object() {
     let map = beatmap();
     let track = Track::default();
     let start_time = session(&map, &track).start_time();
-    // AR 9: 600 ms preempt, first object at 1000 ms, one second of lead-in.
-    assert_eq!(start_time, -600.0);
+    // First object at 1000 ms with a 600 ms preempt: gameplay starts two seconds before it.
+    assert_eq!(start_time, -1000.0);
 
     let mut states = Vec::new();
     let (_, track, _) = run(&map, MS, T0 + 1000 * MS, |s| {
@@ -257,10 +266,10 @@ fn the_clock_starts_on_the_first_report_before_the_first_object() {
             .all(|&(state, time)| state == PlayState::Waiting && time == start_time)
     );
     assert_eq!(states[11].0, PlayState::Playing);
-    // The track starts at frame 0 when time reaches 0: 600 ms after the start.
+    // The track starts at frame 0 when time reaches 0: a second after the start.
     assert_eq!(
         track.commands,
-        [Command::Pause, Command::Seek(0), Command::PlayAt(600 * 48)]
+        [Command::Pause, Command::Seek(0), Command::PlayAt(1000 * 48)]
     );
     // Then time runs with the output stream.
     let (_, time) = states[11 + 500];
@@ -417,7 +426,7 @@ fn a_refused_start_is_tried_again_on_the_next_tick() {
     );
     assert_eq!(states[12].0, PlayState::Playing);
     assert!(
-        (states[12].1 - (-600.0 + 1.0)).abs() < 0.1,
+        (states[12].1 - (-1000.0 + 1.0)).abs() < 0.1,
         "{}",
         states[12].1
     );
@@ -428,7 +437,7 @@ fn a_refused_start_is_tried_again_on_the_next_tick() {
             Command::Seek(0),
             Command::Pause,
             Command::Seek(0),
-            Command::PlayAt(601 * 48),
+            Command::PlayAt(1001 * 48),
         ]
     );
 }
@@ -454,18 +463,268 @@ fn the_play_starts_at_its_start_time_with_offsets() {
         });
         assert_eq!(states[11].0, PlayState::Playing);
         assert!(
-            (states[11].1 - (-600.0 + 1.0)).abs() < 0.1,
+            (states[11].1 - (-1000.0 + 1.0)).abs() < 0.1,
             "{offsets:?}: {}",
             states[11].1
         );
         // Game time is the track time plus the offsets: the track starts when game time
         // reaches the offsets.
         let total = offsets.global_ms + offsets.beatmap_ms;
-        let frame = ((600.0 + total) * 48.0).round() as u64;
+        let frame = ((1000.0 + total) * 48.0).round() as u64;
         assert_eq!(
             track.commands.last(),
             Some(&Command::PlayAt(frame)),
             "{offsets:?}"
         );
     }
+}
+
+/// `map` with its first object `delay` ms later.
+fn delayed(delay: f64) -> Beatmap {
+    let mut map = beatmap();
+    for object in &mut map.hit_objects {
+        object.start_time += delay;
+    }
+    map
+}
+
+fn press(time_ns: u64, kind: InputKind) -> InputEvent {
+    InputEvent { time_ns, kind }
+}
+
+fn space(time_ns: u64) -> InputEvent {
+    press(
+        time_ns,
+        InputKind::Key {
+            scancode: 44,
+            down: true,
+        },
+    )
+}
+
+/// Ticks a play of `map` every millisecond until `end_ns` with `presses` and no other
+/// input, recording the time and skip availability of every playing tick.
+fn run_presses(map: &Beatmap, presses: &[InputEvent], end_ns: u64) -> (Vec<(f64, bool)>, Track) {
+    let track = Track::default();
+    let session = session(map, &track);
+    let (ticks, track, _) = run_presses_with(session, track, presses, end_ns);
+    (ticks, track)
+}
+
+fn run_presses_with(
+    mut session: PlaySession,
+    mut track: Track,
+    presses: &[InputEvent],
+    end_ns: u64,
+) -> (Vec<(f64, bool)>, Track, PlaySession) {
+    let mut sink = Sink::default();
+    let mut snapshot = PlaySnapshot::default();
+    let mut ticks = Vec::new();
+    let mut next = 0;
+    let mut now = T0 - 10 * MS;
+    while now <= end_ns {
+        let start = next;
+        while next < presses.len() && presses[next].time_ns <= now {
+            next += 1;
+        }
+        let (output, music) = reports(now, &track);
+        session.tick(
+            now,
+            &presses[start..next],
+            output,
+            music,
+            &mut track,
+            &mut sink,
+            &mut snapshot,
+        );
+        if snapshot.state != PlayState::Waiting {
+            ticks.push((snapshot.time, snapshot.skip_available));
+        }
+        now += MS;
+    }
+    (ticks, track, session)
+}
+
+#[test]
+fn a_long_lead_in_is_skipped_to_a_second_before_gameplay_starts() {
+    let mut map = beatmap();
+    map.audio_lead_in = 10000.0;
+    let track = Track::default();
+    // The first object at 1000 ms: gameplay starts at −1000, the skip goes to −2000.
+    assert_eq!(session(&map, &track).start_time(), -9000.0);
+
+    let (ticks, track) = run_presses(&map, &[space(T0 + 100 * MS)], T0 + 200 * MS);
+    // Playing ticks start at `T0` + 1 ms; the press is on the 100th.
+    assert!(ticks[..99].iter().all(|&(_, available)| available));
+    // The tick with the press still runs on the old clock; the next runs from the target.
+    let (time, available) = ticks[100];
+    assert!((time - (-2000.0 + 1.0)).abs() < 0.1, "{time}");
+    assert!(!available);
+    // Track frame 0 plays when time reaches 0: 2 s after the skip.
+    assert_eq!(
+        track.commands,
+        [
+            Command::Pause,
+            Command::Seek(0),
+            Command::PlayAt(9000 * 48),
+            Command::Pause,
+            Command::Seek(0),
+            Command::PlayAt(2100 * 48),
+        ]
+    );
+}
+
+#[test]
+fn a_late_first_object_is_skipped_on_the_track() {
+    let map = delayed(29000.0);
+    let track = Track::default();
+    assert_eq!(session(&map, &track).start_time(), 0.0);
+
+    let (ticks, track) = run_presses(&map, &[space(T0 + 100 * MS)], T0 + 200 * MS);
+    // Playing ticks start at `T0` + 1 ms; the press is on the 100th.
+    assert!(ticks[..99].iter().all(|&(_, available)| available));
+    // Gameplay starts at 28 s: the track seeks to 27 s.
+    assert_eq!(track.commands.last(), Some(&Command::Seek(27000 * 48)));
+}
+
+#[test]
+fn the_second_extra_mouse_button_skips_too() {
+    let map = delayed(29000.0);
+    let x2 = press(
+        T0 + 100 * MS,
+        InputKind::MouseButton {
+            button: MouseButton::X2,
+            down: true,
+        },
+    );
+    let (_, track) = run_presses(&map, &[x2], T0 + 200 * MS);
+    assert_eq!(track.commands.last(), Some(&Command::Seek(27000 * 48)));
+}
+
+#[test]
+fn nothing_is_skipped_without_time_to_skip() {
+    // Gameplay starts at −1000, where the play starts: no skip.
+    let map = beatmap();
+    let (ticks, track) = run_presses(&map, &[space(T0 + 100 * MS)], T0 + 200 * MS);
+    assert!(ticks.iter().all(|&(_, available)| !available));
+    assert_eq!(
+        track.commands,
+        [Command::Pause, Command::Seek(0), Command::PlayAt(1000 * 48)]
+    );
+
+    // Released keys and other keys do not skip.
+    let map = delayed(29000.0);
+    let presses = [
+        press(
+            T0 + 100 * MS,
+            InputKind::Key {
+                scancode: 44,
+                down: false,
+            },
+        ),
+        press(
+            T0 + 110 * MS,
+            InputKind::Key {
+                scancode: 29,
+                down: true,
+            },
+        ),
+    ];
+    let (_, track) = run_presses(&map, &presses, T0 + 200 * MS);
+    assert!(!track.commands.contains(&Command::Seek(27000 * 48)));
+}
+
+#[test]
+fn a_skip_does_not_allocate() {
+    let map = delayed(29000.0);
+    let mut track = Track::default();
+    track.commands.reserve(16);
+    let mut sink = Sink::default();
+    let mut session = session(&map, &track);
+    let mut snapshot = PlaySnapshot::default();
+    let presses = [space(T0 + 100 * MS)];
+
+    assert_no_alloc(|| {
+        let mut now = T0 - 10 * MS;
+        while now <= T0 + 200 * MS {
+            let events: &[InputEvent] = if now == T0 + 100 * MS { &presses } else { &[] };
+            let (output, music) = reports(now, &track);
+            session.tick(
+                now,
+                events,
+                output,
+                music,
+                &mut track,
+                &mut sink,
+                &mut snapshot,
+            );
+            now += MS;
+        }
+    });
+    assert_eq!(track.commands.last(), Some(&Command::Seek(27000 * 48)));
+}
+
+/// The lead-in map of `a_long_lead_in_is_skipped_to_a_second_before_gameplay_starts`: the
+/// play starts at −9000, the skip period ends at −2000.
+fn long_lead_in() -> Beatmap {
+    let mut map = beatmap();
+    map.audio_lead_in = 10000.0;
+    map
+}
+
+#[test]
+fn the_skip_period_ends_a_second_before_gameplay_starts() {
+    let map = long_lead_in();
+    // Tick time −2001: skipped to −2000, the track plays 2 s later.
+    let (_, track) = run_presses(&map, &[space(T0 + 6999 * MS)], T0 + 7100 * MS);
+    assert_eq!(track.commands.last(), Some(&Command::PlayAt(8999 * 48)));
+    // Tick time −2000: no skip.
+    let (ticks, track) = run_presses(&map, &[space(T0 + 7000 * MS)], T0 + 7100 * MS);
+    assert_eq!(track.commands.len(), 3);
+    // Ticks start at `T0` + 1 ms, at −8999.
+    assert!(ticks[6998].1);
+    assert!(!ticks[6999].1 && !ticks[7000].1);
+}
+
+#[test]
+fn a_press_before_the_clock_starts_does_not_skip() {
+    let map = long_lead_in();
+    let (ticks, track) = run_presses(&map, &[space(T0 - 5 * MS)], T0 + 100 * MS);
+    assert_eq!(track.commands.len(), 3);
+    assert!(ticks.iter().all(|&(_, available)| available));
+}
+
+#[test]
+fn a_skip_lands_on_its_target_with_offsets() {
+    let map = delayed(29000.0);
+    let offsets = Offsets {
+        global_ms: 25.0,
+        beatmap_ms: -40.0,
+    };
+    let track = Track::default();
+    let session = session_with(&map, &track, offsets);
+    let (ticks, track, _) =
+        run_presses_with(session, track, &[space(T0 + 100 * MS)], T0 + 200 * MS);
+    // Game time 27000 is track time 27015.
+    assert_eq!(track.commands.last(), Some(&Command::Seek(27015 * 48)));
+    assert!(!ticks[99].1);
+}
+
+#[test]
+fn a_refused_skip_is_tried_again_on_the_next_tick() {
+    let map = long_lead_in();
+    // Start: pause, seek, play_at; the skip's seek back to track frame 0 is refused.
+    let track = Track {
+        refuse_seek_after: Some(3),
+        ..Track::default()
+    };
+    let session = session(&map, &track);
+    let (ticks, track, session) =
+        run_presses_with(session, track, &[space(T0 + 100 * MS)], T0 + 200 * MS);
+    assert_eq!(session.clock_errors(), 1);
+    assert!(!ticks[99].1 && !ticks[100].1);
+    // Retried 1 ms later: the clock runs again from −2000.
+    assert_eq!(track.commands.last(), Some(&Command::PlayAt(2101 * 48)));
+    let (time, _) = ticks[150];
+    assert!((time - (-2000.0 + 50.0)).abs() < 0.1, "{time}");
 }

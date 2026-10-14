@@ -5,7 +5,8 @@
 pub mod skin;
 
 use slam_input::{InputEvent, InputKind, MouseButton};
-use slam_osu::replay::{Actions, InputFrame, ReplayInput, gameplay_start_time};
+use slam_osu::lead_in::gameplay_start_time;
+use slam_osu::replay::{Actions, InputFrame, ReplayInput};
 use slam_osu::{Beatmap, Vec2};
 use slam_play::{GameTime, Input, PlayfieldLayout};
 

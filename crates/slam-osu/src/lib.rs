@@ -11,6 +11,7 @@ pub mod events;
 pub mod health;
 pub mod hit_windows;
 pub mod judgement;
+pub mod lead_in;
 mod math;
 pub mod mods;
 pub mod objects;
