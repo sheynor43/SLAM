@@ -18,3 +18,4 @@ mod skin;
 pub use chain::{Found, SkinChain, SkinSource};
 pub use lookup::{Animation, AnimationOptions, SIXTY_FRAME_TIME, TextureFile};
 pub use skin::{LoadError, Skin};
+pub use slam_formats::skin_ini::{Rgba, SkinVersion};

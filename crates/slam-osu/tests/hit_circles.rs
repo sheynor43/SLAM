@@ -438,3 +438,60 @@ fn objects_stepped_over_are_skipped_and_the_play_ends() {
     assert!(sim.log().events().is_empty());
     assert_eq!(sim.rules().skipped_objects(), 1);
 }
+
+// ---- Drawable state ----
+
+/// One live circle after a step: `(time, index, judgement time and result)`.
+type LiveState = (f64, u32, Option<(f64, HitResult)>);
+
+/// `live_circles` after every step.
+fn live_circles(map: &Beatmap, frames: &[InputFrame]) -> Vec<LiveState> {
+    let mut all = vec![frame(0.0, 256.0, -500.0, NONE)];
+    all.extend_from_slice(frames);
+    let mut sim = Simulator::new(
+        map,
+        ReplayInput::new(all),
+        OsuRules::with_policy(map, ORDERED),
+    );
+    let mut states = Vec::new();
+    while sim.step() {
+        for c in sim.rules().live_circles() {
+            states.push((sim.time(), c.index, c.judgement.map(|j| (j.time, j.result))));
+        }
+    }
+    states
+}
+
+#[test]
+fn live_circles_carry_judgements_until_they_fade_out() {
+    // Circle 0 is hit 10 ms late, circle 1 is never pressed.
+    let map = circles(&[(1500.0, 100, 100), (3000.0, 300, 300)]);
+    let states = live_circles(
+        &map,
+        &[
+            frame(1510.0, 100.0, 100.0, LEFT),
+            frame(1520.0, 100.0, 100.0, NONE),
+        ],
+    );
+    let of = |index: u32| -> Vec<_> { states.iter().filter(|s| s.1 == index).collect() };
+
+    // Alive from the start of the preempt (AR 5: 1200 ms) until 801 ms after the hit.
+    let hit = of(0);
+    assert_eq!(hit.first().unwrap().0, 300.0);
+    assert!(hit.iter().all(|s| (s.0 < 1510.0) == s.2.is_none()));
+    assert!(hit.iter().filter_map(|s| s.2).all(|j| j == (1510.0, Great)));
+    assert_eq!(hit.last().unwrap().0, 1510.0 + 800.0);
+
+    // Missed on the first update past the meh window. The simulation ends with that last
+    // judgement, so its fade-out is not stepped through.
+    let missed = of(1);
+    assert_eq!(missed.first().unwrap().0, 1800.0);
+    let miss_time = missed.iter().find_map(|s| s.2).unwrap().0;
+    assert!(miss_time > 3000.0 + MEH && miss_time <= 3000.0 + MEH + UPDATE_INTERVAL);
+    assert!(
+        missed
+            .iter()
+            .filter_map(|s| s.2)
+            .all(|j| j == (miss_time, Miss))
+    );
+}
