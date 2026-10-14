@@ -25,7 +25,9 @@ use slam_render::upload::{
 };
 use slam_skin::SkinChain;
 
-use crate::circles::{CircleTextures, HitCircles, LiveCircles, PieceTextures, SkinSprite};
+use crate::circles::{
+    CircleTextures, HitCircles, LiveCircles, OBJECT_SIZE, PieceTextures, SkinSprite,
+};
 use crate::gameplay_sounds::{GameplaySounds, VoiceSink};
 use crate::hotkeys::{GlobalAction, Hotkeys};
 use crate::input::{ClockTime, GameTime, LiveInput};
@@ -816,11 +818,15 @@ enum Element {
     /// `sliderendcircle` and its overlay; requested only when the skin has it.
     TailCircle,
     TailOverlay,
+    /// `sliderscorepoint`.
+    ScorePoint,
+    /// `reversearrow`.
+    ReverseArrow,
     Cursor,
     Digit(u8),
 }
 
-const ELEMENTS: [Element; 18] = [
+const ELEMENTS: [Element; 20] = [
     Element::Circle,
     Element::Overlay,
     Element::Approach,
@@ -828,6 +834,8 @@ const ELEMENTS: [Element; 18] = [
     Element::HeadOverlay,
     Element::TailCircle,
     Element::TailOverlay,
+    Element::ScorePoint,
+    Element::ReverseArrow,
     Element::Cursor,
     Element::Digit(0),
     Element::Digit(1),
@@ -889,7 +897,7 @@ fn uses_prefix(skins: &SkinChain, prefix: &str) -> bool {
 }
 
 impl PlayTextures {
-    /// Reads the textures of hit circles, slider heads and tails and the cursor from `skins` and queues them for
+    /// Reads the textures of hit circles, slider heads, tails, ticks and reverse arrows and the cursor from `skins` and queues them for
     /// upload with a white image for the HUD. Missing ones are not drawn. Does file I/O: call it off the hot paths.
     pub fn request(
         skins: &SkinChain,
@@ -915,6 +923,8 @@ impl PlayTextures {
                 | Element::HeadOverlay
                 | Element::TailCircle
                 | Element::TailOverlay => continue,
+                Element::ScorePoint => "sliderscorepoint".to_owned(),
+                Element::ReverseArrow => "reversearrow".to_owned(),
                 Element::Cursor => "cursor".to_owned(),
                 Element::Digit(d) => format!("{prefix}-{d}"),
             };
@@ -982,6 +992,14 @@ impl PlayTextures {
                 Element::TailOverlay => {
                     frame.sliders.tail.overlay = Some(SkinSprite::circle(region, r.scale))
                 }
+                // Ported from osu!lazer 2026.1005.0-lazer: osu.Game.Rulesets.Osu/Skinning/Legacy/OsuLegacySkinTransformer.cs (SliderScorePoint)
+                Element::ScorePoint => {
+                    frame.sliders.tick = Some(SkinSprite::new(region, r.scale, OBJECT_SIZE))
+                }
+                // Ported from osu!lazer 2026.1005.0-lazer: osu.Game.Rulesets.Osu/Skinning/Legacy/LegacyReverseArrow.cs (load)
+                Element::ReverseArrow => {
+                    frame.sliders.arrow = Some(SkinSprite::new(region, r.scale, OBJECT_SIZE * 2.0))
+                }
                 Element::Cursor => frame.cursor = Some(SkinSprite::new(region, r.scale, f32::MAX)),
                 Element::Digit(d) => {
                     frame.circles.digits[usize::from(d)] = Some(SkinSprite::digit(region, r.scale))
@@ -1044,7 +1062,7 @@ impl PlayView {
                 bodies,
                 layout,
                 snapshot.circles.as_slice(),
-                snapshot.sliders.as_slice(),
+                &snapshot.sliders,
                 time,
                 ObjectTextures {
                     circles: &textures.circles,
