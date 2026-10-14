@@ -8,7 +8,7 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 use slam_osu::objects::{OsuHitObject, OsuHitObjectKind, Slider};
 use slam_osu::{Beatmap, Vec2};
 use slam_play::slider_body::{
-    LegacyBodyColours, Snaking, body_mesh, range_distances, snaking_range,
+    LegacyBodyColours, Snaking, SnakingTiming, body_mesh, range_distances, snaking_range,
 };
 use slam_skin::{Skin, SkinChain};
 
@@ -164,14 +164,12 @@ fn classic_gradient_has_the_texture_width_of_the_radius() {
 
 fn range(map: &Beatmap, index: usize, time: f64, head_hit: bool, snaking: Snaking) -> (f64, f64) {
     let object = &map.hit_objects[index];
-    snaking_range(
+    let timing = SnakingTiming::new(
         slider(object),
         object.start_time,
         object.defaults.time_preempt,
-        time,
-        head_hit,
-        snaking,
-    )
+    );
+    snaking_range(&timing, time, head_hit, snaking)
 }
 
 #[test]
@@ -226,7 +224,7 @@ fn a_zero_length_slider_is_a_circle_at_its_head() {
     // Zero duration: progress is NaN at the start time, as in lazer.
     let p = range(&map, 3, object.start_time, true, Snaking::default());
     let mesh = body_mesh(path);
-    let (d0, d1) = range_distances(path, (p.0, p.1));
+    let (d0, d1) = range_distances(path.distance(), (p.0, p.1));
     let drawn: Vec<_> = mesh.clipped(d0, d1).collect();
     assert!(!drawn.is_empty());
     let head = path.calculated_path()[0];
@@ -297,7 +295,7 @@ fn the_mesh_clips_like_get_path_to_progress() {
         (vertex, 1.0),
         (0.0, vertex),
     ] {
-        let (d0, d1) = range_distances(path, progress);
+        let (d0, d1) = range_distances(path.distance(), progress);
         let ours = mesh_polyline(&mesh.clipped(d0, d1).collect::<Vec<_>>());
         path.path_to_progress(&mut lazer, progress.0, progress.1);
         let theirs = mesh_polyline(

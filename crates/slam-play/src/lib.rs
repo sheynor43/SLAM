@@ -10,6 +10,7 @@ pub mod input;
 pub mod playfield;
 pub mod session;
 pub mod slider_body;
+pub mod sliders;
 pub mod time;
 
 pub use background::{BackgroundSettings, BackgroundView};

@@ -21,6 +21,8 @@ use slam_osu::{Beatmap, ModSet, Vec2};
 use slam_play::circles::{
     CircleMods, CircleSettings, CircleSkinConfig, CircleStyle, CircleVisuals, HitCircles,
 };
+use slam_play::slider_body::Snaking;
+use slam_play::sliders::{HitSliders, SliderBodies, SliderVisuals};
 use slam_play::{BackgroundSettings, BackgroundView, HudValues, HudView};
 use slam_play::{
     Bindings, FrameTextures, GameTime, GameplaySounds, LiveInput, Offsets, PlaySession,
@@ -412,7 +414,9 @@ fn ticks_and_frames_do_not_allocate() {
     let view = view(&map);
     let textures = FrameTextures::default();
     let mut batch = SpriteBatch::with_capacity(4096);
+    let mut bodies = SliderBodies::new();
     let mut drawn = 0;
+    let mut bodies_drawn = 0;
     // The HUD's glyphs are only requested here: without a device they stay pending.
     let registry = Arc::new(FontRegistry::with_builtin());
     let mut glyphs = glyph_atlas(Arc::clone(&registry), &GlyphAtlasConfig::new(LIMITS)).unwrap();
@@ -444,7 +448,15 @@ fn ticks_and_frames_do_not_allocate() {
             batch.clear();
             text.clear();
             background.push(&mut batch, 640.0, 480.0, &snapshot, now, Some(white));
-            view.push(&mut batch, &layout(), &snapshot, now + MS / 2, &textures);
+            view.push(
+                &mut batch,
+                &mut bodies,
+                &layout(),
+                &snapshot,
+                now + MS / 2,
+                &textures,
+            );
+            bodies_drawn += bodies.as_slice().len();
             hud.update(1280.0, 720.0, &snapshot.hud);
             hud.push_shapes(&mut batch, &layout(), &snapshot, white);
             pending += hud.push_text(&mut text, &snapshot, &mut glyphs).pending;
@@ -455,6 +467,7 @@ fn ticks_and_frames_do_not_allocate() {
     });
     assert_eq!(snapshot.state, PlayState::Results);
     assert!(drawn > 0);
+    assert!(bodies_drawn > 0);
     assert!(pending > 0);
     assert!(snapshot.hud.score > 0);
     assert_eq!(hud.texts()[0], format!("{:06}", snapshot.hud.score));
@@ -529,6 +542,10 @@ fn view(map: &Beatmap) -> PlayView {
             visuals: CircleVisuals::new(map, mods, CircleSettings::default(), None, &chain),
             style: CircleStyle::new(mods, &windows, &chain),
             config: CircleSkinConfig::new(&chain),
+        },
+        sliders: HitSliders {
+            visuals: SliderVisuals::new(map, mods, CircleSettings::default(), None, &chain),
+            snaking: Snaking::default(),
         },
     }
 }
