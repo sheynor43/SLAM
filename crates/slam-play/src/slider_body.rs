@@ -125,25 +125,51 @@ impl Default for Snaking {
     }
 }
 
+/// What snaking needs of a slider: its timing.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct SnakingTiming {
+    pub start_time: f64,
+    /// `Slider.Duration`: from the start to the end time.
+    pub duration: f64,
+    /// `Slider.SpanCount`: repeats plus one.
+    pub span_count: i32,
+    pub time_preempt: f64,
+}
+
+impl SnakingTiming {
+    /// The timing of `slider` starting at `start_time` with `time_preempt`.
+    pub fn new(slider: &Slider, start_time: f64, time_preempt: f64) -> Self {
+        Self {
+            start_time,
+            duration: slider.duration(start_time),
+            span_count: slider.span_count(),
+            time_preempt,
+        }
+    }
+}
+
 /// The visible part of a slider body at `time`, as progress along the path
 /// `(start, end)` with `start <= end`. `head_hit`: the head circle has been hit
 /// (lazer passes progress 0 until then, so snaking out waits for it).
 // Ported from osu!lazer 2026.1005.0-lazer: osu.Game.Rulesets.Osu/Skinning/SnakingSliderBody.cs (UpdateProgress, setRange)
 // Ported from osu!lazer 2026.1005.0-lazer: osu.Game.Rulesets.Osu/Objects/Drawables/DrawableSlider.cs (Update)
 pub fn snaking_range(
-    slider: &Slider,
-    start_time: f64,
-    time_preempt: f64,
+    slider: &SnakingTiming,
     time: f64,
     head_hit: bool,
     snaking: Snaking,
 ) -> (f64, f64) {
+    let SnakingTiming {
+        start_time,
+        duration,
+        span_count,
+        time_preempt,
+    } = *slider;
     let completion = if head_hit {
-        ((time - start_time) / slider.duration(start_time)).clamp(0.0, 1.0)
+        ((time - start_time) / duration).clamp(0.0, 1.0)
     } else {
         0.0
     };
-    let span_count = slider.span_count();
     // IHasPathWithRepeats.SpanAt and ProgressAt; C#'s (int) cast saturates like `as`.
     let span = (completion * f64::from(span_count)) as i32;
     let mut span_progress = completion * f64::from(span_count) % 1.0;
@@ -179,9 +205,10 @@ pub fn snaking_range(
     (start, end)
 }
 
-/// A snaking range in path length for the mesh, as `SliderPath.progressToDistance`.
-pub fn range_distances(path: &SliderPath, (start, end): (f64, f64)) -> (f32, f32) {
-    let d = |p: f64| (p.clamp(0.0, 1.0) * path.distance()) as f32;
+/// A snaking range in path length for the mesh of a path `distance` long, as
+/// `SliderPath.progressToDistance`.
+pub fn range_distances(distance: f64, (start, end): (f64, f64)) -> (f32, f32) {
+    let d = |p: f64| (p.clamp(0.0, 1.0) * distance) as f32;
     (d(start), d(end))
 }
 

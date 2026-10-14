@@ -43,6 +43,8 @@ pub(super) struct Nested {
     max_result: HitResult,
     /// [`HitResult::None`] until judged.
     result: HitResult,
+    /// When it was judged; NaN until then.
+    time: f64,
 }
 
 impl Nested {
@@ -119,6 +121,7 @@ impl SliderState {
                     start_time: n.start_time,
                     max_result,
                     result: HitResult::None,
+                    time: f64::NAN,
                 }
             })
             .collect();
@@ -166,6 +169,23 @@ impl SliderState {
 
     pub(super) fn tail_judged(&self) -> bool {
         self.nested[self.tail].judged()
+    }
+
+    /// The head's hit state time and result, once judged: the judgement time clamped to the
+    /// end of its miss window (`JudgementResult.TimeAbsolute`).
+    pub(super) fn head_judgement(&self) -> Option<(f64, HitResult)> {
+        let n = &self.nested[self.head];
+        n.judged()
+            .then(|| (n.time.min(n.start_time + MISS_WINDOW), n.result))
+    }
+
+    /// The tail's hit state time and result, once judged. A tail has no hit windows, so its
+    /// judgement time is clamped to its start time.
+    // Ported from osu!lazer 2026.1005.0-lazer: osu.Game.Rulesets.Osu/Objects/SliderEndCircle.cs (CreateHitWindows)
+    // Ported from osu!lazer 2026.1005.0-lazer: osu.Game/Rulesets/Judgements/JudgementResult.cs (TimeAbsolute)
+    pub(super) fn tail_judgement(&self) -> Option<(f64, HitResult)> {
+        let n = &self.nested[self.tail];
+        n.judged().then(|| (n.time.min(n.start_time), n.result))
     }
 
     /// Whether the tail is judged as a hit.
@@ -260,6 +280,7 @@ impl SliderState {
             "invalid result for a nested object"
         );
         n.result = result;
+        n.time = time;
         log.apply(Judgement {
             object: ObjectRef {
                 index: index as u32,

@@ -25,11 +25,14 @@ use slam_render::upload::{
 };
 use slam_skin::SkinChain;
 
-use crate::circles::{CircleTextures, HitCircles, LiveCircles, SkinSprite};
+use crate::circles::{CircleTextures, HitCircles, LiveCircles, PieceTextures, SkinSprite};
 use crate::gameplay_sounds::{GameplaySounds, VoiceSink};
 use crate::hotkeys::{GlobalAction, Hotkeys};
 use crate::input::{ClockTime, GameTime, LiveInput};
 use crate::playfield::PlayfieldLayout;
+use crate::sliders::{
+    HitSliders, LiveSliders, ObjectTextures, SliderBodies, SliderTextures, push_objects,
+};
 use crate::time::Offsets;
 
 // Ported from osu!lazer 2026.1005.0-lazer: osu.Game/Screens/Play/Player.cs (PauseCooldownDuration)
@@ -143,6 +146,7 @@ pub struct PlaySnapshot {
     /// Times the play was restarted.
     pub restarts: u32,
     pub circles: LiveCircles,
+    pub sliders: LiveSliders,
 }
 
 impl Default for PlaySnapshot {
@@ -162,6 +166,7 @@ impl Default for PlaySnapshot {
             exit_progress: 0.0,
             restarts: 0,
             circles: LiveCircles::new(),
+            sliders: LiveSliders::new(),
         }
     }
 }
@@ -769,6 +774,7 @@ impl PlaySession {
         snapshot.exit_progress = 0.0;
         snapshot.restarts = self.restarts;
         snapshot.circles.clear();
+        snapshot.sliders.clear();
     }
 
     /// Fills the fields every gameplay tick writes alike.
@@ -780,6 +786,7 @@ impl PlaySession {
         snapshot.exit_progress = self.hotkeys.exit_progress(now_ns);
         snapshot.restarts = self.restarts;
         snapshot.circles.capture(&self.rules);
+        snapshot.sliders.capture(&self.rules);
     }
 }
 
@@ -803,14 +810,24 @@ enum Element {
     Circle,
     Overlay,
     Approach,
+    /// `sliderstartcircle` and its overlay; requested only when the skin has it.
+    HeadCircle,
+    HeadOverlay,
+    /// `sliderendcircle` and its overlay; requested only when the skin has it.
+    TailCircle,
+    TailOverlay,
     Cursor,
     Digit(u8),
 }
 
-const ELEMENTS: [Element; 14] = [
+const ELEMENTS: [Element; 18] = [
     Element::Circle,
     Element::Overlay,
     Element::Approach,
+    Element::HeadCircle,
+    Element::HeadOverlay,
+    Element::TailCircle,
+    Element::TailOverlay,
     Element::Cursor,
     Element::Digit(0),
     Element::Digit(1),
@@ -854,10 +871,25 @@ const WHITE_SIDE: u32 = 4;
 pub struct PlayTextures {
     requested: [Option<Requested>; ELEMENTS.len()],
     white: TextureHandle,
+    /// Whether slider heads use `sliderstartcircle` rather than the hit circle's textures.
+    head_prefix: bool,
+    /// Whether slider tails use `sliderendcircle` rather than the hit circle's textures.
+    tail_prefix: bool,
+}
+
+/// Whether a circle piece looked up with `prefix` (`sliderstartcircle`, `sliderendcircle`) uses
+/// it: when the skin that provides `hitcircle` has it, otherwise the piece falls back to
+/// `hitcircle`, overlay included.
+// Ported from osu!lazer 2026.1005.0-lazer: osu.Game.Rulesets.Osu/Skinning/Legacy/LegacyMainCirclePiece.cs (load)
+fn uses_prefix(skins: &SkinChain, prefix: &str) -> bool {
+    match skins.find_provider(|s| s.texture("hitcircle").is_some()) {
+        Some(provider) => skins.skin(provider).texture(prefix).is_some(),
+        None => skins.texture(prefix).is_some(),
+    }
 }
 
 impl PlayTextures {
-    /// Reads the textures of hit circles and the cursor from `skins` and queues them for
+    /// Reads the textures of hit circles, slider heads and tails and the cursor from `skins` and queues them for
     /// upload with a white image for the HUD. Missing ones are not drawn. Does file I/O: call it off the hot paths.
     pub fn request(
         skins: &SkinChain,
@@ -867,12 +899,22 @@ impl PlayTextures {
         let prefix = skins
             .config(|s| s.setting("HitCirclePrefix").map(str::to_owned))
             .map_or_else(|| "default".to_owned(), |f| f.value);
+        let head_prefix = uses_prefix(skins, "sliderstartcircle");
+        let tail_prefix = uses_prefix(skins, "sliderendcircle");
         let mut requested = [None; ELEMENTS.len()];
         for (slot, element) in requested.iter_mut().zip(ELEMENTS) {
             let name = match element {
                 Element::Circle => "hitcircle".to_owned(),
                 Element::Overlay => "hitcircleoverlay".to_owned(),
                 Element::Approach => "approachcircle".to_owned(),
+                Element::HeadCircle if head_prefix => "sliderstartcircle".to_owned(),
+                Element::HeadOverlay if head_prefix => "sliderstartcircleoverlay".to_owned(),
+                Element::TailCircle if tail_prefix => "sliderendcircle".to_owned(),
+                Element::TailOverlay if tail_prefix => "sliderendcircleoverlay".to_owned(),
+                Element::HeadCircle
+                | Element::HeadOverlay
+                | Element::TailCircle
+                | Element::TailOverlay => continue,
                 Element::Cursor => "cursor".to_owned(),
                 Element::Digit(d) => format!("{prefix}-{d}"),
             };
@@ -901,7 +943,12 @@ impl PlayTextures {
             },
             TextureKind::Atlas,
         )?;
-        Ok(PlayTextures { requested, white })
+        Ok(PlayTextures {
+            requested,
+            white,
+            head_prefix,
+            tail_prefix,
+        })
     }
 
     /// The textures uploaded by this frame; pending and failed ones are `None`.
@@ -923,11 +970,29 @@ impl PlayTextures {
                 Element::Approach => {
                     frame.circles.approach = Some(SkinSprite::circle(region, r.scale))
                 }
+                Element::HeadCircle => {
+                    frame.sliders.head.circle = Some(SkinSprite::circle(region, r.scale))
+                }
+                Element::HeadOverlay => {
+                    frame.sliders.head.overlay = Some(SkinSprite::circle(region, r.scale))
+                }
+                Element::TailCircle => {
+                    frame.sliders.tail.circle = Some(SkinSprite::circle(region, r.scale))
+                }
+                Element::TailOverlay => {
+                    frame.sliders.tail.overlay = Some(SkinSprite::circle(region, r.scale))
+                }
                 Element::Cursor => frame.cursor = Some(SkinSprite::new(region, r.scale, f32::MAX)),
                 Element::Digit(d) => {
                     frame.circles.digits[usize::from(d)] = Some(SkinSprite::digit(region, r.scale))
                 }
             }
+        }
+        if !self.head_prefix {
+            frame.sliders.head = PieceTextures::from(&frame.circles);
+        }
+        if !self.tail_prefix {
+            frame.sliders.tail = PieceTextures::from(&frame.circles);
         }
         frame
     }
@@ -942,6 +1007,7 @@ impl PlayTextures {
 #[derive(Debug, Clone, Copy, PartialEq, Default)]
 pub struct FrameTextures {
     pub circles: CircleTextures,
+    pub sliders: SliderTextures,
     pub cursor: Option<SkinSprite>,
     /// An opaque white image.
     pub white: Option<AtlasRegion>,
@@ -951,28 +1017,39 @@ pub struct FrameTextures {
 #[derive(Debug, Clone)]
 pub struct PlayView {
     pub circles: HitCircles,
+    pub sliders: HitSliders,
 }
 
 impl PlayView {
     /// Writes the playfield's sprites of `snapshot` drawn at engine time `now_ns` on a
-    /// surface laid out by `layout`; the cursor goes on top of the HUD with
-    /// [`PlayView::push_cursor`]. Allocation-free once `batch` has room.
+    /// surface laid out by `layout`, and the slider bodies to draw between them into `bodies`
+    /// (cleared first); the cursor goes on top of the HUD with [`PlayView::push_cursor`].
+    /// Allocation-free once `batch` has room.
     pub fn push(
         &self,
         batch: &mut SpriteBatch,
+        bodies: &mut SliderBodies,
         layout: &PlayfieldLayout,
         snapshot: &PlaySnapshot,
         now_ns: u64,
         textures: &FrameTextures,
     ) {
+        bodies.clear();
         if snapshot.state != PlayState::Waiting {
             let time = snapshot.time_at(now_ns);
-            self.circles.push(
+            push_objects(
+                &self.circles,
+                &self.sliders,
                 batch,
+                bodies,
                 layout,
                 snapshot.circles.as_slice(),
+                snapshot.sliders.as_slice(),
                 time,
-                &textures.circles,
+                ObjectTextures {
+                    circles: &textures.circles,
+                    sliders: &textures.sliders,
+                },
             );
         }
     }

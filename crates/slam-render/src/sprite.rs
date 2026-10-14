@@ -4,6 +4,7 @@
 //! allocates once its buffers have grown to the frame's size.
 
 use std::mem::size_of;
+use std::ops::Range;
 
 use crate::atlas::UvRect;
 use crate::hal::{
@@ -191,6 +192,19 @@ impl Projection {
             0.0, 0.0, 1.0, 0.0,
             -1.0, 1.0, 0.0, 1.0,
         ];
+        Self(m)
+    }
+
+    /// The projection of points `p` drawn at `offset + p * scale` by this one: for
+    /// geometry in its own units (a slider path in osu! pixels) placed on the target.
+    pub fn scaled(&self, scale: f32, [ox, oy]: [f32; 2]) -> Self {
+        let mut m = self.0;
+        for row in 0..4 {
+            let (x, y) = (self.0[row], self.0[4 + row]);
+            m[row] = x * scale;
+            m[4 + row] = y * scale;
+            m[12 + row] = x * ox + y * oy + self.0[12 + row];
+        }
         Self(m)
     }
 
@@ -404,8 +418,29 @@ impl<D: Device> SpriteRenderer<D> {
     where
         D::Texture: 't,
     {
+        let uploaded = self.upload(device, batch, projection, &texture)?;
+        self.draw_range(device, &uploaded, batch, 0..batch.len() as u32, texture)
+    }
+
+    /// Puts `batch` on the GPU for [`SpriteRenderer::draw_range`], taking one of the
+    /// frame's slots (none for an empty batch). Every texture of the batch must resolve,
+    /// or nothing is uploaded. Lets other drawing (slider bodies) go between parts of
+    /// one batch without a slot per part.
+    pub fn upload<'t>(
+        &mut self,
+        device: &mut D,
+        batch: &SpriteBatch,
+        projection: &Projection,
+        texture: impl Fn(TextureId) -> Option<&'t D::Texture>,
+    ) -> Result<UploadedBatch, SpriteError>
+    where
+        D::Texture: 't,
+    {
         if batch.is_empty() {
-            return Ok(SpriteStats::default());
+            return Ok(UploadedBatch {
+                slot: None,
+                quads: 0,
+            });
         }
         if let Some(b) = batch.batches.iter().find(|b| texture(b.texture).is_none()) {
             return Err(SpriteError::MissingTexture(b.texture));
@@ -455,21 +490,63 @@ impl<D: Device> SpriteRenderer<D> {
             std::slice::from_raw_parts(projection.0.as_ptr().cast::<u8>(), size_of::<Projection>())
         };
         device.write_buffer(&slot.globals, 0, globals)?;
+        Ok(UploadedBatch {
+            slot: Some(current),
+            quads: batch.len() as u32,
+        })
+    }
+
+    /// Draws the sprites `quads` (indices in recording order) of `batch`, uploaded as
+    /// `uploaded` this frame, into the current pass. Binds everything it needs, so
+    /// other drawing may happen between ranges; leaves the pipeline, buffers and
+    /// texture slot 0 bound. The batch must not change between upload and draws.
+    pub fn draw_range<'t>(
+        &mut self,
+        device: &mut D,
+        uploaded: &UploadedBatch,
+        batch: &SpriteBatch,
+        quads: Range<u32>,
+        texture: impl Fn(TextureId) -> Option<&'t D::Texture>,
+    ) -> Result<SpriteStats, SpriteError>
+    where
+        D::Texture: 't,
+    {
+        debug_assert_eq!(
+            uploaded.quads,
+            batch.len() as u32,
+            "batch changed after upload"
+        );
+        let quads = quads.start..quads.end.min(uploaded.quads);
+        let Some(slot) = uploaded.slot.filter(|_| !quads.is_empty()) else {
+            return Ok(SpriteStats::default());
+        };
+        let slot = &self.slots[slot];
+        let Some((vertices, _)) = &slot.vertices else {
+            unreachable!("an uploaded slot has vertices")
+        };
         device.set_uniform_buffer(0, &slot.globals)?;
         device.set_index_buffer(&self.indices, IndexFormat::U16)?;
 
         let mut stats = SpriteStats {
-            sprites: batch.len() as u32,
-            batches: batch.batches.len() as u32,
+            sprites: quads.end - quads.start,
+            batches: 0,
             draw_calls: 0,
         };
         let stride = u64::from(SPRITE_LAYOUT.stride);
-        for b in &batch.batches {
+        // Batches are in quad order; skip those ending before the range.
+        let from = batch
+            .batches
+            .partition_point(|b| b.first_quad + b.quads <= quads.start);
+        for b in &batch.batches[from..] {
+            if b.first_quad >= quads.end {
+                break;
+            }
+            stats.batches += 1;
             device.set_pipeline(&self.pipelines[blend_index(b.blend)]);
             let tex = texture(b.texture).ok_or(SpriteError::MissingTexture(b.texture))?;
             device.set_texture(0, tex)?;
-            let mut first = b.first_quad;
-            let end = b.first_quad + b.quads;
+            let mut first = b.first_quad.max(quads.start);
+            let end = (b.first_quad + b.quads).min(quads.end);
             while first < end {
                 let quads = (end - first).min(MAX_QUADS_PER_DRAW);
                 device.set_vertex_buffer(vertices, u64::from(first) * 4 * stride)?;
@@ -480,6 +557,14 @@ impl<D: Device> SpriteRenderer<D> {
         }
         Ok(stats)
     }
+}
+
+/// A [`SpriteBatch`] put on the GPU by [`SpriteRenderer::upload`] for this frame.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct UploadedBatch {
+    /// The slot holding the vertices; none for an empty batch.
+    slot: Option<usize>,
+    quads: u32,
 }
 
 #[cfg(test)]
@@ -610,6 +695,14 @@ mod tests {
     }
 
     #[test]
+    fn scaled_projection_places_local_points() {
+        let p = Projection::pixels(Extent::new(200, 100));
+        let local = p.scaled(2.0, [50.0, 10.0]);
+        assert_close(&[local.apply([0.0, 0.0])], &[p.apply([50.0, 10.0])]);
+        assert_close(&[local.apply([25.0, 20.0])], &[p.apply([100.0, 50.0])]);
+    }
+
+    #[test]
     fn quad_indices_cover_u16_range() {
         let bytes = quad_indices(MAX_QUADS_PER_DRAW);
         let indices: Vec<u16> = bytes
@@ -689,6 +782,84 @@ mod tests {
             })
             .collect();
         assert_eq!(writes, [3 * 4 * 32, 64]);
+    }
+
+    #[test]
+    fn draws_ranges_of_one_upload() {
+        let (mut d, mut r) = setup(1);
+        let mut batch = SpriteBatch::new();
+        for s in [
+            sprite(1, Blend::Alpha),
+            sprite(1, Blend::Alpha),
+            sprite(1, Blend::Alpha),
+            sprite(2, Blend::Additive),
+        ] {
+            batch.push(&s);
+        }
+        let uploaded = r.upload(&mut d, &batch, &P, resolve).expect("upload");
+        let first = r
+            .draw_range(&mut d, &uploaded, &batch, 0..2, resolve)
+            .expect("first part");
+        let rest = r
+            .draw_range(&mut d, &uploaded, &batch, 2..4, resolve)
+            .expect("second part");
+        let empty = r
+            .draw_range(&mut d, &uploaded, &batch, 4..9, resolve)
+            .expect("past the end");
+        assert_eq!(
+            [first, rest, empty],
+            [
+                SpriteStats {
+                    sprites: 2,
+                    batches: 1,
+                    draw_calls: 1
+                },
+                SpriteStats {
+                    sprites: 2,
+                    batches: 2,
+                    draw_calls: 2
+                },
+                SpriteStats::default(),
+            ]
+        );
+        let quad = 4 * 32;
+        let draws: Vec<_> = d
+            .draws()
+            .into_iter()
+            .filter_map(|c| match c {
+                Call::Vertices { offset, .. } => Some(Call::Vertices { buffer: 0, offset }),
+                Call::DrawIndexed(_) | Call::Texture(_) => Some(c),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(
+            draws,
+            [
+                Call::Texture(10),
+                Call::Vertices {
+                    buffer: 0,
+                    offset: 0
+                },
+                Call::DrawIndexed(12),
+                Call::Texture(10),
+                Call::Vertices {
+                    buffer: 0,
+                    offset: 2 * quad
+                },
+                Call::DrawIndexed(6),
+                Call::Texture(20),
+                Call::Vertices {
+                    buffer: 0,
+                    offset: 3 * quad
+                },
+                Call::DrawIndexed(6),
+            ]
+        );
+        // One slot for the whole batch: a second upload this frame has none left.
+        assert!(matches!(
+            r.upload(&mut d, &batch, &P, resolve),
+            Err(SpriteError::OutOfSlots { slots: 1 })
+        ));
     }
 
     #[test]

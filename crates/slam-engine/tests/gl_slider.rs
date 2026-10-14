@@ -6,13 +6,17 @@
 use glow::HasContext;
 use slam_engine::gl::SdlGlSurface;
 use slam_input::InputWindow;
+use slam_render::atlas::UvRect;
 use slam_render::gl::GlRenderTarget;
 use slam_render::gl::{GlDebug, GlDevice};
 use slam_render::slider::{
     SliderBuffer, SliderDraw, SliderError, SliderGradient, SliderMesh, SliderRenderer,
 };
-use slam_render::sprite::Projection;
-use slam_render::{Color, Device, Extent, RenderTargetDesc, TextureFormat};
+use slam_render::sprite::{Projection, Sprite, SpriteBatch, SpriteRenderer};
+use slam_render::textures::TextureId;
+use slam_render::{
+    Color, Device, Extent, RenderTargetDesc, TextureDesc, TextureFormat, TextureUsage,
+};
 use slam_testkit::count_allocs;
 
 slam_testkit::install_counting_allocator!();
@@ -300,6 +304,53 @@ fn draws_slider_bodies() {
         assert_rgb(back(&d, 32.0, 48.0), [0, 0, 0]);
         d.present().expect("present");
         sliders.release(&mut d, upper);
+
+        // A body between two parts of one uploaded sprite batch, as `play` draws a frame:
+        // the first square under the body, the second over it.
+        let white = d
+            .create_texture(
+                &TextureDesc {
+                    size: Extent::new(1, 1),
+                    format: TextureFormat::Rgba8,
+                    usage: TextureUsage::SAMPLED,
+                },
+                Some(&[255; 4]),
+            )
+            .expect("texture");
+        let mut renderer = SpriteRenderer::new(&mut d, 1).expect("sprite renderer");
+        let square = |x: f32, colour: Color| {
+            let mut s = Sprite::new(TextureId(1), UvRect::FULL, [x, 28.0], [8.0, 8.0]);
+            s.colour = colour;
+            s
+        };
+        let mut batch = SpriteBatch::new();
+        batch.push(&square(20.0, Color::rgb(0.0, 1.0, 0.0)));
+        batch.push(&square(40.0, Color::rgb(0.0, 0.0, 1.0)));
+        sliders.begin_frame(&mut d, size).expect("begin frame");
+        renderer.begin_frame();
+        d.begin_pass(Some(&target), Some(Color::BLACK));
+        let resolve = |id: TextureId| (id == TextureId(1)).then_some(&white);
+        let uploaded = renderer
+            .upload(&mut d, &batch, &projection, resolve)
+            .expect("upload");
+        renderer
+            .draw_range(&mut d, &uploaded, &batch, 0..1, resolve)
+            .expect("under");
+        sliders
+            .draw(
+                &mut d,
+                &straight,
+                &body(&projection, &red, (0.0, 44.0), [1.0; 4]),
+                Some(&target),
+            )
+            .expect("body");
+        renderer
+            .draw_range(&mut d, &uploaded, &batch, 1..2, resolve)
+            .expect("over");
+        assert_rgb(pixel(&d, 24, 32), [255, 0, 0]);
+        assert_rgb(pixel(&d, 44, 32), [0, 0, 255]);
+        renderer.destroy(&mut d);
+        d.destroy_texture(white);
 
         sliders.release(&mut d, straight);
         sliders.release(&mut d, folded);

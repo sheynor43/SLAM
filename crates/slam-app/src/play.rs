@@ -20,12 +20,15 @@ use slam_osu::{Beatmap, ModSet};
 use slam_play::circles::{
     CircleMods, CircleSettings, CircleSkinConfig, CircleStyle, CircleVisuals, HitCircles,
 };
+use slam_play::slider_body::Snaking;
+use slam_play::sliders::{HitSliders, MAX_LIVE_SLIDERS, SliderBodies, SliderVisuals};
 use slam_play::{
     BackgroundSettings, BackgroundView, Bindings, GameplaySounds, Hitsounds, HudView, LiveInput,
     Offsets, PlaySession, PlaySnapshot, PlayTextures, PlayView, PlayfieldLayout, SampleCache,
     SampleSkins, SoundSettings,
 };
 use slam_render::gl::{GlDebug, GlDevice, GlTexture};
+use slam_render::slider::{SliderBuffer, SliderDraw, SliderMesh, SliderRenderer};
 use slam_render::sprite::{DEFAULT_SLOTS, Projection, SpriteBatch, SpriteRenderer};
 use slam_render::textures::Textures;
 use slam_render::upload::{
@@ -181,6 +184,9 @@ struct Resources {
     renderer: SpriteRenderer<GlDevice<SdlGlSurface>>,
     /// Draws MSDF glyphs.
     text_renderer: SpriteRenderer<GlDevice<SdlGlSurface>>,
+    sliders: SliderRenderer<GlDevice<SdlGlSurface>>,
+    /// Slider body meshes on the GPU, by object index.
+    slider_buffers: Vec<Option<SliderBuffer<GlDevice<SdlGlSurface>>>>,
 }
 
 /// The draw thread's side. The device and its resources exist between `start` and
@@ -198,6 +204,12 @@ struct View {
     background_view: BackgroundView,
     /// The background, the playfield and the HUD's shapes.
     batch: SpriteBatch,
+    /// Slider bodies between the sprites of `batch`.
+    bodies: SliderBodies,
+    /// Slider body meshes by object index, uploaded at `start`.
+    meshes: Vec<(u32, SliderMesh)>,
+    /// Number of objects in the beatmap.
+    objects: usize,
     /// The HUD's text.
     text: SpriteBatch,
     /// The cursor, on top of the HUD.
@@ -220,6 +232,16 @@ impl Draw<PlaySnapshot> for View {
         let renderer = SpriteRenderer::new(&mut device, 2 * DEFAULT_SLOTS).expect("renderer");
         let text_renderer = SpriteRenderer::with_shader(&mut device, DEFAULT_SLOTS, &shaders::MSDF)
             .expect("text renderer");
+        let mut sliders =
+            SliderRenderer::new(&mut device, MAX_LIVE_SLIDERS).expect("slider renderer");
+        let mut slider_buffers: Vec<_> = (0..self.objects).map(|_| None).collect();
+        for (index, mesh) in &self.meshes {
+            // A slider that fails to upload is drawn without its body.
+            match sliders.upload(&mut device, mesh) {
+                Ok(buffer) => slider_buffers[*index as usize] = buffer,
+                Err(e) => tracing::warn!("slider {index}: {e}"),
+            }
+        }
         let mut textures = Textures::with_capacity(MAX_TEXTURES);
         // The HUD's glyphs are made before the first frame: a glyph takes several frames
         // to appear. The update thread does not wait for this (the lead-in runs on); late
@@ -234,6 +256,8 @@ impl Draw<PlaySnapshot> for View {
             textures,
             renderer,
             text_renderer,
+            sliders,
+            slider_buffers,
         });
     }
 
@@ -270,6 +294,7 @@ impl Draw<PlaySnapshot> for View {
         );
         self.view.push(
             &mut self.batch,
+            &mut self.bodies,
             &layout,
             snapshot,
             info.wait.woke_ns,
@@ -289,9 +314,48 @@ impl Draw<PlaySnapshot> for View {
         let projection = Projection::pixels(size);
         // A failed draw or present loses one frame; the next one tries again.
         let texture = |id| gpu_textures.get(id);
-        let _ = r
+        let _ = r.sliders.begin_frame(&mut r.device, size);
+        // The playfield's sprites in parts, with the slider bodies between them.
+        if let Ok(uploaded) = r
             .renderer
-            .draw(&mut r.device, &self.batch, &projection, texture);
+            .upload(&mut r.device, &self.batch, &projection, texture)
+        {
+            let mut from = 0;
+            for body in self.bodies.as_slice() {
+                let _ = r.renderer.draw_range(
+                    &mut r.device,
+                    &uploaded,
+                    &self.batch,
+                    from..body.before_sprite,
+                    texture,
+                );
+                from = body.before_sprite;
+                let Some(Some(buffer)) = r.slider_buffers.get(body.index as usize) else {
+                    continue;
+                };
+                let origin = layout.to_window(body.position);
+                let path = projection.scaled(layout.scale(), [origin.x, origin.y]);
+                let _ = r.sliders.draw(
+                    &mut r.device,
+                    buffer,
+                    &SliderDraw {
+                        projection: &path,
+                        radius: body.radius,
+                        range: body.range,
+                        tint: body.tint,
+                        gradient: self.view.sliders.visuals.gradient(body.gradient),
+                    },
+                    None,
+                );
+            }
+            let _ = r.renderer.draw_range(
+                &mut r.device,
+                &uploaded,
+                &self.batch,
+                from..u32::MAX,
+                texture,
+            );
+        }
         let _ = r
             .text_renderer
             .draw(&mut r.device, &self.text, &projection, texture);
@@ -307,7 +371,13 @@ impl Draw<PlaySnapshot> for View {
             mut textures,
             renderer,
             text_renderer,
+            mut sliders,
+            slider_buffers,
         } = self.resources.take().expect("started");
+        for buffer in slider_buffers.into_iter().flatten() {
+            sliders.release(&mut device, buffer);
+        }
+        sliders.destroy(&mut device);
         renderer.destroy(&mut device);
         text_renderer.destroy(&mut device);
         for texture in textures.drain() {
@@ -450,6 +520,16 @@ pub fn run(options: &Options) -> Result<(), String> {
             style: CircleStyle::new(circle_mods, &windows, &loaded.skins),
             config: CircleSkinConfig::new(&loaded.skins),
         },
+        sliders: HitSliders {
+            visuals: SliderVisuals::new(
+                beatmap,
+                circle_mods,
+                CircleSettings::default(),
+                Some(&loaded.beatmap_skin),
+                &loaded.skins,
+            ),
+            snaking: Snaking::default(),
+        },
     };
 
     let backend = match options.backend {
@@ -550,6 +630,9 @@ pub fn run(options: &Options) -> Result<(), String> {
         background,
         background_view: BackgroundView::new(BackgroundSettings::default()),
         batch: SpriteBatch::with_capacity(MAX_SPRITES),
+        bodies: SliderBodies::new(),
+        meshes: SliderVisuals::meshes(beatmap),
+        objects: beatmap.hit_objects.len(),
         text: SpriteBatch::with_capacity(MAX_GLYPH_SPRITES),
         cursor: SpriteBatch::with_capacity(1),
         surface_size,

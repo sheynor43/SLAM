@@ -193,7 +193,7 @@ impl ObjectState {
 }
 
 /// A slider alive at the last update of [`OsuRules`].
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq)]
 pub struct LiveSlider {
     /// Object index in the beatmap.
     pub index: u32,
@@ -201,6 +201,12 @@ pub struct LiveSlider {
     /// `SliderInputManager.Tracking`: as of the previous update, changed only by presses since
     /// (a parent updates before its children).
     pub tracking: bool,
+    /// The head's judgement, once judged.
+    pub head: Option<CircleJudgement>,
+    /// The tail's judgement, once judged.
+    pub tail: Option<CircleJudgement>,
+    /// The slider's own judgement, once judged (after its tail, at its end time or later).
+    pub judgement: Option<CircleJudgement>,
 }
 
 /// A hit circle alive at the last update of [`OsuRules`].
@@ -212,7 +218,8 @@ pub struct LiveCircle {
     pub judgement: Option<CircleJudgement>,
 }
 
-/// How a hit circle was judged, as its drawable sees it.
+/// How a hit circle (or a slider, or one of its nested objects) was judged, as its drawable
+/// sees it.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct CircleJudgement {
     /// Lazer's `HitStateUpdateTime`: when the judged transforms start. The judgement time,
@@ -369,19 +376,31 @@ impl OsuRules {
         &self.hit_windows
     }
 
-    /// The sliders alive at the last update, in start time order, with their tracking state:
-    /// what lazer's `DrawableSlider` reads to play its sliding samples. Sliders not alive (not
-    /// yet in their lifetime, or expired after their judgement) are left out.
+    /// The sliders alive at the last update, in start time order, with their tracking state
+    /// and judgements: what lazer's `DrawableSlider` reads to play its sliding samples and
+    /// draws. Sliders not alive (not yet in their lifetime, or expired after their judgement)
+    /// are left out.
     pub fn live_sliders(&self) -> impl Iterator<Item = LiveSlider> + '_ {
         let time = self.time;
         self.live_range(time).filter_map(move |i| {
             let o = &self.objects[i];
             match o.kind {
-                Kind::Slider(s) if o.is_alive(time) => Some(LiveSlider {
-                    // Beatmap object counts fit in `u32`, as `ObjectRef::index` assumes.
-                    index: i as u32,
-                    tracking: self.sliders[s].drawable_tracking(),
-                }),
+                Kind::Slider(s) if o.is_alive(time) => {
+                    let slider = &self.sliders[s];
+                    let judgement =
+                        |(time, result): (f64, HitResult)| CircleJudgement { time, result };
+                    Some(LiveSlider {
+                        // Beatmap object counts fit in `u32`, as `ObjectRef::index` assumes.
+                        index: i as u32,
+                        tracking: slider.drawable_tracking(),
+                        head: slider.head_judgement().map(judgement),
+                        tail: slider.tail_judgement().map(judgement),
+                        judgement: o.result.map(|result| CircleJudgement {
+                            time: o.hit_state_time,
+                            result,
+                        }),
+                    })
+                }
                 _ => None,
             }
         })

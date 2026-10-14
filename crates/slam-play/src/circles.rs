@@ -35,10 +35,10 @@ pub const MAX_LIVE_CIRCLES: usize = 256;
 
 /// Lazer's `OsuHitObject.OBJECT_RADIUS` doubled: the size of a circle at scale 1, in
 /// osu!pixels.
-const OBJECT_SIZE: f32 = 128.0;
+pub(crate) const OBJECT_SIZE: f32 = 128.0;
 
 /// `LegacyMainCirclePiece`'s `maxSize`: circle textures are cropped to this display size.
-const MAX_CIRCLE_SIZE: f32 = OBJECT_SIZE * 2.0;
+pub(crate) const MAX_CIRCLE_SIZE: f32 = OBJECT_SIZE * 2.0;
 
 /// Stable's blanket scale of hit circle numbers (`hitcircle_text_scale`).
 const NUMBER_SCALE: f32 = 0.8;
@@ -47,13 +47,13 @@ const NUMBER_SCALE: f32 = 0.8;
 const MAX_DIGIT_SIZE: f32 = MAX_CIRCLE_SIZE / NUMBER_SCALE;
 
 /// `LegacyMainCirclePiece`'s `legacy_fade_duration`.
-const LEGACY_FADE_DURATION: f64 = 240.0;
+pub(crate) const LEGACY_FADE_DURATION: f64 = 240.0;
 
 /// The colour pieces are dimmed to until shortly before they can be hit.
-const DIM: f32 = 195.0 / 255.0;
+pub(crate) const DIM: f32 = 195.0 / 255.0;
 
 /// Lazer's `OsuHitWindows.MISS_WINDOW`.
-const MISS_WINDOW: f64 = 400.0;
+pub(crate) const MISS_WINDOW: f64 = 400.0;
 
 // ---- Snapshot ----
 
@@ -270,7 +270,7 @@ impl CircleVisuals {
 // Ported from osu!lazer 2026.1005.0-lazer: osu.Game/Skinning/LegacySkin.cs (GetComboColour)
 // Ported from osu!lazer 2026.1005.0-lazer: osu.Game/Skinning/LegacyBeatmapSkin.cs (GetComboColour)
 // Ported from osu!lazer 2026.1005.0-lazer: osu.Game/Skinning/LegacyColourCompatibility.cs (DisallowZeroAlpha)
-fn combo_colour(combo: &ComboInfo, beatmap: Option<&Skin>, skins: &SkinChain) -> Color {
+pub(crate) fn combo_colour(combo: &ComboInfo, beatmap: Option<&Skin>, skins: &SkinChain) -> Color {
     let [r, g, b, a] = match (beatmap, skins.sources().next()) {
         // A beatmap skin has no default colours to fall back on; the caller checked it has some.
         (Some(skin), _) => pick(&skin.ini().combo_colours, combo.combo_index_with_offsets),
@@ -296,7 +296,7 @@ fn pick(colours: &[Rgba], index: i32) -> [u8; 4] {
 // ---- Transforms ----
 
 #[derive(Debug, Clone, Copy, PartialEq)]
-enum Easing {
+pub(crate) enum Easing {
     None,
     /// osu-framework's `Easing.Out` (quadratic).
     Out,
@@ -304,7 +304,7 @@ enum Easing {
 
 /// One transform of a single property.
 #[derive(Debug, Clone, Copy, PartialEq)]
-struct Tween {
+pub(crate) struct Tween {
     start: f64,
     duration: f64,
     end: f32,
@@ -366,7 +366,7 @@ impl Tween {
 
 /// How osu-framework interpolates a property.
 #[derive(Debug, Clone, Copy, PartialEq)]
-enum Kind {
+pub(crate) enum Kind {
     /// A `float`, interpolated in `double`.
     Alpha,
     /// A `Vector2`, interpolated in `float`.
@@ -404,14 +404,14 @@ pub(crate) fn to_srgb(colour: f32) -> f32 {
 /// once (the approach circle's alpha: its fade-in, the fade at the start time and the fade on
 /// a hit); the fourth slot is headroom.
 #[derive(Debug, Clone, Copy)]
-struct Track {
+pub(crate) struct Track {
     kind: Kind,
     tweens: [Tween; 4],
     len: usize,
 }
 
 impl Track {
-    const fn new(kind: Kind) -> Self {
+    pub(crate) const fn new(kind: Kind) -> Self {
         Track {
             kind,
             tweens: [Tween::new(0.0, 0.0, 0.0, Easing::None); 4],
@@ -420,7 +420,7 @@ impl Track {
     }
 
     // Ported from osu-framework 2026.921.1: osu.Framework/Graphics/Transforms/TargetGroupingTransformTracker.cs (AddTransform)
-    fn add(&mut self, start: f64, duration: f64, end: f32, easing: Easing) {
+    pub(crate) fn add(&mut self, start: f64, duration: f64, end: f32, easing: Easing) {
         // Inserted after the transforms starting no later (osu-framework orders by start time,
         // then by creation); the ones starting after it are removed.
         let i = self.tweens[..self.len]
@@ -432,13 +432,13 @@ impl Track {
         self.len = i + 1;
     }
 
-    fn fade_out(&mut self, start: f64, duration: f64) {
+    pub(crate) fn fade_out(&mut self, start: f64, duration: f64) {
         self.add(start, duration, 0.0, Easing::None);
     }
 
     /// The value at `time` of a property starting at `initial`: the latest transform started by
     /// then, from the value the property had when it started.
-    fn value(&self, initial: f32, time: f64) -> f32 {
+    pub(crate) fn value(&self, initial: f32, time: f64) -> f32 {
         let mut value = initial;
         let mut active: Option<&Tween> = None;
         for tween in &self.tweens[..self.len] {
@@ -650,7 +650,7 @@ impl CircleSkinConfig {
 }
 
 /// Multiplies a colour by a brightness and an alpha.
-fn tint(colour: Color, brightness: f32, alpha: f32) -> Color {
+pub(crate) fn tint(colour: Color, brightness: f32, alpha: f32) -> Color {
     Color {
         r: colour.r * brightness,
         g: colour.g * brightness,
@@ -660,7 +660,7 @@ fn tint(colour: Color, brightness: f32, alpha: f32) -> Color {
 }
 
 /// A sprite of `size` window units centred on `centre`.
-fn centred(texture: &SkinSprite, centre: Vec2, size: Vec2, colour: Color) -> Sprite {
+pub(crate) fn centred(texture: &SkinSprite, centre: Vec2, size: Vec2, colour: Color) -> Sprite {
     Sprite {
         position: [centre.x, centre.y],
         size: [size.x, size.y],
@@ -776,34 +776,70 @@ fn push_circles(
     time: f64,
     textures: &CircleTextures,
 ) {
-    let HitCircles {
-        visuals,
-        style,
-        config,
-    } = circles;
-    let px = layout.scale();
     for c in live.iter().rev() {
-        let Some(circle) = visuals.get(c.index) else {
-            continue;
-        };
-        let pose = circle_pose(circle, c.judgement, time, style);
-        let alpha = pose.object_alpha * pose.piece_alpha;
+        if let Some(circle) = circles.visuals.get(c.index) {
+            let pose = circle_pose(circle, c.judgement, time, &circles.style);
+            circles.push_piece(batch, layout, circle, &pose, 1.0, textures.into(), textures);
+        }
+    }
+    let Some(approach) = &textures.approach else {
+        return;
+    };
+    for c in live {
+        if let Some(circle) = circles.visuals.get(c.index) {
+            let pose = circle_pose(circle, c.judgement, time, &circles.style);
+            push_approach(batch, layout, circle, &pose, 1.0, approach);
+        }
+    }
+}
+
+/// The circle and overlay textures of a circle piece: a hit circle's, or a slider head's.
+#[derive(Debug, Clone, Copy, PartialEq, Default)]
+pub struct PieceTextures {
+    pub circle: Option<SkinSprite>,
+    pub overlay: Option<SkinSprite>,
+}
+
+impl From<&CircleTextures> for PieceTextures {
+    fn from(textures: &CircleTextures) -> Self {
+        PieceTextures {
+            circle: textures.circle,
+            overlay: textures.overlay,
+        }
+    }
+}
+
+impl HitCircles {
+    /// Writes the circle piece of `circle` in `pose` (its circle, overlay and combo number),
+    /// within a parent of `parent_alpha` (a slider, for its head). Digits come from `textures`.
+    #[allow(clippy::too_many_arguments)]
+    pub(crate) fn push_piece(
+        &self,
+        batch: &mut SpriteBatch,
+        layout: &PlayfieldLayout,
+        circle: &CircleVisual,
+        pose: &CirclePose,
+        parent_alpha: f32,
+        piece: PieceTextures,
+        textures: &CircleTextures,
+    ) {
+        let alpha = parent_alpha * pose.object_alpha * pose.piece_alpha;
         if alpha <= 0.0 {
-            continue;
+            return;
         }
         let centre = layout.to_window(circle.position);
-        let object_scale = circle.scale * px;
+        let object_scale = circle.scale * layout.scale();
         let white = Color::WHITE;
         let sprite_scale = object_scale * pose.sprite_scale;
         let sprite_alpha = alpha * pose.sprite_alpha;
 
-        if let Some(t) = &textures.circle {
+        if let Some(t) = &piece.circle {
             let size = Vec2::new(t.size.x * sprite_scale, t.size.y * sprite_scale);
             let colour = tint(circle.colour, pose.brightness, sprite_alpha);
             batch.push(&centred(t, centre, size, colour));
         }
         let overlay = |batch: &mut SpriteBatch| {
-            if let Some(t) = &textures.overlay {
+            if let Some(t) = &piece.overlay {
                 let size = Vec2::new(t.size.x * sprite_scale, t.size.y * sprite_scale);
                 let colour = tint(white, pose.brightness, sprite_alpha);
                 batch.push(&centred(t, centre, size, colour));
@@ -816,7 +852,7 @@ fn push_circles(
                 push_number(
                     batch,
                     textures,
-                    config,
+                    &self.config,
                     circle.number,
                     centre,
                     scale,
@@ -824,7 +860,7 @@ fn push_circles(
                 );
             }
         };
-        if config.overlay_above_number {
+        if self.config.overlay_above_number {
             number(batch);
             overlay(batch);
         } else {
@@ -832,31 +868,32 @@ fn push_circles(
             number(batch);
         }
     }
+}
 
-    let Some(approach) = &textures.approach else {
+/// Writes the approach circle of `circle` in `pose`, within a parent of `parent_alpha`.
+pub(crate) fn push_approach(
+    batch: &mut SpriteBatch,
+    layout: &PlayfieldLayout,
+    circle: &CircleVisual,
+    pose: &CirclePose,
+    parent_alpha: f32,
+    approach: &SkinSprite,
+) {
+    let alpha = parent_alpha * pose.object_alpha * pose.approach_alpha;
+    if alpha <= 0.0 {
         return;
-    };
-    for c in live {
-        let Some(circle) = visuals.get(c.index) else {
-            continue;
-        };
-        let pose = circle_pose(circle, c.judgement, time, style);
-        let alpha = pose.object_alpha * pose.approach_alpha;
-        if alpha <= 0.0 {
-            continue;
-        }
-        // `LegacyApproachCircle` is a sprite of its texture's size.
-        // Ported from osu!lazer 2026.1005.0-lazer: osu.Game.Rulesets.Osu/Skinning/Legacy/LegacyApproachCircle.cs
-        let scale = circle.scale * px * pose.approach_scale;
-        let size = Vec2::new(approach.size.x * scale, approach.size.y * scale);
-        let colour = tint(circle.colour, 1.0, alpha);
-        batch.push(&centred(
-            approach,
-            layout.to_window(circle.position),
-            size,
-            colour,
-        ));
     }
+    // `LegacyApproachCircle` is a sprite of its texture's size.
+    // Ported from osu!lazer 2026.1005.0-lazer: osu.Game.Rulesets.Osu/Skinning/Legacy/LegacyApproachCircle.cs
+    let scale = circle.scale * layout.scale() * pose.approach_scale;
+    let size = Vec2::new(approach.size.x * scale, approach.size.y * scale);
+    let colour = tint(circle.colour, 1.0, alpha);
+    batch.push(&centred(
+        approach,
+        layout.to_window(circle.position),
+        size,
+        colour,
+    ));
 }
 
 #[cfg(test)]

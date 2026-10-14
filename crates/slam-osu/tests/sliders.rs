@@ -1261,3 +1261,55 @@ fn slider_tail_hit_follows_the_tail_judgement() {
     // Not a slider index.
     assert!(!sim.rules().slider_tail_hit(1));
 }
+
+/// Slider 0 as alive at the last update of `rules`.
+fn live_slider(rules: &OsuRules) -> slam_osu::rules::LiveSlider {
+    let live: Vec<_> = rules.live_sliders().collect();
+    assert_eq!(live.len(), 1, "{live:?}");
+    live[0]
+}
+
+#[test]
+fn live_sliders_report_the_judgements_of_the_head_the_tail_and_the_slider() {
+    let map = input_slider();
+    let frames = [
+        frame(0.0, 0.0, 0.0, NONE),
+        frame(TIME_SLIDER_START, 0.0, 0.0, LEFT),
+        frame(TIME_SLIDER_END + 100.0, 0.0, 0.0, NONE),
+    ];
+    let rules = OsuRules::with_options(&map, lazer(HitPolicy::StartTimeOrdered));
+    let mut sim = Simulator::new(&map, ReplayInput::new(frames.to_vec()), rules);
+
+    step_to(&mut sim, TIME_SLIDER_START - 1.0);
+    let live = live_slider(sim.rules());
+    assert_eq!((live.head, live.tail, live.judgement), (None, None, None));
+
+    step_to(&mut sim, TIME_DURING_SLIDE_1);
+    let live = live_slider(sim.rules());
+    let head = live.head.expect("the head is judged");
+    assert_eq!((head.time, head.result), (TIME_SLIDER_START, Great));
+    assert_eq!((live.tail, live.judgement), (None, None));
+
+    // The play ends with the slider's judgement; it stays alive while it fades out.
+    sim.run();
+    let live = live_slider(sim.rules());
+    let tail = live.tail.expect("the tail is judged");
+    assert!(tail.result.is_hit());
+    // Judged by the leniency up to 36 ms before the end, never after it.
+    assert!((TIME_SLIDER_END - 36.0..=TIME_SLIDER_END).contains(&tail.time));
+    let slider = live.judgement.expect("the slider is judged");
+    assert_eq!(slider.time, TIME_SLIDER_END);
+    assert!(slider.result.is_hit());
+}
+
+#[test]
+fn a_missed_head_is_reported_at_the_end_of_its_miss_window() {
+    let map = input_slider();
+    let frames = [frame(0.0, 0.0, 0.0, NONE)];
+    let rules = OsuRules::with_options(&map, lazer(HitPolicy::StartTimeOrdered));
+    let mut sim = Simulator::new(&map, ReplayInput::new(frames.to_vec()), rules);
+    step_to(&mut sim, TIME_DURING_SLIDE_1);
+    let head = live_slider(sim.rules()).head.expect("the head is missed");
+    assert_eq!(head.result, Miss);
+    assert!(head.time <= TIME_SLIDER_START + 400.0, "{head:?}");
+}
