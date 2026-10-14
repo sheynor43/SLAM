@@ -552,8 +552,8 @@ pub fn run(options: &Options) -> Result<(), String> {
     sink.set_notify(engine.waker().as_notify());
 
     println!(
-        "playing {} ({} objects), audio: {}, background: {}; Escape pauses, hold ` to retry, \
-         Ctrl+` to quit",
+        "playing {} ({} objects), audio: {}, background: {}; Escape pauses (or leaves the \
+         results), hold ` to retry, Ctrl+` to quit",
         options.map.display(),
         beatmap.hit_objects.len(),
         stream.backend().name(),
@@ -598,10 +598,18 @@ pub fn run(options: &Options) -> Result<(), String> {
     drop(requests);
 
     let session = &gameplay.session;
-    if session.health().has_failed() {
+    // Until the results screen exists, the results go to the console.
+    if let Some(results) = session.results() {
+        println!(
+            "passed: score {}, accuracy {:.2}%, rank {:?}",
+            results.score,
+            results.accuracy * 100.0,
+            results.rank
+        );
+    } else if session.health().has_failed() {
         println!("failed after {} judgements", session.counted_judgements());
     }
-    let statistics = session.log().statistics();
+    let statistics = session.score().statistics();
     println!(
         "300: {}, 100: {}, 50: {}, miss: {}, max combo: {}",
         statistics.count(HitResult::Great),

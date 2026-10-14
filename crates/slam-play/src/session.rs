@@ -1,19 +1,20 @@
 //! A play from start to end: the update side runs the game clock, live input, rules, health
 //! and sounds and writes a [`PlaySnapshot`]; the draw side turns the snapshot into sprites.
 //!
-//! The update side is lazer's `Player` for one play: pausing and resuming, failing, restarting
-//! and quitting, driven by the global actions of [`crate::hotkeys`]. No breaks overlay yet,
+//! The update side is lazer's `Player` for one play: pausing and resuming, failing, passing
+//! to the results, restarting and quitting, driven by the global actions of
+//! [`crate::hotkeys`]. No breaks overlay or results screen yet ([`PlaySession::results`]),
 //! only [`PlaySnapshot::is_break_time`] for the background dim; the HUD's numbers go out in
 //! [`HudValues`].
 
 use slam_audio::{ClockError, GameClock, MusicSnapshot, PositionSnapshot, TrackControl};
 use slam_input::InputEvent;
 use slam_osu::breaks::BreakTracker;
-use slam_osu::judgement::JudgementLog;
+use slam_osu::judgement::{JudgementLog, Statistics};
 use slam_osu::lead_in::{IntroSkip, earliest_start_time, gameplay_start_time};
 use slam_osu::replay::{Actions, Rules};
 use slam_osu::rules::OsuRules;
-use slam_osu::scoring::ScoreProcessor;
+use slam_osu::scoring::{ScoreProcessor, ScoreRank};
 use slam_osu::{Beatmap, HealthProcessor, ModSet, Vec2};
 use slam_render::Extent;
 use slam_render::atlas::AtlasRegion;
@@ -40,6 +41,11 @@ pub const PAUSE_COOLDOWN: f64 = 1000.0;
 /// track down to a stop meanwhile; here it runs at its speed, then stops.
 pub const FAIL_ANIMATION_NS: u64 = 2_500_000_000;
 
+// Ported from osu!lazer 2026.1005.0-lazer: osu.Game/Screens/Play/Player.cs (RESULTS_DISPLAY_DELAY)
+/// How long gameplay runs on after passing before the results show, in nanoseconds of real
+/// time (lazer schedules them on the player's clock, not the gameplay clock).
+pub const RESULTS_DISPLAY_DELAY_NS: u64 = 1_000_000_000;
+
 // Ported from osu!lazer 2026.1005.0-lazer: osu.Game.Rulesets.Osu/UI/Cursor/OsuCursor.cs (SIZE)
 /// Size of the click-to-resume cursor's hit area, in osu!pixels.
 pub(crate) const RESUME_CURSOR_SIZE: f32 = 28.0;
@@ -58,8 +64,11 @@ pub enum PlayState {
     Failing,
     /// Failed, and the clock stopped.
     Failed,
-    /// Every object is judged.
-    Finished,
+    /// Every judgement is in without failing (lazer's `HasPassed`): gameplay runs on until the
+    /// results show, pausing is over.
+    Passed,
+    /// The results show: gameplay stopped, the track plays on.
+    Results,
     /// The player quit: the play is over.
     Exited,
 }
@@ -93,6 +102,18 @@ impl HudValues {
             combo: score.statistics().combo,
         }
     }
+}
+
+/// The final score of a passed play, for the results.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct PlayResults {
+    /// Total score with the mods' multiplier.
+    pub score: i64,
+    /// Accuracy, 0..=1.
+    pub accuracy: f64,
+    pub rank: ScoreRank,
+    /// Counts per result and the highest combo.
+    pub statistics: Statistics,
 }
 
 /// What the draw side needs of one update tick. Fixed size, copied into a buffer slot with
@@ -161,6 +182,8 @@ enum Phase {
     Resuming,
     Failing { until_ns: u64 },
     Failed,
+    Passed { results_at_ns: u64 },
+    Results,
     Exited,
 }
 
@@ -211,6 +234,8 @@ pub struct PlaySession {
     last_time: f64,
     /// A mod restarts the play on failing: at the end of the tick.
     restart_on_fail: bool,
+    /// Every judgement is in without failing (lazer's `HasPassed`); stays after quitting.
+    passed: bool,
     restarts: u32,
     initial: Initial,
     /// Clock commands that failed (queue full); retried on the next tick.
@@ -232,6 +257,12 @@ impl PlaySession {
         let log = JudgementLog::with_capacity(rules.max_judgements());
         let health = HealthProcessor::for_play(beatmap, mods);
         let score = ScoreProcessor::for_play(beatmap, mods);
+        // A play whose rules judge fewer times than the simulated perfect play never passes.
+        debug_assert_eq!(
+            score.max_hits(),
+            rules.max_judgements(),
+            "judgement counts differ"
+        );
         // No storyboards yet.
         let start_time = earliest_start_time(beatmap, None);
         let gameplay_start_time = gameplay_start_time(beatmap);
@@ -270,6 +301,7 @@ impl PlaySession {
             resume_target: Vec2::ZERO,
             last_time: start_time,
             restart_on_fail: false,
+            passed: false,
             restarts: 0,
             clock_errors: 0,
         }
@@ -306,6 +338,17 @@ impl PlaySession {
     /// Times the play was restarted.
     pub fn restarts(&self) -> u32 {
         self.restarts
+    }
+
+    /// The final score once the play passed: while the results wait to show, show, and
+    /// after quitting them.
+    pub fn results(&self) -> Option<PlayResults> {
+        self.passed.then(|| PlayResults {
+            score: self.score.total_score(),
+            accuracy: self.score.accuracy(),
+            rank: self.score.rank(&self.initial.mods),
+            statistics: *self.score.statistics(),
+        })
     }
 
     /// Whether the player quit.
@@ -409,12 +452,19 @@ impl PlaySession {
         {
             self.complete_fail(sink);
         }
+        if let Phase::Passed { results_at_ns } = self.phase
+            && now_ns >= results_at_ns
+        {
+            self.show_results(sink);
+        }
 
         let mut restart = std::mem::take(&mut self.restart_on_fail);
         match self.hotkeys.fire(now_ns) {
             // Ported from osu!lazer 2026.1005.0-lazer: osu.Game/Screens/Play/Player.cs (HotkeyRetryOverlay, HotkeyExitOverlay)
             Some(GlobalAction::QuickRetry) => restart = true,
-            Some(GlobalAction::QuickExit) => self.exit(sink),
+            // The results screen quits on quick exit too (`ResultsScreen.OnPressed`), on the
+            // press there rather than after the hold.
+            Some(GlobalAction::QuickExit) => self.perform_exit(sink),
             _ => {}
         }
         if !self.in_gameplay() {
@@ -448,17 +498,21 @@ impl PlaySession {
         }
 
         snapshot.state = match self.phase {
-            Phase::Playing if self.rules.is_complete() => PlayState::Finished,
             Phase::Playing => PlayState::Playing,
             Phase::Paused => PlayState::Paused,
             Phase::Resuming => PlayState::Resuming,
             Phase::Failing { .. } => PlayState::Failing,
             Phase::Failed => PlayState::Failed,
+            Phase::Passed { .. } => PlayState::Passed,
+            Phase::Results => PlayState::Results,
             Phase::Exited => PlayState::Exited,
         };
         snapshot.time = self.last_time;
         // While a seek is on its way the clock shows the old time: frames hold the tick's.
-        snapshot.clock = (!restart && !seek_sent && !self.clock.is_seeking()).then_some(time);
+        // The results stop gameplay while the track plays on: frames hold the tick's time.
+        snapshot.clock =
+            (!restart && !seek_sent && !self.clock.is_seeking() && self.phase != Phase::Results)
+                .then_some(time);
         snapshot.cursor = self.input.position();
         snapshot.skip_available = self.phase == Phase::Playing
             && !seek_sent
@@ -474,9 +528,12 @@ impl PlaySession {
         self.sounds.stop_all(sink)
     }
 
-    /// Whether gameplay takes input and time: playing or failing.
+    /// Whether gameplay takes input and time: playing, failing or passed.
     fn in_gameplay(&self) -> bool {
-        matches!(self.phase, Phase::Playing | Phase::Failing { .. })
+        matches!(
+            self.phase,
+            Phase::Playing | Phase::Failing { .. } | Phase::Passed { .. }
+        )
     }
 
     /// One gameplay step with `events`: input, health drain, rules, sounds, then the new
@@ -530,6 +587,23 @@ impl PlaySession {
                 };
             }
         }
+
+        // Ported from osu!lazer 2026.1005.0-lazer: osu.Game/Screens/Play/Player.cs (checkScoreCompleted, progressToResults)
+        // The score processor completes on its update at the step's time; a fail in the same
+        // step (on the last judgement) comes first and there are no results. Without
+        // rewinding, completion is never cancelled; without storyboards, nothing waits for
+        // one to end. Lazer's processor updates ahead of the playfield, on the next step;
+        // checked here after the step's judgements, a last judgement by a press before the
+        // step's time passes one step earlier.
+        if self.phase == Phase::Playing
+            && !self.restart_on_fail
+            && self.score.has_completed(step_time)
+        {
+            self.phase = Phase::Passed {
+                results_at_ns: now_ns.saturating_add(RESULTS_DISPLAY_DELAY_NS),
+            };
+            self.passed = true;
+        }
     }
 
     /// Back or pause-gameplay pressed: lazer's `PerformExitWithConfirmation` from the hold-for-
@@ -545,8 +619,29 @@ impl PlaySession {
             // The fail animation is cut short; the fail overlay shows.
             Phase::Failing { .. } => self.complete_fail(sink),
             Phase::Failed => self.exit(sink),
+            // Passed, pausing is over (`ValidForResume` is false): the exit goes on.
+            Phase::Passed { .. } | Phase::Results => self.perform_exit(sink),
             Phase::Exited => {}
         }
+    }
+
+    /// The player asks to quit: lazer's `PerformExit` (or the results screen's exit).
+    // Ported from osu!lazer 2026.1005.0-lazer: osu.Game/Screens/Play/Player.cs (PerformExit)
+    fn perform_exit(&mut self, sink: &mut impl VoiceSink) {
+        match self.phase {
+            // Matching stable, an exit while the results wait shows them instead.
+            Phase::Passed { .. } => self.show_results(sink),
+            _ => self.exit(sink),
+        }
+    }
+
+    // Ported from osu!lazer 2026.1005.0-lazer: osu.Game/Screens/Play/Player.cs (progressToResults, OnSuspending)
+    /// The results screen takes over: gameplay stops (the player screen no longer updates),
+    /// the track plays on.
+    fn show_results(&mut self, sink: &mut impl VoiceSink) {
+        self.phase = Phase::Results;
+        self.sounds.stop_all(sink);
+        self.input.suspend();
     }
 
     // Ported from osu!lazer 2026.1005.0-lazer: osu.Game/Screens/Play/Player.cs (Pause, PauseCooldownActive)
@@ -630,12 +725,13 @@ impl PlaySession {
         self.last_pause_time = None;
         self.last_time = self.start_time;
         self.restart_on_fail = false;
+        self.passed = false;
         self.restarts += 1;
     }
 
     fn is_break_time(&mut self, time: f64) -> bool {
         self.breaks
-            .update(time, self.rules.is_complete())
+            .update(time, self.score.has_completed(time))
             .is_break_time
     }
 

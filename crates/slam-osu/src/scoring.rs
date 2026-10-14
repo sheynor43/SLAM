@@ -168,6 +168,15 @@ pub struct ScoreProcessor {
     total_score_without_mods: i64,
     total_score: i64,
     failed: bool,
+
+    /// Judgements of the simulated perfect play (`MaxHits`).
+    max_hits: usize,
+    /// Judgements applied, failed or not (`JudgedHits`).
+    judged_hits: usize,
+    /// Time of the last judgement applied (`lastAppliedResult.TimeAbsolute`; lazer clamps it
+    /// to the object's end time plus its last judgement offset, which never moves it past
+    /// the time of the step that judged it).
+    last_judgement_time: Option<f64>,
 }
 
 impl ScoreProcessor {
@@ -186,6 +195,7 @@ impl ScoreProcessor {
         autoplay::for_each_judgement(beatmap, |_, target| {
             let max_result = target.max_result(classic);
             processor.apply_result(max_result, max_result);
+            processor.max_hits += 1;
         });
         processor.store_maxima();
         processor
@@ -212,6 +222,9 @@ impl ScoreProcessor {
             total_score_without_mods: 0,
             total_score: 0,
             failed: false,
+            max_hits: 0,
+            judged_hits: 0,
+            last_judgement_time: None,
         }
     }
 
@@ -248,6 +261,9 @@ impl ScoreProcessor {
             judgement.result != HitResult::LegacyComboIncrease,
             "lazer rejects a LegacyComboIncrease judgement"
         );
+        // Ported from osu!lazer 2026.1005.0-lazer: osu.Game/Rulesets/Scoring/JudgementProcessor.cs (ApplyResult)
+        self.judged_hits += 1;
+        self.last_judgement_time = Some(judgement.time);
         if failed {
             return;
         }
@@ -317,6 +333,20 @@ impl ScoreProcessor {
         self.total_score_without_mods = round_to_long(total).max(0);
         self.total_score =
             round_to_long(self.total_score_without_mods as f64 * self.score_multiplier).max(0);
+    }
+
+    /// Judgements of the simulated perfect play (lazer's `MaxHits`).
+    pub fn max_hits(&self) -> usize {
+        self.max_hits
+    }
+
+    /// Whether every judgement of the beatmap is in at gameplay time `time` (lazer's
+    /// `HasCompleted` as its update at `time` sets it): as many as the simulated perfect play
+    /// made, the last one strictly before `time`. A beatmap without judgements completes at
+    /// once; one with objects never judged (stepped over) never does.
+    // Ported from osu!lazer 2026.1005.0-lazer: osu.Game/Rulesets/Scoring/JudgementProcessor.cs (Update)
+    pub fn has_completed(&self, time: f64) -> bool {
+        self.judged_hits == self.max_hits && self.last_judgement_time.is_none_or(|last| last < time)
     }
 
     /// Marks the play as failed: the rank is F from now on (lazer's `FailScore`).
@@ -485,22 +515,33 @@ mod tests {
         let mut p = ScoreProcessor::empty(score_multiplier);
         for &m in max_results {
             p.apply_result(m, m);
+            p.max_hits += 1;
         }
         p.store_maxima();
         p
     }
 
     fn judge(p: &mut ScoreProcessor, result: HitResult, max_result: HitResult) {
+        judge_at(p, 0.0, result, max_result, false);
+    }
+
+    fn judge_at(
+        p: &mut ScoreProcessor,
+        time: f64,
+        result: HitResult,
+        max_result: HitResult,
+        failed: bool,
+    ) {
         let judgement = Judgement {
             object: crate::judgement::ObjectRef {
                 index: 0,
                 nested: Option::None,
             },
-            time: 0.0,
+            time,
             result,
             max_result,
         };
-        p.apply(&judgement, false);
+        p.apply(&judgement, failed);
     }
 
     // Ported from osu!lazer 2026.1005.0-lazer: osu.Game.Tests/Rulesets/Scoring/ScoreProcessorTest.cs (TestSingleOsuHit)
@@ -613,7 +654,37 @@ mod tests {
             max_result: Great,
         };
         p.apply(&judgement, true);
-        assert_eq!(p, before);
+        assert_eq!(p.total_score(), before.total_score());
+        assert_eq!(p.accuracy(), before.accuracy());
+        assert_eq!(p.statistics(), before.statistics());
+    }
+
+    #[test]
+    fn completes_after_every_judgement_strictly_after_the_last() {
+        use HitResult::*;
+        let mut p = processor(&[Great, LargeTickHit, Great], 1.0);
+        assert!(!p.has_completed(0.0));
+        judge_at(&mut p, 100.0, Great, Great, false);
+        judge_at(&mut p, 200.0, LargeTickMiss, LargeTickHit, false);
+        assert!(!p.has_completed(1_000.0), "one judgement is missing");
+        judge_at(&mut p, 300.0, Miss, Great, false);
+        assert!(!p.has_completed(300.0), "not at the last judgement's time");
+        assert!(p.has_completed(300.001));
+    }
+
+    #[test]
+    fn judgements_after_failing_count_towards_completion() {
+        use HitResult::*;
+        let mut p = processor(&[Great; 2], 1.0);
+        judge_at(&mut p, 100.0, Miss, Great, false);
+        judge_at(&mut p, 200.0, Miss, Great, true);
+        assert!(p.has_completed(201.0));
+    }
+
+    #[test]
+    fn a_beatmap_without_judgements_completes_at_once() {
+        let p = processor(&[], 1.0);
+        assert!(p.has_completed(f64::NEG_INFINITY));
     }
 
     #[test]
