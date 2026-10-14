@@ -2002,6 +2002,7 @@ dependencies = [
 name = "slam-render"
 version = "0.1.0"
 dependencies = [
+ "criterion",
  "glow",
  "png",
  "rtrb",

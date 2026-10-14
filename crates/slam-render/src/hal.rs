@@ -16,6 +16,12 @@ pub struct Color {
 impl Color {
     pub const BLACK: Self = Self::rgb(0.0, 0.0, 0.0);
     pub const WHITE: Self = Self::rgb(1.0, 1.0, 1.0);
+    pub const TRANSPARENT: Self = Self {
+        r: 0.0,
+        g: 0.0,
+        b: 0.0,
+        a: 0.0,
+    };
 
     pub const fn rgb(r: f32, g: f32, b: f32) -> Self {
         Self { r, g, b, a: 1.0 }
@@ -47,6 +53,9 @@ pub enum TextureFormat {
     Rgba8Srgb,
     /// 8-bit single channel (masks, glyph coverage).
     R8,
+    /// 16-bit float single channel (distance buffers, ADR-0041). Pixel data is IEEE
+    /// half floats, native-endian.
+    R16Float,
 }
 
 impl TextureFormat {
@@ -54,6 +63,7 @@ impl TextureFormat {
         match self {
             Self::Rgba8 | Self::Rgba8Srgb => 4,
             Self::R8 => 1,
+            Self::R16Float => 2,
         }
     }
 }
@@ -383,6 +393,9 @@ pub enum Blend {
     Premultiplied,
     /// `src.rgb * src.a + dst.rgb`; alpha `src.a + dst.a`.
     Additive,
+    /// Per-channel `max(src, dst)`, as osu-framework's path prepass (`One`/`One` with
+    /// `BlendingEquation.Max`, ADR-0041).
+    Max,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]

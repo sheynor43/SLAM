@@ -255,7 +255,7 @@ struct Slot<B> {
 /// rewrites of a buffer the GPU may still be reading from an earlier frame.
 pub struct SpriteRenderer<D: Device> {
     /// Indexed by [`blend_index`].
-    pipelines: [D::Pipeline; 4],
+    pipelines: [D::Pipeline; BLEND_MODES],
     indices: D::Buffer,
     slots: Vec<Slot<D::Buffer>>,
     next: usize,
@@ -263,17 +263,20 @@ pub struct SpriteRenderer<D: Device> {
     draws: usize,
 }
 
+const BLEND_MODES: usize = 5;
+
 const fn blend_index(blend: Blend) -> usize {
     match blend {
         Blend::Replace => 0,
         Blend::Alpha => 1,
         Blend::Premultiplied => 2,
         Blend::Additive => 3,
+        Blend::Max => 4,
     }
 }
 
 /// `u16` indices of two triangles per quad (corners 0-1-2 and 2-3-0).
-fn quad_indices(quads: u32) -> Vec<u8> {
+pub(crate) fn quad_indices(quads: u32) -> Vec<u8> {
     let mut out = Vec::with_capacity(quads as usize * 12);
     for q in 0..quads {
         let base = (q * 4) as u16;
@@ -293,7 +296,7 @@ impl<D: Device> SpriteRenderer<D> {
     /// Like [`SpriteRenderer::new`], drawing with `shader`, which takes
     /// [`SPRITE_LAYOUT`] vertices and the bindings of `shaders/sprite.wgsl`.
     pub fn with_shader(device: &mut D, slots: usize, shader: &Shader) -> Result<Self, DeviceError> {
-        let mut pipelines = Vec::with_capacity(4);
+        let mut pipelines = Vec::with_capacity(BLEND_MODES);
         let mut buffers = Vec::with_capacity(slots.max(1) + 1);
         match Self::create(device, shader, slots.max(1), &mut pipelines, &mut buffers) {
             Ok(()) => {}
@@ -313,7 +316,7 @@ impl<D: Device> SpriteRenderer<D> {
                 globals,
             })
             .collect();
-        let Ok(pipelines) = <[D::Pipeline; 4]>::try_from(pipelines) else {
+        let Ok(pipelines) = <[D::Pipeline; BLEND_MODES]>::try_from(pipelines) else {
             unreachable!("one pipeline per blend mode")
         };
         Ok(Self {
@@ -339,6 +342,7 @@ impl<D: Device> SpriteRenderer<D> {
             Blend::Alpha,
             Blend::Premultiplied,
             Blend::Additive,
+            Blend::Max,
         ] {
             debug_assert_eq!(blend_index(blend), pipelines.len());
             pipelines.push(device.create_pipeline(&PipelineDesc {
@@ -867,8 +871,8 @@ mod tests {
     }
 
     #[test]
-    fn every_shader_of_the_crate_fits_the_sprite_pipelines() {
-        for shader in shaders::ALL {
+    fn sprite_shaders_fit_the_sprite_pipelines() {
+        for shader in [&shaders::SPRITE, &shaders::MSDF] {
             let mut d = Fake::default();
             let r = SpriteRenderer::with_shader(&mut d, 1, shader).expect("renderer");
             assert!(r.pipelines.iter().all(|p| p.shader == shader.name));
@@ -880,13 +884,13 @@ mod tests {
 
     #[test]
     fn failed_creation_frees_what_was_made() {
-        // 4 pipelines, the index buffer and 3 uniform buffers.
-        for fail_after in 0..8 {
+        // 5 pipelines, the index buffer and 3 uniform buffers.
+        for fail_after in 0..9 {
             let mut d = Fake::failing_after(fail_after);
             assert!(SpriteRenderer::new(&mut d, 3).is_err());
             assert!(d.is_empty(), "fail after {fail_after}");
         }
-        let mut d = Fake::failing_after(8);
+        let mut d = Fake::failing_after(9);
         let mut r = SpriteRenderer::new(&mut d, 3).expect("renderer");
         // A failed buffer growth leaves the slot empty, to be made on the next draw.
         let mut batch = SpriteBatch::new();
