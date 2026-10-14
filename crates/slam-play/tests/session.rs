@@ -3,6 +3,7 @@
 
 mod common;
 
+use std::cell::Cell;
 use std::sync::Arc;
 
 use common::skin::hitsounds;
@@ -13,9 +14,9 @@ use slam_audio::{
 };
 use slam_input::{InputEvent, InputKind, MouseButton};
 use slam_osu::judgement::JudgementLog;
-use slam_osu::replay::Rules;
+use slam_osu::replay::{Actions, Rules};
 use slam_osu::rules::OsuRules;
-use slam_osu::{Beatmap, ModSet};
+use slam_osu::{Beatmap, ModSet, Vec2};
 use slam_play::circles::{
     CircleMods, CircleSettings, CircleSkinConfig, CircleStyle, CircleVisuals, HitCircles,
 };
@@ -44,16 +45,120 @@ enum Command {
 #[derive(Default)]
 struct Track {
     commands: Vec<Command>,
+    /// The stream frame each command was given at.
+    issued: Vec<u64>,
+    /// The stream frame of the last report.
+    frame: Cell<u64>,
     generation: u32,
     /// Refuse the next `play_at` once.
     refuse_play_at: bool,
     /// Refuse one `seek` once this many commands are logged.
     refuse_seek_after: Option<usize>,
+    /// Stream frames the callback takes a seek after it is given (as if behind the queue).
+    seek_delay: u64,
+}
+
+impl Track {
+    /// Room for `n` commands, so that logging them does not allocate.
+    fn reserve(&mut self, n: usize) {
+        self.commands.reserve(n);
+        self.issued.reserve(n);
+    }
+
+    fn log(&mut self, command: Command) {
+        self.commands.push(command);
+        self.issued.push(self.frame.get());
+    }
+
+    /// Where the callback has the track at stream frame `frame`: the commands take effect
+    /// on the frame they were given at (no latency), a `play_at` on its frame. `None`
+    /// before the first command.
+    fn music(&self, frame: u64) -> Option<MusicSnapshot> {
+        let mut anchors: Option<(MusicAnchor, MusicAnchor)> = None;
+        let mut generation = 0;
+        let mut scheduled = None;
+        let push = |anchors: &mut Option<(MusicAnchor, MusicAnchor)>, anchor: MusicAnchor| {
+            *anchors = Some(match *anchors {
+                Some((_, last)) => (last, anchor),
+                None => (anchor, anchor),
+            });
+        };
+        let position = |anchors: &Option<(MusicAnchor, MusicAnchor)>, at: u64| {
+            anchors.map_or((0.0, 0.0), |(_, a)| {
+                (
+                    a.track_frame + (at as f64 - a.device_frame as f64) * a.speed,
+                    a.speed,
+                )
+            })
+        };
+        let fire = |anchors: &mut Option<(MusicAnchor, MusicAnchor)>,
+                    scheduled: &mut Option<u64>,
+                    upto: u64| {
+            if let Some(at) = *scheduled
+                && at <= upto
+            {
+                *scheduled = None;
+                let (track_frame, _) = position(anchors, at);
+                push(
+                    anchors,
+                    MusicAnchor {
+                        device_frame: at,
+                        track_frame,
+                        speed: 1.0,
+                    },
+                );
+            }
+        };
+        for (&command, &issued) in self.commands.iter().zip(&self.issued) {
+            let at = match command {
+                Command::Seek(_) => issued + self.seek_delay,
+                _ => issued,
+            };
+            if at > frame {
+                break;
+            }
+            fire(&mut anchors, &mut scheduled, at);
+            let (track_frame, speed) = position(&anchors, at);
+            match command {
+                Command::PlayAt(device_frame) => scheduled = Some(device_frame),
+                Command::Play | Command::Pause => {
+                    scheduled = None;
+                    let speed = if command == Command::Play { 1.0 } else { 0.0 };
+                    push(
+                        &mut anchors,
+                        MusicAnchor {
+                            device_frame: at,
+                            track_frame,
+                            speed,
+                        },
+                    );
+                }
+                Command::Seek(to) => {
+                    generation += 1;
+                    push(
+                        &mut anchors,
+                        MusicAnchor {
+                            device_frame: at,
+                            track_frame: to as f64,
+                            speed,
+                        },
+                    );
+                }
+            }
+        }
+        fire(&mut anchors, &mut scheduled, frame);
+        anchors.map(|(previous, anchor)| MusicSnapshot {
+            anchor,
+            previous,
+            generation,
+            ended: false,
+        })
+    }
 }
 
 impl TrackControl for Track {
     fn play(&mut self) -> Result<(), PlayError> {
-        self.commands.push(Command::Play);
+        self.log(Command::Play);
         Ok(())
     }
 
@@ -61,12 +166,12 @@ impl TrackControl for Track {
         if std::mem::take(&mut self.refuse_play_at) {
             return Err(PlayError::QueueFull);
         }
-        self.commands.push(Command::PlayAt(device_frame));
+        self.log(Command::PlayAt(device_frame));
         Ok(())
     }
 
     fn pause(&mut self) -> Result<(), PlayError> {
-        self.commands.push(Command::Pause);
+        self.log(Command::Pause);
         Ok(())
     }
 
@@ -78,7 +183,7 @@ impl TrackControl for Track {
             self.refuse_seek_after = None;
             return Err(PlayError::QueueFull);
         }
-        self.commands.push(Command::Seek(frame));
+        self.log(Command::Seek(frame));
         self.generation += 1;
         Ok(())
     }
@@ -121,8 +226,8 @@ impl VoiceSink for Sink {
     }
 }
 
-/// A stream whose reports are exact (no latency, no jitter) from `T0` on, and the track
-/// following the last `play_at`.
+/// A stream whose reports are exact (no latency, no jitter) from `T0` on, and the track as
+/// its commands left it.
 fn reports(now_ns: u64, track: &Track) -> (Option<PositionSnapshot>, Option<MusicSnapshot>) {
     if now_ns < T0 {
         return (None, None);
@@ -134,32 +239,18 @@ fn reports(now_ns: u64, track: &Track) -> (Option<PositionSnapshot>, Option<Musi
         latency_ns: 0,
         sample_rate: RATE,
     };
-    let music = track.commands.iter().rev().find_map(|c| match *c {
-        Command::PlayAt(device_frame) if output.frame >= device_frame => {
-            let anchor = MusicAnchor {
-                device_frame,
-                track_frame: 0.0,
-                speed: 1.0,
-            };
-            Some(MusicSnapshot {
-                anchor,
-                previous: anchor,
-                generation: track.generation,
-                ended: false,
-            })
-        }
-        _ => None,
-    });
-    (Some(output), music)
+    track.frame.set(output.frame);
+    (Some(output), track.music(output.frame))
 }
 
 fn session(map: &Beatmap, track: &Track) -> PlaySession {
     session_with(map, track, Offsets::default())
 }
 
+/// A session with No Fail: the scripted player would run out of health.
 fn session_with(map: &Beatmap, track: &Track, offsets: Offsets) -> PlaySession {
     let (sounds, _) = hitsounds(map, &["normal-hitnormal.wav", "soft-hitnormal.wav"]);
-    let mods = ModSet::default();
+    let mods = mods(vec![slam_osu::mods::Mod::NoFail]);
     PlaySession::new(
         map,
         &mods,
@@ -302,7 +393,7 @@ fn ticks_and_frames_do_not_allocate() {
     let map = beatmap();
     let mut track = Track::default();
     // The fake's own log must not allocate inside the check.
-    track.commands.reserve(16);
+    track.reserve(16);
     let mut sink = Sink::default();
     let mut session = session(&map, &track);
     let events = events(&map, session.start_time(), T0);
@@ -638,7 +729,7 @@ fn nothing_is_skipped_without_time_to_skip() {
 fn a_skip_does_not_allocate() {
     let map = delayed(29000.0);
     let mut track = Track::default();
-    track.commands.reserve(16);
+    track.reserve(16);
     let mut sink = Sink::default();
     let mut session = session(&map, &track);
     let mut snapshot = PlaySnapshot::default();
@@ -727,4 +818,445 @@ fn a_refused_skip_is_tried_again_on_the_next_tick() {
     assert_eq!(track.commands.last(), Some(&Command::PlayAt(2101 * 48)));
     let (time, _) = ticks[150];
     assert!((time - (-2000.0 + 50.0)).abs() < 0.1, "{time}");
+}
+
+// ---- Pausing, failing, restarting and quitting ----
+
+const ESCAPE: u16 = 41;
+const GRAVE: u16 = 53;
+const LCTRL: u16 = 224;
+const Z: u16 = 29;
+
+/// A play ticked every millisecond by hand, with the events of each tick given.
+struct Driver {
+    session: PlaySession,
+    track: Track,
+    sink: Sink,
+    snapshot: PlaySnapshot,
+    now: u64,
+}
+
+impl Driver {
+    /// A play of `map` with `mods`, ticked until the clock started.
+    fn new(map: &Beatmap, mods: ModSet) -> Driver {
+        let mut track = Track::default();
+        track.reserve(256);
+        let (sounds, _) = hitsounds(map, &["normal-hitnormal.wav", "soft-hitnormal.wav"]);
+        let session = PlaySession::new(
+            map,
+            &mods,
+            &track,
+            LiveInput::new(Bindings::default(), layout()),
+            GameplaySounds::new(map, sounds, SoundSettings::for_mods(&mods)),
+            Offsets::default(),
+        );
+        let mut driver = Driver {
+            session,
+            track,
+            sink: Sink::default(),
+            snapshot: PlaySnapshot::default(),
+            now: T0,
+        };
+        driver.tick(&[]);
+        driver.tick(&[]);
+        assert_eq!(driver.state(), PlayState::Playing);
+        driver
+    }
+
+    fn tick(&mut self, events: &[InputEvent]) {
+        let (output, music) = reports(self.now, &self.track);
+        self.session.tick(
+            self.now,
+            events,
+            output,
+            music,
+            &mut self.track,
+            &mut self.sink,
+            &mut self.snapshot,
+        );
+        self.now += MS;
+    }
+
+    /// Ticks for `ms` milliseconds without input.
+    fn run(&mut self, ms: u64) {
+        for _ in 0..ms {
+            self.tick(&[]);
+        }
+    }
+
+    /// Ticks without input until the game time reaches `time`.
+    fn run_to(&mut self, time: f64) {
+        while self.snapshot.time < time {
+            self.tick(&[]);
+        }
+    }
+
+    /// Ticks without input until `done` holds, at most `ms` milliseconds.
+    fn run_until(&mut self, ms: u64, done: impl Fn(&PlaySnapshot) -> bool) {
+        for _ in 0..ms {
+            if done(&self.snapshot) {
+                return;
+            }
+            self.tick(&[]);
+        }
+        assert!(done(&self.snapshot), "not reached in {ms} ms");
+    }
+
+    fn state(&self) -> PlayState {
+        self.snapshot.state
+    }
+
+    fn key(&self, scancode: u16, down: bool) -> InputEvent {
+        press(self.now, InputKind::Key { scancode, down })
+    }
+
+    /// Moves the cursor to osu!pixel `at`.
+    fn mouse(&self, at: Vec2) -> InputEvent {
+        let window = layout().to_window(at);
+        press(
+            self.now,
+            InputKind::MouseMove {
+                x: window.x,
+                y: window.y,
+            },
+        )
+    }
+
+    /// Presses and releases `scancode` on one tick.
+    fn tap(&mut self, scancode: u16) {
+        let events = [self.key(scancode, true), self.key(scancode, false)];
+        self.tick(&events);
+    }
+
+    /// Holds `scancode` (with `modifier` if any) for `ms` milliseconds, then releases.
+    fn hold(&mut self, modifier: Option<u16>, scancode: u16, ms: u64) {
+        let mut down = Vec::new();
+        down.extend(modifier.map(|m| self.key(m, true)));
+        down.push(self.key(scancode, true));
+        self.tick(&down);
+        self.run(ms);
+        let mut up = vec![self.key(scancode, false)];
+        up.extend(modifier.map(|m| self.key(m, false)));
+        self.tick(&up);
+    }
+}
+
+fn mods(list: Vec<slam_osu::mods::Mod>) -> ModSet {
+    ModSet::new(list).unwrap()
+}
+
+#[test]
+fn a_pause_stops_the_clock_and_a_click_on_the_cursor_resumes_it_where_it_was() {
+    let map = beatmap();
+    let mut d = Driver::new(&map, ModSet::default());
+    let at = Vec2::new(300.0, 300.0);
+    let moved = d.mouse(at);
+    d.tick(&[moved]);
+    d.run_to(1500.0);
+
+    d.tap(ESCAPE);
+    assert_eq!(d.state(), PlayState::Paused);
+    assert_eq!(d.track.commands.last(), Some(&Command::Pause));
+    let paused = d.snapshot.time;
+    d.run(500);
+    assert_eq!(d.state(), PlayState::Paused);
+    assert_eq!(d.snapshot.time, paused);
+    assert!((d.snapshot.time_at(d.now) - paused).abs() < 1.0);
+
+    // Continue: the cursor where gameplay paused has to be clicked.
+    d.tap(ESCAPE);
+    assert_eq!(d.state(), PlayState::Resuming);
+    assert_eq!(d.snapshot.resume_target, at);
+    // Clicking 14 osu!pixels off misses the cursor (its right edge is outside).
+    let off = d.mouse(Vec2::new(at.x + 14.0, at.y));
+    d.tick(&[off]);
+    d.tap(Z);
+    assert_eq!(d.state(), PlayState::Resuming);
+    // Smoke does not resume.
+    let on = d.mouse(Vec2::new(at.x - 14.0, at.y + 13.0));
+    d.tick(&[on]);
+    d.tap(6);
+    assert_eq!(d.state(), PlayState::Resuming);
+    d.run(300);
+    assert_eq!(d.snapshot.time, paused);
+
+    let log = d.session.log().events().len();
+    let click = d.key(Z, true);
+    d.tick(&[click]);
+    assert_eq!(d.state(), PlayState::Playing);
+    assert_eq!(d.track.commands.last(), Some(&Command::Play));
+    // The press that resumed holds the left button without pressing it.
+    d.run(1);
+    assert!(d.session.input().held().contains(Actions::LEFT));
+    assert_eq!(d.session.log().events().len(), log);
+    d.run(99);
+    let time = d.snapshot.time;
+    assert!(
+        (time - (paused + 100.0)).abs() < 2.0,
+        "{time} after {paused}"
+    );
+}
+
+#[test]
+fn releases_while_paused_reach_gameplay_on_resume() {
+    let map = beatmap();
+    let mut d = Driver::new(&map, ModSet::default());
+    d.run_to(1500.0);
+    let down = d.key(Z, true);
+    d.tick(&[down]);
+    d.run(5);
+    assert!(d.session.input().held().contains(Actions::LEFT));
+    d.tap(ESCAPE);
+    let up = d.key(Z, false);
+    d.tick(&[up]);
+    // A press while paused is not delivered.
+    let x = d.key(27, true);
+    d.tick(&[x]);
+    // The cursor never moved: it is hidden, and gameplay resumes at once.
+    d.tap(ESCAPE);
+    assert_eq!(d.state(), PlayState::Playing);
+    d.run(2);
+    assert_eq!(d.session.input().held(), Actions::NONE);
+}
+
+#[test]
+fn a_second_pause_waits_for_the_cooldown() {
+    let map = beatmap();
+    let mut d = Driver::new(&map, mods(vec![slam_osu::mods::Mod::NoFail]));
+    d.run_to(1500.0);
+    d.tap(ESCAPE);
+    let paused = d.snapshot.time;
+    d.tap(ESCAPE);
+    assert_eq!(d.state(), PlayState::Playing);
+    d.run_to(paused + 990.0);
+    d.tap(ESCAPE);
+    assert_eq!(d.state(), PlayState::Playing);
+    d.run_to(paused + 1000.0);
+    // The middle mouse button pauses too.
+    let middle = press(
+        d.now,
+        InputKind::MouseButton {
+            button: MouseButton::Middle,
+            down: true,
+        },
+    );
+    d.tick(&[middle]);
+    assert_eq!(d.state(), PlayState::Paused);
+}
+
+#[test]
+fn the_intro_is_a_break_without_cooldown_or_resume_cursor() {
+    let map = delayed(5000.0);
+    let mut d = Driver::new(&map, ModSet::default());
+    let moved = d.mouse(Vec2::new(100.0, 100.0));
+    d.tick(&[moved]);
+    d.run_to(500.0);
+    d.tap(ESCAPE);
+    assert_eq!(d.state(), PlayState::Paused);
+    d.tap(ESCAPE);
+    assert_eq!(d.state(), PlayState::Playing);
+    d.tap(ESCAPE);
+    assert_eq!(d.state(), PlayState::Paused);
+}
+
+#[test]
+fn escape_while_waiting_for_the_click_pauses_again() {
+    let map = beatmap();
+    let mut d = Driver::new(&map, ModSet::default());
+    let moved = d.mouse(Vec2::new(200.0, 200.0));
+    d.tick(&[moved]);
+    d.run_to(1500.0);
+    d.tap(ESCAPE);
+    d.tap(ESCAPE);
+    assert_eq!(d.state(), PlayState::Resuming);
+    d.tap(ESCAPE);
+    assert_eq!(d.state(), PlayState::Paused);
+}
+
+#[test]
+fn running_out_of_health_fails_and_stops_after_the_fail_animation() {
+    let map = beatmap();
+    let mut d = Driver::new(&map, ModSet::default());
+    d.run_until(10_000, |s| s.state == PlayState::Failing);
+    assert_eq!(d.snapshot.health, 0.0);
+    assert!(d.session.health().has_failed());
+    let failed_at = d.session.counted_judgements();
+    // Gameplay runs on for 2.5 s, without counting judgements or pausing.
+    d.tap(ESCAPE);
+    d.run(2_490);
+    assert_eq!(d.state(), PlayState::Failed);
+    let mut d = Driver::new(&map, ModSet::default());
+    d.run_until(10_000, |s| s.state == PlayState::Failing);
+    let time = d.snapshot.time;
+    d.run(2_490);
+    assert_eq!(d.state(), PlayState::Failing);
+    assert!(d.snapshot.time > time + 2_400.0);
+    assert_eq!(d.session.counted_judgements(), failed_at);
+    d.run(20);
+    assert_eq!(d.state(), PlayState::Failed);
+    assert_eq!(d.track.commands.last(), Some(&Command::Pause));
+    let stopped = d.snapshot.time;
+    d.run(100);
+    assert_eq!(d.snapshot.time, stopped);
+    // Back now quits.
+    d.tap(ESCAPE);
+    assert_eq!(d.state(), PlayState::Exited);
+    assert!(d.session.has_exited());
+}
+
+#[test]
+fn no_fail_plays_to_the_end() {
+    let map = beatmap();
+    let mut d = Driver::new(&map, mods(vec![slam_osu::mods::Mod::NoFail]));
+    d.run_until(12_000, |s| s.state == PlayState::Finished);
+    assert!(!d.session.health().has_failed());
+    assert_eq!(d.snapshot.health, 0.0);
+}
+
+#[test]
+fn sudden_death_with_restart_restarts_on_the_first_miss() {
+    let map = beatmap();
+    let mut d = Driver::new(
+        &map,
+        mods(vec![slam_osu::mods::Mod::SuddenDeath {
+            restart: true,
+            fail_on_slider_tail: false,
+        }]),
+    );
+    d.run_until(3_000, |s| s.restarts == 1);
+    assert_eq!(d.state(), PlayState::Playing);
+    assert!(d.session.log().events().is_empty());
+    assert_eq!(d.snapshot.health, 1.0);
+    // Back at the start: the first circle (1000 ms) is missed again a second later.
+    d.run(10);
+    assert!(d.snapshot.time < 0.0, "{}", d.snapshot.time);
+    d.run_until(3_000, |s| s.restarts == 2);
+}
+
+#[test]
+fn holding_quick_retry_restarts_from_the_start() {
+    let map = beatmap();
+    let mut d = Driver::new(&map, mods(vec![slam_osu::mods::Mod::NoFail]));
+    d.run_to(2500.0);
+    assert!(!d.session.log().events().is_empty());
+    // Released before 200 ms: nothing.
+    d.hold(None, GRAVE, 150);
+    assert_eq!(d.snapshot.restarts, 0);
+    d.hold(None, GRAVE, 200);
+    assert_eq!(d.snapshot.retry_progress, 0.0);
+    assert_eq!(d.snapshot.restarts, 1);
+    assert!(d.session.log().events().is_empty());
+    let seek = d
+        .track
+        .commands
+        .iter()
+        .rposition(|c| *c == Command::Seek(0));
+    assert!(seek.is_some());
+    d.run(5);
+    let since_start = d.snapshot.time - d.session.start_time();
+    assert!((0.0..10.0).contains(&since_start), "{since_start}");
+    // The second play judges like a fresh one: the first circle is missed at its time.
+    d.run_to(1_200.0);
+    assert_eq!(d.session.log().events().len(), 1);
+}
+
+#[test]
+fn a_quick_restart_skips_the_intro() {
+    let map = delayed(29000.0);
+    let mut d = Driver::new(&map, ModSet::default());
+    d.run(100);
+    d.hold(Some(LCTRL), 21, 200);
+    assert_eq!(d.snapshot.restarts, 1);
+    d.run(5);
+    // Gameplay starts at 28 000 ms: the skip goes to a second before.
+    assert!(d.track.commands.contains(&Command::Seek(27000 * 48)));
+    assert!(d.snapshot.time >= 27_000.0, "{}", d.snapshot.time);
+}
+
+#[test]
+fn quick_exit_and_back_after_failing_quit() {
+    let map = beatmap();
+    let mut d = Driver::new(&map, ModSet::default());
+    d.run_to(500.0);
+    d.hold(Some(LCTRL), GRAVE, 200);
+    assert_eq!(d.state(), PlayState::Exited);
+    assert_eq!(d.track.commands.last(), Some(&Command::Pause));
+    d.run(10);
+    assert_eq!(d.state(), PlayState::Exited);
+
+    // Back during the fail animation cuts it short; again, it quits.
+    let mut d = Driver::new(&map, ModSet::default());
+    d.run_until(10_000, |s| s.state == PlayState::Failing);
+    d.tap(ESCAPE);
+    assert_eq!(d.state(), PlayState::Failed);
+    d.tap(ESCAPE);
+    assert_eq!(d.state(), PlayState::Exited);
+}
+
+#[test]
+fn pausing_failing_and_ticks_after_a_restart_do_not_allocate() {
+    let map = beatmap();
+    let mut d = Driver::new(&map, ModSet::default());
+    let moved = d.mouse(Vec2::new(300.0, 300.0));
+    let ticks = |d: &mut Driver| {
+        d.run_to(1500.0);
+        d.tap(ESCAPE);
+        d.run(50);
+        d.tap(ESCAPE);
+        let click = d.key(Z, true);
+        d.tick(&[click]);
+        d.run_until(10_000, |s| s.state == PlayState::Failed);
+        d.run(10);
+    };
+    d.tick(&[moved]);
+    assert_no_alloc(|| ticks(&mut d));
+    // The restart builds the play anew; what follows does not allocate.
+    d.hold(None, GRAVE, 200);
+    assert_eq!(d.snapshot.restarts, 1);
+    assert_no_alloc(|| {
+        d.run(10);
+        ticks(&mut d)
+    });
+}
+
+#[test]
+fn a_restart_waits_for_its_seek_in_the_track_to_be_heard() {
+    // Starts at 0, in the track: the restart seeks back inside it.
+    let map = delayed(5000.0);
+    let mut d = Driver::new(&map, mods(vec![slam_osu::mods::Mod::NoFail]));
+    assert_eq!(d.session.start_time(), 0.0);
+    d.run_to(7_000.0);
+    assert!(!d.session.log().events().is_empty());
+    // The seek is heard 20 ms after it is sent.
+    d.track.seek_delay = 20 * 48;
+    d.hold(None, GRAVE, 200);
+    assert_eq!(d.snapshot.restarts, 1);
+    for _ in 0..30 {
+        d.tick(&[]);
+        // Fresh rules never see the old time: nothing is judged, frames do not move.
+        assert!(d.session.log().events().is_empty());
+        assert!(d.snapshot.time < 100.0, "{}", d.snapshot.time);
+    }
+    d.run_to(1_000.0);
+    assert!(d.session.log().events().is_empty());
+}
+
+#[test]
+fn failing_comes_before_a_pause_in_the_same_tick() {
+    let map = beatmap();
+    let mut d = Driver::new(&map, ModSet::default());
+    // Find the tick that fails, then replay up to it with Escape on that tick.
+    let mut probe = Driver::new(&map, ModSet::default());
+    let mut ticks = 0;
+    while probe.state() != PlayState::Failing {
+        probe.tick(&[]);
+        ticks += 1;
+    }
+    d.run(ticks - 1);
+    // The step before Escape fails; Back then cuts the fail animation short instead of
+    // pausing.
+    d.tap(ESCAPE);
+    assert_eq!(d.state(), PlayState::Failed);
+    d.tap(ESCAPE);
+    assert_eq!(d.state(), PlayState::Exited);
 }

@@ -203,6 +203,8 @@ pub struct GameClock {
     generation: u32,
     music: Option<MusicSnapshot>,
     mode: Mode,
+    /// The last seek in the track is heard: time follows its position.
+    seek_heard: bool,
     resets: u64,
 }
 
@@ -221,6 +223,7 @@ impl GameClock {
             mode: Mode::Track {
                 hold_ms: f64::NEG_INFINITY,
             },
+            seek_heard: true,
             resets: 0,
         }
     }
@@ -244,6 +247,12 @@ impl GameClock {
         self.floor = frame;
         self.advance(frame);
         self.snapshot()
+    }
+
+    /// A seek in the track is not heard yet: until it is, time follows the position
+    /// before the seek. Seeks into the lead-in move time at once.
+    pub fn is_seeking(&self) -> bool {
+        matches!(self.mode, Mode::Track { .. }) && !self.seek_heard
     }
 
     /// Times the output model was reset (a report too far off). Grows on xruns.
@@ -408,6 +417,7 @@ impl GameClock {
         self.mode = Mode::Track {
             hold_ms: f64::NEG_INFINITY,
         };
+        self.seek_heard = false;
         Ok(())
     }
 
@@ -489,6 +499,8 @@ impl GameClock {
         }
         let anchor = music.anchor;
         let heard = frame >= anchor.device_frame as f64;
+        // Anchors of a generation start with its seek: any of them heard means the seek is.
+        self.seek_heard |= heard;
         match self.mode {
             Mode::Track { .. } if music.ended && anchor.speed == 0.0 && heard => {
                 self.mode = Mode::Free {
@@ -833,6 +845,43 @@ mod tests {
         let seeked = change(paused, 52_800, 9_600, 1.0);
         assert!((time(&mut clock, &mut device, 1_095, seeked) - 1_010.0).abs() < 0.01);
         assert!((time(&mut clock, &mut device, 1_105, seeked) - 205.0).abs() < 0.01);
+    }
+
+    #[test]
+    fn a_seek_in_the_track_is_pending_until_heard() {
+        let music = playing_from(0, 0, 1.0);
+        let (mut device, mut clock, mut track) = settled(1_000, music);
+        assert!(!clock.is_seeking());
+        clock
+            .seek(device.start_ns + 1_000 * MS, 200.0, &mut track)
+            .unwrap();
+        assert!(clock.is_seeking());
+        // The callback has not taken the seek yet.
+        tick(&mut clock, &mut device, 1_001, music);
+        assert!(clock.is_seeking());
+        // Taken at frame 48 576, heard at 1012 ms; time is the old position until then.
+        let seeked = MusicSnapshot {
+            generation: 1,
+            ..change(music, 48_576, 9_600, 1.0)
+        };
+        assert!((time(&mut clock, &mut device, 1_005, seeked) - 1_005.0).abs() < 0.01);
+        assert!(clock.is_seeking());
+        assert!((time(&mut clock, &mut device, 1_013, seeked) - 201.0).abs() < 0.01);
+        assert!(!clock.is_seeking());
+        // Pausing and playing are not seeks.
+        let paused = change(seeked, 49_000, 9_904, 0.0);
+        tick(&mut clock, &mut device, 1_014, paused);
+        assert!(!clock.is_seeking());
+    }
+
+    #[test]
+    fn a_seek_into_the_lead_in_is_not_pending() {
+        let music = playing_from(0, 0, 1.0);
+        let (device, mut clock, mut track) = settled(1_000, music);
+        clock
+            .seek(device.start_ns + 1_000 * MS, -500.0, &mut track)
+            .unwrap();
+        assert!(!clock.is_seeking());
     }
 
     #[test]

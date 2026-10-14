@@ -433,6 +433,23 @@ impl GameplaySounds {
         self.pending_stops.is_empty()
     }
 
+    /// Starts over for a play that restarts: stops every looping sample (as
+    /// [`stop_all`](Self::stop_all), with the same return value) and forgets the judgements
+    /// played and the spinners' state, so the next update takes a fresh log.
+    pub fn reset(&mut self, sink: &mut impl VoiceSink) -> bool {
+        let stopped = self.stop_all(sink);
+        self.spinning.clear();
+        for spinner in &mut self.spinners {
+            *spinner = SpinnerSounds {
+                end_time: spinner.end_time,
+                ..SpinnerSounds::NEW
+            };
+        }
+        self.seen = 0;
+        self.previous_time = f64::NEG_INFINITY;
+        stopped
+    }
+
     /// Tries the stops that failed before again.
     fn retry_stops(&mut self, sink: &mut impl VoiceSink) {
         self.pending_stops
