@@ -13,6 +13,7 @@ use slam_audio::{
 };
 use slam_engine::clock::now_ns;
 use slam_engine::gl::SdlGlSurface;
+use slam_engine::limiter::{LimiterMode, MAX_HZ, MIN_HZ, is_valid_hz};
 use slam_engine::{Draw, Engine, EngineConfig, FrameInfo, TickInfo, Update};
 use slam_input::{InputEvent, InputWindow, TickMapper, event_ring, sdl_ticks_ns};
 use slam_osu::judgement::HitResult;
@@ -46,7 +47,8 @@ mod perf;
 use perf::{FramePerf, ReportSources, SharedFrameTimes};
 
 pub const USAGE: &str = "usage: slam-app play MAP.osu [--skin DIR] [--backend NAME] \
-                         [--device ID] [--buffer FRAMES] [--no-stats]";
+                         [--device ID] [--buffer FRAMES] [--fps HZ|unlimited] \
+                         [--update-hz HZ] [--no-stats]";
 
 const SAMPLE_RATE: u32 = 48_000;
 const CHANNELS: u16 = 2;
@@ -81,6 +83,10 @@ pub struct Options {
     pub buffer_frames: u32,
     /// Print the once-a-second performance line to stderr; on by default.
     pub stats: bool,
+    /// Draw rate.
+    pub draw: LimiterMode,
+    /// Update rate in Hz.
+    pub update_hz: f64,
 }
 
 impl Options {
@@ -94,6 +100,8 @@ impl Options {
             device: None,
             buffer_frames: StreamConfig::default().buffer_frames,
             stats: true,
+            draw: EngineConfig::default().draw,
+            update_hz: EngineConfig::default().update_hz,
         };
         let mut args = args.into_iter();
         while let Some(arg) = args.next() {
@@ -109,6 +117,15 @@ impl Options {
                 }
                 "--device" => options.device = Some(value()?),
                 "--no-stats" => options.stats = false,
+                "--fps" => {
+                    let fps = value()?;
+                    options.draw = if fps == "unlimited" {
+                        LimiterMode::Unlimited
+                    } else {
+                        LimiterMode::Hz(rate(&arg, &fps)?)
+                    };
+                }
+                "--update-hz" => options.update_hz = rate(&arg, &value()?)?,
                 "--buffer" => {
                     let frames: f64 = number(&arg, &value()?)?;
                     if frames < 1.0 || frames.fract() != 0.0 || frames > 8192.0 {
@@ -123,6 +140,16 @@ impl Options {
         }
         options.map = map.ok_or("no beatmap given")?;
         Ok(options)
+    }
+}
+
+/// A draw or update rate in Hz.
+fn rate(flag: &str, value: &str) -> Result<f64, String> {
+    let hz: f64 = number(flag, value)?;
+    if is_valid_hz(hz) {
+        Ok(hz)
+    } else {
+        Err(format!("{flag} must be in [{MIN_HZ}, {MAX_HZ}] Hz"))
     }
 }
 
@@ -643,7 +670,11 @@ pub fn run(options: &Options) -> Result<(), String> {
     };
     let (mut sink, source) = event_ring(1024);
     let engine = Engine::spawn(
-        EngineConfig::default(),
+        EngineConfig {
+            update_hz: options.update_hz,
+            draw: options.draw,
+            ..EngineConfig::default()
+        },
         gameplay,
         draw,
         PlaySnapshot::default(),
@@ -801,6 +832,8 @@ mod tests {
         );
         assert_eq!(o.buffer_frames, StreamConfig::default().buffer_frames);
         assert!(o.stats);
+        let defaults = EngineConfig::default();
+        assert_eq!((o.draw, o.update_hz), (defaults.draw, defaults.update_hz));
         assert!(!parse(&["--no-stats", "map.osu"]).unwrap().stats);
 
         let o = parse(&[
@@ -811,11 +844,21 @@ mod tests {
         assert_eq!(o.device.as_deref(), Some("out"));
         assert_eq!(o.buffer_frames, 64);
 
+        let o = parse(&["map.osu", "--fps", "4000", "--update-hz", "8000"]).unwrap();
+        assert_eq!((o.draw, o.update_hz), (LimiterMode::Hz(4000.0), 8000.0));
+        let o = parse(&["map.osu", "--fps", "unlimited", "--update-hz", "1"]).unwrap();
+        assert_eq!((o.draw, o.update_hz), (LimiterMode::Unlimited, 1.0));
+
         assert!(parse(&[]).is_err());
         assert!(parse(&["a.osu", "b.osu"]).is_err());
         assert!(parse(&["map.osu", "--skin"]).is_err());
         assert!(parse(&["map.osu", "--buffer", "0"]).is_err());
         assert!(parse(&["map.osu", "--what"]).is_err());
+        for bad in ["0", "8001", "-1", "NaN", "inf", "fast"] {
+            assert!(parse(&["map.osu", "--fps", bad]).is_err(), "{bad}");
+            assert!(parse(&["map.osu", "--update-hz", bad]).is_err(), "{bad}");
+        }
+        assert!(parse(&["map.osu", "--update-hz", "unlimited"]).is_err());
         assert!(parse(&["map.osu", "--backend", "asio"]).is_err());
     }
 
