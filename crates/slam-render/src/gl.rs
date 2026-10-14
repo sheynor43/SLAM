@@ -314,8 +314,16 @@ impl<S: GlSurface> GlDevice<S> {
         let gl = &self.gl;
         // SAFETY: the context is current; valid blend enums.
         unsafe {
+            if self.state.blend == Blend::Max {
+                gl.blend_equation(glow::FUNC_ADD);
+            }
             match blend {
                 Blend::Replace => gl.disable(glow::BLEND),
+                Blend::Max => {
+                    gl.enable(glow::BLEND);
+                    gl.blend_equation(glow::MAX);
+                    gl.blend_func(glow::ONE, glow::ONE);
+                }
                 Blend::Alpha => {
                     gl.enable(glow::BLEND);
                     gl.blend_func_separate(
@@ -398,12 +406,14 @@ impl<S: GlSurface> GlDevice<S> {
     }
 }
 
-/// Internal and pixel-transfer formats of a texture format.
-fn gl_format(format: TextureFormat) -> (u32, u32) {
+/// Internal format, pixel-transfer format and pixel-transfer type of a texture
+/// format.
+fn gl_format(format: TextureFormat) -> (u32, u32, u32) {
     match format {
-        TextureFormat::Rgba8 => (glow::RGBA8, glow::RGBA),
-        TextureFormat::Rgba8Srgb => (glow::SRGB8_ALPHA8, glow::RGBA),
-        TextureFormat::R8 => (glow::R8, glow::RED),
+        TextureFormat::Rgba8 => (glow::RGBA8, glow::RGBA, glow::UNSIGNED_BYTE),
+        TextureFormat::Rgba8Srgb => (glow::SRGB8_ALPHA8, glow::RGBA, glow::UNSIGNED_BYTE),
+        TextureFormat::R8 => (glow::R8, glow::RED, glow::UNSIGNED_BYTE),
+        TextureFormat::R16Float => (glow::R16F, glow::RED, glow::HALF_FLOAT),
     }
 }
 
@@ -536,7 +546,7 @@ impl<S: GlSurface> crate::hal::Device for GlDevice<S> {
         data: Option<&[u8]>,
     ) -> Result<GlTexture, DeviceError> {
         desc.validate(&self.limits, data)?;
-        let (internal, format) = gl_format(desc.format);
+        let (internal, format, ty) = gl_format(desc.format);
         let gl = &self.gl;
         // SAFETY: the context is current on this thread; `validate` checked that the
         // size is within GL limits and that `data` holds exactly the texture's pixels,
@@ -556,7 +566,7 @@ impl<S: GlSurface> crate::hal::Device for GlDevice<S> {
                 desc.size.height as i32,
                 0,
                 format,
-                glow::UNSIGNED_BYTE,
+                ty,
                 glow::PixelUnpackData::Slice(data),
             );
             for (param, value) in [
@@ -590,7 +600,7 @@ impl<S: GlSurface> crate::hal::Device for GlDevice<S> {
         data: &[u8],
     ) -> Result<(), DescError> {
         texture.desc.check_write(origin, size, data.len())?;
-        let format = gl_format(texture.desc.format).1;
+        let (_, format, ty) = gl_format(texture.desc.format);
         let gl = &self.gl;
         // SAFETY: the context is current; `check_write` keeps the region inside the
         // texture (whose size is within GL limits) and `data` exactly the region's
@@ -607,7 +617,7 @@ impl<S: GlSurface> crate::hal::Device for GlDevice<S> {
                 size.width as i32,
                 size.height as i32,
                 format,
-                glow::UNSIGNED_BYTE,
+                ty,
                 glow::PixelUnpackData::Slice(Some(data)),
             );
             gl.bind_texture(glow::TEXTURE_2D, None);

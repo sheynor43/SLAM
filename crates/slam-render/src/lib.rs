@@ -6,6 +6,7 @@ mod fake_device;
 pub mod gl;
 pub mod hal;
 pub mod image;
+pub mod slider;
 pub mod sprite;
 pub mod textures;
 pub mod upload;
