@@ -1986,6 +1986,7 @@ dependencies = [
  "slam-testkit",
  "slam-text",
  "slam-ui",
+ "thiserror",
  "tracing",
 ]
 
