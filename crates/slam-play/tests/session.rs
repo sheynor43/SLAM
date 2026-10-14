@@ -389,7 +389,8 @@ fn ticks_are_deterministic_and_the_play_finishes() {
         (out, session.log().events().to_vec(), sink.plays)
     };
     let (a, log, plays) = snapshots();
-    assert_eq!(a.last().unwrap().0, PlayState::Finished);
+    // A second after the last object: passed, the results wait.
+    assert_eq!(a.last().unwrap().0, PlayState::Passed);
     assert!(a.iter().any(|s| !s.3.is_empty()), "no circle was alive");
     assert!(!log.is_empty());
     assert!(plays > 0, "no hitsound was played");
@@ -405,7 +406,8 @@ fn ticks_and_frames_do_not_allocate() {
     let mut sink = Sink::default();
     let mut session = session(&map, &track);
     let events = events(&map, session.start_time(), T0);
-    let end = end_ns(&map, session.start_time());
+    // On to the results.
+    let end = end_ns(&map, session.start_time()) + 1_100 * MS;
     let mut snapshot = PlaySnapshot::default();
     let view = view(&map);
     let textures = FrameTextures::default();
@@ -451,7 +453,7 @@ fn ticks_and_frames_do_not_allocate() {
             now += 4 * MS;
         }
     });
-    assert_eq!(snapshot.state, PlayState::Finished);
+    assert_eq!(snapshot.state, PlayState::Results);
     assert!(drawn > 0);
     assert!(pending > 0);
     assert!(snapshot.hud.score > 0);
@@ -655,13 +657,23 @@ fn the_play_starts_at_its_start_time_with_offsets() {
     }
 }
 
-/// `map` with its first object `delay` ms later.
+/// The test beatmap with its objects `delay` ms later, decoded anew so that nested objects
+/// and spinner ends move too.
 fn delayed(delay: f64) -> Beatmap {
-    let mut map = beatmap();
-    for object in &mut map.hit_objects {
-        object.start_time += delay;
+    let (head, objects) = common::MAP.split_once("[HitObjects]\n").unwrap();
+    let mut text = format!("{head}[HitObjects]\n");
+    for line in objects.lines() {
+        let mut fields: Vec<String> = line.split(',').map(str::to_owned).collect();
+        let shift = |field: &str| (field.parse::<f64>().unwrap() + delay).to_string();
+        fields[2] = shift(&fields[2]);
+        // A spinner's end time.
+        if fields[3].parse::<u32>().unwrap() & 8 != 0 {
+            fields[5] = shift(&fields[5]);
+        }
+        text.push_str(&fields.join(","));
+        text.push('\n');
     }
-    map
+    Beatmap::decode(text.as_bytes()).unwrap()
 }
 
 fn press(time_ns: u64, kind: InputKind) -> InputEvent {
@@ -1205,9 +1217,171 @@ fn running_out_of_health_fails_and_stops_after_the_fail_animation() {
 fn no_fail_plays_to_the_end() {
     let map = beatmap();
     let mut d = Driver::new(&map, mods(vec![slam_osu::mods::Mod::NoFail]));
-    d.run_until(12_000, |s| s.state == PlayState::Finished);
+    d.run_until(12_000, |s| s.state == PlayState::Passed);
     assert!(!d.session.health().has_failed());
     assert_eq!(d.snapshot.health, 0.0);
+}
+
+// ---- Passing and the results ----
+
+/// A play with No Fail ticked until it passed: every object missed.
+fn passed(map: &Beatmap) -> Driver {
+    let mut d = Driver::new(map, mods(vec![slam_osu::mods::Mod::NoFail]));
+    d.run_until(12_000, |s| s.state == PlayState::Passed);
+    d
+}
+
+#[test]
+fn passing_shows_the_results_a_second_later() {
+    let map = beatmap();
+    let mut d = Driver::new(&map, mods(vec![slam_osu::mods::Mod::NoFail]));
+    let mut last = None;
+    for _ in 0..12_000 {
+        d.tick(&[]);
+        if d.state() == PlayState::Passed {
+            break;
+        }
+        assert!(d.session.results().is_none());
+        last = d.session.log().events().last().map(|j| j.time);
+    }
+    assert_eq!(d.state(), PlayState::Passed);
+    // Every judgement is in, the last one on the previous step: passed on the next step.
+    let last = last.unwrap();
+    assert_eq!(
+        d.session.counted_judgements(),
+        d.session.log().events().len()
+    );
+    assert!(
+        d.snapshot.time > last && d.snapshot.time - last < 1.5,
+        "{last}"
+    );
+    let results = d.session.results().unwrap();
+    assert_eq!(results.statistics, *d.session.log().statistics());
+    assert_eq!(results.score, d.snapshot.hud.score);
+    assert_eq!(results.rank, slam_osu::scoring::ScoreRank::D);
+
+    let time = d.snapshot.time;
+    let commands = d.track.commands.len();
+    assert_no_alloc(|| {
+        // Gameplay runs on for a second of real time.
+        d.run(999);
+        assert_eq!(d.state(), PlayState::Passed);
+        assert!(d.snapshot.time > time + 990.0);
+        assert!(d.snapshot.clock.is_some());
+        d.run(1);
+        assert_eq!(d.state(), PlayState::Results);
+        d.run(100);
+    });
+    assert_eq!(d.state(), PlayState::Results);
+    assert_eq!(d.session.results(), Some(results));
+    // Gameplay stopped, the track plays on.
+    assert!(d.snapshot.clock.is_none());
+    assert!(d.snapshot.time < time + 1_001.0);
+    assert_eq!(d.track.commands.len(), commands);
+    // Back leaves the results, which stay.
+    d.tap(ESCAPE);
+    assert_eq!(d.state(), PlayState::Exited);
+    assert!(d.session.has_exited());
+    assert_eq!(d.session.results(), Some(results));
+}
+
+#[test]
+fn pausing_after_passing_shows_the_results_at_once() {
+    let map = beatmap();
+    let mut d = passed(&map);
+    d.run(100);
+    d.tap(ESCAPE);
+    assert_eq!(d.state(), PlayState::Results);
+    assert!(d.session.results().is_some());
+    assert_ne!(d.track.commands.last(), Some(&Command::Pause));
+    // Quick exit leaves the results.
+    d.hold(Some(LCTRL), GRAVE, 200);
+    assert_eq!(d.state(), PlayState::Exited);
+}
+
+#[test]
+fn quick_exit_after_passing_shows_the_results() {
+    let map = beatmap();
+    let mut d = passed(&map);
+    d.hold(Some(LCTRL), GRAVE, 200);
+    assert_eq!(d.state(), PlayState::Results);
+    d.run(2_000);
+    assert_eq!(d.state(), PlayState::Results);
+    d.tap(ESCAPE);
+    assert_eq!(d.state(), PlayState::Exited);
+}
+
+#[test]
+fn quick_retry_restarts_after_passing_and_from_the_results() {
+    let map = beatmap();
+    let mut d = passed(&map);
+    d.hold(None, GRAVE, 200);
+    assert_eq!(d.snapshot.restarts, 1);
+    assert_eq!(d.state(), PlayState::Playing);
+    assert!(d.session.results().is_none());
+
+    d.run_until(12_000, |s| s.state == PlayState::Results);
+    d.hold(None, GRAVE, 200);
+    assert_eq!(d.snapshot.restarts, 2);
+    assert_eq!(d.state(), PlayState::Playing);
+    assert!(d.session.log().events().is_empty());
+    // The next play passes again.
+    d.run_until(12_000, |s| s.state == PlayState::Passed);
+}
+
+#[test]
+fn back_in_the_tick_that_passes_shows_the_results() {
+    let map = beatmap();
+    let mut d = Driver::new(&map, mods(vec![slam_osu::mods::Mod::NoFail]));
+    // Find the tick that passes, then play it again with Back after its step.
+    let mut probe = Driver::new(&map, mods(vec![slam_osu::mods::Mod::NoFail]));
+    probe.run_until(12_000, |s| s.state == PlayState::Passed);
+    let ticks = (probe.now - d.now) / MS - 1;
+    d.run(ticks);
+    assert_eq!(d.state(), PlayState::Playing);
+    // The step before Back passes; Back then shows the results instead of pausing.
+    let back = d.key(ESCAPE, true);
+    d.tick(&[back]);
+    assert_eq!(d.state(), PlayState::Results);
+    assert!(d.session.results().is_some());
+}
+
+#[test]
+fn sudden_death_with_restart_restarts_on_failing_on_the_last_judgement() {
+    let mut map = beatmap();
+    map.hit_objects.truncate(1);
+    let mut d = Driver::new(
+        &map,
+        mods(vec![slam_osu::mods::Mod::SuddenDeath {
+            restart: true,
+            fail_on_slider_tail: false,
+        }]),
+    );
+    d.run_until(5_000, |s| s.restarts == 1);
+    assert_eq!(d.state(), PlayState::Playing);
+    assert!(d.session.results().is_none());
+}
+
+#[test]
+fn failing_on_the_last_judgement_shows_no_results() {
+    let mut map = beatmap();
+    map.hit_objects.truncate(1);
+    // Missing the only circle with No Fail passes.
+    let mut d = passed(&map);
+    d.run(1_100);
+    assert_eq!(d.state(), PlayState::Results);
+
+    // With Sudden Death, the same miss fails first.
+    let sudden_death = slam_osu::mods::Mod::SuddenDeath {
+        restart: false,
+        fail_on_slider_tail: false,
+    };
+    let mut d = Driver::new(&map, mods(vec![sudden_death]));
+    d.run_until(5_000, |s| s.state == PlayState::Failing);
+    assert_eq!(d.session.log().events().len(), 1);
+    d.run(3_000);
+    assert_eq!(d.state(), PlayState::Failed);
+    assert!(d.session.results().is_none());
 }
 
 #[test]
@@ -1429,7 +1603,7 @@ fn the_snapshot_tells_breaks_the_intro_and_the_end() {
     // `BreakTracker` check the inclusive end).
     d.run_until(1_000, |s| s.time > 4975.0);
     assert!(!d.snapshot.is_break_time);
-    d.run_until(20_000, |s| s.state == PlayState::Finished);
+    d.run_until(20_000, |s| s.state == PlayState::Passed);
     assert!(d.snapshot.is_break_time);
 }
 
