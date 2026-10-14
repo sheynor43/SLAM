@@ -165,6 +165,17 @@ pub struct LiveInput {
     pending_len: usize,
     dropped: u64,
     events: [ActionEvent; MAX_LIVE_STEP_EVENTS],
+    /// Gameplay does not take input (paused): the state below follows the window instead.
+    suspended: bool,
+    /// Window position of the cursor while suspended.
+    parent_window: Option<Vec2>,
+    /// Bound inputs held while suspended.
+    parent_held: [Input; MAX_HELD_INPUTS],
+    parent_len: usize,
+    /// The press that ended the suspension, held by gameplay without a press.
+    resume_press: Option<Input>,
+    /// The next step syncs gameplay with the state followed while suspended.
+    sync_pending: bool,
 }
 
 impl LiveInput {
@@ -199,6 +210,12 @@ impl LiveInput {
             pending_len: 0,
             dropped: 0,
             events: [no_action; MAX_LIVE_STEP_EVENTS],
+            suspended: false,
+            parent_window: None,
+            parent_held: [Input::Key(0); MAX_HELD_INPUTS],
+            parent_len: 0,
+            resume_press: None,
+            sync_pending: false,
         }
     }
 
@@ -239,6 +256,150 @@ impl LiveInput {
         self.dropped
     }
 
+    /// Whether input is suspended ([`suspend`](Self::suspend)).
+    pub fn is_suspended(&self) -> bool {
+        self.suspended
+    }
+
+    /// Whether the cursor has moved yet: until then lazer's gameplay cursor is hidden.
+    pub fn cursor_moved(&self) -> bool {
+        self.window_position.is_some()
+    }
+
+    // Ported from osu!lazer 2026.1005.0-lazer: osu.Game/Rulesets/UI/DrawableRuleset.cs (IsPaused.ValueChanged)
+    /// Stops delivering input to gameplay, as lazer's ruleset input manager stops using its
+    /// parent's input while gameplay is paused. Gameplay keeps its held actions and cursor;
+    /// [`follow_suspended`](Self::follow_suspended) follows the window meanwhile. Events
+    /// still waiting for a step are taken as happening after the suspension.
+    pub fn suspend(&mut self) {
+        if self.suspended {
+            return;
+        }
+        self.suspended = true;
+        self.sync_pending = false;
+        self.resume_press = None;
+        self.parent_window = self.window_position;
+        self.parent_len = self.held_len;
+        for (parent, held) in self.parent_held.iter_mut().zip(&self.held_inputs) {
+            *parent = held.input;
+        }
+        while self.pending_len > 0 {
+            let event = self.pending[self.pending_start];
+            self.pending_start = (self.pending_start + 1) % MAX_PENDING_EVENTS;
+            self.pending_len -= 1;
+            self.follow(event);
+        }
+    }
+
+    /// While suspended, follows `events` in order without delivering them: the cursor and
+    /// the bound inputs held. Each press of a bound input is offered to `stop` with its
+    /// actions and the cursor position in osu!pixels; if `stop` returns `true`, following
+    /// stops after that event and its index is returned. The rest of `events` is not taken.
+    pub fn follow_suspended(
+        &mut self,
+        events: &[InputEvent],
+        mut stop: impl FnMut(Actions, Vec2) -> bool,
+    ) -> Option<usize> {
+        debug_assert!(self.suspended, "input is not suspended");
+        for (index, &event) in events.iter().enumerate() {
+            if let Some((input, actions)) = self.follow(event)
+                && stop(actions, self.parent_position())
+            {
+                self.resume_press = Some(input);
+                return Some(index);
+            }
+        }
+        None
+    }
+
+    /// The cursor position the window has, in osu!pixels.
+    fn parent_position(&self) -> Vec2 {
+        if self.suspended {
+            self.parent_window
+                .map_or(self.position, |w| self.layout.to_playfield(w))
+        } else {
+            self.position
+        }
+    }
+
+    /// Follows one event while suspended. Returns the input and its actions if it is a
+    /// press of a bound input.
+    fn follow(&mut self, event: InputEvent) -> Option<(Input, Actions)> {
+        let (input, down) = match event.kind {
+            InputKind::MouseMove { x, y } => {
+                self.parent_window = Some(Vec2::new(x, y));
+                return None;
+            }
+            InputKind::Key { scancode, down } => (Input::Key(scancode), down),
+            InputKind::MouseButton { button, down } => (Input::Mouse(button), down),
+        };
+        let index = self.parent_held[..self.parent_len]
+            .iter()
+            .position(|&held| held == input);
+        if !down {
+            if let Some(index) = index {
+                self.parent_held
+                    .copy_within(index + 1..self.parent_len, index);
+                self.parent_len -= 1;
+            }
+            return None;
+        }
+        // Ported from osu!lazer 2026.1005.0-lazer: osu.Game/Rulesets/UI/RulesetInputManager.cs (Handle)
+        // The resume overlay has a ruleset input manager of its own, which drops mouse
+        // presses as gameplay's does.
+        if self.mouse_buttons_disabled && matches!(input, Input::Mouse(_)) {
+            return None;
+        }
+        let actions = self.bindings.actions_of(input);
+        if actions.is_empty() || index.is_some() {
+            return None;
+        }
+        if self.parent_len < MAX_HELD_INPUTS {
+            self.parent_held[self.parent_len] = input;
+            self.parent_len += 1;
+        }
+        Some((input, actions))
+    }
+
+    // Ported from osu-framework 2026.921.1: osu.Framework/Input/PassThroughInputManager.cs (syncWithParent)
+    /// Delivers input to gameplay again. The next step first releases what was released
+    /// while suspended, then moves the cursor where it went; presses made while suspended
+    /// are not delivered. The press that resumed (see
+    /// [`follow_suspended`](Self::follow_suspended)) is held from then on without being
+    /// delivered as a press: lazer's `OsuResumeOverlay` blocks it from reaching hit objects.
+    pub fn resume(&mut self) {
+        if self.suspended {
+            self.suspended = false;
+            self.sync_pending = true;
+        }
+    }
+
+    /// Forgets the held inputs and the time of the last step, for a play that starts over.
+    /// Inputs held now are not held by the new play (their releases are dropped); the cursor
+    /// stays.
+    pub fn reset(&mut self) {
+        if let Some(window) = self.parent_window.filter(|_| self.suspended) {
+            self.window_position = Some(window);
+            self.position = self.layout.to_playfield(window);
+        }
+        self.held_len = 0;
+        self.held = Actions::NONE;
+        self.last_time = f64::NEG_INFINITY;
+        self.pending_start = 0;
+        self.pending_len = 0;
+        self.suspended = false;
+        self.parent_len = 0;
+        self.resume_press = None;
+        self.sync_pending = false;
+    }
+
+    /// Keeps `events` for the next step: gameplay does not step this tick.
+    pub fn hold(&mut self, events: &[InputEvent]) {
+        for &event in events {
+            self.defer(event);
+        }
+    }
+
     /// Takes the input events of one update tick and returns the step for the rules.
     ///
     /// `events` must be in non-decreasing `time_ns` order and not newer than `now_ns`, as the
@@ -253,9 +414,15 @@ impl LiveInput {
         now_ns: u64,
         time: &impl GameTime,
     ) -> StepInput<'_> {
+        debug_assert!(!self.suspended, "input is suspended");
         let step_time = time.game_time(now_ns).max(self.last_time);
         let floor = self.last_time;
         let mut len = 0;
+        if std::mem::take(&mut self.sync_pending) {
+            // Lazer syncs when gameplay resumes: at the time it stopped.
+            let at = if floor.is_finite() { floor } else { step_time };
+            self.sync(at, &mut len);
+        }
 
         // Events left over from earlier steps go first.
         while self.pending_len > 0 {
@@ -278,6 +445,69 @@ impl LiveInput {
             position: self.position,
             held: self.held,
             events: &self.events[..len],
+        }
+    }
+
+    /// Syncs gameplay with the state followed while suspended, at game time `time`: releases
+    /// the inputs no longer held, moves the cursor, then holds the press that resumed.
+    fn sync(&mut self, time: f64, len: &mut usize) {
+        let mut k = 0;
+        while k < self.held_len {
+            let input = self.held_inputs[k].input;
+            if self.parent_held[..self.parent_len].contains(&input) {
+                k += 1;
+                continue;
+            }
+            let (released, still_held) = self.release_changes(k);
+            self.emit(released, time, false, len);
+            self.held_inputs.copy_within(k + 1..self.held_len, k);
+            self.held_len -= 1;
+            self.held = still_held;
+        }
+        if let Some(window) = self.parent_window {
+            self.window_position = Some(window);
+            self.position = self.layout.to_playfield(window);
+        }
+        if let Some(input) = self.resume_press.take() {
+            let bound = self.bindings.actions_of(input);
+            let held = self.held_inputs[..self.held_len]
+                .iter()
+                .any(|h| h.input == input);
+            if !held && !bound.is_empty() && self.held_len < MAX_HELD_INPUTS {
+                self.held_inputs[self.held_len] = Held {
+                    input,
+                    actions: bound,
+                };
+                self.held_len += 1;
+                self.held = self.held | bound;
+            }
+        }
+    }
+
+    /// What releasing `held_inputs[index]` changes: the actions released and those still held.
+    fn release_changes(&self, index: usize) -> (Actions, Actions) {
+        let released = self.held_inputs[index].actions;
+        let still_held = self.held_inputs[..self.held_len]
+            .iter()
+            .enumerate()
+            .filter(|&(i, _)| i != index)
+            .fold(Actions::NONE, |acc, (_, h)| acc | h.actions);
+        (released.difference(still_held), still_held)
+    }
+
+    /// Writes a press or release of each action in `changed` at `len`. The caller checks
+    /// the room.
+    fn emit(&mut self, changed: Actions, time: f64, pressed: bool, len: &mut usize) {
+        for action in Actions::SINGLE {
+            if changed.contains(action) && *len < MAX_LIVE_STEP_EVENTS {
+                self.events[*len] = ActionEvent {
+                    time,
+                    position: self.position,
+                    action,
+                    pressed,
+                };
+                *len += 1;
+            }
         }
     }
 
@@ -327,13 +557,7 @@ impl LiveInput {
                 // Lazer drops the release of a button it never saw pressed.
                 return true;
             };
-            let released = self.held_inputs[index].actions;
-            let still_held = self.held_inputs[..self.held_len]
-                .iter()
-                .enumerate()
-                .filter(|&(i, _)| i != index)
-                .fold(Actions::NONE, |acc, (_, h)| acc | h.actions);
-            (released.difference(still_held), still_held)
+            self.release_changes(index)
         };
 
         let count = Actions::SINGLE
@@ -345,17 +569,7 @@ impl LiveInput {
         }
 
         let event_time = time.game_time(event.time_ns).clamp(floor, step_time);
-        for action in Actions::SINGLE {
-            if changed.contains(action) {
-                self.events[*len] = ActionEvent {
-                    time: event_time,
-                    position: self.position,
-                    action,
-                    pressed: down,
-                };
-                *len += 1;
-            }
-        }
+        self.emit(changed, event_time, down, len);
 
         if down {
             self.held_inputs[self.held_len] = Held {
@@ -782,5 +996,120 @@ mod tests {
         let step = input.step(&[], ms(51.0), &Linear);
         assert_eq!(step.position, Vec2::new(999.0, 0.0));
         assert_eq!(step.held, Actions::LEFT | Actions::RIGHT);
+    }
+
+    #[test]
+    fn suspended_input_reaches_gameplay_only_as_releases_on_resume() {
+        let mut input = live();
+        input.step(&[key(1.0, SCANCODE_Z, true)], ms(2.0), &Linear);
+        input.suspend();
+        assert!(input.is_suspended());
+        let followed = input.follow_suspended(
+            &[
+                key(3.0, SCANCODE_Z, false),
+                key(4.0, SCANCODE_X, true),
+                moved(5.0, 164.0, 156.0),
+            ],
+            |_, _| false,
+        );
+        assert_eq!(followed, None);
+        // Gameplay still holds Z and has the cursor where it was.
+        assert_eq!(input.held(), Actions::LEFT);
+        assert_eq!(input.position(), Vec2::ZERO);
+        input.resume();
+        let step = input.step(&[], ms(10.0), &Linear);
+        // Z's release comes at the time gameplay stopped; X, pressed while paused, does not.
+        assert_eq!(summary(&step), [(2.0, Actions::LEFT, false)]);
+        assert_eq!(step.held, Actions::NONE);
+        assert_eq!(step.position, Vec2::new(100.0, 100.0));
+        // X's release later is dropped.
+        let step = input.step(&[key(11.0, SCANCODE_X, false)], ms(12.0), &Linear);
+        assert!(step.events.is_empty());
+    }
+
+    #[test]
+    fn the_press_that_resumes_is_held_without_a_press() {
+        let mut input = live();
+        input.step(&[moved(1.0, 164.0, 156.0)], ms(1.0), &Linear);
+        input.suspend();
+        let events = [
+            key(3.0, SCANCODE_C, true),
+            mouse(4.0, MouseButton::Left, true),
+            key(5.0, SCANCODE_X, true),
+        ];
+        let mut offered = Vec::new();
+        let at = input.follow_suspended(&events, |actions, position| {
+            offered.push((actions, position));
+            actions.contains(Actions::LEFT)
+        });
+        assert_eq!(at, Some(1));
+        assert_eq!(
+            offered,
+            [
+                (Actions::SMOKE, Vec2::new(100.0, 100.0)),
+                (Actions::LEFT, Vec2::new(100.0, 100.0))
+            ]
+        );
+        input.resume();
+        let step = input.step(&events[2..], ms(6.0), &Linear);
+        assert_eq!(summary(&step), [(5.0, Actions::RIGHT, true)]);
+        assert_eq!(step.held, Actions::LEFT | Actions::RIGHT);
+        // Releasing the mouse button releases the left button as usual.
+        let step = input.step(&[mouse(7.0, MouseButton::Left, false)], ms(8.0), &Linear);
+        assert_eq!(summary(&step), [(7.0, Actions::LEFT, false)]);
+    }
+
+    #[test]
+    fn events_waiting_at_a_suspension_happen_while_suspended() {
+        let mut input = live();
+        // More presses than a step takes: the rest wait.
+        let mut events = Vec::new();
+        for k in 0..20 {
+            let t = 1.0 + k as f64 * 0.01;
+            events.push(key(t, SCANCODE_Z, true));
+            events.push(key(t, SCANCODE_X, true));
+            events.push(key(t + 0.005, SCANCODE_Z, false));
+            events.push(key(t + 0.005, SCANCODE_X, false));
+        }
+        input.step(&events, ms(2.0), &Linear);
+        input.suspend();
+        input.resume();
+        let step = input.step(&[], ms(3.0), &Linear);
+        // Everything ended released; the waiting events were not delivered.
+        assert_eq!(step.held, Actions::NONE);
+        assert!(step.events.iter().all(|e| !e.pressed));
+    }
+
+    #[test]
+    fn mouse_presses_while_suspended_stay_disabled() {
+        let mut input = live();
+        input.set_mouse_buttons_disabled(true);
+        input.suspend();
+        let mut offered = 0;
+        input.follow_suspended(&[mouse(1.0, MouseButton::Left, true)], |_, _| {
+            offered += 1;
+            true
+        });
+        assert_eq!(offered, 0);
+    }
+
+    #[test]
+    fn a_reset_forgets_held_inputs_and_time() {
+        let mut input = live();
+        input.step(&[key(1.0, SCANCODE_Z, true)], ms(500.0), &Linear);
+        input.reset();
+        assert_eq!(input.held(), Actions::NONE);
+        // Time may go back, and Z's release is dropped.
+        let step = input.step(&[key(10.0, SCANCODE_Z, false)], ms(20.0), &Linear);
+        assert_eq!(step.time, 20.0);
+        assert!(step.events.is_empty());
+    }
+
+    #[test]
+    fn held_events_wait_for_the_next_step() {
+        let mut input = live();
+        input.hold(&[key(1.0, SCANCODE_Z, true)]);
+        let step = input.step(&[], ms(2.0), &Linear);
+        assert_eq!(summary(&step), [(1.0, Actions::LEFT, true)]);
     }
 }

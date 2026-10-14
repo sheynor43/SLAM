@@ -4,7 +4,7 @@
 
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::time::{Duration, Instant};
 
 use slam_audio::{
@@ -118,6 +118,8 @@ struct Gameplay {
     layout_size: u64,
     /// Input arrives in window points, the surface is in pixels.
     points_per_pixel: f32,
+    /// Set once the player quits; the window closes then.
+    exited: Arc<AtomicBool>,
 }
 
 fn pack_size(width: u32, height: u32) -> u64 {
@@ -149,6 +151,9 @@ impl Update for Gameplay {
             &mut self.mixer,
             snapshot,
         );
+        if self.session.has_exited() {
+            self.exited.store(true, Ordering::Relaxed);
+        }
     }
 }
 
@@ -381,12 +386,14 @@ pub fn run(options: &Options) -> Result<(), String> {
         ),
     );
     let session = PlaySession::new(beatmap, &mods, &player, input, sounds, Offsets::default());
+    let exited = Arc::new(AtomicBool::new(false));
     let gameplay = Gameplay {
         session,
         output: Arc::clone(stream.position()),
         surface: Arc::clone(&surface_size),
         layout_size: initial_size,
         points_per_pixel,
+        exited: Arc::clone(&exited),
         music: Arc::clone(player.position()),
         player,
         mixer: mixer_handle,
@@ -413,13 +420,34 @@ pub fn run(options: &Options) -> Result<(), String> {
     sink.set_notify(engine.waker().as_notify());
 
     println!(
-        "playing {} ({} objects), audio: {}; close the window to stop",
+        "playing {} ({} objects), audio: {}; Escape pauses, hold ` to retry, Ctrl+` to quit",
         options.map.display(),
         beatmap.hit_objects.len(),
         stream.backend().name()
     );
+    // The update thread must not take the window's lock: a watcher closes the window
+    // once the player quits.
+    let closed = Arc::new(AtomicBool::new(false));
+    let watcher = {
+        let (quit, exited, closed) = (
+            window.quit_handle(),
+            Arc::clone(&exited),
+            Arc::clone(&closed),
+        );
+        std::thread::spawn(move || {
+            while !closed.load(Ordering::Relaxed) {
+                // A full event queue refuses the request: try again.
+                if exited.load(Ordering::Relaxed) && quit.request() {
+                    return;
+                }
+                std::thread::sleep(Duration::from_millis(10));
+            }
+        })
+    };
     let mut mapper = TickMapper::new(now_ns, sdl_ticks_ns);
     let ran = window.run(&mut sink, &mut mapper);
+    closed.store(true, Ordering::Relaxed);
+    let _ = watcher.join();
 
     let slam_engine::Stopped {
         update: mut gameplay,
@@ -435,7 +463,11 @@ pub fn run(options: &Options) -> Result<(), String> {
     drop(stream);
     drop(requests);
 
-    let statistics = gameplay.session.log().statistics();
+    let session = &gameplay.session;
+    if session.health().has_failed() {
+        println!("failed after {} judgements", session.counted_judgements());
+    }
+    let statistics = session.log().statistics();
     println!(
         "300: {}, 100: {}, 50: {}, miss: {}, max combo: {}",
         statistics.count(HitResult::Great),
