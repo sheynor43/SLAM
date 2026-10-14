@@ -21,11 +21,11 @@ use slam_osu::{Beatmap, ModSet, Vec2};
 use slam_play::circles::{
     CircleMods, CircleSettings, CircleSkinConfig, CircleStyle, CircleVisuals, HitCircles,
 };
+use slam_play::{BackgroundSettings, BackgroundView, HudValues, HudView};
 use slam_play::{
     Bindings, FrameTextures, GameTime, GameplaySounds, LiveInput, Offsets, PlaySession,
     PlaySnapshot, PlayState, PlayView, SoundSettings, VoiceSink,
 };
-use slam_play::{HudValues, HudView};
 use slam_render::Extent;
 use slam_render::Limits;
 use slam_render::Origin;
@@ -419,6 +419,7 @@ fn ticks_and_frames_do_not_allocate() {
     let mut text = SpriteBatch::with_capacity(256);
     let mut pending = 0;
     let white = WHITE;
+    let mut background = BackgroundView::new(BackgroundSettings::default());
 
     assert_no_alloc(|| {
         let mut next = 0;
@@ -440,6 +441,7 @@ fn ticks_and_frames_do_not_allocate() {
             );
             batch.clear();
             text.clear();
+            background.push(&mut batch, 640.0, 480.0, &snapshot, now, Some(white));
             view.push(&mut batch, &layout(), &snapshot, now + MS / 2, &textures);
             hud.update(1280.0, 720.0, &snapshot.hud);
             hud.push_shapes(&mut batch, &layout(), &snapshot, white);
@@ -1401,4 +1403,82 @@ fn hud_updates_and_frames_do_not_allocate() {
     });
     // Health bar (two), skip button and resume target.
     assert_eq!(batch.len(), 4);
+}
+
+#[test]
+fn the_snapshot_tells_breaks_the_intro_and_the_end() {
+    let mut map = delayed(3000.0);
+    // Effective from 4500 to 5300 - 325 ms of fade.
+    map.breaks.push(slam_osu::breaks::Break {
+        start: 4500.0,
+        end: 5300.0,
+    });
+    // No Fail: nobody plays and the play has to finish.
+    let mut d = Driver::new(&map, mods(vec![slam_osu::mods::Mod::NoFail]));
+    // Gameplay starts at 4000 - max(2000, preempt).
+    assert!(d.snapshot.is_break_time);
+    d.run_to(1999.0);
+    assert!(d.snapshot.is_break_time);
+    d.run_to(2000.0);
+    assert!(!d.snapshot.is_break_time);
+    d.run_to(4500.0);
+    assert!(d.snapshot.is_break_time);
+    d.run_to(4974.0);
+    assert!(d.snapshot.is_break_time);
+    // Ticks fall between whole milliseconds, so 4975 itself is not hit (the unit tests of
+    // `BreakTracker` check the inclusive end).
+    d.run_until(1_000, |s| s.time > 4975.0);
+    assert!(!d.snapshot.is_break_time);
+    d.run_until(20_000, |s| s.state == PlayState::Finished);
+    assert!(d.snapshot.is_break_time);
+}
+
+/// `delayed(3000)` with a break effective from 4500 to 4975.
+fn with_break() -> Beatmap {
+    let mut map = delayed(3000.0);
+    map.breaks.push(slam_osu::breaks::Break {
+        start: 4500.0,
+        end: 5300.0,
+    });
+    map
+}
+
+#[test]
+fn a_break_mid_play_pauses_without_cooldown_and_resumes_at_once() {
+    let map = with_break();
+    let mut d = Driver::new(&map, mods(vec![slam_osu::mods::Mod::NoFail]));
+    let moved = d.mouse(Vec2::new(100.0, 100.0));
+    d.tick(&[moved]);
+    d.run_to(4600.0);
+    d.tap(ESCAPE);
+    assert_eq!(d.state(), PlayState::Paused);
+    d.tap(ESCAPE);
+    assert_eq!(d.state(), PlayState::Playing);
+    d.tap(ESCAPE);
+    assert_eq!(d.state(), PlayState::Paused);
+    d.tap(ESCAPE);
+    assert_eq!(d.state(), PlayState::Playing);
+    // Out of the break and the cooldown, the resume cursor is back.
+    d.run_to(5700.0);
+    d.tap(ESCAPE);
+    assert_eq!(d.state(), PlayState::Paused);
+    d.tap(ESCAPE);
+    assert_eq!(d.state(), PlayState::Resuming);
+}
+
+#[test]
+fn after_a_restart_the_intro_and_the_breaks_count_again() {
+    let map = with_break();
+    let mut d = Driver::new(&map, mods(vec![slam_osu::mods::Mod::NoFail]));
+    d.run_to(6000.0);
+    assert!(!d.snapshot.is_break_time);
+    d.hold(None, GRAVE, 200);
+    assert_eq!(d.snapshot.restarts, 1);
+    d.run(5);
+    assert!(d.snapshot.time < 2000.0, "{}", d.snapshot.time);
+    assert!(d.snapshot.is_break_time);
+    d.run_to(3000.0);
+    assert!(!d.snapshot.is_break_time);
+    d.run_to(4600.0);
+    assert!(d.snapshot.is_break_time);
 }

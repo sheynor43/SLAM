@@ -2,11 +2,13 @@
 //! and sounds and writes a [`PlaySnapshot`]; the draw side turns the snapshot into sprites.
 //!
 //! The update side is lazer's `Player` for one play: pausing and resuming, failing, restarting
-//! and quitting, driven by the global actions of [`crate::hotkeys`]. No breaks overlay yet;
-//! the HUD's numbers go out in [`HudValues`].
+//! and quitting, driven by the global actions of [`crate::hotkeys`]. No breaks overlay yet,
+//! only [`PlaySnapshot::is_break_time`] for the background dim; the HUD's numbers go out in
+//! [`HudValues`].
 
 use slam_audio::{ClockError, GameClock, MusicSnapshot, PositionSnapshot, TrackControl};
 use slam_input::InputEvent;
+use slam_osu::breaks::BreakTracker;
 use slam_osu::judgement::JudgementLog;
 use slam_osu::lead_in::{IntroSkip, earliest_start_time, gameplay_start_time};
 use slam_osu::replay::{Actions, Rules};
@@ -41,13 +43,6 @@ pub const FAIL_ANIMATION_NS: u64 = 2_500_000_000;
 // Ported from osu!lazer 2026.1005.0-lazer: osu.Game.Rulesets.Osu/UI/Cursor/OsuCursor.cs (SIZE)
 /// Size of the click-to-resume cursor's hit area, in osu!pixels.
 pub(crate) const RESUME_CURSOR_SIZE: f32 = 28.0;
-
-// Ported from osu!lazer 2026.1005.0-lazer: osu.Game/Beatmaps/Timing/BreakPeriod.cs (MIN_BREAK_DURATION)
-/// Breaks shorter than this have no effect.
-const MIN_BREAK_DURATION: f64 = 650.0;
-// Ported from osu!lazer 2026.1005.0-lazer: osu.Game/Screens/Play/Break/BreakOverlay.cs (BREAK_FADE_DURATION)
-/// A break ends this long before its end time.
-const BREAK_FADE_DURATION: f64 = MIN_BREAK_DURATION / 2.0;
 
 /// Where a play is.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -113,6 +108,8 @@ pub struct PlaySnapshot {
     pub cursor: Vec2,
     /// Whether the intro can be skipped now.
     pub skip_available: bool,
+    /// Whether gameplay is in a break (lazer's `IsBreakTime`): the background dims less.
+    pub is_break_time: bool,
     /// Health, 0..=1.
     pub health: f64,
     pub hud: HudValues,
@@ -135,6 +132,8 @@ impl Default for PlaySnapshot {
             clock: None,
             cursor: Vec2::ZERO,
             skip_available: false,
+            // Lazer's `BreakTracker` starts in a break.
+            is_break_time: true,
             health: 1.0,
             hud: HudValues::default(),
             resume_target: Vec2::ZERO,
@@ -181,9 +180,7 @@ pub struct PlaySession {
     clock: GameClock,
     offsets: Offsets,
     start_time: f64,
-    gameplay_start_time: f64,
-    /// Breaks that have an effect: lazer's `BreakTracker` periods.
-    breaks: Vec<(f64, f64)>,
+    breaks: BreakTracker,
     skip: IntroSkip,
     /// Skip the intro as soon as it can be (a quick restart).
     auto_skip: bool,
@@ -240,18 +237,11 @@ impl PlaySession {
         let gameplay_start_time = gameplay_start_time(beatmap);
         // The skip overlay appears with the clock at the start.
         let skip = IntroSkip::new(gameplay_start_time, start_time, start_time);
-        // Ported from osu!lazer 2026.1005.0-lazer: osu.Game/Screens/Play/BreakTracker.cs (Breaks)
-        let breaks = beatmap
-            .breaks
-            .iter()
-            .filter(|b| b.end - b.start >= MIN_BREAK_DURATION)
-            .map(|b| (b.start, b.end - BREAK_FADE_DURATION))
-            .collect();
+        let breaks = BreakTracker::new(&beatmap.breaks, gameplay_start_time);
         PlaySession {
             clock: GameClock::new(track),
             offsets,
             start_time,
-            gameplay_start_time,
             breaks,
             skip,
             auto_skip: false,
@@ -474,6 +464,7 @@ impl PlaySession {
             && !seek_sent
             && !self.clock.is_seeking()
             && self.skip.is_available(current);
+        snapshot.is_break_time = self.is_break_time(self.last_time);
         self.fill(snapshot, now_ns);
     }
 
@@ -642,13 +633,10 @@ impl PlaySession {
         self.restarts += 1;
     }
 
-    // Ported from osu!lazer 2026.1005.0-lazer: osu.Game/Screens/Play/BreakTracker.cs (updateBreakTime)
-    fn is_break_time(&self, time: f64) -> bool {
+    fn is_break_time(&mut self, time: f64) -> bool {
         self.breaks
-            .iter()
-            .any(|&(start, end)| time >= start && time <= end)
-            || time < self.gameplay_start_time
-            || self.rules.is_complete()
+            .update(time, self.rules.is_complete())
+            .is_break_time
     }
 
     /// Sends the pending seek, then starts or stops the clock as wanted. A failed seek may

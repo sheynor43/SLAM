@@ -1,5 +1,6 @@
 //! Gameplay presentation: playfield layout, hit object and cursor drawables, live input, hitsounds, gameplay screen.
 
+pub mod background;
 pub mod circles;
 pub mod gameplay_sounds;
 pub mod hitsounds;
@@ -10,6 +11,7 @@ pub mod playfield;
 pub mod session;
 pub mod time;
 
+pub use background::{BackgroundSettings, BackgroundView};
 pub use gameplay_sounds::{GameplaySounds, SoundSettings, VoiceSink};
 pub use hitsounds::{Hitsound, Hitsounds, SampleCache, SampleSkins, Sound};
 pub use hotkeys::{GlobalAction, Hotkeys};

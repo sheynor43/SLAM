@@ -12,6 +12,7 @@ png.workspace = true
 rtrb.workspace = true
 thiserror.workspace = true
 tracing.workspace = true
+zune-jpeg.workspace = true
 
 [dev-dependencies]
 slam-testkit = { path = "../slam-testkit" }
