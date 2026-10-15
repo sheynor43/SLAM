@@ -51,7 +51,7 @@ use perf::{FramePerf, ReportSources, SharedFrameTimes};
 
 pub const USAGE: &str = "usage: slam-app play MAP.osu [--skin DIR] [--backend NAME] \
                          [--device ID] [--buffer FRAMES] [--fps HZ|unlimited] \
-                         [--update-hz HZ] [--mods HDHR] [--no-beatmap-colours] [--no-mouse-buttons] [--no-stats]";
+                         [--update-hz HZ] [--mods HDHR] [--dim PERCENT] [--no-beatmap-colours] [--no-mouse-buttons] [--no-stats]";
 
 const SAMPLE_RATE: u32 = 48_000;
 const CHANNELS: u16 = 2;
@@ -98,6 +98,9 @@ pub struct Options {
     pub mouse_buttons: bool,
     /// Mods of the play; without `--mods`, none.
     pub mods: ModSet,
+    /// How dark the background is in gameplay, 0 ..= 1 (lazer's `DimLevel`); `--dim` takes
+    /// it in whole percent.
+    pub dim: f64,
 }
 
 impl Options {
@@ -116,6 +119,7 @@ impl Options {
             beatmap_colours: true,
             mouse_buttons: true,
             mods: ModSet::default(),
+            dim: BackgroundSettings::default().dim_level,
         };
         let mut args = args.into_iter();
         while let Some(arg) = args.next() {
@@ -143,6 +147,14 @@ impl Options {
                     };
                 }
                 "--update-hz" => options.update_hz = rate(&arg, &value()?)?,
+                "--dim" => {
+                    // Lazer's setting moves in steps of 0.01.
+                    let percent: f64 = number(&arg, &value()?)?;
+                    if !(0.0..=100.0).contains(&percent) || percent.fract() != 0.0 {
+                        return Err("--dim must be a whole percent in [0, 100]".into());
+                    }
+                    options.dim = percent / 100.0;
+                }
                 "--buffer" => {
                     let frames: f64 = number(&arg, &value()?)?;
                     if frames < 1.0 || frames.fract() != 0.0 || frames > 8192.0 {
@@ -728,7 +740,10 @@ pub fn run(options: &Options) -> Result<(), String> {
         view,
         hud,
         background,
-        background_view: BackgroundView::new(BackgroundSettings::default()),
+        background_view: BackgroundView::new(BackgroundSettings {
+            dim_level: options.dim,
+            ..BackgroundSettings::default()
+        }),
         batch: SpriteBatch::with_capacity(MAX_SPRITES),
         bodies: SliderBodies::new(),
         meshes: SliderVisuals::meshes(beatmap),
@@ -936,6 +951,17 @@ mod tests {
             assert!(parse(&["map.osu", "--update-hz", bad]).is_err(), "{bad}");
         }
         assert!(parse(&["map.osu", "--update-hz", "unlimited"]).is_err());
+
+        // The background dim: lazer's default without the flag, whole percent with it.
+        assert_eq!(parse(&["map.osu"]).unwrap().dim, 0.7);
+        assert_eq!(parse(&["map.osu", "--dim", "70"]).unwrap().dim, 0.7);
+        assert_eq!(parse(&["--dim", "0", "map.osu"]).unwrap().dim, 0.0);
+        assert_eq!(parse(&["map.osu", "--dim", "100"]).unwrap().dim, 1.0);
+        assert_eq!(parse(&["map.osu", "--dim", "35"]).unwrap().dim, 0.35);
+        for bad in ["-1", "101", "50.5", "NaN", "inf", "dark"] {
+            assert!(parse(&["map.osu", "--dim", bad]).is_err(), "{bad}");
+        }
+        assert!(parse(&["map.osu", "--dim"]).is_err());
         assert!(parse(&["map.osu", "--backend", "asio"]).is_err());
     }
 
