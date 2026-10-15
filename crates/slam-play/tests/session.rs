@@ -20,6 +20,10 @@ use slam_osu::scoring::ScoreProcessor;
 use slam_osu::{Beatmap, ModSet, Vec2};
 use slam_play::circles::{
     CircleMods, CircleSettings, CircleSkinConfig, CircleStyle, CircleVisuals, HitCircles,
+    SkinSprite,
+};
+use slam_play::cursor::{
+    CursorSkinConfig, CursorTextures, CursorView, ExpandTimes, MAX_CURSOR_SPRITES,
 };
 use slam_play::slider_body::Snaking;
 use slam_play::sliders::{HitSliders, SliderBodies, SliderVisuals};
@@ -411,9 +415,20 @@ fn ticks_and_frames_do_not_allocate() {
     // On to the results.
     let end = end_ns(&map, session.start_time()) + 1_100 * MS;
     let mut snapshot = PlaySnapshot::default();
-    let view = view(&map);
-    let textures = FrameTextures::default();
-    let mut batch = SpriteBatch::with_capacity(4096);
+    let mut view = view(&map);
+    let mut textures = FrameTextures::default();
+    // A continuous trail: the most parts.
+    let piece = Some(SkinSprite::new(WHITE, 1.0, f32::MAX));
+    textures.cursor = CursorTextures {
+        cursor: piece,
+        middle: piece,
+        trail: piece,
+        config: CursorSkinConfig {
+            disjoint: false,
+            ..CursorSkinConfig::default()
+        },
+    };
+    let mut batch = SpriteBatch::with_capacity(4096 + MAX_CURSOR_SPRITES);
     let mut bodies = SliderBodies::new();
     let mut drawn = 0;
     let mut bodies_drawn = 0;
@@ -460,7 +475,7 @@ fn ticks_and_frames_do_not_allocate() {
             hud.update(1280.0, 720.0, &snapshot.hud);
             hud.push_shapes(&mut batch, &layout(), &snapshot, white);
             pending += hud.push_text(&mut text, &snapshot, &mut glyphs).pending;
-            view.push_cursor(&mut batch, &layout(), &snapshot, &textures);
+            view.push_cursor(&mut batch, &layout(), &snapshot, now + MS / 2, &textures);
             drawn += snapshot.circles.as_slice().len();
             now += 4 * MS;
         }
@@ -553,6 +568,7 @@ fn view(map: &Beatmap) -> PlayView {
             visuals: slam_play::spinners::SpinnerVisuals::new(map),
             style: slam_play::spinners::SpinnerStyle::new(mods, &chain),
         },
+        cursor: CursorView::default(),
     }
 }
 
@@ -1724,4 +1740,54 @@ fn f10_toggles_the_mouse_buttons_for_gameplay_only() {
     // F10 works while paused too.
     d.tap(F10);
     assert!(!d.session.input().mouse_buttons_disabled());
+}
+
+#[test]
+fn the_snapshot_carries_the_cursor_path_and_its_expansion() {
+    let map = beatmap();
+    let mut d = Driver::new(&map, mods(vec![slam_osu::mods::Mod::NoFail]));
+    d.run_to(1500.0);
+    assert_eq!(d.snapshot.cursor_path.written(), 0);
+    let moves = [
+        d.mouse(Vec2::new(10.0, 20.0)),
+        d.mouse(Vec2::new(30.0, 40.0)),
+    ];
+    d.tick(&moves);
+    let path: Vec<Vec2> = d.snapshot.cursor_path.since(0).collect();
+    assert_eq!(path.len(), 2);
+    assert!((path[1].x - 30.0).abs() < 1e-3 && (path[1].y - 40.0).abs() < 1e-3);
+
+    let down = d.key(Z, true);
+    d.tick(&[down]);
+    let pressed_at = d.snapshot.cursor_expand.expanded_at;
+    assert!(pressed_at.is_finite());
+    assert_eq!(d.snapshot.cursor_expand.contracted_at, f64::NEG_INFINITY);
+    d.run(5);
+    let up = d.key(Z, false);
+    d.tick(&[up]);
+    assert!(d.snapshot.cursor_expand.contracted_at > pressed_at);
+
+    // A new play has a new cursor: never expanded.
+    d.hold(None, GRAVE, 200);
+    assert_eq!(d.snapshot.restarts, 1);
+    assert_eq!(d.snapshot.cursor_expand, ExpandTimes::default());
+}
+
+#[test]
+fn a_button_released_while_paused_contracts_the_cursor_where_gameplay_stopped() {
+    let map = beatmap();
+    let mut d = Driver::new(&map, ModSet::default());
+    d.run_to(1500.0);
+    let down = d.key(Z, true);
+    d.tick(&[down]);
+    d.run(5);
+    d.tap(ESCAPE);
+    let paused_at = d.snapshot.time;
+    let up = d.key(Z, false);
+    d.tick(&[up]);
+    assert_eq!(d.snapshot.cursor_expand.contracted_at, f64::NEG_INFINITY);
+    // The cursor never moved: gameplay resumes at once and syncs the release.
+    d.tap(ESCAPE);
+    d.run(2);
+    assert_eq!(d.snapshot.cursor_expand.contracted_at, paused_at);
 }
