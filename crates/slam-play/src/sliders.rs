@@ -1,5 +1,5 @@
 //! Sliders as lazer draws them with a legacy skin: the body (ADR-0041), the head and tail circles,
-//! ticks and repeats (their circles and reverse arrows). Ball and follow circle are not drawn yet.
+//! ticks and repeats (their circles and reverse arrows), the ball and the follow circle.
 //!
 //! As for hit circles ([`crate::circles`]), the update side copies the sliders alive in
 //! [`OsuRules`] into a [`LiveSliders`] snapshot and the draw side evaluates each one's transforms
@@ -9,9 +9,12 @@
 //!
 //! Not done: the body's `ShakeContainer` and the kiai flash of the head and tail pieces. Reverse
 //! arrows keep the direction of the full path: they do not follow a body snaking out, and
-//! their rotation is not smoothed over frames.
+//! their rotation is not smoothed over frames. Without frame history, the ball faces right where
+//! lazer keeps its previous rotation (a path too short to tell the direction), and the follow
+//! circle reads its scale for a tick pulse at the tick's hit state time rather than as of the
+//! previous frame. Without a legacy ball (`sliderb`) or follow circle in the skins, none is drawn.
 
-use slam_osu::objects::{NestedKind, OBJECT_RADIUS, OsuHitObjectKind};
+use slam_osu::objects::{NestedKind, OBJECT_RADIUS, OsuHitObjectKind, curve_position_at};
 use slam_osu::rules::{CircleJudgement, LiveCircle, LiveSlider, OsuRules};
 use slam_osu::{Beatmap, SliderPath, Vec2};
 use slam_render::slider::{SliderGradient, SliderMesh};
@@ -28,7 +31,8 @@ use crate::slider_body::{
     LegacyBodyColours, Snaking, SnakingTiming, body_mesh, range_distances, snaking_range,
 };
 use slam_osu::mods::HIDDEN_FADE_OUT_MULTIPLIER;
-use slam_render::Color;
+use slam_render::{Blend, Color};
+
 use slam_skin::{SkinSource, SkinVersion};
 
 /// The most sliders a [`LiveSliders`] snapshot holds and a frame draws; later ones are left out.
@@ -73,6 +77,7 @@ impl LiveSliders {
             sliders: [LiveSlider {
                 index: 0,
                 tracking: false,
+                press_time: None,
                 head: None,
                 tail: None,
                 judgement: None,
@@ -210,6 +215,12 @@ pub struct SliderVisual {
     pub span_duration: f64,
     /// Length of the path, in osu!pixels.
     pub distance: f64,
+    /// Index of the path in [`SliderVisuals::path`].
+    pub path: u32,
+    /// `Slider.SpanCount`.
+    pub span_count: i32,
+    /// `Slider.Velocity`, in osu!pixels per millisecond.
+    pub velocity: f64,
     /// `PlaySliderBody.PathRadius`: `OBJECT_RADIUS * Scale`, in osu!pixels.
     pub radius: f32,
     /// Index of the body's gradient in [`SliderVisuals::gradient`].
@@ -225,6 +236,7 @@ pub struct SliderVisuals {
     sliders: Vec<Option<SliderVisual>>,
     gradients: Vec<SliderGradient>,
     nested: Vec<NestedVisual>,
+    paths: Vec<SliderPath>,
 }
 
 impl SliderVisuals {
@@ -247,6 +259,7 @@ impl SliderVisuals {
         let mut gradient_colours: Vec<[f32; 4]> = Vec::new();
         let mut nested: Vec<NestedVisual> = Vec::new();
         let mut curve: Vec<Vec2> = Vec::new();
+        let mut paths: Vec<SliderPath> = Vec::new();
         let sliders = beatmap
             .hit_objects
             .iter()
@@ -280,6 +293,7 @@ impl SliderVisuals {
                 // Ported from osu!lazer 2026.1005.0-lazer: osu.Game.Rulesets.Osu/Objects/Drawables/DrawableSliderTail.cs (OnApply)
                 let tail_end = if repeat_index % 2 == 0 { 1.0 } else { 0.0 };
                 let nested_start = nested.len();
+                paths.push(slider.path.clone());
                 nested.extend(slider.nested.iter().map(|n| NestedVisual {
                     piece: match n.kind {
                         NestedKind::Head => NestedPiece::Head,
@@ -322,6 +336,10 @@ impl SliderVisuals {
                     time_fade_in: o.defaults.time_fade_in,
                     span_duration: slider.span_duration(o.start_time),
                     distance: slider.path.distance(),
+                    // Slider counts fit in `u32`, as object indices do.
+                    path: (paths.len() - 1) as u32,
+                    span_count: slider.span_count(),
+                    velocity: slider.velocity,
                     radius,
                     gradient,
                     // Nested object counts fit in `u32`, as `ObjectRef::nested` assumes.
@@ -333,7 +351,13 @@ impl SliderVisuals {
             sliders,
             gradients,
             nested,
+            paths,
         }
+    }
+
+    /// The path of `slider`, relative to its position.
+    pub fn path(&self, slider: &SliderVisual) -> &SliderPath {
+        &self.paths[slider.path as usize]
     }
 
     /// The nested objects of `slider`, in the beatmap's order.
@@ -789,6 +813,268 @@ pub fn repeat_pose(
     }
 }
 
+// ---- Ball and follow circle ----
+
+/// `OsuLegacySkinTransformer.MAX_FOLLOW_CIRCLE_AREA_SIZE`: the most the ball's layers and the
+/// follow circle show of their textures, in display units.
+pub(crate) const MAX_FOLLOW_CIRCLE_AREA_SIZE: f32 = OBJECT_RADIUS * 2.0 * 3.0;
+
+/// `LegacyFollowCircle`: legacy follow circles are drawn at half their size.
+const FOLLOW_CIRCLE_TEXTURE_SCALE: f32 = 0.5;
+
+/// The colour of `sliderb-nd` (`LegacySliderBall`).
+const BALL_ND_COLOUR: Color = Color::rgb(5.0 / 255.0, 5.0 / 255.0, 5.0 / 255.0);
+
+/// The frame of an animation of `count` frames of `frame_length` milliseconds each shown at
+/// `playback` milliseconds from its start.
+// Ported from osu-framework 2026.921.1: osu.Framework/Graphics/Animations/AnimationClockComposite.cs (PlaybackPosition)
+// Ported from osu-framework 2026.921.1: osu.Framework/Graphics/Animations/Animation.cs (AddFrame, updateFrameIndex)
+pub fn animation_frame(playback: f64, frame_length: f64, count: usize, looping: bool) -> usize {
+    if count < 2 {
+        return 0;
+    }
+    // Each frame starts where the previous ends; the duration is their sum.
+    let mut duration = 0.0;
+    for _ in 0..count {
+        duration += frame_length;
+    }
+    let mut position = playback;
+    if looping {
+        position %= duration;
+    }
+    let position = position.clamp(0.0, duration);
+    let mut frame = 0;
+    let mut end = frame_length;
+    while frame < count - 1 && position >= end {
+        frame += 1;
+        end += frame_length;
+    }
+    frame
+}
+
+/// How a skin draws the slider ball (`LegacySliderBall`), from the skin that provides it.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct BallStyle {
+    /// The `SliderBall` colour of the skin.
+    pub colour: Color,
+    /// `AllowSliderBallTint`: the ball takes the combo colour instead.
+    pub tint: bool,
+}
+
+impl Default for BallStyle {
+    fn default() -> Self {
+        BallStyle {
+            colour: Color::WHITE,
+            tint: false,
+        }
+    }
+}
+
+impl BallStyle {
+    /// The skin of `skins` that draws the slider ball: the first with `sliderb` or `sliderb0`.
+    // Ported from osu!lazer 2026.1005.0-lazer: osu.Game.Rulesets.Osu/Skinning/Legacy/OsuLegacySkinTransformer.cs (SliderBall)
+    pub fn provider(skins: &SkinChain) -> Option<SkinSource> {
+        skins.find_provider(|s| s.texture("sliderb").is_some() || s.texture("sliderb0").is_some())
+    }
+
+    /// The ball's style with `skins`; the ball reads the configuration of its own skin only.
+    // Ported from osu!lazer 2026.1005.0-lazer: osu.Game.Rulesets.Osu/Skinning/Legacy/LegacySliderBall.cs (load, LoadComplete)
+    pub fn new(skins: &SkinChain) -> Self {
+        let Some(provider) = Self::provider(skins) else {
+            return BallStyle::default();
+        };
+        let skin = skins.skin(provider);
+        let c = skin.slider_ball_colour();
+        BallStyle {
+            colour: Color {
+                r: f32::from(c.r) / 255.0,
+                g: f32::from(c.g) / 255.0,
+                b: f32::from(c.b) / 255.0,
+                a: f32::from(c.a) / 255.0,
+            },
+            tint: skin.allow_slider_ball_tint(),
+        }
+    }
+
+    /// The colour of the ball of a slider of `accent` colour.
+    pub fn ball_colour(self, accent: Color) -> Color {
+        if self.tint { accent } else { self.colour }
+    }
+}
+
+/// A slider ball's appearance at one moment.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct BallPose {
+    /// Where the ball is, in osu!pixels.
+    pub position: Vec2,
+    /// The alpha of the ball's container, follow circle included (`DrawableSliderBall`).
+    pub container_alpha: f32,
+    /// The alpha of the ball's sprites (`LegacySliderBall`).
+    pub ball_alpha: f32,
+    /// The ball's rotation in degrees clockwise: along the path, facing where it goes.
+    pub rotation: f32,
+    /// Milliseconds since the slider's animations started: they share its clock.
+    pub playback: f64,
+    /// The time each frame of the ball's animation is shown: slower on slow sliders.
+    pub frame_length: f64,
+    pub follow_alpha: f32,
+    pub follow_scale: f32,
+}
+
+/// The progress of `slider` at `time`, clamped to its span.
+fn completion_progress(slider: &SliderVisual, time: f64) -> f64 {
+    let duration = slider.end_time - slider.timing.start_time;
+    ((time - slider.timing.start_time) / duration).clamp(0.0, 1.0)
+}
+
+/// The appearance of the ball of `slider`, whose path is `path`, at game `time` in the state
+/// `live` with its nested objects judged as `nested` (in the beatmap's order, empty when they
+/// did not fit in the snapshot: the follow circle then reacts to tracking only).
+// Ported from osu!lazer 2026.1005.0-lazer: osu.Game.Rulesets.Osu/Objects/Drawables/DrawableSliderBall.cs (UpdateProgress)
+// Ported from osu!lazer 2026.1005.0-lazer: osu.Game.Rulesets.Osu/Objects/Drawables/DrawableSlider.cs (UpdateStartTimeStateTransforms, Update)
+// Ported from osu!lazer 2026.1005.0-lazer: osu.Game.Rulesets.Osu/Skinning/Legacy/LegacySliderBall.cs (onHitObjectApplied, updateStateTransforms)
+// Ported from osu!lazer 2026.1005.0-lazer: osu.Game/Rulesets/Objects/Drawables/DrawableHitObject.cs (UpdateState, AnimationStartTime)
+pub fn ball_pose(
+    slider: &SliderVisual,
+    path: &SliderPath,
+    nested: &[NestedVisual],
+    live: &LiveSlider,
+    judgements: &[Option<CircleJudgement>],
+    time: f64,
+) -> BallPose {
+    let start = slider.timing.start_time;
+    let hit_time = live.judgement.map_or(slider.end_time, |j| j.time);
+    let progress = completion_progress(slider, time);
+    let at = |p: f64| curve_position_at(path, slider.span_count, p);
+
+    // 0.1 / distance is the progress that moves the ball 0.1 osu!pixels.
+    let check = 0.1 / slider.distance;
+    let diff = at((1.0 - check).min(progress)) - at(1.0f64.min(progress + check));
+    // Lazer keeps the previous rotation when the path is too short to tell (very short
+    // sliders, the turn of a repeat); without frame history, that is the initial rotation.
+    // Lazer's `LengthFast` approximates the square root; the exact length is used here.
+    let length = (diff.x * diff.x + diff.y * diff.y).sqrt();
+    let rotation = if slider.distance > 0.0 && length >= 0.01 {
+        -90.0 + (-f64::from(diff.x).atan2(f64::from(diff.y)) * 180.0 / std::f64::consts::PI) as f32
+    } else {
+        0.0
+    };
+
+    let sixty = slam_skin::SIXTY_FRAME_TIME;
+    let (follow_alpha, follow_scale) = follow_pose(slider, nested, live, judgements, time);
+    BallPose {
+        position: slider.head.position + at(progress),
+        container_alpha: if time >= start { 1.0 } else { 0.0 },
+        ball_alpha: if time >= start && time < hit_time {
+            1.0
+        } else {
+            0.0
+        },
+        rotation,
+        playback: time - (start - slider.timing.time_preempt),
+        frame_length: (0.15 / slider.velocity * sixty).max(sixty),
+        follow_alpha,
+        follow_scale,
+    }
+}
+
+/// What the follow circle reacts to.
+#[derive(Debug, Clone, Copy, PartialEq)]
+enum FollowEvent {
+    End,
+    Tick,
+    Break,
+}
+
+/// The alpha and scale of the follow circle of `slider` at `time`. The press is the last
+/// time tracking started; a press resets the animation and drops the later transforms, so
+/// earlier ones need no replay. Events are replayed in the order they happened, the press
+/// first at the same time (the slider updates before its nested objects): a nested object's at
+/// its judgement, a press at its update. Each starts its animation at its own time: the hit
+/// state time of the nested object, the slider's end time for a hit tail (lazer's tail is
+/// judged up to 36 ms earlier), the start time at the earliest for a press.
+// Ported from osu!lazer 2026.1005.0-lazer: osu.Game.Rulesets.Osu/Skinning/FollowCircle.cs
+// Ported from osu!lazer 2026.1005.0-lazer: osu.Game.Rulesets.Osu/Skinning/Legacy/LegacyFollowCircle.cs
+fn follow_pose(
+    slider: &SliderVisual,
+    nested: &[NestedVisual],
+    live: &LiveSlider,
+    judgements: &[Option<CircleJudgement>],
+    time: f64,
+) -> (f32, f32) {
+    let (mut alpha0, mut scale0) = (0.0f32, 1.0f32);
+    let mut alpha = Track::new(Kind::Alpha);
+    let mut scale = Track::new(Kind::Scale);
+    let mut press = live.press_time;
+
+    // (when it happened, when its animation starts, what).
+    let events = nested
+        .iter()
+        .zip(judgements)
+        .filter_map(|(n, j)| {
+            let j = (*j)?;
+            let hit = j.result.is_hit();
+            let event = match n.piece {
+                NestedPiece::Head => return None,
+                // The slider's hit state time: its end time until it is judged after its tail.
+                NestedPiece::Tail if hit => {
+                    return Some((j.time, slider.end_time, FollowEvent::End));
+                }
+                NestedPiece::Tick | NestedPiece::Repeat { .. } if hit => FollowEvent::Tick,
+                NestedPiece::Tail | NestedPiece::Tick | NestedPiece::Repeat { .. } => {
+                    FollowEvent::Break
+                }
+            };
+            Some((j.time, j.time, event))
+        })
+        .chain(std::iter::once((
+            f64::INFINITY,
+            f64::INFINITY,
+            FollowEvent::End,
+        )));
+
+    for (happened, at, event) in events {
+        if let Some(raw) = press
+            && raw <= happened
+        {
+            press = None;
+            let start = raw.max(slider.timing.start_time);
+            alpha.settle(&mut alpha0, start);
+            scale.settle(&mut scale0, start);
+            // The slider is unjudged: its hit state time is its end time.
+            let remaining = (slider.end_time - raw).max(0.0);
+            scale.add(start, 0.0, 1.0, Easing::None);
+            scale.add(start, remaining.min(180.0), 2.0, Easing::Out);
+            alpha.add(start, 0.0, 0.0, Easing::None);
+            alpha.add(start, remaining.min(60.0), 1.0, Easing::None);
+        }
+        if happened == f64::INFINITY || happened > time {
+            break;
+        }
+        // An animation may start after it happened: only what has started by then settles.
+        alpha.settle(&mut alpha0, happened.min(at));
+        scale.settle(&mut scale0, happened.min(at));
+        match event {
+            FollowEvent::End => {
+                scale.add(at, 200.0, 1.6, Easing::Out);
+                alpha.add(at, 200.0, 0.0, Easing::In);
+            }
+            FollowEvent::Tick => {
+                // The scale the drawable has when the tick is judged.
+                if scale.value(scale0, at) >= 2.0 {
+                    scale.add(at, 0.0, 2.2, Easing::None);
+                    scale.add(at, 200.0, 2.0, Easing::None);
+                }
+            }
+            FollowEvent::Break => {
+                scale.add(at, 100.0, 4.0, Easing::None);
+                alpha.add(at, 100.0, 0.0, Easing::None);
+            }
+        }
+    }
+    (alpha.value(alpha0, time), scale.value(scale0, time))
+}
+
 // ---- Drawing ----
 
 /// The skin textures of slider pieces for one frame; missing ones are not drawn.
@@ -802,6 +1088,66 @@ pub struct SliderTextures {
     pub tick: Option<SkinSprite>,
     /// `reversearrow`.
     pub arrow: Option<SkinSprite>,
+    /// The frames of `sliderb` (`sliderb0`, `sliderb1`, ...); their length is the slider's.
+    pub ball: AnimationSprites,
+    /// `sliderb-nd` and `sliderb-spec` of the skin that provides the ball.
+    pub ball_nd: Option<SkinSprite>,
+    pub ball_spec: Option<SkinSprite>,
+    /// The frames of `sliderfollowcircle`.
+    pub follow: AnimationSprites,
+}
+
+/// The most frames an animation draws; later ones are left out.
+pub const MAX_ANIMATION_FRAMES: usize = 64;
+
+/// The frames of a looping skin animation for one frame of drawing; empty when it is missing.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct AnimationSprites {
+    frames: [Option<SkinSprite>; MAX_ANIMATION_FRAMES],
+    len: usize,
+    /// The time each frame is shown, in milliseconds.
+    pub frame_length: f64,
+}
+
+impl Default for AnimationSprites {
+    fn default() -> Self {
+        AnimationSprites {
+            frames: [None; MAX_ANIMATION_FRAMES],
+            len: 0,
+            frame_length: slam_skin::SIXTY_FRAME_TIME,
+        }
+    }
+}
+
+impl AnimationSprites {
+    /// `frames`, of `frame_length` milliseconds each; the ones past [`MAX_ANIMATION_FRAMES`]
+    /// are left out.
+    pub fn new(frames: impl IntoIterator<Item = SkinSprite>, frame_length: f64) -> Self {
+        let mut animation = AnimationSprites {
+            frame_length,
+            ..AnimationSprites::default()
+        };
+        for (slot, frame) in animation.frames.iter_mut().zip(frames) {
+            *slot = Some(frame);
+            animation.len += 1;
+        }
+        animation
+    }
+
+    pub fn len(&self) -> usize {
+        self.len
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.len == 0
+    }
+
+    /// The frame shown at `playback` milliseconds from the start when each is shown for
+    /// `frame_length` milliseconds; `None` when there are no frames.
+    pub fn frame_at(&self, playback: f64, frame_length: f64) -> Option<&SkinSprite> {
+        let frame = animation_frame(playback, frame_length, self.len, true);
+        self.frames[..self.len].get(frame)?.as_ref()
+    }
 }
 
 /// One slider body to draw this frame.
@@ -865,6 +1211,7 @@ pub struct HitSliders {
     pub visuals: SliderVisuals,
     pub snaking: Snaking,
     pub arrows: ArrowStyle,
+    pub ball: BallStyle,
 }
 
 /// The textures of one frame for [`push_objects`].
@@ -877,7 +1224,8 @@ pub struct ObjectTextures<'a> {
 /// Writes the sprites of the `circles` and `sliders` alive at game `time` in lazer's
 /// drawing order, and records the slider bodies between them in `bodies`. Objects starting
 /// earlier are on top; within a slider, the body, the tail, the ticks, the repeats, the head's
-/// circle, the reverse arrows, then the head's overlay and number; every approach circle goes above all objects, in start time order,
+/// circle, the reverse arrows, the head's overlay and number, then the follow circle and the
+/// ball; every approach circle goes above all objects, in start time order,
 /// as lazer's playfield proxies them into a layer of their own.
 #[allow(clippy::too_many_arguments)]
 pub fn push_objects(
@@ -1131,4 +1479,96 @@ fn push_slider(
         }
     }
     head(batch, PieceLayers::Overlay);
+
+    let ball = ball_pose(
+        slider,
+        hit_sliders.visuals.path(slider),
+        nested.visuals,
+        live,
+        nested.judgements,
+        time,
+    );
+    push_ball(
+        batch,
+        layout,
+        slider,
+        pose.object_alpha,
+        &ball,
+        hit_sliders.ball,
+        textures.sliders,
+    );
+}
+
+/// Writes the follow circle and the ball of `slider` posed as `ball` in a slider of
+/// `object_alpha`: the follow circle, then `sliderb-nd`, the ball and `sliderb-spec`
+/// (additive). Only the ball turns along the path.
+// Ported from osu!lazer 2026.1005.0-lazer: osu.Game.Rulesets.Osu/Objects/Drawables/DrawableSliderBall.cs (load)
+// Ported from osu!lazer 2026.1005.0-lazer: osu.Game.Rulesets.Osu/Skinning/Legacy/LegacySliderBall.cs (load, UpdateAfterChildren)
+// Ported from osu!lazer 2026.1005.0-lazer: osu.Game.Rulesets.Osu/Skinning/Legacy/LegacyFollowCircle.cs
+fn push_ball(
+    batch: &mut SpriteBatch,
+    layout: &PlayfieldLayout,
+    slider: &SliderVisual,
+    object_alpha: f32,
+    ball: &BallPose,
+    style: BallStyle,
+    textures: &SliderTextures,
+) {
+    let alpha = object_alpha * ball.container_alpha;
+    if alpha <= 0.0 {
+        return;
+    }
+    let centre = layout.to_window(ball.position);
+    let scale = slider.head.scale * layout.scale();
+    let sized = |t: &SkinSprite, scale: f32| Vec2::new(t.size.x * scale, t.size.y * scale);
+
+    let follow_alpha = alpha * ball.follow_alpha;
+    if follow_alpha > 0.0
+        && let Some(t) = textures
+            .follow
+            .frame_at(ball.playback, textures.follow.frame_length)
+    {
+        let size = sized(t, scale * FOLLOW_CIRCLE_TEXTURE_SCALE * ball.follow_scale);
+        batch.push(&centred(
+            t,
+            centre,
+            size,
+            tint(Color::WHITE, 1.0, follow_alpha),
+        ));
+    }
+
+    let ball_alpha = alpha * ball.ball_alpha;
+    let Some(frame) = textures.ball.frame_at(ball.playback, ball.frame_length) else {
+        return;
+    };
+    if ball_alpha <= 0.0 {
+        return;
+    }
+    if let Some(t) = &textures.ball_nd {
+        batch.push(&centred(
+            t,
+            centre,
+            sized(t, scale),
+            tint(BALL_ND_COLOUR, 1.0, ball_alpha),
+        ));
+    }
+    let colour = style.ball_colour(slider.head.colour);
+    let mut sprite = centred(
+        frame,
+        centre,
+        sized(frame, scale),
+        tint(colour, 1.0, ball_alpha),
+    );
+    sprite.rotation = ball.rotation.to_radians();
+    batch.push(&sprite);
+    if let Some(t) = &textures.ball_spec {
+        let mut sprite = centred(
+            t,
+            centre,
+            sized(t, scale),
+            tint(Color::WHITE, 1.0, ball_alpha),
+        );
+        sprite.blend = Blend::Additive;
+        batch.push(&sprite);
+    }
 }

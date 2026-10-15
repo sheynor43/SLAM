@@ -547,6 +547,7 @@ fn view(map: &Beatmap) -> PlayView {
             visuals: SliderVisuals::new(map, mods, CircleSettings::default(), None, &chain),
             snaking: Snaking::default(),
             arrows: slam_play::sliders::ArrowStyle::new(&chain),
+            ball: slam_play::sliders::BallStyle::new(&chain),
         },
     }
 }

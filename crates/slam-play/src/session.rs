@@ -23,7 +23,7 @@ use slam_render::sprite::{Sprite, SpriteBatch};
 use slam_render::upload::{
     TextureHandle, TextureKind, TextureRequests, TextureState, TextureUploads,
 };
-use slam_skin::SkinChain;
+use slam_skin::{AnimationOptions, SIXTY_FRAME_TIME, SkinChain, TextureFile};
 
 use crate::circles::{
     CircleTextures, HitCircles, LiveCircles, OBJECT_SIZE, PieceTextures, SkinSprite,
@@ -33,7 +33,8 @@ use crate::hotkeys::{GlobalAction, Hotkeys};
 use crate::input::{ClockTime, GameTime, LiveInput};
 use crate::playfield::PlayfieldLayout;
 use crate::sliders::{
-    HitSliders, LiveSliders, ObjectTextures, SliderBodies, SliderTextures, push_objects,
+    AnimationSprites, BallStyle, HitSliders, LiveSliders, MAX_ANIMATION_FRAMES,
+    MAX_FOLLOW_CIRCLE_AREA_SIZE, ObjectTextures, SliderBodies, SliderTextures, push_objects,
 };
 use crate::time::Offsets;
 
@@ -822,11 +823,14 @@ enum Element {
     ScorePoint,
     /// `reversearrow`.
     ReverseArrow,
+    /// `sliderb-nd` and `sliderb-spec` of the skin that provides the ball.
+    BallNd,
+    BallSpec,
     Cursor,
     Digit(u8),
 }
 
-const ELEMENTS: [Element; 20] = [
+const ELEMENTS: [Element; 22] = [
     Element::Circle,
     Element::Overlay,
     Element::Approach,
@@ -836,6 +840,8 @@ const ELEMENTS: [Element; 20] = [
     Element::TailOverlay,
     Element::ScorePoint,
     Element::ReverseArrow,
+    Element::BallNd,
+    Element::BallSpec,
     Element::Cursor,
     Element::Digit(0),
     Element::Digit(1),
@@ -870,6 +876,22 @@ pub enum RequestError {
     PixelsRejected(#[from] slam_render::upload::Rejected<Image>),
 }
 
+/// Reads `file` and queues it for upload.
+fn request_file(
+    requests: &mut TextureRequests,
+    file: &TextureFile,
+) -> Result<Requested, RequestError> {
+    let bytes = std::fs::read(&file.path).map_err(|source| RequestError::Read {
+        path: file.path.clone(),
+        source,
+    })?;
+    let handle = requests.load(bytes, TextureKind::Atlas)?;
+    Ok(Requested {
+        handle,
+        scale: file.scale,
+    })
+}
+
 /// Side of the white image the HUD's rectangles tint: the atlas border keeps its edge
 /// texels white, a few pixels keep filtering inside.
 const WHITE_SIDE: u32 = 4;
@@ -883,6 +905,11 @@ pub struct PlayTextures {
     head_prefix: bool,
     /// Whether slider tails use `sliderendcircle` rather than the hit circle's textures.
     tail_prefix: bool,
+    /// The frames of the slider ball.
+    ball: Vec<Requested>,
+    /// The frames of the follow circle and their length.
+    follow: Vec<Requested>,
+    follow_frame_length: f64,
 }
 
 /// Whether a circle piece looked up with `prefix` (`sliderstartcircle`, `sliderendcircle`) uses
@@ -897,7 +924,7 @@ fn uses_prefix(skins: &SkinChain, prefix: &str) -> bool {
 }
 
 impl PlayTextures {
-    /// Reads the textures of hit circles, slider heads, tails, ticks and reverse arrows and the cursor from `skins` and queues them for
+    /// Reads the textures of hit circles, slider heads, tails, ticks, reverse arrows, balls and follow circles and the cursor from `skins` and queues them for
     /// upload with a white image for the HUD. Missing ones are not drawn. Does file I/O: call it off the hot paths.
     pub fn request(
         skins: &SkinChain,
@@ -909,8 +936,21 @@ impl PlayTextures {
             .map_or_else(|| "default".to_owned(), |f| f.value);
         let head_prefix = uses_prefix(skins, "sliderstartcircle");
         let tail_prefix = uses_prefix(skins, "sliderendcircle");
+        let ball_skin = BallStyle::provider(skins).map(|p| skins.skin(p));
         let mut requested = [None; ELEMENTS.len()];
         for (slot, element) in requested.iter_mut().zip(ELEMENTS) {
+            // Ported from osu!lazer 2026.1005.0-lazer: osu.Game.Rulesets.Osu/Skinning/Legacy/LegacySliderBall.cs (load)
+            let ball_layer = match element {
+                Element::BallNd => Some("sliderb-nd"),
+                Element::BallSpec => Some("sliderb-spec"),
+                _ => None,
+            };
+            if let Some(name) = ball_layer {
+                if let Some(file) = ball_skin.and_then(|skin| skin.texture(name)) {
+                    *slot = Some(request_file(requests, &file)?);
+                }
+                continue;
+            }
             let name = match element {
                 Element::Circle => "hitcircle".to_owned(),
                 Element::Overlay => "hitcircleoverlay".to_owned(),
@@ -925,23 +965,46 @@ impl PlayTextures {
                 | Element::TailOverlay => continue,
                 Element::ScorePoint => "sliderscorepoint".to_owned(),
                 Element::ReverseArrow => "reversearrow".to_owned(),
+                Element::BallNd | Element::BallSpec => continue,
                 Element::Cursor => "cursor".to_owned(),
                 Element::Digit(d) => format!("{prefix}-{d}"),
             };
             let Some(found) = skins.texture(&name) else {
                 continue;
             };
-            let path = &found.value.path;
-            let bytes = std::fs::read(path).map_err(|source| RequestError::Read {
-                path: path.clone(),
-                source,
-            })?;
-            let handle = requests.load(bytes, TextureKind::Atlas)?;
-            *slot = Some(Requested {
-                handle,
-                scale: found.value.scale,
-            });
+            *slot = Some(request_file(requests, &found.value)?);
         }
+        // Ported from osu!lazer 2026.1005.0-lazer: osu.Game.Rulesets.Osu/Skinning/Legacy/LegacySliderBall.cs (load)
+        let ball_options = AnimationOptions {
+            animatable: true,
+            looping: true,
+            apply_config_frame_rate: false,
+            separator: "",
+        };
+        let ball_frames = ball_skin
+            .and_then(|skin| skin.animation("sliderb", ball_options))
+            .map_or_else(Vec::new, |a| a.frames);
+        // Ported from osu!lazer 2026.1005.0-lazer: osu.Game.Rulesets.Osu/Skinning/Legacy/OsuLegacySkinTransformer.cs (SliderFollowCircle)
+        let follow_options = AnimationOptions {
+            animatable: true,
+            looping: true,
+            apply_config_frame_rate: true,
+            separator: "-",
+        };
+        let follow_animation = skins.animation("sliderfollowcircle", follow_options);
+        let follow_frame_length = follow_animation
+            .as_ref()
+            .map_or(SIXTY_FRAME_TIME, |a| a.value.frame_length_ms);
+        let follow_frames = follow_animation.map_or_else(Vec::new, |a| a.value.frames);
+        let request_frames = |requests: &mut TextureRequests, frames: &[TextureFile]| {
+            frames
+                .iter()
+                .take(MAX_ANIMATION_FRAMES)
+                .map(|f| request_file(requests, f))
+                .collect::<Result<Vec<_>, _>>()
+        };
+        let ball = request_frames(requests, &ball_frames)?;
+        let follow = request_frames(requests, &follow_frames)?;
         let side = WHITE_SIDE as usize;
         let white = requests.load_pixels(
             Image {
@@ -958,6 +1021,9 @@ impl PlayTextures {
             white,
             head_prefix,
             tail_prefix,
+            ball,
+            follow,
+            follow_frame_length,
         })
     }
 
@@ -1000,12 +1066,45 @@ impl PlayTextures {
                 Element::ReverseArrow => {
                     frame.sliders.arrow = Some(SkinSprite::new(region, r.scale, OBJECT_SIZE * 2.0))
                 }
+                Element::BallNd => {
+                    frame.sliders.ball_nd = Some(SkinSprite::new(
+                        region,
+                        r.scale,
+                        MAX_FOLLOW_CIRCLE_AREA_SIZE,
+                    ))
+                }
+                Element::BallSpec => {
+                    frame.sliders.ball_spec = Some(SkinSprite::new(
+                        region,
+                        r.scale,
+                        MAX_FOLLOW_CIRCLE_AREA_SIZE,
+                    ))
+                }
                 Element::Cursor => frame.cursor = Some(SkinSprite::new(region, r.scale, f32::MAX)),
                 Element::Digit(d) => {
                     frame.circles.digits[usize::from(d)] = Some(SkinSprite::digit(region, r.scale))
                 }
             }
         }
+        // An animation is drawn once all its frames are uploaded.
+        let animation = |frames: &[Requested], frame_length| {
+            let sprites = frames.iter().map(|r| match uploads.get(r.handle) {
+                TextureState::Ready(region) => Some(SkinSprite::new(
+                    region,
+                    r.scale,
+                    MAX_FOLLOW_CIRCLE_AREA_SIZE,
+                )),
+                _ => None,
+            });
+            if sprites.clone().all(|s| s.is_some()) {
+                AnimationSprites::new(sprites.flatten(), frame_length)
+            } else {
+                AnimationSprites::default()
+            }
+        };
+        // The ball's frame length depends on the slider: see `BallPose::frame_length`.
+        frame.sliders.ball = animation(&self.ball, SIXTY_FRAME_TIME);
+        frame.sliders.follow = animation(&self.follow, self.follow_frame_length);
         if !self.head_prefix {
             frame.sliders.head = PieceTextures::from(&frame.circles);
         }
@@ -1015,9 +1114,9 @@ impl PlayTextures {
         frame
     }
 
-    /// Requests whose file was found in the skins.
+    /// Requests whose file was found in the skins, animation frames included.
     pub fn found(&self) -> usize {
-        self.requested.iter().flatten().count()
+        self.requested.iter().flatten().count() + self.ball.len() + self.follow.len()
     }
 }
 

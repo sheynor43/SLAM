@@ -201,6 +201,10 @@ pub struct LiveSlider {
     /// `SliderInputManager.Tracking`: as of the previous update, changed only by presses since
     /// (a parent updates before its children).
     pub tracking: bool,
+    /// The time of the update where [`tracking`](Self::tracking) last turned on while the
+    /// slider was unjudged: the follow circle plays its press animation then (from the start
+    /// time at the earliest). Kept after tracking turns off.
+    pub press_time: Option<f64>,
     /// The head's judgement, once judged.
     pub head: Option<CircleJudgement>,
     /// The tail's judgement, once judged.
@@ -393,6 +397,7 @@ impl OsuRules {
                         // Beatmap object counts fit in `u32`, as `ObjectRef::index` assumes.
                         index: i as u32,
                         tracking: slider.drawable_tracking(),
+                        press_time: slider.press_time(),
                         head: slider.head_judgement().map(judgement),
                         tail: slider.tail_judgement().map(judgement),
                         judgement: o.result.map(|result| CircleJudgement {
@@ -856,7 +861,7 @@ impl OsuRules {
         held: Actions,
         log: &mut JudgementLog,
     ) {
-        self.sliders[s].begin_update();
+        self.sliders[s].begin_update(time, false);
         self.sliders[s].update_nested(i, time, held, false, log);
 
         let slider = &self.sliders[s];
