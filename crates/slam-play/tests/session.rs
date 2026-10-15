@@ -942,6 +942,7 @@ const ESCAPE: u16 = 41;
 const GRAVE: u16 = 53;
 const LCTRL: u16 = 224;
 const Z: u16 = 29;
+const F10: u16 = 67;
 
 /// A play ticked every millisecond by hand, with the events of each tick given.
 struct Driver {
@@ -1674,4 +1675,49 @@ fn after_a_restart_the_intro_and_the_breaks_count_again() {
     assert!(!d.snapshot.is_break_time);
     d.run_to(4600.0);
     assert!(d.snapshot.is_break_time);
+}
+
+#[test]
+fn f10_toggles_the_mouse_buttons_for_gameplay_only() {
+    let map = beatmap();
+    let mut d = Driver::new(&map, mods(vec![slam_osu::mods::Mod::NoFail]));
+    d.run_to(1500.0);
+    let button = |d: &Driver, button, down| press(d.now, InputKind::MouseButton { button, down });
+
+    // In one tick: the press before F10 reaches gameplay, the one after does not.
+    let events = [
+        button(&d, MouseButton::Left, true),
+        d.key(F10, true),
+        d.key(F10, false),
+        button(&d, MouseButton::Right, true),
+    ];
+    d.tick(&events);
+    assert!(d.session.input().mouse_buttons_disabled());
+    d.run(1);
+    let held = d.session.input().held();
+    assert!(
+        held.contains(Actions::LEFT) && !held.contains(Actions::RIGHT),
+        "{held:?}"
+    );
+    // The button pressed before still releases.
+    let release = [button(&d, MouseButton::Left, false)];
+    d.tick(&release);
+    d.run(1);
+    assert_eq!(d.session.input().held(), Actions::NONE);
+
+    // Kept over a restart, as a setting.
+    d.hold(None, GRAVE, 250);
+    assert!(d.session.input().mouse_buttons_disabled());
+
+    // Global bindings still see the buttons: the middle one pauses.
+    d.run_until(5000, |s| s.state == PlayState::Playing && s.time >= 1500.0);
+    let click = [
+        button(&d, MouseButton::Middle, true),
+        button(&d, MouseButton::Middle, false),
+    ];
+    d.tick(&click);
+    assert_eq!(d.state(), PlayState::Paused);
+    // F10 works while paused too.
+    d.tap(F10);
+    assert!(!d.session.input().mouse_buttons_disabled());
 }

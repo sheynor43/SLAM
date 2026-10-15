@@ -239,6 +239,11 @@ impl LiveInput {
         self.mouse_buttons_disabled = disabled;
     }
 
+    /// Whether mouse button presses are ignored ([`Self::set_mouse_buttons_disabled`]).
+    pub fn mouse_buttons_disabled(&self) -> bool {
+        self.mouse_buttons_disabled
+    }
+
     /// Cursor position in osu!pixels.
     pub fn position(&self) -> Vec2 {
         self.position
