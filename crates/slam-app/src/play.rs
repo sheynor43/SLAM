@@ -1,4 +1,4 @@
-//! Plays a beatmap given on the command line: hit circles, a stand-in cursor and HUD, music
+//! Plays a beatmap given on the command line: hit objects, the skinned cursor and HUD, music
 //! and hitsounds, no menus. Developer command until the screen stack and song select exist:
 //! its console output is not localised.
 
@@ -21,6 +21,7 @@ use slam_osu::{Beatmap, Mod, ModSet};
 use slam_play::circles::{
     CircleMods, CircleSettings, CircleSkinConfig, CircleStyle, CircleVisuals, HitCircles,
 };
+use slam_play::cursor::{CursorView, MAX_CURSOR_SPRITES};
 use slam_play::slider_body::Snaking;
 use slam_play::sliders::{
     ArrowStyle, BallStyle, HitSliders, MAX_LIVE_SLIDERS, SliderBodies, SliderVisuals,
@@ -399,8 +400,13 @@ impl Draw<PlaySnapshot> for View {
         }
         self.hud
             .push_text(&mut self.text, snapshot, &mut self.glyphs);
-        self.view
-            .push_cursor(&mut self.cursor, &layout, snapshot, &textures);
+        self.view.push_cursor(
+            &mut self.cursor,
+            &layout,
+            snapshot,
+            info.wait.woke_ns,
+            &textures,
+        );
         r.renderer.begin_frame();
         r.text_renderer.begin_frame();
         let gpu_textures = &r.textures;
@@ -641,6 +647,7 @@ pub fn run(options: &Options) -> Result<(), String> {
             visuals: SpinnerVisuals::new(beatmap),
             style: SpinnerStyle::new(circle_mods, &loaded.skins),
         },
+        cursor: CursorView::default(),
     };
 
     let backend = match options.backend {
@@ -749,7 +756,7 @@ pub fn run(options: &Options) -> Result<(), String> {
         meshes: SliderVisuals::meshes(beatmap),
         objects: beatmap.hit_objects.len(),
         text: SpriteBatch::with_capacity(MAX_GLYPH_SPRITES),
-        cursor: SpriteBatch::with_capacity(1),
+        cursor: SpriteBatch::with_capacity(MAX_CURSOR_SPRITES),
         surface_size,
         perf: frame_times
             .as_ref()

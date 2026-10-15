@@ -10,6 +10,7 @@ use slam_input::{InputEvent, InputKind, MouseButton};
 use slam_osu::Vec2;
 use slam_osu::replay::{ActionEvent, Actions, StepInput};
 
+use crate::cursor::CursorPath;
 use crate::playfield::PlayfieldLayout;
 use crate::time::{Offsets, game_time};
 
@@ -152,6 +153,8 @@ pub struct LiveInput {
     window_position: Option<Vec2>,
     /// Cursor position in osu!pixels.
     position: Vec2,
+    /// The positions gameplay took, for the cursor trail.
+    path: CursorPath,
     /// Inputs held, in press order.
     held_inputs: [Held; MAX_HELD_INPUTS],
     held_len: usize,
@@ -198,6 +201,7 @@ impl LiveInput {
             mouse_buttons_disabled: false,
             window_position: None,
             position: Vec2::ZERO,
+            path: CursorPath::default(),
             held_inputs: [Held {
                 input: Input::Key(0),
                 actions: Actions::NONE,
@@ -247,6 +251,11 @@ impl LiveInput {
     /// Cursor position in osu!pixels.
     pub fn position(&self) -> Vec2 {
         self.position
+    }
+
+    /// The cursor positions gameplay took, newest last.
+    pub fn path(&self) -> &CursorPath {
+        &self.path
     }
 
     /// Actions held.
@@ -386,6 +395,7 @@ impl LiveInput {
         if let Some(window) = self.parent_window.filter(|_| self.suspended) {
             self.window_position = Some(window);
             self.position = self.layout.to_playfield(window);
+            self.path.push(self.position);
         }
         self.held_len = 0;
         self.held = Actions::NONE;
@@ -472,6 +482,7 @@ impl LiveInput {
         if let Some(window) = self.parent_window {
             self.window_position = Some(window);
             self.position = self.layout.to_playfield(window);
+            self.path.push(self.position);
         }
         if let Some(input) = self.resume_press.take() {
             let bound = self.bindings.actions_of(input);
@@ -531,6 +542,7 @@ impl LiveInput {
                 let window = Vec2::new(x, y);
                 self.window_position = Some(window);
                 self.position = self.layout.to_playfield(window);
+                self.path.push(self.position);
                 return true;
             }
             InputKind::Key { scancode, down } => (Input::Key(scancode), down),
@@ -1116,5 +1128,28 @@ mod tests {
         input.hold(&[key(1.0, SCANCODE_Z, true)]);
         let step = input.step(&[], ms(2.0), &Linear);
         assert_eq!(summary(&step), [(1.0, Actions::LEFT, true)]);
+    }
+
+    #[test]
+    fn the_path_keeps_every_position_gameplay_takes() {
+        let mut input = live();
+        input.step(
+            &[moved(1.0, 164.0, 156.0), moved(1.5, 174.0, 156.0)],
+            ms(2.0),
+            &Linear,
+        );
+        let path: Vec<Vec2> = input.path().since(0).collect();
+        assert_eq!(path, [Vec2::new(100.0, 100.0), Vec2::new(110.0, 100.0)]);
+        // While suspended the window's cursor moves, gameplay's does not.
+        input.suspend();
+        input.follow_suspended(&[moved(3.0, 264.0, 256.0)], |_, _| false);
+        assert_eq!(input.path().written(), 2);
+        // Resuming moves gameplay's cursor where the window's went.
+        input.resume();
+        input.step(&[], ms(4.0), &Linear);
+        assert_eq!(
+            input.path().since(2).collect::<Vec<_>>(),
+            [Vec2::new(200.0, 200.0)]
+        );
     }
 }

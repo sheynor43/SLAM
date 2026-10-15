@@ -141,7 +141,7 @@ graph TD
 ### Обмен данными
 
 - Input → Update: SPSC-кольцо событий с таймстемпами. После каждого события кольцо будит update (`Notify`; на Linux — futex, на Windows — event + high-resolution waitable timer); между событиями update спит до дедлайна своей частоты, последние ~200 мкс — активное ожидание. Update получает события пачкой, отсортированной по таймстемпу; опоздавшее событие старше уже выданного получает время последнего выданного, так что порядок не убывает и между тиками.
-- Update → Draw: свой тройной буфер снапшотов (`slam-engine::snapshot`, один атомик на обмен); отрисовка всегда берёт самый свежий и никогда не ждёт.
+- Update → Draw: свой тройной буфер снапшотов (`slam-engine::snapshot`, один атомик на обмен); отрисовка всегда берёт самый свежий и никогда не ждёт. То, что нужно draw между снапшотами (путь курсора для его следа), передаётся кольцом фиксированной ёмкости внутри снапшота — [ADR-0042](adr/0042-cursor-trail-on-draw-thread.md).
 - Update → Audio: lock-free очередь команд («сыграть сэмпл», «seek», «громкость»); аудио → update: атомики с позицией воспроизведения.
 - Workers → все: результаты через каналы; в кадр попадают только готовые данные.
 
@@ -289,7 +289,7 @@ graph TD
 
 ### Реестр элементов
 
-Каждый скинуемый элемент описан в реестре: ID, категория, файлы (включая кадры анимации и `@2x`), связанные ключи `skin.ini`. Пример: элемент «хиткруг» = `hitcircle`, `hitcircleoverlay` + `HitCircleOverlayAboveNumber`; «цифры комбо» = `default-0…9` + `HitCirclePrefix`, `HitCircleOverlap`; «курсор» = `cursor`, `cursormiddle`, `cursortrail`, `cursor-smoke` + `CursorRotate`, `CursorExpand`, `CursorCentre`, `CursorTrailRotate`. Хитсаунды тоже элементы.
+Каждый скинуемый элемент описан в реестре: ID, категория, файлы (включая кадры анимации и `@2x`), связанные ключи `skin.ini`. Пример: элемент «хиткруг» = `hitcircle`, `hitcircleoverlay` + `HitCircleOverlayAboveNumber`; «цифры комбо» = `default-0…9` + `HitCirclePrefix`, `HitCircleOverlap`; «курсор» = `cursor`, `cursormiddle`, `cursortrail`, `cursor-smoke` + `CursorRotate`, `CursorExpand`, `CursorCentre`, `CursorTrailRotate` (курсор и след — [ADR-0042](adr/0042-cursor-trail-on-draw-thread.md)). Хитсаунды тоже элементы.
 
 ### Слоистая сборка (профиль скина)
 

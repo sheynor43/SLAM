@@ -19,7 +19,7 @@ use slam_osu::{Beatmap, HealthProcessor, ModSet, Vec2};
 use slam_render::Extent;
 use slam_render::atlas::AtlasRegion;
 use slam_render::image::Image;
-use slam_render::sprite::{Sprite, SpriteBatch};
+use slam_render::sprite::SpriteBatch;
 use slam_render::upload::{
     TextureHandle, TextureKind, TextureRequests, TextureState, TextureUploads,
 };
@@ -27,6 +27,10 @@ use slam_skin::{AnimationOptions, SIXTY_FRAME_TIME, SkinChain, TextureFile};
 
 use crate::circles::{
     CircleTextures, HitCircles, LiveCircles, OBJECT_SIZE, PieceTextures, SkinSprite,
+};
+use crate::cursor::{
+    CursorFrame, CursorPath, CursorSkinConfig, CursorSources, CursorTextures, CursorView,
+    ExpandTimes, ExpandTracker,
 };
 use crate::gameplay_sounds::{GameplaySounds, VoiceSink};
 use crate::hotkeys::{GlobalAction, Hotkeys};
@@ -134,6 +138,10 @@ pub struct PlaySnapshot {
     pub clock: Option<ClockTime>,
     /// Cursor position in osu!pixels.
     pub cursor: Vec2,
+    /// The cursor positions gameplay took, for the trail (ADR-0042).
+    pub cursor_path: CursorPath,
+    /// When the cursor last expanded and contracted.
+    pub cursor_expand: ExpandTimes,
     /// Whether the intro can be skipped now.
     pub skip_available: bool,
     /// Whether gameplay is in a break (lazer's `IsBreakTime`): the background dims less.
@@ -161,6 +169,8 @@ impl Default for PlaySnapshot {
             time: 0.0,
             clock: None,
             cursor: Vec2::ZERO,
+            cursor_path: CursorPath::default(),
+            cursor_expand: ExpandTimes::default(),
             skip_available: false,
             // Lazer's `BreakTracker` starts in a break.
             is_break_time: true,
@@ -229,6 +239,8 @@ pub struct PlaySession {
     rules: OsuRules,
     /// The spins per minute of the alive spinners, counted after each step.
     spm: SpinnerSpm,
+    /// The cursor's expansion by the left and right buttons.
+    expand: ExpandTracker,
     log: JudgementLog,
     health: HealthProcessor,
     score: ScoreProcessor,
@@ -304,6 +316,7 @@ impl PlaySession {
             },
             rules,
             spm: SpinnerSpm::new(beatmap),
+            expand: ExpandTracker::default(),
             log,
             health,
             score,
@@ -539,6 +552,8 @@ impl PlaySession {
             (!restart && !seek_sent && !self.clock.is_seeking() && self.phase != Phase::Results)
                 .then_some(time);
         snapshot.cursor = self.input.position();
+        snapshot.cursor_path.clone_from(self.input.path());
+        snapshot.cursor_expand = self.expand.times();
         snapshot.skip_available = self.phase == Phase::Playing
             && !seek_sent
             && !self.clock.is_seeking()
@@ -577,6 +592,7 @@ impl PlaySession {
         }
         let step = self.input.step(events, now_ns, time);
         let step_time = step.time;
+        self.expand.apply(step.events);
         // Ported from osu!lazer 2026.1005.0-lazer: osu.Game/Screens/Play/Player.cs (LoadComponents)
         // The health processor is a frame-stable component ahead of the playfield: it drains
         // first, then takes the step's judgements as they come.
@@ -736,6 +752,7 @@ impl PlaySession {
     fn restart(&mut self, sink: &mut impl VoiceSink, quick: bool) {
         self.rules = self.initial.rules.clone();
         self.spm.reset();
+        self.expand.reset();
         self.health = self.initial.health.clone();
         self.score = self.initial.score.clone();
         self.mods = self.initial.mods.clone();
@@ -789,6 +806,8 @@ impl PlaySession {
         snapshot.time = self.start_time;
         snapshot.clock = None;
         snapshot.cursor = self.input.position();
+        snapshot.cursor_path.clone_from(self.input.path());
+        snapshot.cursor_expand = self.expand.times();
         snapshot.skip_available = false;
         snapshot.health = self.health.health();
         snapshot.hud = HudValues::of(&self.score);
@@ -848,7 +867,10 @@ enum Element {
     /// `sliderb-nd` and `sliderb-spec` of the skin that provides the ball.
     BallNd,
     BallSpec,
+    /// `cursor`, `cursormiddle` of the skin with `cursor`, `cursortrail` of the skin with it.
     Cursor,
+    CursorMiddle,
+    CursorTrail,
     Digit(u8),
     /// A digit of the score font (`ScorePrefix`).
     ScoreDigit(u8),
@@ -909,7 +931,7 @@ impl SpinnerPart {
     }
 }
 
-const ELEMENTS: [Element; 44] = [
+const ELEMENTS: [Element; 46] = [
     Element::Circle,
     Element::Overlay,
     Element::Approach,
@@ -922,6 +944,8 @@ const ELEMENTS: [Element; 44] = [
     Element::BallNd,
     Element::BallSpec,
     Element::Cursor,
+    Element::CursorMiddle,
+    Element::CursorTrail,
     Element::Digit(0),
     Element::Digit(1),
     Element::Digit(2),
@@ -1011,6 +1035,7 @@ pub struct PlayTextures {
     /// The frames of the follow circle and their length.
     follow: Vec<Requested>,
     follow_frame_length: f64,
+    cursor: CursorSkinConfig,
 }
 
 /// Whether a circle piece looked up with `prefix` (`sliderstartcircle`, `sliderendcircle`) uses
@@ -1042,6 +1067,7 @@ impl PlayTextures {
         let head_prefix = uses_prefix(skins, "sliderstartcircle");
         let tail_prefix = uses_prefix(skins, "sliderendcircle");
         let ball_skin = BallStyle::provider(skins).map(|p| skins.skin(p));
+        let cursor_sources = CursorSources::new(skins);
         let mut requested = [None; ELEMENTS.len()];
         for (slot, element) in requested.iter_mut().zip(ELEMENTS) {
             // Ported from osu!lazer 2026.1005.0-lazer: osu.Game.Rulesets.Osu/Skinning/Legacy/LegacySliderBall.cs (load)
@@ -1050,8 +1076,19 @@ impl PlayTextures {
                 Element::BallSpec => Some("sliderb-spec"),
                 _ => None,
             };
-            if let Some(name) = ball_layer {
-                if let Some(file) = ball_skin.and_then(|skin| skin.texture(name)) {
+            // Ported from osu!lazer 2026.1005.0-lazer: osu.Game.Rulesets.Osu/Skinning/Legacy/LegacyCursor.cs (load)
+            // Ported from osu!lazer 2026.1005.0-lazer: osu.Game.Rulesets.Osu/Skinning/Legacy/LegacyCursorTrail.cs (load)
+            let cursor_piece = match element {
+                Element::Cursor => Some((cursor_sources.cursor, "cursor")),
+                Element::CursorMiddle => Some((cursor_sources.cursor, "cursormiddle")),
+                Element::CursorTrail => Some((cursor_sources.trail, "cursortrail")),
+                _ => None,
+            };
+            let layer = ball_layer
+                .map(|name| (ball_skin, name))
+                .or(cursor_piece.map(|(source, name)| (source.map(|s| skins.skin(s)), name)));
+            if let Some((skin, name)) = layer {
+                if let Some(file) = skin.and_then(|skin| skin.texture(name)) {
                     *slot = Some(request_file(requests, &file)?);
                 }
                 continue;
@@ -1070,8 +1107,11 @@ impl PlayTextures {
                 | Element::TailOverlay => continue,
                 Element::ScorePoint => "sliderscorepoint".to_owned(),
                 Element::ReverseArrow => "reversearrow".to_owned(),
-                Element::BallNd | Element::BallSpec => continue,
-                Element::Cursor => "cursor".to_owned(),
+                Element::BallNd
+                | Element::BallSpec
+                | Element::Cursor
+                | Element::CursorMiddle
+                | Element::CursorTrail => continue,
                 Element::Digit(d) => format!("{prefix}-{d}"),
                 Element::ScoreDigit(d) => format!("{score_prefix}-{d}"),
                 Element::Spinner(part) => part.name().to_owned(),
@@ -1131,12 +1171,14 @@ impl PlayTextures {
             ball,
             follow,
             follow_frame_length,
+            cursor: CursorSkinConfig::new(skins),
         })
     }
 
     /// The textures uploaded by this frame; pending and failed ones are `None`.
     pub fn resolve(&self, uploads: &TextureUploads) -> FrameTextures {
         let mut frame = FrameTextures::default();
+        frame.cursor.config = self.cursor;
         if let TextureState::Ready(region) = uploads.get(self.white) {
             frame.white = Some(region);
         }
@@ -1187,7 +1229,15 @@ impl PlayTextures {
                         MAX_FOLLOW_CIRCLE_AREA_SIZE,
                     ))
                 }
-                Element::Cursor => frame.cursor = Some(SkinSprite::new(region, r.scale, f32::MAX)),
+                Element::Cursor => {
+                    frame.cursor.cursor = Some(SkinSprite::new(region, r.scale, f32::MAX))
+                }
+                Element::CursorMiddle => {
+                    frame.cursor.middle = Some(SkinSprite::new(region, r.scale, f32::MAX))
+                }
+                Element::CursorTrail => {
+                    frame.cursor.trail = Some(SkinSprite::new(region, r.scale, f32::MAX))
+                }
                 Element::Digit(d) => {
                     frame.circles.digits[usize::from(d)] = Some(SkinSprite::digit(region, r.scale))
                 }
@@ -1242,7 +1292,7 @@ pub struct FrameTextures {
     pub circles: CircleTextures,
     pub sliders: SliderTextures,
     pub spinners: SpinnerTextures,
-    pub cursor: Option<SkinSprite>,
+    pub cursor: CursorTextures,
     /// An opaque white image.
     pub white: Option<AtlasRegion>,
 }
@@ -1253,6 +1303,7 @@ pub struct PlayView {
     pub circles: HitCircles,
     pub sliders: HitSliders,
     pub spinners: HitSpinners,
+    pub cursor: CursorView,
 }
 
 impl PlayView {
@@ -1296,21 +1347,25 @@ impl PlayView {
         }
     }
 
-    /// Writes the cursor of `snapshot`. Allocation-free once `batch` has room.
+    /// Writes the cursor of `snapshot` drawn at engine time `now_ns` and its trail; call
+    /// once a frame, the trail moves on. Allocation-free once `batch` has room for
+    /// [`MAX_CURSOR_SPRITES`](crate::cursor::MAX_CURSOR_SPRITES).
     pub fn push_cursor(
-        &self,
+        &mut self,
         batch: &mut SpriteBatch,
         layout: &PlayfieldLayout,
         snapshot: &PlaySnapshot,
+        now_ns: u64,
         textures: &FrameTextures,
     ) {
-        // A stand-in for the skinned cursor and its trail.
-        if let Some(t) = &textures.cursor {
-            let centre = layout.to_window(snapshot.cursor);
-            let size = [t.size.x * layout.scale(), t.size.y * layout.scale()];
-            let mut sprite = Sprite::new(t.texture, t.uv, [centre.x, centre.y], size);
-            sprite.origin = [size[0] / 2.0, size[1] / 2.0];
-            batch.push(&sprite);
-        }
+        let frame = CursorFrame {
+            path: &snapshot.cursor_path,
+            position: snapshot.cursor,
+            expand: snapshot.cursor_expand,
+            time: snapshot.time_at(now_ns),
+            restarts: snapshot.restarts,
+            now_ns,
+        };
+        self.cursor.push(batch, layout, &frame, &textures.cursor);
     }
 }
