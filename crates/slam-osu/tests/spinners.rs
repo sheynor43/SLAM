@@ -753,6 +753,43 @@ fn drawing_state_follows_the_judgements() {
 }
 
 #[test]
+fn bonus_score_follows_the_whole_spins() {
+    // Twenty spins over 12 ticks: seven plain (five required plus the gap of two), then five
+    // bonus ticks worth 50 each; the spins past the last tick keep counting.
+    let map = spinner_map(JUDGEMENT_START, JUDGEMENT_END);
+    let states = live_states(&map, &judgement_replay(20));
+    for (_, s) in &states {
+        assert_eq!(s.completed_full_spins, (s.total_rotation / 360.0) as i32);
+        let bonus = (s.completed_full_spins - 7).clamp(0, 5);
+        assert_eq!(s.bonus_score, f64::from(50 * bonus));
+        assert_eq!(s.maximum_bonus_score, 250.0);
+    }
+    let mut spins: Vec<i32> = states.iter().map(|(_, s)| s.completed_full_spins).collect();
+    spins.dedup();
+    assert_eq!(spins, (0..=20).collect::<Vec<_>>());
+    // The change time is the step where the count grew.
+    for w in states.windows(2) {
+        let ((_, before), (time, after)) = (w[0], w[1]);
+        if after.completed_full_spins != before.completed_full_spins {
+            assert_eq!(after.full_spins_changed, Some(time));
+        } else {
+            assert_eq!(after.full_spins_changed, before.full_spins_changed);
+        }
+    }
+    assert_eq!(states[0].1.full_spins_changed, None);
+
+    // Without ticks the spins are not counted, as lazer's `updateBonusScore` returns early.
+    let map = beatmap(5.0, "256,192,1000,12,0,1000\n");
+    let frames = SpinFrames::new(900.0).spin(720.0, 100.0).build();
+    for (_, s) in live_states(&map, &frames) {
+        assert_eq!(
+            (s.completed_full_spins, s.bonus_score, s.maximum_bonus_score),
+            (0, 0.0, 0.0)
+        );
+    }
+}
+
+#[test]
 fn an_incomplete_spinner_has_no_completion_time() {
     let map = spinner_map(JUDGEMENT_START, JUDGEMENT_END);
     let states = live_states(&map, &judgement_replay(3));

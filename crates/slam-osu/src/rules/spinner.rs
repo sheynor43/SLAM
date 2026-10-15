@@ -119,6 +119,8 @@ pub(super) struct SpinnerState {
     /// The number of ticks; the ticks from `spins_required_for_bonus` on are bonus ticks.
     tick_count: usize,
     spins_required_for_bonus: i32,
+    /// Lazer's `MaximumBonusSpins`: the number of bonus ticks.
+    maximum_bonus_spins: i32,
     /// Ticks before this index are judged.
     ticks_judged: usize,
     /// When each tick judged as a hit was judged, in order: the first ones, as ticks are hit in
@@ -133,6 +135,8 @@ pub(super) struct SpinnerState {
     history: SpinHistory,
     /// `completedFullSpins`: the whole spins already turned into ticks.
     completed_full_spins: i32,
+    /// When `completed_full_spins` last changed.
+    full_spins_changed: Option<f64>,
     /// Whole spins completed after the last tick was judged, each of which plays
     /// `spinnerbonus-max` in lazer.
     bonus_max_spins: u32,
@@ -159,12 +163,14 @@ impl SpinnerState {
             spins_required: spinner.spins_required,
             tick_count,
             spins_required_for_bonus: spinner.spins_required_for_bonus(),
+            maximum_bonus_spins: spinner.maximum_bonus_spins,
             ticks_judged: 0,
             tick_hits: Vec::with_capacity(tick_count),
             time_completed: None,
             rate,
             history: SpinHistory::new(),
             completed_full_spins: 0,
+            full_spins_changed: None,
             bonus_max_spins: 0,
             current_rotation: 0.0,
             rotation: 0.0,
@@ -242,6 +248,31 @@ impl SpinnerState {
     pub(super) fn last_bonus_hit(&self) -> Option<f64> {
         let first_bonus = usize::try_from(self.spins_required_for_bonus).unwrap_or(0);
         self.tick_hits.get(first_bonus..)?.last().copied()
+    }
+
+    /// Lazer's `CompletedFullSpins`: the whole spins already turned into ticks or bonus-max
+    /// samples; always 0 for a spinner without ticks.
+    pub(super) fn completed_full_spins(&self) -> i32 {
+        self.completed_full_spins
+    }
+
+    /// When [`Self::completed_full_spins`] last changed: lazer's bonus counter animates then.
+    pub(super) fn full_spins_changed(&self) -> Option<f64> {
+        self.full_spins_changed
+    }
+
+    // Ported from osu!lazer 2026.1005.0-lazer: osu.Game.Rulesets.Osu/Objects/Drawables/DrawableSpinner.cs (CurrentBonusScore, MaximumBonusScore, score_per_tick)
+    /// Lazer's `CurrentBonusScore` and `MaximumBonusScore`: the score of the bonus ticks hit so
+    /// far, and of all of them.
+    pub(super) fn bonus_score(&self) -> (f64, f64) {
+        let score_per_tick = HitResult::LargeBonus.base_score();
+        let spins = (self.completed_full_spins - self.spins_required_for_bonus)
+            .clamp(0, self.maximum_bonus_spins.max(0));
+        // C#'s unchecked `int` products.
+        (
+            f64::from(score_per_tick.wrapping_mul(spins)),
+            f64::from(score_per_tick.wrapping_mul(self.maximum_bonus_spins)),
+        )
     }
 
     /// The whole spins completed after the last tick, which play `spinnerbonus-max`; always 0
@@ -392,7 +423,11 @@ impl SpinnerState {
         if spins < self.completed_full_spins {
             // Rewinding in lazer; the total rotation never drops here.
             self.completed_full_spins = spins;
+            self.full_spins_changed = Some(time);
             return;
+        }
+        if spins != self.completed_full_spins {
+            self.full_spins_changed = Some(time);
         }
 
         while self.completed_full_spins != spins {

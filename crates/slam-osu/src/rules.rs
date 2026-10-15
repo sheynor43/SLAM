@@ -255,6 +255,18 @@ pub struct LiveSpinner {
     /// The tracker's `currentRotation`: the rotation spun, signed, which the drawn rotation
     /// follows.
     pub spun_rotation: f32,
+    /// Lazer's `Result.TotalRotation`: the scoring rotation in degrees, which the spins per
+    /// minute are counted from.
+    pub total_rotation: f32,
+    /// Lazer's `CompletedFullSpins`: the whole spins turned into ticks so far; always 0 for a
+    /// spinner without ticks. The bonus counter animates each time it grows.
+    pub completed_full_spins: i32,
+    /// When [`completed_full_spins`](Self::completed_full_spins) last changed.
+    pub full_spins_changed: Option<f64>,
+    /// Lazer's `CurrentBonusScore`: the score of the bonus ticks hit so far.
+    pub bonus_score: f64,
+    /// Lazer's `MaximumBonusScore`: the score of all bonus ticks.
+    pub maximum_bonus_score: f64,
     /// Lazer's `Result.TimeCompleted`: when the required spins were done, if they were.
     pub time_completed: Option<f64>,
     /// When the last bonus tick judged as a hit was judged.
@@ -482,6 +494,7 @@ impl OsuRules {
             match o.kind {
                 Kind::Spinner(s) if o.is_alive(time) => {
                     let spinner = &self.spinners[s];
+                    let (bonus_score, maximum_bonus_score) = spinner.bonus_score();
                     Some(LiveSpinner {
                         // Beatmap object counts fit in `u32`, as `ObjectRef::index` assumes.
                         index: i as u32,
@@ -491,6 +504,11 @@ impl OsuRules {
                         progress: spinner.progress(),
                         rotation: spinner.rotation(),
                         spun_rotation: spinner.spun_rotation(),
+                        total_rotation: spinner.total_rotation(),
+                        completed_full_spins: spinner.completed_full_spins(),
+                        full_spins_changed: spinner.full_spins_changed(),
+                        bonus_score,
+                        maximum_bonus_score,
                         time_completed: spinner.time_completed(),
                         last_bonus_hit: spinner.last_bonus_hit(),
                         judgement: o.result.map(|result| CircleJudgement {

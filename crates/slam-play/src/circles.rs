@@ -28,6 +28,7 @@ use slam_render::textures::TextureId;
 use slam_render::{Blend, Color};
 use slam_skin::{Rgba, Skin, SkinChain, SkinVersion};
 
+use crate::legacy_text::{Digits, LegacyFont};
 use crate::playfield::PlayfieldLayout;
 
 /// The most circles a [`LiveCircles`] snapshot holds; later ones are left out.
@@ -737,7 +738,6 @@ pub(crate) fn centred(texture: &SkinSprite, centre: Vec2, size: Vec2, colour: Co
 
 /// Writes the combo number `number` centred on `centre`, each digit `scale` window units per
 /// display unit.
-// Ported from osu!lazer 2026.1005.0-lazer: osu.Game/Skinning/LegacySpriteText.cs
 // Ported from osu!lazer 2026.1005.0-lazer: osu.Game.Rulesets.Osu/Skinning/Legacy/OsuLegacySkinTransformer.cs (HitCircleText)
 fn push_number(
     batch: &mut SpriteBatch,
@@ -751,59 +751,19 @@ fn push_number(
     if textures.digits[0].is_none() {
         return;
     }
-    let mut digits = [0u8; 10];
-    let mut count = 0;
-    let mut n = number;
-    loop {
-        digits[count] = (n % 10) as u8;
-        count += 1;
-        n /= 10;
-        if n == 0 {
-            break;
-        }
-    }
-    let digits = &mut digits[..count];
-    digits.reverse();
-
-    // Spacing is the negated overlap, between glyphs only; the text is centred on its box and
-    // glyphs are top-aligned (`UseFullGlyphHeight = false`).
-    let spacing = -config.overlap;
-    let mut width = 0.0;
-    let mut height: f32 = 0.0;
-    let mut first = true;
-    for &d in digits.iter() {
-        if let Some(glyph) = &textures.digits[usize::from(d)] {
-            if !first {
-                width += spacing;
-            }
-            first = false;
-            width += glyph.size.x;
-            height = height.max(glyph.size.y);
-        }
-    }
-    let mut x = centre.x - width * scale / 2.0;
-    let top = centre.y - height * scale / 2.0;
-    let mut first = true;
-    for &d in digits.iter() {
-        if let Some(glyph) = &textures.digits[usize::from(d)] {
-            if !first {
-                x += spacing * scale;
-            }
-            first = false;
-            let size = Vec2::new(glyph.size.x * scale, glyph.size.y * scale);
-            batch.push(&Sprite {
-                position: [x, top],
-                size: [size.x, size.y],
-                origin: [0.0, 0.0],
-                rotation: 0.0,
-                colour,
-                texture: glyph.texture,
-                uv: glyph.uv,
-                blend: Blend::Alpha,
-            });
-            x += size.x;
-        }
-    }
+    let font = LegacyFont {
+        digits: &textures.digits,
+        overlap: config.overlap,
+    };
+    let centred = Vec2::new(0.5, 0.5);
+    font.push(
+        batch,
+        &Digits::new(u64::from(number)),
+        centre,
+        centred,
+        scale,
+        colour,
+    );
 }
 
 /// Everything the draw side keeps to draw the hit circles of a play.

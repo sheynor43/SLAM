@@ -36,7 +36,7 @@ use crate::sliders::{
     AnimationSprites, BallStyle, HitSliders, LiveSliders, MAX_ANIMATION_FRAMES,
     MAX_FOLLOW_CIRCLE_AREA_SIZE, ObjectTextures, SliderBodies, SliderTextures, push_objects,
 };
-use crate::spinners::{HitSpinners, LiveSpinners, SpinnerTextures};
+use crate::spinners::{HitSpinners, LiveSpinners, SpinnerSpm, SpinnerTextures};
 use crate::time::Offsets;
 
 // Ported from osu!lazer 2026.1005.0-lazer: osu.Game/Screens/Play/Player.cs (PauseCooldownDuration)
@@ -227,6 +227,8 @@ pub struct PlaySession {
     input: LiveInput,
     hotkeys: Hotkeys,
     rules: OsuRules,
+    /// The spins per minute of the alive spinners, counted after each step.
+    spm: SpinnerSpm,
     log: JudgementLog,
     health: HealthProcessor,
     score: ScoreProcessor,
@@ -301,6 +303,7 @@ impl PlaySession {
                 skip,
             },
             rules,
+            spm: SpinnerSpm::new(beatmap),
             log,
             health,
             score,
@@ -579,6 +582,8 @@ impl PlaySession {
         // first, then takes the step's judgements as they come.
         self.health.update(step_time);
         self.rules.update(&step, &mut self.log);
+        // Lazer's spinners count their rate after their children, in the playfield's update.
+        self.spm.update(&self.rules, step_time);
         self.sounds.update(step_time, &self.log, &self.rules, sink);
         // Ported from osu!lazer 2026.1005.0-lazer: osu.Game/Screens/Play/Player.cs (LoadComponents)
         // Each judgement goes to the health processor, then to the score processor.
@@ -730,6 +735,7 @@ impl PlaySession {
     // Ported from osu!lazer 2026.1005.0-lazer: osu.Game/Screens/Play/Player.cs (Restart, StartGameplay)
     fn restart(&mut self, sink: &mut impl VoiceSink, quick: bool) {
         self.rules = self.initial.rules.clone();
+        self.spm.reset();
         self.health = self.initial.health.clone();
         self.score = self.initial.score.clone();
         self.mods = self.initial.mods.clone();
@@ -805,7 +811,7 @@ impl PlaySession {
         snapshot.restarts = self.restarts;
         snapshot.circles.capture(&self.rules);
         snapshot.sliders.capture(&self.rules);
-        snapshot.spinners.capture(&self.rules);
+        snapshot.spinners.capture(&self.rules, &self.spm);
     }
 }
 
@@ -844,6 +850,8 @@ enum Element {
     BallSpec,
     Cursor,
     Digit(u8),
+    /// A digit of the score font (`ScorePrefix`).
+    ScoreDigit(u8),
     /// A legacy spinner texture.
     Spinner(SpinnerPart),
 }
@@ -862,6 +870,7 @@ enum SpinnerPart {
     Approach,
     Spin,
     Clear,
+    Rpm,
 }
 
 impl SpinnerPart {
@@ -878,6 +887,7 @@ impl SpinnerPart {
             SpinnerPart::Approach => "spinner-approachcircle",
             SpinnerPart::Spin => "spinner-spin",
             SpinnerPart::Clear => "spinner-clear",
+            SpinnerPart::Rpm => "spinner-rpm",
         }
     }
 
@@ -894,11 +904,12 @@ impl SpinnerPart {
             SpinnerPart::Approach => &mut textures.approach,
             SpinnerPart::Spin => &mut textures.spin,
             SpinnerPart::Clear => &mut textures.clear,
+            SpinnerPart::Rpm => &mut textures.rpm,
         }
     }
 }
 
-const ELEMENTS: [Element; 33] = [
+const ELEMENTS: [Element; 44] = [
     Element::Circle,
     Element::Overlay,
     Element::Approach,
@@ -932,6 +943,17 @@ const ELEMENTS: [Element; 33] = [
     Element::Spinner(SpinnerPart::Approach),
     Element::Spinner(SpinnerPart::Spin),
     Element::Spinner(SpinnerPart::Clear),
+    Element::Spinner(SpinnerPart::Rpm),
+    Element::ScoreDigit(0),
+    Element::ScoreDigit(1),
+    Element::ScoreDigit(2),
+    Element::ScoreDigit(3),
+    Element::ScoreDigit(4),
+    Element::ScoreDigit(5),
+    Element::ScoreDigit(6),
+    Element::ScoreDigit(7),
+    Element::ScoreDigit(8),
+    Element::ScoreDigit(9),
 ];
 
 /// A requested skin texture with the pixel density of its file.
@@ -1014,6 +1036,9 @@ impl PlayTextures {
         let prefix = skins
             .config(|s| s.setting("HitCirclePrefix").map(str::to_owned))
             .map_or_else(|| "default".to_owned(), |f| f.value);
+        let score_prefix = skins
+            .config(|s| s.setting("ScorePrefix").map(str::to_owned))
+            .map_or_else(|| "score".to_owned(), |f| f.value);
         let head_prefix = uses_prefix(skins, "sliderstartcircle");
         let tail_prefix = uses_prefix(skins, "sliderendcircle");
         let ball_skin = BallStyle::provider(skins).map(|p| skins.skin(p));
@@ -1048,6 +1073,7 @@ impl PlayTextures {
                 Element::BallNd | Element::BallSpec => continue,
                 Element::Cursor => "cursor".to_owned(),
                 Element::Digit(d) => format!("{prefix}-{d}"),
+                Element::ScoreDigit(d) => format!("{score_prefix}-{d}"),
                 Element::Spinner(part) => part.name().to_owned(),
             };
             let Some(found) = skins.texture(&name) else {
@@ -1164,6 +1190,10 @@ impl PlayTextures {
                 Element::Cursor => frame.cursor = Some(SkinSprite::new(region, r.scale, f32::MAX)),
                 Element::Digit(d) => {
                     frame.circles.digits[usize::from(d)] = Some(SkinSprite::digit(region, r.scale))
+                }
+                Element::ScoreDigit(d) => {
+                    frame.spinners.score_digits[usize::from(d)] =
+                        Some(SkinSprite::new(region, r.scale, f32::MAX))
                 }
                 // Legacy spinner sprites are not cropped.
                 Element::Spinner(part) => {

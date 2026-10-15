@@ -12,9 +12,13 @@
 //! osu!pixels above the spinner, which at the spinner's usual position fills the window's
 //! height.
 //!
-//! Not done: the spins per minute counter and the bonus counter (#152), and lazer's own spinner
-//! (`DefaultSpinner`) when no skin has a legacy one. The old-style metre blinks with a random
-//! number taken from the frame's game time rather than a running generator. "Clear" starts at
+//! The spins per minute are counted on the update side ([`SpinnerSpm`]), once per gameplay
+//! step as lazer counts them once per frame, and drawn with the bonus counter in the skin's
+//! score font. The spins per minute slide up as an offset added to their place, where lazer
+//! interpolates the position itself (a difference in the last bits).
+//!
+//! Not done: lazer's own spinner (`DefaultSpinner`) when no skin has a legacy one. The
+//! old-style metre blinks with a random number taken from the frame's game time rather than a running generator. "Clear" starts at
 //! the completion time, where lazer notices it a frame later. Transforms start from their
 //! property's value at their exact start time, and scales are interpolated before the sprite
 //! scale is applied, which may differ from lazer in the last bits.
@@ -28,6 +32,7 @@ use slam_render::{Blend, Color};
 use slam_skin::{Rgba, SkinChain, SkinSource};
 
 use crate::circles::{CircleMods, Easing, Kind, SkinSprite, Track, centred, to_linear, to_srgb};
+use crate::legacy_text::{Digits, LegacyFont};
 use crate::playfield::PlayfieldLayout;
 
 /// The most spinners a [`LiveSpinners`] snapshot holds and a frame draws; later ones are left
@@ -57,6 +62,237 @@ const GLOW_COLOUR: [u8; 3] = [3, 151, 255];
 
 /// How long "spin" fades out after a tick is hit (`LegacySpinner.UpdateStateTransforms`).
 const TICK_SPIN_FADE: f64 = 300.0;
+
+// Ported from osu!lazer 2026.1005.0-lazer: osu.Game.Rulesets.Osu/Skinning/Legacy/LegacySpinner.cs (spm_hide_offset, load)
+/// How far below their place the spins per minute start, sliding up as the spinner fades in.
+const SPM_HIDE_OFFSET: f32 = 50.0;
+/// The spins per minute background's top left and the counter's top right, from the top
+/// centre of the box.
+const SPM_BACKGROUND: Vec2 = Vec2::new(-87.0, 445.0);
+const SPM_COUNTER: Vec2 = Vec2::new(80.0, 448.0);
+/// The bonus counter's centre below the top of the box.
+const BONUS_Y: f32 = SPINNER_TOP_OFFSET + 299.0;
+
+// ---- Spins per minute ----
+
+// Ported from osu!lazer 2026.1005.0-lazer: osu.Game.Rulesets.Osu/Skinning/Default/SpinnerSpmCalculator.cs (spm_count_duration)
+/// The span the spins per minute are counted over: not hundreds, to avoid frame rounding issues.
+const SPM_COUNT_DURATION: f64 = 595.0;
+
+/// The rotations a [`SpmCalculator`] keeps: [`SPM_COUNT_DURATION`] of updates at 8000 Hz, and
+/// some. When full, the oldest is dropped, which shortens the span (input events between
+/// updates at the highest rates).
+pub const SPM_RECORDS: usize = 8192;
+
+/// The most spinners whose spins per minute are counted at once, as many as a snapshot holds;
+/// later ones show 0.
+pub const SPM_SLOTS: usize = MAX_LIVE_SPINNERS;
+
+/// osu-framework's `Precision.DOUBLE_EPSILON`.
+const DOUBLE_EPSILON: f64 = 1e-7;
+
+#[derive(Debug, Clone, Copy, PartialEq, Default)]
+struct RotationRecord {
+    rotation: f32,
+    time: f64,
+}
+
+/// Lazer's `SpinnerSpmCalculator`: the spins per minute over the last 595 ms of rotations.
+#[derive(Debug, Clone)]
+pub struct SpmCalculator {
+    /// A queue: `len` records from `head`, wrapping around.
+    records: Box<[RotationRecord]>,
+    head: usize,
+    len: usize,
+    last: RotationRecord,
+    result: f64,
+    /// Records dropped because the queue was full.
+    dropped: u64,
+}
+
+impl Default for SpmCalculator {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl SpmCalculator {
+    /// An empty calculator. Allocates its queue.
+    pub fn new() -> Self {
+        SpmCalculator {
+            records: vec![RotationRecord::default(); SPM_RECORDS].into_boxed_slice(),
+            head: 0,
+            len: 0,
+            last: RotationRecord::default(),
+            result: 0.0,
+            dropped: 0,
+        }
+    }
+
+    /// The spins per minute, as of the last [`Self::set_rotation`].
+    pub fn result(&self) -> f64 {
+        self.result
+    }
+
+    /// Records dropped because the queue was full.
+    pub fn dropped(&self) -> u64 {
+        self.dropped
+    }
+
+    // Ported from osu!lazer 2026.1005.0-lazer: osu.Game.Rulesets.Osu/Skinning/Default/SpinnerSpmCalculator.cs (resetState)
+    /// Forgets everything, for a new spinner.
+    pub fn reset(&mut self) {
+        self.last = RotationRecord::default();
+        self.result = 0.0;
+        self.head = 0;
+        self.len = 0;
+    }
+
+    fn peek(&self) -> RotationRecord {
+        self.records[self.head]
+    }
+
+    fn dequeue(&mut self) -> RotationRecord {
+        let record = self.records[self.head];
+        self.head = (self.head + 1) % self.records.len();
+        self.len -= 1;
+        record
+    }
+
+    // Ported from osu!lazer 2026.1005.0-lazer: osu.Game.Rulesets.Osu/Skinning/Default/SpinnerSpmCalculator.cs (SetRotation)
+    /// Records the total `rotation` at game `time` and updates the result.
+    pub fn set_rotation(&mut self, time: f64, rotation: f32) {
+        // If we've gone back in time, it's fine to work with a fresh set of records for now.
+        if self.len > 0 && time < self.last.time {
+            self.head = 0;
+            self.len = 0;
+        }
+
+        // Never calculate the result from records at the same time, to avoid NaN or infinity.
+        // `Precision.AlmostEquals`.
+        if self.len > 0 && (time - self.last.time).abs() <= DOUBLE_EPSILON {
+            return;
+        }
+
+        if self.len > 0 {
+            let mut record = self.peek();
+            while self.len > 0 && time - self.peek().time > SPM_COUNT_DURATION {
+                record = self.dequeue();
+            }
+            // A `float` difference, then `double`.
+            self.result =
+                f64::from(rotation - record.rotation) / (time - record.time) * 1000.0 * 60.0
+                    / 360.0;
+        }
+
+        if self.len == self.records.len() {
+            self.dequeue();
+            self.dropped += 1;
+        }
+        self.last = RotationRecord { rotation, time };
+        let tail = (self.head + self.len) % self.records.len();
+        self.records[tail] = self.last;
+        self.len += 1;
+    }
+}
+
+/// One spinner's [`SpmCalculator`].
+#[derive(Debug, Clone, Default)]
+struct SpmSlot {
+    /// The spinner's object index; `None` while free.
+    index: Option<u32>,
+    /// Alive at the current update.
+    seen: bool,
+    calculator: SpmCalculator,
+}
+
+/// The spins per minute of the spinners alive in a play, kept on the update side: a
+/// calculator for each, from when it comes alive (lazer's `HitObjectApplied`) to when it
+/// expires.
+#[derive(Debug, Clone)]
+pub struct SpinnerSpm {
+    /// Each spinner's end time, by object index.
+    end_times: Box<[Option<f64>]>,
+    slots: [SpmSlot; SPM_SLOTS],
+    /// Spinners left without a calculator because all were taken.
+    dropped: u64,
+}
+
+impl SpinnerSpm {
+    /// The calculators for the spinners of `beatmap` (with its mods applied). Allocates.
+    pub fn new(beatmap: &Beatmap) -> Self {
+        SpinnerSpm {
+            end_times: beatmap
+                .hit_objects
+                .iter()
+                .map(|o| match &o.kind {
+                    OsuHitObjectKind::Spinner(s) => Some(s.end_time),
+                    _ => None,
+                })
+                .collect(),
+            slots: std::array::from_fn(|_| SpmSlot::default()),
+            dropped: 0,
+        }
+    }
+
+    /// Forgets every spinner, for a restart.
+    pub fn reset(&mut self) {
+        for slot in &mut self.slots {
+            slot.index = None;
+        }
+    }
+
+    /// Records the rotation of each spinner alive at the last update of `rules`, at its time
+    /// `time`, up to the spinner's end time: the rate shown does not drop as it fades out.
+    // Ported from osu!lazer 2026.1005.0-lazer: osu.Game.Rulesets.Osu/Objects/Drawables/DrawableSpinner.cs (UpdateAfterChildren)
+    pub fn update(&mut self, rules: &OsuRules, time: f64) {
+        for slot in &mut self.slots {
+            slot.seen = false;
+        }
+        for live in rules.live_spinners() {
+            let Some(&Some(end)) = self.end_times.get(live.index as usize) else {
+                continue;
+            };
+            let i = match self.slots.iter().position(|s| s.index == Some(live.index)) {
+                Some(i) => i,
+                None => match self.slots.iter().position(|s| s.index.is_none()) {
+                    Some(i) => {
+                        self.slots[i].index = Some(live.index);
+                        self.slots[i].calculator.reset();
+                        i
+                    }
+                    None => {
+                        self.dropped += 1;
+                        continue;
+                    }
+                },
+            };
+            let slot = &mut self.slots[i];
+            slot.seen = true;
+            if time <= end {
+                slot.calculator.set_rotation(time, live.total_rotation);
+            }
+        }
+        for slot in &mut self.slots {
+            if !slot.seen {
+                slot.index = None;
+            }
+        }
+    }
+
+    /// The spins per minute of spinner `index`: 0 without a calculator.
+    pub fn get(&self, index: u32) -> f64 {
+        self.slots
+            .iter()
+            .find(|s| s.index == Some(index))
+            .map_or(0.0, |s| s.calculator.result())
+    }
+
+    /// Spinner updates left without a calculator because all were taken.
+    pub fn dropped(&self) -> u64 {
+        self.dropped
+    }
+}
 
 // ---- Snapshot ----
 
@@ -107,6 +343,8 @@ pub struct SpinnerEntry {
     pub live: LiveSpinner,
     /// How its tick hits faded "spin" out, if any tick was hit.
     pub tick_fade: Option<TickFade>,
+    /// Its spins per minute ([`SpinnerSpm`]).
+    pub spm: f64,
 }
 
 /// The spinners alive at an update, copied for the draw side without allocations.
@@ -137,24 +375,32 @@ impl LiveSpinners {
                     progress: 0.0,
                     rotation: 0.0,
                     spun_rotation: 0.0,
+                    total_rotation: 0.0,
+                    completed_full_spins: 0,
+                    full_spins_changed: None,
+                    bonus_score: 0.0,
+                    maximum_bonus_score: 0.0,
                     time_completed: None,
                     last_bonus_hit: None,
                     judgement: None,
                 },
                 tick_fade: None,
+                spm: 0.0,
             }; MAX_LIVE_SPINNERS],
             len: 0,
             dropped: 0,
         }
     }
 
-    /// Replaces the contents with the spinners alive at the last update of `rules`.
-    pub fn capture(&mut self, rules: &OsuRules) {
+    /// Replaces the contents with the spinners alive at the last update of `rules`, with their
+    /// spins per minute from `spm`.
+    pub fn capture(&mut self, rules: &OsuRules, spm: &SpinnerSpm) {
         self.clear();
         for live in rules.live_spinners() {
             self.push(SpinnerEntry {
                 live,
                 tick_fade: TickFade::new(rules.spinner_tick_hits(live.index)),
+                spm: spm.get(live.index),
             });
         }
     }
@@ -258,6 +504,8 @@ pub struct SpinnerStyle {
     /// How fast the new-style top turns relative to the rotation: half when `spinner-middle2`
     /// turns with it.
     pub turn_ratio: f32,
+    /// The score font's `ScoreOverlap`.
+    pub score_overlap: f32,
     pub mods: CircleMods,
 }
 
@@ -300,6 +548,10 @@ impl SpinnerStyle {
             } else {
                 1.0
             },
+            // Ported from osu!lazer 2026.1005.0-lazer: osu.Game/Skinning/LegacySkinExtensions.cs (GetFontOverlap)
+            score_overlap: skins
+                .config(|s| s.setting_f32("ScoreOverlap"))
+                .map_or(0.0, |f| f.value),
             mods,
         }
     }
@@ -328,6 +580,10 @@ pub struct SpinnerTextures {
     pub approach: Option<SkinSprite>,
     pub spin: Option<SkinSprite>,
     pub clear: Option<SkinSprite>,
+    /// `spinner-rpm`, behind the spins per minute.
+    pub rpm: Option<SkinSprite>,
+    /// The score font's digits, `{ScorePrefix}-0` to `-9`.
+    pub score_digits: [Option<SkinSprite>; 10],
 }
 
 // ---- Poses ----
@@ -359,6 +615,11 @@ pub struct SpinnerPose {
     pub progress: f32,
     /// The drawn rotation in degrees, clockwise.
     pub rotation: f32,
+    /// How far below their place the spins per minute are, in osu!pixels.
+    pub spm_offset: f32,
+    pub bonus_alpha: f32,
+    /// The bonus counter's scale, [`SPRITE_SCALE`] included.
+    pub bonus_scale: f32,
 }
 
 /// The appearance of `spinner` at game `time`, in the state of `entry`.
@@ -446,6 +707,11 @@ pub fn spinner_pose(
     let scale = 0.8 + Easing::Out.apply(f64::from(progress)) as f32 * 0.2;
 
     let (clear_alpha, clear_scale) = clear_pose(live, time, end);
+    let (bonus_alpha, bonus_scale) = bonus_pose(live, time);
+
+    // `MoveToOffset`, interpolated in `float`.
+    let mut spm_offset = Track::new(Kind::Scale);
+    spm_offset.add(start - fade_in, fade_in, 0.0, Easing::Out);
 
     SpinnerPose {
         object_alpha: object.value(1.0, time),
@@ -462,6 +728,9 @@ pub fn spinner_pose(
         scale,
         progress,
         rotation: rotation(live, time),
+        spm_offset: spm_offset.value(SPM_HIDE_OFFSET, time),
+        bonus_alpha,
+        bonus_scale,
     }
 }
 
@@ -536,6 +805,47 @@ fn clear_pose(live: &LiveSpinner, time: f64, end: f64) -> (f32, f32) {
     (alpha.value(0.0, time), scale.value(1.0, time))
 }
 
+/// The alpha and scale of the bonus counter. Each whole spin with a bonus restarts its
+/// animation, bigger once the bonus is complete; a judgement rewinds the legacy spinner's
+/// transforms, hiding it.
+// Ported from osu!lazer 2026.1005.0-lazer: osu.Game.Rulesets.Osu/Skinning/Legacy/LegacySpinner.cs (LoadComplete)
+fn bonus_pose(live: &LiveSpinner, time: f64) -> (f32, f32) {
+    let hidden = (0.0, SPRITE_SCALE);
+    let Some(changed) = live.full_spins_changed else {
+        return hidden;
+    };
+    // Lazer rewinds in `Update` and counts the spins after it, so a spin on the judgement's
+    // frame would still show; the rules add no rotation from the end time on.
+    if live.bonus_score <= 0.0
+        || time < changed
+        || live
+            .judgement
+            .is_some_and(|j| j.time > changed && time >= j.time)
+    {
+        return hidden;
+    }
+    let (fade, from, to, duration) = if live.bonus_score == live.maximum_bonus_score {
+        (500.0, 1.4, 1.8, 1000.0)
+    } else {
+        (800.0, SPRITE_SCALE * 2.0, SPRITE_SCALE * 1.28, 800.0)
+    };
+    // `FadeOutFromOne`.
+    let mut alpha = Track::new(Kind::Alpha);
+    alpha.add(changed, 0.0, 1.0, Easing::None);
+    alpha.add(changed, fade, 0.0, Easing::Out);
+    let mut scale = Track::new(Kind::Scale);
+    scale.add(changed, 0.0, from, Easing::None);
+    scale.add(changed, duration, to, Easing::Out);
+    (alpha.value(0.0, time), scale.value(SPRITE_SCALE, time))
+}
+
+/// The digits shown for `spm`: lazer's `Math.Truncate(spm).ToString("#0")`. The rotation never
+/// drops, so the rate is never negative; a sign would have no glyph anyway.
+fn spm_digits(spm: f64) -> Digits {
+    // A saturating cast.
+    Digits::new(spm.trunc().abs() as u64)
+}
+
 /// The old-style metre's height at `progress`, blinking the next bar on with the chance of the
 /// progress through it, drawn from `random` in 0..1.
 // Ported from osu!lazer 2026.1005.0-lazer: osu.Game.Rulesets.Osu/Skinning/Legacy/LegacyOldStyleSpinner.cs (getMetreHeight)
@@ -587,16 +897,7 @@ impl HitSpinners {
         for entry in spinners {
             if let Some(spinner) = self.visuals.get(entry.live.index) {
                 let pose = spinner_pose(spinner, entry, time, &self.style);
-                self.push_spinner(
-                    batch,
-                    layout,
-                    kind,
-                    entry.live.index,
-                    spinner,
-                    &pose,
-                    time,
-                    textures,
-                );
+                self.push_spinner(batch, layout, kind, entry, spinner, &pose, time, textures);
             }
         }
     }
@@ -607,7 +908,7 @@ impl HitSpinners {
         batch: &mut SpriteBatch,
         layout: &PlayfieldLayout,
         kind: SpinnerKind,
-        index: u32,
+        entry: &SpinnerEntry,
         spinner: &SpinnerVisual,
         pose: &SpinnerPose,
         time: f64,
@@ -691,7 +992,7 @@ impl HitSpinners {
                     Blend::Alpha,
                 );
                 if let Some(t) = &textures.metre {
-                    let random = frame_random(time, index);
+                    let random = frame_random(time, entry.live.index);
                     let height = metre_height(pose.progress, self.style.blink, random);
                     push_metre(
                         batch,
@@ -763,7 +1064,47 @@ impl HitSpinners {
         }
 
         // `LegacySpinner`'s own sprites, above the rest.
-        // Ported from osu!lazer 2026.1005.0-lazer: osu.Game.Rulesets.Osu/Skinning/Legacy/LegacySpinner.cs (load)
+        // Ported from osu!lazer 2026.1005.0-lazer: osu.Game.Rulesets.Osu/Skinning/Legacy/LegacySpinner.cs (load, LoadComplete, UpdateStateTransforms)
+        let font = LegacyFont {
+            digits: &textures.score_digits,
+            overlap: self.style.score_overlap,
+        };
+        let centred = Vec2::new(0.5, 0.5);
+        font.push(
+            batch,
+            &Digits::new(entry.live.bonus_score as u64),
+            at(BONUS_Y),
+            centred,
+            pose.bonus_scale * window_scale,
+            white(alpha * pose.bonus_alpha),
+        );
+        if let Some(t) = &textures.rpm {
+            let corner = layout.to_window(Vec2::new(
+                top.x + SPM_BACKGROUND.x,
+                top.y + SPM_BACKGROUND.y + pose.spm_offset,
+            ));
+            let scale = SPRITE_SCALE * window_scale;
+            let mut s = Sprite::new(
+                t.texture,
+                t.uv,
+                [corner.x, corner.y],
+                [t.size.x * scale, t.size.y * scale],
+            );
+            s.colour = white(alpha);
+            batch.push(&s);
+        }
+        let top_right = layout.to_window(Vec2::new(
+            top.x + SPM_COUNTER.x,
+            top.y + SPM_COUNTER.y + pose.spm_offset,
+        ));
+        font.push(
+            batch,
+            &spm_digits(entry.spm),
+            top_right,
+            Vec2::new(1.0, 0.0),
+            SPRITE_SCALE * 0.9 * window_scale,
+            white(alpha),
+        );
         let spin = white(alpha * pose.spin_alpha);
         sprite(
             batch,
@@ -840,6 +1181,95 @@ fn push_metre(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Feeds `calculator` a rotation of `rate` degrees per millisecond every `step` ms from
+    /// `from` to `to`, starting at `rotation`; returns the last rotation.
+    fn spin(
+        calculator: &mut SpmCalculator,
+        from: f64,
+        to: f64,
+        step: f64,
+        rate: f32,
+        rotation: f32,
+    ) -> f32 {
+        let mut time = from;
+        let mut rotation = rotation;
+        while time <= to {
+            calculator.set_rotation(time, rotation);
+            time += step;
+            rotation += rate * step as f32;
+        }
+        rotation - rate * step as f32
+    }
+
+    #[test]
+    fn spm_counts_the_rotation_over_the_window() {
+        // 0.6° per millisecond: 100 turns a minute.
+        let mut spm = SpmCalculator::new();
+        assert_eq!(spm.result(), 0.0);
+        spm.set_rotation(0.0, 0.0);
+        // A single record gives no rate yet.
+        assert_eq!(spm.result(), 0.0);
+        let rotation = spin(&mut spm, 1.0, 2000.0, 1.0, 0.6, 0.6);
+        assert!((spm.result() - 100.0).abs() < 0.01, "{}", spm.result());
+        // Resting: at 2300 the rate runs from the record at 1704, the newest older than 595
+        // ms, over 296 ms of spins in 596 ms; once the spins leave the window, it falls to 0.
+        spin(&mut spm, 2001.0, 2300.0, 1.0, 0.0, rotation);
+        assert!(
+            (spm.result() - 100.0 * 296.0 / 596.0).abs() < 0.01,
+            "{}",
+            spm.result()
+        );
+        spin(&mut spm, 2301.0, 2700.0, 1.0, 0.0, rotation);
+        assert_eq!(spm.result(), 0.0);
+    }
+
+    #[test]
+    fn spm_uses_the_newest_record_older_than_the_window() {
+        // Records at 0, 100, 700: at 700 the record at 0 is older than 595 ms, and so is the
+        // one at 100 (600 ms); the rate runs from 100.
+        let mut spm = SpmCalculator::new();
+        spm.set_rotation(0.0, 0.0);
+        spm.set_rotation(100.0, 90.0);
+        spm.set_rotation(700.0, 450.0);
+        let expected = f64::from(450.0f32 - 90.0) / 600.0 * 1000.0 * 60.0 / 360.0;
+        assert_eq!(spm.result(), expected);
+        // At 1000, only the record at 700 is left and newer than 595 ms: it is used.
+        spm.set_rotation(1000.0, 540.0);
+        let expected = f64::from(540.0f32 - 450.0) / 300.0 * 1000.0 * 60.0 / 360.0;
+        assert_eq!(spm.result(), expected);
+    }
+
+    #[test]
+    fn spm_skips_the_same_time_and_restarts_when_going_back() {
+        let mut spm = SpmCalculator::new();
+        spm.set_rotation(1000.0, 0.0);
+        spm.set_rotation(1100.0, 60.0);
+        let rate = spm.result();
+        assert_eq!(rate, 100.0);
+        // Within `Precision.AlmostEquals` of the last record: ignored.
+        spm.set_rotation(1100.0 + 1e-8, 1000.0);
+        assert_eq!(spm.result(), rate);
+        // Back in time: the records are dropped, the rate stays until there are two again.
+        spm.set_rotation(500.0, 0.0);
+        assert_eq!(spm.result(), rate);
+        spm.set_rotation(600.0, 120.0);
+        assert_eq!(spm.result(), 200.0);
+        // A new spinner starts from nothing.
+        spm.reset();
+        assert_eq!(spm.result(), 0.0);
+        spm.set_rotation(700.0, 500.0);
+        assert_eq!(spm.result(), 0.0);
+    }
+
+    #[test]
+    fn spm_drops_the_oldest_records_when_full() {
+        // A record every 0.01 ms fills the queue in under 164 ms; the rate stays right.
+        let mut spm = SpmCalculator::new();
+        spin(&mut spm, 0.0, 300.0, 0.01, 0.6, 0.0);
+        assert!(spm.dropped() > 0);
+        assert!((spm.result() - 100.0).abs() < 0.5, "{}", spm.result());
+    }
 
     #[test]
     fn tick_fades_chain() {
