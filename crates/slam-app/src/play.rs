@@ -17,7 +17,7 @@ use slam_engine::limiter::{LimiterMode, MAX_HZ, MIN_HZ, is_valid_hz};
 use slam_engine::{Draw, Engine, EngineConfig, FrameInfo, TickInfo, Update};
 use slam_input::{InputEvent, InputWindow, TickMapper, event_ring, sdl_ticks_ns};
 use slam_osu::judgement::HitResult;
-use slam_osu::{Beatmap, ModSet};
+use slam_osu::{Beatmap, Mod, ModSet};
 use slam_play::circles::{
     CircleMods, CircleSettings, CircleSkinConfig, CircleStyle, CircleVisuals, HitCircles,
 };
@@ -50,7 +50,7 @@ use perf::{FramePerf, ReportSources, SharedFrameTimes};
 
 pub const USAGE: &str = "usage: slam-app play MAP.osu [--skin DIR] [--backend NAME] \
                          [--device ID] [--buffer FRAMES] [--fps HZ|unlimited] \
-                         [--update-hz HZ] [--no-beatmap-colours] [--no-mouse-buttons] [--no-stats]";
+                         [--update-hz HZ] [--mods HDHR] [--no-beatmap-colours] [--no-mouse-buttons] [--no-stats]";
 
 const SAMPLE_RATE: u32 = 48_000;
 const CHANNELS: u16 = 2;
@@ -95,6 +95,8 @@ pub struct Options {
     /// Mouse buttons press in gameplay (lazer's `MouseDisableButtons` off); on by default,
     /// toggled with F10.
     pub mouse_buttons: bool,
+    /// Mods of the play; without `--mods`, none.
+    pub mods: ModSet,
 }
 
 impl Options {
@@ -112,6 +114,7 @@ impl Options {
             update_hz: EngineConfig::default().update_hz,
             beatmap_colours: true,
             mouse_buttons: true,
+            mods: ModSet::default(),
         };
         let mut args = args.into_iter();
         while let Some(arg) = args.next() {
@@ -129,6 +132,7 @@ impl Options {
                 "--no-stats" => options.stats = false,
                 "--no-beatmap-colours" => options.beatmap_colours = false,
                 "--no-mouse-buttons" => options.mouse_buttons = false,
+                "--mods" => options.mods = parse_mods(&value()?)?,
                 "--fps" => {
                     let fps = value()?;
                     options.draw = if fps == "unlimited" {
@@ -153,6 +157,43 @@ impl Options {
         options.map = map.ok_or("no beatmap given")?;
         Ok(options)
     }
+}
+
+/// The mods of `--mods`: two-letter acronyms run together, in any letter case and order.
+/// Only mods that keep the track speed are taken; the set must be one lazer accepts.
+fn parse_mods(value: &str) -> Result<ModSet, String> {
+    if value.is_empty() || !value.is_ascii() || !value.len().is_multiple_of(2) {
+        return Err(format!(
+            "--mods {value}: expected two-letter acronyms run together, like HDHR"
+        ));
+    }
+    let mut mods = Vec::new();
+    for i in (0..value.len()).step_by(2) {
+        let acronym = value[i..i + 2].to_ascii_uppercase();
+        let m = Mod::from_acronym(&acronym);
+        match m {
+            Mod::NoFail
+            | Mod::Easy { .. }
+            | Mod::HardRock
+            | Mod::Hidden { .. }
+            | Mod::SuddenDeath { .. }
+            | Mod::Perfect { .. } => mods.push(m),
+            Mod::HalfTime(_) | Mod::Daycore { .. } | Mod::DoubleTime(_) | Mod::Nightcore { .. } => {
+                return Err(format!(
+                    "--mods: {acronym} changes the track speed, which play does not support yet"
+                ));
+            }
+            _ => {
+                return Err(format!(
+                    "--mods: {acronym} is not supported (NF, EZ, HR, HD, SD, PF are)"
+                ));
+            }
+        }
+    }
+    let mods = ModSet::new(mods).map_err(|e| format!("--mods: {e}"))?;
+    mods.check_compatible()
+        .map_err(|e| format!("--mods: {e}"))?;
+    Ok(mods)
 }
 
 /// A draw or update rate in Hz.
@@ -432,6 +473,9 @@ struct Loaded {
     audio: PathBuf,
     beatmap_skin: Skin,
     skins: SkinChain,
+    /// The mods that built `beatmap`: the same instance goes on to the play, as lazer's
+    /// `Player` hands its one clone to the beatmap and the rulesets' processors.
+    mods: ModSet,
     /// The background image's name and bytes; `None` when the beatmap names none or it
     /// cannot be read.
     background: Option<(String, Vec<u8>)>,
@@ -452,7 +496,11 @@ fn load(options: &Options) -> Result<Loaded, String> {
         }
         bytes.map(|bytes| (name.to_owned(), bytes))
     });
-    let beatmap = Beatmap::from_file(file).map_err(|e| format!("{}: {e}", map.display()))?;
+    // The play's start time and the visuals take the preempt of the beatmap with mods applied.
+    let mut mods = options.mods.clone();
+    let beatmap = mods
+        .playable_beatmap(file)
+        .map_err(|e| format!("{}: {e}", map.display()))?;
     let beatmap_skin = Skin::load_beatmap(dir, &bytes).map_err(|e| format!("beatmap skin: {e}"))?;
     let default = Skin::load_default(default_skin_dir())
         .map_err(|e| format!("default skin {}: {e}", default_skin_dir().display()))?;
@@ -463,6 +511,7 @@ fn load(options: &Options) -> Result<Loaded, String> {
         .transpose()?;
     Ok(Loaded {
         beatmap,
+        mods,
         audio,
         beatmap_skin,
         skins: SkinChain::new(user, default),
@@ -532,7 +581,7 @@ fn device_limits(surface: SdlGlSurface) -> Result<(SdlGlSurface, slam_render::Li
 /// Plays the beatmap in a window until it is closed and prints the judgements.
 pub fn run(options: &Options) -> Result<(), String> {
     let loaded = load(options)?;
-    let mods = ModSet::default();
+    let mods = &loaded.mods;
     let beatmap = &loaded.beatmap;
 
     let mut cache = SampleCache::new(SAMPLE_RATE, CHANNELS);
@@ -544,8 +593,8 @@ pub fn run(options: &Options) -> Result<(), String> {
         },
         &mut cache,
     );
-    let sounds = GameplaySounds::new(beatmap, hitsounds, SoundSettings::for_mods(&mods));
-    let circle_mods = CircleMods::new(&mods);
+    let sounds = GameplaySounds::new(beatmap, hitsounds, SoundSettings::for_mods(mods));
+    let circle_mods = CircleMods::new(mods);
     let windows = slam_osu::hit_windows::HitWindows::new(beatmap.difficulty.overall_difficulty);
     let settings = CircleSettings {
         beatmap_colours: options.beatmap_colours,
@@ -651,7 +700,7 @@ pub fn run(options: &Options) -> Result<(), String> {
         ),
     );
     input.set_mouse_buttons_disabled(!options.mouse_buttons);
-    let session = PlaySession::new(beatmap, &mods, &player, input, sounds, Offsets::default());
+    let session = PlaySession::new(beatmap, mods, &player, input, sounds, Offsets::default());
     let exited = Arc::new(AtomicBool::new(false));
     let gameplay = Gameplay {
         session,
@@ -883,6 +932,75 @@ mod tests {
         }
         assert!(parse(&["map.osu", "--update-hz", "unlimited"]).is_err());
         assert!(parse(&["map.osu", "--backend", "asio"]).is_err());
+    }
+
+    #[test]
+    fn mods_are_parsed_in_any_case_and_order() {
+        let acronyms = |args: &[&str]| -> Vec<String> {
+            let mods = parse(args).unwrap().mods;
+            mods.to_api().into_iter().map(|m| m.acronym).collect()
+        };
+        assert!(acronyms(&["map.osu"]).is_empty());
+        assert_eq!(acronyms(&["map.osu", "--mods", "HDHR"]), ["HD", "HR"]);
+        assert_eq!(acronyms(&["--mods", "hrHd", "map.osu"]), ["HR", "HD"]);
+        assert_eq!(acronyms(&["map.osu", "--mods", "nf"]), ["NF"]);
+        assert_eq!(
+            acronyms(&["map.osu", "--mods", "EZHDSD"]),
+            ["EZ", "HD", "SD"]
+        );
+        assert_eq!(acronyms(&["map.osu", "--mods", "PFHR"]), ["PF", "HR"]);
+        // The mods reach the beatmap with their default settings.
+        let mods = parse(&["map.osu", "--mods", "EZ"]).unwrap().mods;
+        assert_eq!(mods, ModSet::new(vec![Mod::from_acronym("EZ")]).unwrap());
+    }
+
+    #[test]
+    fn mods_that_play_cannot_take_are_rejected() {
+        let bad = |value: &str| parse(&["map.osu", "--mods", value]).unwrap_err();
+        // Malformed.
+        for value in ["", "H", "HDH", "HDé", "HD HR"] {
+            assert!(bad(value).contains("two-letter"), "{value}");
+        }
+        // Speed changes and other mods.
+        for value in ["DT", "HDNC", "ht", "DC"] {
+            assert!(bad(value).contains("track speed"), "{value}");
+        }
+        for value in ["FL", "HDCL", "TC", "DA", "MR", "XX", "RX"] {
+            assert!(bad(value).contains("not supported"), "{value}");
+        }
+        // Sets lazer does not accept.
+        for value in ["HDHD", "hdHD"] {
+            assert!(bad(value).contains("more than once"), "{value}");
+        }
+        for value in ["HREZ", "EZHR", "SDPF", "NFSD", "PFNF", "HDNFHRPF"] {
+            assert!(bad(value).contains("incompatible"), "{value}");
+        }
+        assert!(parse(&["map.osu", "--mods"]).is_err());
+    }
+
+    #[test]
+    fn mods_are_applied_to_the_loaded_beatmap() {
+        let map = Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../slam-osu/tests/data/slider-samples.osu")
+            .to_string_lossy()
+            .into_owned();
+        let loaded = |mods: &[&str]| {
+            let mut args = vec![map.as_str()];
+            args.extend_from_slice(mods);
+            let options = parse(&args).unwrap();
+            let loaded = load(&options).unwrap();
+            assert_eq!(loaded.mods, options.mods);
+            loaded
+        };
+        let difficulty = |mods: &[&str]| loaded(mods).beatmap.difficulty;
+        let plain = difficulty(&[]);
+        let hard = difficulty(&["--mods", "HR"]);
+        let easy = difficulty(&["--mods", "EZ"]);
+        assert_eq!(hard.circle_size, (plain.circle_size * 1.3).min(10.0));
+        assert_eq!(hard.approach_rate, (plain.approach_rate * 1.4).min(10.0));
+        assert_eq!(easy.circle_size, plain.circle_size * 0.5);
+        assert_eq!(easy.approach_rate, plain.approach_rate * 0.5);
+        assert_eq!(difficulty(&["--mods", "HDNF"]), plain);
     }
 
     #[test]

@@ -35,6 +35,9 @@ pub enum ModError {
     /// either).
     #[error("mod {0} appears more than once")]
     Duplicate(String),
+    /// Two mods lazer does not allow together (`ModUtils.CheckCompatibleSet`).
+    #[error("mods {0} and {1} are incompatible")]
+    Incompatible(String, String),
     /// The replay's score-info block cannot be read.
     #[error(transparent)]
     Replay(#[from] OsrError),
@@ -612,6 +615,36 @@ impl Mod {
     pub fn is_supported(&self) -> bool {
         !matches!(self, Mod::Other { .. })
     }
+
+    // Ported from osu!lazer 2026.1005.0-lazer: osu.Game.Rulesets.Osu/Mods/*.cs, osu.Game/Rulesets/Mods/*.cs (IncompatibleMods)
+    /// Whether `other` is of a type in this mod's `IncompatibleMods`. Types lazer lists that
+    /// have no variant here (Cinema, Target Practice, Accuracy Challenge, Depth, ...) are left
+    /// out; [`Mod::Other`] lists nothing and is listed by nothing.
+    fn lists_incompatible(&self, other: &Mod) -> bool {
+        use Mod::*;
+        let rate_adjust = |m: &Mod| {
+            matches!(
+                m,
+                HalfTime(_) | Daycore { .. } | DoubleTime(_) | Nightcore { .. }
+            )
+        };
+        match self {
+            // `ModFailCondition`.
+            NoFail => matches!(other, SuddenDeath { .. } | Perfect { .. }),
+            SuddenDeath { .. } => matches!(other, NoFail | Perfect { .. }),
+            Perfect { .. } => matches!(other, NoFail | SuddenDeath { .. }),
+            Easy { .. } => matches!(other, HardRock | DifficultyAdjust(_)),
+            HardRock => matches!(other, Easy { .. } | DifficultyAdjust(_) | Mirror { .. }),
+            DifficultyAdjust(_) => matches!(other, Easy { .. } | HardRock),
+            Mirror { .. } => matches!(other, HardRock),
+            // `IRequiresApproachCircles` (Traceable) and `IHidesApproachCircles` (Hidden).
+            Hidden { .. } => matches!(other, Traceable),
+            Traceable => matches!(other, Hidden { .. }),
+            // `ModRateAdjust` lists itself.
+            HalfTime(_) | Daycore { .. } | DoubleTime(_) | Nightcore { .. } => rate_adjust(other),
+            Classic(_) | Other { .. } => false,
+        }
+    }
 }
 
 /// A `float` setting as the `double` that Newtonsoft's text of it (the shortest round-trip
@@ -982,6 +1015,24 @@ impl ModSet {
     /// of the selected set, as lazer deep-clones the mods for every `Player`.
     pub fn playable_beatmap(&mut self, file: osu_file::Beatmap) -> Result<Beatmap, BeatmapError> {
         Beatmap::from_file_with_mods(file, &mut self.mods)
+    }
+
+    // Ported from osu!lazer 2026.1005.0-lazer: osu.Game/Utils/ModUtils.cs (CheckCompatibleSet)
+    /// Whether lazer allows these mods together: no mod lists another of the set as
+    /// incompatible. Duplicates are already refused by [`ModSet::new`]. The error names the
+    /// first offending pair in set order.
+    pub fn check_compatible(&self) -> Result<(), ModError> {
+        for (i, m) in self.mods.iter().enumerate() {
+            for (j, other) in self.mods.iter().enumerate() {
+                if i != j && m.lists_incompatible(other) {
+                    return Err(ModError::Incompatible(
+                        m.acronym().to_owned(),
+                        other.acronym().to_owned(),
+                    ));
+                }
+            }
+        }
+        Ok(())
     }
 
     /// The mods in order.

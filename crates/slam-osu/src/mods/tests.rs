@@ -539,3 +539,64 @@ fn difficulty_adjust_multipliers() {
         1.0
     );
 }
+
+fn set(acronyms: &str) -> ModSet {
+    let mods = acronyms.split(' ').map(Mod::from_acronym).collect();
+    ModSet::new(mods).unwrap()
+}
+
+fn compatible(acronyms: &str) -> bool {
+    set(acronyms).check_compatible().is_ok()
+}
+
+// Ported from osu!lazer 2026.1005.0-lazer: osu.Game/Utils/ModUtils.cs (CheckCompatibleSet)
+#[test]
+fn incompatible_mods_are_rejected_like_lazer() {
+    // Every pair the lazer types list, in both orders.
+    let pairs = [
+        ("NF", "SD"),
+        ("NF", "PF"),
+        ("SD", "PF"),
+        ("EZ", "HR"),
+        ("EZ", "DA"),
+        ("HR", "DA"),
+        ("HR", "MR"),
+        ("HD", "TC"),
+        ("DT", "HT"),
+        ("DT", "NC"),
+        ("HT", "DC"),
+        ("NC", "DC"),
+        ("DT", "DC"),
+        ("HT", "NC"),
+    ];
+    for (a, b) in pairs {
+        assert!(!compatible(&format!("{a} {b}")), "{a} {b}");
+        assert!(!compatible(&format!("{b} {a}")), "{b} {a}");
+    }
+    let err = set("HD HR EZ").check_compatible().unwrap_err();
+    assert!(matches!(&err, ModError::Incompatible(a, b) if a == "HR" && b == "EZ"));
+    assert_eq!(err.to_string(), "mods HR and EZ are incompatible");
+    // The offending pair need not come first or be adjacent.
+    assert!(!compatible("HD NF CL PF"));
+    assert!(!compatible("CL HD DT EZ NC"));
+}
+
+#[test]
+fn compatible_sets_pass() {
+    assert!(ModSet::default().check_compatible().is_ok());
+    for acronyms in [
+        "HD HR",
+        "EZ HD SD",
+        "NF EZ HD",
+        "HR PF HD",
+        "DT HD HR CL",
+        "HT EZ NF",
+        "TC DA MR",
+        "NC HD SD",
+        "DA HD",
+        "MR EZ",
+        "XX HR EZ2",
+    ] {
+        assert!(compatible(acronyms), "{acronyms}");
+    }
+}
