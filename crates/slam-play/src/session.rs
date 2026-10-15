@@ -36,6 +36,7 @@ use crate::sliders::{
     AnimationSprites, BallStyle, HitSliders, LiveSliders, MAX_ANIMATION_FRAMES,
     MAX_FOLLOW_CIRCLE_AREA_SIZE, ObjectTextures, SliderBodies, SliderTextures, push_objects,
 };
+use crate::spinners::{HitSpinners, LiveSpinners, SpinnerTextures};
 use crate::time::Offsets;
 
 // Ported from osu!lazer 2026.1005.0-lazer: osu.Game/Screens/Play/Player.cs (PauseCooldownDuration)
@@ -150,6 +151,7 @@ pub struct PlaySnapshot {
     pub restarts: u32,
     pub circles: LiveCircles,
     pub sliders: LiveSliders,
+    pub spinners: LiveSpinners,
 }
 
 impl Default for PlaySnapshot {
@@ -170,6 +172,7 @@ impl Default for PlaySnapshot {
             restarts: 0,
             circles: LiveCircles::new(),
             sliders: LiveSliders::new(),
+            spinners: LiveSpinners::new(),
         }
     }
 }
@@ -789,6 +792,7 @@ impl PlaySession {
         snapshot.restarts = self.restarts;
         snapshot.circles.clear();
         snapshot.sliders.clear();
+        snapshot.spinners.clear();
     }
 
     /// Fills the fields every gameplay tick writes alike.
@@ -801,6 +805,7 @@ impl PlaySession {
         snapshot.restarts = self.restarts;
         snapshot.circles.capture(&self.rules);
         snapshot.sliders.capture(&self.rules);
+        snapshot.spinners.capture(&self.rules);
     }
 }
 
@@ -839,9 +844,61 @@ enum Element {
     BallSpec,
     Cursor,
     Digit(u8),
+    /// A legacy spinner texture.
+    Spinner(SpinnerPart),
 }
 
-const ELEMENTS: [Element; 22] = [
+/// The textures of legacy spinners.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum SpinnerPart {
+    Background,
+    Circle,
+    Metre,
+    Glow,
+    Bottom,
+    Top,
+    Middle2,
+    Middle,
+    Approach,
+    Spin,
+    Clear,
+}
+
+impl SpinnerPart {
+    fn name(self) -> &'static str {
+        match self {
+            SpinnerPart::Background => "spinner-background",
+            SpinnerPart::Circle => "spinner-circle",
+            SpinnerPart::Metre => "spinner-metre",
+            SpinnerPart::Glow => "spinner-glow",
+            SpinnerPart::Bottom => "spinner-bottom",
+            SpinnerPart::Top => "spinner-top",
+            SpinnerPart::Middle2 => "spinner-middle2",
+            SpinnerPart::Middle => "spinner-middle",
+            SpinnerPart::Approach => "spinner-approachcircle",
+            SpinnerPart::Spin => "spinner-spin",
+            SpinnerPart::Clear => "spinner-clear",
+        }
+    }
+
+    fn slot(self, textures: &mut SpinnerTextures) -> &mut Option<SkinSprite> {
+        match self {
+            SpinnerPart::Background => &mut textures.background,
+            SpinnerPart::Circle => &mut textures.circle,
+            SpinnerPart::Metre => &mut textures.metre,
+            SpinnerPart::Glow => &mut textures.glow,
+            SpinnerPart::Bottom => &mut textures.bottom,
+            SpinnerPart::Top => &mut textures.top,
+            SpinnerPart::Middle2 => &mut textures.middle2,
+            SpinnerPart::Middle => &mut textures.middle,
+            SpinnerPart::Approach => &mut textures.approach,
+            SpinnerPart::Spin => &mut textures.spin,
+            SpinnerPart::Clear => &mut textures.clear,
+        }
+    }
+}
+
+const ELEMENTS: [Element; 33] = [
     Element::Circle,
     Element::Overlay,
     Element::Approach,
@@ -864,6 +921,17 @@ const ELEMENTS: [Element; 22] = [
     Element::Digit(7),
     Element::Digit(8),
     Element::Digit(9),
+    Element::Spinner(SpinnerPart::Background),
+    Element::Spinner(SpinnerPart::Circle),
+    Element::Spinner(SpinnerPart::Metre),
+    Element::Spinner(SpinnerPart::Glow),
+    Element::Spinner(SpinnerPart::Bottom),
+    Element::Spinner(SpinnerPart::Top),
+    Element::Spinner(SpinnerPart::Middle2),
+    Element::Spinner(SpinnerPart::Middle),
+    Element::Spinner(SpinnerPart::Approach),
+    Element::Spinner(SpinnerPart::Spin),
+    Element::Spinner(SpinnerPart::Clear),
 ];
 
 /// A requested skin texture with the pixel density of its file.
@@ -935,8 +1003,9 @@ fn uses_prefix(skins: &SkinChain, prefix: &str) -> bool {
 }
 
 impl PlayTextures {
-    /// Reads the textures of hit circles, slider heads, tails, ticks, reverse arrows, balls and follow circles and the cursor from `skins` and queues them for
-    /// upload with a white image for the HUD. Missing ones are not drawn. Does file I/O: call it off the hot paths.
+    /// Reads the textures of hit circles, slider heads, tails, ticks, reverse arrows, balls and
+    /// follow circles, legacy spinners and the cursor from `skins` and queues them for upload
+    /// with a white image for the HUD. Missing ones are not drawn. Does file I/O: call it off the hot paths.
     pub fn request(
         skins: &SkinChain,
         requests: &mut TextureRequests,
@@ -979,6 +1048,7 @@ impl PlayTextures {
                 Element::BallNd | Element::BallSpec => continue,
                 Element::Cursor => "cursor".to_owned(),
                 Element::Digit(d) => format!("{prefix}-{d}"),
+                Element::Spinner(part) => part.name().to_owned(),
             };
             let Some(found) = skins.texture(&name) else {
                 continue;
@@ -1095,6 +1165,11 @@ impl PlayTextures {
                 Element::Digit(d) => {
                     frame.circles.digits[usize::from(d)] = Some(SkinSprite::digit(region, r.scale))
                 }
+                // Legacy spinner sprites are not cropped.
+                Element::Spinner(part) => {
+                    *part.slot(&mut frame.spinners) =
+                        Some(SkinSprite::new(region, r.scale, f32::MAX))
+                }
             }
         }
         // An animation is drawn once all its frames are uploaded.
@@ -1136,6 +1211,7 @@ impl PlayTextures {
 pub struct FrameTextures {
     pub circles: CircleTextures,
     pub sliders: SliderTextures,
+    pub spinners: SpinnerTextures,
     pub cursor: Option<SkinSprite>,
     /// An opaque white image.
     pub white: Option<AtlasRegion>,
@@ -1146,6 +1222,7 @@ pub struct FrameTextures {
 pub struct PlayView {
     pub circles: HitCircles,
     pub sliders: HitSliders,
+    pub spinners: HitSpinners,
 }
 
 impl PlayView {
@@ -1165,6 +1242,13 @@ impl PlayView {
         bodies.clear();
         if snapshot.state != PlayState::Waiting {
             let time = snapshot.time_at(now_ns);
+            self.spinners.push(
+                batch,
+                layout,
+                snapshot.spinners.as_slice(),
+                time,
+                &textures.spinners,
+            );
             push_objects(
                 &self.circles,
                 &self.sliders,

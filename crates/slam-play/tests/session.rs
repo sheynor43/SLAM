@@ -549,6 +549,10 @@ fn view(map: &Beatmap) -> PlayView {
             arrows: slam_play::sliders::ArrowStyle::new(&chain),
             ball: slam_play::sliders::BallStyle::new(&chain),
         },
+        spinners: slam_play::spinners::HitSpinners {
+            visuals: slam_play::spinners::SpinnerVisuals::new(map),
+            style: slam_play::spinners::SpinnerStyle::new(mods, &chain),
+        },
     }
 }
 

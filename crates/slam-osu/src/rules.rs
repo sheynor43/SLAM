@@ -247,6 +247,20 @@ pub struct LiveSpinner {
     /// Whole spins completed after the spinner's last tick was judged, each of which plays
     /// `spinnerbonus-max`; 0 for a spinner without ticks.
     pub bonus_max_spins: u32,
+    /// Lazer's `Progress`: [`progress_unclamped`](Self::progress_unclamped) clamped to 0..=1.
+    pub progress: f32,
+    /// The drawn rotation in degrees, clockwise: lazer's `SpinnerRotationTracker.Rotation`,
+    /// which follows the spun rotation with damping.
+    pub rotation: f32,
+    /// The tracker's `currentRotation`: the rotation spun, signed, which the drawn rotation
+    /// follows.
+    pub spun_rotation: f32,
+    /// Lazer's `Result.TimeCompleted`: when the required spins were done, if they were.
+    pub time_completed: Option<f64>,
+    /// When the last bonus tick judged as a hit was judged.
+    pub last_bonus_hit: Option<f64>,
+    /// The spinner's own judgement, once judged (at its end time or later).
+    pub judgement: Option<CircleJudgement>,
 }
 
 /// The osu!standard rules of a play.
@@ -428,6 +442,15 @@ impl OsuRules {
         })
     }
 
+    /// When each tick of the spinner with object index `index` judged as a hit was judged, in
+    /// order (ticks are hit in order). Empty for an index that is not a spinner's.
+    pub fn spinner_tick_hits(&self, index: u32) -> &[f64] {
+        match self.objects.get(index as usize).map(|o| o.kind) {
+            Some(Kind::Spinner(s)) => self.spinners[s].tick_hits(),
+            _ => &[],
+        }
+    }
+
     /// The hit circles alive at the last update, in start time order, with their judgements:
     /// what lazer's `DrawableHitCircle` shows. A judged circle stays alive while it fades out.
     pub fn live_circles(&self) -> impl Iterator<Item = LiveCircle> + '_ {
@@ -449,7 +472,8 @@ impl OsuRules {
     }
 
     /// The spinners alive at the last update, in start time order: what lazer's
-    /// `DrawableSpinner` reads to play its spinning and bonus-max samples. A judged spinner stays
+    /// `DrawableSpinner` reads to play its spinning and bonus-max samples and to draw the
+    /// spinner. A judged spinner stays
     /// alive while it fades out, with the state it had when judged.
     pub fn live_spinners(&self) -> impl Iterator<Item = LiveSpinner> + '_ {
         let time = self.time;
@@ -464,6 +488,15 @@ impl OsuRules {
                         is_spinning: spinner.is_spinning(),
                         progress_unclamped: spinner.progress_unclamped(),
                         bonus_max_spins: spinner.bonus_max_spins(),
+                        progress: spinner.progress(),
+                        rotation: spinner.rotation(),
+                        spun_rotation: spinner.spun_rotation(),
+                        time_completed: spinner.time_completed(),
+                        last_bonus_hit: spinner.last_bonus_hit(),
+                        judgement: o.result.map(|result| CircleJudgement {
+                            time: o.hit_state_time,
+                            result,
+                        }),
                     })
                 }
                 _ => None,

@@ -708,3 +708,70 @@ fn spins_past_the_last_tick_are_counted_for_the_bonus_max_sample() {
             .all(|(_, s)| s.bonus_max_spins == 0)
     );
 }
+
+// ---- Drawing state ----
+
+#[test]
+fn drawing_state_follows_the_judgements() {
+    // Twenty spins: five required, so the spinner is complete with the fifth tick; the twelfth
+    // and last tick is a bonus tick.
+    let map = spinner_map(JUDGEMENT_START, JUDGEMENT_END);
+    let frames = judgement_replay(20);
+    let mut all = vec![frame(0.0, frames[0].position.x, frames[0].position.y, NONE)];
+    all.extend_from_slice(&frames);
+    let rules = OsuRules::with_options(&map, lazer());
+    let mut sim = Simulator::new(&map, ReplayInput::new(all), rules);
+    let mut last = None;
+    while sim.step() {
+        if let Some(live) = sim.rules().live_spinners().next() {
+            assert_eq!(live.progress, live.progress_unclamped.clamp(0.0, 1.0));
+            last = Some(live);
+        }
+    }
+    let live = last.unwrap();
+    let hits: Vec<f64> = sim
+        .log()
+        .events()
+        .iter()
+        .filter(|j| j.object.nested.is_some() && j.result.is_hit())
+        .map(|j| j.time)
+        .collect();
+    assert_eq!(hits.len(), 12);
+    assert_eq!(sim.rules().spinner_tick_hits(0), hits.as_slice());
+    assert_eq!(live.last_bonus_hit, Some(hits[11]));
+    assert_eq!(live.time_completed, Some(hits[4]));
+    let judgement = live.judgement.unwrap();
+    assert_eq!((judgement.time, judgement.result), (JUDGEMENT_END, Great));
+    assert_eq!(live.progress, 1.0);
+    // The drawn rotation follows the spins, short of them while damped.
+    assert!(
+        (0.0..20.0 * 360.0 + 22.5).contains(&live.rotation),
+        "{}",
+        live.rotation
+    );
+    assert!(live.rotation > 19.0 * 360.0, "{}", live.rotation);
+}
+
+#[test]
+fn an_incomplete_spinner_has_no_completion_time() {
+    let map = spinner_map(JUDGEMENT_START, JUDGEMENT_END);
+    let states = live_states(&map, &judgement_replay(3));
+    let (_, live) = *states.last().unwrap();
+    assert_eq!(live.time_completed, None);
+    assert_eq!(live.last_bonus_hit, None);
+    assert!(
+        live.progress < 1.0 && live.progress > 0.5,
+        "{}",
+        live.progress
+    );
+    assert_eq!(live.judgement.unwrap().result, Miss);
+}
+
+#[test]
+fn tick_hits_are_empty_for_other_objects() {
+    let map = beatmap(5.0, "100,100,500,1,0\n256,192,2000,12,0,4000\n");
+    let rules = OsuRules::with_options(&map, lazer());
+    assert!(rules.spinner_tick_hits(0).is_empty());
+    assert!(rules.spinner_tick_hits(1).is_empty());
+    assert!(rules.spinner_tick_hits(7).is_empty());
+}
