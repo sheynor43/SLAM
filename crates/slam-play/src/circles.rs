@@ -298,6 +298,8 @@ fn pick(colours: &[Rgba], index: i32) -> [u8; 4] {
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub(crate) enum Easing {
     None,
+    /// osu-framework's `Easing.In` (quadratic).
+    In,
     /// osu-framework's `Easing.Out` (quadratic).
     Out,
     OutQuint,
@@ -311,6 +313,7 @@ impl Easing {
         const ELASTIC_CONST2: f64 = 0.3 / 4.0;
         match self {
             Easing::None => t,
+            Easing::In => t * t,
             Easing::Out => t * (2.0 - t),
             Easing::OutQuint => {
                 let t = t - 1.0;
@@ -469,6 +472,26 @@ impl Track {
         assert!(i < self.tweens.len(), "too many transforms on one property");
         self.tweens[i] = Tween::new(start, duration, end, easing);
         self.len = i + 1;
+    }
+
+    /// Drops the transforms superseded by `time`: all but the latest started by then, which
+    /// starts from `initial`, updated to the value the property had when it started. Lets a
+    /// long series of transforms, added in time order, fit.
+    pub(crate) fn settle(&mut self, initial: &mut f32, time: f64) {
+        let started = self.tweens[..self.len]
+            .iter()
+            .take_while(|t| t.start <= time)
+            .count();
+        if started < 2 {
+            return;
+        }
+        let last = started - 1;
+        // As `value` steps from one transform to the next.
+        for j in 1..=last {
+            *initial = self.tweens[j - 1].value_at(self.kind, *initial, self.tweens[j].start);
+        }
+        self.tweens.copy_within(last..self.len, 0);
+        self.len -= last;
     }
 
     pub(crate) fn fade_out(&mut self, start: f64, duration: f64) {
@@ -966,6 +989,23 @@ pub(crate) fn push_approach(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn settling_a_track_keeps_its_values() {
+        let mut track = Track::new(Kind::Scale);
+        track.add(0.0, 100.0, 2.0, Easing::Out);
+        track.add(50.0, 0.0, 2.2, Easing::None);
+        track.add(50.0, 200.0, 2.0, Easing::None);
+        track.add(300.0, 100.0, 4.0, Easing::None);
+        let times = [50.0, 60.0, 250.0, 299.0, 300.0, 350.0, 500.0];
+        let before: Vec<f32> = times.iter().map(|&t| track.value(1.0, t)).collect();
+        let mut initial = 1.0;
+        track.settle(&mut initial, 50.0);
+        // The transform started last by then and the one not started yet are kept.
+        assert_eq!(track.len, 2);
+        let after: Vec<f32> = times.iter().map(|&t| track.value(initial, t)).collect();
+        assert_eq!(before, after);
+    }
 
     const START: f64 = 1000.0;
     /// AR 9.

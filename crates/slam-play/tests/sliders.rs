@@ -16,15 +16,17 @@ use slam_play::circles::{
 };
 use slam_play::slider_body::Snaking;
 use slam_play::sliders::{
-    ArrowStyle, HitSliders, LiveSliders, MAX_LIVE_NESTED, NestedPiece, NestedVisual,
-    ObjectTextures, SliderBodies, SliderPose, SliderTextures, SliderVisual, SliderVisuals,
-    push_objects, repeat_pose, slider_pose, tick_pose,
+    AnimationSprites, ArrowStyle, BallPose, BallStyle, HitSliders, LiveSliders, MAX_LIVE_NESTED,
+    NestedPiece, NestedVisual, ObjectTextures, SliderBodies, SliderPose, SliderTextures,
+    SliderVisual, SliderVisuals, animation_frame, ball_pose, push_objects, repeat_pose,
+    slider_pose, tick_pose,
 };
 use slam_render::Limits;
 use slam_render::atlas::UvRect;
 use slam_render::sprite::SpriteBatch;
 use slam_render::textures::TextureId;
 use slam_render::upload::{TextureLoaderConfig, texture_loader};
+use slam_render::{Blend, Color};
 use slam_skin::{Skin, SkinChain};
 use slam_testkit::assert_no_alloc;
 
@@ -86,6 +88,7 @@ fn objects(map: &Beatmap, mods: &ModSet, snaking: Snaking) -> (HitCircles, HitSl
             visuals: SliderVisuals::new(map, circle_mods, settings, None, &chain),
             snaking,
             arrows: ArrowStyle::new(&chain),
+            ball: BallStyle::new(&chain),
         },
     )
 }
@@ -102,6 +105,7 @@ fn live(
     LiveSlider {
         index: 1,
         tracking: false,
+        press_time: None,
         head,
         tail,
         judgement,
@@ -379,6 +383,7 @@ fn slider_textures() -> SliderTextures {
         },
         tick: sprite(TICK),
         arrow: sprite(ARROW),
+        ..SliderTextures::default()
     }
 }
 
@@ -519,7 +524,7 @@ fn frame_does_not_allocate(map: &Beatmap) {
     let mut live_sliders = Box::new(LiveSliders::new());
     let mut batch = SpriteBatch::with_capacity(1024);
     let mut bodies = SliderBodies::new();
-    let (circle_textures, slider_textures) = (circle_textures(), slider_textures());
+    let (circle_textures, slider_textures) = (circle_textures(), ball_textures());
     let mut drawn = 0;
     while sim.step() {
         let time = sim.time();
@@ -1031,4 +1036,485 @@ fn the_arrow_style_reads_the_version_and_the_arrow_provider() {
             default_texture: false,
         }
     );
+}
+
+// ---- Ball and follow circle ----
+
+const BALL: TextureId = TextureId(11);
+const BALL_ND: TextureId = TextureId(12);
+const BALL_SPEC: TextureId = TextureId(13);
+const FOLLOW: TextureId = TextureId(14);
+const BALL_1: TextureId = TextureId(15);
+
+/// [`slider_textures`] with a two-frame ball, its layers and a follow circle.
+fn ball_textures() -> SliderTextures {
+    let frames = |ids: &[TextureId]| ids.iter().map(|&t| sprite(t).unwrap()).collect::<Vec<_>>();
+    SliderTextures {
+        ball: AnimationSprites::new(frames(&[BALL, BALL_1]), 1000.0 / 60.0),
+        ball_nd: sprite(BALL_ND),
+        ball_spec: sprite(BALL_SPEC),
+        follow: AnimationSprites::new(frames(&[FOLLOW]), 1000.0 / 60.0),
+        ..slider_textures()
+    }
+}
+
+#[test]
+fn animation_frames_follow_the_playback_position() {
+    let frame = |playback| animation_frame(playback, 10.0, 3, true);
+    // Before the start: the first frame; each starts where the previous ends.
+    assert_eq!(frame(-5.0), 0);
+    assert_eq!(frame(0.0), 0);
+    assert_eq!(frame(9.999), 0);
+    assert_eq!(frame(10.0), 1);
+    assert_eq!(frame(25.0), 2);
+    // Looping: from the start again.
+    assert_eq!(frame(30.0), 0);
+    assert_eq!(frame(41.0), 1);
+    // Not looping: the last frame stays.
+    assert_eq!(animation_frame(41.0, 10.0, 3, false), 2);
+    assert_eq!(animation_frame(41.0, 10.0, 1, true), 0);
+
+    let animation = ball_textures().ball;
+    assert_eq!(animation.len(), 2);
+    assert_eq!(animation.frame_at(20.0, 16.0).unwrap().texture, BALL_1);
+    assert!(AnimationSprites::default().frame_at(0.0, 16.0).is_none());
+}
+
+/// The judgement at `time` of every nested object of the slider of [`NESTED_MAP`] in `judged`
+/// (by start time, as `(start time, hit)`), the others unjudged.
+fn nested_judgements(
+    nested: &[NestedVisual],
+    judged: &[(f64, bool)],
+) -> Vec<Option<CircleJudgement>> {
+    nested
+        .iter()
+        .map(|n| {
+            let (_, hit) = judged.iter().find(|(t, _)| *t == n.start_time)?;
+            let result = if *hit {
+                HitResult::LargeTickHit
+            } else {
+                HitResult::LargeTickMiss
+            };
+            judged_at(n.start_time, result)
+        })
+        .collect()
+}
+
+fn judged_at(time: f64, result: HitResult) -> Option<CircleJudgement> {
+    Some(CircleJudgement { time, result })
+}
+
+/// The ball of the slider of [`NESTED_MAP`] at `time`, pressed at `press`, judged as
+/// `judgement`, with nested objects judged as `judged` (see [`nested_judgements`]).
+fn ball_at(
+    press: Option<f64>,
+    judgement: Option<CircleJudgement>,
+    judged: &[(f64, bool)],
+    time: f64,
+) -> BallPose {
+    let map = nested_map(&ModSet::default());
+    let (_, sliders) = objects(&map, &ModSet::default(), Snaking::default());
+    let slider = sliders.visuals.get(0).unwrap();
+    let nested = sliders.visuals.nested(slider);
+    let live = LiveSlider {
+        index: 0,
+        press_time: press,
+        ..live(None, None, judgement)
+    };
+    let judgements = nested_judgements(nested, judged);
+    ball_pose(
+        slider,
+        sliders.visuals.path(slider),
+        nested,
+        &live,
+        &judgements,
+        time,
+    )
+}
+
+#[test]
+fn the_ball_rolls_along_the_path_from_the_start_time() {
+    // Appears at the start time with its container; the slider's animations count from its
+    // appearance (preempt 600).
+    let before = ball_at(None, None, &[], 999.0);
+    assert_eq!((before.container_alpha, before.ball_alpha), (0.0, 0.0));
+    assert_eq!(before.playback, 599.0);
+    let at = ball_at(None, None, &[], 1000.0);
+    assert_eq!((at.container_alpha, at.ball_alpha), (1.0, 1.0));
+    assert_eq!(at.position, Vec2::new(200.0, 200.0));
+    // Facing right along the first span, left along the second.
+    assert!(close(at.rotation, 0.0), "{}", at.rotation);
+    let first = ball_at(None, None, &[], 1500.0);
+    assert_eq!(first.position, Vec2::new(300.0, 200.0));
+    assert!(close(first.rotation, 0.0), "{}", first.rotation);
+    let second = ball_at(None, None, &[], 2500.0);
+    assert_eq!(second.position, Vec2::new(300.0, 200.0));
+    assert!(close(second.rotation, -180.0), "{}", second.rotation);
+    // Gone at the slider's hit state time: its end time until judged, then its judgement.
+    let end = ball_at(None, None, &[], 4000.0);
+    assert_eq!((end.container_alpha, end.ball_alpha), (1.0, 0.0));
+    assert_eq!(end.position, Vec2::new(400.0, 200.0));
+    let judged = judged_at(4010.0, HitResult::Great);
+    assert_eq!(ball_at(None, judged, &[], 4005.0).ball_alpha, 1.0);
+    assert_eq!(ball_at(None, judged, &[], 4010.0).ball_alpha, 0.0);
+}
+
+#[test]
+fn the_ball_animates_slower_on_slow_sliders() {
+    let map = nested_map(&ModSet::default());
+    let (_, sliders) = objects(&map, &ModSet::default(), Snaking::default());
+    let slider = *sliders.visuals.get(0).unwrap();
+    // 200 osu!pixels per second: at least a frame at 60 fps.
+    assert_eq!(slider.velocity, 0.2);
+    let pose = |slider: &SliderVisual| {
+        let live = LiveSlider {
+            index: 0,
+            ..live(None, None, None)
+        };
+        ball_pose(
+            slider,
+            sliders.visuals.path(slider),
+            &[],
+            &live,
+            &[],
+            1000.0,
+        )
+    };
+    assert_eq!(pose(&slider).frame_length, 1000.0 / 60.0);
+    let slow = SliderVisual {
+        velocity: 0.05,
+        ..slider
+    };
+    assert!((pose(&slow).frame_length - 50.0).abs() < 1e-9);
+}
+
+/// `Easing.Out` at `t`.
+fn out(t: f32) -> f32 {
+    t * (2.0 - t)
+}
+
+#[test]
+fn the_follow_circle_grows_in_on_press() {
+    let follow = |press, time| {
+        let p = ball_at(press, None, &[], time);
+        (p.follow_alpha, p.follow_scale)
+    };
+    // Hidden until pressed.
+    assert_eq!(follow(None, 2000.0), (0.0, 1.0));
+    // Pressed at 1201: fades in over 60 ms and grows to twice its size over 180 ms.
+    let (alpha, scale) = follow(Some(1201.0), 1231.0);
+    assert!(
+        close(alpha, 0.5) && close(scale, 1.0 + out(30.0 / 180.0)),
+        "{alpha} {scale}"
+    );
+    assert_eq!(follow(Some(1201.0), 1381.0), (1.0, 2.0));
+    // Held from before the start: from the start time.
+    assert_eq!(follow(Some(900.0), 1000.0), (0.0, 1.0));
+    assert_eq!(follow(Some(900.0), 1180.0), (1.0, 2.0));
+    // Late in the slider: only the time left.
+    assert_eq!(follow(Some(3970.0), 4000.0), (1.0, 2.0));
+}
+
+#[test]
+fn the_follow_circle_pulses_on_ticks_once_grown() {
+    let scale =
+        |press, judged: &[(f64, bool)], time| ball_at(press, None, judged, time).follow_scale;
+    let tick = [(1500.0, true)];
+    // Grown when the tick is hit: back from 2.2 to 2 over 200 ms.
+    assert!(close(scale(Some(1001.0), &tick, 1500.0), 2.2));
+    assert!(close(scale(Some(1001.0), &tick, 1600.0), 2.1));
+    assert!(close(scale(Some(1001.0), &tick, 1700.0), 2.0));
+    // Still growing: no pulse.
+    let growing = scale(Some(1450.0), &tick, 1500.0);
+    assert!(close(growing, 1.0 + out(50.0 / 180.0)), "{growing}");
+    // Repeats pulse too.
+    let repeat = [(1500.0, true), (2000.0, true)];
+    assert!(close(scale(Some(1001.0), &repeat, 2000.0), 2.2));
+}
+
+#[test]
+fn the_follow_circle_bursts_on_a_break_and_shrinks_at_the_end() {
+    let follow = |press, judged: &[(f64, bool)], time| {
+        let p = ball_at(press, None, judged, time);
+        (p.follow_alpha, p.follow_scale)
+    };
+    // A missed tick: grows to 4 and fades over 100 ms.
+    let missed = [(1500.0, false)];
+    let (alpha, scale) = follow(Some(1001.0), &missed, 1550.0);
+    assert!(close(alpha, 0.5) && close(scale, 3.0), "{alpha} {scale}");
+    assert_eq!(follow(Some(1001.0), &missed, 1600.0), (0.0, 4.0));
+    // Pressed again later: grows in again from 1.
+    assert_eq!(follow(Some(1700.0), &missed, 1700.0), (0.0, 1.0));
+    assert_eq!(follow(Some(1700.0), &missed, 1880.0), (1.0, 2.0));
+    // A press before the break does not undo it.
+    assert_eq!(follow(Some(1400.0), &missed, 1600.0), (0.0, 4.0));
+
+    // The tail hit: at the slider's end, shrinks to 1.6 and fades out over 200 ms.
+    let all: Vec<_> = [1500.0, 2000.0, 2500.0, 3000.0, 3500.0, 4000.0]
+        .into_iter()
+        .map(|t| (t, true))
+        .collect();
+    assert_eq!(follow(Some(1001.0), &all, 3999.0), (1.0, 2.0));
+    let (alpha, scale) = follow(Some(1001.0), &all, 4100.0);
+    assert!(
+        close(alpha, 0.75) && close(scale, 2.0 - out(0.5) * 0.4),
+        "{alpha} {scale}"
+    );
+    assert_eq!(follow(Some(1001.0), &all, 4200.0), (0.0, 1.6));
+    // The tail missed: bursts when it is judged.
+    let mut tail_missed = all.clone();
+    tail_missed.last_mut().unwrap().1 = false;
+    assert_eq!(follow(Some(1001.0), &tail_missed, 4100.0), (0.0, 4.0));
+}
+
+/// The slider of [`NESTED_MAP`] with its ticks and repeats hit and its tail hit at
+/// `tail_time` (lazer judges it up to 36 ms before the end).
+fn all_hit_with_tail_at(nested: &[NestedVisual], tail_time: f64) -> Vec<Option<CircleJudgement>> {
+    nested
+        .iter()
+        .map(|n| match n.piece {
+            NestedPiece::Head => None,
+            NestedPiece::Tail => judged_at(tail_time, HitResult::SliderTailHit),
+            _ => judged_at(n.start_time, HitResult::LargeTickHit),
+        })
+        .collect()
+}
+
+#[test]
+fn a_press_after_the_tail_is_hit_cancels_the_end_animation() {
+    let map = nested_map(&ModSet::default());
+    let (_, sliders) = objects(&map, &ModSet::default(), Snaking::default());
+    let slider = sliders.visuals.get(0).unwrap();
+    let nested = sliders.visuals.nested(slider);
+    let judgements = all_hit_with_tail_at(nested, 3964.0);
+    let follow = |press, time| {
+        let live = LiveSlider {
+            index: 0,
+            press_time: Some(press),
+            ..live(None, None, None)
+        };
+        let p = ball_pose(
+            slider,
+            sliders.visuals.path(slider),
+            nested,
+            &live,
+            &judgements,
+            time,
+        );
+        (p.follow_alpha, p.follow_scale)
+    };
+    // The tail judged early: the end animation still starts at the end time.
+    assert_eq!(follow(1001.0, 3999.0), (1.0, 2.0));
+    assert_eq!(follow(1001.0, 4200.0), (0.0, 1.6));
+    // Pressed in the same update as the tail's judgement: the end animation plays.
+    assert_eq!(follow(3964.0, 4200.0), (0.0, 1.6));
+    // Pressed after it: the press drops the later end animation.
+    assert_eq!(follow(3980.0, 4200.0), (1.0, 2.0));
+    // At the end time: the later press wins at the same start.
+    assert_eq!(follow(4000.0, 4200.0), (1.0, 2.0));
+    // After it, the slider not judged yet: back at once, no time left.
+    assert_eq!(follow(4005.0, 4005.0), (1.0, 2.0));
+}
+
+#[test]
+fn a_press_before_a_short_slider_grows_in_the_time_left() {
+    let map = nested_map(&ModSet::default());
+    let (_, sliders) = objects(&map, &ModSet::default(), Snaking::default());
+    let slider = SliderVisual {
+        end_time: 1150.0,
+        ..*sliders.visuals.get(0).unwrap()
+    };
+    let live = LiveSlider {
+        index: 0,
+        press_time: Some(950.0),
+        ..live(None, None, None)
+    };
+    let follow = |time| {
+        let p = ball_pose(
+            &slider,
+            sliders.visuals.path(&slider),
+            &[],
+            &live,
+            &[],
+            time,
+        );
+        (p.follow_alpha, p.follow_scale)
+    };
+    // From the start time, over the 200 ms left from the press: 180 ms.
+    assert_eq!(follow(1000.0), (0.0, 1.0));
+    assert_eq!(follow(1180.0), (1.0, 2.0));
+    let slider = SliderVisual {
+        end_time: 1100.0,
+        ..slider
+    };
+    // 150 ms left.
+    let p = ball_pose(
+        &slider,
+        sliders.visuals.path(&slider),
+        &[],
+        &live,
+        &[],
+        1075.0,
+    );
+    assert!(close(p.follow_scale, 1.0 + out(0.5)), "{}", p.follow_scale);
+    let p = ball_pose(
+        &slider,
+        sliders.visuals.path(&slider),
+        &[],
+        &live,
+        &[],
+        1150.0,
+    );
+    assert_eq!((p.follow_alpha, p.follow_scale), (1.0, 2.0));
+}
+
+#[test]
+fn a_degenerate_slider_poses_a_finite_ball() {
+    let map = nested_map(&ModSet::default());
+    let (_, sliders) = objects(&map, &ModSet::default(), Snaking::default());
+    let slider = sliders.visuals.get(0).unwrap();
+    let live = LiveSlider {
+        index: 0,
+        ..live(None, None, None)
+    };
+    // No length to tell the direction: the ball keeps its initial rotation.
+    let zero_length = SliderVisual {
+        distance: 0.0,
+        ..*slider
+    };
+    let p = ball_pose(
+        &zero_length,
+        sliders.visuals.path(slider),
+        &[],
+        &live,
+        &[],
+        1200.0,
+    );
+    assert_eq!(p.rotation, 0.0);
+    assert!(p.position.x.is_finite() && p.position.y.is_finite());
+    // No duration: the progress is not a number exactly at the start time.
+    let instant = SliderVisual {
+        end_time: slider.timing.start_time,
+        ..*slider
+    };
+    for time in [999.0, 1000.0, 1001.0] {
+        let p = ball_pose(
+            &instant,
+            sliders.visuals.path(slider),
+            &[],
+            &live,
+            &[],
+            time,
+        );
+        assert!(p.rotation.is_finite(), "{time}: {p:?}");
+        assert!(p.follow_alpha.is_finite() && p.follow_scale.is_finite());
+    }
+}
+
+#[test]
+fn the_follow_circle_and_ball_draw_above_the_head() {
+    let map = nested_map(&ModSet::default());
+    let (circles, sliders) = objects(&map, &ModSet::default(), Snaking::default());
+    let slider = LiveSlider {
+        index: 0,
+        press_time: Some(1001.0),
+        ..live(None, None, None)
+    };
+    let mut batch = SpriteBatch::new();
+    let mut bodies = SliderBodies::new();
+    let (circle_textures, slider_textures) = (circle_textures(), ball_textures());
+    let layout = common::layout();
+    push_objects(
+        &circles,
+        &sliders,
+        &mut batch,
+        &mut bodies,
+        &layout,
+        &[],
+        &snapshot(&map, slider),
+        2610.0,
+        ObjectTextures {
+            circles: &circle_textures,
+            sliders: &slider_textures,
+        },
+    );
+    let batches = batch.batches();
+    let tail: Vec<_> = batches[batches.len() - 4..]
+        .iter()
+        .map(|b| (b.texture, b.blend))
+        .collect();
+    // Playback 2210 ms at 60 fps: frame 132, the first of two.
+    assert_eq!(
+        tail,
+        [
+            (FOLLOW, Blend::Alpha),
+            (BALL_ND, Blend::Alpha),
+            (BALL, Blend::Alpha),
+            (BALL_SPEC, Blend::Additive),
+        ]
+    );
+    // The follow circle at half its texture size, doubled; the ball's layers at its size.
+    let scale = layout.scale() * sliders.visuals.get(0).unwrap().head.scale;
+    let quads = batch.vertices().len() / 4;
+    let width = |quad: usize| {
+        let v = &batch.vertices()[quad * 4..quad * 4 + 4];
+        let xs = v.iter().map(|v| v.position[0]);
+        xs.clone().fold(f32::MIN, f32::max) - xs.fold(f32::MAX, f32::min)
+    };
+    assert!((width(quads - 4) - 128.0 * scale).abs() < 1e-3);
+    assert!((width(quads - 3) - 128.0 * scale).abs() < 1e-3);
+    // The ball faces left on the second span: turned half a turn, the same width.
+    assert!((width(quads - 2) - 128.0 * scale).abs() < 1e-2);
+    // The ball takes the skin's `SliderBall` colour (white in a skin without one).
+    let ball = &batch.vertices()[(quads - 2) * 4];
+    assert_eq!(ball.colour[0..3], [1.0, 1.0, 1.0]);
+    let nd = &batch.vertices()[(quads - 3) * 4];
+    assert!((nd.colour[0] - 5.0 / 255.0).abs() < 1e-6);
+}
+
+#[test]
+fn the_ball_and_its_layers_come_from_one_skin() {
+    // A two-frame ball; the layers of a later skin are not used.
+    assert_eq!(found(&["sliderb0", "sliderb1"], &["sliderb-nd"]), 2);
+    assert_eq!(found(&[], &["sliderb", "sliderb-nd", "sliderb-spec"]), 3);
+    // The follow circle is looked up on its own.
+    assert_eq!(
+        found(
+            &["sliderfollowcircle-0", "sliderfollowcircle-1"],
+            &["sliderb"]
+        ),
+        3
+    );
+}
+
+#[test]
+fn the_ball_style_reads_the_skin_that_provides_the_ball() {
+    let style = |user_ini: &str, user_ball: bool| {
+        let (user_dir, default_dir) = (
+            common::skin::SampleDir::new(&[]),
+            common::skin::SampleDir::new(&[]),
+        );
+        fs::write(user_dir.0.join("skin.ini"), user_ini).unwrap();
+        let default_ini = "[General]\nAllowSliderBallTint: 1\n[Colours]\nSliderBall: 2,170,255\n";
+        fs::write(default_dir.0.join("skin.ini"), default_ini).unwrap();
+        fs::write(default_dir.0.join("sliderb.png"), b"not checked here").unwrap();
+        if user_ball {
+            fs::write(user_dir.0.join("sliderb0.png"), b"not checked here").unwrap();
+        }
+        let chain = SkinChain::new(
+            Some(Skin::load(&user_dir.0).unwrap()),
+            Skin::load(&default_dir.0).unwrap(),
+        );
+        BallStyle::new(&chain)
+    };
+    let accent = Color::rgb(1.0, 0.0, 0.0);
+    // The default skin's ball: tinted with the combo colour.
+    let default = style("[Colours]\nSliderBall: 10,20,30\n", false);
+    assert!(default.tint);
+    assert_eq!(default.ball_colour(accent), accent);
+    // The user's ball: its colour, and no tint without the setting.
+    let user = style("[Colours]\nSliderBall: 255,0,255\n", true);
+    assert!(!user.tint);
+    assert_eq!(user.ball_colour(accent), Color::rgb(1.0, 0.0, 1.0));
+    assert_eq!(style("", true).ball_colour(accent), Color::WHITE);
 }

@@ -85,6 +85,10 @@ pub(super) struct SliderState {
     /// `SliderInputManager` child, so it sees tracking from the previous update, changed only
     /// by presses since.
     drawable_tracking: bool,
+    /// The time of the update where the drawable last saw tracking start while unjudged:
+    /// lazer's `FollowCircle` plays its press animation then (from the start time at the
+    /// earliest).
+    press_time: Option<f64>,
     time_to_accept_any_key_after: Option<f64>,
     /// The actions held at the previous tracking update.
     last_pressed: Actions,
@@ -148,6 +152,7 @@ impl SliderState {
             head_hit_action: None,
             tracking: false,
             drawable_tracking: false,
+            press_time: None,
             time_to_accept_any_key_after: None,
             last_pressed: Actions::NONE,
             mouse: None,
@@ -216,9 +221,19 @@ impl SliderState {
         self.drawable_tracking
     }
 
-    /// Records the tracking the drawable sees in this update, before the input manager
-    /// updates; call it first in every update of a live slider.
-    pub(super) fn begin_update(&mut self) {
+    /// When the drawable last saw tracking start (see `press_time`).
+    pub(super) fn press_time(&self) -> Option<f64> {
+        self.press_time
+    }
+
+    // Ported from osu!lazer 2026.1005.0-lazer: osu.Game.Rulesets.Osu/Skinning/FollowCircle.cs (load)
+    /// Records the tracking the drawable sees in an update at `time`, before the input manager
+    /// updates; call it first in every update of a live slider. `judged` is whether the slider
+    /// is: a judged slider's follow circle ignores tracking changes.
+    pub(super) fn begin_update(&mut self, time: f64, judged: bool) {
+        if self.tracking && !self.drawable_tracking && !judged {
+            self.press_time = Some(time);
+        }
         self.drawable_tracking = self.tracking;
     }
 
@@ -230,7 +245,7 @@ impl SliderState {
     /// after a judgement at that same time, where lazer would check the cursor and actions
     /// again.
     pub(super) fn update_judged(&mut self, time: f64) {
-        self.begin_update();
+        self.begin_update(time, true);
         self.tracking = self.tracking && time <= self.end_time;
     }
 

@@ -22,7 +22,9 @@ use slam_play::circles::{
     CircleMods, CircleSettings, CircleSkinConfig, CircleStyle, CircleVisuals, HitCircles,
 };
 use slam_play::slider_body::Snaking;
-use slam_play::sliders::{ArrowStyle, HitSliders, MAX_LIVE_SLIDERS, SliderBodies, SliderVisuals};
+use slam_play::sliders::{
+    ArrowStyle, BallStyle, HitSliders, MAX_LIVE_SLIDERS, SliderBodies, SliderVisuals,
+};
 use slam_play::{
     BackgroundSettings, BackgroundView, Bindings, GameplaySounds, Hitsounds, HudView, LiveInput,
     Offsets, PlaySession, PlaySnapshot, PlayTextures, PlayView, PlayfieldLayout, SampleCache,
@@ -558,6 +560,7 @@ pub fn run(options: &Options) -> Result<(), String> {
             ),
             snaking: Snaking::default(),
             arrows: ArrowStyle::new(&loaded.skins),
+            ball: BallStyle::new(&loaded.skins),
         },
     };
 

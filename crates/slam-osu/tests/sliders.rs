@@ -1244,6 +1244,64 @@ fn live_sliders_report_tracking_until_the_slider_expires() {
     assert_eq!(rules.live_sliders().count(), 0);
 }
 
+/// The press time of slider 0 at the last update; none if it is not alive.
+fn live_press_time(sim: &Simulator<OsuRules>) -> Option<Option<f64>> {
+    let live: Vec<_> = sim.rules().live_sliders().collect();
+    live.first().map(|s| s.press_time)
+}
+
+#[test]
+fn live_sliders_report_when_tracking_last_started() {
+    let map = input_slider();
+    let frames = [
+        frame(0.0, 0.0, 0.0, NONE),
+        // Held before the slider starts.
+        frame(1000.0, 0.0, 0.0, LEFT),
+        frame(TIME_DURING_SLIDE_1, 0.0, 0.0, NONE),
+        frame(TIME_DURING_SLIDE_2, 0.0, 0.0, LEFT),
+        frame(TIME_SLIDER_END + 50.0, 0.0, 0.0, NONE),
+        frame(TIME_SLIDER_END + 100.0, 0.0, 0.0, LEFT),
+    ];
+    let rules = OsuRules::with_options(&map, lazer(HitPolicy::StartTimeOrdered));
+    let mut sim = Simulator::new(&map, ReplayInput::new(frames.to_vec()), rules);
+
+    step_to(&mut sim, 900.0);
+    assert_eq!(live_press_time(&sim), Some(None));
+    // The drawable sees tracking start an update after the press (1 ms steps).
+    step_to(&mut sim, 1100.0);
+    assert_eq!(live_press_time(&sim), Some(Some(1001.0)));
+    // Kept after tracking stops.
+    step_to(&mut sim, TIME_DURING_SLIDE_1 + 100.0);
+    assert_eq!(live_tracking(&sim), Some(false));
+    assert_eq!(live_press_time(&sim), Some(Some(1001.0)));
+    step_to(&mut sim, TIME_DURING_SLIDE_2 + 100.0);
+    assert_eq!(live_press_time(&sim), Some(Some(TIME_DURING_SLIDE_2 + 1.0)));
+
+    // A judged slider ignores tracking changes.
+    sim.run();
+    let mut rules = sim.rules().clone();
+    let mut log = JudgementLog::with_capacity(rules.max_judgements());
+    for (time, held) in [
+        (TIME_SLIDER_END + 50.0, NONE),
+        (TIME_SLIDER_END + 100.0, LEFT),
+    ] {
+        let step = StepInput {
+            time,
+            position: Vec2::new(0.0, 0.0),
+            held,
+            events: &[],
+        };
+        rules.update(&step, &mut log);
+    }
+    assert_eq!(
+        rules
+            .live_sliders()
+            .map(|s| s.press_time)
+            .collect::<Vec<_>>(),
+        [Some(TIME_DURING_SLIDE_2 + 1.0)]
+    );
+}
+
 #[test]
 fn slider_tail_hit_follows_the_tail_judgement() {
     let map = input_slider();
