@@ -1791,3 +1791,30 @@ fn a_button_released_while_paused_contracts_the_cursor_where_gameplay_stopped() 
     d.run(2);
     assert_eq!(d.snapshot.cursor_expand.contracted_at, paused_at);
 }
+
+#[test]
+fn the_os_cursor_hides_while_the_gameplay_cursor_is_the_one_to_follow() {
+    for state in [
+        PlayState::Waiting,
+        PlayState::Playing,
+        PlayState::Resuming,
+        PlayState::Failing,
+        PlayState::Passed,
+    ] {
+        assert!(state.hides_os_cursor(), "{state:?}");
+    }
+    for state in [
+        PlayState::Paused,
+        PlayState::Failed,
+        PlayState::Results,
+        PlayState::Exited,
+    ] {
+        assert!(!state.hides_os_cursor(), "{state:?}");
+    }
+    let map = beatmap();
+    let mut d = Driver::new(&map, ModSet::default());
+    d.run_to(1500.0);
+    assert!(d.state().hides_os_cursor());
+    d.tap(ESCAPE);
+    assert!(!d.state().hides_os_cursor());
+}
