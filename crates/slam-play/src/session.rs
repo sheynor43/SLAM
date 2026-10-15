@@ -421,6 +421,8 @@ impl PlaySession {
         let mut skip_requested = false;
         let mut from = 0;
         for (index, event) in events.iter().enumerate() {
+            // Global bindings see mouse buttons even when gameplay ignores them: lazer's
+            // prioritised `GlobalActionContainer` gets them before `RulesetInputManager`.
             let action = self.hotkeys.on_event(event);
             if self.input.is_suspended() {
                 let target = self.resume_target;
@@ -448,6 +450,15 @@ impl PlaySession {
                     self.back(sink);
                 }
                 Some(GlobalAction::SkipCutscene) => skip_requested = true,
+                // Ported from osu!lazer 2026.1005.0-lazer: osu.Game/OsuGame.cs (OnPressed)
+                Some(GlobalAction::ToggleGameplayMouseButtons) => {
+                    if self.in_gameplay() {
+                        self.step(&events[from..index], now_ns, &time, seeking, sink);
+                        from = index + 1;
+                    }
+                    let disabled = self.input.mouse_buttons_disabled();
+                    self.input.set_mouse_buttons_disabled(!disabled);
+                }
                 _ => {}
             }
         }

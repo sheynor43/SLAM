@@ -50,7 +50,7 @@ use perf::{FramePerf, ReportSources, SharedFrameTimes};
 
 pub const USAGE: &str = "usage: slam-app play MAP.osu [--skin DIR] [--backend NAME] \
                          [--device ID] [--buffer FRAMES] [--fps HZ|unlimited] \
-                         [--update-hz HZ] [--no-stats]";
+                         [--update-hz HZ] [--no-beatmap-colours] [--no-mouse-buttons] [--no-stats]";
 
 const SAMPLE_RATE: u32 = 48_000;
 const CHANNELS: u16 = 2;
@@ -90,6 +90,11 @@ pub struct Options {
     pub draw: LimiterMode,
     /// Update rate in Hz.
     pub update_hz: f64,
+    /// Take colours from the beatmap's skin (lazer's `BeatmapColours`); on by default.
+    pub beatmap_colours: bool,
+    /// Mouse buttons press in gameplay (lazer's `MouseDisableButtons` off); on by default,
+    /// toggled with F10.
+    pub mouse_buttons: bool,
 }
 
 impl Options {
@@ -105,6 +110,8 @@ impl Options {
             stats: true,
             draw: EngineConfig::default().draw,
             update_hz: EngineConfig::default().update_hz,
+            beatmap_colours: true,
+            mouse_buttons: true,
         };
         let mut args = args.into_iter();
         while let Some(arg) = args.next() {
@@ -120,6 +127,8 @@ impl Options {
                 }
                 "--device" => options.device = Some(value()?),
                 "--no-stats" => options.stats = false,
+                "--no-beatmap-colours" => options.beatmap_colours = false,
+                "--no-mouse-buttons" => options.mouse_buttons = false,
                 "--fps" => {
                     let fps = value()?;
                     options.draw = if fps == "unlimited" {
@@ -538,12 +547,16 @@ pub fn run(options: &Options) -> Result<(), String> {
     let sounds = GameplaySounds::new(beatmap, hitsounds, SoundSettings::for_mods(&mods));
     let circle_mods = CircleMods::new(&mods);
     let windows = slam_osu::hit_windows::HitWindows::new(beatmap.difficulty.overall_difficulty);
+    let settings = CircleSettings {
+        beatmap_colours: options.beatmap_colours,
+        ..CircleSettings::default()
+    };
     let view = PlayView {
         circles: HitCircles {
             visuals: CircleVisuals::new(
                 beatmap,
                 circle_mods,
-                CircleSettings::default(),
+                settings,
                 Some(&loaded.beatmap_skin),
                 &loaded.skins,
             ),
@@ -554,7 +567,7 @@ pub fn run(options: &Options) -> Result<(), String> {
             visuals: SliderVisuals::new(
                 beatmap,
                 circle_mods,
-                CircleSettings::default(),
+                settings,
                 Some(&loaded.beatmap_skin),
                 &loaded.skins,
             ),
@@ -630,13 +643,14 @@ pub fn run(options: &Options) -> Result<(), String> {
     let localizer = Localizer::builtin().map_err(|e| e.to_string())?;
     let hud = HudView::new(registry, &localizer.format("play-skip-button", None));
 
-    let input = LiveInput::new(
+    let mut input = LiveInput::new(
         Bindings::default(),
         PlayfieldLayout::new(
             pixels_w as f32 * points_per_pixel,
             pixels_h as f32 * points_per_pixel,
         ),
     );
+    input.set_mouse_buttons_disabled(!options.mouse_buttons);
     let session = PlaySession::new(beatmap, &mods, &player, input, sounds, Offsets::default());
     let exited = Arc::new(AtomicBool::new(false));
     let gameplay = Gameplay {
@@ -840,6 +854,10 @@ mod tests {
         let defaults = EngineConfig::default();
         assert_eq!((o.draw, o.update_hz), (defaults.draw, defaults.update_hz));
         assert!(!parse(&["--no-stats", "map.osu"]).unwrap().stats);
+        let o = parse(&["map.osu"]).unwrap();
+        assert!(o.beatmap_colours && o.mouse_buttons);
+        let o = parse(&["--no-beatmap-colours", "map.osu", "--no-mouse-buttons"]).unwrap();
+        assert!(!o.beatmap_colours && !o.mouse_buttons);
 
         let o = parse(&[
             "--skin", "s", "map.osu", "--device", "out", "--buffer", "64",
