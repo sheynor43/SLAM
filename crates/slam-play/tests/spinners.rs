@@ -7,12 +7,12 @@ use std::fs;
 
 use slam_osu::judgement::HitResult;
 use slam_osu::replay::{Actions, InputFrame, ReplayInput, Simulator};
-use slam_osu::rules::{CircleJudgement, LiveSpinner, OsuRules};
+use slam_osu::rules::{CircleJudgement, LiveSpinner, OsuRules, RulesOptions};
 use slam_osu::{Beatmap, GameplayMod, Mod, ModSet, Vec2};
 use slam_play::circles::{CircleMods, SkinSprite};
 use slam_play::spinners::{
-    HitSpinners, LiveSpinners, SpinnerEntry, SpinnerKind, SpinnerPose, SpinnerStyle,
-    SpinnerTextures, SpinnerVisuals, TickFade, spinner_pose,
+    HitSpinners, LiveSpinners, SPM_SLOTS, SpinnerEntry, SpinnerKind, SpinnerPose, SpinnerSpm,
+    SpinnerStyle, SpinnerTextures, SpinnerVisuals, TickFade, spinner_pose,
 };
 use slam_render::atlas::UvRect;
 use slam_render::sprite::SpriteBatch;
@@ -89,6 +89,7 @@ fn style(kind: SpinnerKind, mods: &ModSet) -> SpinnerStyle {
         blink: false,
         background: Color::rgb(0.5, 0.5, 0.5),
         turn_ratio: 0.5,
+        score_overlap: 0.0,
         mods: CircleMods::new(mods),
     }
 }
@@ -102,6 +103,11 @@ fn live() -> LiveSpinner {
         progress: 0.0,
         rotation: 0.0,
         spun_rotation: 0.0,
+        total_rotation: 0.0,
+        completed_full_spins: 0,
+        full_spins_changed: None,
+        bonus_score: 0.0,
+        maximum_bonus_score: 0.0,
         time_completed: None,
         last_bonus_hit: None,
         judgement: None,
@@ -112,6 +118,7 @@ fn entry(live: LiveSpinner) -> SpinnerEntry {
     SpinnerEntry {
         live,
         tick_fade: None,
+        spm: 0.0,
     }
 }
 
@@ -264,6 +271,7 @@ fn tick_hits_fade_spin_out() {
     let ticks = SpinnerEntry {
         live: live(),
         tick_fade: TickFade::new(&[2500.0, 2650.0]),
+        spm: 0.0,
     };
     assert!(close(pose(&ticks, 2650.0).spin_alpha, 0.5));
     assert!(close(pose(&ticks, 2800.0).spin_alpha, 0.25));
@@ -272,6 +280,7 @@ fn tick_hits_fade_spin_out() {
     let late = SpinnerEntry {
         live: live(),
         tick_fade: TickFade::new(&[END - 200.0]),
+        spm: 0.0,
     };
     assert!(close(pose(&late, END - 200.0).spin_alpha, 0.5));
     assert!(close(pose(&late, END - 50.0).spin_alpha, 0.25));
@@ -282,6 +291,7 @@ fn tick_hits_fade_spin_out() {
             ..live()
         },
         tick_fade: TickFade::new(&[2500.0]),
+        spm: 0.0,
     };
     assert_eq!(pose(&judged, END).spin_alpha, 0.0);
 }
@@ -399,6 +409,7 @@ fn textures() -> SpinnerTextures {
         approach: sprite(APPROACH, square),
         spin: sprite(SPIN, square),
         clear: sprite(CLEAR, square),
+        ..SpinnerTextures::default()
     }
 }
 
@@ -441,6 +452,7 @@ fn the_new_style_draws_its_layers_around_the_centre() {
             ..live()
         },
         tick_fade: None,
+        spm: 0.0,
     };
     spinners(SpinnerKind::NewStyle, &map).push(&mut batch, &layout, &[state], START, &textures());
     assert_eq!(
@@ -479,6 +491,7 @@ fn the_new_style_draws_its_layers_around_the_centre() {
             ..live()
         },
         tick_fade: None,
+        spm: 0.0,
     };
     batch.clear();
     spinners(SpinnerKind::NewStyle, &map).push(&mut batch, &layout, &[glowing], START, &textures());
@@ -571,6 +584,7 @@ fn a_frame_does_not_allocate() {
         OsuRules::new(&map, &ModSet::default()),
     );
     let mut live = Box::new(LiveSpinners::new());
+    let mut spm = SpinnerSpm::new(&map);
     let mut batch = SpriteBatch::with_capacity(64);
     let textures = textures();
     let (old, new) = (
@@ -582,7 +596,8 @@ fn a_frame_does_not_allocate() {
     while sim.step() {
         let time = sim.time();
         assert_no_alloc(|| {
-            live.capture(sim.rules());
+            spm.update(sim.rules(), time);
+            live.capture(sim.rules(), &spm);
             batch.clear();
             old.push(&mut batch, &layout, live.as_slice(), time, &textures);
             new.push(&mut batch, &layout, live.as_slice(), time, &textures);
@@ -594,6 +609,7 @@ fn a_frame_does_not_allocate() {
                 TickFade::new(sim.rules().spinner_tick_hits(s.live.index))
             );
             completed |= s.live.time_completed.is_some();
+            assert!(s.spm.is_finite() && s.spm >= 0.0, "{}", s.spm);
         }
     }
     assert!(drawn > 0);
@@ -690,7 +706,315 @@ fn a_late_tick_does_not_bring_back_the_fade_out() {
     let ticks = SpinnerEntry {
         live: live(),
         tick_fade: TickFade::new(&[2500.0, END - 300.0]),
+        spm: 0.0,
     };
     assert_eq!(pose(&ticks, END - 350.0).spin_alpha, 0.0);
     assert_eq!(pose(&ticks, END - 100.0).spin_alpha, 0.0);
+}
+
+// ---- Spins per minute and bonus ----
+
+#[test]
+fn the_spins_per_minute_slide_up_while_the_spinner_fades_in() {
+    let idle = entry(live());
+    // Fade-in 400 ms before the start: 50 osu!pixels below until then, in place at the start.
+    assert_eq!(pose(&idle, APPEAR).spm_offset, 50.0);
+    assert_eq!(pose(&idle, START - 400.0).spm_offset, 50.0);
+    // `Easing.Out` halfway: 0.75 of the way.
+    assert!(close(pose(&idle, START - 200.0).spm_offset, 12.5));
+    assert_eq!(pose(&idle, START).spm_offset, 0.0);
+    assert_eq!(pose(&idle, END + 100.0).spm_offset, 0.0);
+}
+
+fn bonus(changed: f64, score: f64, judgement: Option<CircleJudgement>) -> SpinnerEntry {
+    entry(LiveSpinner {
+        completed_full_spins: 9,
+        full_spins_changed: Some(changed),
+        bonus_score: score,
+        maximum_bonus_score: 250.0,
+        judgement,
+        ..live()
+    })
+}
+
+#[test]
+fn a_bonus_spin_pops_the_counter() {
+    // Before any bonus, or a whole spin without one, the counter is hidden.
+    assert_eq!(pose(&entry(live()), 3000.0).bonus_alpha, 0.0);
+    assert_eq!(pose(&bonus(3000.0, 0.0, None), 3000.0).bonus_alpha, 0.0);
+    // A bonus: from 1 and twice the sprite scale to 0 and 1.28 of it over 800 ms, eased out.
+    let one = bonus(3000.0, 100.0, None);
+    let at = |t: f64| {
+        let p = pose(&one, t);
+        (p.bonus_alpha, p.bonus_scale)
+    };
+    assert_eq!(at(3000.0), (1.0, 0.625 * 2.0));
+    let (alpha, scale) = at(3400.0);
+    assert!(close(alpha, 0.25), "{alpha}");
+    assert!(close(scale, 1.25 - 0.75 * (1.25 - 0.8)), "{scale}");
+    assert_eq!(at(3800.0), (0.0, 0.625 * 1.28));
+}
+
+#[test]
+fn the_complete_bonus_grows_bigger() {
+    // 1.4 to 1.8 over 1000 ms (not scaled by the sprite scale), faded out over 500 ms.
+    let max = bonus(3000.0, 250.0, None);
+    let p = pose(&max, 3000.0);
+    assert_eq!((p.bonus_alpha, p.bonus_scale), (1.0, 1.4));
+    let p = pose(&max, 3250.0);
+    assert!(close(p.bonus_alpha, 0.25), "{}", p.bonus_alpha);
+    let p = pose(&max, 3500.0);
+    assert_eq!(p.bonus_alpha, 0.0);
+    assert!(close(p.bonus_scale, 1.4 + 0.75 * 0.4), "{}", p.bonus_scale);
+    assert_eq!(pose(&max, 4000.0).bonus_scale, 1.8);
+}
+
+#[test]
+fn the_judgement_hides_the_bonus_counter() {
+    let late = bonus(END - 100.0, 100.0, judged(HitResult::Great));
+    assert!(pose(&late, END - 50.0).bonus_alpha > 0.0);
+    assert_eq!(pose(&late, END).bonus_alpha, 0.0);
+}
+
+const RPM: TextureId = TextureId(12);
+const DIGITS: [TextureId; 10] = [
+    TextureId(20),
+    TextureId(21),
+    TextureId(22),
+    TextureId(23),
+    TextureId(24),
+    TextureId(25),
+    TextureId(26),
+    TextureId(27),
+    TextureId(28),
+    TextureId(29),
+];
+
+/// [`textures`] with `spinner-rpm` (160×40) and a score font of 20×30 digits.
+fn counter_textures() -> SpinnerTextures {
+    SpinnerTextures {
+        rpm: sprite(RPM, Vec2::new(160.0, 40.0)),
+        score_digits: DIGITS.map(|d| sprite(d, Vec2::new(20.0, 30.0))),
+        ..textures()
+    }
+}
+
+/// The corners of sprite `i` of `batch`: top left and bottom right.
+fn corners(batch: &SpriteBatch, i: usize) -> ([f32; 2], [f32; 2]) {
+    let v = &batch.vertices()[i * 4..i * 4 + 4];
+    (v[0].position, v[2].position)
+}
+
+#[test]
+fn the_counters_are_drawn_in_the_score_font_below_the_spinner() {
+    let map = beatmap(&ModSet::default());
+    let layout = common::layout();
+    let mut batch = SpriteBatch::new();
+    let state = SpinnerEntry {
+        spm: 307.9,
+        ..bonus(START, 1050.0, None)
+    };
+    let mut hit = spinners(SpinnerKind::NewStyle, &map);
+    hit.style.score_overlap = 2.0;
+    hit.push(&mut batch, &layout, &[state], START, &counter_textures());
+    let ids: Vec<u32> = order(&batch).iter().map(|b| b.0).collect();
+    // The layers and approach circle, then the bonus "1050", the background, "307" and
+    // "spin".
+    let d = |n: usize| DIGITS[n].0;
+    assert_eq!(
+        ids,
+        [
+            BOTTOM.0,
+            TOP.0,
+            MIDDLE2.0,
+            MIDDLE.0,
+            APPROACH.0,
+            d(1),
+            d(0),
+            d(5),
+            d(0),
+            RPM.0,
+            d(3),
+            d(0),
+            d(7),
+            SPIN.0,
+        ]
+    );
+    // At 640×480 the box is the window, its top centre at (320, 0). The bonus is centred 328
+    // below, at twice the sprite scale: four digits 20 wide with overlaps of 2 between them,
+    // 74 × 1.25 wide and 30 × 1.25 tall.
+    let (tl, br) = corners(&batch, 5);
+    assert!(close_to(tl, [320.0 - 46.25, 328.0 - 18.75]), "{tl:?}");
+    let (_, last) = corners(&batch, 8);
+    assert!(close_to(last, [320.0 + 46.25, 328.0 + 18.75]), "{last:?}");
+    assert!(
+        close_to(br, [320.0 - 46.25 + 25.0, 328.0 + 18.75]),
+        "{br:?}"
+    );
+    // The background's top left at (-87, 445) from the top centre, at the sprite scale.
+    let (tl, br) = corners(&batch, 9);
+    assert!(close_to(tl, [233.0, 445.0]), "{tl:?}");
+    assert!(close_to(br, [333.0, 470.0]), "{br:?}");
+    // The rate truncated, its top right at (80, 448), at 0.9 of the sprite scale: three
+    // digits, 56 × 0.5625 wide.
+    let (tl, _) = corners(&batch, 10);
+    let (_, br) = corners(&batch, 12);
+    assert!(close_to(tl, [400.0 - 56.0 * 0.5625, 448.0]), "{tl:?}");
+    assert!(close_to(br, [400.0, 448.0 + 30.0 * 0.5625]), "{br:?}");
+}
+
+#[test]
+fn the_spins_per_minute_follow_the_play() {
+    // A turn every 150 ms from the start: 400 a minute.
+    let map = beatmap(&ModSet::default());
+    let mut frames = vec![InputFrame {
+        time: 0.0,
+        position: Vec2::new(256.0, 142.0),
+        actions: Actions::NONE,
+    }];
+    frames.extend(spin_frames(START, END, 150.0));
+    frames.push(InputFrame {
+        time: END + 1000.0,
+        position: Vec2::new(256.0, 142.0),
+        actions: Actions::NONE,
+    });
+    let mut sim = Simulator::new(
+        &map,
+        ReplayInput::new(frames),
+        OsuRules::new(&map, &ModSet::default()),
+    );
+    let mut spm = SpinnerSpm::new(&map);
+    let mut live = LiveSpinners::new();
+    let mut at_end = None;
+    while sim.step() {
+        let time = sim.time();
+        spm.update(sim.rules(), time);
+        live.capture(sim.rules(), &spm);
+        let Some(s) = live.as_slice().first() else {
+            // Not alive yet: no calculator.
+            assert_eq!(spm.get(0), 0.0);
+            continue;
+        };
+        if (START + 1000.0..END).contains(&time) {
+            assert!((s.spm - 400.0).abs() < 400.0 * 0.05, "{} at {time}", s.spm);
+        }
+        if time == END {
+            at_end = Some(s.spm);
+        }
+    }
+    // The play ends with the judgement at the end time. Not counted after it: the rate shown
+    // does not drop while the spinner fades out.
+    let at_end = at_end.unwrap();
+    spm.update(sim.rules(), END + 100.0);
+    assert_eq!(spm.get(0), at_end);
+    assert_eq!(spm.dropped(), 0);
+    // A restart forgets it.
+    spm.reset();
+    assert_eq!(spm.get(0), 0.0);
+}
+
+/// A beatmap of `objects` at AR 9.
+fn beatmap_of(objects: &str) -> Beatmap {
+    let head = MAP.split("[HitObjects]").next().unwrap();
+    Beatmap::decode(format!("{head}[HitObjects]\n{objects}").as_bytes()).unwrap()
+}
+
+/// Spins `frames` through `map` at `rate`, counting the spins per minute; returns the
+/// counter and the rate of each object at each step.
+fn spm_play(
+    map: &Beatmap,
+    rate: f64,
+    frames: Vec<InputFrame>,
+    mut each: impl FnMut(f64, &SpinnerSpm),
+) -> SpinnerSpm {
+    let options = RulesOptions {
+        rate,
+        ..RulesOptions::for_mods(&ModSet::default())
+    };
+    let mut sim = Simulator::new(
+        map,
+        ReplayInput::new(frames),
+        OsuRules::with_options(map, options),
+    );
+    let mut spm = SpinnerSpm::new(map);
+    while sim.step() {
+        spm.update(sim.rules(), sim.time());
+        each(sim.time(), &spm);
+    }
+    spm
+}
+
+fn rest_then_spin(from: f64, to: f64) -> Vec<InputFrame> {
+    let mut frames = vec![InputFrame {
+        time: 0.0,
+        position: Vec2::new(256.0, 142.0),
+        actions: Actions::NONE,
+    }];
+    frames.extend(spin_frames(from, to, 150.0));
+    frames
+}
+
+#[test]
+fn the_spins_per_minute_count_real_time_spins_under_rate_mods() {
+    // The rules scale the rotation by the gameplay rate (`GetTrueGameplayRate`), so the same
+    // spins in game time show the rate times as many: the spins per real minute. Lazer's
+    // `TestSpinUnaffectedByClockRate` changes the playback rate, which that rate leaves out.
+    let map = beatmap(&ModSet::default());
+    let at = |rate: f64| {
+        let mut value = None;
+        spm_play(&map, rate, rest_then_spin(START, END), |time, spm| {
+            if time == START + 1000.0 {
+                value = Some(spm.get(0));
+            }
+        });
+        value.unwrap()
+    };
+    let normal = at(1.0);
+    assert!((normal - 400.0).abs() < 20.0, "{normal}");
+    for rate in [0.5, 1.5, 2.0] {
+        let other = at(rate);
+        assert!((other - normal * rate).abs() < 2.0, "{other} at {rate}");
+    }
+}
+
+#[test]
+fn a_spinner_starts_counting_afresh() {
+    // Two spinners: the first spun, the second not; once the first expires its calculator is
+    // let go, and the second counts from nothing.
+    let map = beatmap_of("256,192,2000,12,0,3000\n256,192,5000,12,0,6000\n");
+    let mut first = 0.0f64;
+    let mut second = Vec::new();
+    spm_play(&map, 1.0, rest_then_spin(2000.0, 3000.0), |time, spm| {
+        if time <= 3000.0 {
+            first = first.max(spm.get(0));
+        }
+        if time > 3241.0 {
+            assert_eq!(spm.get(0), 0.0, "at {time}");
+        }
+        if time >= 4400.0 {
+            second.push(spm.get(1));
+        }
+    });
+    assert!(first > 300.0, "{first}");
+    assert!(!second.is_empty());
+    assert!(second.iter().all(|&s| s == 0.0), "{second:?}");
+}
+
+#[test]
+fn spinners_past_the_slots_show_no_rate() {
+    // One more spinner at once than there are calculators: the last shows 0.
+    let objects: String = (0..=SPM_SLOTS)
+        .map(|_| "256,192,2000,12,0,4000\n")
+        .collect();
+    let map = beatmap_of(&objects);
+    let mut seen = false;
+    let spm = spm_play(&map, 1.0, rest_then_spin(START, END), |time, spm| {
+        if time == START + 1000.0 {
+            seen = true;
+            assert!(spm.get(0) > 300.0, "{}", spm.get(0));
+            assert_eq!(spm.get(SPM_SLOTS as u32), 0.0);
+        }
+    });
+    assert!(seen);
+    assert!(spm.dropped() > 0);
 }
