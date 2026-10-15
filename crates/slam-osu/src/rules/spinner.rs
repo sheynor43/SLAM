@@ -121,6 +121,12 @@ pub(super) struct SpinnerState {
     spins_required_for_bonus: i32,
     /// Ticks before this index are judged.
     ticks_judged: usize,
+    /// When each tick judged as a hit was judged, in order: the first ones, as ticks are hit in
+    /// order and only missed once the end time passes. Reserved for every tick up front.
+    tick_hits: Vec<f64>,
+    /// Lazer's `Result.TimeCompleted`: the first update from the start time on with the
+    /// required spins done.
+    time_completed: Option<f64>,
     /// Lazer's gameplay rate (`GetTrueGameplayRate`): the rotation is scaled by it, so that the
     /// spins needed do not depend on the speed.
     rate: f64,
@@ -145,14 +151,17 @@ pub(super) struct SpinnerState {
 impl SpinnerState {
     /// The state of `object`, which is `spinner`, played at `rate`.
     pub(super) fn new(object: &OsuHitObject, spinner: &Spinner, rate: f64) -> SpinnerState {
+        let tick_count = usize::try_from(spinner.tick_count()).unwrap_or(0);
         SpinnerState {
             start_time: object.start_time,
             end_time: spinner.end_time,
             position: object.stacked_position(),
             spins_required: spinner.spins_required,
-            tick_count: usize::try_from(spinner.tick_count()).unwrap_or(0),
+            tick_count,
             spins_required_for_bonus: spinner.spins_required_for_bonus(),
             ticks_judged: 0,
+            tick_hits: Vec::with_capacity(tick_count),
+            time_completed: None,
             rate,
             history: SpinHistory::new(),
             completed_full_spins: 0,
@@ -199,7 +208,7 @@ impl SpinnerState {
 
     // Ported from osu!lazer 2026.1005.0-lazer: osu.Game.Rulesets.Osu/Objects/Drawables/DrawableSpinner.cs (Progress)
     /// The fraction of the required spins done, from 0 to 1.
-    fn progress(&self) -> f32 {
+    pub(super) fn progress(&self) -> f32 {
         dotnet::clamp_f32(self.progress_unclamped(), 0.0, 1.0)
     }
 
@@ -207,6 +216,32 @@ impl SpinnerState {
     /// rotation lags more than 10° behind the rotation added.
     pub(super) fn is_spinning(&self) -> bool {
         self.is_spinning
+    }
+
+    /// The tracker's drawn rotation in degrees, clockwise.
+    pub(super) fn rotation(&self) -> f32 {
+        self.rotation
+    }
+
+    /// The tracker's rotation spun in degrees, clockwise, which the drawn one follows.
+    pub(super) fn spun_rotation(&self) -> f32 {
+        self.current_rotation
+    }
+
+    /// When the required spins were done, if they were.
+    pub(super) fn time_completed(&self) -> Option<f64> {
+        self.time_completed
+    }
+
+    /// When each tick hit so far was judged, in order.
+    pub(super) fn tick_hits(&self) -> &[f64] {
+        &self.tick_hits
+    }
+
+    /// When the last bonus tick hit so far was judged.
+    pub(super) fn last_bonus_hit(&self) -> Option<f64> {
+        let first_bonus = usize::try_from(self.spins_required_for_bonus).unwrap_or(0);
+        self.tick_hits.get(first_bonus..)?.last().copied()
     }
 
     /// The whole spins completed after the last tick, which play `spinnerbonus-max`; always 0
@@ -312,9 +347,16 @@ impl SpinnerState {
         time: f64,
         log: &mut JudgementLog,
     ) -> Option<HitResult> {
-        // Lazer returns before the start time, and records the completion time (not used for
-        // judgement) once the progress is full.
-        if time < self.start_time || time < self.end_time {
+        if time < self.start_time {
+            return None;
+        }
+
+        // Not used for judgement: the classic spinner shows "clear" from then.
+        if self.progress() >= 1.0 && self.time_completed.is_none() {
+            self.time_completed = Some(time);
+        }
+
+        if time < self.end_time {
             return None;
         }
 
@@ -376,6 +418,7 @@ impl SpinnerState {
             HitResult::SmallBonus
         };
         let result = if hit {
+            self.tick_hits.push(time);
             max_result
         } else {
             max_result.min_result()

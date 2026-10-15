@@ -11,6 +11,7 @@ pub mod playfield;
 pub mod session;
 pub mod slider_body;
 pub mod sliders;
+pub mod spinners;
 pub mod time;
 
 pub use background::{BackgroundSettings, BackgroundView};
