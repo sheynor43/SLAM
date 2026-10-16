@@ -652,6 +652,7 @@ pub fn run(options: &Options) -> Result<(), String> {
             visuals: SpinnerVisuals::new(beatmap),
             style: SpinnerStyle::new(circle_mods, &loaded.skins),
         },
+        follow_points: slam_play::follow_points::FollowPoints::new(beatmap),
         judgements: JudgementView::new(
             beatmap,
             settings,

@@ -651,11 +651,17 @@ impl SkinSprite {
     /// around its centre to `max_size` × `max_size` display units.
     // Ported from osu!lazer 2026.1005.0-lazer: osu.Game/Skinning/LegacySkinExtensions.cs (WithMaximumSize)
     pub fn new(region: AtlasRegion, texture_scale: f32, max_size: f32) -> Self {
+        Self::within(region, texture_scale, Vec2::new(max_size, max_size))
+    }
+
+    /// [`Self::new`] cropped to `max_size.x` × `max_size.y` display units.
+    // Ported from osu!lazer 2026.1005.0-lazer: osu.Game/Skinning/LegacySkinExtensions.cs (WithMaximumSize)
+    pub fn within(region: AtlasRegion, texture_scale: f32, max_size: Vec2) -> Self {
         let full = Vec2::new(
             region.size.width as f32 / texture_scale,
             region.size.height as f32 / texture_scale,
         );
-        let size = Vec2::new(full.x.min(max_size), full.y.min(max_size));
+        let size = Vec2::new(full.x.min(max_size.x), full.y.min(max_size.y));
         let crop = |u0: f32, u1: f32, keep: f32| {
             let margin = (u1 - u0) * (1.0 - keep) / 2.0;
             (u0 + margin, u1 - margin)
