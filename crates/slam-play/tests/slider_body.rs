@@ -176,7 +176,7 @@ fn range(map: &Beatmap, index: usize, time: f64, head_hit: bool, snaking: Snakin
 fn snaking_in_grows_over_a_third_of_the_preempt() {
     let (map, _) = beatmap("");
     assert_eq!(map.hit_objects[0].defaults.time_preempt, 600.0);
-    let r = |t| range(&map, 0, t, false, Snaking::default());
+    let r = |t| range(&map, 0, t, false, Snaking::LAZER);
     assert_eq!(r(300.0), (0.0, 0.0));
     assert_eq!(r(400.0), (0.0, 0.0));
     assert_eq!(r(500.0), (0.0, 0.5));
@@ -187,7 +187,7 @@ fn snaking_in_grows_over_a_third_of_the_preempt() {
 #[test]
 fn snaking_out_follows_the_ball_on_the_last_span() {
     let (map, _) = beatmap("");
-    let r = |t, hit| range(&map, 0, t, hit, Snaking::default());
+    let r = |t, hit| range(&map, 0, t, hit, Snaking::LAZER);
     // First of two spans: the whole body.
     assert_eq!(r(1500.0, true), (0.0, 1.0));
     // Second span runs back to the head: the end shrinks towards it.
@@ -198,7 +198,7 @@ fn snaking_out_follows_the_ball_on_the_last_span() {
     assert_eq!(r(3250.0, false), (0.0, 1.0));
 
     // One span: the start follows the ball to the end.
-    let r = |t| range(&map, 1, t, true, Snaking::default());
+    let r = |t| range(&map, 1, t, true, Snaking::LAZER);
     assert_eq!(r(5000.0), (0.0, 1.0));
     assert_eq!(r(5500.0), (0.5, 1.0));
     assert_eq!(r(6000.0), (1.0, 1.0));
@@ -208,7 +208,7 @@ fn snaking_out_follows_the_ball_on_the_last_span() {
 fn three_spans_snake_out_only_on_the_last() {
     let (map, _) = beatmap("");
     // Three spans of 500 ms from 10000: out, back, out.
-    let r = |t| range(&map, 4, t, true, Snaking::default());
+    let r = |t| range(&map, 4, t, true, Snaking::LAZER);
     assert_eq!(r(10250.0), (0.0, 1.0));
     assert_eq!(r(10750.0), (0.0, 1.0));
     // The last span runs out again: the start follows the ball.
@@ -222,7 +222,7 @@ fn a_zero_length_slider_is_a_circle_at_its_head() {
     let object = &map.hit_objects[3];
     let path = &slider(object).path;
     // Zero duration: progress is NaN at the start time, as in lazer.
-    let p = range(&map, 3, object.start_time, true, Snaking::default());
+    let p = range(&map, 3, object.start_time, true, Snaking::LAZER);
     let mesh = body_mesh(path);
     let (d0, d1) = range_distances(path.distance(), (p.0, p.1));
     let drawn: Vec<_> = mesh.clipped(d0, d1).collect();
@@ -250,12 +250,18 @@ fn a_repeated_end_point_keeps_one_length_per_point() {
 }
 
 #[test]
-fn snaking_can_be_turned_off() {
+fn snaking_is_off_by_default_and_can_be_turned_on() {
     let (map, _) = beatmap("");
-    let off = Snaking {
-        snaking_in: false,
-        snaking_out: false,
-    };
+    let off = Snaking::default();
+    assert_eq!(
+        off,
+        Snaking {
+            snaking_in: false,
+            snaking_out: false,
+        }
+    );
+    // Lazer's snaking shows part of the body early on.
+    assert_ne!(range(&map, 0, 400.0, false, Snaking::LAZER), (0.0, 1.0));
     assert_eq!(range(&map, 0, 400.0, false, off), (0.0, 1.0));
     assert_eq!(range(&map, 0, 3250.0, true, off), (0.0, 1.0));
     assert_eq!(range(&map, 1, 5500.0, true, off), (0.0, 1.0));
