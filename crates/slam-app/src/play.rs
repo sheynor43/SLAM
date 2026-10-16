@@ -241,7 +241,7 @@ struct Gameplay {
     os_cursor: CursorVisibility,
 }
 
-fn pack_size(width: u32, height: u32) -> u64 {
+pub(crate) fn pack_size(width: u32, height: u32) -> u64 {
     (u64::from(width) << 32) | u64::from(height)
 }
 
@@ -603,7 +603,9 @@ fn load_track(player: &mut MusicPlayer, path: &Path) -> Result<(), String> {
 
 /// The device limits the texture loader needs; the context is released again for the
 /// draw thread.
-fn device_limits(surface: SdlGlSurface) -> Result<(SdlGlSurface, slam_render::Limits), String> {
+pub(crate) fn device_limits(
+    surface: SdlGlSurface,
+) -> Result<(SdlGlSurface, slam_render::Limits), String> {
     let device = GlDevice::new(surface, GlDebug::for_build()).map_err(|e| e.to_string())?;
     let limits = device.limits();
     let surface = device.into_surface().map_err(|e| e.to_string())?;

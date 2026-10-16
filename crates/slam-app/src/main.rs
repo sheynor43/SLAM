@@ -2,7 +2,7 @@
 
 use std::process::ExitCode;
 
-use slam_app::{bench, click, i18n, play};
+use slam_app::{bench, click, i18n, play, shell};
 
 fn main() -> ExitCode {
     tracing_subscriber::fmt()
@@ -11,6 +11,17 @@ fn main() -> ExitCode {
     let mut args = std::env::args().skip(1);
     // Developer commands only so far; their console output is not localised.
     match args.next().as_deref() {
+        None => match shell::run() {
+            Ok(()) => ExitCode::SUCCESS,
+            Err(e) => {
+                eprintln!("{e}");
+                ExitCode::FAILURE
+            }
+        },
+        Some("--help" | "-h") => {
+            print_usage();
+            ExitCode::SUCCESS
+        }
         Some("bench") => {
             let result = bench::Options::parse(args).and_then(|options| bench::run(&options));
             match result {
@@ -61,15 +72,28 @@ fn main() -> ExitCode {
             }
         },
         _ => {
-            eprintln!(
-                "{}\n{}\n{}\n{}\n{}",
-                bench::USAGE,
-                click::USAGE,
-                click::analyze::USAGE,
-                play::USAGE,
-                i18n::USAGE
-            );
+            eprint_usage();
             ExitCode::from(2)
         }
     }
+}
+
+fn usage() -> String {
+    format!(
+        "{}\n{}\n{}\n{}\n{}\n{}",
+        shell::USAGE,
+        bench::USAGE,
+        click::USAGE,
+        click::analyze::USAGE,
+        play::USAGE,
+        i18n::USAGE
+    )
+}
+
+fn print_usage() {
+    println!("{}", usage());
+}
+
+fn eprint_usage() {
+    eprintln!("{}", usage());
 }

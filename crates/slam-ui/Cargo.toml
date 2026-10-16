@@ -15,5 +15,8 @@ fluent-syntax.workspace = true
 unic-langid.workspace = true
 tracing.workspace = true
 
+[dev-dependencies]
+slam-testkit = { path = "../slam-testkit" }
+
 [lints]
 workspace = true

@@ -10,3 +10,8 @@ song-select-beatmap-count =
        *[other] { $count } карты
     }
 play-skip-button = Пропустить
+menu-title = SLAM
+menu-play-button = Играть
+menu-settings-button = Настройки
+menu-exit-button = Выход
+song-select-placeholder = Выбор карты скоро появится. Escape — назад.
