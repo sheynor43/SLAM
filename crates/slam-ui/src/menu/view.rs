@@ -1,4 +1,4 @@
-//! Draw side of the menu and of the song select placeholder. Text is laid out again only
+//! Draw side of the menu. Text is laid out again only
 //! when the window size changes; once warm, `push` does not allocate.
 
 use std::sync::Arc;
@@ -23,13 +23,13 @@ pub struct MenuLabels {
 }
 
 /// One text and its layout at the current window height.
-struct Line {
-    text: String,
-    layout: Layout,
+pub(crate) struct Line {
+    pub(crate) text: String,
+    pub(crate) layout: Layout,
 }
 
 impl Line {
-    fn new(text: &str) -> Line {
+    pub(crate) fn new(text: &str) -> Line {
         Line {
             text: text.to_owned(),
             layout: Layout::new(),
@@ -38,7 +38,7 @@ impl Line {
 }
 
 /// Fonts and the layout context shared by the views.
-struct Typesetter {
+pub(crate) struct Typesetter {
     registry: Arc<FontRegistry>,
     family: FamilyId,
     context: LayoutContext,
@@ -46,7 +46,7 @@ struct Typesetter {
 }
 
 impl Typesetter {
-    fn new(registry: Arc<FontRegistry>, weight: u16) -> Typesetter {
+    pub(crate) fn new(registry: Arc<FontRegistry>, weight: u16) -> Typesetter {
         // An unknown family lays out nothing; the built-in registry has the UI family.
         let family = registry.family(UI_FAMILY).unwrap_or(FamilyId(u32::MAX));
         Typesetter {
@@ -57,7 +57,7 @@ impl Typesetter {
         }
     }
 
-    fn lay_out(&mut self, line: &mut Line, size: f32) {
+    pub(crate) fn lay_out(&mut self, line: &mut Line, size: f32) {
         let style = TextStyle::new(self.family, self.weight, size);
         self.context
             .layout_into(&self.registry, &line.text, &style, &mut line.layout);
@@ -65,7 +65,7 @@ impl Typesetter {
 }
 
 /// Draws `line` centred on `centre`.
-fn push_centred(
+pub(crate) fn push_centred(
     batch: &mut SpriteBatch,
     line: &Line,
     centre: [f32; 2],
@@ -81,9 +81,9 @@ fn push_centred(
 
 /// The window size the lines are laid out for.
 #[derive(Clone, Copy, PartialEq)]
-struct Frame {
-    width: f32,
-    height: f32,
+pub(crate) struct Frame {
+    pub(crate) width: f32,
+    pub(crate) height: f32,
 }
 
 /// The draw side of [`super::MainMenu`].
@@ -207,78 +207,5 @@ impl MenuView {
                 glyphs,
             );
         }
-    }
-}
-
-/// The song select placeholder: one centred message.
-pub struct PlaceholderView {
-    theme: Theme,
-    type_setter: Typesetter,
-    frame: Frame,
-    line: Line,
-}
-
-impl std::fmt::Debug for PlaceholderView {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_struct("PlaceholderView")
-            .field("text", &self.line.text)
-            .finish_non_exhaustive()
-    }
-}
-
-impl PlaceholderView {
-    /// A view of the localised `message`; lays it out once, like [`MenuView::new`].
-    pub fn new(registry: Arc<FontRegistry>, theme: Theme, message: &str) -> PlaceholderView {
-        let frame = Frame {
-            width: 1280.0,
-            height: theme.reference_height,
-        };
-        let mut view = PlaceholderView {
-            type_setter: Typesetter::new(registry, theme.font_weight),
-            frame,
-            line: Line::new(message),
-            theme,
-        };
-        view.lay_out();
-        view
-    }
-
-    fn lay_out(&mut self) {
-        let size = self.theme.message_size * self.theme.scale(self.frame.height);
-        self.type_setter.lay_out(&mut self.line, size);
-    }
-
-    /// Asks `glyphs` for the message's glyphs; see [`MenuView::request_glyphs`].
-    pub fn request_glyphs(&self, glyphs: &mut GlyphCache) -> usize {
-        self.line
-            .layout
-            .glyphs()
-            .iter()
-            .filter(|g| matches!(glyphs.glyph(GlyphKey::of(g)), Glyph::Pending))
-            .count()
-    }
-
-    /// Writes the message at `pose` into `text`. Allocation-free once warm.
-    pub fn push(
-        &mut self,
-        text: &mut SpriteBatch,
-        glyphs: &mut GlyphCache,
-        width: f32,
-        height: f32,
-        pose: Pose,
-    ) {
-        let frame = Frame { width, height };
-        if frame != self.frame {
-            self.frame = frame;
-            self.lay_out();
-        }
-        let centre = [width / 2.0 + pose.offset * width, height / 2.0];
-        push_centred(
-            text,
-            &self.line,
-            centre,
-            faded(self.theme.text, pose.opacity),
-            glyphs,
-        );
     }
 }

@@ -133,3 +133,26 @@ fn notify_fires_for_queued_events_only() {
     }
     assert_eq!(counter.0.load(Ordering::Relaxed), CAPACITY as u32);
 }
+
+#[test]
+fn wheel_scrolls_leave_the_reserve_to_buttons() {
+    let (mut sink, source) = event_ring(CAPACITY);
+    let wheel = |time_ns| InputEvent {
+        time_ns,
+        kind: InputKind::MouseWheel { y: 1.0 },
+    };
+    // Wheel scrolls fill the ring up to the reserve and no further.
+    let mut queued = 0;
+    for t in 0..CAPACITY as u64 {
+        queued += u64::from(sink.push(wheel(t)));
+    }
+    assert_eq!(queued, (CAPACITY - BUTTON_RESERVE) as u64);
+    // A dropped scroll is not a dropped button.
+    assert_eq!(source.dropped(), BUTTON_RESERVE as u64);
+    assert_eq!(source.dropped_buttons(), 0);
+    // The reserve still takes every button.
+    for t in 0..BUTTON_RESERVE as u64 {
+        assert!(sink.push(btn(100 + t, t % 2 == 0)));
+    }
+    assert_eq!(source.len(), CAPACITY);
+}

@@ -66,8 +66,9 @@ pub struct InputWindow {
 /// Shows or hides the OS cursor over the window, from any thread, without locks. The
 /// window applies the wish before waiting for its next event, so a change takes effect
 /// after the next event at the latest; until then a still pointer keeps its look. Set the
-/// state wanted at the start before [`InputWindow::run`].
-#[derive(Clone)]
+/// state wanted at the start before [`InputWindow::run`]. The default handle belongs to no
+/// window: wishes on it change nothing (for tests).
+#[derive(Clone, Default)]
 pub struct CursorVisibility {
     hidden: Arc<AtomicBool>,
 }

@@ -6,11 +6,12 @@ mod check;
 use std::borrow::Cow;
 use std::fmt;
 
+use fluent_bundle::FluentResource;
 use fluent_bundle::concurrent::FluentBundle;
-use fluent_bundle::{FluentArgs, FluentResource};
 use unic_langid::LanguageIdentifier;
 
 pub use check::{LanguageReport, Report, check};
+pub use fluent_bundle::FluentArgs;
 
 /// Language of the fallback bundle, always present.
 pub const FALLBACK_LANGUAGE: &str = "en";

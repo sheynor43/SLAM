@@ -1,6 +1,6 @@
 use sdl3_sys::events::{
     SDL_EVENT_KEY_DOWN, SDL_EVENT_KEY_UP, SDL_EVENT_MOUSE_BUTTON_DOWN, SDL_EVENT_MOUSE_BUTTON_UP,
-    SDL_EVENT_MOUSE_MOTION, SDL_Event, SDL_EventType,
+    SDL_EVENT_MOUSE_MOTION, SDL_EVENT_MOUSE_WHEEL, SDL_Event, SDL_EventType,
 };
 use sdl3_sys::mouse::{
     SDL_BUTTON_LEFT, SDL_BUTTON_MIDDLE, SDL_BUTTON_RIGHT, SDL_BUTTON_X1, SDL_BUTTON_X2,
@@ -45,6 +45,12 @@ pub fn convert(event: &SDL_Event) -> Option<(u64, InputKind)> {
                     y: motion.y,
                 },
             ))
+        } else if ty == SDL_EVENT_MOUSE_WHEEL {
+            let wheel = &event.wheel;
+            if wheel.y == 0.0 {
+                return None;
+            }
+            Some((wheel.timestamp, InputKind::MouseWheel { y: wheel.y }))
         } else {
             None
         }

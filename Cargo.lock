@@ -1872,6 +1872,7 @@ version = "0.1.0"
 dependencies = [
  "cargo_metadata",
  "libc",
+ "rtrb",
  "slam-audio",
  "slam-engine",
  "slam-formats",
@@ -1959,6 +1960,7 @@ version = "0.1.0"
 dependencies = [
  "slam-formats",
  "slam-osu",
+ "thiserror",
 ]
 
 [[package]]

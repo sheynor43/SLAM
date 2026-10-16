@@ -20,6 +20,7 @@ slam-plugins = { path = "../slam-plugins" }
 slam-ui = { path = "../slam-ui" }
 slam-play = { path = "../slam-play" }
 slam-ipc = { path = "../slam-ipc" }
+rtrb.workspace = true
 tracing.workspace = true
 tracing-subscriber.workspace = true
 

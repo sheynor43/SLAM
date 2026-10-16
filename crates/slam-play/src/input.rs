@@ -362,6 +362,7 @@ impl LiveInput {
                 self.parent_path.push(self.layout.to_playfield(window));
                 return None;
             }
+            InputKind::MouseWheel { .. } => return None,
             InputKind::Key { scancode, down } => (Input::Key(scancode), down),
             InputKind::MouseButton { button, down } => (Input::Mouse(button), down),
         };
@@ -564,6 +565,8 @@ impl LiveInput {
                 self.path.push(self.position);
                 return true;
             }
+            // Gameplay does not use the wheel.
+            InputKind::MouseWheel { .. } => return true,
             InputKind::Key { scancode, down } => (Input::Key(scancode), down),
             InputKind::MouseButton { button, down } => (Input::Mouse(button), down),
         };
@@ -625,6 +628,10 @@ impl LiveInput {
     /// Keeps an event for the next step, or drops it if too many wait. A motion right after a
     /// waiting motion replaces it: only the last position matters.
     fn defer(&mut self, event: InputEvent) {
+        // Gameplay does not use the wheel: it never takes a slot a key may need.
+        if matches!(event.kind, InputKind::MouseWheel { .. }) {
+            return;
+        }
         if self.pending_len > 0 && matches!(event.kind, InputKind::MouseMove { .. }) {
             let last = (self.pending_start + self.pending_len - 1) % MAX_PENDING_EVENTS;
             if matches!(self.pending[last].kind, InputKind::MouseMove { .. }) {
@@ -1114,6 +1121,66 @@ mod tests {
         // Everything ended released; the waiting events were not delivered.
         assert_eq!(step.held, Actions::NONE);
         assert!(step.events.iter().all(|e| !e.pressed));
+    }
+
+    fn wheel(t: f64) -> InputEvent {
+        InputEvent {
+            time_ns: ms(t),
+            kind: InputKind::MouseWheel { y: -1.0 },
+        }
+    }
+
+    /// The presses and releases of a few steps over `events`, the last steps empty.
+    fn steps(events: &[InputEvent]) -> Vec<(f64, Actions, bool)> {
+        let mut input = live();
+        let mut all = summary(&input.step(events, ms(2.0), &Linear));
+        for t in 3..8 {
+            all.extend(summary(&input.step(&[], ms(t as f64), &Linear)));
+        }
+        all
+    }
+
+    #[test]
+    fn the_wheel_changes_nothing_even_when_events_wait() {
+        // More presses than a step takes: the rest wait for later steps.
+        let mut plain = Vec::new();
+        let mut scrolled = Vec::new();
+        for k in 0..40 {
+            let t = 1.0 + k as f64 * 0.01;
+            let presses = [
+                key(t, SCANCODE_Z, true),
+                key(t, SCANCODE_X, true),
+                key(t + 0.005, SCANCODE_Z, false),
+                key(t + 0.005, SCANCODE_X, false),
+            ];
+            plain.extend(presses);
+            for press in presses {
+                scrolled.push(wheel(t));
+                scrolled.push(press);
+            }
+        }
+        // Enough scrolls to fill the waiting queue many times over if they took slots.
+        scrolled.extend((0..2 * MAX_PENDING_EVENTS).map(|_| wheel(1.9)));
+        scrolled.push(key(1.95, SCANCODE_Z, true));
+        plain.push(key(1.95, SCANCODE_Z, true));
+        let expected = steps(&plain);
+        assert!(
+            expected.last().is_some_and(|e| e.2),
+            "the last press arrives"
+        );
+        assert_eq!(steps(&scrolled), expected);
+    }
+
+    #[test]
+    fn the_wheel_is_not_offered_while_suspended() {
+        let mut input = live();
+        input.suspend();
+        let mut offered = 0;
+        let stopped = input.follow_suspended(&[wheel(1.0), wheel(2.0)], |_, _| {
+            offered += 1;
+            true
+        });
+        assert_eq!((stopped, offered), (None, 0));
     }
 
     #[test]

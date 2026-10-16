@@ -4,7 +4,8 @@ mod common;
 
 use common::{button, key, motion};
 use sdl3_sys::events::{
-    SDL_EVENT_QUIT, SDL_EVENT_WINDOW_FOCUS_LOST, SDL_Event, SDL_QuitEvent, SDL_WindowEvent,
+    SDL_EVENT_MOUSE_WHEEL, SDL_EVENT_QUIT, SDL_EVENT_WINDOW_FOCUS_LOST, SDL_Event,
+    SDL_MouseWheelEvent, SDL_QuitEvent, SDL_WindowEvent,
 };
 use sdl3_sys::scancode::{SDL_SCANCODE_X, SDL_SCANCODE_Z, SDL_Scancode};
 use slam_input::{InputKind, MouseButton, convert};
@@ -88,6 +89,31 @@ fn motion_keeps_window_coordinates() {
             }
         ))
     );
+}
+
+fn wheel(timestamp: u64, y: f32) -> SDL_Event {
+    SDL_Event {
+        wheel: SDL_MouseWheelEvent {
+            r#type: SDL_EVENT_MOUSE_WHEEL,
+            timestamp,
+            y,
+            ..Default::default()
+        },
+    }
+}
+
+#[test]
+fn wheel_keeps_vertical_notches() {
+    assert_eq!(
+        convert(&wheel(9, -1.0)),
+        Some((9, InputKind::MouseWheel { y: -1.0 }))
+    );
+    assert_eq!(
+        convert(&wheel(9, 0.25)),
+        Some((9, InputKind::MouseWheel { y: 0.25 }))
+    );
+    // Horizontal-only scrolls carry no vertical motion.
+    assert_eq!(convert(&wheel(9, 0.0)), None);
 }
 
 #[test]
