@@ -392,7 +392,10 @@ fn host(name: &str, with_track: bool) -> HostFixture {
             dir.join("audio.wav"),
         )
         .unwrap();
-        map.replacen("[General]\n", "[General]\nAudioFilename: audio.wav\n", 1)
+        // Any line ending: the data may be checked out with CRLF.
+        let map = map.replacen("[General]", "[General]\nAudioFilename: audio.wav", 1);
+        assert!(map.contains("AudioFilename: audio.wav"));
+        map
     } else {
         map
     };
