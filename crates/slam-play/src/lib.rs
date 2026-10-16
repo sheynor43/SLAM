@@ -8,6 +8,7 @@ pub mod hitsounds;
 pub mod hotkeys;
 pub mod hud;
 pub mod input;
+pub mod judgements;
 pub mod legacy_text;
 pub mod playfield;
 pub mod session;

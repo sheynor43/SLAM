@@ -1225,8 +1225,7 @@ pub struct ObjectTextures<'a> {
 /// drawing order, and records the slider bodies between them in `bodies`. Objects starting
 /// earlier are on top; within a slider, the body, the tail, the ticks, the repeats, the head's
 /// circle, the reverse arrows, the head's overlay and number, then the follow circle and the
-/// ball; every approach circle goes above all objects, in start time order,
-/// as lazer's playfield proxies them into a layer of their own.
+/// ball. The approach circles go above them with [`push_approaches`].
 #[allow(clippy::too_many_arguments)]
 pub fn push_objects(
     hit_circles: &HitCircles,
@@ -1283,8 +1282,25 @@ pub fn push_objects(
             }
         }
     }
+}
 
-    let Some(approach) = &textures.circles.approach else {
+/// Writes the approach circles of the live `circles` and `sliders`' heads at game `time`, in
+/// start time order: lazer's playfield proxies them into a layer above all objects and
+/// judgements.
+#[allow(clippy::too_many_arguments)]
+pub fn push_approaches(
+    hit_circles: &HitCircles,
+    hit_sliders: &HitSliders,
+    batch: &mut SpriteBatch,
+    layout: &PlayfieldLayout,
+    circles: &[LiveCircle],
+    sliders: &[LiveSlider],
+    time: f64,
+    textures: &CircleTextures,
+) {
+    let style = &hit_circles.style;
+    let visuals = &hit_sliders.visuals;
+    let Some(approach) = &textures.approach else {
         return;
     };
     let (mut c, mut s) = (0, 0);

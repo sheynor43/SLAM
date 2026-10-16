@@ -22,6 +22,7 @@ use slam_play::circles::{
     CircleMods, CircleSettings, CircleSkinConfig, CircleStyle, CircleVisuals, HitCircles,
 };
 use slam_play::cursor::{CursorView, MAX_CURSOR_SPRITES};
+use slam_play::judgements::JudgementView;
 use slam_play::slider_body::Snaking;
 use slam_play::sliders::{
     ArrowStyle, BallStyle, HitSliders, MAX_LIVE_SLIDERS, SliderBodies, SliderVisuals,
@@ -60,8 +61,9 @@ const WINDOW: (i32, i32) = (1280, 720);
 /// How long the track may take to open.
 const LOAD_TIMEOUT: Duration = Duration::from_secs(10);
 /// Sprites of one frame: every live circle's pieces, numbers and approach circle, slider
-/// ticks (up to `MAX_LIVE_NESTED`) and repeats.
-const MAX_SPRITES: usize = 8192;
+/// ticks (up to `MAX_LIVE_NESTED`) and repeats, and judgement popups: up to `MAX_POPUPS`, of
+/// 150 particles and three sprites each.
+const MAX_SPRITES: usize = 32768;
 /// Textures of the draw thread: atlas pages of the skin and the glyphs, and images too
 /// large for a page.
 const MAX_TEXTURES: usize = 64;
@@ -650,6 +652,12 @@ pub fn run(options: &Options) -> Result<(), String> {
             visuals: SpinnerVisuals::new(beatmap),
             style: SpinnerStyle::new(circle_mods, &loaded.skins),
         },
+        judgements: JudgementView::new(
+            beatmap,
+            settings,
+            Some(&loaded.beatmap_skin),
+            &loaded.skins,
+        ),
         cursor: CursorView::default(),
     };
 

@@ -443,13 +443,16 @@ pub(crate) fn to_srgb(colour: f32) -> f32 {
     }
 }
 
+/// Most transforms a [`Track`] holds: a legacy judgement's scale takes five.
+const MAX_TWEENS: usize = 6;
+
 /// The transforms of one property, by start time. A circle's properties hold at most three at
 /// once (the approach circle's alpha: its fade-in, the fade at the start time and the fade on
-/// a hit); the fourth slot is headroom.
+/// a hit); a legacy judgement's scale holds five.
 #[derive(Debug, Clone, Copy)]
 pub(crate) struct Track {
     kind: Kind,
-    tweens: [Tween; 4],
+    tweens: [Tween; MAX_TWEENS],
     len: usize,
 }
 
@@ -457,7 +460,7 @@ impl Track {
     pub(crate) const fn new(kind: Kind) -> Self {
         Track {
             kind,
-            tweens: [Tween::new(0.0, 0.0, 0.0, Easing::None); 4],
+            tweens: [Tween::new(0.0, 0.0, 0.0, Easing::None); MAX_TWEENS],
             len: 0,
         }
     }

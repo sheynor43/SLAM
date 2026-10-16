@@ -404,6 +404,32 @@ fn ticks_are_deterministic_and_the_play_finishes() {
 }
 
 #[test]
+fn the_snapshot_carries_every_judgement_that_shows_a_popup() {
+    let map = beatmap();
+    let track = Track::default();
+    let end = end_ns(&map, session(&map, &track).start_time());
+    let mut seen = 0;
+    let mut shown = Vec::new();
+    let (session, _, _) = run(&map, MS, end, |s| {
+        shown.extend(s.judgements.since(seen).copied());
+        seen = s.judgements.written();
+    });
+    let targets = slam_play::judgements::PopupTargets::new(&map, &ModSet::default());
+    let expected: Vec<_> = session
+        .log()
+        .events()
+        .iter()
+        .filter_map(|j| targets.shown(j))
+        .collect();
+    assert!(!expected.is_empty());
+    assert!(
+        expected.len() < session.log().events().len(),
+        "ticks show none"
+    );
+    assert_eq!(shown, expected);
+}
+
+#[test]
 fn ticks_and_frames_do_not_allocate() {
     let map = beatmap();
     let mut track = Track::default();
@@ -568,6 +594,12 @@ fn view(map: &Beatmap) -> PlayView {
             visuals: slam_play::spinners::SpinnerVisuals::new(map),
             style: slam_play::spinners::SpinnerStyle::new(mods, &chain),
         },
+        judgements: slam_play::judgements::JudgementView::new(
+            map,
+            CircleSettings::default(),
+            None,
+            &chain,
+        ),
         cursor: CursorView::default(),
     }
 }
