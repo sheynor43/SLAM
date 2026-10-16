@@ -26,7 +26,7 @@ use slam_play::cursor::{
     CursorSkinConfig, CursorTextures, CursorView, ExpandTimes, MAX_CURSOR_SPRITES,
 };
 use slam_play::slider_body::Snaking;
-use slam_play::sliders::{HitSliders, SliderBodies, SliderVisuals};
+use slam_play::sliders::{AnimationSprites, HitSliders, SliderBodies, SliderVisuals};
 use slam_play::{BackgroundSettings, BackgroundView, HudValues, HudView};
 use slam_play::{
     Bindings, FrameTextures, GameTime, GameplaySounds, LiveInput, Offsets, PlaySession,
@@ -38,6 +38,7 @@ use slam_render::Origin;
 use slam_render::atlas::{AtlasRegion, UvRect};
 use slam_render::sprite::SpriteBatch;
 use slam_render::textures::TextureId;
+use slam_skin::SIXTY_FRAME_TIME;
 use slam_testkit::assert_no_alloc;
 use slam_text::{FontRegistry, GlyphAtlasConfig, glyph_atlas};
 
@@ -454,10 +455,12 @@ fn ticks_and_frames_do_not_allocate() {
             ..CursorSkinConfig::default()
         },
     };
+    textures.follow_points = AnimationSprites::new(piece, SIXTY_FRAME_TIME);
     let mut batch = SpriteBatch::with_capacity(4096 + MAX_CURSOR_SPRITES);
     let mut bodies = SliderBodies::new();
     let mut drawn = 0;
     let mut bodies_drawn = 0;
+    let mut follow_points_drawn = 0;
     // The HUD's glyphs are only requested here: without a device they stay pending.
     let registry = Arc::new(FontRegistry::with_builtin());
     let mut glyphs = glyph_atlas(Arc::clone(&registry), &GlyphAtlasConfig::new(LIMITS)).unwrap();
@@ -503,12 +506,17 @@ fn ticks_and_frames_do_not_allocate() {
             pending += hud.push_text(&mut text, &snapshot, &mut glyphs).pending;
             view.push_cursor(&mut batch, &layout(), &snapshot, now + MS / 2, &textures);
             drawn += snapshot.circles.as_slice().len();
+            follow_points_drawn += view
+                .follow_points
+                .alive(snapshot.time_at(now + MS / 2))
+                .count();
             now += 4 * MS;
         }
     });
     assert_eq!(snapshot.state, PlayState::Results);
     assert!(drawn > 0);
     assert!(bodies_drawn > 0);
+    assert!(follow_points_drawn > 0);
     assert!(pending > 0);
     assert!(snapshot.hud.score > 0);
     assert_eq!(hud.texts()[0], format!("{:06}", snapshot.hud.score));
@@ -594,6 +602,7 @@ fn view(map: &Beatmap) -> PlayView {
             visuals: slam_play::spinners::SpinnerVisuals::new(map),
             style: slam_play::spinners::SpinnerStyle::new(mods, &chain),
         },
+        follow_points: slam_play::follow_points::FollowPoints::new(map),
         judgements: slam_play::judgements::JudgementView::new(
             map,
             CircleSettings::default(),

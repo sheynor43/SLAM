@@ -596,6 +596,20 @@ fn found(user: &[&str], default: &[&str]) -> usize {
 }
 
 #[test]
+fn follow_points_are_an_animation_or_a_texture() {
+    assert_eq!(
+        found(&["followpoint-0", "followpoint-1", "followpoint-2"], &[]),
+        3
+    );
+    assert_eq!(found(&["followpoint"], &[]), 1);
+    // The user's frames hide the default skin's texture.
+    assert_eq!(
+        found(&["followpoint-0", "followpoint-1"], &["followpoint"]),
+        2
+    );
+}
+
+#[test]
 fn judgement_animations_share_a_frame_budget() {
     let frames = |name: &'static str, count: usize| (0..count).map(move |i| format!("{name}-{i}"));
     // Four animations of 64 frames (each cut from 70) fill the budget: the next one is left out.

@@ -3,6 +3,7 @@
 pub mod background;
 pub mod circles;
 pub mod cursor;
+pub mod follow_points;
 pub mod gameplay_sounds;
 pub mod hitsounds;
 pub mod hotkeys;

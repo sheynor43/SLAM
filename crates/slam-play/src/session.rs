@@ -32,6 +32,7 @@ use crate::cursor::{
     CursorFrame, CursorPath, CursorSkinConfig, CursorSources, CursorTextures, CursorView,
     ExpandTimes, ExpandTracker,
 };
+use crate::follow_points::{FollowPoints, MAX_FOLLOW_POINT_SIZE};
 use crate::gameplay_sounds::{GameplaySounds, VoiceSink};
 use crate::hotkeys::{GlobalAction, Hotkeys};
 use crate::input::{ClockTime, GameTime, LiveInput};
@@ -1080,6 +1081,9 @@ pub struct PlayTextures {
     /// The frames of the follow circle and their length.
     follow: Vec<Requested>,
     follow_frame_length: f64,
+    /// The frames of the follow points and their length.
+    follow_points: Vec<Requested>,
+    follow_point_frame_length: f64,
     cursor: CursorSkinConfig,
     /// The judgement popups' frames and particles, by `judgements::slot`.
     judgements: [RequestedPiece; PIECE_SLOTS],
@@ -1108,7 +1112,7 @@ fn uses_prefix(skins: &SkinChain, prefix: &str) -> bool {
 
 impl PlayTextures {
     /// Reads the textures of hit circles, slider heads, tails, ticks, reverse arrows, balls and
-    /// follow circles, legacy spinners and the cursor from `skins` and queues them for upload
+    /// follow circles, follow points, legacy spinners and the cursor from `skins` and queues them for upload
     /// with a white image for the HUD. Missing ones are not drawn. Does file I/O: call it off the hot paths.
     pub fn request(
         skins: &SkinChain,
@@ -1200,6 +1204,12 @@ impl PlayTextures {
             .as_ref()
             .map_or(SIXTY_FRAME_TIME, |a| a.value.frame_length_ms);
         let follow_frames = follow_animation.map_or_else(Vec::new, |a| a.value.frames);
+        // Ported from osu!lazer 2026.1005.0-lazer: osu.Game.Rulesets.Osu/Skinning/Legacy/OsuLegacySkinTransformer.cs (FollowPoint)
+        let follow_point_animation = skins.animation("followpoint", follow_options);
+        let follow_point_frame_length = follow_point_animation
+            .as_ref()
+            .map_or(SIXTY_FRAME_TIME, |a| a.value.frame_length_ms);
+        let follow_point_frames = follow_point_animation.map_or_else(Vec::new, |a| a.value.frames);
         let request_frames = |requests: &mut TextureRequests, frames: &[TextureFile]| {
             frames
                 .iter()
@@ -1209,6 +1219,7 @@ impl PlayTextures {
         };
         let ball = request_frames(requests, &ball_frames)?;
         let follow = request_frames(requests, &follow_frames)?;
+        let follow_points = request_frames(requests, &follow_point_frames)?;
         let mut judgements: [RequestedPiece; PIECE_SLOTS] = Default::default();
         let mut frame_count = 0;
         for (slot, source) in judgements.iter_mut().zip(piece_sources(skins)) {
@@ -1255,6 +1266,8 @@ impl PlayTextures {
             ball,
             follow,
             follow_frame_length,
+            follow_points,
+            follow_point_frame_length,
             cursor: CursorSkinConfig::new(skins),
             judgements,
             lighting,
@@ -1339,13 +1352,9 @@ impl PlayTextures {
             }
         }
         // An animation is drawn once all its frames are uploaded.
-        let animation = |frames: &[Requested], frame_length| {
+        let animation = |frames: &[Requested], frame_length, max_size| {
             let sprites = frames.iter().map(|r| match uploads.get(r.handle) {
-                TextureState::Ready(region) => Some(SkinSprite::new(
-                    region,
-                    r.scale,
-                    MAX_FOLLOW_CIRCLE_AREA_SIZE,
-                )),
+                TextureState::Ready(region) => Some(SkinSprite::within(region, r.scale, max_size)),
                 _ => None,
             });
             if sprites.clone().all(|s| s.is_some()) {
@@ -1355,8 +1364,14 @@ impl PlayTextures {
             }
         };
         // The ball's frame length depends on the slider: see `BallPose::frame_length`.
-        frame.sliders.ball = animation(&self.ball, SIXTY_FRAME_TIME);
-        frame.sliders.follow = animation(&self.follow, self.follow_frame_length);
+        let follow_area = Vec2::new(MAX_FOLLOW_CIRCLE_AREA_SIZE, MAX_FOLLOW_CIRCLE_AREA_SIZE);
+        frame.sliders.ball = animation(&self.ball, SIXTY_FRAME_TIME, follow_area);
+        frame.sliders.follow = animation(&self.follow, self.follow_frame_length, follow_area);
+        frame.follow_points = animation(
+            &self.follow_points,
+            self.follow_point_frame_length,
+            MAX_FOLLOW_POINT_SIZE,
+        );
         if !self.head_prefix {
             frame.sliders.head = PieceTextures::from(&frame.circles);
         }
@@ -1409,6 +1424,7 @@ impl PlayTextures {
         self.requested.iter().flatten().count()
             + self.ball.len()
             + self.follow.len()
+            + self.follow_points.len()
             + judgements
             + usize::from(self.lighting.is_some())
     }
@@ -1422,6 +1438,8 @@ pub struct FrameTextures {
     pub spinners: SpinnerTextures,
     pub cursor: CursorTextures,
     pub judgements: JudgementTextures,
+    /// The frames of `followpoint`.
+    pub follow_points: AnimationSprites,
     /// An opaque white image.
     pub white: Option<AtlasRegion>,
 }
@@ -1432,6 +1450,7 @@ pub struct PlayView {
     pub circles: HitCircles,
     pub sliders: HitSliders,
     pub spinners: HitSpinners,
+    pub follow_points: FollowPoints,
     pub judgements: JudgementView,
     pub cursor: CursorView,
 }
@@ -1460,6 +1479,8 @@ impl PlayView {
                 time,
                 &textures.spinners,
             );
+            self.follow_points
+                .push(batch, layout, time, &textures.follow_points);
             let judgements = &mut self.judgements;
             judgements.update(&snapshot.judgements, snapshot.restarts, time);
             judgements.push_below(batch, layout, time, &textures.judgements);
