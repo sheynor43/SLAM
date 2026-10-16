@@ -298,32 +298,41 @@ fn env_of<'a>(pairs: &'a [(&'a str, &'a str)]) -> impl Fn(&str) -> Option<OsStri
     }
 }
 
+/// `path` made absolute on this platform: Windows needs a drive.
+fn abs(path: &str) -> String {
+    if cfg!(windows) {
+        format!("C:{path}")
+    } else {
+        path.to_owned()
+    }
+}
+
 #[test]
 fn dirs_linux() {
     let none = |_: &Path| false;
-    let d = resolve(&env_of(&[("HOME", "/home/u")]), None, &none, Os::Unix).unwrap();
-    assert_eq!(d.config, Path::new("/home/u/.config/slam"));
-    assert_eq!(d.data, Path::new("/home/u/.local/share/slam"));
+    let d = resolve(&env_of(&[("HOME", &abs("/home/u"))]), None, &none, Os::Unix).unwrap();
+    assert_eq!(d.config, Path::new(&abs("/home/u/.config/slam")));
+    assert_eq!(d.data, Path::new(&abs("/home/u/.local/share/slam")));
     assert!(!d.portable);
 
     let d = resolve(
         &env_of(&[
-            ("HOME", "/home/u"),
-            ("XDG_CONFIG_HOME", "/c"),
-            ("XDG_DATA_HOME", "/d"),
+            ("HOME", &abs("/home/u")),
+            ("XDG_CONFIG_HOME", &abs("/c")),
+            ("XDG_DATA_HOME", &abs("/d")),
         ]),
         None,
         &none,
         Os::Unix,
     )
     .unwrap();
-    assert_eq!(d.config, Path::new("/c/slam"));
-    assert_eq!(d.data, Path::new("/d/slam"));
-    assert_eq!(d.settings_file(), Path::new("/c/slam/slam.toml"));
+    assert_eq!(d.config, Path::new(&abs("/c/slam")));
+    assert_eq!(d.data, Path::new(&abs("/d/slam")));
+    assert_eq!(d.settings_file(), Path::new(&abs("/c/slam/slam.toml")));
 
     let d = resolve(
         &env_of(&[
-            ("HOME", "/home/u"),
+            ("HOME", &abs("/home/u")),
             ("XDG_CONFIG_HOME", ""),
             ("XDG_DATA_HOME", "rel/path"),
         ]),
@@ -332,17 +341,20 @@ fn dirs_linux() {
         Os::Unix,
     )
     .unwrap();
-    assert_eq!(d.config, Path::new("/home/u/.config/slam"));
-    assert_eq!(d.data, Path::new("/home/u/.local/share/slam"));
+    assert_eq!(d.config, Path::new(&abs("/home/u/.config/slam")));
+    assert_eq!(d.data, Path::new(&abs("/home/u/.local/share/slam")));
 
     let d = resolve(
-        &env_of(&[("XDG_CONFIG_HOME", "/c"), ("XDG_DATA_HOME", "/d")]),
+        &env_of(&[
+            ("XDG_CONFIG_HOME", &abs("/c")),
+            ("XDG_DATA_HOME", &abs("/d")),
+        ]),
         None,
         &none,
         Os::Unix,
     )
     .unwrap();
-    assert_eq!(d.config, Path::new("/c/slam"));
+    assert_eq!(d.config, Path::new(&abs("/c/slam")));
     assert!(resolve(&env_of(&[]), None, &none, Os::Unix).is_none());
     assert!(resolve(&env_of(&[("HOME", "relative")]), None, &none, Os::Unix).is_none());
 }
@@ -378,6 +390,6 @@ fn dirs_windows_and_portable() {
     assert_eq!(d.data, exe);
     let d = resolve(&env_of(&[]), Some(exe), &marker, Os::Windows).unwrap();
     assert!(d.portable);
-    let d = resolve(&env_of(&[("HOME", "/h")]), Some(exe), &none, Os::Unix).unwrap();
+    let d = resolve(&env_of(&[("HOME", &abs("/h"))]), Some(exe), &none, Os::Unix).unwrap();
     assert!(!d.portable);
 }
