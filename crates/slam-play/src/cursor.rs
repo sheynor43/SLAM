@@ -22,6 +22,8 @@ pub const CURSOR_PATH_CAPACITY: usize = 256;
 pub struct CursorPath {
     points: [Vec2; CURSOR_PATH_CAPACITY],
     written: u64,
+    /// Index of the last position the cursor jumped to rather than moved to.
+    jump: Option<u64>,
 }
 
 impl Default for CursorPath {
@@ -29,6 +31,7 @@ impl Default for CursorPath {
         CursorPath {
             points: [Vec2::ZERO; CURSOR_PATH_CAPACITY],
             written: 0,
+            jump: None,
         }
     }
 }
@@ -40,6 +43,12 @@ impl CursorPath {
         self.written += 1;
     }
 
+    /// Appends a position the cursor jumped to: the trail leaves no parts on the way.
+    pub fn push_jump(&mut self, position: Vec2) {
+        self.jump = Some(self.written);
+        self.push(position);
+    }
+
     /// Positions ever written; the cursor has not moved while this is 0.
     pub fn written(&self) -> u64 {
         self.written
@@ -48,8 +57,16 @@ impl CursorPath {
     /// The positions written after the first `seen`, oldest first. Those overwritten already
     /// are skipped.
     pub fn since(&self, seen: u64) -> impl Iterator<Item = Vec2> + '_ {
+        self.moves_since(seen).map(|(position, _)| position)
+    }
+
+    /// As [`since`](Self::since), each position with whether the cursor jumped to it.
+    pub fn moves_since(&self, seen: u64) -> impl Iterator<Item = (Vec2, bool)> + '_ {
         let start = seen.max(self.written.saturating_sub(CURSOR_PATH_CAPACITY as u64));
-        (start..self.written).map(|i| self.points[(i % CURSOR_PATH_CAPACITY as u64) as usize])
+        (start..self.written).map(|i| {
+            let position = self.points[(i % CURSOR_PATH_CAPACITY as u64) as usize];
+            (position, self.jump == Some(i))
+        })
     }
 }
 
@@ -403,13 +420,42 @@ impl CursorTrail {
     ) {
         // Input comes before the frame's update: new parts take the previous fade clock.
         for position in moves {
-            if disjoint {
-                self.current_position = Some(position);
-            } else {
-                self.add_trail(position, display_width, previous_part_scale);
-            }
+            self.take_move(position, disjoint, display_width, previous_part_scale);
         }
+        self.advance(now_ns, disjoint, part_scale);
+    }
 
+    /// Takes one cursor move of a frame, before [`advance`](Self::advance).
+    fn take_move(
+        &mut self,
+        position: Vec2,
+        disjoint: bool,
+        display_width: f32,
+        previous_part_scale: f32,
+    ) {
+        if disjoint {
+            self.current_position = Some(position);
+        } else {
+            self.add_trail(position, display_width, previous_part_scale);
+        }
+    }
+
+    /// Takes a cursor jump: the trail goes on from `position`, leaving nothing on the way.
+    /// Not lazer's: a jump there is a move like any other, and resuming after a pause drew
+    /// a line of parts from where gameplay paused to where the cursor went meanwhile.
+    fn take_jump(&mut self, position: Vec2, disjoint: bool) {
+        if disjoint {
+            self.current_position = Some(position);
+        } else {
+            self.last_position = Some(position);
+            self.resampler = InputResampler::default();
+            self.resampler.add_position(position);
+        }
+    }
+
+    /// Runs the fade clock to engine time `now_ns`, then leaves a disjoint trail's part with
+    /// `part_scale`.
+    fn advance(&mut self, now_ns: u64, disjoint: bool, part_scale: f32) {
         // Lazer's trail has a clock of its own, started when it loads.
         let start = *self.clock_start_ns.get_or_insert(now_ns);
         let current = now_ns.saturating_sub(start) as f64 / 1e6;
@@ -544,10 +590,14 @@ pub struct CursorFrame<'a> {
     pub time: f64,
     pub restarts: u32,
     pub now_ns: u64,
+    /// Whether the cursor and its trail are drawn; hidden, the trail still takes the moves
+    /// and fades.
+    pub visible: bool,
 }
 
 impl CursorView {
     /// Writes the trail and the cursor of one frame. Hidden until the cursor first moves.
+    /// `frame.restarts` tells cursors apart: a new value starts a new trail.
     /// Allocation-free once `batch` has room.
     // Ported from osu!lazer 2026.1005.0-lazer: osu.Game.Rulesets.Osu/UI/Cursor/OsuCursorContainer.cs (Update)
     // Ported from osu!lazer 2026.1005.0-lazer: osu.Game.Rulesets.Osu/Skinning/Legacy/LegacyCursor.cs (load)
@@ -577,23 +627,25 @@ impl CursorView {
         let part_rotation = self::rotation(lagging, config.rotate);
         self.previous_time = Some(frame.time);
 
-        let moves = frame.path.since(self.seen);
+        let moves = frame.path.moves_since(self.seen);
         self.seen = frame.path.written();
         if let Some(trail) = &textures.trail {
             let display_width = trail.size.x / STABLE_MAGIC_SCALE_FACTOR;
             let previous = self.part_scale.unwrap_or(part_scale);
-            self.trail.update(
-                frame.now_ns,
-                moves,
-                config.disjoint,
-                display_width,
-                previous,
-                part_scale,
-            );
+            for (position, jump) in moves {
+                if jump {
+                    self.trail.take_jump(position, config.disjoint);
+                } else {
+                    self.trail
+                        .take_move(position, config.disjoint, display_width, previous);
+                }
+            }
+            self.trail
+                .advance(frame.now_ns, config.disjoint, part_scale);
         }
         self.part_scale = Some(part_scale);
 
-        if frame.path.written() == 0 {
+        if frame.path.written() == 0 || !frame.visible {
             return;
         }
         if let Some(trail) = &textures.trail {
@@ -660,6 +712,22 @@ mod tests {
         let xs: Vec<f32> = path.since(1).map(|p| p.x).collect();
         assert_eq!(xs, [1.0, 2.0]);
         assert_eq!(path.since(3).count(), 0);
+    }
+
+    #[test]
+    fn the_path_tells_the_last_jump() {
+        let mut path = CursorPath::default();
+        path.push(Vec2::new(1.0, 0.0));
+        path.push_jump(Vec2::new(2.0, 0.0));
+        path.push(Vec2::new(3.0, 0.0));
+        let moves: Vec<bool> = path.moves_since(0).map(|(_, jump)| jump).collect();
+        assert_eq!(moves, [false, true, false]);
+        assert_eq!(path.since(1).next(), Some(Vec2::new(2.0, 0.0)));
+        // Overwritten, the jump is gone with its position.
+        for _ in 0..CURSOR_PATH_CAPACITY {
+            path.push(Vec2::ZERO);
+        }
+        assert!(path.moves_since(0).all(|(_, jump)| !jump));
     }
 
     #[test]

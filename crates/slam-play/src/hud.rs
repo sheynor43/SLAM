@@ -1,11 +1,12 @@
 //! A stand-in HUD until the HUD components exist (M5): score, accuracy and combo as plain
-//! numbers, health as a bar, the skip button and the click-to-resume target.
+//! numbers, health as a bar and the skip button.
 //!
 //! Draw side only. Numbers are formatted into fixed buffers and laid out again only when
 //! they change; once warm ([`HudView::new`]), nothing here allocates.
 //!
 //! Only the numbers follow lazer. Unlike its counters, values show at once (no rolling),
-//! sizes and places are this module's own, and the resume target is a square.
+//! sizes and places are this module's own. The click-to-resume target is drawn with the
+//! cursor ([`crate::resume`]).
 
 use std::fmt::{self, Write as _};
 use std::sync::Arc;
@@ -18,8 +19,7 @@ use slam_text::{
     UI_FAMILY, push_layout,
 };
 
-use crate::playfield::PlayfieldLayout;
-use crate::session::{HudValues, PlaySnapshot, PlayState, RESUME_CURSOR_SIZE};
+use crate::session::{HudValues, PlaySnapshot};
 
 /// Window height the HUD's sizes are given at; it scales with the window.
 const REFERENCE_HEIGHT: f32 = 768.0;
@@ -38,12 +38,6 @@ const SHADE: Color = Color {
     g: 0.0,
     b: 0.0,
     a: 0.5,
-};
-const RESUME: Color = Color {
-    r: 1.0,
-    g: 0.6,
-    b: 0.2,
-    a: 0.6,
 };
 
 /// Every character the numbers use, as long as the longest number text: laying it out
@@ -301,12 +295,10 @@ impl HudView {
     }
 
     /// Writes the HUD's rectangles for `snapshot`, tinting `white` (an opaque white
-    /// image): the health bar, the skip button and the click-to-resume target placed by
-    /// the playfield `layout`. Allocation-free once `batch` has room.
+    /// image): the health bar and the skip button. Allocation-free once `batch` has room.
     pub fn push_shapes(
         &self,
         batch: &mut SpriteBatch,
-        layout: &PlayfieldLayout,
         snapshot: &PlaySnapshot,
         white: AtlasRegion,
     ) {
@@ -332,15 +324,6 @@ impl HudView {
                 [centre[0] - size[0] / 2.0, centre[1] - size[1] / 2.0],
                 size,
                 SHADE,
-            );
-        }
-        if snapshot.state == PlayState::Resuming {
-            let centre = layout.to_window(snapshot.resume_target);
-            let side = RESUME_CURSOR_SIZE * layout.scale();
-            rect(
-                [centre.x - side / 2.0, centre.y - side / 2.0],
-                [side, side],
-                RESUME,
             );
         }
     }

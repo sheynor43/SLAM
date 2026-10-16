@@ -23,6 +23,7 @@ use slam_play::circles::{
 };
 use slam_play::cursor::{CursorView, MAX_CURSOR_SPRITES};
 use slam_play::judgements::JudgementView;
+use slam_play::resume::MAX_TARGET_SPRITES;
 use slam_play::slider_body::Snaking;
 use slam_play::sliders::{
     ArrowStyle, BallStyle, HitSliders, MAX_LIVE_SLIDERS, SliderBodies, SliderVisuals,
@@ -400,8 +401,7 @@ impl Draw<PlaySnapshot> for View {
             &textures,
         );
         if let Some(white) = textures.white {
-            self.hud
-                .push_shapes(&mut self.batch, &layout, snapshot, white);
+            self.hud.push_shapes(&mut self.batch, snapshot, white);
         }
         self.view.push_hit_error(
             &mut self.batch,
@@ -671,6 +671,7 @@ pub fn run(options: &Options) -> Result<(), String> {
         ),
         hit_error: slam_play::hit_error::HitErrorView::new(&windows),
         cursor: CursorView::default(),
+        resume: slam_play::resume::ResumeView::default(),
     };
 
     let backend = match options.backend {
@@ -785,7 +786,7 @@ pub fn run(options: &Options) -> Result<(), String> {
         meshes: SliderVisuals::meshes(beatmap),
         objects: beatmap.hit_objects.len(),
         text: SpriteBatch::with_capacity(MAX_GLYPH_SPRITES),
-        cursor: SpriteBatch::with_capacity(MAX_CURSOR_SPRITES),
+        cursor: SpriteBatch::with_capacity(MAX_CURSOR_SPRITES + MAX_TARGET_SPRITES),
         surface_size,
         perf: frame_times
             .as_ref()

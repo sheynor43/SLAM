@@ -172,6 +172,8 @@ pub struct LiveInput {
     suspended: bool,
     /// Window position of the cursor while suspended.
     parent_window: Option<Vec2>,
+    /// The cursor positions followed while suspended, in osu!pixels.
+    parent_path: CursorPath,
     /// Bound inputs held while suspended.
     parent_held: [Input; MAX_HELD_INPUTS],
     parent_len: usize,
@@ -216,6 +218,7 @@ impl LiveInput {
             events: [no_action; MAX_LIVE_STEP_EVENTS],
             suspended: false,
             parent_window: None,
+            parent_path: CursorPath::default(),
             parent_held: [Input::Key(0); MAX_HELD_INPUTS],
             parent_len: 0,
             resume_press: None,
@@ -293,6 +296,7 @@ impl LiveInput {
         self.sync_pending = false;
         self.resume_press = None;
         self.parent_window = self.window_position;
+        self.parent_path.push_jump(self.position);
         self.parent_len = self.held_len;
         for (parent, held) in self.parent_held.iter_mut().zip(&self.held_inputs) {
             *parent = held.input;
@@ -326,6 +330,18 @@ impl LiveInput {
         None
     }
 
+    /// The cursor the window has while suspended, in osu!pixels: lazer's resume overlay
+    /// shows a cursor of its own there. Gameplay's cursor otherwise.
+    pub fn window_cursor(&self) -> Vec2 {
+        self.parent_position()
+    }
+
+    /// The positions of [`window_cursor`](Self::window_cursor) while suspended, newest last:
+    /// each suspension starts with a jump to gameplay's cursor.
+    pub fn window_path(&self) -> &CursorPath {
+        &self.parent_path
+    }
+
     /// The cursor position the window has, in osu!pixels.
     fn parent_position(&self) -> Vec2 {
         if self.suspended {
@@ -341,7 +357,9 @@ impl LiveInput {
     fn follow(&mut self, event: InputEvent) -> Option<(Input, Actions)> {
         let (input, down) = match event.kind {
             InputKind::MouseMove { x, y } => {
-                self.parent_window = Some(Vec2::new(x, y));
+                let window = Vec2::new(x, y);
+                self.parent_window = Some(window);
+                self.parent_path.push(self.layout.to_playfield(window));
                 return None;
             }
             InputKind::Key { scancode, down } => (Input::Key(scancode), down),
@@ -395,7 +413,7 @@ impl LiveInput {
         if let Some(window) = self.parent_window.filter(|_| self.suspended) {
             self.window_position = Some(window);
             self.position = self.layout.to_playfield(window);
-            self.path.push(self.position);
+            self.path.push_jump(self.position);
         }
         self.held_len = 0;
         self.held = Actions::NONE;
@@ -482,7 +500,8 @@ impl LiveInput {
         if let Some(window) = self.parent_window {
             self.window_position = Some(window);
             self.position = self.layout.to_playfield(window);
-            self.path.push(self.position);
+            // Where the cursor went while suspended: a jump, not a move to draw a trail along.
+            self.path.push_jump(self.position);
         }
         if let Some(input) = self.resume_press.take() {
             let bound = self.bindings.actions_of(input);
@@ -1144,12 +1163,22 @@ mod tests {
         input.suspend();
         input.follow_suspended(&[moved(3.0, 264.0, 256.0)], |_, _| false);
         assert_eq!(input.path().written(), 2);
-        // Resuming moves gameplay's cursor where the window's went.
+        // The window's path starts with a jump to gameplay's cursor, then follows.
+        assert_eq!(input.window_cursor(), Vec2::new(200.0, 200.0));
+        assert_eq!(
+            input.window_path().moves_since(0).collect::<Vec<_>>(),
+            [
+                (Vec2::new(110.0, 100.0), true),
+                (Vec2::new(200.0, 200.0), false)
+            ]
+        );
+        // Resuming moves gameplay's cursor where the window's went: a jump.
         input.resume();
         input.step(&[], ms(4.0), &Linear);
         assert_eq!(
-            input.path().since(2).collect::<Vec<_>>(),
-            [Vec2::new(200.0, 200.0)]
+            input.path().moves_since(2).collect::<Vec<_>>(),
+            [(Vec2::new(200.0, 200.0), true)]
         );
+        assert_eq!(input.window_cursor(), input.position());
     }
 }
