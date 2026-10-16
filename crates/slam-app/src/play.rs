@@ -403,6 +403,14 @@ impl Draw<PlaySnapshot> for View {
             self.hud
                 .push_shapes(&mut self.batch, &layout, snapshot, white);
         }
+        self.view.push_hit_error(
+            &mut self.batch,
+            width,
+            height,
+            snapshot,
+            info.wait.woke_ns,
+            &textures,
+        );
         self.hud
             .push_text(&mut self.text, snapshot, &mut self.glyphs);
         self.view.push_cursor(
@@ -659,6 +667,7 @@ pub fn run(options: &Options) -> Result<(), String> {
             Some(&loaded.beatmap_skin),
             &loaded.skins,
         ),
+        hit_error: slam_play::hit_error::HitErrorView::new(&windows),
         cursor: CursorView::default(),
     };
 

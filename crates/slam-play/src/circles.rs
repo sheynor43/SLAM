@@ -304,6 +304,7 @@ pub(crate) enum Easing {
     /// osu-framework's `Easing.Out` (quadratic).
     Out,
     OutQuint,
+    InQuint,
     OutElasticHalf,
 }
 
@@ -320,6 +321,7 @@ impl Easing {
                 let t = t - 1.0;
                 t * t * t * t * t + 1.0
             }
+            Easing::InQuint => t * t * t * t * t,
             Easing::OutElasticHalf => {
                 let offset = 2f64.powi(-10) * ((0.5 - ELASTIC_CONST2) * ELASTIC_CONST).sin();
                 2f64.powf(-10.0 * t) * ((0.5 * t - ELASTIC_CONST2) * ELASTIC_CONST).sin() + 1.0

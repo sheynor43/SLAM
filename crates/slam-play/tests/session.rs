@@ -456,7 +456,14 @@ fn ticks_and_frames_do_not_allocate() {
         },
     };
     textures.follow_points = AnimationSprites::new(piece, SIXTY_FRAME_TIME);
-    let mut batch = SpriteBatch::with_capacity(4096 + MAX_CURSOR_SPRITES);
+    textures.meter = Some(slam_play::hit_error::MeterTextures {
+        white: WHITE,
+        disc: WHITE,
+        gradient: WHITE,
+    });
+    let mut batch = SpriteBatch::with_capacity(
+        4096 + MAX_CURSOR_SPRITES + slam_play::hit_error::MAX_METER_SPRITES,
+    );
     let mut bodies = SliderBodies::new();
     let mut drawn = 0;
     let mut bodies_drawn = 0;
@@ -503,6 +510,14 @@ fn ticks_and_frames_do_not_allocate() {
             bodies_drawn += bodies.as_slice().len();
             hud.update(1280.0, 720.0, &snapshot.hud);
             hud.push_shapes(&mut batch, &layout(), &snapshot, white);
+            view.push_hit_error(
+                &mut batch,
+                1280.0,
+                720.0,
+                &snapshot,
+                now + MS / 2,
+                &textures,
+            );
             pending += hud.push_text(&mut text, &snapshot, &mut glyphs).pending;
             view.push_cursor(&mut batch, &layout(), &snapshot, now + MS / 2, &textures);
             drawn += snapshot.circles.as_slice().len();
@@ -609,6 +624,7 @@ fn view(map: &Beatmap) -> PlayView {
             None,
             &chain,
         ),
+        hit_error: slam_play::hit_error::HitErrorView::new(&windows),
         cursor: CursorView::default(),
     }
 }
@@ -1378,6 +1394,58 @@ fn pausing_after_passing_shows_the_results_at_once() {
     // Quick exit leaves the results.
     d.hold(Some(LCTRL), GRAVE, 200);
     assert_eq!(d.state(), PlayState::Exited);
+}
+
+#[test]
+fn the_snapshot_carries_every_judgement_the_hit_error_meter_shows() {
+    let map = beatmap();
+    let track = Track::default();
+    let end = end_ns(&map, session(&map, &track).start_time());
+    let mut seen = 0;
+    let mut shown = Vec::new();
+    let (session, _, _) = run(&map, MS, end, |s| {
+        shown.extend(s.hit_errors.since(seen).copied());
+        seen = s.hit_errors.written();
+    });
+    let targets = slam_play::hit_error::HitErrorTargets::new(&map);
+    let expected: Vec<_> = session
+        .log()
+        .events()
+        .iter()
+        .filter_map(|j| targets.error(j))
+        .collect();
+    assert_eq!(shown, expected);
+}
+
+#[test]
+fn hits_reach_the_meter_and_a_quick_retry_starts_it_over() {
+    let map = beatmap();
+    let mut d = Driver::new(&map, mods(vec![slam_osu::mods::Mod::NoFail]));
+    let circle = &map.hit_objects[0];
+    let at = d.mouse(circle.stacked_position());
+    d.tick(&[at]);
+    d.run_to(circle.start_time - 10.0);
+    d.tap(Z);
+    let errors: Vec<_> = d.snapshot.hit_errors.since(0).copied().collect();
+    assert_eq!(errors.len(), 1, "{errors:?}");
+    assert_eq!(errors[0].result, HitResult::Great);
+    assert!((errors[0].offset - (errors[0].time - circle.start_time)).abs() < 1e-9);
+    // About 10 ms early: pressed between two ticks.
+    assert!((-12.0..=-8.0).contains(&errors[0].offset), "{errors:?}");
+    // A slider's head shows too, its tick and tail do not.
+    let slider = &map.hit_objects[1];
+    let at = d.mouse(slider.stacked_position());
+    d.tick(&[at]);
+    d.run_to(slider.start_time + 20.0);
+    d.hold(None, Z, 1);
+    d.run_to(slider.end_time() + 100.0);
+    let errors: Vec<_> = d.snapshot.hit_errors.since(0).copied().collect();
+    assert_eq!(errors.len(), 2, "{errors:?}");
+    assert!((18.0..=22.0).contains(&errors[1].offset), "{errors:?}");
+
+    d.hold(None, GRAVE, 200);
+    assert_eq!(d.snapshot.restarts, 1);
+    assert_eq!(d.snapshot.hit_errors.since(0).count(), 0);
 }
 
 #[test]

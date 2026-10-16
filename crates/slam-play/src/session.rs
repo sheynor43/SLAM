@@ -34,6 +34,9 @@ use crate::cursor::{
 };
 use crate::follow_points::{FollowPoints, MAX_FOLLOW_POINT_SIZE};
 use crate::gameplay_sounds::{GameplaySounds, VoiceSink};
+use crate::hit_error::{
+    HitErrorRing, HitErrorTargets, HitErrorView, MeterTextures, disc_image, gradient_image,
+};
 use crate::hotkeys::{GlobalAction, Hotkeys};
 use crate::input::{ClockTime, GameTime, LiveInput};
 use crate::judgements::{
@@ -168,6 +171,8 @@ pub struct PlaySnapshot {
     pub cursor_expand: ExpandTimes,
     /// The judgements that show popups (ADR-0043).
     pub judgements: JudgementRing,
+    /// The judgements the hit error meter shows.
+    pub hit_errors: HitErrorRing,
     /// Whether the intro can be skipped now.
     pub skip_available: bool,
     /// Whether gameplay is in a break (lazer's `IsBreakTime`): the background dims less.
@@ -198,6 +203,7 @@ impl Default for PlaySnapshot {
             cursor_path: CursorPath::default(),
             cursor_expand: ExpandTimes::default(),
             judgements: JudgementRing::default(),
+            hit_errors: HitErrorRing::default(),
             skip_available: false,
             // Lazer's `BreakTracker` starts in a break.
             is_break_time: true,
@@ -275,6 +281,10 @@ pub struct PlaySession {
     popups: JudgementRing,
     /// Judgements of the log looked at for popups.
     popups_seen: usize,
+    /// Which judgements the hit error meter shows.
+    hit_error_targets: HitErrorTargets,
+    /// The judgements the meter showed, for the draw side; kept across restarts.
+    hit_errors: HitErrorRing,
     health: HealthProcessor,
     score: ScoreProcessor,
     /// The mods' state for the health processor (lives of Easy).
@@ -354,6 +364,8 @@ impl PlaySession {
             popup_targets: PopupTargets::new(beatmap, mods),
             popups: JudgementRing::default(),
             popups_seen: 0,
+            hit_error_targets: HitErrorTargets::new(beatmap),
+            hit_errors: HitErrorRing::default(),
             health,
             score,
             mods: mods.clone(),
@@ -641,6 +653,9 @@ impl PlaySession {
             if let Some(shown) = self.popup_targets.shown(judgement) {
                 self.popups.push(shown);
             }
+            if let Some(error) = self.hit_error_targets.error(judgement) {
+                self.hit_errors.push(error);
+            }
         }
         self.popups_seen = self.log.events().len();
         // Ported from osu!lazer 2026.1005.0-lazer: osu.Game/Screens/Play/Player.cs (LoadComponents)
@@ -810,6 +825,7 @@ impl PlaySession {
         self.applied = 0;
         self.popups_seen = 0;
         self.popups.restart();
+        self.hit_errors.restart();
         self.failed_at = None;
         self.last_pause_time = None;
         self.last_time = self.start_time;
@@ -860,6 +876,7 @@ impl PlaySession {
         snapshot.exit_progress = 0.0;
         snapshot.restarts = self.restarts;
         snapshot.judgements.clone_from(&self.popups);
+        snapshot.hit_errors.clone_from(&self.hit_errors);
         snapshot.circles.clear();
         snapshot.sliders.clear();
         snapshot.spinners.clear();
@@ -874,6 +891,7 @@ impl PlaySession {
         snapshot.exit_progress = self.hotkeys.exit_progress(now_ns);
         snapshot.restarts = self.restarts;
         snapshot.judgements.clone_from(&self.popups);
+        snapshot.hit_errors.clone_from(&self.hit_errors);
         snapshot.circles.capture(&self.rules);
         snapshot.sliders.capture(&self.rules);
         snapshot.spinners.capture(&self.rules, &self.spm);
@@ -1072,6 +1090,9 @@ const WHITE_SIDE: u32 = 4;
 pub struct PlayTextures {
     requested: [Option<Requested>; ELEMENTS.len()],
     white: TextureHandle,
+    /// The hit error meter's disc and gradient.
+    disc: TextureHandle,
+    gradient: TextureHandle,
     /// Whether slider heads use `sliderstartcircle` rather than the hit circle's textures.
     head_prefix: bool,
     /// Whether slider tails use `sliderendcircle` rather than the hit circle's textures.
@@ -1258,9 +1279,13 @@ impl PlayTextures {
             },
             TextureKind::Atlas,
         )?;
+        let disc = requests.load_pixels(disc_image(), TextureKind::Atlas)?;
+        let gradient = requests.load_pixels(gradient_image(), TextureKind::Atlas)?;
         Ok(PlayTextures {
             requested,
             white,
+            disc,
+            gradient,
             head_prefix,
             tail_prefix,
             ball,
@@ -1280,6 +1305,17 @@ impl PlayTextures {
         frame.cursor.config = self.cursor;
         if let TextureState::Ready(region) = uploads.get(self.white) {
             frame.white = Some(region);
+        }
+        if let (Some(white), TextureState::Ready(disc), TextureState::Ready(gradient)) = (
+            frame.white,
+            uploads.get(self.disc),
+            uploads.get(self.gradient),
+        ) {
+            frame.meter = Some(MeterTextures {
+                white,
+                disc,
+                gradient,
+            });
         }
         for (requested, element) in self.requested.iter().zip(ELEMENTS) {
             let Some(r) = requested else { continue };
@@ -1442,6 +1478,8 @@ pub struct FrameTextures {
     pub follow_points: AnimationSprites,
     /// An opaque white image.
     pub white: Option<AtlasRegion>,
+    /// The hit error meter's images.
+    pub meter: Option<MeterTextures>,
 }
 
 /// The draw side of a play.
@@ -1452,6 +1490,7 @@ pub struct PlayView {
     pub spinners: HitSpinners,
     pub follow_points: FollowPoints,
     pub judgements: JudgementView,
+    pub hit_error: HitErrorView,
     pub cursor: CursorView,
 }
 
@@ -1509,6 +1548,26 @@ impl PlayView {
                 time,
                 &textures.circles,
             );
+        }
+    }
+
+    /// Writes the hit error meter of `snapshot` drawn at engine time `now_ns` on a window of
+    /// `width` × `height` pixels: part of the HUD, above the playfield. Allocation-free once
+    /// `batch` has room for [`MAX_METER_SPRITES`](crate::hit_error::MAX_METER_SPRITES).
+    pub fn push_hit_error(
+        &mut self,
+        batch: &mut SpriteBatch,
+        width: f32,
+        height: f32,
+        snapshot: &PlaySnapshot,
+        now_ns: u64,
+        textures: &FrameTextures,
+    ) {
+        let time = snapshot.time_at(now_ns);
+        self.hit_error
+            .update(&snapshot.hit_errors, snapshot.restarts, time);
+        if let Some(meter) = &textures.meter {
+            self.hit_error.push(batch, width, height, time, meter);
         }
     }
 
