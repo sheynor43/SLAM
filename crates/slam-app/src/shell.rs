@@ -29,6 +29,10 @@ use slam_ui::i18n::Localizer;
 use slam_ui::menu::{
     MainMenu, MenuAction, MenuInput, MenuLabels, MenuLayout, MenuSnapshot, MenuView,
 };
+use slam_ui::results::{
+    Results, ResultsAction, ResultsData, ResultsInput, ResultsLabels, ResultsLayout, ResultsMods,
+    ResultsSnapshot, ResultsView, StatKind,
+};
 use slam_ui::screen::{MAX_LAYERS, Nav, Navigated, Pose, ScreenStack};
 use slam_ui::song_select::{
     SongList, SongSelect, SongSelectAction, SongSelectInput, SongSelectLabels, SongSelectLayout,
@@ -40,6 +44,8 @@ use crate::loader::{LoaderConfig, LoaderLink, SceneTrash, Trash};
 use crate::play::scene::{CHANNELS, PlayScene, PlaySettings, Prepared, SAMPLE_RATE};
 use crate::play::{device_limits, pack_size};
 use crate::songs::{SongFiles, SongsLink};
+
+mod results;
 
 pub const USAGE: &str = "usage: slam-app [--songs DIR]\n\
                          slam-app [bench|click|click-analyze|play|i18n] ...\n\
@@ -60,6 +66,7 @@ const GLYPH_WARM_TIMEOUT: Duration = Duration::from_secs(1);
 // USB HID usage ids, as `SDL_Scancode`.
 const KEY_ENTER: u16 = 40;
 const KEY_ESCAPE: u16 = 41;
+const KEY_R: u16 = 21;
 const KEY_HOME: u16 = 74;
 const KEY_PAGE_UP: u16 = 75;
 const KEY_END: u16 = 77;
@@ -72,13 +79,15 @@ const KEY_KEYPAD_ENTER: u16 = 88;
 
 /// The application's screens, as the update thread holds them. The song select's state
 /// lives in [`ShellState`]: its list and selection outlast a visit.
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq)]
 pub enum AppScreen {
     Menu(MainMenu),
     SongSelect,
     /// The play of this id; its state lives with the window's audio, outside
     /// [`ShellState`].
     Play(u64),
+    /// The score of a passed play.
+    Results(Results),
 }
 
 /// What the draw thread needs to draw a screen.
@@ -89,6 +98,7 @@ pub enum ScreenView {
     /// The play of this id, drawn from [`ShellSnapshot::play`]. Only while it is on top:
     /// a play going out leaves at once instead of sliding with a stale snapshot.
     Play(u64),
+    Results(ResultsSnapshot),
 }
 
 #[derive(Clone, Debug)]
@@ -112,6 +122,7 @@ pub struct ShellState {
     /// Layouts in pixels, the unit the draw thread lays out in.
     layout: MenuLayout,
     song_layout: SongSelectLayout,
+    results_layout: ResultsLayout,
     song_select: SongSelect,
     /// The library's end, without a songs folder `None`.
     songs: Option<SongsLink>,
@@ -126,6 +137,16 @@ pub struct ShellState {
     loading: bool,
     /// A difficulty to prepare, not yet taken by [`ShellState::take_play_request`].
     play_request: Option<(usize, usize)>,
+    /// The `.osu` file of the last play asked for from the song select: what Retry plays.
+    last_file: Option<PathBuf>,
+    /// Every results screen's data stays here until a navigation finds this the last
+    /// reference: the update tick and the snapshot buffers only change counts, never free.
+    held_results: Vec<Arc<ResultsData>>,
+    /// The beatmap line of `last_file` for the results.
+    last_title: String,
+    /// The results ask to play `last_file` again, not yet taken by
+    /// [`ShellState::take_retry_request`].
+    retry_request: bool,
     /// Last cursor position in pixels.
     cursor: [f32; 2],
     /// Input arrives in window points, layout is in pixels.
@@ -143,6 +164,7 @@ impl ShellState {
             stack: ScreenStack::new(AppScreen::Menu(MainMenu::new())),
             layout: MenuLayout::new(width, height, &theme),
             song_layout: SongSelectLayout::new(width, height, &theme),
+            results_layout: ResultsLayout::new(width, height, &theme),
             song_select,
             songs: None,
             files: Arc::clone(&empty.1),
@@ -150,6 +172,10 @@ impl ShellState {
             library_status: SongSelectStatus::NoFolder,
             loading: false,
             play_request: None,
+            last_file: None,
+            last_title: String::new(),
+            held_results: Vec::new(),
+            retry_request: false,
             theme,
             cursor: [0.0, 0.0],
             pixels_per_point,
@@ -175,12 +201,46 @@ impl ShellState {
         self.play_request.take()
     }
 
-    /// Ends a load: with the id of a started play, its screen comes in, else the song
-    /// select takes input again. Navigation.
+    /// The results asked to play the last beatmap again, once; it is then loading. The
+    /// file is [`ShellState::last_file`].
+    pub fn take_retry_request(&mut self) -> bool {
+        std::mem::take(&mut self.retry_request)
+    }
+
+    /// The beatmap line of the last play asked for.
+    pub fn last_title(&self) -> &str {
+        &self.last_title
+    }
+
+    /// "artist - title [difficulty]" of a difficulty of the song select's list.
+    fn beatmap_title(&self, set: usize, difficulty: usize) -> String {
+        let row = self.song_select.list().sets.get(set);
+        match (row, row.and_then(|r| r.difficulties.get(difficulty))) {
+            (Some(row), Some(d)) => results::title(&row.artist, &row.title, &d.version),
+            _ => String::new(),
+        }
+    }
+
+    /// The `.osu` file of the last play asked for.
+    pub fn last_file(&self) -> Option<&PathBuf> {
+        self.last_file.as_ref()
+    }
+
+    /// Ends a load: with the id of a started play, its screen comes in (over the results
+    /// of the play it retries, in their place), else the screen that asked takes input
+    /// again. Navigation.
     pub fn finish_loading(&mut self, now_ns: u64, started: Option<u64>) {
         self.set_loading(false);
         if let Some(id) = started {
-            self.stack.navigate(Nav::Push(AppScreen::Play(id)), now_ns);
+            let play = AppScreen::Play(id);
+            let nav = if matches!(self.stack.top(), AppScreen::Results(_)) {
+                Nav::Replace(play)
+            } else {
+                Nav::Push(play)
+            };
+            // A full stack cannot happen from the song select or the results: the play
+            // would be unreachable then, so the shell's depth leaves room for it.
+            self.stack.navigate(nav, now_ns);
         }
     }
 
@@ -189,10 +249,16 @@ impl ShellState {
         matches!(self.stack.top(), AppScreen::Play(_))
     }
 
-    /// The play screen goes; the song select is back. Navigation.
-    pub fn leave_play(&mut self, now_ns: u64) {
+    /// The play screen goes: the results of a passed play take its place, else the song
+    /// select is back. Navigation.
+    pub fn leave_play(&mut self, now_ns: u64, results: Option<ResultsData>) {
         if self.playing() {
-            self.stack.navigate(Nav::Pop, now_ns);
+            // Navigation: the data nobody else holds goes now.
+            self.held_results.retain(|data| Arc::strong_count(data) > 1);
+            self.stack.navigate(after_play(results), now_ns);
+            if let AppScreen::Results(results) = self.stack.top() {
+                self.held_results.push(results.share());
+            }
         }
     }
 
@@ -232,15 +298,18 @@ impl ShellState {
     pub fn set_size(&mut self, width: f32, height: f32) {
         self.layout = MenuLayout::new(width, height, &self.theme);
         self.song_layout = SongSelectLayout::new(width, height, &self.theme);
+        self.results_layout = ResultsLayout::new(width, height, &self.theme);
     }
 
-    /// The input of the screens, as the song select (the larger set) understands it.
-    fn screen_input(&mut self, kind: InputKind) -> Option<SongSelectInput> {
-        Some(match kind {
+    /// The input of the screens, as the song select (the larger set) understands it, and
+    /// the key only the results use.
+    fn screen_input(&mut self, kind: InputKind) -> Option<ScreenInput> {
+        Some(ScreenInput::Common(match kind {
             InputKind::Key {
                 scancode,
                 down: true,
             } => match scancode {
+                KEY_R => return Some(ScreenInput::Retry),
                 KEY_UP => SongSelectInput::Up,
                 KEY_DOWN => SongSelectInput::Down,
                 KEY_LEFT => SongSelectInput::Left,
@@ -274,7 +343,7 @@ impl ShellState {
             // The wheel's positive notches go away from the user, towards the list's start.
             InputKind::MouseWheel { y } => SongSelectInput::Scroll { lines: -y },
             _ => return None,
-        })
+        }))
     }
 
     /// Takes the newest list the library thread published, if any.
@@ -298,16 +367,21 @@ impl ShellState {
             let Some(input) = self.screen_input(event.kind) else {
                 continue;
             };
+            let common = input.common();
             let nav = match self.stack.top_mut() {
                 AppScreen::Menu(menu) => {
-                    match menu_input(input).and_then(|input| menu.input(input, &self.layout)) {
+                    match common
+                        .and_then(menu_input)
+                        .and_then(|input| menu.input(input, &self.layout))
+                    {
                         Some(MenuAction::Play) => Some(Nav::Push(AppScreen::SongSelect)),
                         Some(MenuAction::Exit) => Some(Nav::Exit),
                         None => None,
                     }
                 }
                 AppScreen::SongSelect => {
-                    match self.song_select.input(input, &self.song_layout) {
+                    match common.and_then(|input| self.song_select.input(input, &self.song_layout))
+                    {
                         // Back while loading cancels the load and stays.
                         Some(SongSelectAction::Back) if self.loading => {
                             self.play_request = None;
@@ -316,8 +390,31 @@ impl ShellState {
                         }
                         Some(SongSelectAction::Back) => Some(Nav::Pop),
                         Some(SongSelectAction::Play { set, difficulty }) => {
-                            if self.file(set, difficulty).is_some() {
+                            if let Some(file) = self.file(set, difficulty) {
+                                self.last_file = Some(file.clone());
+                                self.last_title = self.beatmap_title(set, difficulty);
                                 self.play_request = Some((set, difficulty));
+                                self.set_loading(true);
+                            }
+                            None
+                        }
+                        None => None,
+                    }
+                }
+                AppScreen::Results(results) => {
+                    let action = results_input(input)
+                        .and_then(|input| results.input(input, &self.results_layout));
+                    match action {
+                        // Back while loading cancels the load and stays.
+                        Some(ResultsAction::Back) if self.loading => {
+                            self.retry_request = false;
+                            self.set_loading(false);
+                            None
+                        }
+                        Some(ResultsAction::Back) => Some(Nav::Pop),
+                        Some(ResultsAction::Retry) => {
+                            if !self.loading && self.last_file.is_some() {
+                                self.retry_request = true;
                                 self.set_loading(true);
                             }
                             None
@@ -354,6 +451,7 @@ impl ShellState {
                 let view = match screen {
                     AppScreen::Menu(menu) => ScreenView::Menu(menu.snapshot()),
                     AppScreen::SongSelect => ScreenView::SongSelect(self.song_select.snapshot()),
+                    AppScreen::Results(results) => ScreenView::Results(results.snapshot()),
                     AppScreen::Play(id) if std::ptr::eq(screen, top) => ScreenView::Play(*id),
                     AppScreen::Play(_) => return None,
                 };
@@ -362,6 +460,46 @@ impl ShellState {
         }
         navigated
     }
+}
+
+/// The input of a screen: the song select's set, plus the key of the results.
+#[derive(Clone, Copy, Debug, PartialEq)]
+enum ScreenInput {
+    Common(SongSelectInput),
+    Retry,
+}
+
+impl ScreenInput {
+    fn common(self) -> Option<SongSelectInput> {
+        match self {
+            ScreenInput::Common(input) => Some(input),
+            ScreenInput::Retry => None,
+        }
+    }
+}
+
+/// Where the player goes when a play ends: the results of a passed play replace it, a
+/// failed or quit play is popped back to the song select.
+fn after_play(results: Option<ResultsData>) -> Nav<AppScreen> {
+    match results {
+        Some(data) => Nav::Replace(AppScreen::Results(Results::new(data))),
+        None => Nav::Pop,
+    }
+}
+
+/// The input as the results understand it.
+fn results_input(input: ScreenInput) -> Option<ResultsInput> {
+    Some(match input {
+        ScreenInput::Retry => ResultsInput::Retry,
+        ScreenInput::Common(SongSelectInput::Back) => ResultsInput::Back,
+        ScreenInput::Common(SongSelectInput::PointerMove { x, y }) => {
+            ResultsInput::PointerMove { x, y }
+        }
+        ScreenInput::Common(SongSelectInput::PointerPress { x, y }) => {
+            ResultsInput::PointerPress { x, y }
+        }
+        ScreenInput::Common(_) => return None,
+    })
 }
 
 /// The song select's input as the main menu understands it.
@@ -417,6 +555,10 @@ enum Ending {
 struct Game {
     session: Box<PlaySession>,
     ending: Ending,
+    /// The play's id, and what its results show besides the score; made when it starts.
+    id: u64,
+    title: String,
+    mods: ResultsMods,
 }
 
 /// A quit play whose voices the mixer silences. The session keeps its samples until the
@@ -484,12 +626,17 @@ impl PlayHost {
     /// when a play is asked for, starts or ends; logs and frees on the loader thread.
     fn advance(&mut self, now_ns: u64, state: &mut ShellState) {
         self.end_game(now_ns, state);
-        if let Some((set, difficulty)) = state.take_play_request() {
+        // From the song select, or the results playing their beatmap again.
+        let request = match state.take_play_request() {
+            Some((set, difficulty)) => Some(state.file(set, difficulty).cloned()),
+            None => state
+                .take_retry_request()
+                .then(|| state.last_file().cloned()),
+        };
+        if let Some(map) = request {
             self.next_request += 1;
-            let asked = match state.file(set, difficulty) {
-                Some(map) if self.game.is_none() => {
-                    self.loader.request(self.next_request, map.clone())
-                }
+            let asked = match map {
+                Some(map) if self.game.is_none() => self.loader.request(self.next_request, map),
                 _ => false,
             };
             if asked {
@@ -561,7 +708,8 @@ impl PlayHost {
                     } else if let Pending::Track { prepared, .. } =
                         std::mem::replace(&mut self.pending, Pending::Idle)
                     {
-                        self.start(id, *prepared);
+                        let title = state.last_title().to_owned();
+                        self.start(id, *prepared, title);
                         state.finish_loading(now_ns, Some(id));
                     }
                 }
@@ -591,12 +739,16 @@ impl PlayHost {
             // A full queue retries on the next tick.
             && game.session.stop_sounds(mixer)
             && mixer.stop_all().is_ok()
-            && let Some(game) = self.game.take()
+            && let Some(mut game) = self.game.take()
         {
             // A failed command leaves the track playing under the song select.
             let _ = self.audio.player.pause();
             self.os_cursor.set_hidden(false);
-            state.leave_play(now_ns);
+            // The results come from the session before it retires.
+            let results = game.session.results().map(|r| {
+                results::results_data(game.id, std::mem::take(&mut game.title), game.mods, &r)
+            });
+            state.leave_play(now_ns, results);
             // Two quits in a row on a stuck mixer: the older session goes anyway.
             if let Some(old) = self.retiring.replace(Retiring {
                 session: game.session,
@@ -631,7 +783,7 @@ impl PlayHost {
     }
 
     /// Starts `prepared` as play `id` on its opened track. Navigation.
-    fn start(&mut self, id: u64, prepared: Prepared) {
+    fn start(&mut self, id: u64, prepared: Prepared, title: String) {
         let Prepared {
             beatmap,
             mods,
@@ -639,6 +791,7 @@ impl PlayHost {
             scene,
             ..
         } = prepared;
+        let shown_mods = results::mods(&mods);
         let input = LiveInput::new(
             Bindings::default(),
             PlayfieldLayout::new(self.points[0], self.points[1]),
@@ -657,6 +810,9 @@ impl PlayHost {
         self.game = Some(Game {
             session,
             ending: Ending::Playing,
+            id,
+            title,
+            mods: shown_mods,
         });
     }
 }
@@ -737,6 +893,7 @@ struct View {
     glyphs: GlyphCache,
     menu: MenuView,
     song_select: SongSelectView,
+    results: ResultsView,
     shapes: SpriteBatch,
     text: SpriteBatch,
     /// Scenes of plays the update thread starts, and the one shown.
@@ -864,6 +1021,16 @@ impl Draw<ShellSnapshot> for View {
                     layer.pose,
                     r.white,
                 ),
+                ScreenView::Results(results) => self.results.push(
+                    &mut self.shapes,
+                    &mut self.text,
+                    &mut self.glyphs,
+                    width,
+                    height,
+                    results,
+                    layer.pose,
+                    r.white,
+                ),
                 // Drawn whole, without the transition's slide.
                 ScreenView::Play(_) => {}
             }
@@ -940,6 +1107,7 @@ impl View {
     fn request_glyphs(&mut self) -> usize {
         self.menu.request_glyphs(&mut self.glyphs)
             + self.song_select.request_glyphs(&mut self.glyphs)
+            + self.results.request_glyphs(&mut self.glyphs)
     }
 }
 
@@ -979,6 +1147,20 @@ fn open_audio() -> Result<(Audio, slam_audio::OutputStream), String> {
         mixer: mixer_handle,
     };
     Ok((audio, stream))
+}
+
+/// The Fluent key of a judgement row's label.
+fn results_label_key(kind: StatKind) -> &'static str {
+    match kind {
+        StatKind::Great => "results-great-label",
+        StatKind::Ok => "results-ok-label",
+        StatKind::Meh => "results-meh-label",
+        StatKind::Miss => "results-miss-label",
+        StatKind::SliderTick => "results-slider-tick-label",
+        StatKind::SliderEnd | StatKind::SliderTail => "results-slider-end-label",
+        StatKind::SpinnerBonus => "results-spinner-bonus-label",
+        StatKind::SpinnerSpin => "results-spinner-spin-label",
+    }
 }
 
 /// Parses the arguments of the window: `--songs DIR`.
@@ -1033,6 +1215,18 @@ pub fn run(songs: Option<PathBuf>) -> Result<(), String> {
         hint: text("song-select-hint"),
     };
     let song_select = SongSelectView::new(Arc::clone(&registry), theme, &song_labels);
+    let results_labels = ResultsLabels {
+        score: text("results-score-title"),
+        accuracy: text("results-accuracy-title"),
+        max_combo: text("results-max-combo-title"),
+        mods: text("results-mods-title"),
+        no_mods: text("results-no-mods"),
+        stats: StatKind::ALL.map(|kind| text(results_label_key(kind))),
+        retry: text("results-retry-button"),
+        back: text("results-back-button"),
+        hint: text("results-hint"),
+    };
+    let results = ResultsView::new(Arc::clone(&registry), theme, &results_labels);
 
     let mut state = ShellState::new(theme, pixels_w as f32, pixels_h as f32, pixels_per_point);
     // Joined when `run` returns, after the engine.
@@ -1099,6 +1293,7 @@ pub fn run(songs: Option<PathBuf>) -> Result<(), String> {
         glyphs,
         menu,
         song_select,
+        results,
         shapes: SpriteBatch::with_capacity(MAX_SHAPES),
         text: SpriteBatch::with_capacity(MAX_GLYPH_SPRITES),
         scenes: Some(scene_rx),

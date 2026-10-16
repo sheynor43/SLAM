@@ -50,6 +50,22 @@ pub struct Theme {
     /// Height of the status line above the list, and its text size.
     pub song_header_height: f32,
     pub song_status_size: f32,
+    /// Margin around the results screen.
+    pub results_margin: f32,
+    /// Size of the beatmap line on top of the results.
+    pub results_title_size: f32,
+    /// Size of the rank letter.
+    pub results_rank_size: f32,
+    /// Size of the texts of the results' rows.
+    pub results_text_size: f32,
+    /// Pitch of the results' rows.
+    pub results_row_height: f32,
+    /// Width of each of the two columns of the results.
+    pub results_panel_width: f32,
+    /// Gap between the two columns.
+    pub results_column_gap: f32,
+    /// Colour of the rank letter of a silver rank (Hidden, Flashlight).
+    pub rank_silver: Color,
 }
 
 impl Default for Theme {
@@ -100,6 +116,14 @@ impl Default for Theme {
             song_detail_size: 14.0,
             song_header_height: 36.0,
             song_status_size: 22.0,
+            results_margin: 24.0,
+            results_title_size: 24.0,
+            results_rank_size: 160.0,
+            results_text_size: 22.0,
+            results_row_height: 34.0,
+            results_panel_width: 400.0,
+            results_column_gap: 48.0,
+            rank_silver: Color::rgb(0.78, 0.82, 0.88),
         }
     }
 }

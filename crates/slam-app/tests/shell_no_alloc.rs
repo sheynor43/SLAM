@@ -150,3 +150,128 @@ fn song_select_ticks_and_new_lists_do_not_allocate() {
     });
     drop(kept);
 }
+
+fn results_data(id: u64) -> slam_ui::results::ResultsData {
+    use slam_ui::results::{Rank, ResultsData, ResultsMods, ResultsStat, StatKind};
+    ResultsData {
+        id,
+        title: "artist - title [diff]".to_owned(),
+        score: 1_000_000,
+        accuracy: 0.97,
+        rank: Rank::S,
+        stats: [ResultsStat::default(); StatKind::COUNT],
+        combo: 10,
+        max_combo: 12,
+        mods: ResultsMods::default(),
+    }
+}
+
+/// A shell on the results of a play of the first difficulty of a one-set list, at rest;
+/// returns the time it is at.
+fn on_results() -> (
+    ShellState,
+    ShellSnapshot,
+    rtrb::Producer<slam_app::songs::Published>,
+    u64,
+) {
+    use std::path::PathBuf;
+    use std::sync::Arc;
+
+    use slam_app::songs::{link, publish};
+    use slam_library::scan::{BeatmapSetEntry, DifficultyEntry};
+    use slam_ui::song_select::SongSelectStatus;
+
+    let sets = [BeatmapSetEntry {
+        dir: PathBuf::from("set"),
+        artist: "artist".to_owned(),
+        title: "title".to_owned(),
+        creator: "mapper".to_owned(),
+        difficulties: vec![DifficultyEntry {
+            path: PathBuf::from("set/0.osu"),
+            version: "diff".to_owned(),
+            overall_difficulty: 5.0,
+            approach_rate: 5.0,
+            circle_size: 4.0,
+            hp: 5.0,
+        }],
+    }];
+    let (mut producer, songs) = link();
+    let mut state = ShellState::new(Theme::default(), 1280.0, 720.0, 1.0).with_songs(songs);
+    let mut snapshot = ShellSnapshot::default();
+    let key = |scancode| InputEvent {
+        time_ns: 0,
+        kind: InputKind::Key {
+            scancode,
+            down: true,
+        },
+    };
+    producer
+        .push(publish(&sets, SongSelectStatus::Ready, Arc::from("")))
+        .unwrap();
+    state.tick(0, &[key(40)], &mut snapshot);
+    state.tick(TRANSITION_NS, &[key(40)], &mut snapshot);
+    assert_eq!(state.take_play_request(), Some((0, 0)));
+    let t = 2 * TRANSITION_NS;
+    state.finish_loading(t, Some(1));
+    state.leave_play(t + 1, Some(results_data(1)));
+    // The transition and the buffers settle.
+    for now in (t + 2..t + 2 + 2 * TRANSITION_NS).step_by(1_000_000) {
+        state.tick(now, &[], &mut snapshot);
+    }
+    (state, snapshot, producer, t + 3 * TRANSITION_NS)
+}
+
+#[test]
+fn results_ticks_do_not_allocate() {
+    let (mut state, mut snapshot, _producer, t) = on_results();
+    let moves: Vec<InputEvent> = (0..72)
+        .map(|i| InputEvent {
+            time_ns: 0,
+            kind: InputKind::MouseMove {
+                x: 640.0,
+                y: i as f32 * 10.0,
+            },
+        })
+        .collect();
+    assert_no_alloc(|| {
+        for now in t..t + 100 {
+            state.tick(now, &moves, &mut snapshot);
+        }
+    });
+}
+
+/// After leaving the results by `key`, the ticks that follow the transition free nothing.
+fn leaving_results_frees_nothing_on_a_tick(scancode: u16) {
+    let (mut state, mut snapshot, _producer, t) = on_results();
+    let press = InputEvent {
+        time_ns: 0,
+        kind: InputKind::Key {
+            scancode,
+            down: true,
+        },
+    };
+    // Navigation may allocate and free.
+    state.tick(t, &[press], &mut snapshot);
+    if scancode == 21 {
+        assert!(state.take_retry_request());
+        state.finish_loading(t, Some(2));
+    }
+    assert_no_alloc(|| {
+        for now in (t + 1..t + 2 * TRANSITION_NS).step_by(1_000_000) {
+            state.tick(now, &[], &mut snapshot);
+        }
+        for now in t + 2 * TRANSITION_NS..t + 2 * TRANSITION_NS + 5 {
+            state.tick(now, &[], &mut snapshot);
+        }
+    });
+}
+
+#[test]
+fn back_from_the_results_frees_nothing_on_a_tick() {
+    leaving_results_frees_nothing_on_a_tick(41);
+}
+
+#[test]
+fn retry_from_the_results_frees_nothing_on_a_tick() {
+    leaving_results_frees_nothing_on_a_tick(21);
+}

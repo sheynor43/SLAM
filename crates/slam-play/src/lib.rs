@@ -29,6 +29,7 @@ pub use hud::HudView;
 pub use input::{Binding, Bindings, ClockTime, GameTime, Input, LiveInput};
 pub use playfield::PlayfieldLayout;
 pub use session::{
-    FrameTextures, HudValues, PlaySession, PlaySnapshot, PlayState, PlayTextures, PlayView,
+    FrameTextures, HudValues, PlayResults, PlaySession, PlaySnapshot, PlayState, PlayTextures,
+    PlayView,
 };
 pub use time::{Offsets, game_time, track_time_for};

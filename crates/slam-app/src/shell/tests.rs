@@ -317,7 +317,7 @@ fn the_play_screen_comes_in_ignores_screen_input_and_leaves() {
     s.tick(start + TRANSITION_NS + 1, &[key(KEY_ESCAPE)], &mut snap);
     assert_eq!(*s.stack().top(), AppScreen::Play(1));
 
-    s.leave_play(start + 2 * TRANSITION_NS);
+    s.leave_play(start + 2 * TRANSITION_NS, None);
     assert_eq!(*s.stack().top(), AppScreen::SongSelect);
     // The play going out leaves the layers at once: its snapshot is stale.
     s.tick(start + 2 * TRANSITION_NS + 1, &[], &mut snap);
@@ -325,7 +325,7 @@ fn the_play_screen_comes_in_ignores_screen_input_and_leaves() {
     assert_eq!(views.len(), 1);
     assert!(matches!(views[0], ScreenView::SongSelect(_)));
     // Leaving twice does not leave the song select.
-    s.leave_play(start + 2 * TRANSITION_NS);
+    s.leave_play(start + 2 * TRANSITION_NS, None);
     assert_eq!(*s.stack().top(), AppScreen::SongSelect);
     assert!(!s.is_loading());
 }
@@ -335,7 +335,7 @@ fn each_play_comes_in_with_its_own_id() {
     let (mut s, mut snap, _producer) = in_song_select();
     s.tick(TRANSITION_NS + 1, &[key(KEY_ENTER)], &mut snap);
     s.finish_loading(TRANSITION_NS + 2, Some(1));
-    s.leave_play(TRANSITION_NS + 3);
+    s.leave_play(TRANSITION_NS + 3, None);
     // The next play comes in while the first would still be sliding out.
     s.tick(TRANSITION_NS + 4, &[key(KEY_ENTER)], &mut snap);
     assert_eq!(s.take_play_request(), Some((0, 0)));
@@ -360,6 +360,130 @@ fn the_pointer_is_followed_under_the_play() {
     s.finish_loading(TRANSITION_NS + 2, Some(1));
     s.follow_pointer(&[mouse(InputKind::MouseMove { x: 12.0, y: 34.0 })]);
     assert_eq!(s.cursor, [12.0, 34.0]);
+}
+
+fn results_data(id: u64) -> ResultsData {
+    ResultsData {
+        id,
+        title: "artist - title [Hard]".to_owned(),
+        score: 1_234_567,
+        accuracy: 0.97,
+        rank: slam_ui::results::Rank::S,
+        stats: [slam_ui::results::ResultsStat::default(); StatKind::COUNT],
+        combo: 10,
+        max_combo: 12,
+        mods: ResultsMods::default(),
+    }
+}
+
+/// A shell on the results of play 1, over the song select, with the song select's
+/// difficulty `Hard` as the last play.
+fn in_results() -> (
+    ShellState,
+    ShellSnapshot,
+    rtrb::Producer<crate::songs::Published>,
+    u64,
+) {
+    let (mut s, mut snap, producer) = in_song_select();
+    s.tick(TRANSITION_NS + 1, &[key(KEY_DOWN)], &mut snap);
+    s.tick(TRANSITION_NS + 2, &[key(KEY_ENTER)], &mut snap);
+    assert_eq!(s.take_play_request(), Some((0, 1)));
+    let start = 2 * TRANSITION_NS;
+    s.finish_loading(start, Some(1));
+    let end = start + 2 * TRANSITION_NS;
+    s.leave_play(end, Some(results_data(1)));
+    s.tick(end + TRANSITION_NS, &[], &mut snap);
+    (s, snap, producer, end + TRANSITION_NS)
+}
+
+#[test]
+fn a_passed_play_goes_to_the_results_and_a_failed_one_pops() {
+    assert!(matches!(
+        after_play(Some(results_data(1))),
+        Nav::Replace(AppScreen::Results(_))
+    ));
+    assert!(matches!(after_play(None), Nav::Pop));
+}
+
+#[test]
+fn results_replace_the_play_and_back_returns_to_the_song_select() {
+    let (mut s, mut snap, _producer, now) = in_results();
+    assert!(matches!(s.stack().top(), AppScreen::Results(_)));
+    // Menu, song select, results: the play was replaced, not kept below.
+    assert_eq!(s.stack().depth(), 3);
+    let views: Vec<_> = snap.layers.iter().flatten().map(|l| &l.view).collect();
+    assert_eq!(views.len(), 1);
+    assert!(matches!(views[0], ScreenView::Results(r) if r.data.id == 1));
+    assert_eq!(s.last_title(), "a - a [Hard]");
+
+    s.tick(now + 1, &[key(KEY_ESCAPE)], &mut snap);
+    assert_eq!(*s.stack().top(), AppScreen::SongSelect);
+    assert!(!s.is_loading());
+    assert!(!s.take_retry_request());
+}
+
+#[test]
+fn retry_plays_the_same_beatmap_in_place_of_the_results() {
+    let (mut s, mut snap, _producer, now) = in_results();
+    s.tick(now + 1, &[key(KEY_R)], &mut snap);
+    assert!(s.is_loading());
+    assert!(s.take_retry_request());
+    assert!(!s.take_retry_request());
+    assert_eq!(s.last_file(), Some(&PathBuf::from("a").join("Hard.osu")));
+    // Keys while loading do not ask again.
+    s.tick(now + 2, &[key(KEY_R)], &mut snap);
+    assert!(!s.take_retry_request());
+
+    s.finish_loading(now + 3, Some(2));
+    assert_eq!(*s.stack().top(), AppScreen::Play(2));
+    assert_eq!(s.stack().depth(), 3);
+    // Quitting that play lands on the song select, not on the old results.
+    s.leave_play(now + 4, None);
+    assert_eq!(*s.stack().top(), AppScreen::SongSelect);
+    assert_eq!(s.stack().depth(), 2);
+}
+
+#[test]
+fn back_while_the_retry_loads_cancels_it_and_stays_on_the_results() {
+    let (mut s, mut snap, _producer, now) = in_results();
+    s.tick(now + 1, &[key(KEY_R)], &mut snap);
+    s.tick(now + 2, &[key(KEY_ESCAPE)], &mut snap);
+    assert!(!s.is_loading());
+    assert!(!s.take_retry_request());
+    assert!(matches!(s.stack().top(), AppScreen::Results(_)));
+    // A failed load returns to the results as well.
+    s.tick(now + 3, &[key(KEY_R)], &mut snap);
+    s.finish_loading(now + 4, None);
+    assert!(!s.is_loading());
+    assert!(matches!(s.stack().top(), AppScreen::Results(_)));
+}
+
+#[test]
+fn the_results_buttons_are_clickable() {
+    let (mut s, mut snap, _producer, now) = in_results();
+    let click = mouse(InputKind::MouseButton {
+        button: MouseButton::Left,
+        down: true,
+    });
+    let [x, y] = s.results_layout.buttons[0].centre();
+    s.tick(now + 1, &[mouse(InputKind::MouseMove { x, y })], &mut snap);
+    let hovered = snap.layers.iter().flatten().find_map(|l| match &l.view {
+        ScreenView::Results(r) => r.hovered,
+        _ => None,
+    });
+    assert_eq!(hovered, Some(slam_ui::results::ResultsButton::Retry));
+    s.tick(now + 2, &[click], &mut snap);
+    assert!(s.is_loading());
+    assert!(s.take_retry_request());
+    s.tick(now + 3, &[key(KEY_ESCAPE)], &mut snap);
+
+    let [x, y] = s.results_layout.buttons[1].centre();
+    s.tick(
+        now + 4,
+        &[mouse(InputKind::MouseMove { x, y }), click],
+        &mut snap,
+    );
+    assert_eq!(*s.stack().top(), AppScreen::SongSelect);
 }
 
 /// A play host without a window or output: the mixer and decoder run unheard.
