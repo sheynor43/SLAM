@@ -8,3 +8,8 @@ song-select-beatmap-count =
        *[other] { $count } beatmaps
     }
 play-skip-button = Skip
+menu-title = SLAM
+menu-play-button = Play
+menu-settings-button = Settings
+menu-exit-button = Exit
+song-select-placeholder = Song select is coming soon. Press Escape to go back.
