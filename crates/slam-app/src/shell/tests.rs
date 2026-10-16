@@ -571,6 +571,7 @@ fn host(name: &str, with_track: bool) -> HostFixture {
         retiring: None,
         next_request: 0,
         points: [1280.0, 720.0],
+        input: PlayInput::new(&Settings::default()),
     };
     HostFixture {
         host,
@@ -702,4 +703,69 @@ fn the_play_goes_when_the_results_show_or_the_player_quits() {
     ] {
         assert!(!play_over(state), "{state:?}");
     }
+}
+
+#[test]
+fn a_play_takes_its_input_from_the_settings() {
+    let mut fixture = host("settings-input", true);
+    let mut settings = Settings::default();
+    settings.gameplay.mouse_buttons = false;
+    fixture.host.input = PlayInput::new(&settings);
+    let (mut s, mut snap) = listing(&fixture);
+    s.tick(TRANSITION_NS + 1, &[key(KEY_ENTER)], &mut snap);
+    advance_until(&mut fixture, &mut s, TRANSITION_NS + 1, |_, s| s.playing());
+    let game = fixture.host.game.as_ref().unwrap();
+    assert!(game.session.input().mouse_buttons_disabled());
+}
+
+#[test]
+fn play_input_follows_the_settings() {
+    let defaults = PlayInput::new(&Settings::default());
+    assert_eq!(defaults.bindings, Bindings::default());
+    assert!(defaults.mouse_buttons);
+    assert_eq!(defaults.offsets, Offsets::default());
+
+    let mut settings = Settings::default();
+    settings.timing.global_offset_ms = -25.0;
+    settings.input.bindings.truncate(1);
+    settings.gameplay.mouse_buttons = false;
+    let input = PlayInput::new(&settings);
+    assert_eq!(input.offsets.global_ms, -25.0);
+    assert_eq!(input.offsets.beatmap_ms, 0.0);
+    assert_eq!(
+        input.bindings.as_slice(),
+        &Bindings::default().as_slice()[..1]
+    );
+    assert!(!input.mouse_buttons);
+}
+
+#[test]
+fn the_songs_flag_overrides_the_file() {
+    let mut settings = Settings::default();
+    settings.paths.songs = Some("/from/file".into());
+    let kept = with_songs(settings.clone(), None);
+    assert_eq!(kept.paths.songs.as_deref(), Some(Path::new("/from/file")));
+    let flag = with_songs(settings, Some("/from/flag".into()));
+    assert_eq!(flag.paths.songs.as_deref(), Some(Path::new("/from/flag")));
+}
+
+#[test]
+fn the_music_takes_the_master_volume_too() {
+    let mut audio = crate::settings::Audio::default();
+    assert_eq!(volumes(&audio), (1.0, 1.0));
+    audio.master_volume = 0.5;
+    audio.music_volume = 0.5;
+    assert_eq!(volumes(&audio), (0.5, 0.25));
+}
+
+#[test]
+fn an_unknown_backend_falls_back_to_the_first_available() {
+    let available = Backend::available();
+    let first = available.first().copied();
+    assert_eq!(pick_backend(None, available), first);
+    assert_eq!(pick_backend(Some("no-such-backend"), available), first);
+    for &backend in available {
+        assert_eq!(pick_backend(Some(backend.name()), available), Some(backend));
+    }
+    assert_eq!(pick_backend(Some("pipewire"), &[]), None);
 }

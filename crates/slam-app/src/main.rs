@@ -76,7 +76,10 @@ fn main() -> ExitCode {
 }
 
 fn run_shell(args: Vec<String>) -> ExitCode {
-    match shell::parse_songs(args).and_then(shell::run) {
+    match shell::parse_songs(args)
+        .map(shell::load_settings)
+        .and_then(shell::run)
+    {
         Ok(()) => ExitCode::SUCCESS,
         Err(e) => {
             eprintln!("{e}\n{}", shell::USAGE);
