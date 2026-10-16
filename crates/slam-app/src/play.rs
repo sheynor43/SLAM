@@ -17,64 +17,34 @@ use slam_engine::limiter::{LimiterMode, MAX_HZ, MIN_HZ, is_valid_hz};
 use slam_engine::{Draw, Engine, EngineConfig, FrameInfo, TickInfo, Update};
 use slam_input::{CursorVisibility, InputEvent, InputWindow, TickMapper, event_ring, sdl_ticks_ns};
 use slam_osu::judgement::HitResult;
-use slam_osu::{Beatmap, Mod, ModSet};
-use slam_play::circles::{
-    CircleMods, CircleSettings, CircleSkinConfig, CircleStyle, CircleVisuals, HitCircles,
-};
-use slam_play::cursor::{CursorView, MAX_CURSOR_SPRITES};
-use slam_play::judgements::JudgementView;
-use slam_play::resume::MAX_TARGET_SPRITES;
-use slam_play::slider_body::Snaking;
-use slam_play::sliders::{
-    ArrowStyle, BallStyle, HitSliders, MAX_LIVE_SLIDERS, SliderBodies, SliderVisuals,
-};
-use slam_play::spinners::{HitSpinners, SpinnerStyle, SpinnerVisuals};
+use slam_osu::{Mod, ModSet};
 use slam_play::{
-    BackgroundSettings, BackgroundView, Bindings, GameplaySounds, Hitsounds, HudView, LiveInput,
-    Offsets, PlaySession, PlaySnapshot, PlayTextures, PlayView, PlayfieldLayout, SampleCache,
-    SampleSkins, SoundSettings,
+    BackgroundSettings, Bindings, LiveInput, Offsets, PlaySession, PlaySnapshot, PlayfieldLayout,
 };
-use slam_render::gl::{GlDebug, GlDevice, GlTexture};
-use slam_render::slider::{SliderBuffer, SliderDraw, SliderMesh, SliderRenderer};
-use slam_render::sprite::{DEFAULT_SLOTS, Projection, SpriteBatch, SpriteRenderer};
-use slam_render::textures::Textures;
-use slam_render::upload::{
-    TextureHandle, TextureKind, TextureLoaderConfig, TextureRequests, TextureState, TextureUploads,
-    texture_loader,
-};
-use slam_render::{Color, Device, shaders};
-use slam_skin::{Skin, SkinChain};
-use slam_text::{FontRegistry, GlyphAtlasConfig, GlyphCache, glyph_atlas};
+use slam_render::gl::{GlDebug, GlDevice};
+use slam_render::{Color, Device};
+use slam_text::FontRegistry;
 use slam_ui::i18n::Localizer;
 
 use crate::bench::number;
 
 mod perf;
+pub mod scene;
 use perf::{FramePerf, ReportSources, SharedFrameTimes};
+use scene::{CHANNELS, PlayScene, PlaySettings, Prepared, SAMPLE_RATE};
 
 pub const USAGE: &str = "usage: slam-app play MAP.osu [--skin DIR] [--backend NAME] \
                          [--device ID] [--buffer FRAMES] [--fps HZ|unlimited] \
                          [--update-hz HZ] [--mods HDHR] [--dim PERCENT] [--no-beatmap-colours] [--no-mouse-buttons] [--no-stats]";
 
-const SAMPLE_RATE: u32 = 48_000;
-const CHANNELS: u16 = 2;
 const WINDOW: (i32, i32) = (1280, 720);
 /// How long the track may take to open.
 const LOAD_TIMEOUT: Duration = Duration::from_secs(10);
-/// Sprites of one frame: every live circle's pieces, numbers and approach circle, slider
-/// ticks (up to `MAX_LIVE_NESTED`) and repeats, and judgement popups: up to `MAX_POPUPS`, of
-/// 150 particles and three sprites each.
-const MAX_SPRITES: usize = 32768;
-/// Textures of the draw thread: atlas pages of the skin and the glyphs, and images too
-/// large for a page.
-const MAX_TEXTURES: usize = 64;
-/// Glyph sprites of one frame: the HUD's numbers and the skip button.
-const MAX_GLYPH_SPRITES: usize = 256;
 /// How long the draw thread waits for the HUD's glyphs before the first frame.
 const GLYPH_WARM_TIMEOUT: Duration = Duration::from_secs(1);
 
 /// The bundled default skin, in the source tree.
-fn default_skin_dir() -> PathBuf {
+pub(crate) fn default_skin_dir() -> PathBuf {
     Path::new(env!("CARGO_MANIFEST_DIR")).join("../../assets/default-skin")
 }
 
@@ -108,6 +78,16 @@ pub struct Options {
 }
 
 impl Options {
+    /// What the play takes from the options.
+    pub fn settings(&self) -> PlaySettings {
+        PlaySettings {
+            skin: self.skin.clone(),
+            beatmap_colours: self.beatmap_colours,
+            mods: self.mods.clone(),
+            dim: self.dim,
+        }
+    }
+
     /// Parses the arguments after `play`.
     pub fn parse<I: IntoIterator<Item = String>>(args: I) -> Result<Self, String> {
         let mut map = None;
@@ -278,42 +258,11 @@ impl Update for Gameplay {
     }
 }
 
-struct Resources {
-    device: GlDevice<SdlGlSurface>,
-    textures: Textures<GlTexture>,
-    renderer: SpriteRenderer<GlDevice<SdlGlSurface>>,
-    /// Draws MSDF glyphs.
-    text_renderer: SpriteRenderer<GlDevice<SdlGlSurface>>,
-    sliders: SliderRenderer<GlDevice<SdlGlSurface>>,
-    /// Slider body meshes on the GPU, by object index.
-    slider_buffers: Vec<Option<SliderBuffer<GlDevice<SdlGlSurface>>>>,
-}
-
-/// The draw thread's side. The device and its resources exist between `start` and
-/// `stop`, on the draw thread.
+/// The draw thread's side. The device exists between `start` and `stop`, on the draw thread.
 struct View {
     surface: Option<SdlGlSurface>,
-    resources: Option<Resources>,
-    uploads: TextureUploads,
-    textures: PlayTextures,
-    glyphs: GlyphCache,
-    view: PlayView,
-    hud: HudView,
-    /// The beatmap's background, if it has one.
-    background: Option<TextureHandle>,
-    background_view: BackgroundView,
-    /// The background, the playfield and the HUD's shapes.
-    batch: SpriteBatch,
-    /// Slider bodies between the sprites of `batch`.
-    bodies: SliderBodies,
-    /// Slider body meshes by object index, uploaded at `start`.
-    meshes: Vec<(u32, SliderMesh)>,
-    /// Number of objects in the beatmap.
-    objects: usize,
-    /// The HUD's text.
-    text: SpriteBatch,
-    /// The cursor, on top of the HUD.
-    cursor: SpriteBatch,
+    device: Option<GlDevice<SdlGlSurface>>,
+    scene: PlayScene,
     /// Read by the update thread for the input layout.
     surface_size: Arc<AtomicU64>,
     /// Frame times for the console report; `None` with `--no-stats`.
@@ -328,234 +277,36 @@ impl Draw<PlaySnapshot> for View {
         // The same context made a device in `device_limits` already; failing now is a
         // driver fault this developer command does not recover from.
         let mut device = GlDevice::new(surface, GlDebug::for_build()).expect("GL device");
-        // Two draws a frame (playfield and HUD, cursor), each with its spare slots.
-        let renderer = SpriteRenderer::new(&mut device, 2 * DEFAULT_SLOTS).expect("renderer");
-        let text_renderer = SpriteRenderer::with_shader(&mut device, DEFAULT_SLOTS, &shaders::MSDF)
-            .expect("text renderer");
-        let mut sliders =
-            SliderRenderer::new(&mut device, MAX_LIVE_SLIDERS).expect("slider renderer");
-        let mut slider_buffers: Vec<_> = (0..self.objects).map(|_| None).collect();
-        for (index, mesh) in &self.meshes {
-            // A slider that fails to upload is drawn without its body.
-            match sliders.upload(&mut device, mesh) {
-                Ok(buffer) => slider_buffers[*index as usize] = buffer,
-                Err(e) => tracing::warn!("slider {index}: {e}"),
-            }
-        }
-        let mut textures = Textures::with_capacity(MAX_TEXTURES);
-        // The HUD's glyphs are made before the first frame: a glyph takes several frames
-        // to appear. The update thread does not wait for this (the lead-in runs on); late
-        // glyphs show when ready.
-        let deadline = Instant::now() + GLYPH_WARM_TIMEOUT;
-        while self.hud.request_glyphs(&mut self.glyphs) > 0 && Instant::now() < deadline {
-            self.glyphs.process(&mut device, &mut textures);
-            std::thread::sleep(Duration::from_millis(1));
-        }
-        self.resources = Some(Resources {
-            device,
-            textures,
-            renderer,
-            text_renderer,
-            sliders,
-            slider_buffers,
-        });
+        // The update thread does not wait for the glyphs (the lead-in runs on).
+        self.scene.start(&mut device, GLYPH_WARM_TIMEOUT);
+        self.device = Some(device);
     }
 
     fn frame(&mut self, info: &FrameInfo, snapshot: &PlaySnapshot) {
         if let Some(perf) = &mut self.perf {
             perf.record(info.wait.woke_ns);
         }
-        let r = self.resources.as_mut().expect("started");
-        let size = r.device.begin_frame(Color::rgb(0.0, 0.0, 0.0));
+        let device = self.device.as_mut().expect("started");
+        let size = device.begin_frame(Color::rgb(0.0, 0.0, 0.0));
         self.surface_size
             .store(pack_size(size.width, size.height), Ordering::Relaxed);
-        self.uploads.process(&mut r.device, &mut r.textures);
-        self.glyphs.process(&mut r.device, &mut r.textures);
-        let textures = self.textures.resolve(&self.uploads);
-        let (width, height) = (size.width as f32, size.height as f32);
-        let layout = PlayfieldLayout::new(width, height);
-        self.hud.update(width, height, &snapshot.hud);
-        self.batch.clear();
-        self.text.clear();
-        self.cursor.clear();
-        let background = self
-            .background
-            .and_then(|handle| match self.uploads.get(handle) {
-                TextureState::Ready(region) => Some(region),
-                _ => None,
-            });
-        self.background_view.push(
-            &mut self.batch,
-            width,
-            height,
-            snapshot,
-            info.wait.woke_ns,
-            background,
-        );
-        self.view.push(
-            &mut self.batch,
-            &mut self.bodies,
-            &layout,
-            snapshot,
-            info.wait.woke_ns,
-            &textures,
-        );
-        if let Some(white) = textures.white {
-            self.hud.push_shapes(&mut self.batch, snapshot, white);
-        }
-        self.view.push_hit_error(
-            &mut self.batch,
-            width,
-            height,
-            snapshot,
-            info.wait.woke_ns,
-            &textures,
-        );
-        self.hud
-            .push_text(&mut self.text, snapshot, &mut self.glyphs);
-        self.view.push_cursor(
-            &mut self.cursor,
-            &layout,
-            snapshot,
-            info.wait.woke_ns,
-            &textures,
-        );
-        r.renderer.begin_frame();
-        r.text_renderer.begin_frame();
-        let gpu_textures = &r.textures;
-        let projection = Projection::pixels(size);
-        // A failed draw or present loses one frame; the next one tries again.
-        let texture = |id| gpu_textures.get(id);
-        let _ = r.sliders.begin_frame(&mut r.device, size);
-        // The playfield's sprites in parts, with the slider bodies between them.
-        if let Ok(uploaded) = r
-            .renderer
-            .upload(&mut r.device, &self.batch, &projection, texture)
-        {
-            let mut from = 0;
-            for body in self.bodies.as_slice() {
-                let _ = r.renderer.draw_range(
-                    &mut r.device,
-                    &uploaded,
-                    &self.batch,
-                    from..body.before_sprite,
-                    texture,
-                );
-                from = body.before_sprite;
-                let Some(Some(buffer)) = r.slider_buffers.get(body.index as usize) else {
-                    continue;
-                };
-                let origin = layout.to_window(body.position);
-                let path = projection.scaled(layout.scale(), [origin.x, origin.y]);
-                let _ = r.sliders.draw(
-                    &mut r.device,
-                    buffer,
-                    &SliderDraw {
-                        projection: &path,
-                        radius: body.radius,
-                        range: body.range,
-                        tint: body.tint,
-                        gradient: self.view.sliders.visuals.gradient(body.gradient),
-                    },
-                    None,
-                );
-            }
-            let _ = r.renderer.draw_range(
-                &mut r.device,
-                &uploaded,
-                &self.batch,
-                from..u32::MAX,
-                texture,
-            );
-        }
-        let _ = r
-            .text_renderer
-            .draw(&mut r.device, &self.text, &projection, texture);
-        let _ = r
-            .renderer
-            .draw(&mut r.device, &self.cursor, &projection, texture);
-        let _ = r.device.present();
+        self.scene.draw(device, size, info.wait.woke_ns, snapshot);
+        // A failed present loses one frame; the next one tries again.
+        let _ = device.present();
     }
 
     fn stop(&mut self) {
-        let Resources {
-            mut device,
-            mut textures,
-            renderer,
-            text_renderer,
-            mut sliders,
-            slider_buffers,
-        } = self.resources.take().expect("started");
-        for buffer in slider_buffers.into_iter().flatten() {
-            sliders.release(&mut device, buffer);
-        }
-        sliders.destroy(&mut device);
-        renderer.destroy(&mut device);
-        text_renderer.destroy(&mut device);
-        for texture in textures.drain() {
-            device.destroy_texture(texture);
-        }
+        let mut device = self.device.take().expect("started");
+        self.scene.stop(&mut device);
         self.surface = Some(device.into_surface().expect("release GL context"));
     }
-}
-
-/// Everything loaded before the threads start.
-struct Loaded {
-    beatmap: Beatmap,
-    audio: PathBuf,
-    beatmap_skin: Skin,
-    skins: SkinChain,
-    /// The mods that built `beatmap`: the same instance goes on to the play, as lazer's
-    /// `Player` hands its one clone to the beatmap and the rulesets' processors.
-    mods: ModSet,
-    /// The background image's name and bytes; `None` when the beatmap names none or it
-    /// cannot be read.
-    background: Option<(String, Vec<u8>)>,
-}
-
-fn load(options: &Options) -> Result<Loaded, String> {
-    let map = &options.map;
-    let bytes = std::fs::read(map).map_err(|e| format!("{}: {e}", map.display()))?;
-    let file = slam_formats::osu::decode(&bytes)
-        .map_err(|e| format!("{}: {e}", map.display()))?
-        .beatmap;
-    let dir = map.parent().unwrap_or(Path::new("."));
-    let audio = dir.join(&file.general.audio_filename);
-    let background = file.events.background.as_deref().and_then(|name| {
-        let bytes = find_beatmap_file(dir, name).and_then(|path| std::fs::read(path).ok());
-        if bytes.is_none() {
-            tracing::warn!("background {name}: not found or unreadable");
-        }
-        bytes.map(|bytes| (name.to_owned(), bytes))
-    });
-    // The play's start time and the visuals take the preempt of the beatmap with mods applied.
-    let mut mods = options.mods.clone();
-    let beatmap = mods
-        .playable_beatmap(file)
-        .map_err(|e| format!("{}: {e}", map.display()))?;
-    let beatmap_skin = Skin::load_beatmap(dir, &bytes).map_err(|e| format!("beatmap skin: {e}"))?;
-    let default = Skin::load_default(default_skin_dir())
-        .map_err(|e| format!("default skin {}: {e}", default_skin_dir().display()))?;
-    let user = options
-        .skin
-        .as_ref()
-        .map(|dir| Skin::load(dir).map_err(|e| format!("--skin {}: {e}", dir.display())))
-        .transpose()?;
-    Ok(Loaded {
-        beatmap,
-        mods,
-        audio,
-        beatmap_skin,
-        skins: SkinChain::new(user, default),
-        background,
-    })
 }
 
 /// Finds a file of the beatmap's folder by its name in the `.osu` file (with `/`), matching
 /// each part without regard to case as lazer's file lookup does; the exact name wins, then
 /// the smallest matching name. `None` when it is missing or the name leaves the folder
 /// (absolute, empty, `.` or `..` parts): lazer only looks among the set's files.
-fn find_beatmap_file(dir: &Path, name: &str) -> Option<PathBuf> {
+pub(crate) fn find_beatmap_file(dir: &Path, name: &str) -> Option<PathBuf> {
     let mut path = dir.to_path_buf();
     for part in name.split('/') {
         let mut components = Path::new(part).components();
@@ -582,7 +333,7 @@ fn find_beatmap_file(dir: &Path, name: &str) -> Option<PathBuf> {
 }
 
 /// Opens the track and waits until it is ready to play.
-fn load_track(player: &mut MusicPlayer, path: &Path) -> Result<(), String> {
+pub(crate) fn load_track(player: &mut MusicPlayer, path: &Path) -> Result<(), String> {
     let generation = player
         .load(TrackSource::File(path.to_owned()))
         .map_err(|e| format!("{}: {e}", path.display()))?;
@@ -614,66 +365,6 @@ pub(crate) fn device_limits(
 
 /// Plays the beatmap in a window until it is closed and prints the judgements.
 pub fn run(options: &Options) -> Result<(), String> {
-    let loaded = load(options)?;
-    let mods = &loaded.mods;
-    let beatmap = &loaded.beatmap;
-
-    let mut cache = SampleCache::new(SAMPLE_RATE, CHANNELS);
-    let hitsounds = Hitsounds::new(
-        beatmap,
-        SampleSkins {
-            beatmap: Some(&loaded.beatmap_skin),
-            chain: &loaded.skins,
-        },
-        &mut cache,
-    );
-    let sounds = GameplaySounds::new(beatmap, hitsounds, SoundSettings::for_mods(mods));
-    let circle_mods = CircleMods::new(mods);
-    let windows = slam_osu::hit_windows::HitWindows::new(beatmap.difficulty.overall_difficulty);
-    let settings = CircleSettings {
-        beatmap_colours: options.beatmap_colours,
-        ..CircleSettings::default()
-    };
-    let view = PlayView {
-        circles: HitCircles {
-            visuals: CircleVisuals::new(
-                beatmap,
-                circle_mods,
-                settings,
-                Some(&loaded.beatmap_skin),
-                &loaded.skins,
-            ),
-            style: CircleStyle::new(circle_mods, &windows, &loaded.skins),
-            config: CircleSkinConfig::new(&loaded.skins),
-        },
-        sliders: HitSliders {
-            visuals: SliderVisuals::new(
-                beatmap,
-                circle_mods,
-                settings,
-                Some(&loaded.beatmap_skin),
-                &loaded.skins,
-            ),
-            snaking: Snaking::default(),
-            arrows: ArrowStyle::new(&loaded.skins),
-            ball: BallStyle::new(&loaded.skins),
-        },
-        spinners: HitSpinners {
-            visuals: SpinnerVisuals::new(beatmap),
-            style: SpinnerStyle::new(circle_mods, &loaded.skins),
-        },
-        follow_points: slam_play::follow_points::FollowPoints::new(beatmap),
-        judgements: JudgementView::new(
-            beatmap,
-            settings,
-            Some(&loaded.beatmap_skin),
-            &loaded.skins,
-        ),
-        hit_error: slam_play::hit_error::HitErrorView::new(&windows),
-        cursor: CursorView::default(),
-        resume: slam_play::resume::ResumeView::default(),
-    };
-
     let backend = match options.backend {
         Some(backend) => backend,
         None => *Backend::available()
@@ -695,7 +386,6 @@ pub fn run(options: &Options) -> Result<(), String> {
     let mixer_stats = Arc::clone(mixer_handle.stats());
     let music_stats = Arc::clone(player.stats());
     mixer.set_music(music).map_err(|e| e.to_string())?;
-    load_track(&mut player, &loaded.audio)?;
     let stream = slam_audio::open_output(
         backend,
         StreamConfig {
@@ -721,25 +411,24 @@ pub fn run(options: &Options) -> Result<(), String> {
     let initial_size = pack_size(pixels_w, pixels_h);
     let surface_size = Arc::new(AtomicU64::new(initial_size));
     let (surface, limits) = device_limits(surface)?;
-    let (mut requests, uploads): (TextureRequests, TextureUploads) =
-        texture_loader(&TextureLoaderConfig::new(limits)).map_err(|e| e.to_string())?;
-    let textures =
-        PlayTextures::request(&loaded.skins, &mut requests).map_err(|e| e.to_string())?;
-    let background_name = loaded.background.as_ref().map(|(name, _)| name.clone());
-    // The background is optional: a refused request plays without it.
-    let background = loaded.background.and_then(|(name, bytes)| {
-        requests
-            .load(bytes, TextureKind::Standalone)
-            .inspect_err(|e| tracing::warn!("background {name}: {e}"))
-            .ok()
-    });
     let registry = Arc::new(FontRegistry::with_builtin());
-    let glyphs = glyph_atlas(Arc::clone(&registry), &GlyphAtlasConfig::new(limits))
-        .map_err(|e| e.to_string())?;
     // English until the language setting exists (#98).
     let localizer = Localizer::builtin().map_err(|e| e.to_string())?;
-    let hud = HudView::new(registry, &localizer.format("play-skip-button", None));
-
+    let Prepared {
+        beatmap,
+        mods,
+        audio,
+        sounds,
+        scene,
+        background_name,
+    } = scene::prepare(
+        &options.map,
+        &options.settings(),
+        limits,
+        registry,
+        &localizer.format("play-skip-button", None),
+    )?;
+    load_track(&mut player, &audio)?;
     let mut input = LiveInput::new(
         Bindings::default(),
         PlayfieldLayout::new(
@@ -748,7 +437,7 @@ pub fn run(options: &Options) -> Result<(), String> {
         ),
     );
     input.set_mouse_buttons_disabled(!options.mouse_buttons);
-    let session = PlaySession::new(beatmap, mods, &player, input, sounds, Offsets::default());
+    let session = PlaySession::new(&beatmap, &mods, &player, input, sounds, Offsets::default());
     let exited = Arc::new(AtomicBool::new(false));
     let gameplay = Gameplay {
         session,
@@ -768,25 +457,11 @@ pub fn run(options: &Options) -> Result<(), String> {
         mixer: mixer_handle,
     };
     let frame_times = options.stats.then(|| Arc::new(SharedFrameTimes::default()));
+    let objects = beatmap.hit_objects.len();
     let draw = View {
         surface: Some(surface),
-        resources: None,
-        uploads,
-        textures,
-        glyphs,
-        view,
-        hud,
-        background,
-        background_view: BackgroundView::new(BackgroundSettings {
-            dim_level: options.dim,
-            ..BackgroundSettings::default()
-        }),
-        batch: SpriteBatch::with_capacity(MAX_SPRITES),
-        bodies: SliderBodies::new(),
-        meshes: SliderVisuals::meshes(beatmap),
-        objects: beatmap.hit_objects.len(),
-        text: SpriteBatch::with_capacity(MAX_GLYPH_SPRITES),
-        cursor: SpriteBatch::with_capacity(MAX_CURSOR_SPRITES + MAX_TARGET_SPRITES),
+        device: None,
+        scene,
         surface_size,
         perf: frame_times
             .as_ref()
@@ -812,7 +487,7 @@ pub fn run(options: &Options) -> Result<(), String> {
         "playing {} ({} objects), audio: {}, background: {}; Escape pauses (or leaves the \
          results), hold ` to retry, Ctrl+` to quit",
         options.map.display(),
-        beatmap.hit_objects.len(),
+        objects,
         stream.backend().name(),
         background_name.as_deref().unwrap_or("none")
     );
@@ -870,7 +545,6 @@ pub fn run(options: &Options) -> Result<(), String> {
         std::thread::sleep(Duration::from_millis(5));
     }
     drop(stream);
-    drop(requests);
 
     let session = &gameplay.session;
     // Until the results screen exists, the results go to the console.
@@ -1056,7 +730,7 @@ mod tests {
             let mut args = vec![map.as_str()];
             args.extend_from_slice(mods);
             let options = parse(&args).unwrap();
-            let loaded = load(&options).unwrap();
+            let loaded = scene::load(&options.map, &options.settings()).unwrap();
             assert_eq!(loaded.mods, options.mods);
             loaded
         };
@@ -1073,6 +747,6 @@ mod tests {
 
     #[test]
     fn the_default_skin_is_in_the_source_tree() {
-        assert!(Skin::load_default(default_skin_dir()).is_ok());
+        assert!(slam_skin::Skin::load_default(default_skin_dir()).is_ok());
     }
 }

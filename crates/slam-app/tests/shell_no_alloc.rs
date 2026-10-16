@@ -138,5 +138,15 @@ fn song_select_ticks_and_new_lists_do_not_allocate() {
             state.tick(now, &input, &mut snapshot);
         }
     });
+    // A load comes and the play screen goes on top: navigation may allocate, its ticks not.
+    state.tick(4 * TRANSITION_NS, &[key(40)], &mut snapshot);
+    assert_eq!(state.take_play_request(), Some((0, 0)));
+    state.finish_loading(4 * TRANSITION_NS, Some(1));
+    assert_no_alloc(|| {
+        let start = 4 * TRANSITION_NS + 1;
+        for now in (start..start + 3 * TRANSITION_NS).step_by(1_000_000) {
+            state.tick(now, &input, &mut snapshot);
+        }
+    });
     drop(kept);
 }

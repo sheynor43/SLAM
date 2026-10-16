@@ -1,3 +1,5 @@
+use std::path::Path;
+
 use slam_ui::screen::TRANSITION_NS;
 
 use super::*;
@@ -143,7 +145,7 @@ fn songs(sets: &[(&str, &[&str])]) -> Vec<slam_library::scan::BeatmapSetEntry> {
 fn song_view(snap: &ShellSnapshot) -> &SongSelectSnapshot {
     match &snap.layers[0].as_ref().unwrap().view {
         ScreenView::SongSelect(view) => view,
-        ScreenView::Menu(_) => panic!("song select is not on top"),
+        _ => panic!("song select is not on top"),
     }
 }
 
@@ -225,4 +227,328 @@ fn songs_flag() {
     assert_eq!(parse(&["--songs", "S"]), Ok(Some(PathBuf::from("S"))));
     assert!(parse(&["--songs"]).is_err());
     assert!(parse(&["--what"]).is_err());
+}
+
+/// A shell in the song select at rest over two published sets.
+fn in_song_select() -> (
+    ShellState,
+    ShellSnapshot,
+    rtrb::Producer<crate::songs::Published>,
+) {
+    let (mut producer, link) = crate::songs::link();
+    let mut s = state().with_songs(link);
+    let mut snap = ShellSnapshot::default();
+    let sets = songs(&[("a", &["Easy", "Hard"]), ("b", &["Insane"])]);
+    producer
+        .push(crate::songs::publish(
+            &sets,
+            SongSelectStatus::Scanning { sets: 2 },
+            Arc::from(""),
+        ))
+        .unwrap();
+    s.tick(0, &[key(KEY_ENTER)], &mut snap);
+    s.tick(TRANSITION_NS, &[], &mut snap);
+    (s, snap, producer)
+}
+
+#[test]
+fn enter_asks_for_the_selected_difficulty_once() {
+    let (mut s, mut snap, _producer) = in_song_select();
+    s.tick(TRANSITION_NS + 1, &[key(KEY_DOWN)], &mut snap);
+    assert_eq!(s.take_play_request(), None);
+    s.tick(TRANSITION_NS + 2, &[key(KEY_ENTER)], &mut snap);
+    assert!(s.is_loading());
+    assert_eq!(s.song_select().status(), SongSelectStatus::Loading);
+    assert_eq!(s.take_play_request(), Some((0, 1)));
+    assert_eq!(s.take_play_request(), None);
+    assert_eq!(s.file(0, 1), Some(&PathBuf::from("a").join("Hard.osu")));
+}
+
+#[test]
+fn a_load_shows_over_new_lists_and_back_cancels_it_in_place() {
+    let (mut s, mut snap, mut producer) = in_song_select();
+    s.tick(TRANSITION_NS + 1, &[key(KEY_ENTER)], &mut snap);
+    assert!(s.is_loading());
+    let sets = songs(&[("a", &["Easy", "Hard"]), ("b", &["Insane"])]);
+    producer
+        .push(crate::songs::publish(
+            &sets,
+            SongSelectStatus::Ready,
+            Arc::from(""),
+        ))
+        .unwrap();
+    s.tick(TRANSITION_NS + 2, &[], &mut snap);
+    assert_eq!(s.song_select().status(), SongSelectStatus::Loading);
+
+    s.tick(TRANSITION_NS + 3, &[key(KEY_ESCAPE)], &mut snap);
+    assert!(!s.is_loading());
+    assert_eq!(s.take_play_request(), None);
+    assert_eq!(*s.stack().top(), AppScreen::SongSelect);
+    // The library's status is back.
+    assert_eq!(s.song_select().status(), SongSelectStatus::Ready);
+}
+
+#[test]
+fn a_failed_load_returns_to_the_list() {
+    let (mut s, mut snap, _producer) = in_song_select();
+    s.tick(TRANSITION_NS + 1, &[key(KEY_ENTER)], &mut snap);
+    s.finish_loading(TRANSITION_NS + 2, None);
+    assert!(!s.is_loading());
+    assert_eq!(*s.stack().top(), AppScreen::SongSelect);
+    assert_eq!(
+        s.song_select().status(),
+        SongSelectStatus::Scanning { sets: 2 }
+    );
+}
+
+#[test]
+fn the_play_screen_comes_in_ignores_screen_input_and_leaves() {
+    let (mut s, mut snap, _producer) = in_song_select();
+    s.tick(TRANSITION_NS + 1, &[key(KEY_ENTER)], &mut snap);
+    let start = 2 * TRANSITION_NS;
+    s.finish_loading(start, Some(1));
+    assert_eq!(*s.stack().top(), AppScreen::Play(1));
+    s.tick(start + TRANSITION_NS, &[], &mut snap);
+    assert!(matches!(
+        snap.layers[0].as_ref().unwrap().view,
+        ScreenView::Play(1)
+    ));
+    // Escape belongs to the play (it pauses there), not to the stack.
+    s.tick(start + TRANSITION_NS + 1, &[key(KEY_ESCAPE)], &mut snap);
+    assert_eq!(*s.stack().top(), AppScreen::Play(1));
+
+    s.leave_play(start + 2 * TRANSITION_NS);
+    assert_eq!(*s.stack().top(), AppScreen::SongSelect);
+    // The play going out leaves the layers at once: its snapshot is stale.
+    s.tick(start + 2 * TRANSITION_NS + 1, &[], &mut snap);
+    let views: Vec<_> = snap.layers.iter().flatten().map(|l| &l.view).collect();
+    assert_eq!(views.len(), 1);
+    assert!(matches!(views[0], ScreenView::SongSelect(_)));
+    // Leaving twice does not leave the song select.
+    s.leave_play(start + 2 * TRANSITION_NS);
+    assert_eq!(*s.stack().top(), AppScreen::SongSelect);
+    assert!(!s.is_loading());
+}
+
+#[test]
+fn each_play_comes_in_with_its_own_id() {
+    let (mut s, mut snap, _producer) = in_song_select();
+    s.tick(TRANSITION_NS + 1, &[key(KEY_ENTER)], &mut snap);
+    s.finish_loading(TRANSITION_NS + 2, Some(1));
+    s.leave_play(TRANSITION_NS + 3);
+    // The next play comes in while the first would still be sliding out.
+    s.tick(TRANSITION_NS + 4, &[key(KEY_ENTER)], &mut snap);
+    assert_eq!(s.take_play_request(), Some((0, 0)));
+    s.finish_loading(TRANSITION_NS + 5, Some(2));
+    s.tick(TRANSITION_NS + 6, &[], &mut snap);
+    let plays: Vec<u64> = snap
+        .layers
+        .iter()
+        .flatten()
+        .filter_map(|l| match l.view {
+            ScreenView::Play(id) => Some(id),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(plays, [2]);
+}
+
+#[test]
+fn the_pointer_is_followed_under_the_play() {
+    let (mut s, mut snap, _producer) = in_song_select();
+    s.tick(TRANSITION_NS + 1, &[key(KEY_ENTER)], &mut snap);
+    s.finish_loading(TRANSITION_NS + 2, Some(1));
+    s.follow_pointer(&[mouse(InputKind::MouseMove { x: 12.0, y: 34.0 })]);
+    assert_eq!(s.cursor, [12.0, 34.0]);
+}
+
+/// A play host without a window or output: the mixer and decoder run unheard.
+struct HostFixture {
+    host: PlayHost,
+    scenes: rtrb::Consumer<(u64, PlayScene)>,
+    _scene_trash: crate::loader::SceneTrash,
+    _mixer: slam_audio::Mixer,
+    _loader: crate::loader::LoaderThread,
+    dir: PathBuf,
+}
+
+impl Drop for HostFixture {
+    fn drop(&mut self) {
+        let _ = std::fs::remove_dir_all(&self.dir);
+    }
+}
+
+/// A set whose map plays `count.wav` of the default skin when `with_track`.
+fn host(name: &str, with_track: bool) -> HostFixture {
+    let dir = std::env::temp_dir().join(format!("slam-shell-{name}-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).unwrap();
+    let data = Path::new(env!("CARGO_MANIFEST_DIR"));
+    let map =
+        std::fs::read_to_string(data.join("../slam-osu/tests/data/slider-samples.osu")).unwrap();
+    let map = if with_track {
+        std::fs::copy(
+            data.join("../../assets/default-skin/count.wav"),
+            dir.join("audio.wav"),
+        )
+        .unwrap();
+        map.replacen("[General]\n", "[General]\nAudioFilename: audio.wav\n", 1)
+    } else {
+        map
+    };
+    std::fs::write(dir.join("map.osu"), map).unwrap();
+    let (loader, scene_trash, thread) = crate::loader::spawn(LoaderConfig {
+        settings: PlaySettings::default(),
+        limits: slam_render::Limits {
+            max_texture_size: 4096,
+            max_uniform_block_size: 16384,
+            max_uniform_buffer_slots: 12,
+            max_texture_slots: 16,
+        },
+        registry: Arc::new(FontRegistry::with_builtin()),
+        skip_label: "Skip".to_owned(),
+    })
+    .unwrap();
+    let (mut mixer, mixer_handle) = slam_audio::mixer(&MixerConfig {
+        sample_rate: SAMPLE_RATE,
+        channels: CHANNELS,
+        ..MixerConfig::default()
+    })
+    .unwrap();
+    let (music, player) = slam_audio::music(&MusicConfig {
+        sample_rate: SAMPLE_RATE,
+        channels: CHANNELS,
+        ..MusicConfig::default()
+    })
+    .unwrap();
+    mixer.set_music(music).unwrap();
+    let (scene_tx, scenes) = rtrb::RingBuffer::new(2);
+    let host = PlayHost {
+        audio: Audio {
+            output: Arc::new(AudioPosition::new()),
+            music: Arc::clone(player.position()),
+            player,
+            mixer: mixer_handle,
+        },
+        loader,
+        scenes: scene_tx,
+        os_cursor: CursorVisibility::default(),
+        pending: Pending::Idle,
+        game: None,
+        retiring: None,
+        next_request: 0,
+        points: [1280.0, 720.0],
+    };
+    HostFixture {
+        host,
+        scenes,
+        _scene_trash: scene_trash,
+        _mixer: mixer,
+        _loader: thread,
+        dir,
+    }
+}
+
+/// A shell in the song select listing the fixture's one map.
+fn listing(fixture: &HostFixture) -> (ShellState, ShellSnapshot) {
+    let (mut producer, link) = crate::songs::link();
+    let mut s = state().with_songs(link);
+    let mut snap = ShellSnapshot::default();
+    let mut sets = songs(&[("set", &["Normal"])]);
+    sets[0].difficulties[0].path = fixture.dir.join("map.osu");
+    producer
+        .push(crate::songs::publish(
+            &sets,
+            SongSelectStatus::Ready,
+            Arc::from(""),
+        ))
+        .unwrap();
+    s.tick(0, &[key(KEY_ENTER)], &mut snap);
+    s.tick(TRANSITION_NS, &[], &mut snap);
+    (s, snap)
+}
+
+/// Advances `host` until `done` or 20 s pass.
+fn advance_until(
+    fixture: &mut HostFixture,
+    s: &mut ShellState,
+    mut now: u64,
+    done: impl Fn(&PlayHost, &ShellState) -> bool,
+) -> u64 {
+    let deadline = std::time::Instant::now() + Duration::from_secs(20);
+    while !done(&fixture.host, s) {
+        assert!(
+            std::time::Instant::now() < deadline,
+            "the host did not get there"
+        );
+        now += 1_000_000;
+        fixture.host.advance(now, s);
+        std::thread::sleep(Duration::from_millis(1));
+    }
+    now
+}
+
+#[test]
+fn a_play_starts_with_its_scene_and_ends_back_in_the_list() {
+    let mut fixture = host("start", true);
+    let (mut s, mut snap) = listing(&fixture);
+    s.tick(TRANSITION_NS + 1, &[key(KEY_ENTER)], &mut snap);
+    assert!(s.is_loading());
+    let now = advance_until(&mut fixture, &mut s, TRANSITION_NS + 1, |_, s| s.playing());
+    assert_eq!(*s.stack().top(), AppScreen::Play(1));
+    assert!(!s.is_loading());
+    let (id, scene) = fixture.scenes.pop().unwrap();
+    assert_eq!(id, 1);
+    assert!(!scene.started());
+    assert!(fixture.host.game.is_some());
+
+    // The player quits: sounds stop and the screen goes at once.
+    fixture.host.game.as_mut().unwrap().ending = Ending::Sounds;
+    fixture.host.advance(now + 1, &mut s);
+    assert!(fixture.host.game.is_none());
+    assert_eq!(*s.stack().top(), AppScreen::SongSelect);
+    // The session waits for the mixer to be idle long enough, then goes to the loader.
+    assert!(fixture.host.retiring.is_some());
+    fixture.host.advance(now + 2, &mut s);
+    assert!(fixture.host.retiring.is_some());
+    fixture.host.advance(now + 2 + VOICES_IDLE_NS, &mut s);
+    assert!(fixture.host.retiring.is_none());
+    assert!(matches!(fixture.host.pending, Pending::Idle));
+}
+
+#[test]
+fn a_track_that_does_not_open_returns_to_the_list() {
+    let mut fixture = host("no-track", false);
+    let (mut s, mut snap) = listing(&fixture);
+    s.tick(TRANSITION_NS + 1, &[key(KEY_ENTER)], &mut snap);
+    advance_until(&mut fixture, &mut s, TRANSITION_NS + 1, |_, s| {
+        !s.is_loading()
+    });
+    assert_eq!(*s.stack().top(), AppScreen::SongSelect);
+    assert!(fixture.host.game.is_none());
+    assert!(matches!(fixture.host.pending, Pending::Idle));
+    assert!(fixture.scenes.pop().is_err());
+}
+
+#[test]
+fn back_while_preparing_drops_the_play() {
+    let mut fixture = host("cancel", true);
+    let (mut s, mut snap) = listing(&fixture);
+    s.tick(TRANSITION_NS + 1, &[key(KEY_ENTER)], &mut snap);
+    fixture.host.advance(TRANSITION_NS + 2, &mut s);
+    assert!(matches!(fixture.host.pending, Pending::Preparing(1)));
+    s.tick(TRANSITION_NS + 3, &[key(KEY_ESCAPE)], &mut snap);
+    assert!(!s.is_loading());
+    // The preparation comes back and is freed; nothing starts.
+    advance_until(&mut fixture, &mut s, TRANSITION_NS + 3, |h, _| {
+        matches!(h.pending, Pending::Idle)
+    });
+    for t in 0..50 {
+        fixture
+            .host
+            .advance(TRANSITION_NS + 100_000_000 + t, &mut s);
+    }
+    assert_eq!(*s.stack().top(), AppScreen::SongSelect);
+    assert!(fixture.host.game.is_none());
+    assert!(fixture.scenes.pop().is_err());
 }
