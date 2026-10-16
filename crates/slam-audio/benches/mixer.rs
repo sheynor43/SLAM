@@ -137,6 +137,7 @@ mod bench {
                                             balance: 0.3,
                                             rate: 1.37 + i as f64 * 0.01,
                                             looping: true,
+                                            ..VoiceParams::default()
                                         },
                                     )
                                     .unwrap();

@@ -237,6 +237,20 @@ fn from_table(mut table: Table) -> Loaded {
         &mut settings.audio.music_volume,
         0.0..=1.0,
     );
+    cx.float(
+        &mut audio,
+        "audio",
+        "hitsound_volume",
+        &mut settings.audio.hitsound_volume,
+        0.0..=1.0,
+    );
+    cx.float(
+        &mut audio,
+        "audio",
+        "effects_volume",
+        &mut settings.audio.effects_volume,
+        0.0..=1.0,
+    );
     cx.unknown(&audio, "audio");
 
     let mut timing = cx.section(&mut table, "timing");

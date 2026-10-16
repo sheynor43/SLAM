@@ -95,6 +95,10 @@ pub struct Audio {
     pub buffer_frames: u32,
     pub master_volume: f64,
     pub music_volume: f64,
+    /// Gameplay hitsound volume, 0.0..=1.0, on top of the master volume.
+    pub hitsound_volume: f64,
+    /// Volume of the other sound effects, 0.0..=1.0, on top of the master volume.
+    pub effects_volume: f64,
 }
 
 impl Default for Audio {
@@ -105,6 +109,8 @@ impl Default for Audio {
             buffer_frames: StreamConfig::default().buffer_frames,
             master_volume: 1.0,
             music_volume: 1.0,
+            hitsound_volume: 1.0,
+            effects_volume: 1.0,
         }
     }
 }

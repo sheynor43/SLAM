@@ -23,6 +23,10 @@ pub const SAMPLE_CONCURRENCY: usize = 6;
 /// Highest playback rate of a voice ([`VoiceParams::rate`]).
 pub const MAX_VOICE_RATE: f64 = 8.0;
 
+/// Length of the linear ramp of the master and group gains, so that moving a volume
+/// slider does not click on sounding voices (ADR-0046).
+pub const BUS_RAMP_MS: f64 = 5.0;
+
 /// One frame in the 32.32 fixed-point voice cursor (ADR-0039).
 const FRAME: u64 = 1 << 32;
 const FRACTION: u64 = FRAME - 1;
@@ -121,6 +125,30 @@ impl VoiceId {
     }
 }
 
+/// Gain group of a voice, under the master gain (ADR-0046).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default)]
+pub enum VoiceGroup {
+    /// Gameplay samples: hits, slider ticks and tails, slider and spinner loops,
+    /// spinner bonus.
+    Hitsounds,
+    /// Everything else: interface, combo break, fail, sections.
+    #[default]
+    Effects,
+}
+
+impl VoiceGroup {
+    /// Every group, in the order of their gains in the mixer.
+    pub const ALL: [Self; 2] = [Self::Hitsounds, Self::Effects];
+
+    /// Position in [`VoiceGroup::ALL`].
+    fn index(self) -> usize {
+        match self {
+            Self::Hitsounds => 0,
+            Self::Effects => 1,
+        }
+    }
+}
+
 /// How a voice starts.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct VoiceParams {
@@ -136,6 +164,8 @@ pub struct VoiceParams {
     pub rate: f64,
     /// Restarts from the first frame after the last until stopped.
     pub looping: bool,
+    /// Gain group; the voice sounds at master × group × its own gain.
+    pub group: VoiceGroup,
 }
 
 impl Default for VoiceParams {
@@ -145,6 +175,7 @@ impl Default for VoiceParams {
             balance: 0.0,
             rate: 1.0,
             looping: false,
+            group: VoiceGroup::default(),
         }
     }
 }
@@ -178,6 +209,7 @@ enum Command {
         balance: f32,
         step: u64,
         looping: bool,
+        group: VoiceGroup,
     },
     Stop(u64),
     Gain {
@@ -194,7 +226,134 @@ enum Command {
         step: u64,
     },
     StopAll,
-    MasterGain(f32),
+    MasterGain {
+        target: f32,
+        frames: u32,
+    },
+    GroupGain {
+        group: VoiceGroup,
+        target: f32,
+        frames: u32,
+    },
+}
+
+/// A gain moving linearly to a target over whole frames (ADR-0039, ADR-0046).
+#[derive(Debug, Clone, Copy)]
+struct Ramp {
+    /// Gain at the next frame.
+    gain: f32,
+    /// Gain the ramp ends at.
+    target: f32,
+    /// Gain change per frame while `left > 0`.
+    step: f32,
+    /// Frames left in the ramp; after them the gain is `target` exactly. The gain is
+    /// `target - step * left`, so rounding does not accumulate.
+    left: u32,
+}
+
+impl Ramp {
+    const fn steady(gain: f32) -> Self {
+        Self {
+            gain,
+            target: gain,
+            step: 0.0,
+            left: 0,
+        }
+    }
+
+    fn is_steady(&self) -> bool {
+        self.left == 0
+    }
+
+    /// Starts a ramp from the current gain, also mid-ramp; 0 frames, or a steady gain
+    /// already at `target`, sets it at once (a ramp would only hold voices off the
+    /// fast path).
+    fn set(&mut self, target: f32, frames: u32) {
+        self.target = target;
+        if frames == 0 || (self.is_steady() && self.gain == target) {
+            self.gain = target;
+            self.left = 0;
+        } else {
+            self.left = frames;
+            self.step = (target - self.gain) / frames as f32;
+            // The frames follow `at`, whose first value can differ from the old gain
+            // by an ulp of rounding.
+            self.gain = self.at(0);
+        }
+    }
+
+    /// Gain `k` frames after the next one.
+    #[inline(always)]
+    fn at(&self, k: u32) -> f32 {
+        if self.left <= k {
+            self.target
+        } else {
+            // Clamped: the product can overshoot the start by an ulp.
+            (self.target - self.step * (self.left - k) as f32).clamp(0.0, 1.0)
+        }
+    }
+
+    /// Moves the ramp `frames` frames on.
+    fn advance(&mut self, frames: u32) {
+        if self.left > 0 {
+            self.gain = self.at(frames);
+            self.left = self.left.saturating_sub(frames);
+        }
+    }
+
+    /// Gains frame by frame from the next one, as [`at`](Self::at) gives them.
+    #[inline(always)]
+    fn frames(&self) -> RampFrames {
+        RampFrames {
+            target: self.target,
+            step: self.step,
+            left: self.left,
+        }
+    }
+}
+
+/// [`Ramp::at`] for consecutive frames, counting down instead of subtracting.
+#[derive(Clone, Copy)]
+struct RampFrames {
+    target: f32,
+    step: f32,
+    left: u32,
+}
+
+impl RampFrames {
+    #[inline(always)]
+    fn next(&mut self) -> f32 {
+        if self.left == 0 {
+            self.target
+        } else {
+            // Clamped: the product can overshoot the start by an ulp.
+            let gain = (self.target - self.step * self.left as f32).clamp(0.0, 1.0);
+            self.left -= 1;
+            gain
+        }
+    }
+}
+
+/// The master and group gains over one buffer, for the voices of a group.
+#[derive(Clone, Copy)]
+struct Bus {
+    master: Ramp,
+    group: Ramp,
+    /// Neither gain moves during the buffer.
+    steady: bool,
+    /// Master × group at the first frame.
+    gain: f32,
+}
+
+impl Bus {
+    fn new(master: Ramp, group: Ramp) -> Self {
+        Self {
+            master,
+            group,
+            steady: master.is_steady() && group.is_steady(),
+            gain: master.at(0) * group.at(0),
+        }
+    }
 }
 
 struct Voice {
@@ -206,14 +365,8 @@ struct Voice {
     /// Frames advanced per output frame, 32.32 fixed point.
     step: u64,
     looping: bool,
-    gain: f32,
-    /// Gain the ramp ends at.
-    target: f32,
-    /// Gain change per frame while `ramp_left > 0`.
-    gain_step: f32,
-    /// Frames left in the gain ramp; after them the gain is `target` exactly. The
-    /// gain is `target - gain_step * ramp_left`, so rounding does not accumulate.
-    ramp_left: u32,
+    group: VoiceGroup,
+    gain: Ramp,
     /// Gains of the first two channels from the balance.
     left: f32,
     right: f32,
@@ -225,45 +378,40 @@ impl Voice {
         self.right = (1.0 + balance).min(1.0);
     }
 
-    /// Moves the gain ramp `frames` frames on.
-    fn advance_ramp(&mut self, frames: u32) {
-        if self.ramp_left > 0 {
-            self.ramp_left = self.ramp_left.saturating_sub(frames);
-            // Clamped: the product can overshoot the start by an ulp.
-            self.gain = (self.target - self.gain_step * self.ramp_left as f32).clamp(0.0, 1.0);
-        }
-    }
-
-    /// Adds this voice to `out` (whole frames of `channels`); returns whether it still
-    /// sounds afterwards.
-    fn mix(&mut self, out: &mut [f32], channels: usize, master_gain: f32) -> bool {
-        if self.step == 0 {
+    /// Adds this voice to `out` (whole frames of `channels`) under `bus`; returns
+    /// whether it still sounds afterwards.
+    fn mix(&mut self, out: &mut [f32], channels: usize, frames: u32, bus: &Bus) -> bool {
+        let sounding = if self.step == 0 {
             // Paused, as BASS pauses a channel at zero frequency. The gain ramp runs on
             // in real time, like lazer's `VolumeTo` transform on the update thread.
-            self.advance_ramp((out.len() / channels).try_into().unwrap_or(u32::MAX));
-            return true;
-        }
-        let simple = self.step == FRAME
+            true
+        } else if self.step == FRAME
             && self.pos & FRACTION == 0
-            && self.ramp_left == 0
-            && (channels < 2 || (self.left == 1.0 && self.right == 1.0));
-        if simple {
-            self.mix_simple(out, channels, master_gain)
+            && self.gain.is_steady()
+            && bus.steady
+            && (channels < 2 || (self.left == 1.0 && self.right == 1.0))
+        {
+            self.mix_simple(out, channels, self.gain.gain * bus.gain)
         } else {
-            // Constant channel counts let the frame loop unroll.
-            match channels {
-                1 => self.mix_general(out, 1, master_gain),
-                2 => self.mix_general(out, 2, master_gain),
-                n => self.mix_general(out, n, master_gain),
+            // Constant channel counts let the frame loop unroll; most buffers have
+            // steady bus gains, which keeps their ramps out of the loop.
+            match (channels, bus.steady) {
+                (1, true) => self.mix_general::<false>(out, 1, bus),
+                (1, false) => self.mix_general::<true>(out, 1, bus),
+                (2, true) => self.mix_general::<false>(out, 2, bus),
+                (2, false) => self.mix_general::<true>(out, 2, bus),
+                (n, true) => self.mix_general::<false>(out, n, bus),
+                (n, false) => self.mix_general::<true>(out, n, bus),
             }
-        }
+        };
+        self.gain.advance(frames);
+        sounding
     }
 
     /// Rate 1, whole-frame cursor, constant gain, no balance: one multiply-add per
     /// value.
-    fn mix_simple(&mut self, out: &mut [f32], channels: usize, master_gain: f32) -> bool {
+    fn mix_simple(&mut self, out: &mut [f32], channels: usize, gain: f32) -> bool {
         let data = self.sample.data();
-        let gain = self.gain * master_gain;
         let mut cursor = (self.pos >> 32) as usize * channels;
         let mut written = 0;
         while written < out.len() {
@@ -287,10 +435,15 @@ impl Voice {
         true
     }
 
-    /// Any rate (linear interpolation between neighbouring frames), gain ramp and
-    /// balance.
+    /// Any rate (linear interpolation between neighbouring frames), gain ramps and
+    /// balance. `BUS_RAMP`: whether the bus gains move during the buffer.
     #[inline(always)]
-    fn mix_general(&mut self, out: &mut [f32], channels: usize, master_gain: f32) -> bool {
+    fn mix_general<const BUS_RAMP: bool>(
+        &mut self,
+        out: &mut [f32],
+        channels: usize,
+        bus: &Bus,
+    ) -> bool {
         let data = self.sample.data();
         let frames = self.sample.frames();
         let end = (frames as u64) << 32;
@@ -302,37 +455,43 @@ impl Voice {
         };
         // Voices have the channels of their sample, which has at most `MAX_CHANNELS`.
         let silence = [0.0f32; MAX_CHANNELS as usize];
+        // Locals stay in registers across the writes to `out`.
+        let (step, looping) = (self.step, self.looping);
+        let mut pos = self.pos;
+        let mut gains = self.gain.frames();
+        let (mut master, mut group) = (bus.master.frames(), bus.group.frames());
         for frame in out.chunks_exact_mut(channels) {
-            if self.pos >= end {
-                if !self.looping {
+            if pos >= end {
+                if !looping {
+                    self.pos = pos;
                     return false;
                 }
-                self.pos %= end;
+                pos %= end;
             }
-            let i = (self.pos >> 32) as usize;
-            let t = (self.pos & FRACTION) as f32 * (1.0 / FRAME as f32);
+            let i = (pos >> 32) as usize;
+            let t = (pos & FRACTION) as f32 * (1.0 / FRAME as f32);
             let a = &data[i * channels..(i + 1) * channels];
             let b = if i + 1 < frames {
                 &data[(i + 1) * channels..(i + 2) * channels]
-            } else if self.looping {
+            } else if looping {
                 &data[..channels]
             } else {
                 // Past the end of a one-shot the next frame is silence.
                 &silence[..channels]
             };
-            let gain = self.gain * master_gain;
+            let bus_gain = if BUS_RAMP {
+                master.next() * group.next()
+            } else {
+                bus.gain
+            };
+            let gain = gains.next() * bus_gain;
             for (c, ((o, &a), &b)) in frame.iter_mut().zip(a).zip(b).enumerate() {
                 let side = if c < 2 { sides[c] } else { 1.0 };
                 *o += (a + (b - a) * t) * (gain * side);
             }
-            self.pos += self.step;
-            // `advance_ramp(1)`, inline: `data` borrows the sample.
-            if self.ramp_left > 0 {
-                self.ramp_left -= 1;
-                // Clamped: the product can overshoot the start by an ulp.
-                self.gain = (self.target - self.gain_step * self.ramp_left as f32).clamp(0.0, 1.0);
-            }
+            pos += step;
         }
+        self.pos = pos;
         if self.looping {
             // The simple path expects a cursor inside the sample.
             self.pos %= end;
@@ -383,7 +542,8 @@ pub fn mixer(config: &MixerConfig) -> Result<(Mixer, MixerHandle), AudioError> {
         voices: Vec::with_capacity(config.max_voices),
         max_voices: config.max_voices,
         max_per_sample: config.max_per_sample,
-        master_gain: 1.0,
+        master: Ramp::steady(1.0),
+        groups: [Ramp::steady(1.0); VoiceGroup::ALL.len()],
         sample_rate: config.sample_rate,
         channels: config.channels,
         music: None,
@@ -413,7 +573,9 @@ pub struct Mixer {
     voices: Vec<Voice>,
     max_voices: usize,
     max_per_sample: usize,
-    master_gain: f32,
+    master: Ramp,
+    /// Gains of the [`VoiceGroup`]s, by [`VoiceGroup::index`].
+    groups: [Ramp; VoiceGroup::ALL.len()],
     sample_rate: u32,
     channels: u16,
     /// The track, mixed under the voices (ADR-0033).
@@ -447,6 +609,13 @@ impl Mixer {
         found
     }
 
+    fn advance_buses(&mut self, frames: u32) {
+        self.master.advance(frames);
+        for group in &mut self.groups {
+            group.advance(frames);
+        }
+    }
+
     fn stale(&self) {
         self.stats
             .stale_voice_commands
@@ -467,6 +636,7 @@ impl Mixer {
                     balance,
                     step,
                     looping,
+                    group,
                 } => {
                     let mut same = 0;
                     let mut oldest_same = None;
@@ -492,10 +662,8 @@ impl Mixer {
                         pos: 0,
                         step,
                         looping,
-                        gain,
-                        target: gain,
-                        gain_step: 0.0,
-                        ramp_left: 0,
+                        group,
+                        gain: Ramp::steady(gain),
                         left: 1.0,
                         right: 1.0,
                     };
@@ -532,14 +700,7 @@ impl Mixer {
                     frames,
                 } => {
                     if let Some(voice) = self.voice(voice) {
-                        // From the current gain, also mid-ramp.
-                        voice.target = target;
-                        voice.ramp_left = frames;
-                        if frames == 0 {
-                            voice.gain = target;
-                        } else {
-                            voice.gain_step = (target - voice.gain) / frames as f32;
-                        }
+                        voice.gain.set(target, frames);
                     }
                 }
                 Command::Balance { voice, balance } => {
@@ -557,7 +718,12 @@ impl Mixer {
                         release(&mut self.released, &self.stats, voice.sample);
                     }
                 }
-                Command::MasterGain(gain) => self.master_gain = gain,
+                Command::MasterGain { target, frames } => self.master.set(target, frames),
+                Command::GroupGain {
+                    group,
+                    target,
+                    frames,
+                } => self.groups[group.index()].set(target, frames),
             }
         }
     }
@@ -573,15 +739,22 @@ impl AudioCallback for Mixer {
         if let Some(music) = &mut self.music {
             music.mix_into(out, info);
         }
+        // The bus ramps run in real time, also through a format mismatch.
+        let frames = (out.len() / usize::from(info.channels.max(1)))
+            .try_into()
+            .unwrap_or(u32::MAX);
         if info.channels != self.channels || info.sample_rate != self.sample_rate {
             self.stats.format_mismatches.fetch_add(1, Ordering::Relaxed);
+            self.advance_buses(frames);
             return;
         }
 
         let channels = usize::from(self.channels);
         let mut kept = 0;
+        let buses = self.groups.map(|group| Bus::new(self.master, group));
         for i in 0..self.voices.len() {
-            if self.voices[i].mix(out, channels, self.master_gain) {
+            let bus = &buses[self.voices[i].group.index()];
+            if self.voices[i].mix(out, channels, frames, bus) {
                 self.voices.swap(kept, i);
                 kept += 1;
             }
@@ -590,6 +763,7 @@ impl AudioCallback for Mixer {
         for voice in self.voices.drain(kept..) {
             release(&mut self.released, &self.stats, voice.sample);
         }
+        self.advance_buses(frames);
         for o in out.iter_mut() {
             *o = o.clamp(-1.0, 1.0);
         }
@@ -660,6 +834,7 @@ impl MixerHandle {
             balance: clamp_balance(params.balance),
             step,
             looping: params.looping,
+            group: params.group,
         })?;
         let id = VoiceId(self.queued_plays);
         self.queued_plays += 1;
@@ -680,12 +855,7 @@ impl MixerHandle {
         gain: f32,
         ramp_ms: f64,
     ) -> Result<(), PlayError> {
-        let frames = if ramp_ms.is_finite() && ramp_ms > 0.0 {
-            // Saturating cast: absurd ramps just never finish.
-            (ramp_ms * f64::from(self.sample_rate) / 1000.0).round() as u32
-        } else {
-            0
-        };
+        let frames = self.ramp_frames(ramp_ms);
         let target = clamp_gain(gain);
         self.push_for(voice, |voice| Command::Gain {
             voice,
@@ -727,10 +897,38 @@ impl MixerHandle {
         self.push(Command::StopAll)
     }
 
-    /// Sets the gain applied to all voices from the next audio buffer; linear, clamped
-    /// to 0..=1.
+    /// Moves the gain applied to all voices (not the music) to `gain` over
+    /// [`BUS_RAMP_MS`] from the next audio buffer; linear, clamped like
+    /// [`VoiceParams::gain`].
     pub fn set_master_gain(&mut self, gain: f32) -> Result<(), PlayError> {
-        self.push(Command::MasterGain(clamp_gain(gain)))
+        let frames = self.ramp_frames(BUS_RAMP_MS);
+        self.push(Command::MasterGain {
+            target: clamp_gain(gain),
+            frames,
+        })
+    }
+
+    /// Moves the gain of every voice in `group`, sounding or not yet started, to `gain`
+    /// over [`BUS_RAMP_MS`] from the next audio buffer; linear, clamped like
+    /// [`VoiceParams::gain`] (ADR-0046).
+    pub fn set_group_gain(&mut self, group: VoiceGroup, gain: f32) -> Result<(), PlayError> {
+        let frames = self.ramp_frames(BUS_RAMP_MS);
+        self.push(Command::GroupGain {
+            group,
+            target: clamp_gain(gain),
+            frames,
+        })
+    }
+
+    /// Output frames in `ramp_ms` milliseconds; 0 for a non-positive or non-finite
+    /// length.
+    fn ramp_frames(&self, ramp_ms: f64) -> u32 {
+        if ramp_ms.is_finite() && ramp_ms > 0.0 {
+            // Saturating cast: absurd ramps just never finish.
+            (ramp_ms * f64::from(self.sample_rate) / 1000.0).round() as u32
+        } else {
+            0
+        }
     }
 
     /// Drops the sample references the mixer has finished with. Every command does
@@ -795,7 +993,7 @@ impl std::fmt::Debug for Mixer {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("Mixer")
             .field("voices", &self.voices.len())
-            .field("master_gain", &self.master_gain)
+            .field("master_gain", &self.master.target)
             .finish_non_exhaustive()
     }
 }
@@ -844,6 +1042,14 @@ mod tests {
         let mut out = vec![9.0; frames];
         mixer.process(&mut out, &info(1));
         out
+    }
+
+    /// Frames of a master or group gain ramp at [`RATE`].
+    const BUS_FRAMES: usize = (BUS_RAMP_MS * RATE as f64 / 1000.0) as usize;
+
+    /// Runs a mono mixer until master and group gain ramps have ended.
+    fn settle(mixer: &mut Mixer) {
+        run(mixer, BUS_FRAMES);
     }
 
     #[test]
@@ -913,8 +1119,9 @@ mod tests {
     fn stop_all_and_master_gain() {
         let (mut m, mut h) = mono_mixer(4, 4);
         let s = sample(&[0.5; 8], 1);
-        h.play(&s, 1.0).unwrap();
         h.set_master_gain(0.5).unwrap();
+        settle(&mut m);
+        h.play(&s, 1.0).unwrap();
         assert_eq!(run(&mut m, 1), [0.25]);
         h.stop_all().unwrap();
         assert_eq!(run(&mut m, 2), [0.0, 0.0]);
@@ -1239,6 +1446,7 @@ mod tests {
         balance: 0.0,
         rate: 1.0,
         looping: true,
+        group: VoiceGroup::Effects,
     };
 
     #[test]
@@ -1337,10 +1545,175 @@ mod tests {
     }
 
     #[test]
+    fn voices_sound_at_master_times_group_times_voice_gain() {
+        let (mut m, mut h) = mono_mixer(4, 8);
+        h.set_master_gain(0.5).unwrap();
+        h.set_group_gain(VoiceGroup::Hitsounds, 0.5).unwrap();
+        settle(&mut m);
+        let hit = VoiceParams {
+            gain: 0.5,
+            group: VoiceGroup::Hitsounds,
+            ..LOOP
+        };
+        let v = played(&mut h, &[1.0; 64], hit);
+        assert_eq!(run(&mut m, 2), [0.125, 0.125]);
+        h.stop_voice(v).unwrap();
+        // Effects keep their own gain under the master.
+        played(&mut h, &[1.0; 64], VoiceParams { gain: 0.5, ..LOOP });
+        assert_eq!(run(&mut m, 2), [0.25, 0.25]);
+    }
+
+    #[test]
+    fn a_group_gain_ramps_a_sounding_loop_without_steps() {
+        let (mut m, mut h) = mono_mixer(4, 8);
+        let hit = VoiceParams {
+            group: VoiceGroup::Hitsounds,
+            ..LOOP
+        };
+        played(&mut h, &[1.0; 16], hit);
+        assert_eq!(run(&mut m, 3), [1.0; 3]);
+        h.set_group_gain(VoiceGroup::Hitsounds, 0.0).unwrap();
+        // Several buffers, one ramp: no jump at buffer edges.
+        let out: Vec<f32> = (0..BUS_FRAMES / 16 + 1)
+            .flat_map(|_| run(&mut m, 16))
+            .collect();
+        let expected: Vec<f32> = (0..out.len())
+            .map(|k| BUS_FRAMES.saturating_sub(k) as f32 / BUS_FRAMES as f32)
+            .collect();
+        assert_close(&out, &expected);
+        let largest_step = std::iter::once(1.0)
+            .chain(out.iter().copied())
+            .collect::<Vec<_>>()
+            .windows(2)
+            .map(|w| (w[0] - w[1]).abs())
+            .fold(0.0, f32::max);
+        assert!(
+            largest_step <= 1.0 / BUS_FRAMES as f32 + 1e-6,
+            "{largest_step}"
+        );
+        assert_eq!(out[BUS_FRAMES..], vec![0.0; out.len() - BUS_FRAMES]);
+    }
+
+    #[test]
+    fn groups_are_independent() {
+        let (mut m, mut h) = mono_mixer(4, 8);
+        let hit = VoiceParams {
+            group: VoiceGroup::Hitsounds,
+            ..LOOP
+        };
+        played(&mut h, &[0.25; 16], hit);
+        played(&mut h, &[0.5; 16], LOOP);
+        h.set_group_gain(VoiceGroup::Hitsounds, 0.0).unwrap();
+        settle(&mut m);
+        assert_eq!(run(&mut m, 2), [0.5, 0.5]);
+        h.set_group_gain(VoiceGroup::Hitsounds, 1.0).unwrap();
+        h.set_group_gain(VoiceGroup::Effects, 0.0).unwrap();
+        settle(&mut m);
+        assert_eq!(run(&mut m, 2), [0.25, 0.25]);
+    }
+
+    #[test]
+    fn a_group_gain_applies_to_voices_started_later_and_retargets_mid_ramp() {
+        let (mut m, mut h) = mono_mixer(4, 8);
+        h.set_group_gain(VoiceGroup::Effects, 0.0).unwrap();
+        settle(&mut m);
+        played(&mut h, &[1.0; 16], LOOP);
+        assert_eq!(run(&mut m, 2), [0.0, 0.0]);
+        h.set_group_gain(VoiceGroup::Effects, 1.0).unwrap();
+        let half = run(&mut m, BUS_FRAMES / 2);
+        assert_close(&half[..1], &[0.0]);
+        // Back down from where the ramp got to, over a full ramp.
+        h.set_group_gain(VoiceGroup::Effects, 0.0).unwrap();
+        let down = run(&mut m, BUS_FRAMES + 1);
+        assert_close(&down[..1], &[0.5]);
+        assert_close(&down[BUS_FRAMES / 2..BUS_FRAMES / 2 + 1], &[0.25]);
+        assert_eq!(down[BUS_FRAMES], 0.0);
+    }
+
+    #[test]
+    fn bus_ramps_do_not_depend_on_buffer_size() {
+        for channels in [1u16, 2, 3] {
+            let mix = |chunk: usize| {
+                let (mut m, mut h) = mixer(&MixerConfig {
+                    sample_rate: RATE,
+                    channels,
+                    max_voices: 4,
+                    queue_capacity: 8,
+                    ..Default::default()
+                })
+                .unwrap();
+                let c = usize::from(channels);
+                let data = |frames: usize, value: f32| {
+                    let data: Vec<f32> = (0..frames * c).map(|i| value + i as f32 * 1e-3).collect();
+                    sample(&data, channels)
+                };
+                let hit = VoiceParams {
+                    balance: -0.4,
+                    rate: 1.25,
+                    group: VoiceGroup::Hitsounds,
+                    ..LOOP
+                };
+                let v = h.play_voice(&data(37, 0.5), hit).unwrap();
+                h.play_voice(&data(11, 0.125), LOOP).unwrap();
+                h.set_master_gain(0.3).unwrap();
+                h.set_group_gain(VoiceGroup::Hitsounds, 0.6).unwrap();
+                h.set_voice_gain(v, 0.2, ms(100)).unwrap();
+                let mut out = Vec::new();
+                let mut buffer = vec![0.0; chunk * c];
+                while out.len() < 2 * BUS_FRAMES * c {
+                    m.process(&mut buffer, &info(channels));
+                    out.extend_from_slice(&buffer);
+                }
+                out.truncate(2 * BUS_FRAMES * c);
+                out
+            };
+            let whole = mix(2 * BUS_FRAMES);
+            assert_eq!(mix(7), whole, "{channels} channels");
+            assert_eq!(mix(128), whole, "{channels} channels");
+        }
+    }
+
+    #[test]
+    fn a_bus_ramp_is_whole_frames_of_its_length() {
+        let (_m, h) = mixer(&MixerConfig {
+            sample_rate: 44_100,
+            ..Default::default()
+        })
+        .unwrap();
+        // 220.5 frames round up.
+        assert_eq!(h.ramp_frames(BUS_RAMP_MS), 221);
+    }
+
+    #[test]
+    fn a_gain_already_set_does_not_ramp() {
+        let mut ramp = Ramp::steady(0.5);
+        ramp.set(0.5, 240);
+        assert!(ramp.is_steady());
+        ramp.set(1.0, 4);
+        // Mid-ramp, the same target goes on ramping.
+        ramp.advance(2);
+        ramp.set(1.0, 4);
+        assert!(!ramp.is_steady());
+        assert_eq!(ramp.at(0), 0.75);
+    }
+
+    #[test]
+    fn bus_ramps_run_through_a_format_mismatch() {
+        let (mut m, mut h) = mono_mixer(4, 8);
+        h.set_master_gain(0.5).unwrap();
+        let mut out = vec![0.0; 2 * BUS_FRAMES];
+        m.process(&mut out, &info(2));
+        assert_eq!(m.stats.format_mismatches.load(Ordering::Relaxed), 1);
+        played(&mut h, &[1.0; 16], LOOP);
+        assert_eq!(run(&mut m, 1), [0.5]);
+    }
+
+    #[test]
     fn gain_ramp_applies_master_gain() {
         let (mut m, mut h) = mono_mixer(4, 4);
         let v = played(&mut h, &[1.0; 64], LOOP);
         h.set_master_gain(0.5).unwrap();
+        settle(&mut m);
         h.set_voice_gain(v, 0.0, ms(2)).unwrap();
         assert_eq!(run(&mut m, 3), [0.5, 0.25, 0.0]);
     }
@@ -1585,7 +1958,7 @@ mod tests {
                     .get((r >> 16) as usize % voices.len().max(1))
                     .copied()
                     .unwrap_or(VoiceId::NONE);
-                let _ = match r % 6 {
+                let _ = match r % 8 {
                     0 => {
                         let s = &bank[(r >> 24) as usize % bank.len()];
                         let params = VoiceParams {
@@ -1593,6 +1966,7 @@ mod tests {
                             balance: ((r >> 32) % 5) as f32 * 0.5 - 1.0,
                             rate,
                             looping: r & 0x40 != 0,
+                            group: VoiceGroup::ALL[(r >> 7) as usize % 2],
                         };
                         h.play_voice(s, params).map(|v| voices.push(v))
                     }
@@ -1603,6 +1977,11 @@ mod tests {
                     }
                     3 => h.set_voice_balance(voice, -0.3),
                     4 => h.set_voice_rate(voice, rate),
+                    5 => h.set_master_gain(((r >> 36) % 3) as f32 * 0.5),
+                    6 => h.set_group_gain(
+                        VoiceGroup::ALL[(r >> 7) as usize % 2],
+                        ((r >> 40) % 3) as f32 * 0.5,
+                    ),
                     _ => Ok(()),
                 };
                 let frames = (r >> 48) as usize % 9;
@@ -1611,7 +1990,7 @@ mod tests {
                 // `process` clamps the output, so check the voices themselves too.
                 assert!(buffer.iter().all(|v| v.is_finite()));
                 for v in &m.voices {
-                    assert!((0.0..=1.0).contains(&v.gain), "gain {}", v.gain);
+                    assert!((0.0..=1.0).contains(&v.gain.gain), "gain {:?}", v.gain);
                     let end = (v.sample.frames() as u64) << 32;
                     assert!(!v.looping || v.pos < end);
                 }

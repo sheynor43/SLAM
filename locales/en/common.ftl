@@ -2,6 +2,10 @@ common-button-ok = OK
 common-button-cancel = Cancel
 common-button-back = Back
 settings-language-name = English
+settings-audio-master-volume = Master
+settings-audio-music-volume = Music
+settings-audio-hitsound-volume = Hitsounds
+settings-audio-effects-volume = Effects
 song-select-beatmap-count =
     { $count ->
         [one] { $count } beatmap

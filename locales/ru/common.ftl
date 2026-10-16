@@ -2,6 +2,10 @@ common-button-ok = OK
 common-button-cancel = Отмена
 common-button-back = Назад
 settings-language-name = Русский
+settings-audio-master-volume = Общая
+settings-audio-music-volume = Музыка
+settings-audio-hitsound-volume = Хитсаунды
+settings-audio-effects-volume = Эффекты
 song-select-beatmap-count =
     { $count ->
         [one] { $count } карта
