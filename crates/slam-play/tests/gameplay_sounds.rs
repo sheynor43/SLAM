@@ -5,7 +5,7 @@ mod common;
 use std::sync::Arc;
 
 use common::skin::hitsounds;
-use slam_audio::{PlayError, Sample, VoiceId, VoiceParams};
+use slam_audio::{PlayError, Sample, VoiceGroup, VoiceId, VoiceParams};
 use slam_osu::judgement::HitResult;
 use slam_osu::replay::{Actions, InputFrame, ReplayInput, Rules, Simulator};
 use slam_osu::rules::OsuRules;
@@ -125,6 +125,8 @@ impl VoiceSink for Recorder {
         params: VoiceParams,
     ) -> Result<VoiceId, PlayError> {
         self.check()?;
+        // Every gameplay sample sounds under the hitsound volume, none as an effect.
+        assert_eq!(params.group, VoiceGroup::Hitsounds);
         let name = self
             .samples
             .iter()

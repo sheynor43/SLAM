@@ -5,7 +5,8 @@ use std::sync::Arc;
 
 use slam_audio::{
     AudioCallback, AudioPosition, CallbackInfo, ClockError, GameClock, MixerConfig, MusicConfig,
-    MusicEvent, PlayError, PositionSnapshot, Sample, SineTone, TrackSource, VoiceId, VoiceParams,
+    MusicEvent, PlayError, PositionSnapshot, Sample, SineTone, TrackSource, VoiceGroup, VoiceId,
+    VoiceParams,
 };
 use slam_testkit::assert_no_alloc;
 
@@ -133,6 +134,7 @@ fn voice_controls_do_not_allocate() {
                     balance: -0.4,
                     rate: 0.5 + i as f64 * 0.25,
                     looping: i % 2 == 1,
+                    group: VoiceGroup::ALL[i % 2],
                 };
                 *voice = handle.play_voice(sample, params).unwrap();
             }
@@ -143,6 +145,13 @@ fn voice_controls_do_not_allocate() {
                     2 => handle.set_voice_rate(voice, 1.0).unwrap(),
                     _ => handle.stop_voice(voice).unwrap(),
                 }
+            }
+            // Bus ramps over the voices, the master one too.
+            handle
+                .set_group_gain(VoiceGroup::ALL[round % 2], 0.25 * (round % 5) as f32)
+                .unwrap();
+            if round % 3 == 0 {
+                handle.set_master_gain(0.9).unwrap();
             }
             for frames in [1usize, 64, 128, 1024] {
                 mixer.process(&mut out[..2 * frames], &info);

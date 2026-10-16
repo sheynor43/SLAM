@@ -32,7 +32,7 @@
 
 use std::sync::Arc;
 
-use slam_audio::{MixerHandle, PlayError, Sample, VoiceId, VoiceParams};
+use slam_audio::{MixerHandle, PlayError, Sample, VoiceGroup, VoiceId, VoiceParams};
 use slam_osu::judgement::{Judgement, JudgementLog};
 use slam_osu::objects::{OsuHitObject, OsuHitObjectKind, Slider, curve_position_at};
 use slam_osu::rules::OsuRules;
@@ -60,6 +60,16 @@ const SPINNING_MAX_FREQUENCY: f32 = 100_000.0 / 44_100.0;
 const SPINNING_FADE_IN: f64 = 300.0;
 /// Fade-out of `spinnerspin` when spinning stops, and of the judged spinner, in gameplay ms.
 const SPINNER_FADE_OUT: f64 = 240.0;
+
+/// Start of every voice here: gameplay samples sound under the hitsound volume
+/// (ADR-0046).
+const HITSOUND: VoiceParams = VoiceParams {
+    gain: 1.0,
+    balance: 0.0,
+    rate: 1.0,
+    looping: false,
+    group: VoiceGroup::Hitsounds,
+};
 
 /// Where gameplay sounds go: the mixer, or a recorder in tests.
 pub trait VoiceSink {
@@ -519,7 +529,7 @@ impl GameplaySounds {
             let params = VoiceParams {
                 gain: sound.gain,
                 balance,
-                ..VoiceParams::default()
+                ..HITSOUND
             };
             if sink.play_voice(&sound.sample, params).is_err() {
                 self.failed += 1;
@@ -584,7 +594,7 @@ impl GameplaySounds {
                         gain: sound.gain,
                         balance,
                         looping: true,
-                        ..VoiceParams::default()
+                        ..HITSOUND
                     };
                     match sink.play_voice(&sound.sample, params) {
                         Ok(voice) => {
@@ -656,7 +666,7 @@ impl GameplaySounds {
                             gain: 0.0,
                             rate,
                             looping: true,
-                            ..VoiceParams::default()
+                            ..HITSOUND
                         };
                         match sink.play_voice(&sound.sample, params) {
                             Ok(voice) => {
@@ -710,7 +720,7 @@ impl GameplaySounds {
                 for sound in self.hitsounds.get(live.index, Sound::SpinnerBonusMax) {
                     let params = VoiceParams {
                         gain: sound.gain,
-                        ..VoiceParams::default()
+                        ..HITSOUND
                     };
                     match sink.play_voice(&sound.sample, params) {
                         Ok(voice) => spinner.bonus_voice = voice,
