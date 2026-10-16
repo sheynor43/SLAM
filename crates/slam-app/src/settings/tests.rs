@@ -35,6 +35,8 @@ fn defaults_match_hardcoded_values() {
     assert_eq!(s.audio.buffer_frames, StreamConfig::default().buffer_frames);
     assert_eq!(s.gameplay.dim, BackgroundSettings::default().dim_level);
     assert_eq!(s.audio.master_volume, 1.0);
+    assert_eq!(s.audio.hitsound_volume, 1.0);
+    assert_eq!(s.audio.effects_volume, 1.0);
 }
 
 #[test]
@@ -48,6 +50,8 @@ fn round_trip_non_default() {
     s.audio.buffer_frames = 256;
     s.audio.master_volume = 0.5;
     s.audio.music_volume = 0.25;
+    s.audio.hitsound_volume = 0.75;
+    s.audio.effects_volume = 0.125;
     s.timing.global_offset_ms = -12.5;
     s.frame.update_hz = 2000.0;
     s.frame.draw = DrawRate::Hz(240.0);
@@ -118,6 +122,8 @@ version = 1
 [audio]
 master_volume = 3.0
 music_volume = 0.4
+hitsound_volume = 0.6
+effects_volume = 2.0
 buffer_frames = "big"
 [timing]
 global_offset_ms = 12
@@ -132,12 +138,19 @@ dim = 0.1
     let s = loaded.settings;
     assert_eq!(s.audio.master_volume, 1.0);
     assert_eq!(s.audio.music_volume, 0.4);
+    assert_eq!(s.audio.hitsound_volume, 0.6);
+    assert_eq!(s.audio.effects_volume, 1.0);
     assert_eq!(s.audio.buffer_frames, StreamConfig::default().buffer_frames);
     assert_eq!(s.timing.global_offset_ms, 12.0);
     assert_eq!(s.frame.draw, Settings::default().frame.draw);
     assert_eq!(s.frame.update_hz, 500.0);
     assert_eq!(s.gameplay.dim, 0.1);
-    for field in ["audio.master_volume", "audio.buffer_frames", "frame.draw"] {
+    for field in [
+        "audio.master_volume",
+        "audio.effects_volume",
+        "audio.buffer_frames",
+        "frame.draw",
+    ] {
         assert!(
             loaded.warnings.iter().any(|w| w.starts_with(field)),
             "{field}: {:?}",

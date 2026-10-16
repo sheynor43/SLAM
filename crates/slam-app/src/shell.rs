@@ -9,7 +9,7 @@ use std::time::{Duration, Instant};
 
 use slam_audio::{
     AudioPosition, Backend, MixerConfig, MixerHandle, MusicConfig, MusicEvent, MusicPlayer,
-    MusicPosition, StreamConfig, TrackSource,
+    MusicPosition, StreamConfig, TrackSource, VoiceGroup,
 };
 use slam_engine::clock::now_ns;
 use slam_engine::gl::SdlGlSurface;
@@ -1201,6 +1201,12 @@ fn open_audio(
         .set_master_gain(master)
         .map_err(|e| e.to_string())?;
     player.set_volume(music).map_err(|e| e.to_string())?;
+    mixer_handle
+        .set_group_gain(VoiceGroup::Hitsounds, settings.hitsound_volume as f32)
+        .map_err(|e| e.to_string())?;
+    mixer_handle
+        .set_group_gain(VoiceGroup::Effects, settings.effects_volume as f32)
+        .map_err(|e| e.to_string())?;
     let stream = slam_audio::open_output(
         backend,
         StreamConfig {
