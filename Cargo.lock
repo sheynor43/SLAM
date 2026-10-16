@@ -1873,6 +1873,7 @@ dependencies = [
  "cargo_metadata",
  "libc",
  "rtrb",
+ "serde",
  "slam-audio",
  "slam-engine",
  "slam-formats",
@@ -1887,6 +1888,7 @@ dependencies = [
  "slam-testkit",
  "slam-text",
  "slam-ui",
+ "toml",
  "tracing",
  "tracing-subscriber",
 ]

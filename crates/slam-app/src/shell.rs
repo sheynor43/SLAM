@@ -45,6 +45,7 @@ use slam_ui::theme::Theme;
 use crate::loader::{LoaderConfig, LoaderLink, SceneTrash, Trash};
 use crate::play::scene::{CHANNELS, PlayScene, PlaySettings, Prepared, SAMPLE_RATE};
 use crate::play::{device_limits, pack_size};
+use crate::settings::{Dirs, Settings};
 use crate::songs::{SongFiles, SongsLink};
 
 mod results;
@@ -52,10 +53,10 @@ mod results;
 pub const USAGE: &str = "usage: slam-app [--songs DIR]\n\
                          slam-app [bench|click|click-analyze|play|i18n] ...\n\
                          without a command, opens the window with the main menu; --songs is \
-                         the folder of beatmap sets (as stable's Songs)";
+                         the folder of beatmap sets (as stable's Songs) and overrides \
+                         paths.songs of slam.toml";
 
 const WINDOW: (i32, i32) = (1280, 720);
-const UPDATE_HZ: f64 = 1000.0;
 /// Textures of the draw thread: the white square and the glyph pages.
 const MAX_TEXTURES: usize = 16;
 /// Rectangles of one frame: the buttons or rows of up to two layers.
@@ -606,6 +607,30 @@ struct PlayHost {
     next_request: u64,
     /// The window in points, as gameplay input takes it.
     points: [f32; 2],
+    input: PlayInput,
+}
+
+/// What a play takes from the settings on the update thread.
+#[derive(Clone, Copy, Debug, PartialEq)]
+struct PlayInput {
+    bindings: Bindings,
+    /// Mouse buttons press in gameplay (lazer's `MouseDisableButtons` off).
+    mouse_buttons: bool,
+    offsets: Offsets,
+}
+
+impl PlayInput {
+    fn new(settings: &Settings) -> PlayInput {
+        PlayInput {
+            bindings: settings.bindings(),
+            mouse_buttons: settings.gameplay.mouse_buttons,
+            offsets: Offsets {
+                global_ms: settings.timing.global_offset_ms,
+                // Per-beatmap offsets come with #172.
+                beatmap_ms: 0.0,
+            },
+        }
+    }
 }
 
 impl PlayHost {
@@ -819,17 +844,18 @@ impl PlayHost {
             ..
         } = prepared;
         let shown_mods = results::mods(&mods);
-        let input = LiveInput::new(
-            Bindings::default(),
+        let mut input = LiveInput::new(
+            self.input.bindings,
             PlayfieldLayout::new(self.points[0], self.points[1]),
         );
+        input.set_mouse_buttons_disabled(!self.input.mouse_buttons);
         let session = Box::new(PlaySession::new(
             &beatmap,
             &mods,
             &self.audio.player,
             input,
             sounds,
-            Offsets::default(),
+            self.input.offsets,
         ));
         self.loader.free(Trash::Other(Box::new((beatmap, mods))));
         // The caller checked for a free slot.
@@ -1138,31 +1164,51 @@ impl View {
     }
 }
 
-/// Opens the first available backend's default output with the mixer and music player.
-fn open_audio() -> Result<(Audio, slam_audio::OutputStream), String> {
-    let backend = *Backend::available()
-        .first()
+/// The backend `name` names if this build has it, else the first available one.
+fn pick_backend(name: Option<&str>, available: &[Backend]) -> Option<Backend> {
+    let named = name.and_then(|name| {
+        let backend = Backend::from_name(name).filter(|b| available.contains(b));
+        if backend.is_none() {
+            tracing::warn!("audio: backend {name} is not available, taking the first one");
+        }
+        backend
+    });
+    named.or_else(|| available.first().copied())
+}
+
+/// Opens the output the settings name with the mixer and music player.
+fn open_audio(
+    settings: &crate::settings::Audio,
+) -> Result<(Audio, slam_audio::OutputStream), String> {
+    let backend = pick_backend(settings.backend.as_deref(), Backend::available())
         .ok_or("no audio backend in this build")?;
-    let (mut mixer, mixer_handle) = slam_audio::mixer(&MixerConfig {
+    let (mut mixer, mut mixer_handle) = slam_audio::mixer(&MixerConfig {
         sample_rate: SAMPLE_RATE,
         channels: CHANNELS,
         ..MixerConfig::default()
     })
     .map_err(|e| e.to_string())?;
-    let (music, player) = slam_audio::music(&MusicConfig {
+    let (music, mut player) = slam_audio::music(&MusicConfig {
         sample_rate: SAMPLE_RATE,
         channels: CHANNELS,
         ..MusicConfig::default()
     })
     .map_err(|e| e.to_string())?;
     mixer.set_music(music).map_err(|e| e.to_string())?;
+    // The mixer's master gain leaves the music alone, so the track takes both.
+    let (master, music) = volumes(settings);
+    mixer_handle
+        .set_master_gain(master)
+        .map_err(|e| e.to_string())?;
+    player.set_volume(music).map_err(|e| e.to_string())?;
     let stream = slam_audio::open_output(
         backend,
         StreamConfig {
+            device: settings.device.clone(),
             sample_rate: SAMPLE_RATE,
             channels: CHANNELS,
+            buffer_frames: settings.buffer_frames,
             name: "SLAM".to_owned(),
-            ..StreamConfig::default()
         },
         Box::new(mixer),
     )
@@ -1174,6 +1220,12 @@ fn open_audio() -> Result<(Audio, slam_audio::OutputStream), String> {
         mixer: mixer_handle,
     };
     Ok((audio, stream))
+}
+
+/// The mixer's master gain and the track's volume.
+fn volumes(settings: &crate::settings::Audio) -> (f32, f32) {
+    let master = settings.master_volume as f32;
+    (master, master * settings.music_volume as f32)
 }
 
 /// The Fluent key of a judgement row's label.
@@ -1203,9 +1255,31 @@ pub fn parse_songs<I: IntoIterator<Item = String>>(args: I) -> Result<Option<Pat
     Ok(songs)
 }
 
-/// Opens the window with the main menu and runs until it is closed. With `songs`, the song
-/// select lists the beatmap sets of that folder.
-pub fn run(songs: Option<PathBuf>) -> Result<(), String> {
+/// The settings of `slam.toml` in the settings folder, created with the defaults if missing;
+/// `songs` from the command line overrides the file's folder. Without a settings folder or
+/// with a broken file, the defaults.
+pub fn load_settings(songs: Option<PathBuf>) -> Settings {
+    let settings = match Dirs::detect() {
+        Some(dirs) => crate::settings::load_or_create(&dirs.settings_file()).settings,
+        None => {
+            tracing::warn!("settings: no settings folder, using the defaults");
+            Settings::default()
+        }
+    };
+    with_songs(settings, songs)
+}
+
+/// `settings` with the songs folder of the command line, if given.
+fn with_songs(mut settings: Settings, songs: Option<PathBuf>) -> Settings {
+    if songs.is_some() {
+        settings.paths.songs = songs;
+    }
+    settings
+}
+
+/// Opens the window with the main menu and runs until it is closed. With a songs folder, the
+/// song select lists the beatmap sets of that folder.
+pub fn run(settings: Settings) -> Result<(), String> {
     let theme = Theme::default();
     let mut window =
         InputWindow::new_opengl("SLAM", WINDOW.0, WINDOW.1).map_err(|e| e.to_string())?;
@@ -1258,7 +1332,7 @@ pub fn run(songs: Option<PathBuf>) -> Result<(), String> {
     let mut state = ShellState::new(theme, pixels_w as f32, pixels_h as f32, pixels_per_point);
     // Joined when `run` returns, after the engine.
     let mut _library = None;
-    if let Some(songs) = songs {
+    if let Some(songs) = settings.paths.songs.clone() {
         let localizer = Arc::clone(&localizer);
         let scanning = Box::new(move |count: usize| {
             let mut args = slam_ui::i18n::FluentArgs::new();
@@ -1273,7 +1347,11 @@ pub fn run(songs: Option<PathBuf>) -> Result<(), String> {
     }
     // The play: a loader thread, scenes for the draw thread, the audio output.
     let (loader, scene_trash, _loader) = crate::loader::spawn(LoaderConfig {
-        settings: PlaySettings::default(),
+        settings: PlaySettings {
+            beatmap_colours: settings.gameplay.beatmap_colours,
+            dim: settings.gameplay.dim,
+            ..PlaySettings::default()
+        },
         limits,
         registry: Arc::clone(&registry),
         skip_label: text("play-skip-button"),
@@ -1281,7 +1359,7 @@ pub fn run(songs: Option<PathBuf>) -> Result<(), String> {
     .map_err(|e| e.to_string())?;
     let (scene_tx, scene_rx) = rtrb::RingBuffer::<(u64, PlayScene)>::new(2);
     // Without an output the window still opens; the song select does not play.
-    let (audio, stream) = match open_audio() {
+    let (audio, stream) = match open_audio(&settings.audio) {
         Ok((audio, stream)) => (Some(audio), Some(stream)),
         Err(e) => {
             tracing::warn!("audio: {e}");
@@ -1302,6 +1380,7 @@ pub fn run(songs: Option<PathBuf>) -> Result<(), String> {
             pixels_w as f32 * points_per_pixel,
             pixels_h as f32 * points_per_pixel,
         ],
+        input: PlayInput::new(&settings),
     });
 
     let exited = Arc::new(AtomicBool::new(false));
@@ -1333,7 +1412,8 @@ pub fn run(songs: Option<PathBuf>) -> Result<(), String> {
     let (mut sink, source) = event_ring(1024);
     let engine = Engine::spawn(
         EngineConfig {
-            update_hz: UPDATE_HZ,
+            update_hz: settings.frame.update_hz,
+            draw: settings.frame.draw.to_limiter(),
             ..EngineConfig::default()
         },
         shell,

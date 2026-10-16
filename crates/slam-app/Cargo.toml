@@ -21,6 +21,8 @@ slam-ui = { path = "../slam-ui" }
 slam-play = { path = "../slam-play" }
 slam-ipc = { path = "../slam-ipc" }
 rtrb.workspace = true
+serde.workspace = true
+toml.workspace = true
 tracing.workspace = true
 tracing-subscriber.workspace = true
 
