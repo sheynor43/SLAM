@@ -8,6 +8,7 @@ use sdl3_sys::events::{
 };
 use sdl3_sys::hints::{SDL_HINT_INVALID_PARAM_CHECKS, SDL_SetHint};
 use sdl3_sys::init::{SDL_INIT_VIDEO, SDL_Init, SDL_Quit};
+use sdl3_sys::mouse::{SDL_HideCursor, SDL_ShowCursor};
 use sdl3_sys::video::{
     SDL_CreateWindow, SDL_DestroyWindow, SDL_GetCurrentVideoDriver, SDL_GetWindowSizeInPixels,
     SDL_SetWindowFullscreen, SDL_WINDOW_HIGH_PIXEL_DENSITY, SDL_WINDOW_OPENGL,
@@ -56,6 +57,32 @@ pub struct InputWindow {
     /// Whether [`QuitHandle`]s may push events; cleared when the window is dropped,
     /// before `SDL_Quit`.
     alive: Arc<Mutex<bool>>,
+    /// Whether the OS cursor should be hidden over the window, set by any thread.
+    cursor_hidden: Arc<AtomicBool>,
+    /// Whether it is hidden now.
+    cursor_applied: bool,
+}
+
+/// Shows or hides the OS cursor over the window, from any thread, without locks. The
+/// window applies the wish before waiting for its next event, so a change takes effect
+/// after the next event at the latest; until then a still pointer keeps its look. Set the
+/// state wanted at the start before [`InputWindow::run`].
+#[derive(Clone)]
+pub struct CursorVisibility {
+    hidden: Arc<AtomicBool>,
+}
+
+impl CursorVisibility {
+    /// Asks for the OS cursor to be hidden over the window (the game draws its own) or
+    /// shown.
+    pub fn set_hidden(&self, hidden: bool) {
+        self.hidden.store(hidden, Ordering::Relaxed);
+    }
+
+    /// The last wish.
+    pub fn is_hidden(&self) -> bool {
+        self.hidden.load(Ordering::Relaxed)
+    }
 }
 
 /// Asks [`InputWindow::run`] to return, from any thread. Outliving the window is
@@ -150,6 +177,8 @@ impl InputWindow {
             size,
             counters: Arc::default(),
             alive: Arc::new(Mutex::new(true)),
+            cursor_hidden: Arc::default(),
+            cursor_applied: false,
         })
     }
 
@@ -200,6 +229,33 @@ impl InputWindow {
         &self.counters
     }
 
+    /// A handle that shows or hides the OS cursor over the window.
+    pub fn cursor_visibility(&self) -> CursorVisibility {
+        CursorVisibility {
+            hidden: Arc::clone(&self.cursor_hidden),
+        }
+    }
+
+    /// Hides or shows the OS cursor as [`CursorVisibility`] last asked.
+    fn apply_cursor(&mut self) {
+        let hidden = self.cursor_hidden.load(Ordering::Relaxed);
+        if hidden == self.cursor_applied {
+            return;
+        }
+        // SAFETY: SDL video is initialised on this thread, which owns the window.
+        let done = unsafe {
+            if hidden {
+                SDL_HideCursor()
+            } else {
+                SDL_ShowCursor()
+            }
+        };
+        // A failure is tried again after the next event.
+        if done {
+            self.cursor_applied = hidden;
+        }
+    }
+
     /// A handle that makes [`InputWindow::run`] return as if the window was closed.
     pub fn quit_handle(&self) -> QuitHandle {
         QuitHandle {
@@ -223,6 +279,7 @@ impl InputWindow {
         mapper.calibrate();
         let mut event = SDL_Event::default();
         loop {
+            self.apply_cursor();
             // SAFETY: SDL is initialised on this thread; `event` is a valid out pointer.
             if !unsafe { SDL_WaitEvent(&mut event) } {
                 return Err(WindowError::WaitEvent(sdl_error()));
@@ -296,4 +353,20 @@ pub(crate) fn sdl_error() -> String {
     unsafe { CStr::from_ptr(ptr) }
         .to_string_lossy()
         .into_owned()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn cursor_visibility_handles_share_one_wish() {
+        let a = CursorVisibility {
+            hidden: Arc::default(),
+        };
+        let b = a.clone();
+        assert!(!a.is_hidden());
+        b.set_hidden(true);
+        assert!(a.is_hidden());
+    }
 }

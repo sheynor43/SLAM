@@ -15,7 +15,7 @@ use slam_engine::clock::now_ns;
 use slam_engine::gl::SdlGlSurface;
 use slam_engine::limiter::{LimiterMode, MAX_HZ, MIN_HZ, is_valid_hz};
 use slam_engine::{Draw, Engine, EngineConfig, FrameInfo, TickInfo, Update};
-use slam_input::{InputEvent, InputWindow, TickMapper, event_ring, sdl_ticks_ns};
+use slam_input::{CursorVisibility, InputEvent, InputWindow, TickMapper, event_ring, sdl_ticks_ns};
 use slam_osu::judgement::HitResult;
 use slam_osu::{Beatmap, Mod, ModSet};
 use slam_play::circles::{
@@ -235,6 +235,8 @@ struct Gameplay {
     points_per_pixel: f32,
     /// Set once the player quits; the window closes then.
     exited: Arc<AtomicBool>,
+    /// Hides the OS cursor while gameplay draws its own.
+    os_cursor: CursorVisibility,
 }
 
 fn pack_size(width: u32, height: u32) -> u64 {
@@ -266,6 +268,7 @@ impl Update for Gameplay {
             &mut self.mixer,
             snapshot,
         );
+        self.os_cursor.set_hidden(snapshot.state.hides_os_cursor());
         if self.session.has_exited() {
             self.exited.store(true, Ordering::Relaxed);
         }
@@ -733,6 +736,12 @@ pub fn run(options: &Options) -> Result<(), String> {
         layout_size: initial_size,
         points_per_pixel,
         exited: Arc::clone(&exited),
+        os_cursor: {
+            // Hidden from the first frame: the play starts without an event to apply it.
+            let os_cursor = window.cursor_visibility();
+            os_cursor.set_hidden(true);
+            os_cursor
+        },
         music: Arc::clone(player.position()),
         player,
         mixer: mixer_handle,

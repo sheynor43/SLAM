@@ -84,6 +84,24 @@ pub enum PlayState {
     Exited,
 }
 
+impl PlayState {
+    /// Whether the OS cursor should be hidden: while lazer shows the gameplay cursor (the
+    /// player's, or the resume overlay's to aim at the resume target). Paused, failed and on
+    /// the results the OS cursor shows where lazer shows its menu cursor (there is no menu
+    /// cursor of our own yet).
+    // Ported from osu!lazer 2026.1005.0-lazer: osu.Game.Rulesets.Osu/UI/OsuResumeOverlay.cs (ProvidingUserCursor)
+    pub fn hides_os_cursor(self) -> bool {
+        matches!(
+            self,
+            PlayState::Waiting
+                | PlayState::Playing
+                | PlayState::Resuming
+                | PlayState::Failing
+                | PlayState::Passed
+        )
+    }
+}
+
 /// The numbers of the HUD: lazer's score processor as the HUD counters bind it.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct HudValues {
