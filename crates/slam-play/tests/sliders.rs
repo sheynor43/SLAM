@@ -121,7 +121,7 @@ fn pose_with(mods: &ModSet, snaking: Snaking, state: &LiveSlider, time: f64) -> 
 }
 
 fn pose(state: &LiveSlider, time: f64) -> SliderPose {
-    pose_with(&ModSet::default(), Snaking::default(), state, time)
+    pose_with(&ModSet::default(), Snaking::LAZER, state, time)
 }
 
 fn close(a: f32, b: f32) -> bool {
@@ -176,6 +176,9 @@ fn the_slider_fades_out_from_its_end_time_or_judgement() {
     let hit = live(head, tail, judged(END, HitResult::IgnoreHit));
     assert!(close(pose(&hit, END + 20.0).body_alpha, 0.5));
     assert!(close(pose(&hit, END + 120.0).object_alpha, 0.5));
+    // Without snaking out (the default), the body stays with the slider.
+    let default = pose_with(&ModSet::default(), Snaking::default(), &hit, END + 20.0);
+    assert_eq!(default.body_alpha, 1.0);
     // A missed head keeps the body until the slider is gone.
     let missed = live(
         judged(START + 150.0, HitResult::Miss),
@@ -253,7 +256,7 @@ fn hidden_fades_the_body_and_the_tail() {
     // The slider keeps its fade-in; its head and tail get Hidden's.
     assert_eq!(slider.defaults.time_fade_in, 400.0);
     let idle = live(None, None, None);
-    let at = |time| pose_with(&hidden, Snaking::default(), &idle, time);
+    let at = |time| pose_with(&hidden, Snaking::LAZER, &idle, time);
     // The body: from the end of its fade-in to the end time, easing out.
     let fade_start = APPEAR + 400.0;
     assert_eq!(at(fade_start).body_alpha, 1.0);
@@ -270,7 +273,7 @@ fn hidden_fades_the_body_and_the_tail() {
         only_fade_approach_circles: true,
     }])
     .unwrap();
-    let at = |time| pose_with(&approach_only, Snaking::default(), &idle, time);
+    let at = |time| pose_with(&approach_only, Snaking::LAZER, &idle, time);
     assert_eq!(at(half).body_alpha, 1.0);
     assert_eq!(at(tail_fade + 90.0).tail.object_alpha, 1.0);
 }
@@ -299,16 +302,16 @@ fn repeat_slider_pose(mods: &ModSet, state: &LiveSlider, time: f64) -> SliderPos
     for m in mods.mods() {
         m.clone().apply_to_beatmap(&mut map);
     }
-    let (circles, sliders) = objects(&map, mods, Snaking::default());
+    let (circles, sliders) = objects(&map, mods, Snaking::LAZER);
     let slider = sliders.visuals.get(0).unwrap();
     let state = LiveSlider { index: 0, ..*state };
-    slider_pose(slider, &state, time, &circles.style, Snaking::default())
+    slider_pose(slider, &state, time, &circles.style, Snaking::LAZER)
 }
 
 #[test]
 fn a_repeated_tail_appears_at_the_start_of_the_path_after_one_span() {
     let map = Beatmap::decode(REPEAT_MAP.as_bytes()).unwrap();
-    let (_, sliders) = objects(&map, &ModSet::default(), Snaking::default());
+    let (_, sliders) = objects(&map, &ModSet::default(), Snaking::LAZER);
     let slider = sliders.visuals.get(0).unwrap();
     assert_eq!(slider.tail.repeat_index, 1);
     assert_eq!(slider.tail.position, Vec2::new(200.0, 200.0));
@@ -406,7 +409,7 @@ fn order(batch: &SpriteBatch) -> Vec<u32> {
 #[test]
 fn objects_draw_in_lazer_order_with_bodies_between_sprites() {
     let map = beatmap(&ModSet::default());
-    let (circles, sliders) = objects(&map, &ModSet::default(), Snaking::default());
+    let (circles, sliders) = objects(&map, &ModSet::default(), Snaking::LAZER);
     let layout = common::layout();
     let mut batch = SpriteBatch::new();
     let mut bodies = SliderBodies::new();
@@ -480,7 +483,7 @@ fn objects_draw_in_lazer_order_with_bodies_between_sprites() {
 #[test]
 fn a_faded_slider_records_no_body() {
     let map = beatmap(&ModSet::default());
-    let (circles, sliders) = objects(&map, &ModSet::default(), Snaking::default());
+    let (circles, sliders) = objects(&map, &ModSet::default(), Snaking::LAZER);
     let mut batch = SpriteBatch::new();
     let mut bodies = SliderBodies::new();
     let (circle_textures, slider_textures) = (circle_textures(), slider_textures());
@@ -510,7 +513,7 @@ fn a_frame_does_not_allocate() {
 
 fn frame_does_not_allocate(map: &Beatmap) {
     let map = map.clone();
-    let (circles, sliders) = objects(&map, &ModSet::default(), Snaking::default());
+    let (circles, sliders) = objects(&map, &ModSet::default(), Snaking::LAZER);
     let layout = common::layout();
     let frames = map.hit_objects.iter().flat_map(|o| {
         [
@@ -682,7 +685,7 @@ fn nested_map(mods: &ModSet) -> Beatmap {
 /// the circle style.
 fn nested_visuals(mods: &ModSet) -> (SliderVisual, Vec<NestedVisual>, CircleStyle) {
     let map = nested_map(mods);
-    let (circles, sliders) = objects(&map, mods, Snaking::default());
+    let (circles, sliders) = objects(&map, mods, Snaking::LAZER);
     let slider = *sliders.visuals.get(0).unwrap();
     let nested = sliders.visuals.nested(&slider).to_vec();
     (slider, nested, circles.style)
@@ -822,7 +825,7 @@ fn the_first_repeat_waits_for_snaking_and_its_arrow_pulses() {
     let appear = 2000.0 - 1600.0;
     let at =
         |arrows, snaking, time| repeat_pose(&slider, &repeat, None, time, &style, snaking, arrows);
-    let snaking = Snaking::default();
+    let snaking = Snaking::LAZER;
     let still = Snaking {
         snaking_in: false,
         snaking_out: false,
@@ -861,7 +864,7 @@ fn a_hit_repeat_grows_its_arrow_and_fades() {
             judgement,
             time,
             &style,
-            Snaking::default(),
+            Snaking::LAZER,
             ROCKING,
         )
     };
@@ -901,7 +904,7 @@ fn later_repeats_appear_two_spans_before_without_fading_in() {
             None,
             time,
             &style,
-            Snaking::default(),
+            Snaking::LAZER,
             ROCKING,
         )
     };
@@ -926,7 +929,7 @@ fn hidden_fades_repeat_circles_with_the_head_but_not_their_arrows() {
             judgement,
             time,
             &style,
-            Snaking::default(),
+            Snaking::LAZER,
             ROCKING,
         )
     };
@@ -961,7 +964,7 @@ fn arrows_from_the_default_skin_turn_black_on_bright_colours() {
 /// `nested` (all unjudged if `None`), and the number of sprites.
 fn nested_order(time: f64, nested: Option<Vec<Option<CircleJudgement>>>) -> (Vec<u32>, usize) {
     let map = nested_map(&ModSet::default());
-    let (circles, sliders) = objects(&map, &ModSet::default(), Snaking::default());
+    let (circles, sliders) = objects(&map, &ModSet::default(), Snaking::LAZER);
     let slider = LiveSlider {
         index: 0,
         ..live(None, None, None)
@@ -1154,7 +1157,7 @@ fn ball_at(
     time: f64,
 ) -> BallPose {
     let map = nested_map(&ModSet::default());
-    let (_, sliders) = objects(&map, &ModSet::default(), Snaking::default());
+    let (_, sliders) = objects(&map, &ModSet::default(), Snaking::LAZER);
     let slider = sliders.visuals.get(0).unwrap();
     let nested = sliders.visuals.nested(slider);
     let live = LiveSlider {
@@ -1203,7 +1206,7 @@ fn the_ball_rolls_along_the_path_from_the_start_time() {
 #[test]
 fn the_ball_animates_slower_on_slow_sliders() {
     let map = nested_map(&ModSet::default());
-    let (_, sliders) = objects(&map, &ModSet::default(), Snaking::default());
+    let (_, sliders) = objects(&map, &ModSet::default(), Snaking::LAZER);
     let slider = *sliders.visuals.get(0).unwrap();
     // 200 osu!pixels per second: at least a frame at 60 fps.
     assert_eq!(slider.velocity, 0.2);
@@ -1324,7 +1327,7 @@ fn all_hit_with_tail_at(nested: &[NestedVisual], tail_time: f64) -> Vec<Option<C
 #[test]
 fn a_press_after_the_tail_is_hit_cancels_the_end_animation() {
     let map = nested_map(&ModSet::default());
-    let (_, sliders) = objects(&map, &ModSet::default(), Snaking::default());
+    let (_, sliders) = objects(&map, &ModSet::default(), Snaking::LAZER);
     let slider = sliders.visuals.get(0).unwrap();
     let nested = sliders.visuals.nested(slider);
     let judgements = all_hit_with_tail_at(nested, 3964.0);
@@ -1360,7 +1363,7 @@ fn a_press_after_the_tail_is_hit_cancels_the_end_animation() {
 #[test]
 fn a_press_before_a_short_slider_grows_in_the_time_left() {
     let map = nested_map(&ModSet::default());
-    let (_, sliders) = objects(&map, &ModSet::default(), Snaking::default());
+    let (_, sliders) = objects(&map, &ModSet::default(), Snaking::LAZER);
     let slider = SliderVisual {
         end_time: 1150.0,
         ..*sliders.visuals.get(0).unwrap()
@@ -1412,7 +1415,7 @@ fn a_press_before_a_short_slider_grows_in_the_time_left() {
 #[test]
 fn a_degenerate_slider_poses_a_finite_ball() {
     let map = nested_map(&ModSet::default());
-    let (_, sliders) = objects(&map, &ModSet::default(), Snaking::default());
+    let (_, sliders) = objects(&map, &ModSet::default(), Snaking::LAZER);
     let slider = sliders.visuals.get(0).unwrap();
     let live = LiveSlider {
         index: 0,
@@ -1455,7 +1458,7 @@ fn a_degenerate_slider_poses_a_finite_ball() {
 #[test]
 fn the_follow_circle_and_ball_draw_above_the_head() {
     let map = nested_map(&ModSet::default());
-    let (circles, sliders) = objects(&map, &ModSet::default(), Snaking::default());
+    let (circles, sliders) = objects(&map, &ModSet::default(), Snaking::LAZER);
     let slider = LiveSlider {
         index: 0,
         press_time: Some(1001.0),

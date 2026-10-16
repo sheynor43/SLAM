@@ -108,21 +108,20 @@ fn interpolate_non_linear(
     std::array::from_fn(|i| start[i] + t * (end[i] - start[i]))
 }
 
-/// Snaking settings (`OsuRulesetSetting.SnakingInSliders` / `SnakingOutSliders`);
-/// both on by default.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+/// Snaking settings (`OsuRulesetSetting.SnakingInSliders` / `SnakingOutSliders`).
+/// Both off by default, unlike lazer: bodies show whole from the start.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub struct Snaking {
     pub snaking_in: bool,
     pub snaking_out: bool,
 }
 
-impl Default for Snaking {
-    fn default() -> Self {
-        Self {
-            snaking_in: true,
-            snaking_out: true,
-        }
-    }
+impl Snaking {
+    /// Lazer's defaults: bodies snake in and out.
+    pub const LAZER: Snaking = Snaking {
+        snaking_in: true,
+        snaking_out: true,
+    };
 }
 
 /// What snaking needs of a slider: its timing.
