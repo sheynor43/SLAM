@@ -17,6 +17,7 @@ use crate::circles::{
     CircleSettings, Easing, Kind, SkinSprite, Track, centred, combo_colour, tint,
 };
 use crate::playfield::PlayfieldLayout;
+use crate::ring::EventRing;
 use crate::sliders::animation_frame;
 
 /// Judgements a snapshot keeps for the draw side between two frames.
@@ -48,53 +49,14 @@ impl ShownJudgement {
     };
 }
 
-/// The judgements that show popups, newest last: a ring of the last
-/// [`JUDGEMENT_RING_CAPACITY`] with a count of all ever written.
-#[derive(Debug, Clone, Copy, PartialEq)]
-pub struct JudgementRing {
-    entries: [ShownJudgement; JUDGEMENT_RING_CAPACITY],
-    written: u64,
-    /// Judgements written before the current attempt (a restart).
-    attempt_start: u64,
-}
-
-impl Default for JudgementRing {
+impl Default for ShownJudgement {
     fn default() -> Self {
-        JudgementRing {
-            entries: [ShownJudgement::EMPTY; JUDGEMENT_RING_CAPACITY],
-            written: 0,
-            attempt_start: 0,
-        }
+        ShownJudgement::EMPTY
     }
 }
 
-impl JudgementRing {
-    /// Appends a judgement, overwriting the oldest one when full.
-    pub fn push(&mut self, judgement: ShownJudgement) {
-        self.entries[(self.written % JUDGEMENT_RING_CAPACITY as u64) as usize] = judgement;
-        self.written += 1;
-    }
-
-    /// Judgements ever written.
-    pub fn written(&self) -> u64 {
-        self.written
-    }
-
-    /// Starts a new attempt: the judgements written so far are of the previous one and are no
-    /// longer read.
-    pub fn restart(&mut self) {
-        self.attempt_start = self.written;
-    }
-
-    /// The judgements of the current attempt written after the first `seen`, oldest first.
-    /// Those overwritten already are skipped.
-    pub fn since(&self, seen: u64) -> impl Iterator<Item = &ShownJudgement> + '_ {
-        let start = seen
-            .max(self.attempt_start)
-            .max(self.written.saturating_sub(JUDGEMENT_RING_CAPACITY as u64));
-        (start..self.written).map(|i| &self.entries[(i % JUDGEMENT_RING_CAPACITY as u64) as usize])
-    }
-}
+/// The judgements that show popups, newest last.
+pub type JudgementRing = EventRing<ShownJudgement, JUDGEMENT_RING_CAPACITY>;
 
 /// Where an object's popups show and whether it shows them at all.
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -638,11 +600,7 @@ impl JudgementView {
             self.restarts = restarts;
             self.len = 0;
         }
-        let skipped = ring
-            .written()
-            .saturating_sub(JUDGEMENT_RING_CAPACITY as u64)
-            .saturating_sub(self.seen.max(ring.attempt_start));
-        self.dropped += skipped;
+        self.dropped += ring.skipped(self.seen);
         for shown in ring.since(self.seen) {
             self.retain(|p| p.object != shown.object);
             if self.len == MAX_POPUPS {
