@@ -96,7 +96,13 @@ impl std::fmt::Debug for SongSelectView {
 
 /// Lays `line` out at `size`, cutting its text with an ellipsis if it is wider than
 /// `avail`. Reuses the line's buffers.
-fn fit(type_setter: &mut Typesetter, line: &mut Line, size: f32, avail: f32, ellipsis: f32) {
+pub(crate) fn fit(
+    type_setter: &mut Typesetter,
+    line: &mut Line,
+    size: f32,
+    avail: f32,
+    ellipsis: f32,
+) {
     type_setter.lay_out(line, size);
     let total = line.layout.width();
     if total <= avail {

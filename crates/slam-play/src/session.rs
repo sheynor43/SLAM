@@ -153,6 +153,8 @@ pub struct PlayResults {
     pub rank: ScoreRank,
     /// Counts per result and the highest combo.
     pub statistics: Statistics,
+    /// The counts and combo of a perfect play, to show only the results the beatmap has.
+    pub maximum_statistics: Statistics,
 }
 
 /// What the draw side needs of one update tick. Fixed size, copied into a buffer slot with
@@ -437,6 +439,7 @@ impl PlaySession {
             accuracy: self.score.accuracy(),
             rank: self.score.rank(&self.initial.mods),
             statistics: *self.score.statistics(),
+            maximum_statistics: *self.score.maximum_statistics(),
         })
     }
 

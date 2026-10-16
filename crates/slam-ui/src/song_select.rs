@@ -283,6 +283,11 @@ impl SongSelect {
         self.scanning_text = text;
     }
 
+    /// The list shown.
+    pub fn list(&self) -> &SongList {
+        &self.list
+    }
+
     /// The selected `(set, difficulty)`, if the list has a set.
     pub fn selected(&self) -> Option<(usize, usize)> {
         (self.set < self.list.sets.len()).then_some((self.set, self.difficulty))

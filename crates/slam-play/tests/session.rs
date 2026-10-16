@@ -1435,6 +1435,11 @@ fn passing_shows_the_results_a_second_later() {
     );
     let results = d.session.results().unwrap();
     assert_eq!(results.statistics, *d.session.log().statistics());
+    assert_eq!(
+        results.maximum_statistics,
+        *d.session.score().maximum_statistics()
+    );
+    assert!(results.maximum_statistics.max_combo > 0);
     assert_eq!(results.score, d.snapshot.hud.score);
     assert_eq!(results.rank, slam_osu::scoring::ScoreRank::D);
 
@@ -1545,6 +1550,7 @@ fn quick_exit_after_passing_shows_the_results() {
 fn quick_retry_restarts_after_passing_and_from_the_results() {
     let map = beatmap();
     let mut d = passed(&map);
+    let maxima = d.session.results().unwrap().maximum_statistics;
     d.hold(None, GRAVE, 200);
     assert_eq!(d.snapshot.restarts, 1);
     assert_eq!(d.state(), PlayState::Playing);
@@ -1555,8 +1561,9 @@ fn quick_retry_restarts_after_passing_and_from_the_results() {
     assert_eq!(d.snapshot.restarts, 2);
     assert_eq!(d.state(), PlayState::Playing);
     assert!(d.session.log().events().is_empty());
-    // The next play passes again.
+    // The next play passes again, against the same maxima.
     d.run_until(12_000, |s| s.state == PlayState::Passed);
+    assert_eq!(d.session.results().unwrap().maximum_statistics, maxima);
 }
 
 #[test]
