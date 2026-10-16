@@ -679,3 +679,21 @@ fn back_while_preparing_drops_the_play() {
     assert!(fixture.host.game.is_none());
     assert!(fixture.scenes.pop().is_err());
 }
+
+#[test]
+fn the_play_goes_when_the_results_show_or_the_player_quits() {
+    for state in [PlayState::Results, PlayState::Exited] {
+        assert!(play_over(state), "{state:?}");
+    }
+    for state in [
+        PlayState::Waiting,
+        PlayState::Playing,
+        PlayState::Paused,
+        PlayState::Resuming,
+        PlayState::Failing,
+        PlayState::Failed,
+        PlayState::Passed,
+    ] {
+        assert!(!play_over(state), "{state:?}");
+    }
+}

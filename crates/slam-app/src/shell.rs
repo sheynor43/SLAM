@@ -18,7 +18,9 @@ use slam_input::{
     CursorVisibility, InputEvent, InputKind, InputWindow, MouseButton, TickMapper, event_ring,
     sdl_ticks_ns,
 };
-use slam_play::{Bindings, LiveInput, Offsets, PlaySession, PlaySnapshot, PlayfieldLayout};
+use slam_play::{
+    Bindings, LiveInput, Offsets, PlaySession, PlaySnapshot, PlayState, PlayfieldLayout,
+};
 use slam_render::atlas::{Atlas, AtlasRegion};
 use slam_render::gl::{GlDebug, GlDevice, GlTexture};
 use slam_render::sprite::{DEFAULT_SLOTS, Projection, SpriteBatch, SpriteRenderer};
@@ -478,6 +480,12 @@ impl ScreenInput {
     }
 }
 
+/// Whether the play screen goes: the player quit, or the results show (a second after
+/// passing, as lazer's `progressToResults`).
+fn play_over(state: PlayState) -> bool {
+    matches!(state, PlayState::Results | PlayState::Exited)
+}
+
 /// Where the player goes when a play ends: the results of a passed play replace it, a
 /// failed or quit play is popped back to the song select.
 fn after_play(results: Option<ResultsData>) -> Nav<AppScreen> {
@@ -609,7 +617,7 @@ impl PlayHost {
             snapshot,
         );
         self.os_cursor.set_hidden(snapshot.state.hides_os_cursor());
-        if game.session.has_exited() {
+        if play_over(snapshot.state) {
             game.ending = Ending::Sounds;
         }
     }
