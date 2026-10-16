@@ -120,6 +120,19 @@ impl HitResult {
         )
     }
 
+    // Ported from osu!lazer 2026.1005.0-lazer: osu.Game/Rulesets/Scoring/HitResult.cs (IsTick)
+    /// Whether the result is of a tick; slider tails count as ticks.
+    pub fn is_tick(self) -> bool {
+        matches!(
+            self,
+            HitResult::LargeTickHit
+                | HitResult::LargeTickMiss
+                | HitResult::SmallTickHit
+                | HitResult::SmallTickMiss
+                | HitResult::SliderTailHit
+        )
+    }
+
     // Ported from osu!lazer 2026.1005.0-lazer: osu.Game/Rulesets/Scoring/HitResult.cs (IsBonus)
     /// Whether the result is a bonus.
     pub fn is_bonus(self) -> bool {
@@ -322,6 +335,21 @@ mod tests {
         ];
         for (max, min) in cases {
             assert_eq!(max.min_result(), min, "{max:?}");
+        }
+    }
+
+    #[test]
+    fn ticks_match_lazer() {
+        use HitResult::*;
+        let ticks = [
+            LargeTickHit,
+            LargeTickMiss,
+            SmallTickHit,
+            SmallTickMiss,
+            SliderTailHit,
+        ];
+        for r in HitResult::ALL {
+            assert_eq!(r.is_tick(), ticks.contains(&r), "{r:?}");
         }
     }
 

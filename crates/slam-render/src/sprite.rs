@@ -105,11 +105,12 @@ impl SpriteBatch {
         Self::default()
     }
 
-    /// Room for `quads` sprites before the first frame grows the buffers.
+    /// Room for `quads` sprites before the first frame grows the buffers, however often
+    /// their textures and blending change.
     pub fn with_capacity(quads: usize) -> Self {
         Self {
             vertices: Vec::with_capacity(quads * 4),
-            batches: Vec::with_capacity(quads.min(64)),
+            batches: Vec::with_capacity(quads),
         }
     }
 

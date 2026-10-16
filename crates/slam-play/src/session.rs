@@ -35,10 +35,15 @@ use crate::cursor::{
 use crate::gameplay_sounds::{GameplaySounds, VoiceSink};
 use crate::hotkeys::{GlobalAction, Hotkeys};
 use crate::input::{ClockTime, GameTime, LiveInput};
+use crate::judgements::{
+    JudgementRing, JudgementTextures, JudgementView, MAX_JUDGEMENT_FRAMES, PIECE_SLOTS, PieceKind,
+    PieceSprites, PopupTargets, piece_sources,
+};
 use crate::playfield::PlayfieldLayout;
 use crate::sliders::{
     AnimationSprites, BallStyle, HitSliders, LiveSliders, MAX_ANIMATION_FRAMES,
-    MAX_FOLLOW_CIRCLE_AREA_SIZE, ObjectTextures, SliderBodies, SliderTextures, push_objects,
+    MAX_FOLLOW_CIRCLE_AREA_SIZE, ObjectTextures, SliderBodies, SliderTextures, push_approaches,
+    push_objects,
 };
 use crate::spinners::{HitSpinners, LiveSpinners, SpinnerSpm, SpinnerTextures};
 use crate::time::Offsets;
@@ -160,6 +165,8 @@ pub struct PlaySnapshot {
     pub cursor_path: CursorPath,
     /// When the cursor last expanded and contracted.
     pub cursor_expand: ExpandTimes,
+    /// The judgements that show popups (ADR-0043).
+    pub judgements: JudgementRing,
     /// Whether the intro can be skipped now.
     pub skip_available: bool,
     /// Whether gameplay is in a break (lazer's `IsBreakTime`): the background dims less.
@@ -189,6 +196,7 @@ impl Default for PlaySnapshot {
             cursor: Vec2::ZERO,
             cursor_path: CursorPath::default(),
             cursor_expand: ExpandTimes::default(),
+            judgements: JudgementRing::default(),
             skip_available: false,
             // Lazer's `BreakTracker` starts in a break.
             is_break_time: true,
@@ -260,6 +268,12 @@ pub struct PlaySession {
     /// The cursor's expansion by the left and right buttons.
     expand: ExpandTracker,
     log: JudgementLog,
+    /// Which judgements show popups.
+    popup_targets: PopupTargets,
+    /// The judgements that showed popups, for the draw side; kept across restarts.
+    popups: JudgementRing,
+    /// Judgements of the log looked at for popups.
+    popups_seen: usize,
     health: HealthProcessor,
     score: ScoreProcessor,
     /// The mods' state for the health processor (lives of Easy).
@@ -336,6 +350,9 @@ impl PlaySession {
             spm: SpinnerSpm::new(beatmap),
             expand: ExpandTracker::default(),
             log,
+            popup_targets: PopupTargets::new(beatmap, mods),
+            popups: JudgementRing::default(),
+            popups_seen: 0,
             health,
             score,
             mods: mods.clone(),
@@ -619,6 +636,12 @@ impl PlaySession {
         // Lazer's spinners count their rate after their children, in the playfield's update.
         self.spm.update(&self.rules, step_time);
         self.sounds.update(step_time, &self.log, &self.rules, sink);
+        for judgement in self.log.events_since(self.popups_seen) {
+            if let Some(shown) = self.popup_targets.shown(judgement) {
+                self.popups.push(shown);
+            }
+        }
+        self.popups_seen = self.log.events().len();
         // Ported from osu!lazer 2026.1005.0-lazer: osu.Game/Screens/Play/Player.cs (LoadComponents)
         // Each judgement goes to the health processor, then to the score processor.
         for (index, judgement) in self.log.events().iter().enumerate().skip(self.applied) {
@@ -784,6 +807,8 @@ impl PlaySession {
         self.run = true;
         self.auto_skip = quick;
         self.applied = 0;
+        self.popups_seen = 0;
+        self.popups.restart();
         self.failed_at = None;
         self.last_pause_time = None;
         self.last_time = self.start_time;
@@ -833,6 +858,7 @@ impl PlaySession {
         snapshot.retry_progress = 0.0;
         snapshot.exit_progress = 0.0;
         snapshot.restarts = self.restarts;
+        snapshot.judgements.clone_from(&self.popups);
         snapshot.circles.clear();
         snapshot.sliders.clear();
         snapshot.spinners.clear();
@@ -846,6 +872,7 @@ impl PlaySession {
         snapshot.retry_progress = self.hotkeys.retry_progress(now_ns);
         snapshot.exit_progress = self.hotkeys.exit_progress(now_ns);
         snapshot.restarts = self.restarts;
+        snapshot.judgements.clone_from(&self.popups);
         snapshot.circles.capture(&self.rules);
         snapshot.sliders.capture(&self.rules);
         snapshot.spinners.capture(&self.rules, &self.spm);
@@ -1054,6 +1081,18 @@ pub struct PlayTextures {
     follow: Vec<Requested>,
     follow_frame_length: f64,
     cursor: CursorSkinConfig,
+    /// The judgement popups' frames and particles, by `judgements::slot`.
+    judgements: [RequestedPiece; PIECE_SLOTS],
+    lighting: Option<Requested>,
+}
+
+/// The requested textures of one result's popup.
+#[derive(Debug, Clone, Default)]
+struct RequestedPiece {
+    kind: PieceKind,
+    frames: Vec<Requested>,
+    frame_length: f64,
+    particle: Option<Requested>,
 }
 
 /// Whether a circle piece looked up with `prefix` (`sliderstartcircle`, `sliderendcircle`) uses
@@ -1170,6 +1209,33 @@ impl PlayTextures {
         };
         let ball = request_frames(requests, &ball_frames)?;
         let follow = request_frames(requests, &follow_frames)?;
+        let mut judgements: [RequestedPiece; PIECE_SLOTS] = Default::default();
+        let mut frame_count = 0;
+        for (slot, source) in judgements.iter_mut().zip(piece_sources(skins)) {
+            // The pieces share the frame budget; one past it is not drawn.
+            let frames = source.frames.len().min(MAX_ANIMATION_FRAMES);
+            if frame_count + frames > MAX_JUDGEMENT_FRAMES {
+                tracing::warn!(
+                    frames,
+                    "judgement animation over the frame budget, not drawn"
+                );
+                continue;
+            }
+            frame_count += frames;
+            *slot = RequestedPiece {
+                kind: source.kind,
+                frames: request_frames(requests, &source.frames)?,
+                frame_length: source.frame_length,
+                particle: source
+                    .particle
+                    .map(|p| request_file(requests, &p))
+                    .transpose()?,
+            };
+        }
+        let lighting = skins
+            .texture("lighting")
+            .map(|f| request_file(requests, &f.value))
+            .transpose()?;
         let side = WHITE_SIDE as usize;
         let white = requests.load_pixels(
             Image {
@@ -1190,6 +1256,8 @@ impl PlayTextures {
             follow,
             follow_frame_length,
             cursor: CursorSkinConfig::new(skins),
+            judgements,
+            lighting,
         })
     }
 
@@ -1295,12 +1363,54 @@ impl PlayTextures {
         if !self.tail_prefix {
             frame.sliders.tail = PieceTextures::from(&frame.circles);
         }
+        self.resolve_judgements(uploads, &mut frame.judgements);
         frame
+    }
+
+    /// The popup textures uploaded by this frame: a piece is drawn once all its textures are.
+    // Ported from osu!lazer 2026.1005.0-lazer: osu.Game/Skinning/LegacySkinExtensions.cs (GetAnimation)
+    fn resolve_judgements(&self, uploads: &TextureUploads, textures: &mut JudgementTextures) {
+        // Neither popups nor the lighting are cropped (no `maxSize`).
+        let sprite = |r: &Requested| match uploads.get(r.handle) {
+            TextureState::Ready(region) => Some(SkinSprite::new(region, r.scale, f32::MAX)),
+            _ => None,
+        };
+        textures.lighting = self.lighting.as_ref().and_then(sprite);
+        let mut next = 0;
+        for (piece, out) in self.judgements.iter().zip(&mut textures.pieces) {
+            let start = next;
+            let mut ready = true;
+            for r in &piece.frames {
+                textures.frames[next] = sprite(r);
+                ready &= textures.frames[next].is_some();
+                next += 1;
+            }
+            let particle = piece.particle.as_ref().map(sprite);
+            ready &= particle.is_none_or(|p| p.is_some());
+            if ready && !piece.frames.is_empty() {
+                *out = PieceSprites {
+                    kind: piece.kind,
+                    // The request kept the frames within `MAX_JUDGEMENT_FRAMES`.
+                    frames: (start as u16, piece.frames.len() as u16),
+                    frame_length: piece.frame_length,
+                    particle: particle.flatten(),
+                };
+            }
+        }
     }
 
     /// Requests whose file was found in the skins, animation frames included.
     pub fn found(&self) -> usize {
-        self.requested.iter().flatten().count() + self.ball.len() + self.follow.len()
+        let judgements: usize = self
+            .judgements
+            .iter()
+            .map(|p| p.frames.len() + usize::from(p.particle.is_some()))
+            .sum();
+        self.requested.iter().flatten().count()
+            + self.ball.len()
+            + self.follow.len()
+            + judgements
+            + usize::from(self.lighting.is_some())
     }
 }
 
@@ -1311,6 +1421,7 @@ pub struct FrameTextures {
     pub sliders: SliderTextures,
     pub spinners: SpinnerTextures,
     pub cursor: CursorTextures,
+    pub judgements: JudgementTextures,
     /// An opaque white image.
     pub white: Option<AtlasRegion>,
 }
@@ -1321,6 +1432,7 @@ pub struct PlayView {
     pub circles: HitCircles,
     pub sliders: HitSliders,
     pub spinners: HitSpinners,
+    pub judgements: JudgementView,
     pub cursor: CursorView,
 }
 
@@ -1330,7 +1442,7 @@ impl PlayView {
     /// (cleared first); the cursor goes on top of the HUD with [`PlayView::push_cursor`].
     /// Allocation-free once `batch` has room.
     pub fn push(
-        &self,
+        &mut self,
         batch: &mut SpriteBatch,
         bodies: &mut SliderBodies,
         layout: &PlayfieldLayout,
@@ -1348,6 +1460,9 @@ impl PlayView {
                 time,
                 &textures.spinners,
             );
+            let judgements = &mut self.judgements;
+            judgements.update(&snapshot.judgements, snapshot.restarts, time);
+            judgements.push_below(batch, layout, time, &textures.judgements);
             push_objects(
                 &self.circles,
                 &self.sliders,
@@ -1361,6 +1476,17 @@ impl PlayView {
                     circles: &textures.circles,
                     sliders: &textures.sliders,
                 },
+            );
+            judgements.push_above(batch, layout, time, &textures.judgements);
+            push_approaches(
+                &self.circles,
+                &self.sliders,
+                batch,
+                layout,
+                snapshot.circles.as_slice(),
+                snapshot.sliders.as_slice(),
+                time,
+                &textures.circles,
             );
         }
     }

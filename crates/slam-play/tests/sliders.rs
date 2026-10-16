@@ -18,8 +18,8 @@ use slam_play::slider_body::Snaking;
 use slam_play::sliders::{
     AnimationSprites, ArrowStyle, BallPose, BallStyle, HitSliders, LiveSliders, MAX_LIVE_NESTED,
     NestedPiece, NestedVisual, ObjectTextures, SliderBodies, SliderPose, SliderTextures,
-    SliderVisual, SliderVisuals, animation_frame, ball_pose, push_objects, repeat_pose,
-    slider_pose, tick_pose,
+    SliderVisual, SliderVisuals, animation_frame, ball_pose, push_approaches, push_objects,
+    repeat_pose, slider_pose, tick_pose,
 };
 use slam_render::Limits;
 use slam_render::atlas::UvRect;
@@ -421,6 +421,7 @@ fn objects_draw_in_lazer_order_with_bodies_between_sprites() {
         },
     ];
     let (circle_textures, slider_textures) = (circle_textures(), slider_textures());
+    let live_sliders = snapshot(&map, live(None, None, None));
     push_objects(
         &circles,
         &sliders,
@@ -428,12 +429,22 @@ fn objects_draw_in_lazer_order_with_bodies_between_sprites() {
         &mut bodies,
         &layout,
         &live_circles,
-        &snapshot(&map, live(None, None, None)),
+        &live_sliders,
         1500.0 - 60.0,
         ObjectTextures {
             circles: &circle_textures,
             sliders: &slider_textures,
         },
+    );
+    push_approaches(
+        &circles,
+        &sliders,
+        &mut batch,
+        &layout,
+        &live_circles,
+        live_sliders.as_slice(),
+        1500.0 - 60.0,
+        &circle_textures,
     );
     // Circle 2, the slider (body, tail, head), circle 0 on top; then the approach circles
     // of the head and circle 2 (circle 0's has faded) in start time order.
@@ -582,6 +593,22 @@ fn found(user: &[&str], default: &[&str]) -> usize {
     PlayTextures::request(&chain, &mut requests)
         .unwrap()
         .found()
+}
+
+#[test]
+fn judgement_animations_share_a_frame_budget() {
+    let frames = |name: &'static str, count: usize| (0..count).map(move |i| format!("{name}-{i}"));
+    // Four animations of 64 frames (each cut from 70) fill the budget: the next one is left out.
+    let names: Vec<String> = ["hit0", "hit50", "hit100", "hit300"]
+        .into_iter()
+        .flat_map(|name| frames(name, 70))
+        .chain(["slidertickmiss".to_owned()])
+        .collect();
+    let names: Vec<&str> = names.iter().map(String::as_str).collect();
+    assert_eq!(found(&names, &[]), 4 * 64);
+    let names: Vec<String> = frames("hit0", 70).chain(["hit300".to_owned()]).collect();
+    let names: Vec<&str> = names.iter().map(String::as_str).collect();
+    assert_eq!(found(&names, &[]), 64 + 1);
 }
 
 #[test]
