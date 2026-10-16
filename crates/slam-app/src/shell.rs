@@ -149,6 +149,9 @@ pub struct ShellState {
     /// The results ask to play `last_file` again, not yet taken by
     /// [`ShellState::take_retry_request`].
     retry_request: bool,
+    /// The results went back to the song select: the track they played on stops, not yet
+    /// taken by [`ShellState::take_track_stop`].
+    track_stop: bool,
     /// Last cursor position in pixels.
     cursor: [f32; 2],
     /// Input arrives in window points, layout is in pixels.
@@ -178,6 +181,7 @@ impl ShellState {
             last_title: String::new(),
             held_results: Vec::new(),
             retry_request: false,
+            track_stop: false,
             theme,
             cursor: [0.0, 0.0],
             pixels_per_point,
@@ -207,6 +211,11 @@ impl ShellState {
     /// file is [`ShellState::last_file`].
     pub fn take_retry_request(&mut self) -> bool {
         std::mem::take(&mut self.retry_request)
+    }
+
+    /// Whether the track playing under the results should stop, once.
+    pub fn take_track_stop(&mut self) -> bool {
+        std::mem::take(&mut self.track_stop)
     }
 
     /// The beatmap line of the last play asked for.
@@ -413,7 +422,10 @@ impl ShellState {
                             self.set_loading(false);
                             None
                         }
-                        Some(ResultsAction::Back) => Some(Nav::Pop),
+                        Some(ResultsAction::Back) => {
+                            self.track_stop = true;
+                            Some(Nav::Pop)
+                        }
                         Some(ResultsAction::Retry) => {
                             if !self.loading && self.last_file.is_some() {
                                 self.retry_request = true;
@@ -634,6 +646,10 @@ impl PlayHost {
     /// when a play is asked for, starts or ends; logs and frees on the loader thread.
     fn advance(&mut self, now_ns: u64, state: &mut ShellState) {
         self.end_game(now_ns, state);
+        if state.take_track_stop() {
+            // A failed command leaves the track playing under the song select.
+            let _ = self.audio.player.pause();
+        }
         // From the song select, or the results playing their beatmap again.
         let request = match state.take_play_request() {
             Some((set, difficulty)) => Some(state.file(set, difficulty).cloned()),
@@ -749,13 +765,16 @@ impl PlayHost {
             && mixer.stop_all().is_ok()
             && let Some(mut game) = self.game.take()
         {
-            // A failed command leaves the track playing under the song select.
-            let _ = self.audio.player.pause();
             self.os_cursor.set_hidden(false);
             // The results come from the session before it retires.
             let results = game.session.results().map(|r| {
                 results::results_data(game.id, std::mem::take(&mut game.title), game.mods, &r)
             });
+            // The track plays on under the results, as in lazer; a failed command leaves it
+            // playing under the song select.
+            if results.is_none() {
+                let _ = self.audio.player.pause();
+            }
             state.leave_play(now_ns, results);
             // Two quits in a row on a stuck mixer: the older session goes anyway.
             if let Some(old) = self.retiring.replace(Retiring {

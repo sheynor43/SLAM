@@ -416,10 +416,14 @@ fn results_replace_the_play_and_back_returns_to_the_song_select() {
     assert!(matches!(views[0], ScreenView::Results(r) if r.data.id == 1));
     assert_eq!(s.last_title(), "a - a [Hard]");
 
+    // The track plays on under the results and stops on the way back.
+    assert!(!s.take_track_stop());
     s.tick(now + 1, &[key(KEY_ESCAPE)], &mut snap);
     assert_eq!(*s.stack().top(), AppScreen::SongSelect);
     assert!(!s.is_loading());
     assert!(!s.take_retry_request());
+    assert!(s.take_track_stop());
+    assert!(!s.take_track_stop());
 }
 
 #[test]
@@ -451,6 +455,8 @@ fn back_while_the_retry_loads_cancels_it_and_stays_on_the_results() {
     assert!(!s.is_loading());
     assert!(!s.take_retry_request());
     assert!(matches!(s.stack().top(), AppScreen::Results(_)));
+    // Still on the results: the track plays on.
+    assert!(!s.take_track_stop());
     // A failed load returns to the results as well.
     s.tick(now + 3, &[key(KEY_R)], &mut snap);
     s.finish_loading(now + 4, None);
