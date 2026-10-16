@@ -13,6 +13,7 @@ pub mod input;
 pub mod judgements;
 pub mod legacy_text;
 pub mod playfield;
+pub mod resume;
 pub mod ring;
 pub mod session;
 pub mod slider_body;

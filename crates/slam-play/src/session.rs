@@ -44,6 +44,7 @@ use crate::judgements::{
     PieceSprites, PopupTargets, piece_sources,
 };
 use crate::playfield::PlayfieldLayout;
+use crate::resume::ResumeView;
 use crate::sliders::{
     AnimationSprites, BallStyle, HitSliders, LiveSliders, MAX_ANIMATION_FRAMES,
     MAX_FOLLOW_CIRCLE_AREA_SIZE, ObjectTextures, SliderBodies, SliderTextures, push_approaches,
@@ -182,6 +183,13 @@ pub struct PlaySnapshot {
     pub hud: HudValues,
     /// Where to click to resume, in osu!pixels ([`PlayState::Resuming`]).
     pub resume_target: Vec2,
+    /// The cursor the window has while gameplay's stands still, in osu!pixels: the resume
+    /// overlay's own cursor ([`PlayState::Resuming`]).
+    pub resume_cursor: Vec2,
+    /// The positions of `resume_cursor`, for its trail.
+    pub resume_cursor_path: CursorPath,
+    /// Times the play went into [`PlayState::Resuming`]: each has a new cursor.
+    pub resumes: u32,
     /// How far quick retry is held, 0..=1.
     pub retry_progress: f32,
     /// How far quick exit is held, 0..=1.
@@ -210,6 +218,9 @@ impl Default for PlaySnapshot {
             health: 1.0,
             hud: HudValues::default(),
             resume_target: Vec2::ZERO,
+            resume_cursor: Vec2::ZERO,
+            resume_cursor_path: CursorPath::default(),
+            resumes: 0,
             retry_progress: 0.0,
             exit_progress: 0.0,
             restarts: 0,
@@ -297,6 +308,8 @@ pub struct PlaySession {
     /// Gameplay time of the last pause.
     last_pause_time: Option<f64>,
     resume_target: Vec2,
+    /// Times the play went into resuming.
+    resumes: u32,
     /// Time of the last gameplay step: lazer's gameplay clock time, which stands still
     /// while paused and seeking.
     last_time: f64,
@@ -374,6 +387,7 @@ impl PlaySession {
             sounds,
             last_pause_time: None,
             resume_target: Vec2::ZERO,
+            resumes: 0,
             last_time: start_time,
             restart_on_fail: false,
             passed: false,
@@ -774,6 +788,7 @@ impl PlaySession {
             self.complete_resume();
         } else {
             self.phase = Phase::Resuming;
+            self.resumes = self.resumes.wrapping_add(1);
             // The gameplay cursor stood still while paused.
             self.resume_target = self.input.position();
         }
@@ -872,6 +887,11 @@ impl PlaySession {
         snapshot.health = self.health.health();
         snapshot.hud = HudValues::of(&self.score);
         snapshot.resume_target = Vec2::ZERO;
+        snapshot.resume_cursor = self.input.window_cursor();
+        snapshot
+            .resume_cursor_path
+            .clone_from(self.input.window_path());
+        snapshot.resumes = self.resumes;
         snapshot.retry_progress = 0.0;
         snapshot.exit_progress = 0.0;
         snapshot.restarts = self.restarts;
@@ -887,6 +907,11 @@ impl PlaySession {
         snapshot.health = self.health.health();
         snapshot.hud = HudValues::of(&self.score);
         snapshot.resume_target = self.resume_target;
+        snapshot.resume_cursor = self.input.window_cursor();
+        snapshot
+            .resume_cursor_path
+            .clone_from(self.input.window_path());
+        snapshot.resumes = self.resumes;
         snapshot.retry_progress = self.hotkeys.retry_progress(now_ns);
         snapshot.exit_progress = self.hotkeys.exit_progress(now_ns);
         snapshot.restarts = self.restarts;
@@ -901,7 +926,7 @@ impl PlaySession {
 // Ported from osu-framework 2026.921.1: osu.Framework/Graphics/Primitives/RectangleF.cs (Contains)
 /// Whether the click-to-resume cursor at `target` is hovered by the cursor at `at`: its
 /// square hit area, as the framework's rectangle (left and top edges inside).
-fn hovers(target: Vec2, at: Vec2) -> bool {
+pub(crate) fn hovers(target: Vec2, at: Vec2) -> bool {
     let half = RESUME_CURSOR_SIZE / 2.0;
     let (left, top) = (target.x - half, target.y - half);
     left <= at.x
@@ -1306,6 +1331,9 @@ impl PlayTextures {
         if let TextureState::Ready(region) = uploads.get(self.white) {
             frame.white = Some(region);
         }
+        if let TextureState::Ready(disc) = uploads.get(self.disc) {
+            frame.disc = Some(disc);
+        }
         if let (Some(white), TextureState::Ready(disc), TextureState::Ready(gradient)) = (
             frame.white,
             uploads.get(self.disc),
@@ -1480,6 +1508,8 @@ pub struct FrameTextures {
     pub white: Option<AtlasRegion>,
     /// The hit error meter's images.
     pub meter: Option<MeterTextures>,
+    /// A white disc on transparent.
+    pub disc: Option<AtlasRegion>,
 }
 
 /// The draw side of a play.
@@ -1492,6 +1522,7 @@ pub struct PlayView {
     pub judgements: JudgementView,
     pub hit_error: HitErrorView,
     pub cursor: CursorView,
+    pub resume: ResumeView,
 }
 
 impl PlayView {
@@ -1572,8 +1603,11 @@ impl PlayView {
     }
 
     /// Writes the cursor of `snapshot` drawn at engine time `now_ns` and its trail; call
-    /// once a frame, the trail moves on. Allocation-free once `batch` has room for
-    /// [`MAX_CURSOR_SPRITES`](crate::cursor::MAX_CURSOR_SPRITES).
+    /// once a frame, the trail moves on. While resuming, gameplay's cursor and trail hide
+    /// (lazer's `ActiveCursor.Hide`, the trail too here) and the resume overlay's target
+    /// and cursor show instead. Allocation-free once `batch` has room for
+    /// [`MAX_CURSOR_SPRITES`](crate::cursor::MAX_CURSOR_SPRITES) and
+    /// [`MAX_TARGET_SPRITES`](crate::resume::MAX_TARGET_SPRITES).
     pub fn push_cursor(
         &mut self,
         batch: &mut SpriteBatch,
@@ -1589,7 +1623,16 @@ impl PlayView {
             time: snapshot.time_at(now_ns),
             restarts: snapshot.restarts,
             now_ns,
+            visible: snapshot.state != PlayState::Resuming,
         };
         self.cursor.push(batch, layout, &frame, &textures.cursor);
+        self.resume.push(
+            batch,
+            layout,
+            snapshot,
+            now_ns,
+            textures.disc,
+            &textures.cursor,
+        );
     }
 }

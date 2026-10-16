@@ -461,8 +461,11 @@ fn ticks_and_frames_do_not_allocate() {
         disc: WHITE,
         gradient: WHITE,
     });
+    textures.disc = Some(WHITE);
     let mut batch = SpriteBatch::with_capacity(
-        4096 + MAX_CURSOR_SPRITES + slam_play::hit_error::MAX_METER_SPRITES,
+        4096 + MAX_CURSOR_SPRITES
+            + slam_play::resume::MAX_TARGET_SPRITES
+            + slam_play::hit_error::MAX_METER_SPRITES,
     );
     let mut bodies = SliderBodies::new();
     let mut drawn = 0;
@@ -509,7 +512,7 @@ fn ticks_and_frames_do_not_allocate() {
             );
             bodies_drawn += bodies.as_slice().len();
             hud.update(1280.0, 720.0, &snapshot.hud);
-            hud.push_shapes(&mut batch, &layout(), &snapshot, white);
+            hud.push_shapes(&mut batch, &snapshot, white);
             view.push_hit_error(
                 &mut batch,
                 1280.0,
@@ -626,6 +629,7 @@ fn view(map: &Beatmap) -> PlayView {
         ),
         hit_error: slam_play::hit_error::HitErrorView::new(&windows),
         cursor: CursorView::default(),
+        resume: slam_play::resume::ResumeView::default(),
     }
 }
 
@@ -1192,6 +1196,83 @@ fn a_pause_stops_the_clock_and_a_click_on_the_cursor_resumes_it_where_it_was() {
 }
 
 #[test]
+fn while_resuming_the_overlay_cursor_follows_the_window_and_gameplay_cursor_hides() {
+    const CURSOR: TextureId = TextureId(1);
+    const DISC: TextureId = TextureId(2);
+    let map = beatmap();
+    let mut d = Driver::new(&map, ModSet::default());
+    let mut view = view(&map);
+    let mut textures = FrameTextures::default();
+    let cursor = AtlasRegion {
+        texture: CURSOR,
+        ..WHITE
+    };
+    textures.cursor.cursor = Some(SkinSprite::new(cursor, 1.0, f32::MAX));
+    textures.disc = Some(AtlasRegion {
+        texture: DISC,
+        ..WHITE
+    });
+    let mut batch = SpriteBatch::new();
+    // The textures of a frame's sprites, in order.
+    fn drawn(
+        view: &mut PlayView,
+        textures: &FrameTextures,
+        d: &Driver,
+        batch: &mut SpriteBatch,
+    ) -> Vec<TextureId> {
+        batch.clear();
+        view.push_cursor(batch, &layout(), &d.snapshot, d.now, textures);
+        batch.batches().iter().map(|b| b.texture).collect()
+    }
+
+    let at = Vec2::new(300.0, 300.0);
+    let moved = d.mouse(at);
+    d.tick(&[moved]);
+    d.run_to(1500.0);
+    assert_eq!(drawn(&mut view, &textures, &d, &mut batch), [CURSOR]);
+    d.tap(ESCAPE);
+    // Paused: gameplay's cursor stays where it was.
+    let away = d.mouse(Vec2::new(100.0, 100.0));
+    d.tick(&[away]);
+    assert_eq!(drawn(&mut view, &textures, &d, &mut batch), [CURSOR]);
+    d.tap(ESCAPE);
+    assert_eq!(d.state(), PlayState::Resuming);
+    // The target under the overlay's cursor, which is where the window's is.
+    assert_eq!(drawn(&mut view, &textures, &d, &mut batch), [DISC, CURSOR]);
+    assert_eq!(d.snapshot.resume_cursor, Vec2::new(100.0, 100.0));
+    let window = layout().to_window(Vec2::new(100.0, 100.0));
+    let cursor_quad = &batch.vertices()[batch.len() * 4 - 4..];
+    let centre_x = cursor_quad.iter().map(|v| v.position[0]).sum::<f32>() / 4.0;
+    assert!(
+        (centre_x - window.x).abs() < 1e-3,
+        "{centre_x} {}",
+        window.x
+    );
+
+    // The overlay's cursor and trail draw without allocating, gameplay's hidden.
+    let mut frames =
+        SpriteBatch::with_capacity(MAX_CURSOR_SPRITES + slam_play::resume::MAX_TARGET_SPRITES);
+    for step in 0..8 {
+        let moved = d.mouse(Vec2::new(100.0 + 20.0 * step as f32, 100.0));
+        d.tick(&[moved]);
+        let (snapshot, now) = (&d.snapshot, d.now);
+        assert_no_alloc(|| {
+            frames.clear();
+            view.push_cursor(&mut frames, &layout(), snapshot, now, &textures);
+        });
+    }
+    assert_eq!(d.state(), PlayState::Resuming);
+
+    let on = d.mouse(at);
+    d.tick(&[on]);
+    let click = d.key(Z, true);
+    d.tick(&[click]);
+    assert_eq!(d.state(), PlayState::Playing);
+    d.run(1);
+    assert_eq!(drawn(&mut view, &textures, &d, &mut batch), [CURSOR]);
+}
+
+#[test]
 fn releases_while_paused_reach_gameplay_on_resume() {
     let map = beatmap();
     let mut d = Driver::new(&map, ModSet::default());
@@ -1720,12 +1801,12 @@ fn hud_updates_and_frames_do_not_allocate() {
             snapshot.hud = *values;
             batch.clear();
             text.clear();
-            hud.push_shapes(&mut batch, &layout(), &snapshot, WHITE);
+            hud.push_shapes(&mut batch, &snapshot, WHITE);
             hud.push_text(&mut text, &snapshot, &mut glyphs);
         }
     });
-    // Health bar (two), skip button and resume target.
-    assert_eq!(batch.len(), 4);
+    // Health bar (two) and skip button; the resume target goes with the cursor.
+    assert_eq!(batch.len(), 3);
 }
 
 #[test]

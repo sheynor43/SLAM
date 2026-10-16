@@ -138,6 +138,7 @@ fn frame(path: &CursorPath, position: Vec2, expand: ExpandTimes, time: f64) -> C
         time,
         restarts: 0,
         now_ns: (time * 1e6) as u64,
+        visible: true,
     }
 }
 
@@ -379,4 +380,54 @@ fn trail_parts_take_the_scale_the_cursor_had_a_frame_before() {
         }),
         "{q:?}"
     );
+}
+
+#[test]
+fn a_jump_leaves_no_trail_on_the_way_and_a_hidden_cursor_draws_nothing() {
+    let mut path = CursorPath::default();
+    let mut view = CursorView::default();
+    let config = CursorSkinConfig {
+        disjoint: false,
+        ..CursorSkinConfig::default()
+    };
+    let textures = textures(config);
+    let mut batch = SpriteBatch::new();
+    path.push(Vec2::new(100.5, 100.0));
+    view.push(
+        &mut batch,
+        &layout(),
+        &frame(&path, Vec2::new(100.5, 100.0), ExpandTimes::default(), 0.0),
+        &textures,
+    );
+    // Hidden: the trail still takes the jump, nothing is drawn.
+    path.push_jump(Vec2::new(400.5, 100.0));
+    batch.clear();
+    let hidden = CursorFrame {
+        visible: false,
+        ..frame(&path, Vec2::new(400.5, 100.0), ExpandTimes::default(), 1.0)
+    };
+    view.push(&mut batch, &layout(), &hidden, &textures);
+    assert_eq!(batch.len(), 0);
+    // Shown again: the cursor and its middle, no parts between 100 and 400.
+    batch.clear();
+    view.push(
+        &mut batch,
+        &layout(),
+        &frame(&path, Vec2::new(400.5, 100.0), ExpandTimes::default(), 2.0),
+        &textures,
+    );
+    assert_eq!(batch.len(), 2);
+    // A move after the jump leaves parts from where the cursor jumped to.
+    path.push(Vec2::new(500.5, 100.0));
+    batch.clear();
+    view.push(
+        &mut batch,
+        &layout(),
+        &frame(&path, Vec2::new(500.5, 100.0), ExpandTimes::default(), 3.0),
+        &textures,
+    );
+    assert_eq!(batch.len() - 2, 23);
+    let scale = layout().scale();
+    let leftmost = quads(&batch)[0][0];
+    assert!(leftmost > layout().to_window(Vec2::new(400.0, 100.0)).x - 10.0 * scale);
 }
