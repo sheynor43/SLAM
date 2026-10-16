@@ -10,9 +10,7 @@ use slam_render::textures::TextureId;
 use slam_render::{Limits, Origin};
 use slam_testkit::assert_no_alloc;
 use slam_text::{FontRegistry, GlyphAtlasConfig, glyph_atlas};
-use slam_ui::menu::{
-    MainMenu, MenuInput, MenuLabels, MenuLayout, MenuSnapshot, MenuView, PlaceholderView,
-};
+use slam_ui::menu::{MainMenu, MenuInput, MenuLabels, MenuLayout, MenuSnapshot, MenuView};
 use slam_ui::screen::Pose;
 use slam_ui::theme::Theme;
 
@@ -51,8 +49,7 @@ fn views_push_without_allocating_once_warm() {
         title: "SLAM".into(),
         buttons: ["Play".into(), "Settings".into(), "Exit".into()],
     };
-    let mut menu = MenuView::new(Arc::clone(&registry), Theme::default(), &labels);
-    let mut placeholder = PlaceholderView::new(registry, Theme::default(), "Soon");
+    let mut menu = MenuView::new(registry, Theme::default(), &labels);
     let white = AtlasRegion {
         texture: TextureId(0),
         origin: Origin::new(0, 0),
@@ -86,7 +83,6 @@ fn views_push_without_allocating_once_warm() {
             pose,
             white,
         );
-        placeholder.push(&mut text, glyphs, width, height, pose);
     };
     // Warm: the first frames at each size lay out and request glyphs (not allocation-free).
     frame(1280.0, 720.0, &mut glyphs);

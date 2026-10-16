@@ -5,3 +5,4 @@ pub mod click;
 pub mod i18n;
 pub mod play;
 pub mod shell;
+pub mod songs;

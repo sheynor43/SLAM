@@ -26,6 +26,11 @@ pub enum InputKind {
         x: f32,
         y: f32,
     },
+    /// Vertical wheel scroll in notches, positive away from the user, as the OS reports it
+    /// (natural scrolling already applied). Fractional on precise touchpads.
+    MouseWheel {
+        y: f32,
+    },
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]

@@ -70,6 +70,12 @@ pub struct DecodeOptions {
     /// `osu file format vN` header. Default false, which is lazer's behaviour: the file is
     /// decoded as version 14 with a warning and the first line is parsed like any other.
     pub require_header: bool,
+    /// Parse only `[General]`, `[Editor]`, `[Metadata]` and `[Difficulty]`. Lines inside
+    /// `[Events]`, `[TimingPoints]`, `[Colours]` and `[HitObjects]` are skipped (section
+    /// headers are still tracked, so sections in unusual order work), leaving those parts of
+    /// the [`Beatmap`] empty. Skipped sections produce no warnings. Meant for library scans.
+    /// Default false.
+    pub headers_only: bool,
 }
 
 impl Default for DecodeOptions {
@@ -77,6 +83,7 @@ impl Default for DecodeOptions {
         Self {
             apply_offsets: true,
             require_header: false,
+            headers_only: false,
         }
     }
 }
@@ -254,6 +261,7 @@ fn decode_text(text: &str, options: &DecodeOptions) -> Result<Decoded, DecodeErr
         offset,
         hit_object_parser: HitObjectParser::new(offset, version),
         has_approach_rate: false,
+        headers_only: options.headers_only,
     };
     decoder.parse_stream(text, &mut warnings);
 
@@ -295,6 +303,7 @@ struct Decoder {
     offset: f64,
     hit_object_parser: HitObjectParser,
     has_approach_rate: bool,
+    headers_only: bool,
 }
 
 impl Decoder {
@@ -334,6 +343,15 @@ impl Decoder {
                         });
                     }
                 }
+                continue;
+            }
+
+            if self.headers_only
+                && matches!(
+                    section,
+                    SECTION_EVENTS | SECTION_TIMING_POINTS | SECTION_COLOURS | SECTION_HIT_OBJECTS
+                )
+            {
                 continue;
             }
 

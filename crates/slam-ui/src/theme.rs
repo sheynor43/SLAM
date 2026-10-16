@@ -29,6 +29,27 @@ pub struct Theme {
     pub button_spacing: f32,
     /// Gap between the title and the first button.
     pub title_gap: f32,
+    /// Fill of a hovered song select row.
+    pub row_hover_fill: Color,
+    /// Fraction of the window width the song select list takes (on the right).
+    pub song_panel_ratio: f32,
+    /// Margin around the song select panel.
+    pub song_margin: f32,
+    /// Pitch of a song select row.
+    pub song_row_height: f32,
+    /// Gap between two drawn song select rows (inside the pitch).
+    pub song_row_gap: f32,
+    /// How far difficulty rows are indented.
+    pub song_indent: f32,
+    /// Padding between a row's edge and its text.
+    pub song_text_pad: f32,
+    /// Size of the artist and title, and of version texts.
+    pub song_title_size: f32,
+    /// Size of the creator and of the hint.
+    pub song_detail_size: f32,
+    /// Height of the status line above the list, and its text size.
+    pub song_header_height: f32,
+    pub song_status_size: f32,
 }
 
 impl Default for Theme {
@@ -63,6 +84,22 @@ impl Default for Theme {
             button_height: 56.0,
             button_spacing: 12.0,
             title_gap: 48.0,
+            row_hover_fill: Color {
+                r: 1.0,
+                g: 1.0,
+                b: 1.0,
+                a: 0.18,
+            },
+            song_panel_ratio: 0.55,
+            song_margin: 24.0,
+            song_row_height: 52.0,
+            song_row_gap: 4.0,
+            song_indent: 32.0,
+            song_text_pad: 16.0,
+            song_title_size: 20.0,
+            song_detail_size: 14.0,
+            song_header_height: 36.0,
+            song_status_size: 22.0,
         }
     }
 }

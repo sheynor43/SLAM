@@ -4,4 +4,5 @@ pub mod anim;
 pub mod i18n;
 pub mod menu;
 pub mod screen;
+pub mod song_select;
 pub mod theme;

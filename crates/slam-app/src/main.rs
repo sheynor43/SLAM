@@ -11,13 +11,7 @@ fn main() -> ExitCode {
     let mut args = std::env::args().skip(1);
     // Developer commands only so far; their console output is not localised.
     match args.next().as_deref() {
-        None => match shell::run() {
-            Ok(()) => ExitCode::SUCCESS,
-            Err(e) => {
-                eprintln!("{e}");
-                ExitCode::FAILURE
-            }
-        },
+        None => run_shell(Vec::new()),
         Some("--help" | "-h") => {
             print_usage();
             ExitCode::SUCCESS
@@ -71,9 +65,22 @@ fn main() -> ExitCode {
                 ExitCode::FAILURE
             }
         },
+        Some(flag) if flag.starts_with("--") => {
+            run_shell(std::iter::once(flag.to_owned()).chain(args).collect())
+        }
         _ => {
             eprint_usage();
             ExitCode::from(2)
+        }
+    }
+}
+
+fn run_shell(args: Vec<String>) -> ExitCode {
+    match shell::parse_songs(args).and_then(shell::run) {
+        Ok(()) => ExitCode::SUCCESS,
+        Err(e) => {
+            eprintln!("{e}\n{}", shell::USAGE);
+            ExitCode::FAILURE
         }
     }
 }

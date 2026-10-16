@@ -5,7 +5,7 @@ use crate::theme::Theme;
 
 pub mod view;
 
-pub use view::{MenuLabels, MenuView, PlaceholderView};
+pub use view::{MenuLabels, MenuView};
 
 /// What the menu understands; the application turns keys and mouse events into these.
 #[derive(Clone, Copy, Debug, PartialEq)]

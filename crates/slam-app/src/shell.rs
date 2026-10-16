@@ -1,6 +1,7 @@
-//! The window with the screens (ADR-0044): the main menu and a song select placeholder.
-//! Opened by `slam-app` without arguments. Console output is not localised; UI text is.
+//! The window with the screens (ADR-0044): the main menu and the song select. Opened by
+//! `slam-app` without a command. Console output is not localised; UI text is.
 
+use std::path::PathBuf;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::time::{Duration, Instant};
@@ -20,35 +21,48 @@ use slam_text::{FontRegistry, GlyphAtlasConfig, GlyphCache, glyph_atlas};
 use slam_ui::i18n::Localizer;
 use slam_ui::menu::{
     MainMenu, MenuAction, MenuInput, MenuLabels, MenuLayout, MenuSnapshot, MenuView,
-    PlaceholderView,
 };
 use slam_ui::screen::{MAX_LAYERS, Nav, Navigated, Pose, ScreenStack};
+use slam_ui::song_select::{
+    SongList, SongSelect, SongSelectAction, SongSelectInput, SongSelectLabels, SongSelectLayout,
+    SongSelectSnapshot, SongSelectStatus, SongSelectView,
+};
 use slam_ui::theme::Theme;
 
 use crate::play::{device_limits, pack_size};
+use crate::songs::{SongFiles, SongsLink};
 
-pub const USAGE: &str = "usage: slam-app [bench|click|click-analyze|play|i18n] ...\n\
-                         without arguments, opens the window with the main menu";
+pub const USAGE: &str = "usage: slam-app [--songs DIR]\n\
+                         slam-app [bench|click|click-analyze|play|i18n] ...\n\
+                         without a command, opens the window with the main menu; --songs is \
+                         the folder of beatmap sets (as stable's Songs)";
 
 const WINDOW: (i32, i32) = (1280, 720);
 const UPDATE_HZ: f64 = 1000.0;
 /// Textures of the draw thread: the white square and the glyph pages.
 const MAX_TEXTURES: usize = 16;
-/// Rectangles of one frame: the buttons of up to two layers.
-const MAX_SHAPES: usize = 16;
+/// Rectangles of one frame: the buttons or rows of up to two layers.
+const MAX_SHAPES: usize = 256;
 /// Glyph sprites of one frame: the texts of up to two layers.
-const MAX_GLYPH_SPRITES: usize = 512;
+const MAX_GLYPH_SPRITES: usize = 8192;
 /// How long the draw thread waits for the glyphs before the first frame.
 const GLYPH_WARM_TIMEOUT: Duration = Duration::from_secs(1);
 
 // USB HID usage ids, as `SDL_Scancode`.
 const KEY_ENTER: u16 = 40;
 const KEY_ESCAPE: u16 = 41;
-const KEY_KEYPAD_ENTER: u16 = 88;
+const KEY_HOME: u16 = 74;
+const KEY_PAGE_UP: u16 = 75;
+const KEY_END: u16 = 77;
+const KEY_PAGE_DOWN: u16 = 78;
+const KEY_RIGHT: u16 = 79;
+const KEY_LEFT: u16 = 80;
 const KEY_DOWN: u16 = 81;
 const KEY_UP: u16 = 82;
+const KEY_KEYPAD_ENTER: u16 = 88;
 
-/// The application's screens, as the update thread holds them.
+/// The application's screens, as the update thread holds them. The song select's state
+/// lives in [`ShellState`]: its list and selection outlast a visit.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum AppScreen {
     Menu(MainMenu),
@@ -56,20 +70,20 @@ pub enum AppScreen {
 }
 
 /// What the draw thread needs to draw a screen.
-#[derive(Clone, Copy, Debug, PartialEq)]
+#[derive(Clone, Debug)]
 pub enum ScreenView {
     Menu(MenuSnapshot),
-    SongSelect,
+    SongSelect(SongSelectSnapshot),
 }
 
-#[derive(Clone, Copy, Debug, PartialEq)]
+#[derive(Clone, Debug)]
 pub struct LayerSnapshot {
     pub view: ScreenView,
     pub pose: Pose,
 }
 
 /// The visible screens, bottom first.
-#[derive(Clone, Copy, Debug, Default, PartialEq)]
+#[derive(Clone, Debug, Default)]
 pub struct ShellSnapshot {
     pub layers: [Option<LayerSnapshot>; MAX_LAYERS],
 }
@@ -78,8 +92,17 @@ pub struct ShellSnapshot {
 pub struct ShellState {
     stack: ScreenStack<AppScreen>,
     theme: Theme,
-    /// Layout in pixels, the unit the draw thread lays out in.
+    /// Layouts in pixels, the unit the draw thread lays out in.
     layout: MenuLayout,
+    song_layout: SongSelectLayout,
+    song_select: SongSelect,
+    /// The library's end, without a songs folder `None`.
+    songs: Option<SongsLink>,
+    /// The `.osu` files of the song select's list, by set and difficulty.
+    files: Arc<SongFiles>,
+    /// The lists before the first publication, kept so that replacing them frees nothing
+    /// on the update thread.
+    _empty: (Arc<SongList>, Arc<SongFiles>, Arc<str>),
     /// Last cursor position in pixels.
     cursor: [f32; 2],
     /// Input arrives in window points, layout is in pixels.
@@ -88,72 +111,129 @@ pub struct ShellState {
 
 impl ShellState {
     pub fn new(theme: Theme, width: f32, height: f32, pixels_per_point: f32) -> ShellState {
+        let empty: (Arc<SongList>, Arc<SongFiles>, Arc<str>) =
+            (Arc::default(), Arc::from([]), Arc::from(""));
+        let mut song_select = SongSelect::new();
+        song_select.set_list(Arc::clone(&empty.0));
+        song_select.set_scanning_text(Arc::clone(&empty.2));
         ShellState {
             stack: ScreenStack::new(AppScreen::Menu(MainMenu::new())),
             layout: MenuLayout::new(width, height, &theme),
+            song_layout: SongSelectLayout::new(width, height, &theme),
+            song_select,
+            songs: None,
+            files: Arc::clone(&empty.1),
+            _empty: empty,
             theme,
             cursor: [0.0, 0.0],
             pixels_per_point,
         }
     }
 
+    /// A shell whose song select shows what the library thread publishes; without a
+    /// link, it says that no songs folder was given.
+    pub fn with_songs(mut self, songs: SongsLink) -> ShellState {
+        self.song_select
+            .set_status(SongSelectStatus::Scanning { sets: 0 });
+        self.songs = Some(songs);
+        self
+    }
+
     pub fn stack(&self) -> &ScreenStack<AppScreen> {
         &self.stack
+    }
+
+    pub fn song_select(&self) -> &SongSelect {
+        &self.song_select
+    }
+
+    /// The `.osu` file of a difficulty of the song select's list.
+    pub fn file(&self, set: usize, difficulty: usize) -> Option<&PathBuf> {
+        self.files.get(set)?.get(difficulty)
     }
 
     /// Lays the screens out for a window of `width` × `height` pixels.
     pub fn set_size(&mut self, width: f32, height: f32) {
         self.layout = MenuLayout::new(width, height, &self.theme);
+        self.song_layout = SongSelectLayout::new(width, height, &self.theme);
     }
 
-    fn menu_input(&mut self, kind: InputKind) -> Option<MenuInput> {
+    /// The input of the screens, as the song select (the larger set) understands it.
+    fn screen_input(&mut self, kind: InputKind) -> Option<SongSelectInput> {
         Some(match kind {
             InputKind::Key {
                 scancode,
                 down: true,
             } => match scancode {
-                KEY_UP => MenuInput::Up,
-                KEY_DOWN => MenuInput::Down,
-                KEY_ENTER | KEY_KEYPAD_ENTER => MenuInput::Activate,
-                KEY_ESCAPE => MenuInput::Back,
+                KEY_UP => SongSelectInput::Up,
+                KEY_DOWN => SongSelectInput::Down,
+                KEY_LEFT => SongSelectInput::Left,
+                KEY_RIGHT => SongSelectInput::Right,
+                KEY_PAGE_UP => SongSelectInput::PageUp,
+                KEY_PAGE_DOWN => SongSelectInput::PageDown,
+                KEY_HOME => SongSelectInput::Home,
+                KEY_END => SongSelectInput::End,
+                KEY_ENTER | KEY_KEYPAD_ENTER => SongSelectInput::Activate,
+                KEY_ESCAPE => SongSelectInput::Back,
                 _ => return None,
             },
             InputKind::MouseButton {
                 button: MouseButton::X1,
                 down: true,
-            } => MenuInput::Back,
+            } => SongSelectInput::Back,
             InputKind::MouseButton {
                 button: MouseButton::Left,
                 down: true,
-            } => MenuInput::PointerPress {
+            } => SongSelectInput::PointerPress {
                 x: self.cursor[0],
                 y: self.cursor[1],
             },
             InputKind::MouseMove { x, y } => {
                 self.cursor = [x * self.pixels_per_point, y * self.pixels_per_point];
-                MenuInput::PointerMove {
+                SongSelectInput::PointerMove {
                     x: self.cursor[0],
                     y: self.cursor[1],
                 }
             }
+            // The wheel's positive notches go away from the user, towards the list's start.
+            InputKind::MouseWheel { y } => SongSelectInput::Scroll { lines: -y },
             _ => return None,
         })
+    }
+
+    /// Takes the newest list the library thread published, if any.
+    fn receive_songs(&mut self) {
+        let Some(published) = self.songs.as_mut().and_then(SongsLink::latest) else {
+            return;
+        };
+        self.song_select.set_list(published.list);
+        self.song_select.set_status(published.status);
+        self.song_select.set_scanning_text(published.scanning_text);
+        self.files = published.files;
     }
 
     /// Gives `events` to the top screen and applies what it asks for at `now_ns`. Stops at
     /// the first exit.
     pub fn handle(&mut self, events: &[InputEvent], now_ns: u64) -> Navigated {
         for event in events {
-            let Some(input) = self.menu_input(event.kind) else {
+            let Some(input) = self.screen_input(event.kind) else {
                 continue;
             };
             let nav = match self.stack.top_mut() {
-                AppScreen::Menu(menu) => match menu.input(input, &self.layout) {
-                    Some(MenuAction::Play) => Some(Nav::Push(AppScreen::SongSelect)),
-                    Some(MenuAction::Exit) => Some(Nav::Exit),
-                    None => None,
-                },
-                AppScreen::SongSelect => (input == MenuInput::Back).then_some(Nav::Pop),
+                AppScreen::Menu(menu) => {
+                    match menu_input(input).and_then(|input| menu.input(input, &self.layout)) {
+                        Some(MenuAction::Play) => Some(Nav::Push(AppScreen::SongSelect)),
+                        Some(MenuAction::Exit) => Some(Nav::Exit),
+                        None => None,
+                    }
+                }
+                AppScreen::SongSelect => {
+                    match self.song_select.input(input, &self.song_layout) {
+                        Some(SongSelectAction::Back) => Some(Nav::Pop),
+                        // Playing from the stack comes with the play screen.
+                        Some(SongSelectAction::Play { .. }) | None => None,
+                    }
+                }
             };
             if let Some(nav) = nav
                 && self.stack.navigate(nav, now_ns) == Navigated::Exit
@@ -173,18 +253,32 @@ impl ShellState {
         snapshot: &mut ShellSnapshot,
     ) -> Navigated {
         self.stack.tick(now_ns);
+        self.receive_songs();
         let navigated = self.handle(events, now_ns);
         for (slot, layer) in snapshot.layers.iter_mut().zip(self.stack.layers(now_ns)) {
             *slot = layer.map(|(screen, pose)| LayerSnapshot {
                 view: match screen {
                     AppScreen::Menu(menu) => ScreenView::Menu(menu.snapshot()),
-                    AppScreen::SongSelect => ScreenView::SongSelect,
+                    AppScreen::SongSelect => ScreenView::SongSelect(self.song_select.snapshot()),
                 },
                 pose,
             });
         }
         navigated
     }
+}
+
+/// The song select's input as the main menu understands it.
+fn menu_input(input: SongSelectInput) -> Option<MenuInput> {
+    Some(match input {
+        SongSelectInput::Up => MenuInput::Up,
+        SongSelectInput::Down => MenuInput::Down,
+        SongSelectInput::Activate => MenuInput::Activate,
+        SongSelectInput::Back => MenuInput::Back,
+        SongSelectInput::PointerMove { x, y } => MenuInput::PointerMove { x, y },
+        SongSelectInput::PointerPress { x, y } => MenuInput::PointerPress { x, y },
+        _ => return None,
+    })
 }
 
 /// The update thread's side.
@@ -234,7 +328,7 @@ struct View {
     theme: Theme,
     glyphs: GlyphCache,
     menu: MenuView,
-    placeholder: PlaceholderView,
+    song_select: SongSelectView,
     shapes: SpriteBatch,
     text: SpriteBatch,
     /// Read by the update thread for the layout.
@@ -302,12 +396,15 @@ impl Draw<ShellSnapshot> for View {
                     layer.pose,
                     r.white,
                 ),
-                ScreenView::SongSelect => self.placeholder.push(
+                ScreenView::SongSelect(song_select) => self.song_select.push(
+                    &mut self.shapes,
                     &mut self.text,
                     &mut self.glyphs,
                     width,
                     height,
+                    song_select,
                     layer.pose,
+                    r.white,
                 ),
             }
             ends[layers] = (self.shapes.len() as u32, self.text.len() as u32);
@@ -370,12 +467,26 @@ impl Draw<ShellSnapshot> for View {
 impl View {
     fn request_glyphs(&mut self) -> usize {
         self.menu.request_glyphs(&mut self.glyphs)
-            + self.placeholder.request_glyphs(&mut self.glyphs)
+            + self.song_select.request_glyphs(&mut self.glyphs)
     }
 }
 
-/// Opens the window with the main menu and runs until it is closed.
-pub fn run() -> Result<(), String> {
+/// Parses the arguments of the window: `--songs DIR`.
+pub fn parse_songs<I: IntoIterator<Item = String>>(args: I) -> Result<Option<PathBuf>, String> {
+    let mut songs = None;
+    let mut args = args.into_iter();
+    while let Some(arg) = args.next() {
+        match arg.as_str() {
+            "--songs" => songs = Some(args.next().ok_or("--songs needs a value")?.into()),
+            _ => return Err(format!("unexpected argument {arg}")),
+        }
+    }
+    Ok(songs)
+}
+
+/// Opens the window with the main menu and runs until it is closed. With `songs`, the song
+/// select lists the beatmap sets of that folder.
+pub fn run(songs: Option<PathBuf>) -> Result<(), String> {
     let theme = Theme::default();
     let mut window =
         InputWindow::new_opengl("SLAM", WINDOW.0, WINDOW.1).map_err(|e| e.to_string())?;
@@ -393,7 +504,7 @@ pub fn run() -> Result<(), String> {
     let glyphs = glyph_atlas(Arc::clone(&registry), &GlyphAtlasConfig::new(limits))
         .map_err(|e| e.to_string())?;
     // English until the language setting exists (#98).
-    let localizer = Localizer::builtin().map_err(|e| e.to_string())?;
+    let localizer = Arc::new(Localizer::builtin().map_err(|e| e.to_string())?);
     let text = |key: &str| localizer.format(key, None).into_owned();
     let labels = MenuLabels {
         title: text("menu-title"),
@@ -404,11 +515,34 @@ pub fn run() -> Result<(), String> {
         ],
     };
     let menu = MenuView::new(Arc::clone(&registry), theme, &labels);
-    let placeholder = PlaceholderView::new(registry, theme, &text("song-select-placeholder"));
+    let song_labels = SongSelectLabels {
+        no_folder: text("song-select-no-folder"),
+        failed: text("song-select-failed"),
+        loading: text("song-select-loading"),
+        empty: text("song-select-empty"),
+        hint: text("song-select-hint"),
+    };
+    let song_select = SongSelectView::new(registry, theme, &song_labels);
 
+    let mut state = ShellState::new(theme, pixels_w as f32, pixels_h as f32, pixels_per_point);
+    // Joined when `run` returns, after the engine.
+    let mut _library = None;
+    if let Some(songs) = songs {
+        let localizer = Arc::clone(&localizer);
+        let scanning = Box::new(move |count: usize| {
+            let mut args = slam_ui::i18n::FluentArgs::new();
+            args.set("count", count);
+            localizer
+                .format("song-select-scanning", Some(&args))
+                .into_owned()
+        });
+        let (link, thread) = crate::songs::spawn(songs, scanning).map_err(|e| e.to_string())?;
+        state = state.with_songs(link);
+        _library = Some(thread);
+    }
     let exited = Arc::new(AtomicBool::new(false));
     let shell = Shell {
-        state: ShellState::new(theme, pixels_w as f32, pixels_h as f32, pixels_per_point),
+        state,
         surface: Arc::clone(&surface_size),
         layout_size: initial_size,
         exited: Arc::clone(&exited),
@@ -419,7 +553,7 @@ pub fn run() -> Result<(), String> {
         theme,
         glyphs,
         menu,
-        placeholder,
+        song_select,
         shapes: SpriteBatch::with_capacity(MAX_SHAPES),
         text: SpriteBatch::with_capacity(MAX_GLYPH_SPRITES),
         surface_size,
