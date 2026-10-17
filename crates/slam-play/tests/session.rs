@@ -462,12 +462,13 @@ fn ticks_and_frames_do_not_allocate() {
         white: WHITE,
         disc: WHITE,
         gradient: WHITE,
+        triangle: WHITE,
     });
     textures.disc = Some(WHITE);
     let mut batch = SpriteBatch::with_capacity(
         4096 + MAX_CURSOR_SPRITES
             + slam_play::resume::MAX_TARGET_SPRITES
-            + slam_play::hit_error::MAX_METER_SPRITES,
+            + slam_play::hit_error::MAX_HIT_ERROR_SPRITES,
     );
     let mut bodies = SliderBodies::new();
     let mut drawn = 0;
@@ -646,7 +647,11 @@ fn view(map: &Beatmap) -> PlayView {
             None,
             &chain,
         ),
-        hit_error: slam_play::hit_error::HitErrorView::new(&windows),
+        hit_error: slam_play::hit_error::HitErrorMeter::new(
+            slam_play::hit_error::HitErrorStyle::Bar,
+            &windows,
+            1.0,
+        ),
         cursor: CursorView::default(),
         resume: slam_play::resume::ResumeView::default(),
     }

@@ -35,6 +35,8 @@ pub struct PlayOptions {
     /// How dark the background is, 0 ..= 1.
     pub dim: f64,
     pub beatmap_colours: bool,
+    /// Size multiplier of the hit error meter (ADR-0050).
+    pub hit_error_scale: f64,
 }
 
 /// A prepared play, or why it could not be.
@@ -151,6 +153,7 @@ pub fn spawn(mut config: LoaderConfig) -> std::io::Result<(LoaderLink, SceneTras
                     idle = false;
                     config.settings.dim = options.dim;
                     config.settings.beatmap_colours = options.beatmap_colours;
+                    config.settings.hit_error_scale = options.hit_error_scale;
                     let result = prepare(
                         &map,
                         &config.settings,
@@ -194,6 +197,7 @@ mod tests {
     const OPTIONS: PlayOptions = PlayOptions {
         dim: 0.7,
         beatmap_colours: true,
+        hit_error_scale: 1.0,
     };
 
     fn config() -> LoaderConfig {

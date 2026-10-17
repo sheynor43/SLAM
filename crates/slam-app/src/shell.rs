@@ -1674,6 +1674,7 @@ pub fn run(settings: Settings) -> Result<(), String> {
         settings: PlaySettings {
             beatmap_colours: settings.gameplay.beatmap_colours,
             dim: settings.gameplay.dim,
+            hit_error_scale: settings.gameplay.hit_error_scale,
             ..PlaySettings::default()
         },
         limits,

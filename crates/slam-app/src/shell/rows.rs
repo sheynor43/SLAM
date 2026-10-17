@@ -21,6 +21,9 @@ const SECTION_KEYS: [&str; 5] = [
 /// The number of sections.
 pub const SECTIONS: usize = SECTION_KEYS.len();
 
+/// The range of the hit error meter size slider (ADR-0050).
+const HIT_ERROR_SCALE_RANGE: (f64, f64) = (0.5, 2.0);
+
 const BUFFER_PRESETS: [u32; 6] = [64, 128, 256, 512, 1024, 2048];
 const DRAW_PRESETS: [f64; 9] = [
     60.0, 120.0, 144.0, 240.0, 360.0, 1000.0, 2000.0, 4000.0, 8000.0,
@@ -49,10 +52,11 @@ pub enum Row {
     MenuDrawHz,
     Dim,
     BeatmapColours,
+    HitErrorScale,
 }
 
 impl Row {
-    pub const ALL: [Row; 20] = [
+    pub const ALL: [Row; 21] = [
         Row::MasterVolume,
         Row::MusicVolume,
         Row::HitsoundVolume,
@@ -73,6 +77,7 @@ impl Row {
         Row::MenuDrawHz,
         Row::Dim,
         Row::BeatmapColours,
+        Row::HitErrorScale,
     ];
 
     /// The action and binding slot a key row edits.
@@ -113,7 +118,7 @@ impl Row {
             | Row::SmokeKey2
             | Row::ResetKeys => 2,
             Row::UpdateHz | Row::DrawHz | Row::MenuDrawHz => 3,
-            Row::Dim | Row::BeatmapColours => 4,
+            Row::Dim | Row::BeatmapColours | Row::HitErrorScale => 4,
         }
     }
 
@@ -139,6 +144,7 @@ impl Row {
             Row::MenuDrawHz => "settings-frame-menu-draw-rate",
             Row::Dim => "settings-gameplay-dim",
             Row::BeatmapColours => "settings-gameplay-beatmap-colours",
+            Row::HitErrorScale => "settings-gameplay-hit-error-scale",
         }
     }
 
@@ -236,6 +242,12 @@ impl Rows {
             Row::HitsoundVolume => percent(s.audio.hitsound_volume),
             Row::EffectsVolume => percent(s.audio.effects_volume),
             Row::Dim => percent(s.gameplay.dim),
+            Row::HitErrorScale => RowKind::Slider {
+                min: HIT_ERROR_SCALE_RANGE.0,
+                max: HIT_ERROR_SCALE_RANGE.1,
+                step: 0.01,
+                value: round_to(s.gameplay.hit_error_scale, 2),
+            },
             Row::Backend => choice(
                 self.backends.len(),
                 self.backends.iter().position(|b| *b == s.audio.backend),
@@ -297,6 +309,10 @@ impl Rows {
                 settings.audio.effects_volume = percent(v);
             }
             (Row::Dim, RowValue::Slider(v)) => settings.gameplay.dim = percent(v),
+            (Row::HitErrorScale, RowValue::Slider(v)) => {
+                settings.gameplay.hit_error_scale =
+                    round_to(v, 2).clamp(HIT_ERROR_SCALE_RANGE.0, HIT_ERROR_SCALE_RANGE.1);
+            }
             (Row::GlobalOffset, RowValue::Slider(v)) => {
                 settings.timing.global_offset_ms = v.round();
             }
@@ -375,6 +391,7 @@ impl Rows {
                     | Row::HitsoundVolume
                     | Row::EffectsVolume
                     | Row::Dim => text("settings-unit-percent"),
+                    Row::HitErrorScale => text("settings-unit-times"),
                     _ => String::new(),
                 };
                 let button = match row {
@@ -418,6 +435,7 @@ pub fn round_for_save(settings: &mut Settings) {
     ] {
         *volume = round_to(*volume, 2);
     }
+    settings.gameplay.hit_error_scale = round_to(settings.gameplay.hit_error_scale, 2);
     settings.timing.global_offset_ms = settings.timing.global_offset_ms.round();
 }
 
@@ -473,6 +491,14 @@ mod tests {
         rows.apply(&mut s, index(Row::Dim), RowValue::Slider(7.0));
         rows.apply(&mut s, index(Row::GlobalOffset), RowValue::Slider(-3.0));
         rows.apply(&mut s, index(Row::BeatmapColours), RowValue::Toggle(false));
+        rows.apply(
+            &mut s,
+            index(Row::HitErrorScale),
+            RowValue::Slider(1.2300000000000002),
+        );
+        assert_eq!(s.gameplay.hit_error_scale, 1.23);
+        rows.apply(&mut s, index(Row::HitErrorScale), RowValue::Slider(9.0));
+        assert_eq!(s.gameplay.hit_error_scale, 2.0);
         // 0.3 and 0.07 exactly as typed, not 0.30000000000000004.
         assert_eq!(s.audio.master_volume, 0.3);
         assert_eq!(s.gameplay.dim, 0.07);
@@ -554,11 +580,13 @@ mod tests {
         s.audio.master_volume = 0.1 + 0.2;
         s.audio.music_volume = 0.555;
         s.gameplay.dim = 0.30000000000000004;
+        s.gameplay.hit_error_scale = 1.12 + 0.005;
         s.timing.global_offset_ms = 12.4;
         round_for_save(&mut s);
         assert_eq!(s.audio.master_volume, 0.3);
         assert_eq!(s.audio.music_volume, 0.56);
         assert_eq!(s.gameplay.dim, 0.3);
+        assert_eq!(s.gameplay.hit_error_scale, 1.13);
         assert_eq!(s.timing.global_offset_ms, 12.0);
     }
 
@@ -599,6 +627,7 @@ mod tests {
         assert_eq!(draw[0], "Unlimited");
         assert!(draw.contains(&"240 Hz".to_owned()), "{draw:?}");
         assert_eq!(labels.rows[index(Row::GlobalOffset)].unit, " ms");
+        assert_eq!(labels.rows[index(Row::HitErrorScale)].unit, "×");
         localizer.set_language("ru").unwrap();
         let labels = rows.labels(&localizer);
         let draw = &labels.rows[index(Row::DrawHz)].options;

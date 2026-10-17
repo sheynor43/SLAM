@@ -64,6 +64,8 @@ pub struct PlaySettings {
     pub mods: ModSet,
     /// How dark the background is, 0 ..= 1 (lazer's `DimLevel`).
     pub dim: f64,
+    /// Size multiplier of the hit error meter (ADR-0050).
+    pub hit_error_scale: f64,
 }
 
 impl Default for PlaySettings {
@@ -73,6 +75,7 @@ impl Default for PlaySettings {
             beatmap_colours: true,
             mods: ModSet::default(),
             dim: BackgroundSettings::default().dim_level,
+            hit_error_scale: 1.0,
         }
     }
 }
@@ -220,7 +223,11 @@ pub fn prepare(
             Some(&loaded.beatmap_skin),
             &loaded.skins,
         ),
-        hit_error: slam_play::hit_error::HitErrorView::new(&windows),
+        hit_error: slam_play::hit_error::HitErrorMeter::new(
+            slam_play::hit_error::HitErrorStyle::default(),
+            &windows,
+            settings.hit_error_scale as f32,
+        ),
         cursor: CursorView::default(),
         resume: slam_play::resume::ResumeView::default(),
     };

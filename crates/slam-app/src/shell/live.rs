@@ -129,6 +129,7 @@ pub fn play_options(settings: &Settings) -> PlayOptions {
     PlayOptions {
         dim: settings.gameplay.dim,
         beatmap_colours: settings.gameplay.beatmap_colours,
+        hit_error_scale: settings.gameplay.hit_error_scale,
     }
 }
 
@@ -243,11 +244,13 @@ mod tests {
         let mut settings = Settings::default();
         settings.gameplay.dim = 0.3;
         settings.gameplay.beatmap_colours = false;
+        settings.gameplay.hit_error_scale = 1.5;
         assert_eq!(
             play_options(&settings),
             PlayOptions {
                 dim: 0.3,
                 beatmap_colours: false,
+                hit_error_scale: 1.5,
             }
         );
     }

@@ -35,6 +35,7 @@ fn defaults_match_hardcoded_values() {
     assert_eq!(s.frame.update_hz, 1000.0);
     assert_eq!(s.audio.buffer_frames, StreamConfig::default().buffer_frames);
     assert_eq!(s.gameplay.dim, BackgroundSettings::default().dim_level);
+    assert_eq!(s.gameplay.hit_error_scale, 1.0);
     assert_eq!(s.audio.master_volume, 1.0);
     assert_eq!(s.audio.hitsound_volume, 1.0);
     assert_eq!(s.audio.effects_volume, 1.0);
@@ -60,6 +61,7 @@ fn round_trip_non_default() {
     s.gameplay.dim = 0.3;
     s.gameplay.beatmap_colours = false;
     s.gameplay.mouse_buttons = false;
+    s.gameplay.hit_error_scale = 1.5;
     s.input.bindings = Bindings::new(&[
         Binding {
             input: keys::input_from_name("F").unwrap(),
@@ -157,6 +159,38 @@ dim = 0.1
             loaded.warnings.iter().any(|w| w.starts_with(field)),
             "{field}: {:?}",
             loaded.warnings
+        );
+    }
+}
+
+#[test]
+fn hit_error_scale_missing_defaults_and_round_trips() {
+    let missing = file::from_toml_str("[gameplay]\ndim = 0.2\n");
+    assert_eq!(missing.status, LoadStatus::Ok, "{:?}", missing.warnings);
+    assert_eq!(missing.settings.gameplay.hit_error_scale, 1.0);
+    let int = file::from_toml_str("[gameplay]\nhit_error_scale = 2\n");
+    assert_eq!(int.settings.gameplay.hit_error_scale, 2.0);
+    let mut s = Settings::default();
+    s.gameplay.hit_error_scale = 0.73;
+    let text = file::to_toml_string(&s).unwrap();
+    assert!(text.contains("hit_error_scale = 0.73"), "{text}");
+    assert_eq!(file::from_toml_str(&text).settings, s);
+}
+
+#[test]
+fn hit_error_scale_is_rounded_to_its_step_and_out_of_range_falls_back() {
+    let rounded = file::from_toml_str("[gameplay]\nhit_error_scale = 1.044\n");
+    assert_eq!(rounded.settings.gameplay.hit_error_scale, 1.04);
+    for bad in ["0.1", "5.0", "\"big\""] {
+        let loaded = file::from_toml_str(&format!("[gameplay]\nhit_error_scale = {bad}\n"));
+        assert_eq!(loaded.status, LoadStatus::Recovered, "{bad}");
+        assert_eq!(loaded.settings.gameplay.hit_error_scale, 1.0, "{bad}");
+        assert!(
+            loaded
+                .warnings
+                .iter()
+                .any(|w| w.starts_with("gameplay.hit_error_scale")),
+            "{bad}"
         );
     }
 }

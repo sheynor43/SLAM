@@ -35,7 +35,7 @@ use crate::cursor::{
 use crate::follow_points::{FollowPoints, MAX_FOLLOW_POINT_SIZE};
 use crate::gameplay_sounds::{GameplaySounds, VoiceSink};
 use crate::hit_error::{
-    HitErrorRing, HitErrorTargets, HitErrorView, MeterTextures, disc_image, gradient_image,
+    HitErrorMeter, HitErrorRing, HitErrorTargets, MeterTextures, disc_image, gradient_image,
 };
 use crate::hotkeys::{GlobalAction, Hotkeys};
 use crate::input::{ClockTime, GameTime, LiveInput};
@@ -43,6 +43,7 @@ use crate::judgements::{
     JudgementRing, JudgementTextures, JudgementView, MAX_JUDGEMENT_FRAMES, PIECE_SLOTS, PieceKind,
     PieceSprites, PopupTargets, piece_sources,
 };
+use crate::legacy_hit_error::triangle_image;
 use crate::offset::{self, OffsetPanel};
 use crate::playfield::PlayfieldLayout;
 use crate::resume::ResumeView;
@@ -1177,9 +1178,10 @@ const WHITE_SIDE: u32 = 4;
 pub struct PlayTextures {
     requested: [Option<Requested>; ELEMENTS.len()],
     white: TextureHandle,
-    /// The hit error meter's disc and gradient.
+    /// The hit error meters' disc, gradient and triangle.
     disc: TextureHandle,
     gradient: TextureHandle,
+    triangle: TextureHandle,
     /// Whether slider heads use `sliderstartcircle` rather than the hit circle's textures.
     head_prefix: bool,
     /// Whether slider tails use `sliderendcircle` rather than the hit circle's textures.
@@ -1368,11 +1370,13 @@ impl PlayTextures {
         )?;
         let disc = requests.load_pixels(disc_image(), TextureKind::Atlas)?;
         let gradient = requests.load_pixels(gradient_image(), TextureKind::Atlas)?;
+        let triangle = requests.load_pixels(triangle_image(), TextureKind::Atlas)?;
         Ok(PlayTextures {
             requested,
             white,
             disc,
             gradient,
+            triangle,
             head_prefix,
             tail_prefix,
             ball,
@@ -1396,15 +1400,22 @@ impl PlayTextures {
         if let TextureState::Ready(disc) = uploads.get(self.disc) {
             frame.disc = Some(disc);
         }
-        if let (Some(white), TextureState::Ready(disc), TextureState::Ready(gradient)) = (
+        if let (
+            Some(white),
+            TextureState::Ready(disc),
+            TextureState::Ready(gradient),
+            TextureState::Ready(triangle),
+        ) = (
             frame.white,
             uploads.get(self.disc),
             uploads.get(self.gradient),
+            uploads.get(self.triangle),
         ) {
             frame.meter = Some(MeterTextures {
                 white,
                 disc,
                 gradient,
+                triangle,
             });
         }
         for (requested, element) in self.requested.iter().zip(ELEMENTS) {
@@ -1582,7 +1593,7 @@ pub struct PlayView {
     pub spinners: HitSpinners,
     pub follow_points: FollowPoints,
     pub judgements: JudgementView,
-    pub hit_error: HitErrorView,
+    pub hit_error: HitErrorMeter,
     pub cursor: CursorView,
     pub resume: ResumeView,
 }
@@ -1646,7 +1657,7 @@ impl PlayView {
 
     /// Writes the hit error meter of `snapshot` drawn at engine time `now_ns` on a window of
     /// `width` × `height` pixels: part of the HUD, above the playfield. Allocation-free once
-    /// `batch` has room for [`MAX_METER_SPRITES`](crate::hit_error::MAX_METER_SPRITES).
+    /// `batch` has room for [`MAX_HIT_ERROR_SPRITES`](crate::hit_error::MAX_HIT_ERROR_SPRITES).
     pub fn push_hit_error(
         &mut self,
         batch: &mut SpriteBatch,
