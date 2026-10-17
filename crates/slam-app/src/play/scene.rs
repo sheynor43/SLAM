@@ -309,6 +309,12 @@ pub struct PlayScene {
 }
 
 impl PlayScene {
+    /// The background dim the scene was prepared with.
+    #[cfg(test)]
+    pub(crate) fn dim(&self) -> f64 {
+        self.background_view.settings().dim_level
+    }
+
     /// Whether [`PlayScene::start`] made the GPU resources.
     pub fn started(&self) -> bool {
         self.gpu.is_some()

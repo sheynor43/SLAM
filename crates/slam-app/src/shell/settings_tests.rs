@@ -180,8 +180,29 @@ fn shell_with(link: crate::settings::saver::SaveLink) -> Shell {
         exited: Arc::new(AtomicBool::new(false)),
         draw_rate: DrawRateControl::new(),
         rate_switch: DrawRateSwitch::new(LimiterMode::Hz(1000.0)),
+        update_rate: AppliedUpdateRate::new(UpdateRateControl::new(), 1000.0),
         saver: Some(link),
     }
+}
+
+#[test]
+fn a_committed_update_rate_reaches_the_engine() {
+    let (link, _taken) = crate::settings::saver::detached(1);
+    let mut shell = shell_with(link);
+    let control = UpdateRateControl::new();
+    shell.update_rate = AppliedUpdateRate::new(control.clone(), 1000.0);
+    let mut snap = ShellSnapshot::default();
+    opened(&mut shell.state, &mut snap);
+    // Audio, offset, keys, frame rates; the update rate is the first row.
+    let tabs = [key(KEY_TAB); 3];
+    shell.state.tick(LATER, &tabs, &mut snap);
+    shell.state.tick(LATER, &[key(KEY_RIGHT)], &mut snap);
+    // Not before the screen closes.
+    shell.apply_settings(LATER);
+    assert_eq!(control.hz(), 1000.0);
+    shell.state.tick(LATER, &[key(KEY_ESCAPE)], &mut snap);
+    shell.apply_settings(LATER);
+    assert_eq!(control.hz(), 2000.0);
 }
 
 #[test]

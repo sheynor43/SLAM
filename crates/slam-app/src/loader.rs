@@ -25,6 +25,16 @@ const POLL: Duration = Duration::from_millis(5);
 pub struct LoadRequest {
     pub id: u64,
     pub map: PathBuf,
+    pub options: PlayOptions,
+}
+
+/// The settings a play takes when it is prepared, sent with each request so that a
+/// change applies to the next play (ADR-0048).
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct PlayOptions {
+    /// How dark the background is, 0 ..= 1.
+    pub dim: f64,
+    pub beatmap_colours: bool,
 }
 
 /// A prepared play, or why it could not be.
@@ -56,6 +66,7 @@ fn log(trash: Trash) {
 
 /// What the loader needs to prepare a play.
 pub struct LoaderConfig {
+    /// Each request's [`PlayOptions`] replace the fields they name.
     pub settings: PlaySettings,
     pub limits: Limits,
     pub registry: Arc<FontRegistry>,
@@ -72,8 +83,8 @@ pub struct LoaderLink {
 
 impl LoaderLink {
     /// Asks for a play of `map`; `false` if too many requests wait.
-    pub fn request(&mut self, id: u64, map: PathBuf) -> bool {
-        self.requests.push(LoadRequest { id, map }).is_ok()
+    pub fn request(&mut self, id: u64, map: PathBuf, options: PlayOptions) -> bool {
+        self.requests.push(LoadRequest { id, map, options }).is_ok()
     }
 
     /// A finished preparation, if any.
@@ -115,7 +126,7 @@ impl Drop for LoaderThread {
 }
 
 /// Starts the loader on a thread named `slam-play-loader`.
-pub fn spawn(config: LoaderConfig) -> std::io::Result<(LoaderLink, SceneTrash, LoaderThread)> {
+pub fn spawn(mut config: LoaderConfig) -> std::io::Result<(LoaderLink, SceneTrash, LoaderThread)> {
     let (requests, mut request_rx) = rtrb::RingBuffer::new(RING);
     let (mut result_tx, results) = rtrb::RingBuffer::new(RING);
     let (trash, mut trash_rx) = rtrb::RingBuffer::<Trash>::new(TRASH);
@@ -135,9 +146,11 @@ pub fn spawn(config: LoaderConfig) -> std::io::Result<(LoaderLink, SceneTrash, L
                     idle = false;
                 }
                 if result_tx.slots() > 0
-                    && let Ok(LoadRequest { id, map }) = request_rx.pop()
+                    && let Ok(LoadRequest { id, map, options }) = request_rx.pop()
                 {
                     idle = false;
+                    config.settings.dim = options.dim;
+                    config.settings.beatmap_colours = options.beatmap_colours;
                     let result = prepare(
                         &map,
                         &config.settings,
@@ -178,6 +191,11 @@ mod tests {
 
     use super::*;
 
+    const OPTIONS: PlayOptions = PlayOptions {
+        dim: 0.7,
+        beatmap_colours: true,
+    };
+
     fn config() -> LoaderConfig {
         LoaderConfig {
             settings: PlaySettings::default(),
@@ -208,18 +226,36 @@ mod tests {
         let (mut link, _scenes, thread) = spawn(config()).unwrap();
         let map =
             Path::new(env!("CARGO_MANIFEST_DIR")).join("../slam-osu/tests/data/slider-samples.osu");
-        assert!(link.request(7, map));
+        assert!(link.request(7, map, OPTIONS));
         let result = wait(&mut link);
         assert_eq!(result.id, 7);
         let prepared = result.result.unwrap();
         assert!(!prepared.beatmap.hit_objects.is_empty());
         assert!(!prepared.scene.started());
+        assert_eq!(prepared.scene.dim(), 0.7);
         link.free(Trash::Prepared(prepared));
 
-        assert!(link.request(8, PathBuf::from("/nonexistent/map.osu")));
+        assert!(link.request(8, PathBuf::from("/nonexistent/map.osu"), OPTIONS));
         let result = wait(&mut link);
         assert_eq!(result.id, 8);
         assert!(result.result.is_err());
+        drop(thread);
+    }
+
+    #[test]
+    fn each_play_takes_the_options_of_its_request() {
+        let (mut link, _scenes, thread) = spawn(config()).unwrap();
+        let map =
+            Path::new(env!("CARGO_MANIFEST_DIR")).join("../slam-osu/tests/data/slider-samples.osu");
+        for (id, dim) in [(1, 0.25), (2, 0.9)] {
+            let options = PlayOptions { dim, ..OPTIONS };
+            assert!(link.request(id, map.clone(), options));
+            let result = wait(&mut link);
+            assert_eq!(result.id, id);
+            let prepared = result.result.unwrap();
+            assert_eq!(prepared.scene.dim(), dim);
+            link.free(Trash::Prepared(prepared));
+        }
         drop(thread);
     }
 }

@@ -566,6 +566,7 @@ fn host(name: &str, with_track: bool) -> HostFixture {
             music: Arc::clone(player.position()),
             player,
             mixer: mixer_handle,
+            volumes: AppliedVolumes::new(Volumes::of(&Settings::default().audio)),
         },
         loader,
         scenes: scene_tx,
@@ -774,12 +775,21 @@ fn the_songs_flag_overrides_the_file() {
 }
 
 #[test]
-fn the_music_takes_the_master_volume_too() {
-    let mut audio = crate::settings::Audio::default();
-    assert_eq!(volumes(&audio), (1.0, 1.0));
-    audio.master_volume = 0.5;
-    audio.music_volume = 0.5;
-    assert_eq!(volumes(&audio), (0.5, 0.25));
+fn changed_settings_reach_the_audio_and_the_next_play() {
+    let mut fixture = host("live", false);
+    let mut settings = Settings::default();
+    settings.audio.master_volume = 0.5;
+    settings.audio.hitsound_volume = 0.25;
+    settings.timing.global_offset_ms = -12.0;
+    settings.gameplay.mouse_buttons = !settings.gameplay.mouse_buttons;
+    fixture.host.apply_settings(&settings);
+    let host = &fixture.host;
+    assert_eq!(
+        host.audio.volumes,
+        AppliedVolumes::new(Volumes::of(&settings.audio))
+    );
+    assert_eq!(host.input.offsets.global_ms, -12.0);
+    assert_eq!(host.input.mouse_buttons, settings.gameplay.mouse_buttons);
 }
 
 #[test]
