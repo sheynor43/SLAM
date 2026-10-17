@@ -292,6 +292,13 @@ fn from_table(mut table: Table) -> Loaded {
             Err(e) => cx.warn(format!("frame.menu_draw: {e}, using the default")),
         }
     }
+    cx.field(
+        &mut frame,
+        "frame",
+        "show_fps",
+        &mut settings.frame.show_fps,
+        |_| Ok(()),
+    );
     cx.unknown(&frame, "frame");
 
     let mut gameplay = cx.section(&mut table, "gameplay");

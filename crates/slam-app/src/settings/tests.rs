@@ -60,6 +60,7 @@ fn round_trip_non_default() {
     s.frame.update_hz = 2000.0;
     s.frame.draw = DrawRate::Hz(240.0);
     s.frame.menu_draw = DrawRate::Hz(60.0);
+    s.frame.show_fps = true;
     s.gameplay.dim = 0.3;
     s.gameplay.beatmap_colours = false;
     s.gameplay.beatmap_hitsounds = false;

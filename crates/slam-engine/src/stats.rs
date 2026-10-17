@@ -6,10 +6,14 @@ use std::sync::atomic::{AtomicU64, Ordering};
 const NS_PER_SEC: f64 = 1_000_000_000.0;
 
 /// Progress of the update and draw threads, published by [`Engine`](crate::Engine)
-/// after every step. Each counter has a single writer; reads are relaxed and may lag.
+/// after every step. Each counter has a single writer, except the update interval,
+/// which draw takes back; reads are relaxed and may lag.
 #[derive(Debug, Default)]
 pub struct EngineCounters {
     update_ticks: Padded,
+    /// Raised by the update thread, taken by the draw thread; the padded counters keep
+    /// it off the line of `draw_frames`.
+    update_interval_ns: AtomicU64,
     draw_frames: Padded,
 }
 
@@ -25,6 +29,14 @@ impl EngineCounters {
         self.update_ticks.0.load(Ordering::Relaxed)
     }
 
+    /// The update thread's longest frame time since the previous call, 0 if it ran no
+    /// scheduled tick since: nanoseconds between the starts of two scheduled ticks
+    /// ([`UpdateStats::scheduled_interval_ns`](crate::UpdateStats)). Taking the longest
+    /// lets a reader slower than update see every stall. One reader only.
+    pub fn take_update_interval_ns(&self) -> u64 {
+        self.update_interval_ns.swap(0, Ordering::Relaxed)
+    }
+
     /// Frames drawn by the draw thread since start.
     pub fn draw_frames(&self) -> u64 {
         self.draw_frames.0.load(Ordering::Relaxed)
@@ -32,6 +44,10 @@ impl EngineCounters {
 
     pub(crate) fn set_update_ticks(&self, ticks: u64) {
         self.update_ticks.0.store(ticks, Ordering::Relaxed);
+    }
+
+    pub(crate) fn raise_update_interval_ns(&self, ns: u64) {
+        self.update_interval_ns.fetch_max(ns, Ordering::Relaxed);
     }
 
     pub(crate) fn set_draw_frames(&self, frames: u64) {
@@ -226,6 +242,17 @@ impl RateMeter {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn the_update_interval_is_the_longest_since_taken() {
+        let counters = EngineCounters::default();
+        assert_eq!(counters.take_update_interval_ns(), 0);
+        counters.raise_update_interval_ns(1_000_000);
+        counters.raise_update_interval_ns(30_000_000);
+        counters.raise_update_interval_ns(2_000_000);
+        assert_eq!(counters.take_update_interval_ns(), 30_000_000);
+        assert_eq!(counters.take_update_interval_ns(), 0);
+    }
 
     /// Reference nearest-rank percentile by sorting.
     fn reference(samples: &[u32], per_mille: usize) -> u32 {

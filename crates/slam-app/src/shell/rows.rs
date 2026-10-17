@@ -50,6 +50,7 @@ pub enum Row {
     UpdateHz,
     DrawHz,
     MenuDrawHz,
+    ShowFps,
     Dim,
     BeatmapColours,
     BeatmapHitsounds,
@@ -58,7 +59,7 @@ pub enum Row {
 }
 
 impl Row {
-    pub const ALL: [Row; 23] = [
+    pub const ALL: [Row; 24] = [
         Row::MasterVolume,
         Row::MusicVolume,
         Row::HitsoundVolume,
@@ -77,6 +78,7 @@ impl Row {
         Row::UpdateHz,
         Row::DrawHz,
         Row::MenuDrawHz,
+        Row::ShowFps,
         Row::Dim,
         Row::BeatmapColours,
         Row::BeatmapHitsounds,
@@ -121,7 +123,7 @@ impl Row {
             | Row::SmokeKey1
             | Row::SmokeKey2
             | Row::ResetKeys => 2,
-            Row::UpdateHz | Row::DrawHz | Row::MenuDrawHz => 3,
+            Row::UpdateHz | Row::DrawHz | Row::MenuDrawHz | Row::ShowFps => 3,
             Row::Dim
             | Row::BeatmapColours
             | Row::BeatmapHitsounds
@@ -150,6 +152,7 @@ impl Row {
             Row::UpdateHz => "settings-frame-update-rate",
             Row::DrawHz => "settings-frame-draw-rate",
             Row::MenuDrawHz => "settings-frame-menu-draw-rate",
+            Row::ShowFps => "settings-frame-show-fps",
             Row::Dim => "settings-gameplay-dim",
             Row::BeatmapColours => "settings-gameplay-beatmap-colours",
             Row::BeatmapHitsounds => "settings-gameplay-beatmap-hitsounds",
@@ -301,6 +304,9 @@ impl Rows {
                 self.draw.len(),
                 self.draw.iter().position(|d| *d == s.frame.menu_draw),
             ),
+            Row::ShowFps => RowKind::Toggle {
+                value: s.frame.show_fps,
+            },
             Row::BeatmapColours => RowKind::Toggle {
                 value: s.gameplay.beatmap_colours,
             },
@@ -353,6 +359,7 @@ impl Rows {
                 settings.timing.global_offset_ms = v.round();
             }
             (Row::MouseButtons, RowValue::Toggle(v)) => settings.gameplay.mouse_buttons = v,
+            (Row::ShowFps, RowValue::Toggle(v)) => settings.frame.show_fps = v,
             (Row::BeatmapColours, RowValue::Toggle(v)) => settings.gameplay.beatmap_colours = v,
             (Row::BeatmapHitsounds, RowValue::Toggle(v)) => settings.gameplay.beatmap_hitsounds = v,
             (Row::Skin, RowValue::Choice(i)) => match i {
@@ -558,6 +565,8 @@ mod tests {
         assert_eq!(s.timing.global_offset_ms, -3.0);
         assert!(!s.gameplay.beatmap_colours);
         assert!(!s.gameplay.beatmap_hitsounds);
+        rows.apply(&mut s, index(Row::ShowFps), RowValue::Toggle(true));
+        assert!(s.frame.show_fps);
         // The first draw option is Unlimited, the second 60 Hz.
         rows.apply(&mut s, index(Row::MenuDrawHz), RowValue::Choice(0));
         rows.apply(&mut s, index(Row::DrawHz), RowValue::Choice(1));

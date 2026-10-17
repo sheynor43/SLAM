@@ -164,6 +164,7 @@ impl<U: Update, D: Draw<U::Snapshot>> Engine<U, D> {
                 .name("slam-update".into())
                 .spawn(move || {
                     let mut applied = initial_update;
+                    let mut scheduled_ticks = 0;
                     while !stop.load(Ordering::Acquire) {
                         let wanted = update_rate.hz.load(Ordering::Relaxed);
                         if wanted != applied {
@@ -172,7 +173,13 @@ impl<U: Update, D: Draw<U::Snapshot>> Engine<U, D> {
                             applied = wanted;
                         }
                         if update_loop.step() {
-                            counters.set_update_ticks(update_loop.stats().ticks);
+                            let stats = update_loop.stats();
+                            counters.set_update_ticks(stats.ticks);
+                            // Only a step on schedule has a new interval.
+                            if stats.ticks - stats.input_ticks != scheduled_ticks {
+                                scheduled_ticks = stats.ticks - stats.input_ticks;
+                                counters.raise_update_interval_ns(stats.scheduled_interval_ns);
+                            }
                         }
                     }
                     update_loop

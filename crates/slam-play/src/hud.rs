@@ -19,6 +19,7 @@ use slam_text::{
     UI_FAMILY, push_layout,
 };
 
+use crate::fps_counter::FpsLabels;
 use crate::menu_overlay::MenuLabels;
 use crate::offset::{OffsetPanel, OffsetWording, format_offset};
 use crate::session::{HudValues, PlaySnapshot};
@@ -75,6 +76,8 @@ pub struct HudLabels {
     pub offset_later: String,
     /// The pause and fail menus' texts.
     pub menu: MenuLabels,
+    /// The FPS counter's texts.
+    pub fps: FpsLabels,
 }
 
 /// A localised text around a number.
@@ -94,12 +97,12 @@ impl Template {
         }
     }
 
-    fn len(&self) -> usize {
+    pub(crate) fn len(&self) -> usize {
         self.prefix.len() + self.suffix.len()
     }
 
     /// Writes the text with `number` into `out`. Allocation-free once `out` has room.
-    fn write(&self, number: &str, out: &mut String) {
+    pub(crate) fn write(&self, number: &str, out: &mut String) {
         out.clear();
         out.push_str(&self.prefix);
         out.push_str(number);
@@ -108,7 +111,7 @@ impl Template {
 }
 
 /// Bytes of a number's text.
-const NUMBER_TEXT_LEN: usize = WARM_TEXT.len();
+pub(crate) const NUMBER_TEXT_LEN: usize = WARM_TEXT.len();
 
 /// The text of a number, formatted without allocating.
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -128,6 +131,12 @@ impl NumberText {
     pub fn as_str(&self) -> &str {
         // Only whole `&str`s are written.
         std::str::from_utf8(&self.bytes[..self.len]).unwrap_or_default()
+    }
+}
+
+impl Default for NumberText {
+    fn default() -> Self {
+        Self::new()
     }
 }
 
@@ -585,6 +594,7 @@ mod tests {
             offset_earlier: format!("{OFFSET_PLACEHOLDER} ms (hit objects appear earlier)"),
             offset_later: format!("{OFFSET_PLACEHOLDER} ms (hit objects appear later)"),
             menu: crate::menu_overlay::tests::labels(),
+            fps: crate::fps_counter::tests::labels(),
         };
         let mut hud = HudView::new(Arc::new(FontRegistry::with_builtin()), &labels);
         hud.update(
