@@ -26,13 +26,16 @@ use slam_play::cursor::{
     CursorSkinConfig, CursorTextures, CursorView, ExpandTimes, MAX_CURSOR_SPRITES,
 };
 use slam_play::hud::OFFSET_PLACEHOLDER;
+use slam_play::menu_overlay::{
+    GameplayMenu, MenuInfo, MenuKind, MenuLayout, MenuView, song_progress,
+};
 use slam_play::offset::OffsetPanel;
 use slam_play::slider_body::Snaking;
 use slam_play::sliders::{AnimationSprites, HitSliders, SliderBodies, SliderVisuals};
-use slam_play::{BackgroundSettings, BackgroundView, HudLabels, HudValues, HudView};
+use slam_play::{BackgroundSettings, BackgroundView, HudLabels, HudValues, HudView, MenuLabels};
 use slam_play::{
     Bindings, FrameTextures, GameTime, GameplaySounds, LiveInput, Offsets, PlaySession,
-    PlaySnapshot, PlayState, PlayView, SoundSettings, VoiceSink,
+    PlaySnapshot, PlayState, PlayView, PlayfieldLayout, SoundSettings, VoiceSink,
 };
 use slam_render::Extent;
 use slam_render::Limits;
@@ -557,6 +560,16 @@ fn labels() -> HudLabels {
         offset_zero: format!("{OFFSET_PLACEHOLDER} мс"),
         offset_earlier: format!("{OFFSET_PLACEHOLDER} мс (объекты появляются раньше)"),
         offset_later: format!("{OFFSET_PLACEHOLDER} мс (объекты появляются позже)"),
+        menu: MenuLabels {
+            paused: "пауза".to_owned(),
+            failed: "провал".to_owned(),
+            continue_button: "Продолжить".to_owned(),
+            retry_button: "Заново".to_owned(),
+            quit_button: "Выйти".to_owned(),
+            retry_count: format!("Перезапусков: {OFFSET_PLACEHOLDER}"),
+            song_progress: format!("Прогресс песни: {OFFSET_PLACEHOLDER}"),
+            accuracy: format!("Точность: {OFFSET_PLACEHOLDER}"),
+        },
     }
 }
 
@@ -1050,6 +1063,10 @@ const Z: u16 = 29;
 const F10: u16 = 67;
 const MINUS: u16 = 45;
 const EQUALS: u16 = 46;
+const ENTER: u16 = 40;
+const SPACE: u16 = 44;
+const DOWN: u16 = 81;
+const UP: u16 = 82;
 
 /// A play ticked every millisecond by hand, with the events of each tick given.
 struct Driver {
@@ -1142,6 +1159,19 @@ impl Driver {
             InputKind::MouseMove {
                 x: window.x,
                 y: window.y,
+            },
+        )
+    }
+
+    /// Moves the mouse to the middle of button `index` of menu `kind`.
+    fn menu_mouse(&self, kind: MenuKind, index: usize) -> InputEvent {
+        let [width, height] = layout().window_size();
+        let ([x, y], [w, h]) = MenuLayout::new(width, height, kind).button(index);
+        press(
+            self.now,
+            InputKind::MouseMove {
+                x: x + w / 2.0,
+                y: y + h / 2.0,
             },
         )
     }
@@ -1739,6 +1769,11 @@ fn pausing_failing_and_ticks_after_a_restart_do_not_allocate() {
         d.tap(EQUALS);
         d.tap(ESCAPE);
         d.run(50);
+        d.tap(DOWN);
+        d.tap(UP);
+        let over = d.menu_mouse(MenuKind::Pause, 1);
+        let away = d.mouse(Vec2::new(300.0, 300.0));
+        d.tick(&[over, away]);
         d.tap(ESCAPE);
         let click = d.key(Z, true);
         d.tick(&[click]);
@@ -1853,6 +1888,46 @@ fn hud_updates_and_frames_do_not_allocate() {
     assert_eq!(hud.offset_text(), "12.5 мс (объекты появляются раньше)");
     hud.update(1280.0, 720.0, &HudValues::default(), -3.0);
     assert_eq!(hud.offset_text(), "-3 мс (объекты появляются позже)");
+}
+
+#[test]
+fn menu_frames_do_not_allocate() {
+    let registry = Arc::new(FontRegistry::with_builtin());
+    let mut glyphs = glyph_atlas(Arc::clone(&registry), &GlyphAtlasConfig::new(LIMITS)).unwrap();
+    let mut view = MenuView::new(registry, &labels().menu);
+    assert!(view.request_glyphs(&mut glyphs) > 0);
+    let mut text = SpriteBatch::with_capacity(256);
+    let mut batch = SpriteBatch::with_capacity(16);
+    let mut menus = Vec::new();
+    for (kind, retries, progress, accuracy) in [
+        (MenuKind::Pause, 0, 0, 1.0),
+        (MenuKind::Fail, 12_345, 100, 0.987_65),
+        (MenuKind::Pause, u32::MAX, 57, f64::NAN),
+    ] {
+        let mut menu = GameplayMenu::default();
+        let info = MenuInfo {
+            retries,
+            progress,
+            accuracy,
+        };
+        menu.show(kind, info, 0, [1280.0, 720.0]);
+        menus.push(menu.snapshot());
+    }
+    assert_no_alloc(|| {
+        for (index, menu) in menus.iter().cycle().take(12).enumerate() {
+            let height = [720.0, 1080.0, 1.0, 0.0][index % 4];
+            view.update(1280.0, height, menu);
+            batch.clear();
+            text.clear();
+            view.push_shapes(&mut batch, menu, 100 * MS, WHITE);
+            view.push_text(&mut text, menu, 100 * MS, &mut glyphs);
+        }
+    });
+    // The background and a rectangle per button.
+    view.update(1280.0, 720.0, &menus[0]);
+    batch.clear();
+    view.push_shapes(&mut batch, &menus[0], 300 * MS, WHITE);
+    assert_eq!(batch.len(), 4);
 }
 
 #[test]
@@ -2190,4 +2265,242 @@ fn offset_presses_in_one_tick_apply_in_order_and_time_never_goes_back() {
     }
     // Z went to gameplay around the presses: pressed, then released.
     assert!(!d.session.input().held().contains(Actions::LEFT));
+}
+
+#[test]
+fn the_pause_menu_shows_what_the_play_is_at_and_continues() {
+    let map = beatmap();
+    let mut d = Driver::new(&map, mods(vec![slam_osu::mods::Mod::NoFail]));
+    assert!(!d.snapshot.menu.visible);
+    d.run_to(1500.0);
+    d.tap(ESCAPE);
+    assert_eq!(d.state(), PlayState::Paused);
+    let menu = d.snapshot.menu;
+    assert!(menu.visible);
+    assert_eq!(menu.kind, MenuKind::Pause);
+    assert_eq!(menu.info.retries, 0);
+    let first = map.hit_objects[0].start_time;
+    let last = map
+        .hit_objects
+        .iter()
+        .map(|o| o.end_time())
+        .fold(f64::NEG_INFINITY, f64::max);
+    assert_eq!(
+        menu.info.progress,
+        song_progress(d.snapshot.time, first, last)
+    );
+    assert!(menu.info.progress > 0);
+    assert_eq!(menu.info.accuracy, d.snapshot.hud.accuracy);
+
+    // Enter with nothing selected does nothing; down selects continue.
+    d.tap(ENTER);
+    assert_eq!(d.state(), PlayState::Paused);
+    d.tap(DOWN);
+    d.tap(ENTER);
+    // The cursor never moved: gameplay goes on at once.
+    assert_eq!(d.state(), PlayState::Playing);
+    assert!(!d.snapshot.menu.visible);
+
+    // The middle mouse button continues too (after the pause cooldown).
+    d.run(1_000);
+    d.tap(ESCAPE);
+    assert_eq!(d.state(), PlayState::Paused);
+    let middle = press(
+        d.now,
+        InputKind::MouseButton {
+            button: MouseButton::Middle,
+            down: true,
+        },
+    );
+    d.tick(&[middle]);
+    assert_eq!(d.state(), PlayState::Playing);
+}
+
+#[test]
+fn the_pause_menu_retries_without_skipping_and_quits() {
+    let map = delayed(29000.0);
+    let mut d = Driver::new(&map, ModSet::default());
+    d.run(100);
+    d.tap(ESCAPE);
+    assert_eq!(d.state(), PlayState::Paused);
+    // Up starts from the bottom: quit, then retry.
+    d.tap(UP);
+    d.tap(UP);
+    let commands = d.track.commands.len();
+    d.tap(SPACE);
+    assert_eq!(d.state(), PlayState::Playing);
+    assert_eq!(d.snapshot.restarts, 1);
+    assert!(!d.snapshot.menu.visible);
+    d.run(10);
+    // Unlike a quick retry, the menu's retry does not skip the intro.
+    assert!(!d.track.commands[commands..].contains(&Command::Seek(27000 * 48)));
+    assert!(d.snapshot.time < 1_000.0, "{}", d.snapshot.time);
+
+    d.tap(ESCAPE);
+    assert_eq!(d.snapshot.menu.info.retries, 1);
+    d.tap(UP);
+    d.tap(ENTER);
+    assert_eq!(d.state(), PlayState::Exited);
+}
+
+#[test]
+fn space_in_the_pause_menu_does_not_skip_the_intro() {
+    let map = delayed(29000.0);
+    let mut d = Driver::new(&map, ModSet::default());
+    d.run(100);
+    assert!(d.snapshot.skip_available);
+    d.tap(ESCAPE);
+    d.tap(DOWN);
+    let commands = d.track.commands.len();
+    d.tap(SPACE);
+    assert_eq!(d.state(), PlayState::Playing);
+    d.run(10);
+    assert!(!d.track.commands[commands..].contains(&Command::Seek(27000 * 48)));
+    // Space while playing still skips.
+    d.tap(SPACE);
+    d.run(5);
+    assert!(d.track.commands.contains(&Command::Seek(27000 * 48)));
+}
+
+#[test]
+fn the_fail_menu_retries_or_quits_with_the_mouse() {
+    let map = beatmap();
+    let mut d = Driver::new(&map, ModSet::default());
+    d.run_until(10_000, |s| s.state == PlayState::Failing);
+    assert!(!d.snapshot.menu.visible, "not during the fail animation");
+    d.run_until(3_000, |s| s.state == PlayState::Failed);
+    assert!(d.snapshot.menu.visible);
+    assert_eq!(d.snapshot.menu.kind, MenuKind::Fail);
+
+    // A click on retry: down and up over the button.
+    let over = d.menu_mouse(MenuKind::Fail, 0);
+    d.tick(&[over]);
+    let left = |d: &Driver, down| {
+        press(
+            d.now,
+            InputKind::MouseButton {
+                button: MouseButton::Left,
+                down,
+            },
+        )
+    };
+    let down = left(&d, true);
+    d.tick(&[down]);
+    assert_eq!(d.state(), PlayState::Failed);
+    let up = left(&d, false);
+    d.tick(&[up]);
+    assert_eq!(d.state(), PlayState::Playing);
+    assert_eq!(d.snapshot.restarts, 1);
+    assert!(!d.snapshot.menu.visible);
+
+    // Failed again: a click on quit.
+    d.run_until(10_000, |s| s.state == PlayState::Failed);
+    assert_eq!(d.snapshot.menu.info.retries, 1);
+    let over = d.menu_mouse(MenuKind::Fail, 1);
+    let (down, up) = (left(&d, true), left(&d, false));
+    d.tick(&[over, down, up]);
+    assert_eq!(d.state(), PlayState::Exited);
+}
+
+#[test]
+fn continue_and_the_resume_click_in_one_tick_go_on_playing() {
+    let map = beatmap();
+    let mut d = Driver::new(&map, mods(vec![slam_osu::mods::Mod::NoFail]));
+    // The cursor stands on continue's place when gameplay pauses.
+    let over = d.menu_mouse(MenuKind::Pause, 0);
+    d.tick(&[over]);
+    d.run_to(1500.0);
+    d.tap(ESCAPE);
+    d.tap(ENTER);
+    assert_eq!(
+        d.state(),
+        PlayState::Paused,
+        "hovering alone selects nothing"
+    );
+    let mut nudge = d.menu_mouse(MenuKind::Pause, 0);
+    if let InputKind::MouseMove { x, .. } = &mut nudge.kind {
+        *x += 1.0;
+    }
+    let left = |d: &Driver, down| {
+        press(
+            d.now,
+            InputKind::MouseButton {
+                button: MouseButton::Left,
+                down,
+            },
+        )
+    };
+    let (down, up) = (left(&d, true), left(&d, false));
+    // Continue, then the resume target (where gameplay's cursor stopped) is clicked.
+    let click = d.key(Z, true);
+    d.tick(&[nudge, down, up, click]);
+    assert_eq!(d.state(), PlayState::Playing);
+}
+
+#[test]
+fn quick_retry_and_quick_exit_take_the_menu_away() {
+    let map = beatmap();
+    let mut d = Driver::new(&map, ModSet::default());
+    d.run_to(500.0);
+    d.tap(ESCAPE);
+    assert!(d.snapshot.menu.visible);
+    d.hold(None, GRAVE, 200);
+    assert_eq!(d.snapshot.restarts, 1);
+    assert!(!d.snapshot.menu.visible);
+
+    d.run(10);
+    d.tap(ESCAPE);
+    assert!(d.snapshot.menu.visible);
+    d.hold(Some(LCTRL), GRAVE, 200);
+    assert_eq!(d.state(), PlayState::Exited);
+    assert!(!d.snapshot.menu.visible);
+    // Keys after quitting press nothing.
+    d.tap(DOWN);
+    d.tap(ENTER);
+    assert_eq!(d.state(), PlayState::Exited);
+}
+
+#[test]
+fn the_middle_button_quits_the_fail_menu() {
+    let map = beatmap();
+    let mut d = Driver::new(&map, ModSet::default());
+    d.run_until(10_000, |s| s.state == PlayState::Failed);
+    let middle = press(
+        d.now,
+        InputKind::MouseButton {
+            button: MouseButton::Middle,
+            down: true,
+        },
+    );
+    d.tick(&[middle]);
+    assert_eq!(d.state(), PlayState::Exited);
+}
+
+#[test]
+fn the_menu_is_hit_in_the_units_of_the_input() {
+    let map = beatmap();
+    let mut d = Driver::new(&map, ModSet::default());
+    // Input in points on a window twice the default size.
+    d.session.set_layout(PlayfieldLayout::new(1280.0, 960.0));
+    d.run_until(10_000, |s| s.state == PlayState::Failed);
+    let ([x, y], [w, h]) = MenuLayout::new(1280.0, 960.0, MenuKind::Fail).button(1);
+    let over = press(
+        d.now,
+        InputKind::MouseMove {
+            x: x + w / 2.0,
+            y: y + h / 2.0,
+        },
+    );
+    let left = |down| {
+        press(
+            d.now,
+            InputKind::MouseButton {
+                button: MouseButton::Left,
+                down,
+            },
+        )
+    };
+    let (down, up) = (left(true), left(false));
+    d.tick(&[over, down, up]);
+    assert_eq!(d.state(), PlayState::Exited);
 }

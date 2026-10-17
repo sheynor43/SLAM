@@ -23,6 +23,8 @@ pub struct PlayfieldLayout {
     origin: Vec2,
     /// Window units per osu!pixel.
     scale: f32,
+    /// The window's size in window units.
+    window: [f32; 2],
 }
 
 impl PlayfieldLayout {
@@ -46,12 +48,21 @@ impl PlayfieldLayout {
             (width - box_width) / 2.0,
             (height - box_height) / 2.0 + STORYBOARD_SHIFT * scale,
         );
-        PlayfieldLayout { origin, scale }
+        PlayfieldLayout {
+            origin,
+            scale,
+            window: [width, height],
+        }
     }
 
     /// Window units per osu!pixel.
     pub fn scale(&self) -> f32 {
         self.scale
+    }
+
+    /// The window's width and height in window units.
+    pub fn window_size(&self) -> [f32; 2] {
+        self.window
     }
 
     /// Window position of osu!pixel (0, 0).

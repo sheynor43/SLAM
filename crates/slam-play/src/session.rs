@@ -44,6 +44,9 @@ use crate::judgements::{
     PieceSprites, PopupTargets, piece_sources,
 };
 use crate::legacy_hit_error::triangle_image;
+use crate::menu_overlay::{
+    GameplayMenu, MenuButton, MenuInfo, MenuKind, MenuSnapshot, song_progress,
+};
 use crate::offset::{self, OffsetPanel};
 use crate::playfield::PlayfieldLayout;
 use crate::resume::ResumeView;
@@ -200,6 +203,8 @@ pub struct PlaySnapshot {
     pub exit_progress: f32,
     /// Times the play was restarted.
     pub restarts: u32,
+    /// The pause or fail menu.
+    pub menu: MenuSnapshot,
     /// The beatmap offset and its panel.
     pub offset_panel: OffsetPanel,
     pub circles: LiveCircles,
@@ -230,6 +235,7 @@ impl Default for PlaySnapshot {
             retry_progress: 0.0,
             exit_progress: 0.0,
             restarts: 0,
+            menu: MenuSnapshot::default(),
             offset_panel: OffsetPanel::default(),
             circles: LiveCircles::new(),
             sliders: LiveSliders::new(),
@@ -330,6 +336,12 @@ pub struct PlaySession {
     /// Every judgement is in without failing (lazer's `HasPassed`); stays after quitting.
     passed: bool,
     restarts: u32,
+    /// The pause or fail menu.
+    menu: GameplayMenu,
+    /// The menu's retry was pressed: the play restarts at the end of the tick.
+    menu_restart: bool,
+    /// Start of the first object and the latest end of an object, for the song progress.
+    playable: (f64, f64),
     initial: Initial,
     /// Clock commands that failed (queue full); retried on the next tick.
     clock_errors: u64,
@@ -362,6 +374,18 @@ impl PlaySession {
         // The skip overlay appears with the clock at the start.
         let skip = IntroSkip::new(gameplay_start_time, start_time, start_time);
         let breaks = BreakTracker::new(&beatmap.breaks, gameplay_start_time);
+        // Ported from osu!lazer 2026.1005.0-lazer: osu.Game/Beatmaps/IBeatmap.cs (CalculatePlayableBounds)
+        let playable = match beatmap.hit_objects.first() {
+            Some(first) => (
+                first.start_time,
+                beatmap
+                    .hit_objects
+                    .iter()
+                    .map(|object| object.end_time())
+                    .fold(f64::NEG_INFINITY, f64::max),
+            ),
+            None => (0.0, 0.0),
+        };
         PlaySession {
             clock: GameClock::new(track),
             offsets,
@@ -407,6 +431,9 @@ impl PlaySession {
             restart_on_fail: false,
             passed: false,
             restarts: 0,
+            menu: GameplayMenu::default(),
+            menu_restart: false,
+            playable,
             clock_errors: 0,
         }
     }
@@ -531,6 +558,7 @@ impl PlaySession {
             // Global bindings see mouse buttons even when gameplay ignores them: lazer's
             // prioritised `GlobalActionContainer` gets them before `RulesetInputManager`.
             let action = self.hotkeys.on_event(event);
+            self.menu.follow_pointer(event);
             if self.input.is_suspended() {
                 let target = self.resume_target;
                 let resuming = self.phase == Phase::Resuming;
@@ -548,13 +576,24 @@ impl PlaySession {
                     continue;
                 }
             }
+            // The menu shows only while gameplay is suspended; what it takes reaches
+            // nothing else (Space selects there rather than skipping).
+            let key = self.hotkeys.menu_key(event);
+            let size = self.input.layout().window_size();
+            let (clicked, taken) = self.menu.on_event(event, key, size);
+            if let Some(button) = clicked {
+                self.press_menu(button, event.time_ns, sink);
+            }
+            if taken {
+                continue;
+            }
             match action {
                 Some(GlobalAction::Back | GlobalAction::PauseGameplay) => {
                     if self.in_gameplay() {
                         self.step(&events[from..index], now_ns, &time, seeking, sink);
                         from = index + 1;
                     }
-                    self.back(sink);
+                    self.back(event.time_ns, sink);
                 }
                 Some(GlobalAction::SkipCutscene) => skip_requested = true,
                 // Ported from osu!lazer 2026.1005.0-lazer: osu.Game/OsuGame.cs (OnPressed)
@@ -609,7 +648,7 @@ impl PlaySession {
         if let Phase::Failing { until_ns } = self.phase
             && now_ns >= until_ns
         {
-            self.complete_fail(sink);
+            self.complete_fail(now_ns, sink);
         }
         if let Phase::Passed { results_at_ns } = self.phase
             && now_ns >= results_at_ns
@@ -618,6 +657,7 @@ impl PlaySession {
         }
 
         let mut restart = std::mem::take(&mut self.restart_on_fail);
+        let menu_restart = std::mem::take(&mut self.menu_restart);
         match self.hotkeys.fire(now_ns) {
             // Ported from osu!lazer 2026.1005.0-lazer: osu.Game/Screens/Play/Player.cs (HotkeyRetryOverlay, HotkeyExitOverlay)
             Some(GlobalAction::QuickRetry) => restart = true,
@@ -631,9 +671,10 @@ impl PlaySession {
             self.sounds.stop_all(sink);
         }
 
-        if restart && self.phase != Phase::Exited {
-            // Lazer's quick restarts skip the intro (`AutomaticallySkipIntro`).
-            self.restart(sink, true);
+        if (restart || menu_restart) && self.phase != Phase::Exited {
+            // Lazer's quick restarts skip the intro (`AutomaticallySkipIntro`); the menu's
+            // retry does not.
+            self.restart(sink, restart);
         } else if self.phase == Phase::Playing && !seeking {
             // Ported from osu!lazer 2026.1005.0-lazer: osu.Game/Screens/Play/Player.cs (PerformIntroSkip)
             // The skip period is checked at the tick's time; lazer checks the button enabled
@@ -669,6 +710,7 @@ impl PlaySession {
         snapshot.time = self.last_time;
         // While a seek is on its way the clock shows the old time: frames hold the tick's.
         // The results stop gameplay while the track plays on: frames hold the tick's time.
+        let restart = restart || menu_restart;
         snapshot.clock =
             (!restart && !seek_sent && !self.clock.is_seeking() && self.phase != Phase::Results)
                 .then_some(time);
@@ -784,19 +826,57 @@ impl PlaySession {
     /// menu button, or the pause overlay's first button (continue) while paused.
     // Ported from osu!lazer 2026.1005.0-lazer: osu.Game/Screens/Play/Player.cs (PerformExitWithConfirmation)
     // Ported from osu!lazer 2026.1005.0-lazer: osu.Game/Screens/Play/PauseOverlay.cs (BackAction, OnPressed)
-    fn back(&mut self, sink: &mut impl VoiceSink) {
+    fn back(&mut self, now_ns: u64, sink: &mut impl VoiceSink) {
         match self.phase {
             // A restart on failing is on its way: nothing to pause.
             Phase::Playing if self.restart_on_fail => {}
-            Phase::Playing | Phase::Resuming => self.pause(sink),
-            Phase::Paused => self.resume(),
+            Phase::Playing | Phase::Resuming => self.pause(now_ns, sink),
+            // The menu's back button: continue when paused, quit when failed.
+            // Without a menu, a button of it was pressed this tick (retry): it goes on.
+            Phase::Paused | Phase::Failed => {
+                if let Some(kind) = self.menu.kind() {
+                    self.press_menu(kind.back_button(), now_ns, sink);
+                }
+            }
             // The fail animation is cut short; the fail overlay shows.
-            Phase::Failing { .. } => self.complete_fail(sink),
-            Phase::Failed => self.exit(sink),
+            Phase::Failing { .. } => self.complete_fail(now_ns, sink),
             // Passed, pausing is over (`ValidForResume` is false): the exit goes on.
             Phase::Passed { .. } | Phase::Results => self.perform_exit(sink),
             Phase::Exited => {}
         }
+    }
+
+    // Ported from osu!lazer 2026.1005.0-lazer: osu.Game/Screens/Play/GameplayMenuOverlay.cs (AddButton)
+    // Ported from osu!lazer 2026.1005.0-lazer: osu.Game/Screens/Play/Player.cs (PauseOverlay, FailOverlay)
+    /// A button of the menu pressed at `now_ns`: its action, then the menu hides.
+    fn press_menu(&mut self, button: MenuButton, now_ns: u64, sink: &mut impl VoiceSink) {
+        // The menu shows only while paused or failed; quitting hides it.
+        if !matches!(self.phase, Phase::Paused | Phase::Failed) {
+            return;
+        }
+        match button {
+            MenuButton::Continue => self.resume(),
+            MenuButton::Retry => self.menu_restart = true,
+            // The menu shows: `PerformExitWithConfirmation` exits at once.
+            MenuButton::Quit => self.perform_exit(sink),
+        }
+        self.menu.hide(now_ns);
+    }
+
+    /// The menu's information now: lazer updates it as the menu shows.
+    // Ported from osu!lazer 2026.1005.0-lazer: osu.Game/Screens/Play/GameplayMenuOverlay.cs (updateInfoText)
+    fn menu_info(&self) -> MenuInfo {
+        MenuInfo {
+            retries: self.restarts,
+            progress: song_progress(self.last_time, self.playable.0, self.playable.1),
+            accuracy: self.score.accuracy(),
+        }
+    }
+
+    fn show_menu(&mut self, kind: MenuKind, now_ns: u64) {
+        let info = self.menu_info();
+        let size = self.input.layout().window_size();
+        self.menu.show(kind, info, now_ns, size);
     }
 
     /// The player asks to quit: lazer's `PerformExit` (or the results screen's exit).
@@ -819,7 +899,7 @@ impl PlaySession {
     }
 
     // Ported from osu!lazer 2026.1005.0-lazer: osu.Game/Screens/Play/Player.cs (Pause, PauseCooldownActive)
-    fn pause(&mut self, sink: &mut impl VoiceSink) {
+    fn pause(&mut self, now_ns: u64, sink: &mut impl VoiceSink) {
         let current = self.last_time;
         let resuming = self.phase == Phase::Resuming;
         // The cooldown counts while playing outside breaks.
@@ -838,6 +918,7 @@ impl PlaySession {
         // Looping samples stop; the others play out.
         self.sounds.stop_all(sink);
         self.input.suspend();
+        self.show_menu(MenuKind::Pause, now_ns);
     }
 
     // Ported from osu!lazer 2026.1005.0-lazer: osu.Game/Screens/Play/Player.cs (Resume)
@@ -861,11 +942,12 @@ impl PlaySession {
     }
 
     // Ported from osu!lazer 2026.1005.0-lazer: osu.Game/Screens/Play/Player.cs (onFailComplete)
-    fn complete_fail(&mut self, sink: &mut impl VoiceSink) {
+    fn complete_fail(&mut self, now_ns: u64, sink: &mut impl VoiceSink) {
         self.phase = Phase::Failed;
         self.run = false;
         self.sounds.stop_all(sink);
         self.input.suspend();
+        self.show_menu(MenuKind::Fail, now_ns);
     }
 
     fn exit(&mut self, sink: &mut impl VoiceSink) {
@@ -876,6 +958,8 @@ impl PlaySession {
         self.run = false;
         self.sounds.stop_all(sink);
         self.input.suspend();
+        // The player screen goes with its menu.
+        self.menu.reset();
     }
 
     /// Starts the play over from its start time. Allocates: the rules, health and mods are
@@ -907,8 +991,9 @@ impl PlaySession {
         self.restart_on_fail = false;
         self.passed = false;
         self.restarts += 1;
-        // A new player shows no panel.
+        // A new player shows no panel and no menu.
         self.offset_panel.reset();
+        self.menu.reset();
     }
 
     fn is_break_time(&mut self, time: f64) -> bool {
@@ -957,6 +1042,7 @@ impl PlaySession {
         snapshot.retry_progress = 0.0;
         snapshot.exit_progress = 0.0;
         snapshot.restarts = self.restarts;
+        snapshot.menu = self.menu.snapshot();
         snapshot.offset_panel = self.offset_panel;
         snapshot.judgements.clone_from(&self.popups);
         snapshot.hit_errors.clone_from(&self.hit_errors);
@@ -978,6 +1064,7 @@ impl PlaySession {
         snapshot.retry_progress = self.hotkeys.retry_progress(now_ns);
         snapshot.exit_progress = self.hotkeys.exit_progress(now_ns);
         snapshot.restarts = self.restarts;
+        snapshot.menu = self.menu.snapshot();
         snapshot.judgements.clone_from(&self.popups);
         snapshot.hit_errors.clone_from(&self.hit_errors);
         snapshot.circles.capture(&self.rules);

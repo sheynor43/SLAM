@@ -19,6 +19,7 @@ use slam_text::{
     UI_FAMILY, push_layout,
 };
 
+use crate::menu_overlay::MenuLabels;
 use crate::offset::{OffsetPanel, OffsetWording, format_offset};
 use crate::session::{HudValues, PlaySnapshot};
 
@@ -55,7 +56,8 @@ const WARM_TEXT: &str = "0123456789.%x-0123456789";
 /// none (the combo's `x` is Latin).
 const WARM_DIGITS: &str = "0123456789.%-";
 
-/// Stands for the number in the offset panel's localised texts ([`HudLabels`]).
+/// Stands for the number in the localised texts around one: the offset panel's
+/// ([`HudLabels`]) and the menus' ([`crate::menu_overlay::MenuLabels`]).
 pub const OFFSET_PLACEHOLDER: &str = "\u{FFFC}";
 /// What the offset's digits are laid out with to warm the panel's texts.
 const WARM_OFFSET: &str = "-0123456789.";
@@ -71,18 +73,20 @@ pub struct HudLabels {
     pub offset_earlier: String,
     /// The panel's text for a negative offset: objects appear later.
     pub offset_later: String,
+    /// The pause and fail menus' texts.
+    pub menu: MenuLabels,
 }
 
 /// A localised text around a number.
 #[derive(Debug, Clone)]
-struct Template {
-    prefix: String,
-    suffix: String,
+pub(crate) struct Template {
+    pub(crate) prefix: String,
+    pub(crate) suffix: String,
 }
 
 impl Template {
     /// `label` split at [`OFFSET_PLACEHOLDER`]; without one, the number is left out.
-    fn new(label: &str) -> Template {
+    pub(crate) fn new(label: &str) -> Template {
         let (prefix, suffix) = label.split_once(OFFSET_PLACEHOLDER).unwrap_or((label, ""));
         Template {
             prefix: prefix.to_owned(),
@@ -145,7 +149,7 @@ impl fmt::Write for NumberText {
 
 /// Formats with `write!`; a text too long for the buffer keeps what fit (never for the
 /// numbers below).
-fn number_text(args: fmt::Arguments<'_>) -> NumberText {
+pub(crate) fn number_text(args: fmt::Arguments<'_>) -> NumberText {
     let mut text = NumberText::new();
     let _ = text.write_fmt(args);
     text
@@ -580,6 +584,7 @@ mod tests {
             offset_zero: format!("{OFFSET_PLACEHOLDER} ms"),
             offset_earlier: format!("{OFFSET_PLACEHOLDER} ms (hit objects appear earlier)"),
             offset_later: format!("{OFFSET_PLACEHOLDER} ms (hit objects appear later)"),
+            menu: crate::menu_overlay::tests::labels(),
         };
         let mut hud = HudView::new(Arc::new(FontRegistry::with_builtin()), &labels);
         hud.update(
