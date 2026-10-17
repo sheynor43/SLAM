@@ -49,6 +49,10 @@ pub struct UpdateStats {
     /// tick (different devices, delivered late); raised to that event's time to keep
     /// the order.
     pub reordered: u64,
+    /// Time between the starts of the last two ticks run on schedule, the update
+    /// thread's frame time; ticks woken early by input are left out, a stall is
+    /// spanned. 0 until the second scheduled tick, and again after a rate change.
+    pub scheduled_interval_ns: u64,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, thiserror::Error)]
@@ -77,6 +81,8 @@ pub struct UpdateLoop<U: Update> {
     deadline_index: u64,
     started: bool,
     last_event_ns: u64,
+    /// Start of the last scheduled tick; 0 before the first.
+    last_scheduled_ns: u64,
     stats: UpdateStats,
 }
 
@@ -109,16 +115,20 @@ impl<U: Update> UpdateLoop<U> {
             deadline_index: 0,
             started: false,
             last_event_ns: 0,
+            last_scheduled_ns: 0,
             stats: UpdateStats::default(),
         })
     }
 
-    /// Changes the update rate. The schedule restarts on the next step.
+    /// Changes the update rate. The schedule restarts on the next step, and so does the
+    /// scheduled interval: one spanning two rates is neither's frame time.
     pub fn set_hz(&mut self, hz: f64) -> Result<(), InvalidUpdateConfig> {
         validate_hz(hz)?;
         self.hz = hz;
         self.period_ns = NS_PER_SEC / hz;
         self.started = false;
+        self.last_scheduled_ns = 0;
+        self.stats.scheduled_interval_ns = 0;
         Ok(())
     }
 
@@ -172,6 +182,10 @@ impl<U: Update> UpdateLoop<U> {
             } else {
                 self.deadline_index += 1;
             }
+            if self.last_scheduled_ns != 0 {
+                self.stats.scheduled_interval_ns = now - self.last_scheduled_ns;
+            }
+            self.last_scheduled_ns = now;
         }
         let mut info = TickInfo {
             now_ns: now,

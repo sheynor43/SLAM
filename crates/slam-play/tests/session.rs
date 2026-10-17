@@ -32,7 +32,10 @@ use slam_play::menu_overlay::{
 use slam_play::offset::OffsetPanel;
 use slam_play::slider_body::Snaking;
 use slam_play::sliders::{AnimationSprites, HitSliders, SliderBodies, SliderVisuals};
-use slam_play::{BackgroundSettings, BackgroundView, HudLabels, HudValues, HudView, MenuLabels};
+use slam_play::{
+    BackgroundSettings, BackgroundView, FpsCounter, FpsLabels, FpsView, HudLabels, HudValues,
+    HudView, MenuLabels,
+};
 use slam_play::{
     Bindings, FrameTextures, GameTime, GameplaySounds, LiveInput, Offsets, PlaySession,
     PlaySnapshot, PlayState, PlayView, PlayfieldLayout, SoundSettings, VoiceSink,
@@ -569,6 +572,10 @@ fn labels() -> HudLabels {
             retry_count: format!("Перезапусков: {OFFSET_PLACEHOLDER}"),
             song_progress: format!("Прогресс песни: {OFFSET_PLACEHOLDER}"),
             accuracy: format!("Точность: {OFFSET_PLACEHOLDER}"),
+        },
+        fps: FpsLabels {
+            frame_time: format!("{OFFSET_PLACEHOLDER} мс"),
+            fps: format!("{OFFSET_PLACEHOLDER} fps"),
         },
     }
 }
@@ -1888,6 +1895,41 @@ fn hud_updates_and_frames_do_not_allocate() {
     assert_eq!(hud.offset_text(), "12.5 мс (объекты появляются раньше)");
     hud.update(1280.0, 720.0, &HudValues::default(), -3.0);
     assert_eq!(hud.offset_text(), "-3 мс (объекты появляются позже)");
+}
+
+#[test]
+fn fps_counter_frames_do_not_allocate() {
+    let registry = Arc::new(FontRegistry::with_builtin());
+    let mut glyphs = glyph_atlas(Arc::clone(&registry), &GlyphAtlasConfig::new(LIMITS)).unwrap();
+    let mut view = FpsView::new(registry, &labels().fps);
+    assert!(view.request_glyphs(&mut glyphs) > 0);
+    let mut counter = FpsCounter::new();
+    let mut text = SpriteBatch::with_capacity(256);
+    let mut batch = SpriteBatch::with_capacity(16);
+    assert_no_alloc(|| {
+        let mut now = 0;
+        for frame in 0..4000_u64 {
+            // Steady, then spikes and a rate change, at several window sizes.
+            let step = if frame % 700 == 699 { 40 * MS } else { MS };
+            now += step;
+            let aim = if frame < 2000 { 1000.0 } else { 144.0 };
+            // Update stalls too: two-digit and grouped frame times, and a suspension.
+            let update = match frame % 900 {
+                300 => 30 * MS,
+                600 => 1234 * MS,
+                899 => 15_000 * MS,
+                _ => 1000 * 1000 + frame * 1000,
+            };
+            counter.frame(now, update, aim, 1000.0);
+            let height = [720.0, 1080.0, 1.0, 0.0][(frame / 500) as usize % 4];
+            view.update(1280.0, height, &counter);
+            batch.clear();
+            text.clear();
+            view.push_shapes(&mut batch, WHITE);
+            view.push_text(&mut text, &mut glyphs);
+        }
+    });
+    assert_eq!(batch.len(), 1);
 }
 
 #[test]

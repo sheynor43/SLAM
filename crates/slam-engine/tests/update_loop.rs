@@ -145,3 +145,48 @@ fn a_new_rate_restarts_the_schedule() {
     assert!(waited >= 9_000_000, "{waited} ns");
     assert_eq!(update.stats().resyncs, 0);
 }
+
+#[test]
+fn the_scheduled_interval_skips_input_ticks() {
+    // 50 ms period, so that the input tick surely comes before the deadline.
+    let (mut sink, mut update) = make(20.0, 16);
+    assert!(update.step());
+    // One scheduled tick so far: no interval yet.
+    assert_eq!(update.stats().scheduled_interval_ns, 0);
+    assert!(update.step());
+    let interval = update.stats().scheduled_interval_ns;
+    // Generous upper bound for a loaded machine.
+    assert!((45_000_000..250_000_000).contains(&interval), "{interval}");
+    sink.push(mv(now_ns()));
+    assert!(update.step());
+    assert!(update.state().ticks.last().unwrap().0.by_input);
+    assert_eq!(update.stats().scheduled_interval_ns, interval);
+}
+
+#[test]
+fn the_scheduled_interval_spans_a_stall() {
+    let (_sink, mut update) = make(1000.0, 16);
+    for _ in 0..3 {
+        assert!(update.step());
+    }
+    update.state_mut().stall_next = Some(Duration::from_millis(30));
+    assert!(update.step());
+    assert!(update.step());
+    assert!(update.stats().scheduled_interval_ns >= 30_000_000);
+}
+
+#[test]
+fn a_rate_change_restarts_the_scheduled_interval() {
+    let (_sink, mut update) = make(1000.0, 16);
+    for _ in 0..3 {
+        assert!(update.step());
+    }
+    assert!(update.stats().scheduled_interval_ns > 0);
+    update.set_hz(500.0).unwrap();
+    std::thread::sleep(Duration::from_millis(30));
+    assert!(update.step());
+    assert_eq!(update.stats().scheduled_interval_ns, 0);
+    assert!(update.step());
+    let interval = update.stats().scheduled_interval_ns;
+    assert!((1_500_000..25_000_000).contains(&interval), "{interval}");
+}

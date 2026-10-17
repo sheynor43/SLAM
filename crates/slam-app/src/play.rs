@@ -28,6 +28,7 @@ use slam_ui::i18n::Localizer;
 
 use crate::bench::number;
 
+pub mod fps;
 mod perf;
 pub mod scene;
 use perf::{FramePerf, ReportSources, SharedFrameTimes};
@@ -35,7 +36,7 @@ use scene::{CHANNELS, PlayScene, PlaySettings, Prepared, SAMPLE_RATE};
 
 pub const USAGE: &str = "usage: slam-app play MAP.osu [--skin DIR] [--backend NAME] \
                          [--device ID] [--buffer FRAMES] [--fps HZ|unlimited] \
-                         [--update-hz HZ] [--mods HDHR] [--dim PERCENT] [--no-beatmap-colours] [--no-beatmap-hitsounds] [--no-mouse-buttons] [--no-stats]";
+                         [--update-hz HZ] [--mods HDHR] [--dim PERCENT] [--no-beatmap-colours] [--no-beatmap-hitsounds] [--show-fps] [--no-mouse-buttons] [--no-stats]";
 
 const WINDOW: (i32, i32) = (1280, 720);
 /// How long the track may take to open.
@@ -69,6 +70,8 @@ pub struct Options {
     pub beatmap_colours: bool,
     /// Play the beatmap's own hitsound samples (lazer's `BeatmapHitsounds`); on by default.
     pub beatmap_hitsounds: bool,
+    /// Show the FPS counter (lazer's `ShowFpsDisplay`); off by default.
+    pub show_fps: bool,
     /// Mouse buttons press in gameplay (lazer's `MouseDisableButtons` off); on by default,
     /// toggled with F10.
     pub mouse_buttons: bool,
@@ -88,6 +91,7 @@ impl Options {
             skin: self.skin.clone(),
             beatmap_colours: self.beatmap_colours,
             beatmap_hitsounds: self.beatmap_hitsounds,
+            show_fps: self.show_fps,
             mods: self.mods.clone(),
             dim: self.dim,
             hit_error_scale: self.hit_error_scale,
@@ -108,6 +112,7 @@ impl Options {
             update_hz: EngineConfig::default().update_hz,
             beatmap_colours: true,
             beatmap_hitsounds: true,
+            show_fps: false,
             mouse_buttons: true,
             mods: ModSet::default(),
             dim: BackgroundSettings::default().dim_level,
@@ -129,6 +134,7 @@ impl Options {
                 "--no-stats" => options.stats = false,
                 "--no-beatmap-colours" => options.beatmap_colours = false,
                 "--no-beatmap-hitsounds" => options.beatmap_hitsounds = false,
+                "--show-fps" => options.show_fps = true,
                 "--no-mouse-buttons" => options.mouse_buttons = false,
                 "--mods" => options.mods = parse_mods(&value()?)?,
                 "--fps" => {
@@ -272,6 +278,8 @@ struct View {
     surface: Option<SdlGlSurface>,
     device: Option<GlDevice<SdlGlSurface>>,
     scene: PlayScene,
+    /// The FPS counter's inputs from the engine (ADR-0053).
+    fps: fps::FpsSource,
     /// Read by the update thread for the input layout.
     surface_size: Arc<AtomicU64>,
     /// Frame times for the console report; `None` with `--no-stats`.
@@ -299,7 +307,8 @@ impl Draw<PlaySnapshot> for View {
         let size = device.begin_frame(Color::rgb(0.0, 0.0, 0.0));
         self.surface_size
             .store(pack_size(size.width, size.height), Ordering::Relaxed);
-        self.scene.draw(device, size, info.wait.woke_ns, snapshot);
+        self.scene
+            .draw(device, size, info.wait.woke_ns, snapshot, self.fps.sample());
         // A failed present loses one frame; the next one tries again.
         let _ = device.present();
     }
@@ -467,10 +476,18 @@ pub fn run(options: &Options) -> Result<(), String> {
     };
     let frame_times = options.stats.then(|| Arc::new(SharedFrameTimes::default()));
     let objects = beatmap.hit_objects.len();
+    let counters = Arc::<slam_engine::EngineCounters>::default();
+    let update_rate = slam_engine::UpdateRateControl::new();
+    let draw_rate = slam_engine::DrawRateControl::new();
     let draw = View {
         surface: Some(surface),
         device: None,
         scene,
+        fps: fps::FpsSource::new(
+            Arc::clone(&counters),
+            update_rate.clone(),
+            draw_rate.clone(),
+        ),
         surface_size,
         perf: frame_times
             .as_ref()
@@ -478,7 +495,7 @@ pub fn run(options: &Options) -> Result<(), String> {
         _quit: crate::bench::QuitOnDrop(window.quit_handle()),
     };
     let (mut sink, source) = event_ring(1024);
-    let engine = Engine::spawn(
+    let engine = Engine::spawn_shared(
         EngineConfig {
             update_hz: options.update_hz,
             draw: options.draw,
@@ -488,6 +505,11 @@ pub fn run(options: &Options) -> Result<(), String> {
         draw,
         PlaySnapshot::default(),
         source,
+        slam_engine::EngineShared {
+            counters,
+            update_rate,
+            draw_rate,
+        },
     )
     .map_err(|e| e.to_string())?;
     sink.set_notify(engine.waker().as_notify());
@@ -653,6 +675,8 @@ mod tests {
                 .unwrap()
                 .beatmap_hitsounds
         );
+        assert!(!o.show_fps);
+        assert!(parse(&["--show-fps", "map.osu"]).unwrap().show_fps);
 
         let o = parse(&[
             "--skin", "s", "map.osu", "--device", "out", "--buffer", "64",

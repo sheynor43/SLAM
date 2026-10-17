@@ -56,6 +56,7 @@
 | [0050](0050-hit-error-meter-styles.md) | Шкала ошибок: стиль legacy по умолчанию, стиль лазера вторым, временная настройка размера `gameplay.hit_error_scale` до редактора HUD | Принято |
 | [0051](0051-stable-skin-selection.md) | Выбор скина до M3: папка `Skins` рядом с папкой карт, `[skin] name` в `slam.toml`, прокрутка выпадающего списка, откат на стандартный скин при ошибке | Принято |
 | [0052](0052-gameplay-menu-overlay.md) | Меню паузы и окно провала внутри экрана игры, состояние меню в `PlaySession`, порт `GameplayMenuOverlay` | Принято |
+| [0053](0053-fps-counter.md) | Счётчик FPS для игрока: порт `FPSCounter` в потоке draw, время кадра update через `EngineCounters` | Принято |
 
 ## Шаблон
 

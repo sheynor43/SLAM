@@ -145,6 +145,8 @@ pub struct Frame {
     pub draw: DrawRate,
     /// Draw rate on every other screen (ADR-0047).
     pub menu_draw: DrawRate,
+    /// Show the FPS counter in gameplay (lazer's `ShowFpsDisplay`; ADR-0053).
+    pub show_fps: bool,
 }
 
 impl Default for Frame {
@@ -154,6 +156,7 @@ impl Default for Frame {
             update_hz: engine.update_hz,
             draw: engine.draw.into(),
             menu_draw: engine.draw.into(),
+            show_fps: false,
         }
     }
 }

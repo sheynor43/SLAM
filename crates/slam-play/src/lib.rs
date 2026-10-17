@@ -4,6 +4,7 @@ pub mod background;
 pub mod circles;
 pub mod cursor;
 pub mod follow_points;
+pub mod fps_counter;
 pub mod gameplay_sounds;
 pub mod hit_error;
 pub mod hitsounds;
@@ -25,6 +26,7 @@ pub mod spinners;
 pub mod time;
 
 pub use background::{BackgroundSettings, BackgroundView};
+pub use fps_counter::{FpsCounter, FpsLabels, FpsTexts, FpsView};
 pub use gameplay_sounds::{GameplaySounds, SoundSettings, VoiceSink};
 pub use hitsounds::{Hitsound, Hitsounds, SampleCache, SampleSkins, Sound};
 pub use hotkeys::{GlobalAction, Hotkeys};

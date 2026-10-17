@@ -52,6 +52,7 @@ use slam_ui::song_select::{
 use slam_ui::theme::Theme;
 
 use crate::loader::{LoaderConfig, LoaderLink, SceneTrash, Trash};
+use crate::play::fps::FpsSource;
 use crate::play::scene::{CHANNELS, PlayScene, PlaySettings, Prepared, SAMPLE_RATE};
 use crate::play::{device_limits, pack_size};
 use crate::settings::saver::SaveLink;
@@ -1253,6 +1254,8 @@ struct View {
     scene_trash: Option<SceneTrash>,
     /// Read by the update thread for the layout.
     surface_size: Arc<AtomicU64>,
+    /// The counter's inputs from the engine (ADR-0053).
+    fps: FpsSource,
     _quit: crate::bench::QuitOnDrop,
 }
 
@@ -1415,7 +1418,13 @@ impl Draw<ShellSnapshot> for View {
                 if let Some((id, scene)) = &mut self.scene
                     && scene_on_layers(snapshot, *id)
                 {
-                    scene.draw(&mut r.device, size, info.wait.woke_ns, &snapshot.play);
+                    scene.draw(
+                        &mut r.device,
+                        size,
+                        info.wait.woke_ns,
+                        &snapshot.play,
+                        self.fps.sample(),
+                    );
                 }
                 continue;
             }
@@ -1678,6 +1687,7 @@ pub fn run(settings: Settings) -> Result<(), String> {
             PlaySettings {
                 beatmap_colours: options.beatmap_colours,
                 beatmap_hitsounds: options.beatmap_hitsounds,
+                show_fps: options.show_fps,
                 dim: options.dim,
                 hit_error_scale: options.hit_error_scale,
                 skin: options.skin,
@@ -1721,6 +1731,7 @@ pub fn run(settings: Settings) -> Result<(), String> {
     let menu_rate = settings.frame.menu_draw.to_limiter();
     let draw_rate = DrawRateControl::new();
     let update_rate = UpdateRateControl::new();
+    let counters = Arc::<slam_engine::EngineCounters>::default();
     let shell = Shell {
         state,
         host,
@@ -1749,6 +1760,11 @@ pub fn run(settings: Settings) -> Result<(), String> {
         scene_shown: false,
         scene_trash: Some(scene_trash),
         surface_size,
+        fps: FpsSource::new(
+            Arc::clone(&counters),
+            update_rate.clone(),
+            draw_rate.clone(),
+        ),
         _quit: crate::bench::QuitOnDrop(window.quit_handle()),
     };
     let (mut sink, source) = event_ring(1024);
@@ -1763,7 +1779,7 @@ pub fn run(settings: Settings) -> Result<(), String> {
         ShellSnapshot::default(),
         source,
         EngineShared {
-            counters: Arc::default(),
+            counters,
             update_rate,
             draw_rate,
         },
