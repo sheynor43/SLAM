@@ -73,7 +73,11 @@ fn down_enter_exits_and_other_keys_and_releases_do_nothing() {
     });
     assert_eq!(s.tick(0, &[key(4), release], &mut snap), Navigated::Stay);
     assert_eq!(
-        s.tick(0, &[key(KEY_DOWN), key(KEY_KEYPAD_ENTER)], &mut snap),
+        s.tick(
+            0,
+            &[key(KEY_DOWN), key(KEY_DOWN), key(KEY_KEYPAD_ENTER)],
+            &mut snap
+        ),
         Navigated::Exit
     );
 }

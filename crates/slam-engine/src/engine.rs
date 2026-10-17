@@ -58,6 +58,7 @@ type DrawHandle<U, D> = JoinHandle<DrawLoop<<U as Update>::Snapshot, D, SystemTi
 pub struct Engine<U: Update, D: Draw<U::Snapshot>> {
     stop: Arc<AtomicBool>,
     rates: Arc<Rates>,
+    draw_rate: DrawRateControl,
     counters: Arc<EngineCounters>,
     waker: Waker,
     update: Option<UpdateHandle<U>>,
@@ -101,6 +102,30 @@ impl<U: Update, D: Draw<U::Snapshot>> Engine<U, D> {
     where
         U::Snapshot: Clone,
     {
+        let shared = EngineShared {
+            counters,
+            draw_rate: DrawRateControl::new(),
+        };
+        Self::spawn_shared(config, update, draw, initial, source, shared)
+    }
+
+    /// [`Engine::spawn`] with handles created before the threads, which `update` and
+    /// `draw` may hold already. The draw rate starts as `config.draw`.
+    pub fn spawn_shared(
+        config: EngineConfig,
+        update: U,
+        draw: D,
+        initial: U::Snapshot,
+        source: EventSource,
+        shared: EngineShared,
+    ) -> Result<Self, EngineError>
+    where
+        U::Snapshot: Clone,
+    {
+        let EngineShared {
+            counters,
+            draw_rate,
+        } = shared;
         let (writer, reader) = triple_buffer(initial);
         let (waker, parker) = wake_pair();
         let mut update_loop = UpdateLoop::new(
@@ -122,11 +147,12 @@ impl<U: Update, D: Draw<U::Snapshot>> Engine<U, D> {
         let (initial_update, initial_draw) = (config.update_hz.to_bits(), encode_mode(config.draw));
         let rates = Arc::new(Rates {
             update: AtomicU64::new(initial_update),
-            draw: AtomicU64::new(initial_draw),
         });
+        draw_rate.mode.store(initial_draw, Ordering::Relaxed);
         let mut engine = Self {
             stop: Arc::clone(&stop),
             rates: Arc::clone(&rates),
+            draw_rate: draw_rate.clone(),
             counters: Arc::clone(&counters),
             waker,
             update: None,
@@ -159,9 +185,9 @@ impl<U: Update, D: Draw<U::Snapshot>> Engine<U, D> {
                 let mut applied = initial_draw;
                 draw_loop.start();
                 while !stop.load(Ordering::Acquire) {
-                    let wanted = rates.draw.load(Ordering::Relaxed);
+                    let wanted = draw_rate.mode.load(Ordering::Relaxed);
                     if wanted != applied {
-                        // Validated by `Engine::set_draw_mode`.
+                        // Validated by `DrawRateControl::set_mode`.
                         let _ = draw_loop.set_mode(decode_mode(wanted));
                         applied = wanted;
                     }
@@ -202,17 +228,16 @@ impl<U: Update, D: Draw<U::Snapshot>> Engine<U, D> {
     /// Changes the draw frame rate while running. Takes effect after the frame being
     /// waited for (at most `1 / MIN_HZ`).
     pub fn set_draw_mode(&self, mode: LimiterMode) -> Result<(), InvalidRate> {
-        if let LimiterMode::Hz(hz) = mode
-            && !is_valid_hz(hz)
-        {
-            return Err(InvalidRate);
-        }
-        self.rates.draw.store(encode_mode(mode), Ordering::Relaxed);
-        Ok(())
+        self.draw_rate.set_mode(mode)
     }
 
     pub fn draw_mode(&self) -> LimiterMode {
-        decode_mode(self.rates.draw.load(Ordering::Relaxed))
+        self.draw_rate.mode()
+    }
+
+    /// A handle that changes the draw rate from any thread.
+    pub fn draw_rate(&self) -> &DrawRateControl {
+        &self.draw_rate
     }
 
     /// Stops both threads and returns their state. A panic in either thread is
@@ -239,12 +264,57 @@ impl<U: Update, D: Draw<U::Snapshot>> Engine<U, D> {
     }
 }
 
-/// Rates requested through the engine handle, polled by each thread once per step.
+/// The update rate requested through the engine handle, polled once per step.
 struct Rates {
     /// `f64` bits of the update rate.
     update: AtomicU64,
+}
+
+/// Handles shared with the threads, created before [`Engine::spawn_shared`].
+pub struct EngineShared {
+    pub counters: Arc<EngineCounters>,
+    pub draw_rate: DrawRateControl,
+}
+
+/// Changes the draw rate of a running engine from any thread; clones share one rate.
+/// The draw thread polls it once per frame and applies a change after the frame
+/// being waited for (at most `1 / MIN_HZ`).
+#[derive(Clone, Debug)]
+pub struct DrawRateControl {
     /// See [`encode_mode`].
-    draw: AtomicU64,
+    mode: Arc<AtomicU64>,
+}
+
+impl DrawRateControl {
+    /// A control for an engine not spawned yet; [`Engine::spawn_shared`] sets its
+    /// starting rate.
+    pub fn new() -> DrawRateControl {
+        DrawRateControl {
+            mode: Arc::new(AtomicU64::new(encode_mode(EngineConfig::default().draw))),
+        }
+    }
+
+    /// Requests a new draw rate. Does not allocate or block.
+    pub fn set_mode(&self, mode: LimiterMode) -> Result<(), InvalidRate> {
+        if let LimiterMode::Hz(hz) = mode
+            && !is_valid_hz(hz)
+        {
+            return Err(InvalidRate);
+        }
+        self.mode.store(encode_mode(mode), Ordering::Relaxed);
+        Ok(())
+    }
+
+    /// The last requested rate.
+    pub fn mode(&self) -> LimiterMode {
+        decode_mode(self.mode.load(Ordering::Relaxed))
+    }
+}
+
+impl Default for DrawRateControl {
+    fn default() -> DrawRateControl {
+        DrawRateControl::new()
+    }
 }
 
 /// `Unlimited` is 0; a rate is its `f64` bits, never 0 since the rate is positive.

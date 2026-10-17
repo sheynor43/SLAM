@@ -12,7 +12,7 @@ use slam_play::input::{Binding, Bindings, Input, MAX_BINDINGS};
 use super::dirs::{Os, resolve};
 use super::file::{self, LoadStatus};
 use super::keys;
-use super::model::{BindingEntry, DrawRate, Settings};
+use super::model::{BindingEntry, DrawRate, Frame, Settings};
 
 fn temp_dir(tag: &str) -> PathBuf {
     static N: AtomicU32 = AtomicU32::new(0);
@@ -55,6 +55,7 @@ fn round_trip_non_default() {
     s.timing.global_offset_ms = -12.5;
     s.frame.update_hz = 2000.0;
     s.frame.draw = DrawRate::Hz(240.0);
+    s.frame.menu_draw = DrawRate::Hz(60.0);
     s.gameplay.dim = 0.3;
     s.gameplay.beatmap_colours = false;
     s.gameplay.mouse_buttons = false;
@@ -171,6 +172,32 @@ fn draw_rate_forms() {
     assert_eq!(un.settings.frame.draw.to_limiter(), LimiterMode::Unlimited);
     let bad = file::from_toml_str("[frame]\ndraw = 1e9\n");
     assert_eq!(bad.status, LoadStatus::Recovered);
+}
+
+#[test]
+fn menu_draw_missing_defaults_and_round_trips() {
+    let missing = file::from_toml_str("[frame]\ndraw = 240.0\n");
+    assert_eq!(missing.status, LoadStatus::Ok, "{:?}", missing.warnings);
+    assert_eq!(missing.settings.frame.menu_draw, Frame::default().draw);
+    let set = file::from_toml_str("[frame]\nmenu_draw = \"unlimited\"\n");
+    assert_eq!(set.settings.frame.menu_draw, DrawRate::Unlimited);
+    let mut s = Settings::default();
+    s.frame.menu_draw = DrawRate::Hz(144.0);
+    let text = file::to_toml_string(&s).unwrap();
+    assert!(text.contains("menu_draw = 144.0"), "{text}");
+    assert_eq!(file::from_toml_str(&text).settings, s);
+}
+
+#[test]
+fn menu_draw_invalid_falls_back_with_a_warning() {
+    let bad = file::from_toml_str("[frame]\nmenu_draw = 1e9\n");
+    assert_eq!(bad.status, LoadStatus::Recovered);
+    assert_eq!(bad.settings.frame.menu_draw, Frame::default().menu_draw);
+    assert!(
+        bad.warnings
+            .iter()
+            .any(|w| w.starts_with("frame.menu_draw"))
+    );
 }
 
 #[test]
@@ -405,4 +432,53 @@ fn dirs_windows_and_portable() {
     assert!(d.portable);
     let d = resolve(&env_of(&[("HOME", &abs("/h"))]), Some(exe), &none, Os::Unix).unwrap();
     assert!(!d.portable);
+}
+
+mod saver_tests {
+    use super::*;
+    use crate::settings::saver;
+
+    #[test]
+    fn write_keeps_the_files_songs_folder() {
+        let dir = temp_dir("saver-paths");
+        let path = dir.join("slam.toml");
+        let mut on_disk = Settings::default();
+        on_disk.paths.songs = Some(PathBuf::from("/from/file"));
+        file::save(&path, &on_disk).unwrap();
+
+        let mut edited = Settings::default();
+        edited.paths.songs = Some(PathBuf::from("/from/flag"));
+        edited.audio.master_volume = 0.3;
+        saver::write(&path, edited).unwrap();
+
+        let loaded = file::load(&path).settings;
+        assert_eq!(loaded.paths.songs, Some(PathBuf::from("/from/file")));
+        assert_eq!(loaded.audio.master_volume, 0.3);
+    }
+
+    #[test]
+    fn write_creates_a_missing_file_and_spares_a_broken_one() {
+        let dir = temp_dir("saver-broken");
+        let path = dir.join("slam.toml");
+        saver::write(&path, Settings::default()).unwrap();
+        assert_eq!(file::load(&path).status, LoadStatus::Ok);
+
+        std::fs::write(&path, "= = broken [[[").unwrap();
+        assert!(saver::write(&path, Settings::default()).is_err());
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), "= = broken [[[");
+    }
+
+    #[test]
+    fn the_thread_writes_what_was_queued_before_it_finished() {
+        let dir = temp_dir("saver-thread");
+        let path = dir.join("slam.toml");
+        let (mut link, thread) = saver::spawn(path.clone()).unwrap();
+        for volume in [0.1, 0.2, 0.7] {
+            let mut s = Settings::default();
+            s.audio.master_volume = volume;
+            assert!(link.request(Box::new(s)).is_ok());
+        }
+        thread.finish();
+        assert_eq!(file::load(&path).settings.audio.master_volume, 0.7);
+    }
 }

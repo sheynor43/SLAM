@@ -30,6 +30,7 @@ pub enum MenuInput {
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum MenuAction {
     Play,
+    Settings,
     Exit,
 }
 
@@ -44,15 +45,15 @@ impl MenuItem {
     /// The items, top to bottom.
     pub const ALL: [MenuItem; 3] = [MenuItem::Play, MenuItem::Settings, MenuItem::Exit];
 
-    /// Whether the item can be selected and activated. Settings has no screen yet (#98).
+    /// Whether the item can be selected and activated.
     pub const fn enabled(self) -> bool {
-        !matches!(self, MenuItem::Settings)
+        true
     }
 
     fn action(self) -> Option<MenuAction> {
         match self {
             MenuItem::Play => Some(MenuAction::Play),
-            MenuItem::Settings => None,
+            MenuItem::Settings => Some(MenuAction::Settings),
             MenuItem::Exit => Some(MenuAction::Exit),
         }
     }

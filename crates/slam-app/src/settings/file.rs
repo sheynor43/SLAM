@@ -277,6 +277,12 @@ fn from_table(mut table: Table) -> Loaded {
             Err(e) => cx.warn(format!("frame.draw: {e}, using the default")),
         }
     }
+    if let Some(value) = frame.remove("menu_draw") {
+        match DrawRate::from_value(&value) {
+            Ok(rate) => settings.frame.menu_draw = rate,
+            Err(e) => cx.warn(format!("frame.menu_draw: {e}, using the default")),
+        }
+    }
     cx.unknown(&frame, "frame");
 
     let mut gameplay = cx.section(&mut table, "gameplay");

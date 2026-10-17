@@ -89,6 +89,18 @@ pub struct Theme {
     pub widget_accent_fill: Color,
     /// Fill of an open dropdown list.
     pub widget_popup_fill: Color,
+    /// Margin around the settings screen, and the gap below its title.
+    pub settings_margin: f32,
+    /// Size of the settings screen's title.
+    pub settings_title_size: f32,
+    /// Width of the column of section tabs.
+    pub settings_tab_width: f32,
+    /// Pitch of the settings rows and of the tabs.
+    pub settings_row_pitch: f32,
+    /// Fraction of the content width the row labels take.
+    pub settings_label_ratio: f32,
+    /// Size of the "after restart" marker.
+    pub settings_marker_size: f32,
 }
 
 impl Default for Theme {
@@ -170,6 +182,12 @@ impl Default for Theme {
                 b: 0.16,
                 a: 0.98,
             },
+            settings_margin: 32.0,
+            settings_title_size: 40.0,
+            settings_tab_width: 200.0,
+            settings_row_pitch: 52.0,
+            settings_label_ratio: 0.4,
+            settings_marker_size: 14.0,
         }
     }
 }

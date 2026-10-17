@@ -111,6 +111,11 @@ impl Dropdown {
         }
     }
 
+    /// The number of options.
+    pub fn count(&self) -> usize {
+        self.count
+    }
+
     pub fn selected(&self) -> usize {
         self.selected
     }

@@ -7,7 +7,10 @@ use std::time::{Duration, Instant};
 
 use slam_engine::clock::now_ns;
 use slam_engine::limiter::LimiterMode;
-use slam_engine::{Draw, Engine, EngineConfig, FrameInfo, TickInfo, Update};
+use slam_engine::{
+    Draw, DrawRateControl, Engine, EngineConfig, EngineCounters, EngineShared, FrameInfo, TickInfo,
+    Update,
+};
 use slam_input::{InputEvent, InputKind, MouseButton, event_ring};
 
 /// Snapshot: index of the tick that wrote it.
@@ -263,6 +266,59 @@ fn invalid_rates_are_rejected() {
         );
         assert!(result.is_err(), "{hz} accepted");
     }
+}
+
+/// Requests a draw rate from the update thread on its first tick.
+struct RateSetter {
+    control: DrawRateControl,
+    mode: LimiterMode,
+}
+
+impl Update for RateSetter {
+    type Snapshot = Snap;
+
+    fn tick(&mut self, _info: &TickInfo, _events: &[InputEvent], _snapshot: &mut Snap) {
+        self.control.set_mode(self.mode).unwrap();
+    }
+}
+
+#[test]
+fn update_changes_the_draw_rate_through_a_shared_control() {
+    let (_sink, source) = event_ring(64);
+    let frames = Arc::new(AtomicU64::new(0));
+    let draw = Counter {
+        frames: Arc::clone(&frames),
+        ..Counter::default()
+    };
+    let control = DrawRateControl::new();
+    let update = RateSetter {
+        control: control.clone(),
+        mode: LimiterMode::Hz(1000.0),
+    };
+    let shared = EngineShared {
+        counters: Arc::new(EngineCounters::default()),
+        draw_rate: control.clone(),
+    };
+    let engine = Engine::spawn_shared(
+        config(1000.0, LimiterMode::Hz(10.0)),
+        update,
+        draw,
+        0,
+        source,
+        shared,
+    )
+    .unwrap();
+
+    std::thread::sleep(Duration::from_millis(150));
+    let frames_before = frames.load(Ordering::Relaxed);
+    std::thread::sleep(Duration::from_millis(300));
+    let drawn = frames.load(Ordering::Relaxed) - frames_before;
+    assert_eq!(engine.draw_mode(), LimiterMode::Hz(1000.0));
+    assert_eq!(control.mode(), LimiterMode::Hz(1000.0));
+    assert!(control.set_mode(LimiterMode::Hz(0.0)).is_err());
+    engine.shutdown();
+    // At 10 Hz there would be about 3 frames; at 1000 Hz about 300.
+    assert!(drawn > 30, "{drawn} frames");
 }
 
 #[test]
