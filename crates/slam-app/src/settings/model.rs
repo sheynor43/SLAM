@@ -84,6 +84,15 @@ pub struct Paths {
     pub songs: Option<PathBuf>,
 }
 
+/// Skin choice (ADR-0051).
+#[derive(Clone, Debug, Default, PartialEq, Serialize)]
+pub struct SkinSettings {
+    /// Folder name inside `Skins`, next to the songs folder; `None` plays on the default
+    /// skin.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub name: Option<String>,
+}
+
 /// Audio output and volumes.
 #[derive(Clone, Debug, PartialEq, Serialize)]
 pub struct Audio {
@@ -315,6 +324,7 @@ impl Serialize for InputSettings {
 #[derive(Clone, Debug, Default, PartialEq, Serialize)]
 pub struct Settings {
     pub paths: Paths,
+    pub skin: SkinSettings,
     pub audio: Audio,
     pub timing: Timing,
     pub frame: Frame,

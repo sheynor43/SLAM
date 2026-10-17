@@ -398,4 +398,103 @@ mod keybind_tests {
         assert_eq!(k.input(outside, &l), Some(KeyBindAction::Cancelled));
         assert!(!k.is_listening());
     }
+
+    const LONG: usize = 25;
+
+    fn long() -> DropdownLayout {
+        DropdownLayout::new(BOUNDS, LONG, 1.0).within(1000.0)
+    }
+
+    #[test]
+    fn a_long_list_shows_a_capped_window() {
+        let l = long();
+        assert_eq!(l.visible(), MAX_VISIBLE_OPTIONS);
+        assert_eq!(l.list().height, 40.0 * MAX_VISIBLE_OPTIONS as f32);
+        let short = DropdownLayout::new(BOUNDS, 3, 1.0).within(1000.0);
+        assert_eq!(short.visible(), 3);
+    }
+
+    #[test]
+    fn the_list_opens_above_when_there_is_no_room_below() {
+        // The box is at y 100..140; a 300 high window has room for 4 below and 2 above.
+        let l = DropdownLayout::new(BOUNDS, LONG, 1.0).within(300.0);
+        assert_eq!((l.visible(), l.list().y), (4, 140.0));
+        // A box near the bottom: more room above.
+        let low = Rect { y: 600.0, ..BOUNDS };
+        let l = DropdownLayout::new(low, LONG, 1.0).within(700.0);
+        assert_eq!(l.visible(), 10);
+        assert_eq!(l.list().y, 200.0);
+        assert!(l.list().y + l.list().height <= low.y);
+        // Neither side fits everything: the larger side, shortened, inside the window.
+        let l = DropdownLayout::new(low, LONG, 1.0).within(650.0);
+        assert_eq!(l.visible(), 10);
+        let l = DropdownLayout::new(Rect { y: 200.0, ..BOUNDS }, LONG, 1.0).within(400.0);
+        assert!(l.list().y >= 0.0 && l.list().y + l.list().height <= 400.0);
+    }
+
+    #[test]
+    fn opening_scrolls_the_selection_into_view() {
+        let l = long();
+        let mut d = Dropdown::new(LONG, 20);
+        d.input(DropdownInput::Activate, &l);
+        assert_eq!(d.scroll(), 20 + 1 - MAX_VISIBLE_OPTIONS);
+        let mut d = Dropdown::new(LONG, 3);
+        d.input(DropdownInput::Activate, &l);
+        assert_eq!(d.scroll(), 0);
+    }
+
+    #[test]
+    fn arrows_scroll_to_keep_the_highlight_visible() {
+        let l = long();
+        let mut d = Dropdown::new(LONG, 0);
+        d.input(DropdownInput::Activate, &l);
+        for _ in 0..12 {
+            d.input(DropdownInput::Down, &l);
+        }
+        assert_eq!(d.highlight(), 12);
+        assert_eq!(d.scroll(), 3);
+        for _ in 0..12 {
+            d.input(DropdownInput::Up, &l);
+        }
+        assert_eq!((d.highlight(), d.scroll()), (0, 0));
+    }
+
+    #[test]
+    fn the_wheel_scrolls_within_bounds_and_only_while_open() {
+        let l = long();
+        let mut d = Dropdown::new(LONG, 0);
+        d.input(DropdownInput::Scroll { lines: 3.0 }, &l);
+        assert_eq!(d.scroll(), 0);
+        d.input(DropdownInput::Activate, &l);
+        d.input(DropdownInput::Scroll { lines: 3.0 }, &l);
+        assert_eq!(d.scroll(), 3);
+        d.input(DropdownInput::Scroll { lines: 0.1 }, &l);
+        assert_eq!(d.scroll(), 4);
+        d.input(DropdownInput::Scroll { lines: 100.0 }, &l);
+        assert_eq!(d.scroll(), LONG - MAX_VISIBLE_OPTIONS);
+        d.input(DropdownInput::Scroll { lines: -100.0 }, &l);
+        assert_eq!(d.scroll(), 0);
+        // The highlight and selection did not move.
+        assert_eq!((d.highlight(), d.selected()), (0, 0));
+    }
+
+    #[test]
+    fn hit_testing_accounts_for_the_scroll_offset() {
+        let l = long().scrolled(5);
+        let first = l.option(5);
+        assert_eq!(first.y, BOUNDS.y + BOUNDS.height);
+        let [x, y] = first.centre();
+        assert_eq!(l.option_at(x, y), Some(5));
+        let [x, y] = l.option(14).centre();
+        assert_eq!(l.option_at(x, y), Some(14));
+        // Pressing picks the option under the pointer, not the slot.
+        let mut d = Dropdown::new(LONG, 0);
+        d.input(DropdownInput::Activate, &long());
+        d.input(DropdownInput::Scroll { lines: 5.0 }, &long());
+        let [x, y] = long().scrolled(5).option(7).centre();
+        assert_eq!(
+            d.input(DropdownInput::PointerPress { x, y }, &long()),
+            Some(DropdownAction::Selected(7))
+        );
+    }
 }

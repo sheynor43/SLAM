@@ -19,7 +19,9 @@ pub mod keybind;
 pub mod slider;
 pub mod toggle;
 
-pub use dropdown::{Dropdown, DropdownAction, DropdownInput, DropdownLayout, DropdownView};
+pub use dropdown::{
+    Dropdown, DropdownAction, DropdownInput, DropdownLayout, DropdownView, MAX_VISIBLE_OPTIONS,
+};
 pub use keybind::{KeyBind, KeyBindAction, KeyBindInput, KeyBindLayout, KeyBindView};
 pub use slider::{Slider, SliderAction, SliderInput, SliderLayout, SliderView};
 pub use toggle::{Toggle, ToggleAction, ToggleInput, ToggleLayout, ToggleView};

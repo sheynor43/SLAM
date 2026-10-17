@@ -6,7 +6,7 @@ use slam_audio::{MixerHandle, MusicPlayer, VoiceGroup};
 use slam_engine::UpdateRateControl;
 
 use crate::loader::PlayOptions;
-use crate::settings::{Audio, Settings};
+use crate::settings::{Audio, Settings, skins};
 
 /// A value last handed to another thread.
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -130,6 +130,10 @@ pub fn play_options(settings: &Settings) -> PlayOptions {
         dim: settings.gameplay.dim,
         beatmap_colours: settings.gameplay.beatmap_colours,
         hit_error_scale: settings.gameplay.hit_error_scale,
+        skin: skins::skin_path(
+            settings.paths.songs.as_deref(),
+            settings.skin.name.as_deref(),
+        ),
     }
 }
 
@@ -251,7 +255,18 @@ mod tests {
                 dim: 0.3,
                 beatmap_colours: false,
                 hit_error_scale: 1.5,
+                skin: None,
             }
         );
+        // The skin is a folder of `Skins`, next to the songs folder.
+        settings.skin.name = Some("Cool".into());
+        assert_eq!(play_options(&settings).skin, None);
+        settings.paths.songs = Some("/games/osu/Songs".into());
+        assert_eq!(
+            play_options(&settings).skin,
+            Some(std::path::PathBuf::from("/games/osu/Skins/Cool"))
+        );
+        settings.skin.name = None;
+        assert_eq!(play_options(&settings).skin, None);
     }
 }

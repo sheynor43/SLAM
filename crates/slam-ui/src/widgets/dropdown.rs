@@ -24,6 +24,10 @@ pub enum DropdownInput {
     Activate,
     /// Closes the list without a change.
     Back,
+    /// Wheel: positive `lines` scroll the open list towards its end. The highlight stays.
+    Scroll {
+        lines: f32,
+    },
     /// Pointer moved: while open, highlights the option under it.
     PointerMove {
         x: f32,
@@ -42,13 +46,22 @@ pub enum DropdownAction {
     Selected(usize),
 }
 
-/// Where a dropdown and its open list are: the list's options are stacked right below the
-/// box, each as high as the box.
+/// The most options an open list shows at once; longer lists scroll.
+pub const MAX_VISIBLE_OPTIONS: usize = 10;
+
+/// Where a dropdown and its open list are. The list's options are stacked right below the
+/// box, each as high as the box, at most [`MAX_VISIBLE_OPTIONS`] of them. The list never
+/// leaves the window: if it does not fit below the box it opens above it when there is more
+/// room there, and shows fewer options when neither side has room for all of them. The
+/// first option shown is the scroll offset.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct DropdownLayout {
     pub bounds: Rect,
     pub count: usize,
     pub scale: f32,
+    /// The window's height: the list stays above it. Unbounded by default.
+    window_height: f32,
+    scroll: usize,
 }
 
 impl DropdownLayout {
@@ -57,26 +70,75 @@ impl DropdownLayout {
             bounds,
             count,
             scale,
+            window_height: f32::INFINITY,
+            scroll: 0,
         }
     }
 
-    /// The rectangle of option `index` in the open list.
+    /// The layout keeping the open list within a window `height` high.
+    pub fn within(mut self, height: f32) -> DropdownLayout {
+        self.window_height = height;
+        self
+    }
+
+    /// The layout with the list scrolled to start at option `scroll`.
+    pub fn scrolled(mut self, scroll: usize) -> DropdownLayout {
+        self.scroll = scroll;
+        self
+    }
+
+    /// How many options the open list shows, and whether it opens above the box.
+    fn fit(&self) -> (usize, bool) {
+        let wanted = self.count.min(MAX_VISIBLE_OPTIONS);
+        let height = self.bounds.height;
+        if wanted == 0 || height <= 0.0 {
+            return (wanted, false);
+        }
+        let rows = |space: f32| (space.max(0.0) / height).floor() as usize;
+        let below = rows(self.window_height - (self.bounds.y + height));
+        if below >= wanted {
+            return (wanted, false);
+        }
+        let above = rows(self.bounds.y);
+        if above > below {
+            (above.max(1).min(wanted), true)
+        } else {
+            (below.max(1).min(wanted), false)
+        }
+    }
+
+    /// The number of options the open list shows.
+    pub fn visible(&self) -> usize {
+        self.fit().0
+    }
+
+    /// The index of the first option shown: the scroll offset kept within the list.
+    pub fn first(&self) -> usize {
+        self.scroll.min(self.count - self.visible())
+    }
+
+    /// The rectangle of option `index` in the open list; meaningful for the shown ones.
     pub fn option(&self, index: usize) -> Rect {
         Rect {
-            x: self.bounds.x,
-            y: self.bounds.y + self.bounds.height * (index + 1) as f32,
-            width: self.bounds.width,
+            y: self.list().y + self.bounds.height * (index as f32 - self.first() as f32),
             height: self.bounds.height,
+            ..self.list()
         }
     }
 
     /// The whole open list.
     pub fn list(&self) -> Rect {
+        let (visible, above) = self.fit();
+        let height = self.bounds.height * visible as f32;
         Rect {
             x: self.bounds.x,
-            y: self.bounds.y + self.bounds.height,
+            y: if above {
+                self.bounds.y - height
+            } else {
+                self.bounds.y + self.bounds.height
+            },
             width: self.bounds.width,
-            height: self.bounds.height * self.count as f32,
+            height,
         }
     }
 
@@ -85,8 +147,9 @@ impl DropdownLayout {
         if !self.list().contains(x, y) || self.bounds.height <= 0.0 {
             return None;
         }
-        let index = ((y - self.list().y) / self.bounds.height) as usize;
-        (index < self.count).then_some(index)
+        let slot = ((y - self.list().y) / self.bounds.height) as usize;
+        let index = self.first() + slot;
+        (slot < self.visible() && index < self.count).then_some(index)
     }
 }
 
@@ -96,6 +159,8 @@ pub struct Dropdown {
     count: usize,
     selected: usize,
     highlight: usize,
+    /// The first option an open list shows.
+    scroll: usize,
     open: bool,
 }
 
@@ -107,6 +172,7 @@ impl Dropdown {
             count,
             selected,
             highlight: selected,
+            scroll: 0,
             open: false,
         }
     }
@@ -125,6 +191,11 @@ impl Dropdown {
         self.highlight
     }
 
+    /// The first option an open list shows (before clamping to the layout).
+    pub fn scroll(&self) -> usize {
+        self.scroll
+    }
+
     pub fn is_open(&self) -> bool {
         self.open
     }
@@ -140,11 +211,33 @@ impl Dropdown {
         self.highlight = self.selected;
     }
 
-    fn open(&mut self) {
+    fn open(&mut self, layout: &DropdownLayout) {
         if self.count > 0 {
             self.open = true;
             self.highlight = self.selected;
+            self.reveal(self.selected, layout);
         }
+    }
+
+    /// Scrolls the least that shows option `index`.
+    fn reveal(&mut self, index: usize, layout: &DropdownLayout) {
+        let visible = layout.visible().max(1);
+        if index < self.scroll {
+            self.scroll = index;
+        } else if index >= self.scroll + visible {
+            self.scroll = index + 1 - visible;
+        }
+        self.scroll = self.scroll.min(self.count.saturating_sub(visible));
+    }
+
+    fn scroll_by(&mut self, lines: f32, layout: &DropdownLayout) {
+        if !self.open || lines == 0.0 || lines.is_nan() {
+            return;
+        }
+        // At least one option per wheel event, however small the delta.
+        let steps = (lines.round() as isize).abs().max(1) * lines.signum() as isize;
+        let last = self.count.saturating_sub(layout.visible());
+        self.scroll = self.scroll.saturating_add_signed(steps).min(last);
     }
 
     fn choose(&mut self, index: usize) -> Option<DropdownAction> {
@@ -156,7 +249,7 @@ impl Dropdown {
         changed.then_some(DropdownAction::Selected(index))
     }
 
-    fn step(&mut self, forward: bool) -> Option<DropdownAction> {
+    fn step(&mut self, forward: bool, layout: &DropdownLayout) -> Option<DropdownAction> {
         let from = if self.open {
             self.highlight
         } else {
@@ -169,6 +262,7 @@ impl Dropdown {
         };
         if self.open {
             self.highlight = to;
+            self.reveal(to, layout);
             None
         } else if to != self.selected && self.count > 0 {
             self.selected = to;
@@ -186,14 +280,19 @@ impl Dropdown {
         input: DropdownInput,
         layout: &DropdownLayout,
     ) -> Option<DropdownAction> {
+        let layout = &layout.scrolled(self.scroll);
         match input {
-            DropdownInput::Up => self.step(false),
-            DropdownInput::Down => self.step(true),
+            DropdownInput::Up => self.step(false, layout),
+            DropdownInput::Down => self.step(true, layout),
+            DropdownInput::Scroll { lines } => {
+                self.scroll_by(lines, layout);
+                None
+            }
             DropdownInput::Activate => {
                 if self.open {
                     self.choose(self.highlight)
                 } else {
-                    self.open();
+                    self.open(layout);
                     None
                 }
             }
@@ -220,7 +319,7 @@ impl Dropdown {
                     }
                 } else {
                     if layout.bounds.contains(x, y) {
-                        self.open();
+                        self.open(layout);
                     }
                     None
                 }
@@ -297,6 +396,7 @@ impl DropdownView {
             self.scale = layout.scale;
             self.lay_out();
         }
+        let layout = &layout.scrolled(state.scroll);
         let theme = &self.theme;
         let pad = theme.widget_pad * layout.scale;
         let box_fill = if state.open {
@@ -318,7 +418,9 @@ impl DropdownView {
             &layout.list(),
             faded(theme.widget_popup_fill, opacity),
         );
-        for (i, line) in self.options.iter().enumerate().take(layout.count) {
+        let first = layout.first();
+        let shown = self.options.iter().enumerate().skip(first);
+        for (i, line) in shown.take(layout.visible().min(layout.count)) {
             let rect = layout.option(i);
             if i == state.highlight {
                 fill(

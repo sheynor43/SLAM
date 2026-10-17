@@ -611,3 +611,25 @@ fn the_conflict_blocks_navigation() {
     assert_eq!(s.focus(), 2);
     assert!(s.conflict().is_some());
 }
+
+#[test]
+fn the_wheel_scrolls_an_open_long_dropdown_and_is_ignored_otherwise() {
+    let mut s = SettingsScreen::new(&[slider(0, 1.0), dropdown(0, 30, 0)], 1);
+    assert_eq!(input(&mut s, SettingsInput::Scroll { lines: 2.0 }), None);
+    input(&mut s, SettingsInput::Down);
+    input(&mut s, SettingsInput::Activate);
+    input(&mut s, SettingsInput::Scroll { lines: 4.0 });
+    let RowWidget::Dropdown(d) = s.snapshot().widgets[1] else {
+        panic!("a dropdown");
+    };
+    assert_eq!(d.scroll(), 4);
+    // Keys keep the highlight in view.
+    for _ in 0..20 {
+        input(&mut s, SettingsInput::Down);
+    }
+    let RowWidget::Dropdown(d) = s.snapshot().widgets[1] else {
+        panic!("a dropdown");
+    };
+    assert_eq!(d.highlight(), 20);
+    assert!(d.scroll() <= 20 && 20 < d.scroll() + crate::widgets::MAX_VISIBLE_OPTIONS);
+}

@@ -30,13 +30,15 @@ pub struct LoadRequest {
 
 /// The settings a play takes when it is prepared, sent with each request so that a
 /// change applies to the next play (ADR-0048).
-#[derive(Clone, Copy, Debug, PartialEq)]
+#[derive(Clone, Debug, PartialEq)]
 pub struct PlayOptions {
     /// How dark the background is, 0 ..= 1.
     pub dim: f64,
     pub beatmap_colours: bool,
     /// Size multiplier of the hit error meter (ADR-0050).
     pub hit_error_scale: f64,
+    /// The chosen skin's folder (ADR-0051); `None` plays on the default skin.
+    pub skin: Option<PathBuf>,
 }
 
 /// A prepared play, or why it could not be.
@@ -154,6 +156,7 @@ pub fn spawn(mut config: LoaderConfig) -> std::io::Result<(LoaderLink, SceneTras
                     config.settings.dim = options.dim;
                     config.settings.beatmap_colours = options.beatmap_colours;
                     config.settings.hit_error_scale = options.hit_error_scale;
+                    config.settings.skin = options.skin;
                     let result = prepare(
                         &map,
                         &config.settings,
@@ -194,11 +197,14 @@ mod tests {
 
     use super::*;
 
-    const OPTIONS: PlayOptions = PlayOptions {
-        dim: 0.7,
-        beatmap_colours: true,
-        hit_error_scale: 1.0,
-    };
+    fn options() -> PlayOptions {
+        PlayOptions {
+            dim: 0.7,
+            beatmap_colours: true,
+            hit_error_scale: 1.0,
+            skin: None,
+        }
+    }
 
     fn config() -> LoaderConfig {
         LoaderConfig {
@@ -230,7 +236,7 @@ mod tests {
         let (mut link, _scenes, thread) = spawn(config()).unwrap();
         let map =
             Path::new(env!("CARGO_MANIFEST_DIR")).join("../slam-osu/tests/data/slider-samples.osu");
-        assert!(link.request(7, map, OPTIONS));
+        assert!(link.request(7, map, options()));
         let result = wait(&mut link);
         assert_eq!(result.id, 7);
         let prepared = result.result.unwrap();
@@ -239,10 +245,26 @@ mod tests {
         assert_eq!(prepared.scene.dim(), 0.7);
         link.free(Trash::Prepared(prepared));
 
-        assert!(link.request(8, PathBuf::from("/nonexistent/map.osu"), OPTIONS));
+        assert!(link.request(8, PathBuf::from("/nonexistent/map.osu"), options()));
         let result = wait(&mut link);
         assert_eq!(result.id, 8);
         assert!(result.result.is_err());
+        drop(thread);
+    }
+
+    #[test]
+    fn a_skin_that_does_not_load_falls_back_to_the_default() {
+        let (mut link, _scenes, thread) = spawn(config()).unwrap();
+        let map =
+            Path::new(env!("CARGO_MANIFEST_DIR")).join("../slam-osu/tests/data/slider-samples.osu");
+        let options = PlayOptions {
+            skin: Some(PathBuf::from("/nonexistent/Skins/Gone")),
+            ..options()
+        };
+        assert!(link.request(3, map, options));
+        let result = wait(&mut link);
+        assert_eq!(result.id, 3);
+        link.free(Trash::Prepared(result.result.unwrap()));
         drop(thread);
     }
 
@@ -252,7 +274,7 @@ mod tests {
         let map =
             Path::new(env!("CARGO_MANIFEST_DIR")).join("../slam-osu/tests/data/slider-samples.osu");
         for (id, dim) in [(1, 0.25), (2, 0.9)] {
-            let options = PlayOptions { dim, ..OPTIONS };
+            let options = PlayOptions { dim, ..options() };
             assert!(link.request(id, map.clone(), options));
             let result = wait(&mut link);
             assert_eq!(result.id, id);

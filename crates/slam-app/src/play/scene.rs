@@ -116,11 +116,14 @@ pub(crate) fn load(map: &Path, settings: &PlaySettings) -> Result<Loaded, String
     let beatmap_skin = Skin::load_beatmap(dir, &bytes).map_err(|e| format!("beatmap skin: {e}"))?;
     let default = Skin::load_default(default_skin_dir())
         .map_err(|e| format!("default skin {}: {e}", default_skin_dir().display()))?;
-    let user = settings
-        .skin
-        .as_ref()
-        .map(|dir| Skin::load(dir).map_err(|e| format!("skin {}: {e}", dir.display())))
-        .transpose()?;
+    // A skin that does not load is not worth cancelling the play: play on the default one.
+    let user = settings.skin.as_ref().and_then(|dir| {
+        Skin::load(dir)
+            .inspect_err(|e| {
+                tracing::warn!("skin {}: {e}, playing on the default skin", dir.display());
+            })
+            .ok()
+    });
     Ok(Loaded {
         beatmap,
         mods,
