@@ -6,6 +6,7 @@ settings-audio-master-volume = Master
 settings-audio-music-volume = Music
 settings-audio-hitsound-volume = Hitsounds
 settings-audio-effects-volume = Effects
+settings-keybind-listening = Press a key...
 song-select-beatmap-count =
     { $count ->
         [one] { $count } beatmap

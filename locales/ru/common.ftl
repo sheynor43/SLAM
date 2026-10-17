@@ -6,6 +6,7 @@ settings-audio-master-volume = Общая
 settings-audio-music-volume = Музыка
 settings-audio-hitsound-volume = Хитсаунды
 settings-audio-effects-volume = Эффекты
+settings-keybind-listening = Нажмите клавишу...
 song-select-beatmap-count =
     { $count ->
         [one] { $count } карта
