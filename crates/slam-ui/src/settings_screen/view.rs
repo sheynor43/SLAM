@@ -15,8 +15,7 @@ use crate::menu::view::{Frame, Line, Typesetter};
 use crate::screen::Pose;
 use crate::theme::{Theme, faded};
 use crate::widgets::{
-    DropdownLayout, DropdownView, SliderLayout, SliderView, ToggleLayout, ToggleView, fill,
-    push_left, push_right,
+    DropdownView, SliderLayout, SliderView, ToggleLayout, ToggleView, fill, push_left, push_right,
 };
 
 /// The texts of one row, already localised.
@@ -411,7 +410,7 @@ impl SettingsView {
                         open_row = Some(i);
                         continue;
                     }
-                    let bounds = DropdownLayout::new(widget, dropdown.count(), layout.scale);
+                    let bounds = layout.dropdown_at(slot, dropdown.count());
                     view.push(shapes, text, glyphs, dropdown, &bounds, opacity, white);
                 }
                 _ => {}
@@ -421,11 +420,7 @@ impl SettingsView {
             && let (RowView::Dropdown(view), RowWidget::Dropdown(dropdown)) =
                 (&mut self.views[i], &snapshot.widgets[i])
         {
-            let bounds = DropdownLayout::new(
-                layout.widget(self.meta[i].1),
-                dropdown.count(),
-                layout.scale,
-            );
+            let bounds = layout.dropdown_at(self.meta[i].1, dropdown.count());
             view.push(shapes, text, glyphs, dropdown, &bounds, opacity, white);
         }
     }

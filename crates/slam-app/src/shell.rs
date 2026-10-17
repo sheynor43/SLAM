@@ -703,6 +703,7 @@ fn settings_input(input: ScreenInput) -> Option<SettingsInput> {
             SongSelectInput::Back => SettingsInput::Back,
             SongSelectInput::PointerMove { x, y } => SettingsInput::PointerMove { x, y },
             SongSelectInput::PointerPress { x, y } => SettingsInput::PointerPress { x, y },
+            SongSelectInput::Scroll { lines } => SettingsInput::Scroll { lines },
             _ => return None,
         },
     })
@@ -1671,11 +1672,16 @@ pub fn run(settings: Settings) -> Result<(), String> {
     }
     // The play: a loader thread, scenes for the draw thread, the audio output.
     let (loader, scene_trash, _loader) = crate::loader::spawn(LoaderConfig {
-        settings: PlaySettings {
-            beatmap_colours: settings.gameplay.beatmap_colours,
-            dim: settings.gameplay.dim,
-            hit_error_scale: settings.gameplay.hit_error_scale,
-            ..PlaySettings::default()
+        // The skin travels with each request; this is what the first one starts from.
+        settings: {
+            let options = live::play_options(&settings);
+            PlaySettings {
+                beatmap_colours: options.beatmap_colours,
+                dim: options.dim,
+                hit_error_scale: options.hit_error_scale,
+                skin: options.skin,
+                ..PlaySettings::default()
+            }
         },
         limits,
         registry: Arc::clone(&registry),

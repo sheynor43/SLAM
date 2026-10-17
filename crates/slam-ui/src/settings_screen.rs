@@ -158,6 +158,10 @@ pub enum SettingsInput {
         x: f32,
         y: f32,
     },
+    /// Wheel: positive `lines` scroll an open dropdown list towards its end.
+    Scroll {
+        lines: f32,
+    },
     PointerRelease,
     /// An input the application captured while a key row listens. `Empty` is ignored.
     Captured(KeyValue),
@@ -216,6 +220,8 @@ pub struct SettingsLayout {
     pub title: Rect,
     pub tabs: [Rect; MAX_SECTIONS],
     content: Rect,
+    /// The window's height, which an open dropdown list stays within.
+    window_height: f32,
     row_height: f32,
     pitch: f32,
     label_width: f32,
@@ -260,6 +266,7 @@ impl SettingsLayout {
             },
             tabs,
             content,
+            window_height: height,
             row_height,
             pitch,
             label_width: content.width * theme.settings_label_ratio,
@@ -356,7 +363,12 @@ impl SettingsLayout {
     }
 
     fn dropdown(&self, slot: usize, count: usize) -> DropdownLayout {
-        DropdownLayout::new(self.widget(slot), count, self.scale)
+        DropdownLayout::new(self.widget(slot), count, self.scale).within(self.window_height)
+    }
+
+    /// Where the dropdown of the row at `slot` and its open list are.
+    pub fn dropdown_at(&self, slot: usize, count: usize) -> DropdownLayout {
+        self.dropdown(slot, count)
     }
 }
 
@@ -618,6 +630,7 @@ impl SettingsScreen {
                     SettingsInput::Back => DropdownInput::Back,
                     SettingsInput::PointerMove { x, y } => DropdownInput::PointerMove { x, y },
                     SettingsInput::PointerPress { x, y } => DropdownInput::PointerPress { x, y },
+                    SettingsInput::Scroll { lines } => DropdownInput::Scroll { lines },
                     _ => return None,
                 };
                 let layout = layout.dropdown(slot, dropdown.count());
@@ -694,6 +707,10 @@ impl SettingsScreen {
                 }
                 let row = self.row_at(layout, x, y)?;
                 self.focus = row;
+                self.route(row, input, layout)
+            }
+            SettingsInput::Scroll { .. } => {
+                let row = self.open_dropdown()?;
                 self.route(row, input, layout)
             }
             // Only meaningful while a key row listens.

@@ -592,7 +592,13 @@ fn found(user: &[&str], default: &[&str]) -> usize {
         Some(Skin::load(&user_dir.0).unwrap()),
         Skin::load(&default_dir.0).unwrap(),
     );
-    let (mut requests, _uploads) = texture_loader(&TextureLoaderConfig::new(LIMITS)).unwrap();
+    // Room for every request at once: whether the loader thread drained some before the
+    // queue filled would otherwise decide the test.
+    let config = TextureLoaderConfig {
+        request_capacity: 1024,
+        ..TextureLoaderConfig::new(LIMITS)
+    };
+    let (mut requests, _uploads) = texture_loader(&config).unwrap();
     PlayTextures::request(&chain, &mut requests)
         .unwrap()
         .found()

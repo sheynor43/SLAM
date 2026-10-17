@@ -8,7 +8,7 @@ use slam_ui::i18n::{FluentArgs, Localizer};
 use slam_ui::settings_screen::{RowKind, RowLabels, RowSpec, RowValue, SettingsLabels};
 
 use super::keybinds;
-use crate::settings::{DrawRate, Settings, Timing};
+use crate::settings::{DrawRate, Settings, Timing, skins};
 
 /// Sections, in order; the keys of their names are in [`SECTION_KEYS`].
 const SECTION_KEYS: [&str; 5] = [
@@ -53,10 +53,11 @@ pub enum Row {
     Dim,
     BeatmapColours,
     HitErrorScale,
+    Skin,
 }
 
 impl Row {
-    pub const ALL: [Row; 21] = [
+    pub const ALL: [Row; 22] = [
         Row::MasterVolume,
         Row::MusicVolume,
         Row::HitsoundVolume,
@@ -78,6 +79,7 @@ impl Row {
         Row::Dim,
         Row::BeatmapColours,
         Row::HitErrorScale,
+        Row::Skin,
     ];
 
     /// The action and binding slot a key row edits.
@@ -118,7 +120,7 @@ impl Row {
             | Row::SmokeKey2
             | Row::ResetKeys => 2,
             Row::UpdateHz | Row::DrawHz | Row::MenuDrawHz => 3,
-            Row::Dim | Row::BeatmapColours | Row::HitErrorScale => 4,
+            Row::Dim | Row::BeatmapColours | Row::HitErrorScale | Row::Skin => 4,
         }
     }
 
@@ -145,6 +147,7 @@ impl Row {
             Row::Dim => "settings-gameplay-dim",
             Row::BeatmapColours => "settings-gameplay-beatmap-colours",
             Row::HitErrorScale => "settings-gameplay-hit-error-scale",
+            Row::Skin => "settings-gameplay-skin",
         }
     }
 
@@ -165,6 +168,9 @@ pub struct Rows {
     buffers: Vec<u32>,
     update_hz: Vec<f64>,
     draw: Vec<DrawRate>,
+    /// The folder names in `Skins`; option `i + 1` of the skin row is `skins[i]`, option 0
+    /// the default skin.
+    skins: Vec<String>,
 }
 
 /// `presets` with `current` in its place if it is not one of them.
@@ -204,6 +210,15 @@ impl Rows {
             buffers: with_current(&BUFFER_PRESETS, settings.audio.buffer_frames),
             update_hz: with_current(&RATE_PRESETS, settings.frame.update_hz),
             draw,
+            skins: settings
+                .paths
+                .songs
+                .as_deref()
+                .map(skins::skin_dirs)
+                .unwrap_or_default()
+                .into_iter()
+                .map(|(name, _)| name)
+                .collect(),
         }
     }
 
@@ -282,6 +297,17 @@ impl Rows {
             Row::BeatmapColours => RowKind::Toggle {
                 value: s.gameplay.beatmap_colours,
             },
+            // A saved skin that is no longer there shows as the default one, and stays
+            // saved until the player picks another.
+            Row::Skin => choice(
+                self.skins.len() + 1,
+                s.skin
+                    .name
+                    .as_ref()
+                    .and_then(|name| self.skins.iter().position(|n| n == name))
+                    .map(|i| i + 1)
+                    .or(Some(0)),
+            ),
             // Handled above.
             Row::LeftKey1
             | Row::LeftKey2
@@ -318,6 +344,14 @@ impl Rows {
             }
             (Row::MouseButtons, RowValue::Toggle(v)) => settings.gameplay.mouse_buttons = v,
             (Row::BeatmapColours, RowValue::Toggle(v)) => settings.gameplay.beatmap_colours = v,
+            (Row::Skin, RowValue::Choice(i)) => match i {
+                0 => settings.skin.name = None,
+                _ => {
+                    if let Some(name) = self.skins.get(i - 1) {
+                        settings.skin.name = Some(name.clone());
+                    }
+                }
+            },
             (Row::Backend, RowValue::Choice(i)) => {
                 if let Some(backend) = self.backends.get(i) {
                     settings.audio.backend = backend.clone();
@@ -382,6 +416,9 @@ impl Rows {
                         .map(|hz| number("settings-option-hz", hz.to_string()))
                         .collect(),
                     Row::DrawHz | Row::MenuDrawHz => self.draw.iter().map(rate).collect(),
+                    Row::Skin => std::iter::once(text("settings-option-default-skin"))
+                        .chain(self.skins.iter().cloned())
+                        .collect(),
                     _ => Vec::new(),
                 };
                 let unit = match row {
@@ -572,6 +609,63 @@ mod tests {
             specs[index(Row::BufferFrames)].kind,
             RowKind::Dropdown { selected: 3, .. }
         ));
+    }
+
+    fn with_skins(names: &[&str], saved: Option<&str>) -> (Rows, Settings) {
+        let mut s = Settings::default();
+        s.skin.name = saved.map(str::to_owned);
+        let mut rows = Rows::new(&s);
+        rows.skins = names.iter().map(|n| (*n).to_owned()).collect();
+        (rows, s)
+    }
+
+    fn skin_selected(rows: &Rows, s: &Settings) -> (usize, usize) {
+        match rows.specs(s)[index(Row::Skin)].kind {
+            RowKind::Dropdown { options, selected } => (options, selected),
+            other => panic!("{other:?}"),
+        }
+    }
+
+    #[test]
+    fn the_skin_row_offers_the_default_and_the_folders() {
+        let (rows, mut s) = with_skins(&["Alpha", "beta"], None);
+        assert_eq!(skin_selected(&rows, &s), (3, 0));
+        assert_eq!(Row::Skin.section(), 4);
+        assert!(!Row::Skin.restart_required());
+        rows.apply(&mut s, index(Row::Skin), RowValue::Choice(2));
+        assert_eq!(s.skin.name.as_deref(), Some("beta"));
+        assert_eq!(skin_selected(&rows, &s), (3, 2));
+        rows.apply(&mut s, index(Row::Skin), RowValue::Choice(99));
+        assert_eq!(s.skin.name.as_deref(), Some("beta"));
+        rows.apply(&mut s, index(Row::Skin), RowValue::Choice(0));
+        assert_eq!(s.skin.name, None);
+        // Case matters: the folder name is matched as saved.
+        s.skin.name = Some("ALPHA".into());
+        assert_eq!(skin_selected(&rows, &s), (3, 0));
+    }
+
+    #[test]
+    fn a_missing_skin_shows_as_default_and_stays_saved() {
+        let (rows, s) = with_skins(&["Alpha"], Some("Gone"));
+        assert_eq!(skin_selected(&rows, &s), (2, 0));
+        assert_eq!(s.skin.name.as_deref(), Some("Gone"));
+        // No songs folder: only the default skin.
+        let (rows, s) = with_skins(&[], Some("Gone"));
+        assert_eq!(skin_selected(&rows, &s), (1, 0));
+    }
+
+    #[test]
+    fn the_skin_options_are_labelled() {
+        let (rows, _) = with_skins(&["Alpha"], None);
+        let mut localizer = Localizer::builtin().unwrap();
+        localizer.set_language("en").unwrap();
+        let labels = rows.labels(&localizer);
+        assert_eq!(labels.rows[index(Row::Skin)].label, "Skin");
+        assert_eq!(labels.rows[index(Row::Skin)].options, ["Default", "Alpha"]);
+        localizer.set_language("ru").unwrap();
+        let labels = rows.labels(&localizer);
+        assert_eq!(labels.rows[index(Row::Skin)].label, "Скин");
+        assert_eq!(labels.rows[index(Row::Skin)].options[0], "Стандартный");
     }
 
     #[test]

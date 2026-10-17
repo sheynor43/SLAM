@@ -208,6 +208,14 @@ fn from_table(mut table: Table) -> Loaded {
     cx.opt(&mut paths, "paths", "songs", &mut settings.paths.songs);
     cx.unknown(&paths, "paths");
 
+    let mut skin = cx.section(&mut table, "skin");
+    cx.opt(&mut skin, "skin", "name", &mut settings.skin.name);
+    // An empty name is the default skin.
+    if settings.skin.name.as_deref() == Some("") {
+        settings.skin.name = None;
+    }
+    cx.unknown(&skin, "skin");
+
     let mut audio = cx.section(&mut table, "audio");
     cx.opt(&mut audio, "audio", "backend", &mut settings.audio.backend);
     cx.opt(&mut audio, "audio", "device", &mut settings.audio.device);

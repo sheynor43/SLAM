@@ -46,6 +46,10 @@ pub(crate) const CHANNELS: u16 = 2;
 /// ticks (up to `MAX_LIVE_NESTED`) and repeats, and judgement popups: up to `MAX_POPUPS`, of
 /// 150 particles and three sprites each.
 const MAX_SPRITES: usize = 32768;
+/// Room in the texture loader's queue for every texture of a play at once: a skin with
+/// nearly every element requests about 260, and a full queue fails the preparation if the
+/// loader thread has not drained some yet.
+const TEXTURE_REQUEST_CAPACITY: usize = 1024;
 /// Textures of a play: atlas pages of the skin and the glyphs, and images too large for a
 /// page.
 const MAX_TEXTURES: usize = 64;
@@ -116,11 +120,14 @@ pub(crate) fn load(map: &Path, settings: &PlaySettings) -> Result<Loaded, String
     let beatmap_skin = Skin::load_beatmap(dir, &bytes).map_err(|e| format!("beatmap skin: {e}"))?;
     let default = Skin::load_default(default_skin_dir())
         .map_err(|e| format!("default skin {}: {e}", default_skin_dir().display()))?;
-    let user = settings
-        .skin
-        .as_ref()
-        .map(|dir| Skin::load(dir).map_err(|e| format!("skin {}: {e}", dir.display())))
-        .transpose()?;
+    // A skin that does not load is not worth cancelling the play: play on the default one.
+    let user = settings.skin.as_ref().and_then(|dir| {
+        Skin::load(dir)
+            .inspect_err(|e| {
+                tracing::warn!("skin {}: {e}, playing on the default skin", dir.display());
+            })
+            .ok()
+    });
     Ok(Loaded {
         beatmap,
         mods,
@@ -233,7 +240,11 @@ pub fn prepare(
     };
 
     let (mut requests, uploads): (TextureRequests, TextureUploads) =
-        texture_loader(&TextureLoaderConfig::new(limits)).map_err(|e| e.to_string())?;
+        texture_loader(&TextureLoaderConfig {
+            request_capacity: TEXTURE_REQUEST_CAPACITY,
+            ..TextureLoaderConfig::new(limits)
+        })
+        .map_err(|e| e.to_string())?;
     let textures =
         PlayTextures::request(&loaded.skins, &mut requests).map_err(|e| e.to_string())?;
     let background_name = loaded.background.as_ref().map(|(name, _)| name.clone());

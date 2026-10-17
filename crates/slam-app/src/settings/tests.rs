@@ -36,6 +36,7 @@ fn defaults_match_hardcoded_values() {
     assert_eq!(s.audio.buffer_frames, StreamConfig::default().buffer_frames);
     assert_eq!(s.gameplay.dim, BackgroundSettings::default().dim_level);
     assert_eq!(s.gameplay.hit_error_scale, 1.0);
+    assert_eq!(s.skin.name, None);
     assert_eq!(s.audio.master_volume, 1.0);
     assert_eq!(s.audio.hitsound_volume, 1.0);
     assert_eq!(s.audio.effects_volume, 1.0);
@@ -47,6 +48,7 @@ fn round_trip_non_default() {
     let path = dir.join("sub").join("slam.toml");
     let mut s = Settings::default();
     s.paths.songs = Some(PathBuf::from("/games/osu/Songs"));
+    s.skin.name = Some("My Skin".into());
     s.audio.backend = Some("pipewire".into());
     s.audio.device = Some("dev".into());
     s.audio.buffer_frames = 256;
@@ -267,6 +269,29 @@ fn future_version_and_unknown_keys() {
     assert_eq!(loaded.status, LoadStatus::Recovered);
     assert_eq!(loaded.settings.gameplay.dim, 0.2);
     for needle in ["version", "gameplay.bogus", "extra"] {
+        assert!(
+            loaded.warnings.iter().any(|w| w.starts_with(needle)),
+            "{needle}: {:?}",
+            loaded.warnings
+        );
+    }
+}
+
+#[test]
+fn an_empty_skin_name_is_the_default_skin() {
+    let loaded = file::from_toml_str("[skin]\nname = \"\"\n");
+    assert_eq!(loaded.status, LoadStatus::Ok);
+    assert_eq!(loaded.settings.skin.name, None);
+    let loaded = file::from_toml_str("[skin]\nname = \"Cool\"\n");
+    assert_eq!(loaded.settings.skin.name.as_deref(), Some("Cool"));
+}
+
+#[test]
+fn bad_skin_values_warn_and_unknown_skin_keys_are_reported() {
+    let loaded = file::from_toml_str("[skin]\nname = 5\nbogus = 1\n");
+    assert_eq!(loaded.status, LoadStatus::Recovered);
+    assert_eq!(loaded.settings.skin.name, None);
+    for needle in ["skin.name", "skin.bogus"] {
         assert!(
             loaded.warnings.iter().any(|w| w.starts_with(needle)),
             "{needle}: {:?}",
