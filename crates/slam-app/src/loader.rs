@@ -35,6 +35,7 @@ pub struct PlayOptions {
     /// How dark the background is, 0 ..= 1.
     pub dim: f64,
     pub beatmap_colours: bool,
+    pub beatmap_hitsounds: bool,
     /// Size multiplier of the hit error meter (ADR-0050).
     pub hit_error_scale: f64,
     /// The chosen skin's folder (ADR-0051); `None` plays on the default skin.
@@ -155,6 +156,7 @@ pub fn spawn(mut config: LoaderConfig) -> std::io::Result<(LoaderLink, SceneTras
                     idle = false;
                     config.settings.dim = options.dim;
                     config.settings.beatmap_colours = options.beatmap_colours;
+                    config.settings.beatmap_hitsounds = options.beatmap_hitsounds;
                     config.settings.hit_error_scale = options.hit_error_scale;
                     config.settings.skin = options.skin;
                     let result = prepare(
@@ -201,6 +203,7 @@ mod tests {
         PlayOptions {
             dim: 0.7,
             beatmap_colours: true,
+            beatmap_hitsounds: true,
             hit_error_scale: 1.0,
             skin: None,
         }

@@ -1677,6 +1677,7 @@ pub fn run(settings: Settings) -> Result<(), String> {
             let options = live::play_options(&settings);
             PlaySettings {
                 beatmap_colours: options.beatmap_colours,
+                beatmap_hitsounds: options.beatmap_hitsounds,
                 dim: options.dim,
                 hit_error_scale: options.hit_error_scale,
                 skin: options.skin,

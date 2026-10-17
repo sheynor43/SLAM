@@ -35,7 +35,7 @@ use scene::{CHANNELS, PlayScene, PlaySettings, Prepared, SAMPLE_RATE};
 
 pub const USAGE: &str = "usage: slam-app play MAP.osu [--skin DIR] [--backend NAME] \
                          [--device ID] [--buffer FRAMES] [--fps HZ|unlimited] \
-                         [--update-hz HZ] [--mods HDHR] [--dim PERCENT] [--no-beatmap-colours] [--no-mouse-buttons] [--no-stats]";
+                         [--update-hz HZ] [--mods HDHR] [--dim PERCENT] [--no-beatmap-colours] [--no-beatmap-hitsounds] [--no-mouse-buttons] [--no-stats]";
 
 const WINDOW: (i32, i32) = (1280, 720);
 /// How long the track may take to open.
@@ -67,6 +67,8 @@ pub struct Options {
     pub update_hz: f64,
     /// Take colours from the beatmap's skin (lazer's `BeatmapColours`); on by default.
     pub beatmap_colours: bool,
+    /// Play the beatmap's own hitsound samples (lazer's `BeatmapHitsounds`); on by default.
+    pub beatmap_hitsounds: bool,
     /// Mouse buttons press in gameplay (lazer's `MouseDisableButtons` off); on by default,
     /// toggled with F10.
     pub mouse_buttons: bool,
@@ -85,6 +87,7 @@ impl Options {
         PlaySettings {
             skin: self.skin.clone(),
             beatmap_colours: self.beatmap_colours,
+            beatmap_hitsounds: self.beatmap_hitsounds,
             mods: self.mods.clone(),
             dim: self.dim,
             hit_error_scale: self.hit_error_scale,
@@ -104,6 +107,7 @@ impl Options {
             draw: EngineConfig::default().draw,
             update_hz: EngineConfig::default().update_hz,
             beatmap_colours: true,
+            beatmap_hitsounds: true,
             mouse_buttons: true,
             mods: ModSet::default(),
             dim: BackgroundSettings::default().dim_level,
@@ -124,6 +128,7 @@ impl Options {
                 "--device" => options.device = Some(value()?),
                 "--no-stats" => options.stats = false,
                 "--no-beatmap-colours" => options.beatmap_colours = false,
+                "--no-beatmap-hitsounds" => options.beatmap_hitsounds = false,
                 "--no-mouse-buttons" => options.mouse_buttons = false,
                 "--mods" => options.mods = parse_mods(&value()?)?,
                 "--fps" => {
@@ -642,6 +647,12 @@ mod tests {
         assert!(o.beatmap_colours && o.mouse_buttons);
         let o = parse(&["--no-beatmap-colours", "map.osu", "--no-mouse-buttons"]).unwrap();
         assert!(!o.beatmap_colours && !o.mouse_buttons);
+        assert!(o.beatmap_hitsounds);
+        assert!(
+            !parse(&["--no-beatmap-hitsounds", "map.osu"])
+                .unwrap()
+                .beatmap_hitsounds
+        );
 
         let o = parse(&[
             "--skin", "s", "map.osu", "--device", "out", "--buffer", "64",

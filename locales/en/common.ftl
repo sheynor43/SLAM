@@ -77,6 +77,7 @@ settings-frame-draw-rate = Gameplay frame rate
 settings-frame-menu-draw-rate = Menu frame rate
 settings-gameplay-dim = Background dim
 settings-gameplay-beatmap-colours = Beatmap colours
+settings-gameplay-beatmap-hitsounds = Beatmap hitsounds
 settings-gameplay-hit-error-scale = Hit error meter size
 settings-gameplay-skin = Skin
 settings-option-default-skin = Default

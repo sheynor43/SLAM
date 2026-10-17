@@ -62,6 +62,7 @@ fn round_trip_non_default() {
     s.frame.menu_draw = DrawRate::Hz(60.0);
     s.gameplay.dim = 0.3;
     s.gameplay.beatmap_colours = false;
+    s.gameplay.beatmap_hitsounds = false;
     s.gameplay.mouse_buttons = false;
     s.gameplay.hit_error_scale = 1.5;
     s.input.bindings = Bindings::new(&[

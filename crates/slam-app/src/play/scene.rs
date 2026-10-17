@@ -68,6 +68,8 @@ pub struct PlaySettings {
     pub skin: Option<PathBuf>,
     /// Take colours from the beatmap's skin (lazer's `BeatmapColours`).
     pub beatmap_colours: bool,
+    /// Play the beatmap's own hitsound samples (lazer's `BeatmapHitsounds`).
+    pub beatmap_hitsounds: bool,
     pub mods: ModSet,
     /// How dark the background is, 0 ..= 1 (lazer's `DimLevel`).
     pub dim: f64,
@@ -80,6 +82,7 @@ impl Default for PlaySettings {
         Self {
             skin: None,
             beatmap_colours: true,
+            beatmap_hitsounds: true,
             mods: ModSet::default(),
             dim: BackgroundSettings::default().dim_level,
             hit_error_scale: 1.0,
@@ -197,7 +200,9 @@ pub fn prepare(
     let hitsounds = Hitsounds::new(
         beatmap,
         SampleSkins {
-            beatmap: Some(&loaded.beatmap_skin),
+            // Like lazer's `AllowSampleLookup`, disabled beatmap hitsounds drop the whole
+            // beatmap skin from the sample lookup.
+            beatmap: settings.beatmap_hitsounds.then_some(&loaded.beatmap_skin),
             chain: &loaded.skins,
         },
         &mut cache,

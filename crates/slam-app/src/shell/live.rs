@@ -129,6 +129,7 @@ pub fn play_options(settings: &Settings) -> PlayOptions {
     PlayOptions {
         dim: settings.gameplay.dim,
         beatmap_colours: settings.gameplay.beatmap_colours,
+        beatmap_hitsounds: settings.gameplay.beatmap_hitsounds,
         hit_error_scale: settings.gameplay.hit_error_scale,
         skin: skins::skin_path(
             settings.paths.songs.as_deref(),
@@ -244,16 +245,18 @@ mod tests {
     }
 
     #[test]
-    fn the_next_play_takes_the_dim_and_beatmap_colours() {
+    fn the_next_play_takes_the_dim_and_beatmap_settings() {
         let mut settings = Settings::default();
         settings.gameplay.dim = 0.3;
         settings.gameplay.beatmap_colours = false;
+        settings.gameplay.beatmap_hitsounds = false;
         settings.gameplay.hit_error_scale = 1.5;
         assert_eq!(
             play_options(&settings),
             PlayOptions {
                 dim: 0.3,
                 beatmap_colours: false,
+                beatmap_hitsounds: false,
                 hit_error_scale: 1.5,
                 skin: None,
             }

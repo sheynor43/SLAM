@@ -52,12 +52,13 @@ pub enum Row {
     MenuDrawHz,
     Dim,
     BeatmapColours,
+    BeatmapHitsounds,
     HitErrorScale,
     Skin,
 }
 
 impl Row {
-    pub const ALL: [Row; 22] = [
+    pub const ALL: [Row; 23] = [
         Row::MasterVolume,
         Row::MusicVolume,
         Row::HitsoundVolume,
@@ -78,6 +79,7 @@ impl Row {
         Row::MenuDrawHz,
         Row::Dim,
         Row::BeatmapColours,
+        Row::BeatmapHitsounds,
         Row::HitErrorScale,
         Row::Skin,
     ];
@@ -120,7 +122,11 @@ impl Row {
             | Row::SmokeKey2
             | Row::ResetKeys => 2,
             Row::UpdateHz | Row::DrawHz | Row::MenuDrawHz => 3,
-            Row::Dim | Row::BeatmapColours | Row::HitErrorScale | Row::Skin => 4,
+            Row::Dim
+            | Row::BeatmapColours
+            | Row::BeatmapHitsounds
+            | Row::HitErrorScale
+            | Row::Skin => 4,
         }
     }
 
@@ -146,6 +152,7 @@ impl Row {
             Row::MenuDrawHz => "settings-frame-menu-draw-rate",
             Row::Dim => "settings-gameplay-dim",
             Row::BeatmapColours => "settings-gameplay-beatmap-colours",
+            Row::BeatmapHitsounds => "settings-gameplay-beatmap-hitsounds",
             Row::HitErrorScale => "settings-gameplay-hit-error-scale",
             Row::Skin => "settings-gameplay-skin",
         }
@@ -297,6 +304,9 @@ impl Rows {
             Row::BeatmapColours => RowKind::Toggle {
                 value: s.gameplay.beatmap_colours,
             },
+            Row::BeatmapHitsounds => RowKind::Toggle {
+                value: s.gameplay.beatmap_hitsounds,
+            },
             // A saved skin that is no longer there shows as the default one, and stays
             // saved until the player picks another.
             Row::Skin => choice(
@@ -344,6 +354,7 @@ impl Rows {
             }
             (Row::MouseButtons, RowValue::Toggle(v)) => settings.gameplay.mouse_buttons = v,
             (Row::BeatmapColours, RowValue::Toggle(v)) => settings.gameplay.beatmap_colours = v,
+            (Row::BeatmapHitsounds, RowValue::Toggle(v)) => settings.gameplay.beatmap_hitsounds = v,
             (Row::Skin, RowValue::Choice(i)) => match i {
                 0 => settings.skin.name = None,
                 _ => {
@@ -530,6 +541,11 @@ mod tests {
         rows.apply(&mut s, index(Row::BeatmapColours), RowValue::Toggle(false));
         rows.apply(
             &mut s,
+            index(Row::BeatmapHitsounds),
+            RowValue::Toggle(false),
+        );
+        rows.apply(
+            &mut s,
             index(Row::HitErrorScale),
             RowValue::Slider(1.2300000000000002),
         );
@@ -541,6 +557,7 @@ mod tests {
         assert_eq!(s.gameplay.dim, 0.07);
         assert_eq!(s.timing.global_offset_ms, -3.0);
         assert!(!s.gameplay.beatmap_colours);
+        assert!(!s.gameplay.beatmap_hitsounds);
         // The first draw option is Unlimited, the second 60 Hz.
         rows.apply(&mut s, index(Row::MenuDrawHz), RowValue::Choice(0));
         rows.apply(&mut s, index(Row::DrawHz), RowValue::Choice(1));
