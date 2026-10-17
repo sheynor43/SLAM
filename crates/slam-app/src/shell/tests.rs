@@ -539,7 +539,7 @@ fn host(name: &str, with_track: bool) -> HostFixture {
             max_texture_slots: 16,
         },
         registry: Arc::new(FontRegistry::with_builtin()),
-        skip_label: "Skip".to_owned(),
+        hud_labels: crate::play::scene::hud_labels(&Localizer::builtin().unwrap()),
     })
     .unwrap();
     let (mut mixer, mixer_handle) = slam_audio::mixer(&MixerConfig {
@@ -572,6 +572,7 @@ fn host(name: &str, with_track: bool) -> HostFixture {
         next_request: 0,
         points: [1280.0, 720.0],
         input: PlayInput::new(&Settings::default()),
+        beatmap_offsets: HashMap::new(),
     };
     HostFixture {
         host,
@@ -648,6 +649,25 @@ fn a_play_starts_with_its_scene_and_ends_back_in_the_list() {
     fixture.host.advance(now + 2 + VOICES_IDLE_NS, &mut s);
     assert!(fixture.host.retiring.is_none());
     assert!(matches!(fixture.host.pending, Pending::Idle));
+}
+
+#[test]
+fn a_play_takes_its_beatmap_offset_and_keeps_it_when_it_ends() {
+    let mut fixture = host("beatmap-offset", true);
+    let map = fixture.dir.join("map.osu");
+    fixture.host.beatmap_offsets.insert(map.clone(), -7.0);
+    let (mut s, mut snap) = listing(&fixture);
+    s.tick(TRANSITION_NS + 1, &[key(KEY_ENTER)], &mut snap);
+    let now = advance_until(&mut fixture, &mut s, TRANSITION_NS + 1, |_, s| s.playing());
+    let game = fixture.host.game.as_mut().unwrap();
+    assert_eq!(game.session.beatmap_offset(), -7.0);
+
+    // The play's offset goes back when it ends.
+    fixture.host.beatmap_offsets.clear();
+    fixture.host.game.as_mut().unwrap().ending = Ending::Sounds;
+    fixture.host.advance(now + 1, &mut s);
+    assert!(fixture.host.game.is_none());
+    assert_eq!(fixture.host.beatmap_offsets.get(&map), Some(&-7.0));
 }
 
 #[test]

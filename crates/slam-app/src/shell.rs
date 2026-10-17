@@ -2,6 +2,7 @@
 //! prepared on worker threads (ADR-0045). Opened by `slam-app` without a command. Console
 //! output is not localised; UI text is.
 
+use std::collections::HashMap;
 use std::path::PathBuf;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
@@ -580,6 +581,8 @@ struct Game {
     id: u64,
     title: String,
     mods: ResultsMods,
+    /// The beatmap file played: its offset is kept when the play ends.
+    map: Option<PathBuf>,
 }
 
 /// A quit play whose voices the mixer silences. The session keeps its samples until the
@@ -608,6 +611,9 @@ struct PlayHost {
     /// The window in points, as gameplay input takes it.
     points: [f32; 2],
     input: PlayInput,
+    /// Beatmap offsets the hotkeys set, by beatmap file, until the app quits (stored
+    /// with the library in #175).
+    beatmap_offsets: HashMap<PathBuf, f64>,
 }
 
 /// What a play takes from the settings on the update thread.
@@ -626,7 +632,7 @@ impl PlayInput {
             mouse_buttons: settings.gameplay.mouse_buttons,
             offsets: Offsets {
                 global_ms: settings.timing.global_offset_ms,
-                // Per-beatmap offsets come with #172.
+                // Each play takes its beatmap's ([`PlayHost::beatmap_offsets`]).
                 beatmap_ms: 0.0,
             },
         }
@@ -758,7 +764,8 @@ impl PlayHost {
                         std::mem::replace(&mut self.pending, Pending::Idle)
                     {
                         let title = state.last_title().to_owned();
-                        self.start(id, *prepared, title);
+                        let map = state.last_file().cloned();
+                        self.start(id, *prepared, title, map);
                         state.finish_loading(now_ns, Some(id));
                     }
                 }
@@ -800,6 +807,10 @@ impl PlayHost {
             if results.is_none() {
                 let _ = self.audio.player.pause();
             }
+            if let Some(map) = game.map.take() {
+                self.beatmap_offsets
+                    .insert(map, game.session.beatmap_offset());
+            }
             state.leave_play(now_ns, results);
             // Two quits in a row on a stuck mixer: the older session goes anyway.
             if let Some(old) = self.retiring.replace(Retiring {
@@ -834,8 +845,9 @@ impl PlayHost {
         }
     }
 
-    /// Starts `prepared` as play `id` on its opened track. Navigation.
-    fn start(&mut self, id: u64, prepared: Prepared, title: String) {
+    /// Starts `prepared` as play `id` of the beatmap file `map` on its opened track, with
+    /// the offset the file last had. Navigation.
+    fn start(&mut self, id: u64, prepared: Prepared, title: String, map: Option<PathBuf>) {
         let Prepared {
             beatmap,
             mods,
@@ -855,7 +867,14 @@ impl PlayHost {
             &self.audio.player,
             input,
             sounds,
-            self.input.offsets,
+            Offsets {
+                beatmap_ms: map
+                    .as_ref()
+                    .and_then(|map| self.beatmap_offsets.get(map))
+                    .copied()
+                    .unwrap_or(0.0),
+                ..self.input.offsets
+            },
         ));
         self.loader.free(Trash::Other(Box::new((beatmap, mods))));
         // The caller checked for a free slot.
@@ -866,6 +885,7 @@ impl PlayHost {
             id,
             title,
             mods: shown_mods,
+            map,
         });
     }
 }
@@ -1360,7 +1380,7 @@ pub fn run(settings: Settings) -> Result<(), String> {
         },
         limits,
         registry: Arc::clone(&registry),
-        skip_label: text("play-skip-button"),
+        hud_labels: crate::play::scene::hud_labels(&localizer),
     })
     .map_err(|e| e.to_string())?;
     let (scene_tx, scene_rx) = rtrb::RingBuffer::<(u64, PlayScene)>::new(2);
@@ -1387,6 +1407,7 @@ pub fn run(settings: Settings) -> Result<(), String> {
             pixels_h as f32 * points_per_pixel,
         ],
         input: PlayInput::new(&settings),
+        beatmap_offsets: HashMap::new(),
     });
 
     let exited = Arc::new(AtomicBool::new(false));

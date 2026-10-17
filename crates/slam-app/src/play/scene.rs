@@ -12,6 +12,7 @@ use slam_play::circles::{
     CircleMods, CircleSettings, CircleSkinConfig, CircleStyle, CircleVisuals, HitCircles,
 };
 use slam_play::cursor::{CursorView, MAX_CURSOR_SPRITES};
+use slam_play::hud::OFFSET_PLACEHOLDER;
 use slam_play::judgements::JudgementView;
 use slam_play::resume::MAX_TARGET_SPRITES;
 use slam_play::slider_body::Snaking;
@@ -20,8 +21,8 @@ use slam_play::sliders::{
 };
 use slam_play::spinners::{HitSpinners, SpinnerStyle, SpinnerVisuals};
 use slam_play::{
-    BackgroundSettings, BackgroundView, GameplaySounds, Hitsounds, HudView, PlaySnapshot,
-    PlayTextures, PlayView, PlayfieldLayout, SampleCache, SampleSkins, SoundSettings,
+    BackgroundSettings, BackgroundView, GameplaySounds, Hitsounds, HudLabels, HudView,
+    PlaySnapshot, PlayTextures, PlayView, PlayfieldLayout, SampleCache, SampleSkins, SoundSettings,
 };
 use slam_render::gl::{GlDevice, GlTexture};
 use slam_render::slider::{SliderBuffer, SliderDraw, SliderMesh, SliderRenderer};
@@ -34,6 +35,7 @@ use slam_render::upload::{
 use slam_render::{Device, Extent, Limits, shaders};
 use slam_skin::{Skin, SkinChain};
 use slam_text::{FontRegistry, GlyphAtlasConfig, GlyphCache, glyph_atlas};
+use slam_ui::i18n::{FluentArgs, Localizer};
 
 use super::{default_skin_dir, find_beatmap_file};
 
@@ -138,6 +140,21 @@ pub struct Prepared {
     pub background_name: Option<String>,
 }
 
+/// The HUD's texts in the language of `localizer`.
+pub fn hud_labels(localizer: &Localizer) -> HudLabels {
+    let text = |key: &str| {
+        let mut args = FluentArgs::new();
+        args.set("offset", OFFSET_PLACEHOLDER);
+        localizer.format(key, Some(&args)).into_owned()
+    };
+    HudLabels {
+        skip: text("play-skip-button"),
+        offset_zero: text("play-offset"),
+        offset_earlier: text("play-offset-earlier"),
+        offset_later: text("play-offset-later"),
+    }
+}
+
 /// Reads and builds a play of `map`: beatmap, skins, hitsounds, visuals, slider meshes, and
 /// a texture loader of its own that starts loading the play's images. Call it off the hot
 /// paths; `limits` are the draw device's.
@@ -146,7 +163,7 @@ pub fn prepare(
     settings: &PlaySettings,
     limits: Limits,
     registry: Arc<FontRegistry>,
-    skip_label: &str,
+    labels: &HudLabels,
 ) -> Result<Prepared, String> {
     let loaded = load(map, settings)?;
     let mods = &loaded.mods;
@@ -222,7 +239,7 @@ pub fn prepare(
     });
     let glyphs = glyph_atlas(Arc::clone(&registry), &GlyphAtlasConfig::new(limits))
         .map_err(|e| e.to_string())?;
-    let hud = HudView::new(registry, skip_label);
+    let hud = HudView::new(registry, labels);
     let scene = PlayScene {
         _requests: requests,
         uploads,
@@ -342,7 +359,12 @@ impl PlayScene {
         let textures = self.textures.resolve(&self.uploads);
         let (width, height) = (size.width as f32, size.height as f32);
         let layout = PlayfieldLayout::new(width, height);
-        self.hud.update(width, height, &snapshot.hud);
+        self.hud.update(
+            width,
+            height,
+            &snapshot.hud,
+            snapshot.offset_panel.offset_ms,
+        );
         self.batch.clear();
         self.text.clear();
         self.cursor.clear();
@@ -363,12 +385,13 @@ impl PlayScene {
             &textures,
         );
         if let Some(white) = textures.white {
-            self.hud.push_shapes(&mut self.batch, snapshot, white);
+            self.hud
+                .push_shapes(&mut self.batch, snapshot, now_ns, white);
         }
         self.view
             .push_hit_error(&mut self.batch, width, height, snapshot, now_ns, &textures);
         self.hud
-            .push_text(&mut self.text, snapshot, &mut self.glyphs);
+            .push_text(&mut self.text, snapshot, now_ns, &mut self.glyphs);
         self.view
             .push_cursor(&mut self.cursor, &layout, snapshot, now_ns, &textures);
         r.renderer.begin_frame();

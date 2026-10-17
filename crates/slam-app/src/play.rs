@@ -426,7 +426,7 @@ pub fn run(options: &Options) -> Result<(), String> {
         &options.settings(),
         limits,
         registry,
-        &localizer.format("play-skip-button", None),
+        &scene::hud_labels(&localizer),
     )?;
     load_track(&mut player, &audio)?;
     let mut input = LiveInput::new(
