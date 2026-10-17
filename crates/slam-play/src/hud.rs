@@ -1,5 +1,5 @@
 //! A stand-in HUD until the HUD components exist (M5): score, accuracy and combo as plain
-//! numbers, health as a bar and the skip button.
+//! numbers, health as a bar, the skip button and the beatmap offset panel.
 //!
 //! Draw side only. Numbers are formatted into fixed buffers and laid out again only when
 //! they change; once warm ([`HudView::new`]), nothing here allocates.
@@ -19,6 +19,7 @@ use slam_text::{
     UI_FAMILY, push_layout,
 };
 
+use crate::offset::{OffsetPanel, OffsetWording, format_offset};
 use crate::session::{HudValues, PlaySnapshot};
 
 /// Window height the HUD's sizes are given at; it scales with the window.
@@ -29,6 +30,13 @@ const SCORE_SIZE: f32 = 40.0;
 const ACCURACY_SIZE: f32 = 24.0;
 const COMBO_SIZE: f32 = 40.0;
 const SKIP_SIZE: f32 = 24.0;
+// Ported from osu!lazer 2026.1005.0-lazer: osu.Game/Screens/Play/SubmittingPlayer.cs (GameplayOffsetControl Margin)
+/// The offset panel's distance from the right edge.
+const OFFSET_MARGIN: f32 = 20.0;
+// The panel's text size and padding are this module's own: lazer's panel holds a slider
+// too.
+const OFFSET_SIZE: f32 = 20.0;
+const OFFSET_PADDING: f32 = 8.0;
 const HEALTH_BAR: [f32; 2] = [300.0, 8.0];
 const SKIP_BUTTON: [f32; 2] = [180.0, 48.0];
 
@@ -46,6 +54,54 @@ const WARM_TEXT: &str = "0123456789.%x-0123456789";
 /// The numbers without a letter: a shape plan is made per script, and digits alone have
 /// none (the combo's `x` is Latin).
 const WARM_DIGITS: &str = "0123456789.%-";
+
+/// Stands for the number in the offset panel's localised texts ([`HudLabels`]).
+pub const OFFSET_PLACEHOLDER: &str = "\u{FFFC}";
+/// What the offset's digits are laid out with to warm the panel's texts.
+const WARM_OFFSET: &str = "-0123456789.";
+
+/// The HUD's localised texts.
+#[derive(Debug, Clone)]
+pub struct HudLabels {
+    /// The skip button's text.
+    pub skip: String,
+    /// The offset panel's text at zero, with [`OFFSET_PLACEHOLDER`] for the number.
+    pub offset_zero: String,
+    /// The panel's text for a positive offset: objects appear earlier.
+    pub offset_earlier: String,
+    /// The panel's text for a negative offset: objects appear later.
+    pub offset_later: String,
+}
+
+/// A localised text around a number.
+#[derive(Debug, Clone)]
+struct Template {
+    prefix: String,
+    suffix: String,
+}
+
+impl Template {
+    /// `label` split at [`OFFSET_PLACEHOLDER`]; without one, the number is left out.
+    fn new(label: &str) -> Template {
+        let (prefix, suffix) = label.split_once(OFFSET_PLACEHOLDER).unwrap_or((label, ""));
+        Template {
+            prefix: prefix.to_owned(),
+            suffix: suffix.to_owned(),
+        }
+    }
+
+    fn len(&self) -> usize {
+        self.prefix.len() + self.suffix.len()
+    }
+
+    /// Writes the text with `number` into `out`. Allocation-free once `out` has room.
+    fn write(&self, number: &str, out: &mut String) {
+        out.clear();
+        out.push_str(&self.prefix);
+        out.push_str(number);
+        out.push_str(&self.suffix);
+    }
+}
 
 /// Bytes of a number's text.
 const NUMBER_TEXT_LEN: usize = WARM_TEXT.len();
@@ -162,9 +218,17 @@ pub struct HudView {
     combo: Counter,
     skip_label: String,
     skip: Layout,
+    /// The offset panel's texts: at zero, earlier, later ([`OffsetWording`]).
+    offset_templates: [Template; 3],
+    /// The offset the panel's layout shows, as bits; `None` lays it out on the next update.
+    offset_shown: Option<u64>,
+    offset_text: String,
+    offset: Layout,
     /// [`WARM_TEXT`] and [`WARM_DIGITS`] laid out: the glyphs to warm (each script may
     /// shape to other glyphs).
     warm: [Layout; 2],
+    /// The offset panel's texts laid out with [`WARM_OFFSET`].
+    warm_offset: [Layout; 3],
 }
 
 impl std::fmt::Debug for HudView {
@@ -180,10 +244,20 @@ impl std::fmt::Debug for HudView {
 }
 
 impl HudView {
-    /// A HUD with fonts from `registry` and the skip button's localised `skip_label`.
-    /// Lays out every character it will show, so that later layouts do not allocate:
-    /// call it off the hot paths.
-    pub fn new(registry: Arc<FontRegistry>, skip_label: &str) -> HudView {
+    /// A HUD with fonts from `registry` and the localised `labels`. Lays out every
+    /// character it will show, so that later layouts do not allocate: call it off the hot
+    /// paths.
+    pub fn new(registry: Arc<FontRegistry>, labels: &HudLabels) -> HudView {
+        let offset_templates = [
+            Template::new(&labels.offset_zero),
+            Template::new(&labels.offset_earlier),
+            Template::new(&labels.offset_later),
+        ];
+        let longest = offset_templates
+            .iter()
+            .map(Template::len)
+            .max()
+            .unwrap_or(0);
         // An unknown family lays out nothing; the built-in registry has the UI family.
         let family = registry.family(UI_FAMILY).unwrap_or(FamilyId(u32::MAX));
         let mut hud = HudView {
@@ -198,9 +272,14 @@ impl HudView {
             score: Counter::new(SCORE_SIZE),
             accuracy: Counter::new(ACCURACY_SIZE),
             combo: Counter::new(COMBO_SIZE),
-            skip_label: skip_label.to_owned(),
+            skip_label: labels.skip.clone(),
             skip: Layout::new(),
+            offset_templates,
+            offset_shown: None,
+            offset_text: String::with_capacity(longest + NUMBER_TEXT_LEN),
+            offset: Layout::new(),
             warm: [Layout::new(), Layout::new()],
+            warm_offset: [Layout::new(), Layout::new(), Layout::new()],
         };
         let style = hud.style(1.0);
         for counter in [&mut hud.score, &mut hud.accuracy, &mut hud.combo] {
@@ -216,6 +295,13 @@ impl HudView {
             .layout_into(&hud.registry, WARM_DIGITS, &style, digits);
         hud.context
             .layout_into(&hud.registry, &hud.skip_label, &style, &mut hud.skip);
+        for (template, warm) in hud.offset_templates.iter().zip(&mut hud.warm_offset) {
+            template.write(WARM_OFFSET, &mut hud.offset_text);
+            hud.context
+                .layout_into(&hud.registry, &hud.offset_text, &style, warm);
+            hud.context
+                .layout_into(&hud.registry, &hud.offset_text, &style, &mut hud.offset);
+        }
         hud
     }
 
@@ -230,14 +316,15 @@ impl HudView {
         self.warm
             .iter()
             .chain([&self.skip])
+            .chain(&self.warm_offset)
             .flat_map(Layout::glyphs)
             .filter(|g| matches!(glyphs.glyph(GlyphKey::of(g)), slam_text::Glyph::Pending))
             .count()
     }
 
-    /// Lays out what changed for the HUD `values` on a window of `width` × `height`
-    /// pixels. Allocation-free.
-    pub fn update(&mut self, width: f32, height: f32, values: &HudValues) {
+    /// Lays out what changed for the HUD `values` and the beatmap offset `offset_ms` on a
+    /// window of `width` × `height` pixels. Allocation-free.
+    pub fn update(&mut self, width: f32, height: f32, values: &HudValues, offset_ms: f64) {
         let frame = Frame {
             width,
             height,
@@ -248,6 +335,7 @@ impl HudView {
             for counter in [&mut self.score, &mut self.accuracy, &mut self.combo] {
                 counter.shown = None;
             }
+            self.offset_shown = None;
             let style = self.style(SKIP_SIZE * frame.scale);
             self.context
                 .layout_into(&self.registry, &self.skip_label, &style, &mut self.skip);
@@ -283,6 +371,48 @@ impl HudView {
             u64::from(values.combo),
             format_combo(values.combo),
         );
+        if self.offset_shown != Some(offset_ms.to_bits()) {
+            self.offset_shown = Some(offset_ms.to_bits());
+            let mut digits = NumberText::new();
+            // The digits of an offset in range always fit.
+            let wording = format_offset(offset_ms, &mut digits).unwrap_or(OffsetWording::Zero);
+            let template = &self.offset_templates[match wording {
+                OffsetWording::Zero => 0,
+                OffsetWording::Earlier => 1,
+                OffsetWording::Later => 2,
+            }];
+            template.write(digits.as_str(), &mut self.offset_text);
+            let style = self.style(OFFSET_SIZE * scale);
+            self.context
+                .layout_into(&self.registry, &self.offset_text, &style, &mut self.offset);
+        }
+    }
+
+    /// The offset panel's text as last laid out.
+    pub fn offset_text(&self) -> &str {
+        &self.offset_text
+    }
+
+    // Ported from osu!lazer 2026.1005.0-lazer: osu.Game/Screens/Play/GameplayOffsetControl.cs
+    /// The offset panel's box (position and size) and alpha at `now_ns`, if it shows: at
+    /// the right edge, centred vertically, moving right as it fades.
+    fn offset_box(&self, panel: &OffsetPanel, now_ns: u64) -> Option<([f32; 2], [f32; 2], f32)> {
+        let alpha = panel.alpha(now_ns);
+        if alpha <= 0.0 {
+            return None;
+        }
+        let Frame {
+            width,
+            height,
+            scale,
+        } = self.frame;
+        let padding = OFFSET_PADDING * scale;
+        let size = [
+            self.offset.width() + 2.0 * padding,
+            self.offset.height() + 2.0 * padding,
+        ];
+        let x = width - OFFSET_MARGIN * scale - size[0] + panel.shift(now_ns) * scale;
+        Some(([x, (height - size[1]) / 2.0], size, alpha))
     }
 
     /// The texts of the counters as last laid out: score, accuracy, combo.
@@ -294,12 +424,14 @@ impl HudView {
         ]
     }
 
-    /// Writes the HUD's rectangles for `snapshot`, tinting `white` (an opaque white
-    /// image): the health bar and the skip button. Allocation-free once `batch` has room.
+    /// Writes the HUD's rectangles for `snapshot` at engine time `now_ns`, tinting `white`
+    /// (an opaque white image): the health bar, the skip button and the offset panel.
+    /// Allocation-free once `batch` has room.
     pub fn push_shapes(
         &self,
         batch: &mut SpriteBatch,
         snapshot: &PlaySnapshot,
+        now_ns: u64,
         white: AtlasRegion,
     ) {
         let Frame {
@@ -326,6 +458,13 @@ impl HudView {
                 SHADE,
             );
         }
+        if let Some((position, size, alpha)) = self.offset_box(&snapshot.offset_panel, now_ns) {
+            let shade = Color {
+                a: SHADE.a * alpha,
+                ..SHADE
+            };
+            rect(position, size, shade);
+        }
     }
 
     /// Writes the HUD's text for `snapshot` into a batch drawn with the MSDF shader.
@@ -335,6 +474,7 @@ impl HudView {
         &self,
         batch: &mut SpriteBatch,
         snapshot: &PlaySnapshot,
+        now_ns: u64,
         glyphs: &mut GlyphCache,
     ) -> TextStats {
         let Frame {
@@ -344,20 +484,21 @@ impl HudView {
         } = self.frame;
         let margin = MARGIN * scale;
         let mut stats = TextStats::default();
-        let mut text = |layout: &Layout, position: [f32; 2]| {
-            let s = push_layout(batch, layout, position, TEXT, glyphs);
+        let mut text = |layout: &Layout, position: [f32; 2], colour: Color| {
+            let s = push_layout(batch, layout, position, colour, glyphs);
             stats.drawn += s.drawn;
             stats.pending += s.pending;
         };
         let score = &self.score.layout;
-        text(score, [width - margin - score.width(), margin]);
+        text(score, [width - margin - score.width(), margin], TEXT);
         let accuracy = &self.accuracy.layout;
         text(
             accuracy,
             [width - margin - accuracy.width(), margin + score.height()],
+            TEXT,
         );
         let combo = &self.combo.layout;
-        text(combo, [margin, height - margin - combo.height()]);
+        text(combo, [margin, height - margin - combo.height()], TEXT);
         if snapshot.skip_available {
             let (centre, _) = self.skip_button(width, height, scale);
             let skip = &self.skip;
@@ -367,6 +508,15 @@ impl HudView {
                     centre[0] - skip.width() / 2.0,
                     centre[1] - skip.height() / 2.0,
                 ],
+                TEXT,
+            );
+        }
+        if let Some((position, _, alpha)) = self.offset_box(&snapshot.offset_panel, now_ns) {
+            let padding = OFFSET_PADDING * scale;
+            text(
+                &self.offset,
+                [position[0] + padding, position[1] + padding],
+                Color { a: alpha, ..TEXT },
             );
         }
         stats
@@ -425,7 +575,13 @@ mod tests {
 
     #[test]
     fn counters_lay_out_their_values() {
-        let mut hud = HudView::new(Arc::new(FontRegistry::with_builtin()), "Skip");
+        let labels = HudLabels {
+            skip: "Skip".to_owned(),
+            offset_zero: format!("{OFFSET_PLACEHOLDER} ms"),
+            offset_earlier: format!("{OFFSET_PLACEHOLDER} ms (hit objects appear earlier)"),
+            offset_later: format!("{OFFSET_PLACEHOLDER} ms (hit objects appear later)"),
+        };
+        let mut hud = HudView::new(Arc::new(FontRegistry::with_builtin()), &labels);
         hud.update(
             1280.0,
             720.0,
@@ -434,14 +590,17 @@ mod tests {
                 accuracy: 0.98765,
                 combo: 42,
             },
+            -1.0,
         );
         assert_eq!(hud.texts(), ["012345", "98.76%", "42x"]);
+        assert_eq!(hud.offset_text(), "-1 ms (hit objects appear later)");
         assert_eq!(hud.score.layout.glyphs().len(), 6);
         assert_eq!(hud.combo.layout.glyphs().len(), 3);
         // Text scales with the window height.
         let font_size = hud.score.layout.font_size();
         assert!((font_size - SCORE_SIZE * 720.0 / REFERENCE_HEIGHT).abs() < 1e-4);
-        hud.update(1280.0, 1536.0, &HudValues::default());
+        hud.update(1280.0, 1536.0, &HudValues::default(), 0.0);
+        assert_eq!(hud.offset_text(), "0 ms");
         assert_eq!(hud.texts(), ["000000", "100.00%", "0x"]);
         assert!((hud.score.layout.font_size() - SCORE_SIZE * 2.0).abs() < 1e-4);
     }

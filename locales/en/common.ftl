@@ -12,6 +12,9 @@ song-select-beatmap-count =
        *[other] { $count } beatmaps
     }
 play-skip-button = Skip
+play-offset = { $offset } ms
+play-offset-earlier = { $offset } ms (hit objects appear earlier)
+play-offset-later = { $offset } ms (hit objects appear later)
 menu-title = SLAM
 menu-play-button = Play
 menu-settings-button = Settings

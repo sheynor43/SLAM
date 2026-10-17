@@ -14,6 +14,9 @@ song-select-beatmap-count =
        *[other] { $count } карты
     }
 play-skip-button = Пропустить
+play-offset = { $offset } мс
+play-offset-earlier = { $offset } мс (объекты появляются раньше)
+play-offset-later = { $offset } мс (объекты появляются позже)
 menu-title = SLAM
 menu-play-button = Играть
 menu-settings-button = Настройки

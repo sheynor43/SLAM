@@ -8,6 +8,7 @@ use std::thread::JoinHandle;
 use std::time::Duration;
 
 use slam_audio::{MusicEvent, PlayError};
+use slam_play::HudLabels;
 use slam_render::Limits;
 use slam_text::FontRegistry;
 
@@ -58,8 +59,8 @@ pub struct LoaderConfig {
     pub settings: PlaySettings,
     pub limits: Limits,
     pub registry: Arc<FontRegistry>,
-    /// The skip button's text.
-    pub skip_label: String,
+    /// The HUD's texts.
+    pub hud_labels: HudLabels,
 }
 
 /// The update thread's end.
@@ -142,7 +143,7 @@ pub fn spawn(config: LoaderConfig) -> std::io::Result<(LoaderLink, SceneTrash, L
                         &config.settings,
                         config.limits,
                         Arc::clone(&config.registry),
-                        &config.skip_label,
+                        &config.hud_labels,
                     )
                     .map(Box::new)
                     .inspect_err(|e| tracing::warn!("{e}"));
@@ -173,6 +174,8 @@ mod tests {
     use std::path::Path;
     use std::time::Instant;
 
+    use slam_ui::i18n::Localizer;
+
     use super::*;
 
     fn config() -> LoaderConfig {
@@ -185,7 +188,7 @@ mod tests {
                 max_texture_slots: 16,
             },
             registry: Arc::new(FontRegistry::with_builtin()),
-            skip_label: "Skip".to_owned(),
+            hud_labels: crate::play::scene::hud_labels(&Localizer::builtin().unwrap()),
         }
     }
 

@@ -43,6 +43,7 @@ use crate::judgements::{
     JudgementRing, JudgementTextures, JudgementView, MAX_JUDGEMENT_FRAMES, PIECE_SLOTS, PieceKind,
     PieceSprites, PopupTargets, piece_sources,
 };
+use crate::offset::{self, OffsetPanel};
 use crate::playfield::PlayfieldLayout;
 use crate::resume::ResumeView;
 use crate::sliders::{
@@ -198,6 +199,8 @@ pub struct PlaySnapshot {
     pub exit_progress: f32,
     /// Times the play was restarted.
     pub restarts: u32,
+    /// The beatmap offset and its panel.
+    pub offset_panel: OffsetPanel,
     pub circles: LiveCircles,
     pub sliders: LiveSliders,
     pub spinners: LiveSpinners,
@@ -226,6 +229,7 @@ impl Default for PlaySnapshot {
             retry_progress: 0.0,
             exit_progress: 0.0,
             restarts: 0,
+            offset_panel: OffsetPanel::default(),
             circles: LiveCircles::new(),
             sliders: LiveSliders::new(),
             spinners: LiveSpinners::new(),
@@ -270,6 +274,11 @@ pub struct PlaySession {
     clock: GameClock,
     offsets: Offsets,
     start_time: f64,
+    /// Lazer's `GameplayStartTime`: the offset can change for a while after it.
+    gameplay_start_time: f64,
+    /// Whether hotkeys may change the beatmap offset (not in a replay).
+    offset_adjustable: bool,
+    offset_panel: OffsetPanel,
     breaks: BreakTracker,
     skip: IntroSkip,
     /// Skip the intro as soon as it can be (a quick restart).
@@ -356,6 +365,9 @@ impl PlaySession {
             clock: GameClock::new(track),
             offsets,
             start_time,
+            gameplay_start_time,
+            offset_adjustable: true,
+            offset_panel: OffsetPanel::new(offsets.beatmap_ms),
             breaks,
             skip,
             auto_skip: false,
@@ -453,6 +465,17 @@ impl PlaySession {
         self.clock_errors
     }
 
+    /// The beatmap offset, milliseconds: as the play started, or as hotkeys changed it.
+    pub fn beatmap_offset(&self) -> f64 {
+        self.offsets.beatmap_ms
+    }
+
+    /// Whether hotkeys may change the beatmap offset; they may unless turned off (a
+    /// replay, which lazer plays without the offset control).
+    pub fn set_offset_adjustable(&mut self, adjustable: bool) {
+        self.offset_adjustable = adjustable;
+    }
+
     /// Changes the playfield layout of the input (the window was resized).
     pub fn set_layout(&mut self, layout: PlayfieldLayout) {
         self.input.set_layout(layout);
@@ -491,11 +514,10 @@ impl PlaySession {
             None => return self.waiting(events, snapshot),
         };
 
-        let time = ClockTime {
+        let mut time = ClockTime {
             clock,
             offsets: self.offsets,
         };
-        let current = time.game_time(now_ns);
         // A seek in the track is heard one output latency later; until then time is the old
         // position, which must not reach the rules (a restart would miss every object).
         let seeking = self.clock.is_seeking();
@@ -543,9 +565,42 @@ impl PlaySession {
                     let disabled = self.input.mouse_buttons_disabled();
                     self.input.set_mouse_buttons_disabled(!disabled);
                 }
+                // Ported from osu!lazer 2026.1005.0-lazer: osu.Game/Screens/Play/PlayerSettings/BeatmapOffsetControl.cs (OnPressed)
+                Some(action @ (GlobalAction::IncreaseOffset | GlobalAction::DecreaseOffset)) => {
+                    // Paused, resuming and after the play the gameplay clock is stopped. Without
+                    // the control (a replay) the key is not taken, as lazer has nothing to
+                    // take it; with it, the key is taken even when the offset cannot change.
+                    if !self.offset_adjustable || !self.in_gameplay() {
+                        continue;
+                    }
+                    // The events before play at the old offset, those after at the new.
+                    self.step(&events[from..index], now_ns, &time, seeking, sink);
+                    from = index + 1;
+                    // Lazer checks the clock of the previous frame; this tick's time up to
+                    // the press differs by less than a tick at the window's end.
+                    let is_break_time = self.is_break_time(self.last_time);
+                    if !offset::may_adjust(self.last_time, self.gameplay_start_time, is_break_time)
+                    {
+                        continue;
+                    }
+                    let delta = if action == GlobalAction::IncreaseOffset {
+                        offset::STEP_MS
+                    } else {
+                        -offset::STEP_MS
+                    };
+                    let beatmap_ms = offset::adjusted(self.offsets.beatmap_ms, delta);
+                    // A bindable notifies only when its value changes.
+                    if beatmap_ms != self.offsets.beatmap_ms {
+                        self.offsets.beatmap_ms = beatmap_ms;
+                        time.offsets = self.offsets;
+                        self.offset_panel.changed(beatmap_ms, event.time_ns);
+                    }
+                }
                 _ => {}
             }
         }
+        // Time moves with the offset at once (lazer's offset clock).
+        let current = time.game_time(now_ns);
         if self.in_gameplay() {
             self.step(&events[from..], now_ns, &time, seeking, sink);
         }
@@ -624,6 +679,7 @@ impl PlaySession {
             && !self.clock.is_seeking()
             && self.skip.is_available(current);
         snapshot.is_break_time = self.is_break_time(self.last_time);
+        snapshot.offset_panel = self.offset_panel;
         self.fill(snapshot, now_ns);
     }
 
@@ -850,6 +906,8 @@ impl PlaySession {
         self.restart_on_fail = false;
         self.passed = false;
         self.restarts += 1;
+        // A new player shows no panel.
+        self.offset_panel.reset();
     }
 
     fn is_break_time(&mut self, time: f64) -> bool {
@@ -898,6 +956,7 @@ impl PlaySession {
         snapshot.retry_progress = 0.0;
         snapshot.exit_progress = 0.0;
         snapshot.restarts = self.restarts;
+        snapshot.offset_panel = self.offset_panel;
         snapshot.judgements.clone_from(&self.popups);
         snapshot.hit_errors.clone_from(&self.hit_errors);
         snapshot.circles.clear();
