@@ -92,10 +92,11 @@ impl Row {
         }
     }
 
-    /// Whether a change only takes effect after a restart. The audio and offset rows wait
-    /// for live application (#180); the two draw rates apply when the screen closes.
+    /// Whether a change only takes effect after a restart: the output must be reopened
+    /// for these. The others apply when the screen closes, the offset, mouse buttons and
+    /// background from the next play (ADR-0048).
     pub fn restart_required(self) -> bool {
-        !matches!(self, Row::DrawHz | Row::MenuDrawHz)
+        matches!(self, Row::Backend | Row::BufferFrames)
     }
 }
 
@@ -389,10 +390,10 @@ mod tests {
     }
 
     #[test]
-    fn the_draw_rows_apply_at_once_and_the_others_after_a_restart() {
+    fn only_the_output_rows_wait_for_a_restart() {
         for row in Row::ALL {
-            let live = matches!(row, Row::DrawHz | Row::MenuDrawHz);
-            assert_eq!(row.restart_required(), !live, "{row:?}");
+            let output = matches!(row, Row::Backend | Row::BufferFrames);
+            assert_eq!(row.restart_required(), output, "{row:?}");
         }
     }
 

@@ -16,6 +16,7 @@ use slam_engine::clock::now_ns;
 use slam_engine::gl::SdlGlSurface;
 use slam_engine::{
     Draw, DrawRateControl, Engine, EngineConfig, EngineShared, FrameInfo, TickInfo, Update,
+    UpdateRateControl,
 };
 use slam_input::{
     CursorVisibility, InputEvent, InputKind, InputWindow, MouseButton, TickMapper, event_ring,
@@ -56,6 +57,9 @@ use crate::settings::{Dirs, Settings};
 use crate::songs::{SongFiles, SongsLink};
 
 mod draw_rate;
+mod live;
+
+use live::{AppliedUpdateRate, AppliedVolumes, Volumes};
 mod results;
 mod rows;
 
@@ -711,6 +715,8 @@ struct Audio {
     mixer: MixerHandle,
     output: Arc<AudioPosition>,
     music: Arc<MusicPosition>,
+    /// The gains `mixer` and `player` were last given.
+    volumes: AppliedVolumes,
 }
 
 /// How long a play's track may take to open.
@@ -841,6 +847,20 @@ impl PlayHost {
         }
     }
 
+    /// Hands changed settings to the audio thread and to the next play (ADR-0048). Does
+    /// not allocate or block.
+    fn apply_settings(&mut self, settings: &Settings) {
+        let audio = &mut self.audio;
+        audio.volumes.sync(
+            Volumes::of(&settings.audio),
+            &mut audio.mixer,
+            &mut audio.player,
+        );
+        // A play copies these when it starts; the bindings are not edited live yet.
+        self.input.offsets.global_ms = settings.timing.global_offset_ms;
+        self.input.mouse_buttons = settings.gameplay.mouse_buttons;
+    }
+
     /// Takes requests, prepared plays and track events; ends a quit play. Allocates only
     /// when a play is asked for, starts or ends; logs and frees on the loader thread.
     fn advance(&mut self, now_ns: u64, state: &mut ShellState) {
@@ -859,7 +879,10 @@ impl PlayHost {
         if let Some(map) = request {
             self.next_request += 1;
             let asked = match map {
-                Some(map) if self.game.is_none() => self.loader.request(self.next_request, map),
+                Some(map) if self.game.is_none() => {
+                    let options = live::play_options(state.settings());
+                    self.loader.request(self.next_request, map, options)
+                }
                 _ => false,
             };
             if asked {
@@ -1073,14 +1096,22 @@ struct Shell {
     /// Changes the draw thread's rate (ADR-0047).
     draw_rate: DrawRateControl,
     rate_switch: DrawRateSwitch,
+    /// Changes this thread's own rate (ADR-0048).
+    update_rate: AppliedUpdateRate,
     /// Writes the settings file on its own thread; without a settings folder, `None`.
     saver: Option<SaveLink>,
 }
 
 impl Shell {
-    /// Asks for the draw rate the visible screens call for, and hands changed settings to
-    /// the saver. Neither blocks, allocates or touches the disk.
+    /// Asks for the draw rate the visible screens call for, hands changed settings to the
+    /// threads that use them (ADR-0048) and to the saver. Neither blocks, allocates or
+    /// touches the disk.
     fn apply_settings(&mut self, now_ns: u64) {
+        let settings = self.state.settings();
+        self.update_rate.sync(settings);
+        if let Some(host) = &mut self.host {
+            host.apply_settings(settings);
+        }
         let gameplay = self.state.gameplay_visible(now_ns);
         if let Some(mode) = self
             .rate_switch
@@ -1422,17 +1453,18 @@ fn open_audio(
     })
     .map_err(|e| e.to_string())?;
     mixer.set_music(music).map_err(|e| e.to_string())?;
-    // The mixer's master gain leaves the music alone, so the track takes both.
-    let (master, music) = volumes(settings);
+    let volumes = Volumes::of(settings);
     mixer_handle
-        .set_master_gain(master)
+        .set_master_gain(volumes.master)
         .map_err(|e| e.to_string())?;
-    player.set_volume(music).map_err(|e| e.to_string())?;
-    mixer_handle
-        .set_group_gain(VoiceGroup::Hitsounds, settings.hitsound_volume as f32)
+    player
+        .set_volume(volumes.music)
         .map_err(|e| e.to_string())?;
     mixer_handle
-        .set_group_gain(VoiceGroup::Effects, settings.effects_volume as f32)
+        .set_group_gain(VoiceGroup::Hitsounds, volumes.hitsounds)
+        .map_err(|e| e.to_string())?;
+    mixer_handle
+        .set_group_gain(VoiceGroup::Effects, volumes.effects)
         .map_err(|e| e.to_string())?;
     let stream = slam_audio::open_output(
         backend,
@@ -1451,14 +1483,9 @@ fn open_audio(
         music: Arc::clone(player.position()),
         player,
         mixer: mixer_handle,
+        volumes: AppliedVolumes::new(volumes),
     };
     Ok((audio, stream))
-}
-
-/// The mixer's master gain and the track's volume.
-fn volumes(settings: &crate::settings::Audio) -> (f32, f32) {
-    let master = settings.master_volume as f32;
-    (master, master * settings.music_volume as f32)
 }
 
 /// The Fluent key of a judgement row's label.
@@ -1639,6 +1666,7 @@ pub fn run(settings: Settings) -> Result<(), String> {
     // The window opens on the menu: it starts at the menu's rate.
     let menu_rate = settings.frame.menu_draw.to_limiter();
     let draw_rate = DrawRateControl::new();
+    let update_rate = UpdateRateControl::new();
     let shell = Shell {
         state,
         host,
@@ -1648,6 +1676,7 @@ pub fn run(settings: Settings) -> Result<(), String> {
         exited: Arc::clone(&exited),
         draw_rate: draw_rate.clone(),
         rate_switch: DrawRateSwitch::new(menu_rate),
+        update_rate: AppliedUpdateRate::new(update_rate.clone(), settings.frame.update_hz),
         saver,
     };
     let draw = View {
@@ -1681,6 +1710,7 @@ pub fn run(settings: Settings) -> Result<(), String> {
         source,
         EngineShared {
             counters: Arc::default(),
+            update_rate,
             draw_rate,
         },
     )

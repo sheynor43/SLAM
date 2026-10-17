@@ -111,6 +111,10 @@ impl BackgroundView {
         }
     }
 
+    pub fn settings(&self) -> BackgroundSettings {
+        self.settings
+    }
+
     /// The background's grey level at `now_ns`, after taking the snapshot's break state.
     pub fn update(&mut self, snapshot: &PlaySnapshot, now_ns: u64) -> f32 {
         let is_break_time = snapshot.is_break_time;

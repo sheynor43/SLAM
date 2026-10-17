@@ -20,6 +20,7 @@ mod wake;
 pub use draw::{Draw, DrawLoop, FrameInfo};
 pub use engine::{
     DrawRateControl, Engine, EngineConfig, EngineError, EngineShared, RATE_PRESETS, Stopped,
+    UpdateRateControl,
 };
 pub use snapshot::{SnapshotReader, SnapshotWriter, triple_buffer};
 pub use stats::{EngineCounters, FrameSummary, FrameTimes, RateMeter};

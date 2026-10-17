@@ -9,7 +9,7 @@ use slam_engine::clock::now_ns;
 use slam_engine::limiter::LimiterMode;
 use slam_engine::{
     Draw, DrawRateControl, Engine, EngineConfig, EngineCounters, EngineShared, FrameInfo, TickInfo,
-    Update,
+    Update, UpdateRateControl,
 };
 use slam_input::{InputEvent, InputKind, MouseButton, event_ring};
 
@@ -297,6 +297,7 @@ fn update_changes_the_draw_rate_through_a_shared_control() {
     };
     let shared = EngineShared {
         counters: Arc::new(EngineCounters::default()),
+        update_rate: UpdateRateControl::new(),
         draw_rate: control.clone(),
     };
     let engine = Engine::spawn_shared(
@@ -319,6 +320,59 @@ fn update_changes_the_draw_rate_through_a_shared_control() {
     engine.shutdown();
     // At 10 Hz there would be about 3 frames; at 1000 Hz about 300.
     assert!(drawn > 30, "{drawn} frames");
+}
+
+/// Requests an update rate from the update thread on its first tick.
+struct UpdateRateSetter {
+    control: UpdateRateControl,
+    hz: f64,
+}
+
+impl Update for UpdateRateSetter {
+    type Snapshot = Snap;
+
+    fn tick(&mut self, _info: &TickInfo, _events: &[InputEvent], _snapshot: &mut Snap) {
+        self.control.set_hz(self.hz).unwrap();
+    }
+}
+
+#[test]
+fn update_changes_its_own_rate_through_a_shared_control() {
+    let (_sink, source) = event_ring(64);
+    let counters = Arc::new(EngineCounters::default());
+    let control = UpdateRateControl::new();
+    let update = UpdateRateSetter {
+        control: control.clone(),
+        hz: 1000.0,
+    };
+    let shared = EngineShared {
+        counters: Arc::clone(&counters),
+        update_rate: control.clone(),
+        draw_rate: DrawRateControl::new(),
+    };
+    let engine = Engine::spawn_shared(
+        // The first tick, which asks for the new rate, comes 50 ms in.
+        config(20.0, LimiterMode::Hz(10.0)),
+        update,
+        Counter::default(),
+        0,
+        source,
+        shared,
+    )
+    .unwrap();
+
+    // Without a wakeup, the change applies right after the tick that made it.
+    std::thread::sleep(Duration::from_millis(150));
+    let ticks_before = counters.update_ticks();
+    std::thread::sleep(Duration::from_millis(300));
+    let ticked = counters.update_ticks() - ticks_before;
+    assert_eq!(engine.update_hz(), 1000.0);
+    assert_eq!(control.hz(), 1000.0);
+    assert!(control.set_hz(0.0).is_err());
+    assert_eq!(control.hz(), 1000.0);
+    engine.shutdown();
+    // At 20 Hz there would be about 6 ticks; at 1000 Hz about 300.
+    assert!(ticked > 30, "{ticked} ticks");
 }
 
 #[test]
