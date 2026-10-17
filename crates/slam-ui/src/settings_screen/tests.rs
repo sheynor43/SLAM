@@ -309,3 +309,305 @@ fn the_layout_keeps_rows_and_tabs_inside_the_window() {
         assert_eq!(moved.row(1).x, l.row(1).x + 10.0);
     }
 }
+
+fn key_row(section: usize, value: KeyValue) -> RowSpec {
+    RowSpec {
+        section,
+        kind: RowKind::Key { value },
+        restart_required: false,
+    }
+}
+
+fn button(section: usize) -> RowSpec {
+    RowSpec {
+        section,
+        kind: RowKind::Button,
+        restart_required: false,
+    }
+}
+
+const Z: KeyValue = KeyValue::Key(29);
+const X: KeyValue = KeyValue::Key(27);
+
+/// Section 0: toggle, two key rows, button.
+fn keys_screen() -> SettingsScreen {
+    SettingsScreen::new(
+        &[
+            toggle(0, false),
+            key_row(0, Z),
+            key_row(0, KeyValue::Empty),
+            button(0),
+        ],
+        1,
+    )
+}
+
+fn listening(s: &mut SettingsScreen, row: usize) {
+    while s.focus() < row {
+        input(s, SettingsInput::Down);
+    }
+    assert_eq!(input(s, SettingsInput::Activate), None);
+    assert!(s.is_listening());
+}
+
+#[test]
+fn activating_a_key_row_starts_listening() {
+    let mut s = keys_screen();
+    input(&mut s, SettingsInput::Down);
+    assert!(!s.is_listening());
+    assert_eq!(input(&mut s, SettingsInput::Activate), None);
+    assert!(s.is_listening());
+    assert!(s.snapshot().widgets[1] != s.snapshot().widgets[2]);
+}
+
+#[test]
+fn a_press_on_a_key_row_starts_listening() {
+    let mut s = keys_screen();
+    let l = layout();
+    let r = l.widget(s.slot(2));
+    let (x, y) = (r.x + 4.0, r.y + 4.0);
+    assert_eq!(s.input(SettingsInput::PointerPress { x, y }, &l), None);
+    assert!(s.is_listening());
+    assert_eq!(s.focus(), 2);
+    // The next press arrives as a capture, whatever button it is.
+    assert_eq!(
+        input(
+            &mut s,
+            SettingsInput::Captured(KeyValue::Mouse(MouseKey::Left))
+        ),
+        Some(SettingsAction::KeyCaptured {
+            row: 2,
+            key: KeyValue::Mouse(MouseKey::Left)
+        })
+    );
+    assert!(!s.is_listening());
+}
+
+#[test]
+fn a_captured_key_is_reported_and_listening_ends() {
+    let mut s = keys_screen();
+    listening(&mut s, 2);
+    assert_eq!(
+        input(&mut s, SettingsInput::Captured(X)),
+        Some(SettingsAction::KeyCaptured { row: 2, key: X })
+    );
+    assert!(!s.is_listening());
+    // The application decides the value.
+    assert_eq!(
+        s.widget(2),
+        Some(&RowWidget::Key(KeyRow {
+            bind: KeyBind::new(),
+            value: KeyValue::Empty
+        }))
+    );
+    s.set_key(2, X);
+    assert!(matches!(s.widget(2), Some(RowWidget::Key(k)) if k.value() == X));
+}
+
+#[test]
+fn escape_stops_listening_without_closing() {
+    let mut s = keys_screen();
+    listening(&mut s, 1);
+    assert_eq!(input(&mut s, SettingsInput::Back), None);
+    assert!(!s.is_listening());
+    assert_eq!(
+        input(&mut s, SettingsInput::Back),
+        Some(SettingsAction::Close)
+    );
+}
+
+#[test]
+fn delete_clears_the_listening_slot() {
+    let mut s = keys_screen();
+    listening(&mut s, 1);
+    assert_eq!(
+        input(&mut s, SettingsInput::Clear),
+        Some(SettingsAction::KeyCleared { row: 1 })
+    );
+    assert!(!s.is_listening());
+    // Not listening: nothing to clear.
+    assert_eq!(input(&mut s, SettingsInput::Clear), None);
+}
+
+#[test]
+fn an_empty_capture_and_other_input_while_listening_do_nothing() {
+    let mut s = keys_screen();
+    listening(&mut s, 1);
+    for i in [
+        SettingsInput::Captured(KeyValue::Empty),
+        SettingsInput::Down,
+        SettingsInput::NextSection,
+        SettingsInput::Activate,
+    ] {
+        assert_eq!(input(&mut s, i), None);
+        assert!(s.is_listening());
+        assert_eq!(s.focus(), 1);
+    }
+}
+
+#[test]
+fn a_button_row_asks_for_its_action() {
+    let mut s = keys_screen();
+    while s.focus() < 3 {
+        input(&mut s, SettingsInput::Down);
+    }
+    assert_eq!(
+        input(&mut s, SettingsInput::Activate),
+        Some(SettingsAction::Pressed { row: 3 })
+    );
+    let l = layout();
+    let r = l.row(s.slot(3));
+    assert_eq!(
+        s.input(
+            SettingsInput::PointerPress {
+                x: r.x + 5.0,
+                y: r.y + 5.0
+            },
+            &l
+        ),
+        Some(SettingsAction::Pressed { row: 3 })
+    );
+}
+
+#[test]
+fn navigation_passes_over_the_new_rows() {
+    let mut s = keys_screen();
+    for expected in [1, 2, 3, 3] {
+        input(&mut s, SettingsInput::Down);
+        assert_eq!(s.focus(), expected);
+    }
+    // Left and right do nothing on a key row or a button.
+    assert_eq!(input(&mut s, SettingsInput::Left), None);
+    input(&mut s, SettingsInput::Up);
+    assert_eq!(input(&mut s, SettingsInput::Right), None);
+}
+
+fn asked() -> SettingsScreen {
+    let mut s = keys_screen();
+    listening(&mut s, 2);
+    input(&mut s, SettingsInput::Captured(Z));
+    s.ask_conflict(2, Z, Some(1));
+    s
+}
+
+#[test]
+fn the_conflict_is_in_the_snapshot_with_keep_chosen() {
+    let s = asked();
+    let c = s.snapshot().conflict.unwrap();
+    assert_eq!((c.row, c.key, c.other, c.apply), (2, Z, Some(1), false));
+}
+
+#[test]
+fn activating_the_conflict_keeps_by_default() {
+    let mut s = asked();
+    assert_eq!(
+        input(&mut s, SettingsInput::Activate),
+        Some(SettingsAction::ConflictResolved {
+            row: 2,
+            key: Z,
+            apply: false
+        })
+    );
+    assert!(s.conflict().is_none());
+}
+
+#[test]
+fn right_chooses_apply_and_left_goes_back() {
+    let mut s = asked();
+    assert_eq!(input(&mut s, SettingsInput::Right), None);
+    assert!(s.conflict().unwrap().apply);
+    assert_eq!(input(&mut s, SettingsInput::Left), None);
+    assert!(!s.conflict().unwrap().apply);
+    input(&mut s, SettingsInput::Right);
+    assert_eq!(
+        input(&mut s, SettingsInput::Activate),
+        Some(SettingsAction::ConflictResolved {
+            row: 2,
+            key: Z,
+            apply: true
+        })
+    );
+}
+
+#[test]
+fn escape_keeps_the_old_binding_and_does_not_close() {
+    let mut s = asked();
+    input(&mut s, SettingsInput::Right);
+    assert_eq!(
+        input(&mut s, SettingsInput::Back),
+        Some(SettingsAction::ConflictResolved {
+            row: 2,
+            key: Z,
+            apply: false
+        })
+    );
+    assert_eq!(
+        input(&mut s, SettingsInput::Back),
+        Some(SettingsAction::Close)
+    );
+}
+
+#[test]
+fn the_conflict_buttons_answer_to_the_pointer() {
+    let l = layout();
+    let [keep, apply] = l.conflict_buttons();
+    let mut s = asked();
+    s.input(
+        SettingsInput::PointerMove {
+            x: apply.x + 2.0,
+            y: apply.y + 2.0,
+        },
+        &l,
+    );
+    assert!(s.conflict().unwrap().apply);
+    // A press elsewhere does nothing, the screen stays modal.
+    assert_eq!(
+        s.input(SettingsInput::PointerPress { x: 0.0, y: 0.0 }, &l),
+        None
+    );
+    assert!(s.conflict().is_some());
+    assert_eq!(
+        s.input(
+            SettingsInput::PointerPress {
+                x: keep.x + 2.0,
+                y: keep.y + 2.0
+            },
+            &l
+        ),
+        Some(SettingsAction::ConflictResolved {
+            row: 2,
+            key: Z,
+            apply: false
+        })
+    );
+    let mut s = asked();
+    assert_eq!(
+        s.input(
+            SettingsInput::PointerPress {
+                x: apply.x + 2.0,
+                y: apply.y + 2.0
+            },
+            &l
+        ),
+        Some(SettingsAction::ConflictResolved {
+            row: 2,
+            key: Z,
+            apply: true
+        })
+    );
+}
+
+#[test]
+fn the_conflict_blocks_navigation() {
+    let mut s = asked();
+    for i in [
+        SettingsInput::Down,
+        SettingsInput::NextSection,
+        SettingsInput::Captured(X),
+        SettingsInput::Clear,
+    ] {
+        assert_eq!(input(&mut s, i), None);
+    }
+    assert_eq!(s.focus(), 2);
+    assert!(s.conflict().is_some());
+}

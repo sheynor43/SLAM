@@ -11,8 +11,8 @@ use slam_testkit::assert_no_alloc;
 use slam_text::{FontRegistry, GlyphAtlasConfig, glyph_atlas};
 use slam_ui::screen::Pose;
 use slam_ui::settings_screen::{
-    RowKind, RowLabels, RowSpec, SettingsInput, SettingsLabels, SettingsLayout, SettingsScreen,
-    SettingsView,
+    KeyLabels, KeyValue, MouseKey, RowKind, RowLabels, RowSpec, SettingsAction, SettingsInput,
+    SettingsLabels, SettingsLayout, SettingsScreen, SettingsView,
 };
 use slam_ui::theme::Theme;
 
@@ -42,6 +42,19 @@ fn rows() -> Vec<RowSpec> {
                 selected: 1,
             },
         ),
+        row(
+            2,
+            RowKind::Key {
+                value: KeyValue::Key(29),
+            },
+        ),
+        row(
+            2,
+            RowKind::Key {
+                value: KeyValue::Empty,
+            },
+        ),
+        row(2, RowKind::Button),
     ]
 }
 
@@ -50,23 +63,39 @@ fn labels() -> SettingsLabels {
         label: label.into(),
         unit: unit.into(),
         options: options.iter().map(|o| (*o).to_owned()).collect(),
+        button: String::new(),
     };
     SettingsLabels {
         title: "Settings".into(),
-        sections: vec!["Audio".into(), "Frame".into()],
+        sections: vec!["Audio".into(), "Frame".into(), "Keys".into()],
         rows: vec![
             row("Master", "%", &[]),
             row("Colours", "", &[]),
             row("Rate", "", &["60 Hz", "144 Hz", "Unlimited"]),
+            row("Left (1)", "", &[]),
+            row("Left (2)", "", &[]),
+            RowLabels {
+                button: "Reset".into(),
+                ..row("Reset keys", "", &[])
+            },
         ],
         restart: "after restart".into(),
+        keys: KeyLabels {
+            empty: "None".into(),
+            prompt: "Press a key...".into(),
+            keys: (0..512).map(|i| format!("Key {i}")).collect(),
+            mouse: ["Left", "Middle", "Right", "X1", "X2"].map(String::from),
+            conflict_title: "Already bound:".into(),
+            conflict_keep: "Keep".into(),
+            conflict_apply: "Apply".into(),
+        },
     }
 }
 
 #[test]
 fn settings_input_does_not_allocate() {
     let layout = SettingsLayout::new(1280.0, 720.0, &Theme::default());
-    let mut screen = SettingsScreen::new(&rows(), 2);
+    let mut screen = SettingsScreen::new(&rows(), 3);
     assert_no_alloc(|| {
         for input in [
             SettingsInput::Right,
@@ -88,6 +117,49 @@ fn settings_input_does_not_allocate() {
     });
 }
 
+/// Listening, capture, the conflict question and the button, on the keys section (row 3 is
+/// the first key row).
+fn key_flow(screen: &mut SettingsScreen, layout: &SettingsLayout) {
+    use SettingsInput::*;
+    screen.input(NextSection, layout);
+    screen.input(NextSection, layout);
+    screen.input(Activate, layout);
+    std::hint::black_box(screen.is_listening());
+    let action = screen.input(Captured(KeyValue::Key(30)), layout);
+    if let Some(SettingsAction::KeyCaptured { row, key }) = action {
+        screen.set_key(row, key);
+    }
+    screen.input(Down, layout);
+    screen.input(Activate, layout);
+    screen.input(Back, layout);
+    screen.input(Activate, layout);
+    screen.input(Clear, layout);
+    screen.input(Activate, layout);
+    let action = screen.input(Captured(KeyValue::Mouse(MouseKey::Left)), layout);
+    if let Some(SettingsAction::KeyCaptured { row, key }) = action {
+        screen.ask_conflict(row, key, Some(3));
+    }
+    std::hint::black_box(screen.snapshot());
+    screen.input(Right, layout);
+    screen.input(Left, layout);
+    screen.input(Right, layout);
+    screen.input(Activate, layout);
+    screen.input(Down, layout);
+    std::hint::black_box(screen.input(Activate, layout));
+    screen.input(PrevSection, layout);
+    screen.input(PrevSection, layout);
+}
+
+#[test]
+fn key_input_does_not_allocate() {
+    let layout = SettingsLayout::new(1280.0, 720.0, &Theme::default());
+    let mut screen = SettingsScreen::new(&rows(), 3);
+    assert_no_alloc(|| {
+        key_flow(&mut screen, &layout);
+        key_flow(&mut screen, &layout);
+    });
+}
+
 #[test]
 fn the_view_pushes_without_allocating_once_warm() {
     let registry = Arc::new(FontRegistry::with_builtin());
@@ -100,7 +172,7 @@ fn the_view_pushes_without_allocating_once_warm() {
     let mut glyphs = glyph_atlas(Arc::clone(&registry), &GlyphAtlasConfig::new(limits)).unwrap();
     let theme = Theme::default();
     let specs = rows();
-    let mut screen = SettingsScreen::new(&specs, 2);
+    let mut screen = SettingsScreen::new(&specs, 3);
     let mut view = SettingsView::new(registry, theme, &specs, &labels());
     let white = AtlasRegion {
         texture: TextureId(0),
@@ -147,8 +219,36 @@ fn the_view_pushes_without_allocating_once_warm() {
         screen.input(SettingsInput::Back, &layout);
         screen.input(SettingsInput::PrevSection, &layout);
     }
+    // Warm the keys section: listening and the question.
+    for _ in 0..2 {
+        screen.input(SettingsInput::NextSection, &layout);
+        screen.input(SettingsInput::NextSection, &layout);
+        screen.input(SettingsInput::Activate, &layout);
+        frame(&screen, 1280.0, 720.0, &mut glyphs);
+        screen.input(SettingsInput::Back, &layout);
+        screen.ask_conflict(3, KeyValue::Mouse(MouseKey::X2), Some(4));
+        frame(&screen, 1280.0, 720.0, &mut glyphs);
+        screen.input(SettingsInput::Back, &layout);
+        frame(&screen, 800.0, 600.0, &mut glyphs);
+        screen.input(SettingsInput::PrevSection, &layout);
+        screen.input(SettingsInput::PrevSection, &layout);
+    }
     assert_no_alloc(|| {
         for i in 0..40 {
+            key_flow(&mut screen, &layout);
+            frame(&screen, 1280.0, 720.0, &mut glyphs);
+            // The frames of each state of the keys section.
+            screen.input(SettingsInput::NextSection, &layout);
+            screen.input(SettingsInput::NextSection, &layout);
+            screen.input(SettingsInput::Activate, &layout);
+            frame(&screen, 1280.0, 720.0, &mut glyphs);
+            screen.input(SettingsInput::Back, &layout);
+            screen.ask_conflict(3, KeyValue::Key(300), None);
+            frame(&screen, 1280.0, 720.0, &mut glyphs);
+            screen.input(SettingsInput::Back, &layout);
+            frame(&screen, 1280.0, 720.0, &mut glyphs);
+            screen.input(SettingsInput::PrevSection, &layout);
+            screen.input(SettingsInput::PrevSection, &layout);
             // A slider that changes every frame, sections, an open list.
             screen.input(SettingsInput::Right, &layout);
             if i % 10 == 5 {

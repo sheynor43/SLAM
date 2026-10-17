@@ -22,6 +22,7 @@ use slam_input::{
     CursorVisibility, InputEvent, InputKind, InputWindow, MouseButton, TickMapper, event_ring,
     sdl_ticks_ns,
 };
+use slam_play::input::Input;
 use slam_play::{
     Bindings, LiveInput, Offsets, PlaySession, PlaySnapshot, PlayState, PlayfieldLayout,
 };
@@ -41,7 +42,8 @@ use slam_ui::results::{
 };
 use slam_ui::screen::{MAX_LAYERS, Nav, Navigated, Pose, ScreenStack};
 use slam_ui::settings_screen::{
-    SettingsAction, SettingsInput, SettingsLayout, SettingsScreen, SettingsSnapshot, SettingsView,
+    KeyValue, SettingsAction, SettingsInput, SettingsLayout, SettingsScreen, SettingsSnapshot,
+    SettingsView,
 };
 use slam_ui::song_select::{
     SongList, SongSelect, SongSelectAction, SongSelectInput, SongSelectLabels, SongSelectLayout,
@@ -60,6 +62,7 @@ mod draw_rate;
 mod live;
 
 use live::{AppliedUpdateRate, AppliedVolumes, Volumes};
+mod keybinds;
 mod results;
 mod rows;
 
@@ -88,6 +91,7 @@ const KEY_ESCAPE: u16 = 41;
 const KEY_R: u16 = 21;
 const KEY_TAB: u16 = 43;
 const KEY_HOME: u16 = 74;
+const KEY_DELETE: u16 = 76;
 const KEY_PAGE_UP: u16 = 75;
 const KEY_END: u16 = 77;
 const KEY_PAGE_DOWN: u16 = 78;
@@ -402,6 +406,28 @@ impl ShellState {
     /// The input of the screens, as the song select (the larger set) understands it, and
     /// the key only the results use.
     fn screen_input(&mut self, kind: InputKind) -> Option<ScreenInput> {
+        // A key row that listens takes every key and mouse button, whatever the menus make
+        // of them; Escape still goes through, as it cancels.
+        if matches!(self.stack.top(), AppScreen::Settings(s) if s.is_listening()) {
+            match kind {
+                InputKind::Key {
+                    scancode: KEY_DELETE,
+                    down: true,
+                } => return Some(ScreenInput::Clear),
+                InputKind::Key {
+                    scancode,
+                    down: true,
+                } if scancode != KEY_ESCAPE => {
+                    return Some(ScreenInput::Capture(KeyValue::Key(scancode)));
+                }
+                InputKind::MouseButton { button, down: true } => {
+                    return Some(ScreenInput::Capture(keybinds::key_value(Some(
+                        Input::Mouse(button),
+                    ))));
+                }
+                _ => {}
+            }
+        }
         Some(ScreenInput::Common(match kind {
             InputKind::Key {
                 scancode,
@@ -543,6 +569,17 @@ impl ShellState {
                             }
                             None
                         }
+                        Some(
+                            action @ (SettingsAction::KeyCaptured { .. }
+                            | SettingsAction::KeyCleared { .. }
+                            | SettingsAction::Pressed { .. }
+                            | SettingsAction::ConflictResolved { .. }),
+                        ) => {
+                            if let Some(editing) = &mut self.editing {
+                                keybinds::apply(screen, editing, action);
+                            }
+                            None
+                        }
                         Some(SettingsAction::Close) => {
                             commit_settings(
                                 &mut self.settings,
@@ -605,6 +642,10 @@ enum ScreenInput {
     Tab,
     /// The primary button released.
     Release,
+    /// Any key or mouse button, while a key row listens.
+    Capture(KeyValue),
+    /// Delete, while a key row listens.
+    Clear,
 }
 
 impl ScreenInput {
@@ -648,6 +689,8 @@ fn settings_input(input: ScreenInput) -> Option<SettingsInput> {
     Some(match input {
         ScreenInput::Tab => SettingsInput::NextSection,
         ScreenInput::Release => SettingsInput::PointerRelease,
+        ScreenInput::Capture(key) => SettingsInput::Captured(key),
+        ScreenInput::Clear => SettingsInput::Clear,
         ScreenInput::Retry => return None,
         ScreenInput::Common(input) => match input {
             SongSelectInput::Up => SettingsInput::Up,
@@ -683,7 +726,9 @@ fn after_play(results: Option<ResultsData>) -> Nav<AppScreen> {
 /// The input as the results understand it.
 fn results_input(input: ScreenInput) -> Option<ResultsInput> {
     Some(match input {
-        ScreenInput::Tab | ScreenInput::Release => return None,
+        ScreenInput::Tab | ScreenInput::Release | ScreenInput::Capture(_) | ScreenInput::Clear => {
+            return None;
+        }
         ScreenInput::Retry => ResultsInput::Retry,
         ScreenInput::Common(SongSelectInput::Back) => ResultsInput::Back,
         ScreenInput::Common(SongSelectInput::PointerMove { x, y }) => {
@@ -856,7 +901,8 @@ impl PlayHost {
             &mut audio.mixer,
             &mut audio.player,
         );
-        // A play copies these when it starts; the bindings are not edited live yet.
+        // A play copies these when it starts (ADR-0049 for the bindings).
+        self.input.bindings = settings.input.bindings;
         self.input.offsets.global_ms = settings.timing.global_offset_ms;
         self.input.mouse_buttons = settings.gameplay.mouse_buttons;
     }

@@ -9,22 +9,70 @@
 use crate::menu::Rect;
 use crate::theme::Theme;
 use crate::widgets::{
-    Dropdown, DropdownAction, DropdownInput, DropdownLayout, Slider, SliderAction, SliderInput,
-    SliderLayout, Toggle, ToggleAction, ToggleInput, ToggleLayout,
+    Dropdown, DropdownAction, DropdownInput, DropdownLayout, KeyBind, KeyBindAction, KeyBindInput,
+    KeyBindLayout, Slider, SliderAction, SliderInput, SliderLayout, Toggle, ToggleAction,
+    ToggleInput, ToggleLayout,
 };
 
 pub mod view;
 
-pub use view::{RowLabels, SettingsLabels, SettingsView};
+pub use view::{KeyLabels, RowLabels, SettingsLabels, SettingsView};
 
 /// Most rows; more are ignored.
 pub const MAX_ROWS: usize = 24;
 /// Most sections; rows of later ones go into the last.
 pub const MAX_SECTIONS: usize = 6;
 
+/// A mouse button, as the screen names it; the application converts to and from its own.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum MouseKey {
+    Left,
+    Middle,
+    Right,
+    X1,
+    X2,
+}
+
+impl MouseKey {
+    /// Every button, in the order of [`MouseKey::index`].
+    pub const ALL: [MouseKey; 5] = [
+        MouseKey::Left,
+        MouseKey::Middle,
+        MouseKey::Right,
+        MouseKey::X1,
+        MouseKey::X2,
+    ];
+
+    /// The position in [`MouseKey::ALL`].
+    pub fn index(self) -> usize {
+        match self {
+            MouseKey::Left => 0,
+            MouseKey::Middle => 1,
+            MouseKey::Right => 2,
+            MouseKey::X1 => 3,
+            MouseKey::X2 => 4,
+        }
+    }
+}
+
+/// What a key row shows: nothing, a keyboard key by scancode (USB HID usage id) or a mouse
+/// button. The screen never turns it into text; the draw side looks the label up.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum KeyValue {
+    Empty,
+    Key(u16),
+    Mouse(MouseKey),
+}
+
 /// What a row edits, with its starting value.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub enum RowKind {
+    /// A key binding slot; the application owns the binding, the screen only listens.
+    Key {
+        value: KeyValue,
+    },
+    /// A button that asks the application to do something.
+    Button,
     Toggle {
         value: bool,
     },
@@ -53,9 +101,28 @@ pub struct RowSpec {
 /// The state of a row's widget.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub enum RowWidget {
+    Key(KeyRow),
+    Button,
     Toggle(Toggle),
     Slider(Slider),
     Dropdown(Dropdown),
+}
+
+/// The state of a key row: the binding shown and whether it waits for a key.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct KeyRow {
+    bind: KeyBind,
+    value: KeyValue,
+}
+
+impl KeyRow {
+    pub fn value(&self) -> KeyValue {
+        self.value
+    }
+
+    pub fn is_listening(&self) -> bool {
+        self.bind.is_listening()
+    }
 }
 
 /// A row's new value.
@@ -92,13 +159,54 @@ pub enum SettingsInput {
         y: f32,
     },
     PointerRelease,
+    /// An input the application captured while a key row listens. `Empty` is ignored.
+    Captured(KeyValue),
+    /// Delete while a key row listens: empties the slot.
+    Clear,
 }
 
 /// What the screen asks the application to do.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub enum SettingsAction {
-    Changed { row: usize, value: RowValue },
+    Changed {
+        row: usize,
+        value: RowValue,
+    },
+    /// The listening key row `row` got `key`. The application binds it, or asks
+    /// [`SettingsScreen::ask_conflict`] when it is taken, and refreshes the key rows with
+    /// [`SettingsScreen::set_key`].
+    KeyCaptured {
+        row: usize,
+        key: KeyValue,
+    },
+    /// The listening key row `row` is to be emptied.
+    KeyCleared {
+        row: usize,
+    },
+    /// The button row `row` was pressed.
+    Pressed {
+        row: usize,
+    },
+    /// The player answered the conflict of `key` and key row `row`: `apply` takes the key
+    /// over from its other place, else the old binding stays.
+    ConflictResolved {
+        row: usize,
+        key: KeyValue,
+        apply: bool,
+    },
     Close,
+}
+
+/// The question shown when a captured key is already bound elsewhere.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct Conflict {
+    /// The key row being bound.
+    pub row: usize,
+    pub key: KeyValue,
+    /// The key row that holds `key` now, if it is on the screen.
+    pub other: Option<usize>,
+    /// The highlighted answer: apply the new binding (`true`) or keep the old.
+    pub apply: bool,
 }
 
 /// Where the screen's parts are: a pure function of the window size and theme, shared by
@@ -208,6 +316,36 @@ impl SettingsLayout {
             .position(|tab| tab.contains(x, y))
     }
 
+    /// The box of the conflict question: it takes the place of the rows. Its parts are the
+    /// rows 0 to 2 of [`SettingsLayout::dialog_row`] (title, key, other binding) and the two
+    /// buttons of [`SettingsLayout::conflict_buttons`] below them.
+    pub fn dialog(&self) -> Rect {
+        Rect {
+            height: 3.0 * self.pitch + self.row_height,
+            ..self.row(0)
+        }
+    }
+
+    /// Row `i` (0 to 2) of the conflict box.
+    pub fn dialog_row(&self, i: usize) -> Rect {
+        self.row(i)
+    }
+
+    /// The "keep" and "apply" buttons, left and right.
+    pub fn conflict_buttons(&self) -> [Rect; 2] {
+        let row = self.row(3);
+        let gap = self.theme.widget_pad * self.scale;
+        let width = ((row.width - gap) / 2.0).max(0.0);
+        [
+            Rect { width, ..row },
+            Rect {
+                x: row.x + width + gap,
+                width,
+                ..row
+            },
+        ]
+    }
+
     fn toggle(&self, slot: usize) -> ToggleLayout {
         // The whole row switches, not only the track.
         ToggleLayout::new(self.row(slot), &self.theme, self.scale)
@@ -230,6 +368,7 @@ pub struct SettingsSnapshot {
     /// Index of the focused row.
     pub focus: usize,
     pub section: usize,
+    pub conflict: Option<Conflict>,
 }
 
 /// The screen's state on the update thread.
@@ -241,6 +380,7 @@ pub struct SettingsScreen {
     sections: usize,
     focus: usize,
     section: usize,
+    conflict: Option<Conflict>,
 }
 
 impl SettingsScreen {
@@ -257,6 +397,11 @@ impl SettingsScreen {
             meta[i] = (section as u8, counts[section]);
             counts[section] = counts[section].saturating_add(1);
             widgets[i] = match spec.kind {
+                RowKind::Key { value } => RowWidget::Key(KeyRow {
+                    bind: KeyBind::new(),
+                    value,
+                }),
+                RowKind::Button => RowWidget::Button,
                 RowKind::Toggle { value } => RowWidget::Toggle(Toggle::new(value)),
                 RowKind::Slider {
                     min,
@@ -276,6 +421,7 @@ impl SettingsScreen {
             sections,
             focus: 0,
             section: 0,
+            conflict: None,
         };
         screen.focus = screen.first_row(0).unwrap_or(0);
         screen
@@ -305,7 +451,43 @@ impl SettingsScreen {
             len: self.len,
             focus: self.focus,
             section: self.section,
+            conflict: self.conflict,
         }
+    }
+
+    /// Whether a key row waits for a key: the application then gives it every key and mouse
+    /// button as [`SettingsInput::Captured`].
+    pub fn is_listening(&self) -> bool {
+        self.listening_row().is_some()
+    }
+
+    fn listening_row(&self) -> Option<usize> {
+        self.widgets[..self.len]
+            .iter()
+            .position(|w| matches!(w, RowWidget::Key(k) if k.is_listening()))
+    }
+
+    /// Shows `value` in key row `row`. Anything else is left alone.
+    pub fn set_key(&mut self, row: usize, value: KeyValue) {
+        if let Some(RowWidget::Key(k)) = self.widgets[..self.len].get_mut(row) {
+            k.value = value;
+        }
+    }
+
+    /// Asks whether to take `key` for key row `row` although the key row `other` (if on the
+    /// screen) has it. The screen answers with [`SettingsAction::ConflictResolved`].
+    pub fn ask_conflict(&mut self, row: usize, key: KeyValue, other: Option<usize>) {
+        self.conflict = Some(Conflict {
+            row,
+            key,
+            other,
+            apply: false,
+        });
+    }
+
+    /// The question being asked.
+    pub fn conflict(&self) -> Option<&Conflict> {
+        self.conflict.as_ref()
     }
 
     /// The position of `row` within its section.
@@ -383,6 +565,26 @@ impl SettingsScreen {
     ) -> Option<SettingsAction> {
         let slot = self.slot(row);
         let value = match &mut self.widgets[row] {
+            RowWidget::Key(key) => {
+                let input = match input {
+                    SettingsInput::Activate => KeyBindInput::Activate,
+                    SettingsInput::PointerPress { x, y } => KeyBindInput::PointerPress { x, y },
+                    _ => return None,
+                };
+                // Starting to listen is not for the application to know; it asks the screen.
+                key.bind.input::<KeyValue>(
+                    input,
+                    &KeyBindLayout::new(layout.widget(slot), layout.scale),
+                );
+                return None;
+            }
+            RowWidget::Button => {
+                return matches!(
+                    input,
+                    SettingsInput::Activate | SettingsInput::PointerPress { .. }
+                )
+                .then_some(SettingsAction::Pressed { row });
+            }
             RowWidget::Toggle(toggle) => {
                 let input = match input {
                     SettingsInput::Activate => ToggleInput::Activate,
@@ -434,6 +636,12 @@ impl SettingsScreen {
     ) -> Option<SettingsAction> {
         if self.len == 0 {
             return matches!(input, SettingsInput::Back).then_some(SettingsAction::Close);
+        }
+        if let Some(conflict) = self.conflict {
+            return self.answer(conflict, input, layout);
+        }
+        if let Some(row) = self.listening_row() {
+            return self.listen(row, input);
         }
         match input {
             SettingsInput::Up | SettingsInput::Down => {
@@ -488,6 +696,8 @@ impl SettingsScreen {
                 self.focus = row;
                 self.route(row, input, layout)
             }
+            // Only meaningful while a key row listens.
+            SettingsInput::Captured(_) | SettingsInput::Clear => None,
             SettingsInput::PointerRelease => {
                 let mut action = None;
                 for row in 0..self.len {
@@ -497,6 +707,69 @@ impl SettingsScreen {
                 }
                 action
             }
+        }
+    }
+
+    /// Input while key row `row` listens: it ends with a key, Escape or Delete.
+    fn listen(&mut self, row: usize, input: SettingsInput) -> Option<SettingsAction> {
+        let RowWidget::Key(key) = &mut self.widgets[row] else {
+            return None;
+        };
+        let none = KeyBindLayout::new(Rect::default(), 1.0);
+        match input {
+            SettingsInput::Captured(value) if value != KeyValue::Empty => {
+                let KeyBindAction::Bound(key) =
+                    key.bind.input(KeyBindInput::Captured(value), &none)?
+                else {
+                    return None;
+                };
+                Some(SettingsAction::KeyCaptured { row, key })
+            }
+            SettingsInput::Back => {
+                key.bind.input::<KeyValue>(KeyBindInput::Back, &none);
+                None
+            }
+            SettingsInput::Clear => {
+                key.bind.input::<KeyValue>(KeyBindInput::Back, &none);
+                Some(SettingsAction::KeyCleared { row })
+            }
+            _ => None,
+        }
+    }
+
+    /// Input while the conflict question is open: the arrows or the pointer choose,
+    /// Activate or a press answers, Back keeps the old binding.
+    fn answer(
+        &mut self,
+        conflict: Conflict,
+        input: SettingsInput,
+        layout: &SettingsLayout,
+    ) -> Option<SettingsAction> {
+        let [keep, apply] = layout.conflict_buttons();
+        let resolve = |screen: &mut SettingsScreen, apply: bool| {
+            screen.conflict = None;
+            Some(SettingsAction::ConflictResolved {
+                row: conflict.row,
+                key: conflict.key,
+                apply,
+            })
+        };
+        let choose = |screen: &mut SettingsScreen, apply: bool| {
+            if let Some(c) = &mut screen.conflict {
+                c.apply = apply;
+            }
+            None
+        };
+        match input {
+            SettingsInput::Left => choose(self, false),
+            SettingsInput::Right => choose(self, true),
+            SettingsInput::Activate => resolve(self, conflict.apply),
+            SettingsInput::Back => resolve(self, false),
+            SettingsInput::PointerMove { x, y } if keep.contains(x, y) => choose(self, false),
+            SettingsInput::PointerMove { x, y } if apply.contains(x, y) => choose(self, true),
+            SettingsInput::PointerPress { x, y } if keep.contains(x, y) => resolve(self, false),
+            SettingsInput::PointerPress { x, y } if apply.contains(x, y) => resolve(self, true),
+            _ => None,
         }
     }
 

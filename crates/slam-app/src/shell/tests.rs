@@ -1,5 +1,6 @@
 use std::path::Path;
 
+use slam_osu::replay::Actions;
 use slam_ui::screen::TRANSITION_NS;
 
 use super::*;
@@ -752,7 +753,7 @@ fn play_input_follows_the_settings() {
 
     let mut settings = Settings::default();
     settings.timing.global_offset_ms = -25.0;
-    settings.input.bindings.truncate(1);
+    settings.input.bindings = Bindings::new(&Bindings::default().as_slice()[..1]);
     settings.gameplay.mouse_buttons = false;
     let input = PlayInput::new(&settings);
     assert_eq!(input.offsets.global_ms, -25.0);
@@ -782,6 +783,7 @@ fn changed_settings_reach_the_audio_and_the_next_play() {
     settings.audio.hitsound_volume = 0.25;
     settings.timing.global_offset_ms = -12.0;
     settings.gameplay.mouse_buttons = !settings.gameplay.mouse_buttons;
+    settings.input.clear(Actions::SMOKE, 0);
     fixture.host.apply_settings(&settings);
     let host = &fixture.host;
     assert_eq!(
@@ -790,6 +792,8 @@ fn changed_settings_reach_the_audio_and_the_next_play() {
     );
     assert_eq!(host.input.offsets.global_ms, -12.0);
     assert_eq!(host.input.mouse_buttons, settings.gameplay.mouse_buttons);
+    assert_eq!(host.input.bindings, settings.input.bindings);
+    assert_ne!(host.input.bindings, Bindings::default());
 }
 
 #[test]
