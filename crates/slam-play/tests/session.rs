@@ -9,8 +9,8 @@ use std::sync::Arc;
 use common::skin::hitsounds;
 use common::{beatmap, layout, play};
 use slam_audio::{
-    MusicAnchor, MusicSnapshot, PlayError, PositionSnapshot, Sample, TrackControl, VoiceId,
-    VoiceParams,
+    FilterKind, MusicAnchor, MusicSnapshot, PlayError, PositionSnapshot, Sample, TrackAdjustment,
+    TrackControl, VoiceGroup, VoiceId, VoiceParams,
 };
 use slam_input::{InputEvent, InputKind, MouseButton};
 use slam_osu::judgement::{HitResult, JudgementLog};
@@ -79,6 +79,12 @@ struct Track {
     refuse_seek_after: Option<usize>,
     /// Stream frames the callback takes a seek after it is given (as if behind the queue).
     seek_delay: u64,
+    /// Every adjustment given, in order.
+    adjustments: Vec<TrackAdjustment>,
+    /// Refuse the next adjustment (queue full).
+    refuse_adjust: bool,
+    /// Frequency moves given: stream frame, target, frames.
+    frequencies: Vec<(u64, f64, u64)>,
 }
 
 impl Track {
@@ -86,6 +92,8 @@ impl Track {
     fn reserve(&mut self, n: usize) {
         self.commands.reserve(n);
         self.issued.reserve(n);
+        self.adjustments.reserve(n);
+        self.frequencies.reserve(n);
     }
 
     fn log(&mut self, command: Command) {
@@ -94,82 +102,168 @@ impl Track {
     }
 
     /// Where the callback has the track at stream frame `frame`: the commands take effect
-    /// on the frame they were given at (no latency), a `play_at` on its frame. `None`
-    /// before the first command.
+    /// on the frame they were given at (no latency), a `play_at` on its frame, a frequency
+    /// move as the callback makes it (one anchor with an acceleration). `None` before the
+    /// first command.
     fn music(&self, frame: u64) -> Option<MusicSnapshot> {
+        #[derive(Clone, Copy)]
+        struct Move {
+            from: u64,
+            start: f64,
+            step: f64,
+            end: u64,
+            target: f64,
+        }
+        impl Move {
+            fn at(&self, x: u64) -> (f64, f64) {
+                if x >= self.end {
+                    (self.target, 0.0)
+                } else {
+                    (self.start + self.step * (x - self.from) as f64, self.step)
+                }
+            }
+        }
+        #[derive(Clone, Copy)]
+        enum Event {
+            Command(Command),
+            Frequency(f64, u64),
+        }
         let mut anchors: Option<(MusicAnchor, MusicAnchor)> = None;
         let mut generation = 0;
         let mut scheduled = None;
-        let push = |anchors: &mut Option<(MusicAnchor, MusicAnchor)>, anchor: MusicAnchor| {
+        let mut playing = false;
+        let mut frequency = Move {
+            from: 0,
+            start: 1.0,
+            step: 0.0,
+            end: 0,
+            target: 1.0,
+        };
+        let mut move_end = None;
+        let position = |anchors: &Option<(MusicAnchor, MusicAnchor)>, at: u64| {
+            anchors.map_or(0.0, |(_, a)| a.at(at as f64))
+        };
+        let push = |anchors: &mut Option<(MusicAnchor, MusicAnchor)>,
+                    at: u64,
+                    track_frame: f64,
+                    playing: bool,
+                    frequency: &Move| {
+            let (speed, accel) = if playing {
+                frequency.at(at)
+            } else {
+                (0.0, 0.0)
+            };
+            let anchor = MusicAnchor {
+                device_frame: at,
+                track_frame,
+                speed,
+                accel,
+            };
             *anchors = Some(match *anchors {
                 Some((_, last)) => (last, anchor),
                 None => (anchor, anchor),
             });
         };
-        let position = |anchors: &Option<(MusicAnchor, MusicAnchor)>, at: u64| {
-            anchors.map_or((0.0, 0.0), |(_, a)| {
-                (
-                    a.track_frame + (at as f64 - a.device_frame as f64) * a.speed,
-                    a.speed,
-                )
-            })
-        };
+        // Starts and move ends due by `upto`, in order.
         let fire = |anchors: &mut Option<(MusicAnchor, MusicAnchor)>,
                     scheduled: &mut Option<u64>,
+                    move_end: &mut Option<u64>,
+                    playing: &mut bool,
+                    frequency: &Move,
                     upto: u64| {
-            if let Some(at) = *scheduled
-                && at <= upto
-            {
-                *scheduled = None;
-                let (track_frame, _) = position(anchors, at);
-                push(
-                    anchors,
-                    MusicAnchor {
-                        device_frame: at,
-                        track_frame,
-                        speed: 1.0,
-                    },
-                );
+            loop {
+                let next = [*scheduled, *move_end]
+                    .into_iter()
+                    .flatten()
+                    .filter(|&at| at <= upto)
+                    .min();
+                let Some(at) = next else { break };
+                let track_frame = position(anchors, at);
+                if *scheduled == Some(at) {
+                    *scheduled = None;
+                    *playing = true;
+                } else {
+                    *move_end = None;
+                }
+                push(anchors, at, track_frame, *playing, frequency);
             }
         };
-        for (&command, &issued) in self.commands.iter().zip(&self.issued) {
-            let at = match command {
-                Command::Seek(_) => issued + self.seek_delay,
-                _ => issued,
-            };
+        // Both logs are in the order given; commands of one frame come first.
+        let command_at = |k: usize| match self.commands[k] {
+            Command::Seek(_) => self.issued[k] + self.seek_delay,
+            _ => self.issued[k],
+        };
+        let (mut c, mut f) = (0, 0);
+        let events = std::iter::from_fn(|| {
+            let next_command = (c < self.commands.len()).then(|| command_at(c));
+            let next_frequency = self.frequencies.get(f).map(|&(at, ..)| at);
+            match (next_command, next_frequency) {
+                (Some(at), Some(fat)) if at <= fat => {
+                    c += 1;
+                    Some((at, Event::Command(self.commands[c - 1])))
+                }
+                (Some(at), None) => {
+                    c += 1;
+                    Some((at, Event::Command(self.commands[c - 1])))
+                }
+                (_, Some(at)) => {
+                    let (_, target, frames) = self.frequencies[f];
+                    f += 1;
+                    Some((at, Event::Frequency(target, frames)))
+                }
+                (None, None) => None,
+            }
+        });
+        for (at, event) in events {
             if at > frame {
                 break;
             }
-            fire(&mut anchors, &mut scheduled, at);
-            let (track_frame, speed) = position(&anchors, at);
-            match command {
-                Command::PlayAt(device_frame) => scheduled = Some(device_frame),
-                Command::Play | Command::Pause => {
+            fire(
+                &mut anchors,
+                &mut scheduled,
+                &mut move_end,
+                &mut playing,
+                &frequency,
+                at,
+            );
+            let track_frame = position(&anchors, at);
+            match event {
+                Event::Command(Command::PlayAt(device_frame)) => scheduled = Some(device_frame),
+                Event::Command(command @ (Command::Play | Command::Pause)) => {
                     scheduled = None;
-                    let speed = if command == Command::Play { 1.0 } else { 0.0 };
-                    push(
-                        &mut anchors,
-                        MusicAnchor {
-                            device_frame: at,
-                            track_frame,
-                            speed,
-                        },
-                    );
+                    playing = command == Command::Play;
+                    push(&mut anchors, at, track_frame, playing, &frequency);
                 }
-                Command::Seek(to) => {
+                Event::Command(Command::Seek(to)) => {
                     generation += 1;
-                    push(
-                        &mut anchors,
-                        MusicAnchor {
-                            device_frame: at,
-                            track_frame: to as f64,
-                            speed,
+                    push(&mut anchors, at, to as f64, playing, &frequency);
+                }
+                Event::Frequency(target, frames) => {
+                    let (start, _) = frequency.at(at);
+                    frequency = Move {
+                        from: at,
+                        start,
+                        step: if frames == 0 {
+                            0.0
+                        } else {
+                            (target - start) / frames as f64
                         },
-                    );
+                        end: at + frames,
+                        target,
+                    };
+                    move_end = (frames > 0).then_some(at + frames);
+                    push(&mut anchors, at, track_frame, playing, &frequency);
                 }
             }
         }
-        fire(&mut anchors, &mut scheduled, frame);
+        fire(
+            &mut anchors,
+            &mut scheduled,
+            &mut move_end,
+            &mut playing,
+            &frequency,
+            frame,
+        );
         anchors.map(|(previous, anchor)| MusicSnapshot {
             anchor,
             previous,
@@ -215,6 +309,24 @@ impl TrackControl for Track {
         unreachable!("no rate mods")
     }
 
+    fn adjust(&mut self, adjustments: &[TrackAdjustment]) -> Result<(), PlayError> {
+        if std::mem::take(&mut self.refuse_adjust) {
+            return Err(PlayError::QueueFull);
+        }
+        self.adjustments.extend_from_slice(adjustments);
+        for adjustment in adjustments {
+            if let TrackAdjustment::Frequency {
+                frequency,
+                duration_ms,
+            } = *adjustment
+            {
+                let frames = (duration_ms * f64::from(RATE) / 1_000.0).round() as u64;
+                self.frequencies.push((self.frame.get(), frequency, frames));
+            }
+        }
+        Ok(())
+    }
+
     fn generation(&self) -> u32 {
         self.generation
     }
@@ -224,15 +336,26 @@ impl TrackControl for Track {
 #[derive(Default)]
 struct Sink {
     plays: u64,
+    /// Voices started in the effects group, and the last of them.
+    effects: u64,
+    last_effect: Option<VoiceId>,
+    /// The last voice stopped.
+    last_stopped: Option<VoiceId>,
 }
 
 impl VoiceSink for Sink {
-    fn play_voice(&mut self, _: &Arc<Sample>, _: VoiceParams) -> Result<VoiceId, PlayError> {
+    fn play_voice(&mut self, _: &Arc<Sample>, params: VoiceParams) -> Result<VoiceId, PlayError> {
         self.plays += 1;
-        Ok(VoiceId::from_play(self.plays))
+        let voice = VoiceId::from_play(self.plays);
+        if params.group == VoiceGroup::Effects {
+            self.effects += 1;
+            self.last_effect = Some(voice);
+        }
+        Ok(voice)
     }
 
-    fn stop_voice(&mut self, _: VoiceId) -> Result<(), PlayError> {
+    fn stop_voice(&mut self, voice: VoiceId) -> Result<(), PlayError> {
+        self.last_stopped = Some(voice);
         Ok(())
     }
 
@@ -1095,7 +1218,9 @@ impl Driver {
             &mods,
             &track,
             LiveInput::new(Bindings::default(), layout()),
-            GameplaySounds::new(map, sounds, SoundSettings::for_mods(&mods)),
+            GameplaySounds::new(map, sounds, SoundSettings::for_mods(&mods)).with_fail_sound(Some(
+                Arc::new(Sample::from_interleaved(vec![0.1; 2 * 10], RATE, 2).unwrap()),
+            )),
             Offsets::default(),
         );
         let mut driver = Driver {
@@ -1440,7 +1565,13 @@ fn running_out_of_health_fails_and_stops_after_the_fail_animation() {
     // Judgements after the fail do not score: the misses leave the accuracy.
     assert_eq!(d.snapshot.hud, hud);
     assert!(d.session.log().events().len() > failed_at);
-    assert!(d.snapshot.time > time + 2_400.0);
+    // The track slows down to a stop: t − t²/5000 ms of gameplay in t ms.
+    let slowed = 2_490.0 - 2_490.0 * 2_490.0 / 5_000.0;
+    assert!(
+        (d.snapshot.time - time - slowed).abs() < 5.0,
+        "{} after {time}",
+        d.snapshot.time
+    );
     assert_eq!(d.session.counted_judgements(), failed_at);
     d.run(20);
     assert_eq!(d.state(), PlayState::Failed);
@@ -1763,6 +1894,188 @@ fn quick_exit_and_back_after_failing_quit() {
     assert_eq!(d.state(), PlayState::Failed);
     d.tap(ESCAPE);
     assert_eq!(d.state(), PlayState::Exited);
+}
+
+fn filter(kind: FilterKind, cutoff_hz: f32, duration_ms: f64) -> TrackAdjustment {
+    TrackAdjustment::Filter {
+        kind,
+        cutoff_hz,
+        duration_ms,
+    }
+}
+
+fn frequency(frequency: f64, duration_ms: f64) -> TrackAdjustment {
+    TrackAdjustment::Frequency {
+        frequency,
+        duration_ms,
+    }
+}
+
+/// What the track is given when the fail animation ends.
+const FAILED: [TrackAdjustment; 4] = [
+    TrackAdjustment::Frequency {
+        frequency: 0.0,
+        duration_ms: 0.0,
+    },
+    TrackAdjustment::Volume(1.0),
+    TrackAdjustment::Filter {
+        kind: FilterKind::LowPass,
+        cutoff_hz: 22_049.0,
+        duration_ms: 0.0,
+    },
+    TrackAdjustment::Filter {
+        kind: FilterKind::HighPass,
+        cutoff_hz: 1.0,
+        duration_ms: 0.0,
+    },
+];
+
+#[test]
+fn failing_slows_the_track_to_a_stop_with_the_fail_sound_and_filters() {
+    let map = beatmap();
+    let mut d = Driver::new(&map, ModSet::default());
+    // A new play makes the track sound as it is: the last one may have failed.
+    assert_eq!(d.track.adjustments, slam_play::fail::neutral_track());
+    d.run_until(10_000, |s| s.state == PlayState::Failing);
+    let fail = d.snapshot.fail.expect("failing");
+    // The driver moves on a millisecond after each tick.
+    assert_eq!(
+        (fail.time, fail.at_ns, fail.cut),
+        (d.snapshot.time, d.now - MS, false)
+    );
+    // Ported from osu!lazer 2026.1005.0-lazer: osu.Game/Screens/Play/FailAnimationContainer.cs (Start)
+    assert_eq!(
+        d.track.adjustments[4..],
+        [
+            frequency(0.0, 2_500.0),
+            TrackAdjustment::Volume(0.5),
+            filter(FilterKind::LowPass, 300.0, 2_500.0),
+            filter(FilterKind::HighPass, 300.0, 0.0),
+        ]
+    );
+    assert_eq!(d.sink.effects, 1);
+    let fail_voice = d.sink.last_effect;
+    // The track only ever slows down (lazer's `TestSceneFailAnimation`).
+    let mut speed = f64::INFINITY;
+    while d.state() == PlayState::Failing {
+        let frame = d.track.frame.get();
+        let now = d.track.music(frame).unwrap().anchor.speed_at(frame as f64);
+        assert!(now <= speed, "{now} after {speed}");
+        speed = now;
+        d.run(1);
+    }
+    assert!(speed < 0.01, "{speed}");
+    assert_eq!(d.state(), PlayState::Failed);
+    assert_eq!(d.track.adjustments[8..], FAILED);
+    assert_eq!(d.snapshot.fail, Some(fail));
+    // The fail sound plays on under the menu; a restart stops it and the track sounds as it
+    // is again.
+    assert_ne!(d.sink.last_stopped, fail_voice);
+    d.hold(None, GRAVE, 200);
+    assert_eq!(d.snapshot.restarts, 1);
+    assert_eq!(d.sink.last_stopped, fail_voice);
+    assert_eq!(d.track.adjustments[12..], slam_play::fail::neutral_track());
+    assert_eq!(d.snapshot.fail, None);
+    d.run(100);
+    assert_eq!(d.track.adjustments.len(), 16);
+}
+
+#[test]
+fn back_cuts_the_fail_animation_short_and_stops_the_track_at_once() {
+    let map = beatmap();
+    let mut d = Driver::new(&map, ModSet::default());
+    d.run_until(10_000, |s| s.state == PlayState::Failing);
+    d.run(500);
+    d.tap(ESCAPE);
+    assert_eq!(d.state(), PlayState::Failed);
+    assert!(d.snapshot.fail.unwrap().cut);
+    assert_eq!(d.track.adjustments[8..], FAILED);
+    // Quitting stops the fail sound and resets the track.
+    let fail_voice = d.sink.last_effect;
+    d.tap(ESCAPE);
+    assert_eq!(d.state(), PlayState::Exited);
+    assert_eq!(d.sink.last_stopped, fail_voice);
+    assert_eq!(d.track.adjustments[12..], slam_play::fail::neutral_track());
+}
+
+#[test]
+fn a_refused_track_adjustment_is_sent_again() {
+    let map = beatmap();
+    let mut d = Driver::new(&map, ModSet::default());
+    d.run_until(10_000, |s| s.state == PlayState::Failing);
+    d.track.refuse_adjust = true;
+    d.tap(ESCAPE);
+    assert_eq!(d.state(), PlayState::Failed);
+    assert_eq!(d.track.adjustments.len(), 8);
+    let errors = d.session.clock_errors();
+    d.run(1);
+    assert_eq!(d.track.adjustments[8..], FAILED);
+    assert_eq!(d.session.clock_errors(), errors);
+}
+
+#[test]
+fn failed_objects_fall_and_fade_out() {
+    let map = beatmap();
+    let mut d = Driver::new(&map, ModSet::default());
+    let mut view = view(&map);
+    let mut textures = FrameTextures::default();
+    let piece = Some(SkinSprite::new(WHITE, 1.0, f32::MAX));
+    textures.circles.circle = piece;
+    textures.circles.approach = piece;
+    let mut bodies = SliderBodies::new();
+    // The frame drawn with the snapshot's fail, and without it.
+    let mut draw = |d: &Driver| {
+        let mut frame = |snapshot: &PlaySnapshot| {
+            let mut batch = SpriteBatch::new();
+            view.push(
+                &mut batch,
+                &mut bodies,
+                &layout(),
+                snapshot,
+                d.now,
+                &textures,
+            );
+            batch.vertices().to_vec()
+        };
+        let failing = frame(&d.snapshot);
+        let mut plain = d.snapshot.clone();
+        plain.fail = None;
+        (failing, frame(&plain))
+    };
+    let mean_y = |v: &[slam_render::sprite::SpriteVertex]| {
+        v.iter().map(|v| v.position[1]).sum::<f32>() / v.len() as f32
+    };
+    d.run_until(10_000, |s| s.state == PlayState::Failing);
+    let (failing, plain) = draw(&d);
+    assert!(!plain.is_empty());
+    // A millisecond on: the fall starts from where the objects are.
+    for (f, p) in failing.iter().zip(&plain) {
+        assert!((f.position[0] - p.position[0]).abs() < 0.5);
+        assert!((f.position[1] - p.position[1]).abs() < 0.5);
+        assert!((f.colour[3] - p.colour[3]).abs() < 0.01);
+    }
+    // Every frame with objects later on: they are lower and fainter.
+    let mut checked = 0;
+    for _ in 0..40 {
+        d.run(50);
+        let (failing, plain) = draw(&d);
+        assert_eq!(failing.len(), plain.len());
+        if plain.is_empty() {
+            continue;
+        }
+        checked += 1;
+        assert!(mean_y(&failing) > mean_y(&plain));
+        for (f, p) in failing.iter().zip(&plain) {
+            assert!(f.colour[3] < p.colour[3] || p.colour[3] == 0.0);
+            assert_eq!(f.colour[..3], p.colour[..3]);
+        }
+    }
+    assert!(checked > 0);
+    // Back: the animation is at its end, the objects are gone.
+    d.tap(ESCAPE);
+    assert_eq!(d.state(), PlayState::Failed);
+    let (failing, _) = draw(&d);
+    assert!(failing.iter().all(|v| v.colour[3] == 0.0));
 }
 
 #[test]

@@ -896,7 +896,8 @@ mod tests {
     #[test]
     fn clock_time_applies_rate_and_offsets() {
         use slam_audio::{
-            GameClock, MusicAnchor, MusicSnapshot, PlayError, PositionSnapshot, TrackControl,
+            GameClock, MusicAnchor, MusicSnapshot, PlayError, PositionSnapshot, TrackAdjustment,
+            TrackControl,
         };
 
         struct NoTrack;
@@ -916,6 +917,10 @@ mod tests {
             fn set_rate(&mut self, _: f64) -> Result<(), PlayError> {
                 Ok(())
             }
+
+            fn adjust(&mut self, _: &[TrackAdjustment]) -> Result<(), PlayError> {
+                Ok(())
+            }
             fn generation(&self) -> u32 {
                 0
             }
@@ -925,6 +930,7 @@ mod tests {
             device_frame: 0,
             track_frame: 0.0,
             speed: 1.5,
+            accel: 0.0,
         };
         let mut clock = GameClock::new(&NoTrack);
         clock.update(

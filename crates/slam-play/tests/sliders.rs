@@ -14,6 +14,7 @@ use slam_play::circles::{
     CircleMods, CircleSettings, CircleSkinConfig, CircleStyle, CircleTextures, CircleVisuals,
     HitCircles, LiveCircles, PieceTextures, SkinSprite,
 };
+use slam_play::fail::FailFrame;
 use slam_play::slider_body::Snaking;
 use slam_play::sliders::{
     AnimationSprites, ArrowStyle, BallPose, BallStyle, HitSliders, LiveSliders, MAX_LIVE_NESTED,
@@ -438,6 +439,7 @@ fn objects_draw_in_lazer_order_with_bodies_between_sprites() {
             circles: &circle_textures,
             sliders: &slider_textures,
         },
+        None,
     );
     push_approaches(
         &circles,
@@ -448,6 +450,7 @@ fn objects_draw_in_lazer_order_with_bodies_between_sprites() {
         live_sliders.as_slice(),
         1500.0 - 60.0,
         &circle_textures,
+        None,
     );
     // Circle 2, the slider (body, tail, head), circle 0 on top; then the approach circles
     // of the head and circle 2 (circle 0's has faded) in start time order.
@@ -500,6 +503,7 @@ fn a_faded_slider_records_no_body() {
             circles: &circle_textures,
             sliders: &slider_textures,
         },
+        None,
     );
     assert!(bodies.as_slice().is_empty());
     assert!(batch.is_empty());
@@ -540,9 +544,19 @@ fn frame_does_not_allocate(map: &Beatmap) {
     let mut bodies = SliderBodies::new();
     let (circle_textures, slider_textures) = (circle_textures(), ball_textures());
     let mut drawn = 0;
+    let mut fell = 0;
+    // From halfway on the play is failing: the objects fall.
+    let fail = slam_play::fail::FailView {
+        time: map.hit_objects[map.hit_objects.len() / 2].start_time,
+        at_ns: 0,
+        cut: false,
+    };
     while sim.step() {
         let time = sim.time();
+        let failing = time >= fail.time;
         assert_no_alloc(|| {
+            let [width, height] = layout.window_size();
+            let fail = FailFrame::new(failing.then_some(fail), time, 0, width, height);
             live_circles.capture(sim.rules());
             live_sliders.capture(sim.rules());
             batch.clear();
@@ -560,11 +574,32 @@ fn frame_does_not_allocate(map: &Beatmap) {
                     circles: &circle_textures,
                     sliders: &slider_textures,
                 },
+                fail.as_ref(),
+            );
+            push_approaches(
+                &circles,
+                &sliders,
+                &mut batch,
+                &layout,
+                live_circles.as_slice(),
+                live_sliders.as_slice(),
+                time,
+                &circle_textures,
+                fail.as_ref(),
             );
         });
         drawn += bodies.as_slice().len();
+        fell += bodies
+            .as_slice()
+            .iter()
+            .filter(|b| failing && time > fail.time + 100.0 && !b.transform.is_identity())
+            .count();
+        if !failing {
+            assert!(bodies.as_slice().iter().all(|b| b.transform.is_identity()));
+        }
     }
     assert!(drawn > 0);
+    assert!(fell > 0, "slider bodies fall with their sliders");
 }
 
 // ---- Textures ----
@@ -996,6 +1031,7 @@ fn nested_order(time: f64, nested: Option<Vec<Option<CircleJudgement>>>) -> (Vec
             circles: &circle_textures,
             sliders: &slider_textures,
         },
+        None,
     );
     (order(&batch), batch.len())
 }
@@ -1487,6 +1523,7 @@ fn the_follow_circle_and_ball_draw_above_the_head() {
             circles: &circle_textures,
             sliders: &slider_textures,
         },
+        None,
     );
     let batches = batch.batches();
     let tail: Vec<_> = batches[batches.len() - 4..]

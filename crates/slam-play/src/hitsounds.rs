@@ -178,6 +178,27 @@ pub fn lookup(sample: &HitSample, skins: SampleSkins<'_>) -> Lookup {
     Lookup::Missing
 }
 
+// Ported from osu!lazer 2026.1005.0-lazer: osu.Game/Skinning/LegacySkin.cs (GetSample, getLegacyLookupNames)
+/// Looks up a sample that is not a hit sample (a `SampleInfo` such as `Gameplay/failsound`)
+/// through the skins: the first file found wins. No bank or layering rules apply, and the
+/// beatmap's skin takes part (when beatmap hitsounds are on).
+pub fn lookup_effect(name: &str, skins: SampleSkins<'_>) -> Lookup {
+    for (source, skin, _) in skins.sources() {
+        if let Some(path) = skin.sample(name) {
+            return Lookup::Found { source, path };
+        }
+    }
+    Lookup::Missing
+}
+
+/// The decoded sample [`lookup_effect`] finds, if any. Call it off the hot paths.
+pub fn effect(name: &str, skins: SampleSkins<'_>, cache: &mut SampleCache) -> Option<Arc<Sample>> {
+    match lookup_effect(name, skins) {
+        Lookup::Found { path, .. } => cache.get(&path),
+        _ => None,
+    }
+}
+
 /// Decoded samples by file, converted to the mixer's format. One [`Arc`] per file, so the
 /// mixer's per-sample voice limit counts copies of the same file.
 ///

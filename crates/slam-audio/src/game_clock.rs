@@ -5,7 +5,7 @@
 //! (negative lead-in time, after the end) time runs on the same axis, and the track is
 //! started with [`TrackControl::play_at`] on the exact frame where time reaches 0.
 
-use crate::{MusicPlayer, MusicSnapshot, PlayError, PositionSnapshot};
+use crate::{MusicPlayer, MusicSnapshot, PlayError, PositionSnapshot, TrackAdjustment};
 
 /// A report further than this from the model resets it (xrun, device hiccup).
 const RESET_ERROR_NS: f64 = 8e6;
@@ -27,6 +27,9 @@ pub trait TrackControl {
     fn seek(&mut self, frame: u64) -> Result<(), PlayError>;
     /// Sets the track rate (see [`MusicPlayer::set_rate`]).
     fn set_rate(&mut self, rate: f64) -> Result<(), PlayError>;
+    /// Changes how the track sounds, all or nothing (see [`MusicPlayer::adjust`]). The
+    /// clock follows the heard position, so a frequency change moves time with it.
+    fn adjust(&mut self, adjustments: &[TrackAdjustment]) -> Result<(), PlayError>;
     /// Generation of the last load or seek, as in [`MusicSnapshot::generation`].
     fn generation(&self) -> u32;
 }
@@ -50,6 +53,10 @@ impl TrackControl for MusicPlayer {
 
     fn set_rate(&mut self, rate: f64) -> Result<(), PlayError> {
         MusicPlayer::set_rate(self, rate)
+    }
+
+    fn adjust(&mut self, adjustments: &[TrackAdjustment]) -> Result<(), PlayError> {
+        MusicPlayer::adjust(self, adjustments)
     }
 
     fn generation(&self) -> u32 {
@@ -512,7 +519,7 @@ impl GameClock {
             Mode::Free {
                 lead_in: Some(true),
                 ..
-            } if anchor.speed > 0.0 && heard => {
+            } if anchor.moves() && heard => {
                 let free = self.free_time(frame);
                 let track = music.track_frame_at(frame) * model.ms_per_frame();
                 // A late start: hold until the track catches up instead of going back.
@@ -618,6 +625,10 @@ mod tests {
             self.send(Command::Rate(rate))
         }
 
+        fn adjust(&mut self, _: &[TrackAdjustment]) -> Result<(), PlayError> {
+            Ok(())
+        }
+
         fn generation(&self) -> u32 {
             self.generation
         }
@@ -704,6 +715,7 @@ mod tests {
             device_frame,
             track_frame: track_frame as f64,
             speed,
+            accel: 0.0,
         };
         MusicSnapshot {
             anchor,
@@ -724,6 +736,7 @@ mod tests {
                 device_frame,
                 track_frame: track_frame as f64,
                 speed,
+                accel: 0.0,
             },
             previous: music.anchor,
             ..music
@@ -892,6 +905,21 @@ mod tests {
         let a = time(&mut clock, &mut device, 1_100, fast);
         let b = time(&mut clock, &mut device, 1_200, fast);
         assert!((b - a - 150.0).abs() < 0.01, "{a} {b}");
+    }
+
+    #[test]
+    fn a_moving_frequency_slows_time_along_the_anchor_curve() {
+        let music = playing_from(0, 0, 1.0);
+        let (mut device, mut clock, _) = settled(1_000, music);
+        // From 1 s on the frequency falls from 1 to 0 over 1 s (48000 frames).
+        let mut slowing = change(music, 48_000, 48_000, 1.0);
+        slowing.anchor.accel = -1.0 / 48_000.0;
+        let a = time(&mut clock, &mut device, 1_250, slowing);
+        let b = time(&mut clock, &mut device, 1_750, slowing);
+        // Track time at real t past 1 s: t − t²/2 (in seconds).
+        let curve = |t: f64| 1_000.0 + (t - t * t / 2.0) * 1_000.0;
+        assert!((a - curve(0.25)).abs() < 0.01, "{a}");
+        assert!((b - curve(0.75)).abs() < 0.01, "{b}");
     }
 
     #[test]

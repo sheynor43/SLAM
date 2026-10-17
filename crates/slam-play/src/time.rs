@@ -39,7 +39,8 @@ pub fn track_time_for(game_ms: f64, rate: f64, offsets: &Offsets) -> f64 {
 mod tests {
     use super::*;
     use slam_audio::{
-        GameClock, MusicAnchor, MusicSnapshot, PlayError, PositionSnapshot, TrackControl,
+        GameClock, MusicAnchor, MusicSnapshot, PlayError, PositionSnapshot, TrackAdjustment,
+        TrackControl,
     };
 
     struct NoTrack;
@@ -60,6 +61,10 @@ mod tests {
         fn set_rate(&mut self, _: f64) -> Result<(), PlayError> {
             Ok(())
         }
+
+        fn adjust(&mut self, _: &[TrackAdjustment]) -> Result<(), PlayError> {
+            Ok(())
+        }
         fn generation(&self) -> u32 {
             0
         }
@@ -71,6 +76,7 @@ mod tests {
             device_frame: 0,
             track_frame: 0.0,
             speed,
+            accel: 0.0,
         };
         let music = MusicSnapshot {
             anchor,

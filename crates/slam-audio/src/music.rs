@@ -17,6 +17,11 @@
 //! time-stretch. A rate change re-renders the track from the start of a block a little
 //! ahead of the callback, in a new epoch; the callback drops the replaced blocks and
 //! carries on into the new ones without a gap.
+//!
+//! The track frequency (ADR-0054: rate with the pitch, lazer's `Frequency`) is applied by
+//! the callback, reading the blocks at a fractional step, and can move linearly over a
+//! number of output frames. Low-pass and high-pass filters act on the track before it
+//! is mixed with anything else.
 
 use std::io::Cursor;
 use std::path::PathBuf;
@@ -36,6 +41,7 @@ use symphonia::core::io::{MediaSource, MediaSourceStream};
 use symphonia::core::meta::MetadataOptions;
 use symphonia::core::units::{TimeBase, Timestamp};
 
+use crate::filter::{FILTER_CHUNK, FilterKind, TrackFilters};
 use crate::hal::{AudioCallback, AudioError, CallbackInfo};
 use crate::mixer::PlayError;
 use crate::sample::{MAX_CHANNELS, SAMPLE_RATES, SampleError, new_resampler, remix_into};
@@ -59,6 +65,30 @@ pub const MIN_MUSIC_RATE: f64 = 0.05;
 /// Fastest track rate. Lazer sets no limit; its rate mods reach 2.
 pub const MAX_MUSIC_RATE: f64 = 4.0;
 
+/// Highest track frequency (ADR-0054); the lowest is 0, the track standing.
+pub const MAX_MUSIC_FREQUENCY: f64 = 4.0;
+
+/// A change to how the track sounds (ADR-0054), for [`MusicPlayer::adjust`]. Durations
+/// are in milliseconds of output (real time); 0 is at once.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub enum TrackAdjustment {
+    /// Track frames per frame on top of the rate, with the pitch (lazer's `Frequency`),
+    /// moving linearly to `frequency` in 0..=[`MAX_MUSIC_FREQUENCY`]. At 0 the track
+    /// stands still while playing.
+    Frequency { frequency: f64, duration_ms: f64 },
+    /// Multiplies the volume of [`MusicPlayer::set_volume`] (lazer's volume adjustments),
+    /// clamped to 0..=1.
+    Volume(f32),
+    /// Moves a filter's cutoff, Hz, along OutCubic (lazer's `CutoffTo`). A low-pass at
+    /// [`MAX_LOW_PASS_CUTOFF`](crate::MAX_LOW_PASS_CUTOFF) or above and a high-pass at
+    /// [`MIN_HIGH_PASS_CUTOFF`](crate::MIN_HIGH_PASS_CUTOFF) or below are off.
+    Filter {
+        kind: FilterKind,
+        cutoff_hz: f32,
+        duration_ms: f64,
+    },
+}
+
 /// A rate change replaces blocks from at least this long after the block the callback
 /// plays (and at least two blocks on): time for the decoder to seek and render the
 /// first new block, milliseconds.
@@ -73,6 +103,9 @@ const STRETCH_CHUNK: usize = 1_024;
 
 /// Track frames within which two positions count as the same (rounding of `f64`).
 const FRAME_EPSILON: f64 = 1e-3;
+
+/// Rates closer than this continue an anchor: the frequency's steps add up to rounding.
+const SPEED_EPSILON: f64 = 1e-9;
 
 /// Music stream parameters. Rate and channels must match the output stream.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -171,14 +204,33 @@ pub struct MusicAnchor {
     /// Track frame (at the stream rate) at `device_frame`; fractional when the track
     /// rate is not 1.
     pub track_frame: f64,
-    /// The track rate while playing; 0 while paused, waiting for decoded audio or
-    /// ended.
+    /// The track rate while playing at `device_frame`; 0 while paused, waiting for
+    /// decoded audio or ended.
     pub speed: f64,
+    /// Change of `speed` per stream frame while the frequency moves (ADR-0054), else 0.
+    pub accel: f64,
 }
 
 impl MusicAnchor {
-    fn at(&self, device_frame: f64) -> f64 {
-        self.track_frame + (device_frame - self.device_frame as f64) * self.speed
+    /// Track frame at stream frame `device_frame`, at or after this anchor's.
+    /// A slowing track stops where its rate reaches 0: past that (a stalled callback that
+    /// has not marked the move's end yet) it stands rather than goes back.
+    pub fn at(&self, device_frame: f64) -> f64 {
+        let mut d = device_frame - self.device_frame as f64;
+        if self.accel < 0.0 {
+            d = d.min(self.speed / -self.accel);
+        }
+        self.track_frame + d * self.speed + 0.5 * self.accel * d * d
+    }
+
+    /// The track rate at stream frame `device_frame`, never below 0.
+    pub fn speed_at(&self, device_frame: f64) -> f64 {
+        (self.speed + (device_frame - self.device_frame as f64) * self.accel).max(0.0)
+    }
+
+    /// Whether the track moves from this anchor on.
+    pub fn moves(&self) -> bool {
+        self.speed > 0.0 || self.accel > 0.0
     }
 }
 
@@ -224,7 +276,7 @@ impl MusicSnapshot {
 /// Seqlock-protected [`MusicSnapshot`]. Writer: the audio callback. Readers: any thread.
 #[derive(Debug, Default)]
 pub struct MusicPosition {
-    lock: SeqLock<7>,
+    lock: SeqLock<9>,
 }
 
 impl MusicPosition {
@@ -233,9 +285,11 @@ impl MusicPosition {
             s.anchor.device_frame,
             s.anchor.track_frame.to_bits(),
             s.anchor.speed.to_bits(),
+            s.anchor.accel.to_bits(),
             s.previous.device_frame,
             s.previous.track_frame.to_bits(),
             s.previous.speed.to_bits(),
+            s.previous.accel.to_bits(),
             u64::from(s.generation) | u64::from(s.ended) << 32,
         ]);
     }
@@ -248,14 +302,16 @@ impl MusicPosition {
                 device_frame: w[0],
                 track_frame: f64::from_bits(w[1]),
                 speed: f64::from_bits(w[2]),
+                accel: f64::from_bits(w[3]),
             },
             previous: MusicAnchor {
-                device_frame: w[3],
-                track_frame: f64::from_bits(w[4]),
-                speed: f64::from_bits(w[5]),
+                device_frame: w[4],
+                track_frame: f64::from_bits(w[5]),
+                speed: f64::from_bits(w[6]),
+                accel: f64::from_bits(w[7]),
             },
-            generation: w[6] as u32,
-            ended: w[6] >> 32 & 1 == 1,
+            generation: w[8] as u32,
+            ended: w[8] >> 32 & 1 == 1,
         })
     }
 }
@@ -335,6 +391,18 @@ enum AudioCommand {
     PlayAt(u64),
     Pause,
     Volume(f32),
+    /// Move the frequency linearly to `target` over `frames` output frames (at once
+    /// for 0).
+    Frequency {
+        target: f64,
+        frames: u64,
+    },
+    /// Move the cutoff of a filter to `cutoff` over `frames` output frames.
+    Filter {
+        kind: FilterKind,
+        cutoff: f32,
+        frames: u64,
+    },
     /// Drop audio of older generations and stand at `frame` until blocks of
     /// `generation` arrive.
     Flush {
@@ -461,6 +529,15 @@ fn parts(config: &MusicConfig) -> Result<(MusicSource, MusicPlayer, Decoder), Au
         free: free_tx,
         current: None,
         cursor: 0,
+        frac: 0.0,
+        carry: 0,
+        entered: None,
+        frequency: 1.0,
+        frequency_step: 0.0,
+        frequency_target: 1.0,
+        frequency_left: 0,
+        filters: TrackFilters::new(config.sample_rate),
+        scratch: vec![0.0; FILTER_CHUNK * channels].into_boxed_slice(),
         generation: 0,
         epoch: None,
         track_frame: 0.0,
@@ -494,12 +571,23 @@ fn parts(config: &MusicConfig) -> Result<(MusicSource, MusicPlayer, Decoder), Au
         loaded: 0,
         length: None,
         rate: 1.0,
+        volume: 1.0,
+        volume_adjustment: 1.0,
         stop_reported: false,
         sample_rate: config.sample_rate,
         position,
         stats,
     };
     Ok((source, player, decoder))
+}
+
+/// `gain` clamped to 0..=1; non-finite counts as 0.
+fn unit_gain(gain: f32) -> f32 {
+    if gain.is_finite() {
+        gain.clamp(0.0, 1.0)
+    } else {
+        0.0
+    }
 }
 
 /// `a` is an older generation than `b` (wrapping).
@@ -526,6 +614,24 @@ pub struct MusicSource {
     current: Option<Block>,
     /// Next frame of `current`.
     cursor: usize,
+    /// How far past `cursor` the track is, 0..1 frames: the frequency reads between
+    /// frames.
+    frac: f64,
+    /// Frames past the end of the block just left, to skip in the next one.
+    carry: usize,
+    /// `seq` of the last block entered in this generation: a block replacing it or an
+    /// earlier one comes late.
+    entered: Option<u32>,
+    /// Block frames per output frame (ADR-0054), at the next frame.
+    frequency: f64,
+    /// Change of `frequency` per output frame while `frequency_left > 0`.
+    frequency_step: f64,
+    frequency_target: f64,
+    /// Output frames left in the frequency's move.
+    frequency_left: u64,
+    filters: TrackFilters,
+    /// Where the track is rendered while a filter is on: [`FILTER_CHUNK`] frames.
+    scratch: Box<[f32]>,
     generation: u32,
     /// Epoch of the blocks being played; `None` until the generation's first block.
     epoch: Option<u32>,
@@ -564,13 +670,40 @@ impl MusicSource {
         self.apply_commands();
         if info.channels != self.channels || info.sample_rate != self.sample_rate {
             self.stats.format_mismatches.fetch_add(1, Ordering::Relaxed);
-            self.mark(info.frame, 0.0);
+            self.mark(info.frame, 0.0, 0.0);
             self.publish();
             return;
         }
         let ch = usize::from(self.channels);
         let frames = out.len() / ch;
+        if self.filters.is_active() {
+            // The filters act on the track alone: it is rendered and filtered apart, then
+            // added.
+            let mut scratch = std::mem::take(&mut self.scratch);
+            let mut done = 0;
+            while done < frames {
+                let n = (frames - done).min(FILTER_CHUNK);
+                let chunk = &mut scratch[..n * ch];
+                chunk.fill(0.0);
+                self.render(chunk, info.frame + done as u64);
+                self.filters.process(chunk, ch);
+                for (o, s) in out[done * ch..(done + n) * ch].iter_mut().zip(chunk.iter()) {
+                    *o += s;
+                }
+                done += n;
+            }
+            self.scratch = scratch;
+        } else {
+            self.render(&mut out[..frames * ch], info.frame);
+            self.filters.advance(frames as u64);
+        }
+        self.publish();
+    }
 
+    /// Adds the track to `out` (whole frames) starting at stream frame `first`.
+    fn render(&mut self, out: &mut [f32], first: u64) {
+        let ch = usize::from(self.channels);
+        let frames = out.len() / ch;
         if self.tail_pos < self.tail_frames {
             let n = frames.min(self.tail_frames - self.tail_pos);
             let len = self.tail_frames as f32;
@@ -593,23 +726,27 @@ impl MusicSource {
             if matches!(self.ready(), Ready::End) {
                 self.ended = true;
             }
-            self.mark(info.frame, 0.0);
+            self.mark(first, 0.0, 0.0);
         }
         let mut i = 0;
         if let Some(at) = self.start_at
             && !self.playing
-            && at < info.frame + frames as u64
+            && at < first + frames as u64
         {
             // Scheduled start inside this buffer, or at once if the frame has passed.
             self.start_at = None;
             self.playing = true;
-            i = at.saturating_sub(info.frame) as usize;
+            i = at.saturating_sub(first) as usize;
         }
         while self.playing && i < frames {
             match self.ready() {
                 Ready::Data => {
                     let rate = self.current.as_ref().map_or(1.0, |b| b.rate);
-                    self.mark(info.frame + i as u64, rate);
+                    if self.frequency != 1.0 || self.frequency_left > 0 || self.frac != 0.0 {
+                        i = self.play_frequency(out, first, i, rate);
+                        continue;
+                    }
+                    self.mark(first + i as u64, rate, 0.0);
                     let Some(block) = &self.current else { break };
                     let n = (frames - i).min(block.frames - self.cursor);
                     if self.env == 1.0 && self.gain == self.target_gain {
@@ -646,13 +783,13 @@ impl MusicSource {
                         self.stats.underruns.fetch_add(1, Ordering::Relaxed);
                     }
                     self.env = 0.0;
-                    self.mark(info.frame + i as u64, 0.0);
+                    self.mark(first + i as u64, 0.0, 0.0);
                     break;
                 }
                 Ready::End => {
                     self.ended = true;
                     self.env = 0.0;
-                    self.mark(info.frame + i as u64, 0.0);
+                    self.mark(first + i as u64, 0.0, 0.0);
                     break;
                 }
             }
@@ -661,9 +798,97 @@ impl MusicSource {
             // Ended exactly at the buffer end: report it now, not a buffer late.
             self.ended = true;
             self.env = 0.0;
-            self.mark(info.frame + frames as u64, 0.0);
+            self.mark(first + frames as u64, 0.0, 0.0);
         }
-        self.publish();
+    }
+
+    /// Plays `current` from output frame `i` at the frequency, reading between frames
+    /// (linear interpolation, ADR-0054). Stops at the block's end, at the end of the
+    /// frequency's move (a new anchor) or once a standing track has faded out. Returns
+    /// the next output frame.
+    fn play_frequency(&mut self, out: &mut [f32], first: u64, mut i: usize, rate: f64) -> usize {
+        let ch = usize::from(self.channels);
+        let frames = out.len() / ch;
+        let moving = self.frequency_left > 0;
+        let accel = if moving {
+            rate * self.frequency_step
+        } else {
+            0.0
+        };
+        self.mark(first + i as u64, rate * self.frequency, accel);
+        let Some(block) = self.current.take() else {
+            return frames;
+        };
+        // At frequency 0 the track stands: the held sound fades out.
+        let standing = self.frequency == 0.0 && !moving;
+        // The frame after the block's last: the next block's first if it follows on.
+        let mut after = [0.0f32; MAX_CHANNELS as usize];
+        let last = (block.frames - 1) * ch;
+        after[..ch].copy_from_slice(&block.data[last..last + ch]);
+        if let Ok(next) = self.filled.peek()
+            && next.generation == block.generation
+            && next.epoch == block.epoch
+            && next.seq == block.seq.wrapping_add(1) & SEQ_MASK
+            && next.frames > 0
+        {
+            after[..ch].copy_from_slice(&next.data[..ch]);
+        }
+        while i < frames && self.cursor < block.frames {
+            if standing {
+                if self.env == 0.0 {
+                    i = frames;
+                    break;
+                }
+                self.env = (self.env - self.step).max(0.0);
+            } else {
+                self.env = (self.env + self.step).min(1.0);
+            }
+            self.gain = if self.gain < self.target_gain {
+                (self.gain + self.step).min(self.target_gain)
+            } else {
+                (self.gain - self.step).max(self.target_gain)
+            };
+            let g = self.env * self.gain;
+            let t = self.frac as f32;
+            let src = self.cursor * ch;
+            let has_next = self.cursor + 1 < block.frames;
+            let dst = i * ch;
+            for c in 0..ch {
+                let x = block.data[src + c];
+                let y = if has_next {
+                    block.data[src + ch + c]
+                } else {
+                    after[c]
+                };
+                out[dst + c] += (x + (y - x) * t) * g;
+            }
+            i += 1;
+            // The step at the middle of the frame: after n frames the track has moved
+            // exactly `n·speed + n²·accel/2`, the anchor's curve.
+            let advance = if self.frequency_left > 0 {
+                // Rounding of a slow move to 0 must not step backwards.
+                let mid = (self.frequency + 0.5 * self.frequency_step).max(0.0);
+                self.frequency_left -= 1;
+                self.frequency = if self.frequency_left == 0 {
+                    self.frequency_target
+                } else {
+                    (self.frequency + self.frequency_step).max(0.0)
+                };
+                mid
+            } else {
+                self.frequency
+            };
+            self.frac += advance;
+            let whole = self.frac.floor();
+            self.frac -= whole;
+            self.cursor += whole as usize;
+            if moving && self.frequency_left == 0 {
+                break;
+            }
+        }
+        self.track_frame = block.start + (self.cursor as f64 + self.frac) * rate;
+        self.current = Some(block);
+        i
     }
 
     /// Stream rate and channels this source mixes.
@@ -673,17 +898,20 @@ impl MusicSource {
 
     /// Starts a new anchor at stream frame `device_frame` unless the current one already
     /// describes the track there.
-    fn mark(&mut self, device_frame: u64, speed: f64) {
+    fn mark(&mut self, device_frame: u64, speed: f64, accel: f64) {
         let a = self.anchor;
-        let continues = a.speed == speed
+        let at = device_frame as f64;
+        let continues = a.accel == accel
             && device_frame >= a.device_frame
-            && (a.at(device_frame as f64) - self.track_frame).abs() <= FRAME_EPSILON;
+            && (a.speed_at(at) - speed).abs() <= SPEED_EPSILON
+            && (a.at(at) - self.track_frame).abs() <= FRAME_EPSILON;
         if !continues {
             self.previous = a;
             self.anchor = MusicAnchor {
                 device_frame,
                 track_frame: self.track_frame,
                 speed,
+                accel,
             };
         }
     }
@@ -722,6 +950,21 @@ impl MusicSource {
                     }
                 }
                 AudioCommand::Volume(gain) => self.target_gain = gain,
+                AudioCommand::Frequency { target, frames } => {
+                    if frames == 0 {
+                        self.frequency = target;
+                        self.frequency_left = 0;
+                    } else {
+                        self.frequency_step = (target - self.frequency) / frames as f64;
+                        self.frequency_target = target;
+                        self.frequency_left = frames;
+                    }
+                }
+                AudioCommand::Filter {
+                    kind,
+                    cutoff,
+                    frames,
+                } => self.filters.set(kind, cutoff, frames),
                 AudioCommand::Flush { generation, frame } => {
                     if self.playing {
                         self.cut_tail();
@@ -732,6 +975,9 @@ impl MusicSource {
                     self.generation = generation;
                     self.epoch = None;
                     self.track_frame = frame as f64;
+                    self.frac = 0.0;
+                    self.carry = 0;
+                    self.entered = None;
                     self.ended = false;
                     self.primed = false;
                 }
@@ -752,7 +998,7 @@ impl MusicSource {
         if let Some(block) = &self.current
             && block.generation == self.generation
         {
-            let n = capacity.min(block.frames - self.cursor);
+            let n = capacity.min(block.frames.saturating_sub(self.cursor));
             self.tail[..n * ch]
                 .copy_from_slice(&block.data[self.cursor * ch..(self.cursor + n) * ch]);
             copied = n;
@@ -782,6 +1028,8 @@ impl MusicSource {
                         // Kept: the track stays ended until the next flush.
                         return Ready::End;
                     }
+                    // Reading between frames can step past the block's end.
+                    self.carry = self.cursor - block.frames;
                 }
                 if let Some(block) = self.current.take() {
                     self.recycle(block);
@@ -833,11 +1081,56 @@ impl MusicSource {
     /// Starts playing `block` where the track is: false if the track has already
     /// passed all of it.
     fn enter(&mut self, block: &Block) -> bool {
+        let carry = std::mem::take(&mut self.carry);
         self.cursor = 0;
+        if self.epoch == Some(block.epoch) {
+            // The next block of the same rendering: carry on between its frames. After a
+            // late splice's skip (rounded up to a frame) the track moves on by under one.
+            let ahead = block.start + (carry as f64 + self.frac) * block.rate - self.track_frame;
+            debug_assert!(
+                ahead >= -FRAME_EPSILON && ahead < block.rate + FRAME_EPSILON,
+                "decoder and callback disagree on the track frame"
+            );
+            if carry >= block.frames && !block.end {
+                self.carry = carry - block.frames;
+                return false;
+            }
+            self.cursor = carry.min(block.frames);
+            self.track_frame = block.start + (self.cursor as f64 + self.frac) * block.rate;
+            self.publish_cursor(block);
+            return true;
+        }
         // A rate change is rendered from a whole frame at or after the replaced block's
-        // start, so the track continues forward by under a frame. A late one starts
-        // behind the track: skip ahead to it.
+        // start, so the track continues forward by under a frame, or carries on between
+        // frames where the frequency had stepped past the block's start. A late one (the
+        // callback had started the replaced block) starts behind the track: skip ahead to
+        // it.
         let behind = self.track_frame - block.start;
+        let late = self
+            .entered
+            .is_some_and(|seq| seq.wrapping_sub(block.seq) & SEQ_MASK < SEQ_MASK / 2);
+        if self.epoch.is_some() && !late && behind > FRAME_EPSILON && block.frames > 0 {
+            let at = behind / block.rate;
+            let whole = at.floor();
+            if whole >= block.frames as f64 && !block.end {
+                self.carry = whole as usize - block.frames;
+                self.frac = at - whole;
+                self.epoch = Some(block.epoch);
+                return false;
+            }
+            self.cursor = (whole as usize).min(block.frames);
+            self.frac = if self.cursor < block.frames {
+                at - whole
+            } else {
+                0.0
+            };
+            self.epoch = Some(block.epoch);
+            self.track_frame = block.start + (self.cursor as f64 + self.frac) * block.rate;
+            self.publish_cursor(block);
+            return true;
+        }
+        // A new rendering starts on a whole frame.
+        self.frac = 0.0;
         if self.epoch.is_some() && behind > FRAME_EPSILON && block.frames > 0 {
             let skip = (behind / block.rate).ceil();
             if self.epoch != Some(block.epoch) {
@@ -853,6 +1146,8 @@ impl MusicSource {
                 self.publish_cursor(block);
                 return true;
             } else {
+                // The next blocks of this epoch carry on with the skip.
+                self.carry = skip as usize - block.frames;
                 return false;
             }
         } else {
@@ -869,7 +1164,8 @@ impl MusicSource {
         true
     }
 
-    fn publish_cursor(&self, block: &Block) {
+    fn publish_cursor(&mut self, block: &Block) {
+        self.entered = Some(block.seq);
         Mark::new(block.epoch, self.generation, block.seq).store(&self.splices.cursor);
     }
 
@@ -917,6 +1213,10 @@ pub struct MusicPlayer {
     loaded: u32,
     length: Option<u64>,
     rate: f64,
+    /// The volume of [`set_volume`](Self::set_volume) and its multiplier from
+    /// [`adjust`](Self::adjust).
+    volume: f32,
+    volume_adjustment: f32,
     /// The decoder thread's death was reported.
     stop_reported: bool,
     sample_rate: u32,
@@ -1022,12 +1322,63 @@ impl MusicPlayer {
 
     /// Sets the track volume, linear, clamped to 0..=1 (non-finite counts as 0).
     pub fn set_volume(&mut self, gain: f32) -> Result<(), PlayError> {
-        let gain = if gain.is_finite() {
-            gain.clamp(0.0, 1.0)
+        let gain = unit_gain(gain);
+        self.send(&[AudioCommand::Volume(gain * self.volume_adjustment)], None)?;
+        self.volume = gain;
+        Ok(())
+    }
+
+    /// Queues `adjustments` together, or none of them, for the next audio buffer; at
+    /// most 8. They stay across loads and seeks.
+    pub fn adjust(&mut self, adjustments: &[TrackAdjustment]) -> Result<(), PlayError> {
+        const MAX: usize = 8;
+        if adjustments.len() > MAX {
+            return Err(PlayError::QueueFull);
+        }
+        let mut commands = [AudioCommand::Play; MAX];
+        let mut volume_adjustment = self.volume_adjustment;
+        for (command, adjustment) in commands.iter_mut().zip(adjustments) {
+            *command = match *adjustment {
+                TrackAdjustment::Frequency {
+                    frequency,
+                    duration_ms,
+                } => {
+                    if !(0.0..=MAX_MUSIC_FREQUENCY).contains(&frequency) {
+                        return Err(PlayError::InvalidRate);
+                    }
+                    AudioCommand::Frequency {
+                        target: frequency,
+                        frames: self.frames_in(duration_ms),
+                    }
+                }
+                TrackAdjustment::Volume(gain) => {
+                    volume_adjustment = unit_gain(gain);
+                    AudioCommand::Volume(self.volume * volume_adjustment)
+                }
+                TrackAdjustment::Filter {
+                    kind,
+                    cutoff_hz,
+                    duration_ms,
+                } => AudioCommand::Filter {
+                    kind,
+                    cutoff: if cutoff_hz.is_nan() { 0.0 } else { cutoff_hz },
+                    frames: self.frames_in(duration_ms),
+                },
+            };
+        }
+        self.send(&commands[..adjustments.len()], None)?;
+        self.volume_adjustment = volume_adjustment;
+        Ok(())
+    }
+
+    /// Output frames in `ms` milliseconds; 0 for nothing or nonsense.
+    fn frames_in(&self, ms: f64) -> u64 {
+        let frames = (ms * f64::from(self.sample_rate) / 1_000.0).round();
+        if frames.is_finite() && frames > 0.0 {
+            frames as u64
         } else {
-            0.0
-        };
-        self.send(&[AudioCommand::Volume(gain)], None)
+            0
+        }
     }
 
     /// Next decoder event, oldest first. Events of earlier generations are still
@@ -1088,10 +1439,12 @@ impl MusicPlayer {
         if self.audio.slots() < audio.len() || (decoder.is_some() && self.decoder.slots() == 0) {
             return Err(PlayError::QueueFull);
         }
-        for &command in audio {
-            if self.audio.push(command).is_err() {
-                unreachable!("slots were checked above");
+        // One commit: the callback sees all of them or none, never a part.
+        match self.audio.write_chunk_uninit(audio.len()) {
+            Ok(chunk) => {
+                chunk.fill_from_iter(audio.iter().copied());
             }
+            Err(_) => unreachable!("slots were checked above"),
         }
         if let Some(command) = decoder {
             if self.decoder.push(command).is_err() {
@@ -3066,5 +3419,275 @@ mod tests {
         let speeds = play_continuously(&mut rig, 30, &mut last);
         assert_eq!(speeds.last(), Some(&1.5));
         assert_eq!(rig.player.stats().underruns.load(Ordering::Relaxed), 0);
+    }
+
+    /// A playing ramp track past its fade-in, at stream frame 1024 and track frame 1024.
+    fn playing_ramp(block_frames: usize) -> Rig {
+        let mut rig = Rig::new(block_frames, 8);
+        rig.player.load(ramp_track(400_000)).unwrap();
+        rig.pump();
+        rig.loaded();
+        rig.player.play().unwrap();
+        while rig.frame < 1_024 {
+            rig.run(block_frames.min(256).min(1_024 - rig.frame as usize));
+            rig.pump();
+        }
+        assert_eq!(rig.snapshot().track_frame_at(1_024.0), 1_024.0);
+        rig
+    }
+
+    fn frequency(frequency: f64, duration_ms: f64) -> TrackAdjustment {
+        TrackAdjustment::Frequency {
+            frequency,
+            duration_ms,
+        }
+    }
+
+    /// The ramp track's value at fractional track frame `p`, read between frames.
+    fn ramp_at(p: f64) -> f32 {
+        (p / f64::from(RAMP_SCALE)) as f32
+    }
+
+    #[test]
+    fn frequency_reads_between_frames_from_the_next_buffer() {
+        let mut rig = playing_ramp(256);
+        rig.player.adjust(&[frequency(0.5, 0.0)]).unwrap();
+        let mut heard = 1_024.0;
+        for _ in 0..8 {
+            rig.pump();
+            let first = rig.frame;
+            let out = rig.run(300);
+            for (k, &v) in out.iter().enumerate() {
+                let p = heard + k as f64 * 0.5;
+                assert!((v - ramp_at(p)).abs() < 1e-6, "frame {k}: {v} vs {p}");
+                assert!(
+                    (rig.snapshot().track_frame_at((first + k as u64) as f64) - p).abs() < 1e-9
+                );
+            }
+            heard += 150.0;
+        }
+        // One anchor from the change on, across blocks.
+        let s = rig.snapshot();
+        assert_eq!(
+            (s.anchor.device_frame, s.anchor.speed, s.anchor.accel),
+            (1_024, 0.5, 0.0)
+        );
+        assert_eq!(rig.player.stats().underruns.load(Ordering::Relaxed), 0);
+    }
+
+    #[test]
+    fn frequency_moves_linearly_on_one_anchor_and_stands_at_zero() {
+        let mut rig = playing_ramp(256);
+        // 4800 frames: the track moves k − k²/9600 frames in k frames, 2400 in all.
+        rig.player.adjust(&[frequency(0.0, 100.0)]).unwrap();
+        let curve = |k: f64| 1_024.0 + k - k * k / 9_600.0;
+        let mut k = 0;
+        while k < 4_800 {
+            rig.pump();
+            let first = rig.frame;
+            let out = rig.run(128);
+            let s = rig.snapshot();
+            for (i, &v) in out.iter().enumerate().take(4_800 - k.min(4_800)) {
+                let p = curve((k + i) as f64);
+                assert!((v - ramp_at(p)).abs() < 1e-6, "frame {}: {v} vs {p}", k + i);
+                let at = s.track_frame_at((first + i as u64) as f64);
+                assert!((at - p).abs() < 1e-6, "position {}: {at} vs {p}", k + i);
+            }
+            if k + 128 < 4_800 {
+                assert_eq!(s.anchor.device_frame, 1_024, "one anchor through the move");
+            }
+            k += 128;
+        }
+        // Standing: the held sound fades out, the position stays.
+        let out = rig.run(512);
+        let s = rig.snapshot();
+        assert_eq!((s.anchor.speed, s.anchor.accel), (0.0, 0.0));
+        assert!((s.anchor.track_frame - 3_424.0).abs() < 1e-6);
+        assert!(out.windows(2).all(|w| w[1] <= w[0]));
+        assert!(out[FADE..].iter().all(|&v| v == 0.0));
+        assert!((rig.snapshot().track_frame_at(rig.frame as f64) - 3_424.0).abs() < 1e-6);
+        // Back to 1: fades in from where it stood.
+        rig.player.adjust(&[frequency(1.0, 0.0)]).unwrap();
+        rig.pump();
+        let first = rig.frame as f64;
+        let out = rig.run(512);
+        let start = rig.snapshot().track_frame_at(first);
+        assert!((start - 3_424.0).abs() < 1e-6);
+        for (i, &v) in out.iter().enumerate().skip(FADE) {
+            assert!((v - ramp_at(start + i as f64)).abs() < 1e-6);
+        }
+        assert_eq!(rig.player.stats().underruns.load(Ordering::Relaxed), 0);
+    }
+
+    #[test]
+    fn frequency_steps_over_block_ends() {
+        // Blocks of 7 frames and a frequency over 3: whole blocks are stepped over.
+        let mut rig = playing_ramp(7);
+        rig.player.adjust(&[frequency(3.5, 0.0)]).unwrap();
+        let mut heard = 1_024.0;
+        for _ in 0..20 {
+            rig.pump();
+            let out = rig.run(4);
+            for (k, &v) in out.iter().enumerate() {
+                let p = heard + k as f64 * 3.5;
+                assert!((v - ramp_at(p)).abs() < 1e-6, "{v} vs {p}");
+            }
+            heard += 14.0;
+        }
+        assert_eq!(rig.player.stats().underruns.load(Ordering::Relaxed), 0);
+    }
+
+    #[test]
+    fn rate_changes_during_a_frequency_move_stay_continuous() {
+        let mut rig = playing_ramp(1_024);
+        let mut last = rig.snapshot().track_frame_at(rig.frame as f64);
+        rig.player.adjust(&[frequency(0.25, 100.0)]).unwrap();
+        play_continuously(&mut rig, 20, &mut last);
+        rig.player.set_rate(1.5).unwrap();
+        play_continuously(&mut rig, 40, &mut last);
+        let s = rig.snapshot();
+        assert_eq!((s.anchor.speed, s.anchor.accel), (1.5 * 0.25, 0.0));
+        let stats = rig.player.stats();
+        assert_eq!(stats.underruns.load(Ordering::Relaxed), 0);
+        assert_eq!(stats.late_splices.load(Ordering::Relaxed), 0);
+        assert_eq!(stats.leaked_blocks.load(Ordering::Relaxed), 0);
+    }
+
+    #[test]
+    fn frequency_stays_across_seeks() {
+        let mut rig = playing_ramp(256);
+        rig.player.adjust(&[frequency(0.5, 0.0)]).unwrap();
+        rig.run(100);
+        rig.player.seek(10_000).unwrap();
+        rig.run(0);
+        rig.pump();
+        let first = rig.frame as f64;
+        rig.run(512);
+        let s = rig.snapshot();
+        assert_eq!(s.anchor.speed, 0.5);
+        assert_eq!(s.track_frame_at(first), 10_000.0);
+    }
+
+    #[test]
+    fn volume_adjustment_multiplies_the_volume() {
+        let mut rig = playing_ramp(256);
+        rig.player.set_volume(0.8).unwrap();
+        rig.player.adjust(&[TrackAdjustment::Volume(0.5)]).unwrap();
+        rig.pump();
+        let out = rig.run(1_024);
+        assert!((out[1_000] - ramp(1_024 + 1_000) * 0.4).abs() < 1e-7);
+        // The setting changes under the adjustment.
+        rig.player.set_volume(1.0).unwrap();
+        rig.pump();
+        let out = rig.run(1_024);
+        assert!((out[1_000] - ramp(2_048 + 1_000) * 0.5).abs() < 1e-7);
+        rig.player.adjust(&[TrackAdjustment::Volume(1.0)]).unwrap();
+        rig.pump();
+        let out = rig.run(1_024);
+        assert_eq!(out[1_000], ramp(3_072 + 1_000));
+    }
+
+    #[test]
+    fn adjustments_queue_all_or_nothing() {
+        let mut rig = playing_ramp(256);
+        let bad = [TrackAdjustment::Volume(0.5), frequency(-1.0, 0.0)];
+        assert_eq!(rig.player.adjust(&bad), Err(PlayError::InvalidRate));
+        assert_eq!(
+            rig.player
+                .adjust(&[frequency(MAX_MUSIC_FREQUENCY + 1.0, 0.0)]),
+            Err(PlayError::InvalidRate)
+        );
+        // Nine never fit; eight do not fit a queue of eight with a command waiting.
+        assert_eq!(
+            rig.player.adjust(&[TrackAdjustment::Volume(0.5); 9]),
+            Err(PlayError::QueueFull)
+        );
+        rig.player.pause().unwrap();
+        assert_eq!(
+            rig.player.adjust(&[TrackAdjustment::Volume(0.5); 8]),
+            Err(PlayError::QueueFull)
+        );
+        rig.player.play().unwrap();
+        rig.pump();
+        let out = rig.run(1_024);
+        // Nothing of the refused adjustments arrived.
+        assert_eq!(out[1_000], ramp(1_024 + 1_000));
+        assert_eq!(rig.snapshot().anchor.speed, 1.0);
+    }
+
+    #[test]
+    fn high_pass_filters_the_track() {
+        // A constant track: the high-pass takes it away.
+        let mut rig = Rig::new(256, 8);
+        rig.player.load(wav(RATE, &[0.5; 100_000])).unwrap();
+        rig.pump();
+        rig.loaded();
+        rig.player.play().unwrap();
+        rig.run(1_024);
+        rig.player
+            .adjust(&[TrackAdjustment::Filter {
+                kind: FilterKind::HighPass,
+                cutoff_hz: 300.0,
+                duration_ms: 0.0,
+            }])
+            .unwrap();
+        for _ in 0..8 {
+            rig.pump();
+            rig.run(1_000);
+        }
+        rig.pump();
+        let out = rig.run(1_000);
+        assert!(out.iter().all(|v| v.abs() < 1e-4), "{:?}", &out[..4]);
+        // Off again: the track as it is.
+        rig.player
+            .adjust(&[TrackAdjustment::Filter {
+                kind: FilterKind::HighPass,
+                cutoff_hz: 0.0,
+                duration_ms: 0.0,
+            }])
+            .unwrap();
+        rig.pump();
+        assert!(rig.run(1_000).iter().all(|&v| v == 0.5));
+    }
+
+    #[test]
+    fn rate_changes_between_frames_join_on_time() {
+        // A frequency that leaves the track between frames: the splice lands on time.
+        for f in [0.3, 1.7, 3.7] {
+            let mut rig = playing_ramp(1_024);
+            let mut last = rig.snapshot().track_frame_at(rig.frame as f64);
+            rig.player.adjust(&[frequency(f, 0.0)]).unwrap();
+            play_continuously(&mut rig, 20, &mut last);
+            rig.player.set_rate(1.5).unwrap();
+            play_continuously(&mut rig, 40, &mut last);
+            assert_eq!(rig.snapshot().anchor.speed, 1.5 * f);
+            let stats = rig.player.stats();
+            assert_eq!(
+                stats.late_splices.load(Ordering::Relaxed),
+                0,
+                "frequency {f}"
+            );
+            assert_eq!(stats.underruns.load(Ordering::Relaxed), 0);
+        }
+    }
+
+    #[test]
+    fn a_slowing_anchor_stands_past_its_stop() {
+        let anchor = MusicAnchor {
+            device_frame: 1_000,
+            track_frame: 500.0,
+            speed: 1.0,
+            accel: -1.0 / 100.0,
+        };
+        // Stops after 100 frames, 50 frames on.
+        assert_eq!(anchor.at(1_100.0), 550.0);
+        assert_eq!(anchor.at(1_300.0), 550.0);
+        assert_eq!(anchor.speed_at(1_300.0), 0.0);
+        let mut last = 0.0;
+        for k in 0..400 {
+            let at = anchor.at(1_000.0 + k as f64);
+            assert!(at >= last);
+            last = at;
+        }
     }
 }

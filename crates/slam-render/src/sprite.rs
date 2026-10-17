@@ -138,6 +138,19 @@ impl SpriteBatch {
         &self.batches
     }
 
+    /// Moves the sprites from the `first`-th on by `map` and multiplies their colours by
+    /// `tint` ([`tint_srgb`]): a layer placed, tinted and faded after it was recorded.
+    pub fn transform_from(&mut self, first: usize, map: &Affine, tint: [f32; 4]) {
+        let identity = map.is_identity();
+        let tint = Tint::new(tint);
+        for vertex in self.vertices.iter_mut().skip(first * 4) {
+            if !identity {
+                vertex.position = map.apply(vertex.position);
+            }
+            vertex.colour = tint.apply(vertex.colour);
+        }
+    }
+
     /// Records `sprite` on top of those recorded before.
     pub fn push(&mut self, sprite: &Sprite) {
         // A u32 quad index overflows only past 2^32 sprites (128 GiB of vertices).
@@ -176,6 +189,136 @@ impl SpriteBatch {
     }
 }
 
+/// A 2D affine map of target pixels: `p ↦ (a·x + c·y + tx, b·x + d·y + ty)`. Places a
+/// layer drawn in place somewhere else: scaled and rotated about a point, moved.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct Affine {
+    pub a: f32,
+    pub b: f32,
+    pub c: f32,
+    pub d: f32,
+    pub tx: f32,
+    pub ty: f32,
+}
+
+impl Default for Affine {
+    fn default() -> Self {
+        Self::IDENTITY
+    }
+}
+
+impl Affine {
+    pub const IDENTITY: Self = Self {
+        a: 1.0,
+        b: 0.0,
+        c: 0.0,
+        d: 1.0,
+        tx: 0.0,
+        ty: 0.0,
+    };
+
+    /// Scales by `scale` and rotates by `rotation` (radians, clockwise on screen) about
+    /// `pivot`, then moves by `offset`.
+    pub fn about(pivot: [f32; 2], scale: f32, rotation: f32, offset: [f32; 2]) -> Self {
+        let (sin, cos) = rotation.sin_cos();
+        let (a, b, c, d) = (cos * scale, sin * scale, -sin * scale, cos * scale);
+        let [px, py] = pivot;
+        Self {
+            a,
+            b,
+            c,
+            d,
+            tx: px - (a * px + c * py) + offset[0],
+            ty: py - (b * px + d * py) + offset[1],
+        }
+    }
+
+    pub fn is_identity(&self) -> bool {
+        *self == Self::IDENTITY
+    }
+
+    pub fn apply(&self, [x, y]: [f32; 2]) -> [f32; 2] {
+        [
+            self.a * x + self.c * y + self.tx,
+            self.b * x + self.d * y + self.ty,
+        ]
+    }
+
+    /// `self` after `inner`: `p ↦ self(inner(p))`.
+    pub fn then_after(&self, inner: &Affine) -> Self {
+        Self {
+            a: self.a * inner.a + self.c * inner.b,
+            b: self.b * inner.a + self.d * inner.b,
+            c: self.a * inner.c + self.c * inner.d,
+            d: self.b * inner.c + self.d * inner.d,
+            tx: self.a * inner.tx + self.c * inner.ty + self.tx,
+            ty: self.b * inner.tx + self.d * inner.ty + self.ty,
+        }
+    }
+}
+
+// Ported from osu-framework 2026.921.1: osu.Framework/Graphics/Colour/SRGBColour.cs (operator *)
+/// `colour` tinted by `tint`, both sRGB-encoded with straight alpha: the colours multiply
+/// in linear light, as a parent's colour multiplies a child's; the alphas multiply as
+/// they are.
+pub fn tint_srgb(colour: [f32; 4], tint: [f32; 4]) -> [f32; 4] {
+    Tint::new(tint).apply(colour)
+}
+
+/// A tint with its colour in linear light, for many colours.
+struct Tint {
+    srgb: [f32; 4],
+    linear: [f32; 3],
+    white: bool,
+}
+
+impl Tint {
+    fn new(srgb: [f32; 4]) -> Self {
+        Self {
+            srgb,
+            linear: [0, 1, 2].map(|i| srgb_to_linear(srgb[i])),
+            white: srgb[..3] == [1.0; 3],
+        }
+    }
+
+    // Ported from osu-framework 2026.921.1: osu.Framework/Graphics/Colour/SRGBColour.cs (operator *)
+    /// A white side gives the other colour as it is.
+    fn apply(&self, colour: [f32; 4]) -> [f32; 4] {
+        let alpha = colour[3] * self.srgb[3];
+        if self.white {
+            [colour[0], colour[1], colour[2], alpha]
+        } else if colour[..3] == [1.0; 3] {
+            [self.srgb[0], self.srgb[1], self.srgb[2], alpha]
+        } else {
+            let [r, g, b] =
+                [0, 1, 2].map(|i| linear_to_srgb(srgb_to_linear(colour[i]) * self.linear[i]));
+            [r, g, b, alpha]
+        }
+    }
+}
+
+// Ported from osu-framework 2026.921.1: osu.Framework/Extensions/Color4Extensions/Color4Extensions.cs (ToLinear)
+fn srgb_to_linear(c: f32) -> f32 {
+    if c == 1.0 {
+        1.0
+    } else if c <= 0.04045 {
+        c / 12.92
+    } else {
+        ((c + 0.055) / 1.055).powf(2.4)
+    }
+}
+
+// Ported from osu-framework 2026.921.1: osu.Framework/Extensions/Color4Extensions/Color4Extensions.cs (ToSRGB)
+fn linear_to_srgb(c: f32) -> f32 {
+    if c == 1.0 {
+        1.0
+    } else if c < 0.003_130_8 {
+        12.92 * c
+    } else {
+        1.055 * c.powf(1.0 / 2.4) - 0.055
+    }
+}
+
 /// Maps target pixels (origin top left, y down) to clip space: a column-major 4x4
 /// matrix, the `Globals` uniform block of `shaders/sprite.wgsl`.
 #[repr(transparent)]
@@ -205,6 +348,18 @@ impl Projection {
             m[row] = x * scale;
             m[4 + row] = y * scale;
             m[12 + row] = x * ox + y * oy + self.0[12 + row];
+        }
+        Self(m)
+    }
+
+    /// The projection of points `p` drawn at `map(p)` by this one.
+    pub fn transformed(&self, map: &Affine) -> Self {
+        let mut m = self.0;
+        for row in 0..4 {
+            let (x, y) = (self.0[row], self.0[4 + row]);
+            m[row] = x * map.a + y * map.b;
+            m[4 + row] = x * map.c + y * map.d;
+            m[12 + row] = x * map.tx + y * map.ty + self.0[12 + row];
         }
         Self(m)
     }
@@ -596,6 +751,74 @@ mod tests {
                 "{actual:?} != {expected:?}"
             );
         }
+    }
+
+    #[test]
+    fn affine_about_keeps_its_pivot_and_turns_clockwise() {
+        let map = Affine::about([10.0, 20.0], 2.0, std::f32::consts::FRAC_PI_2, [0.0, 0.0]);
+        assert_close(&[map.apply([10.0, 20.0])], &[[10.0, 20.0]]);
+        // Right of the pivot goes below it (y down), twice as far.
+        assert_close(&[map.apply([11.0, 20.0])], &[[10.0, 22.0]]);
+        let moved = Affine::about([10.0, 20.0], 1.0, 0.0, [3.0, -4.0]);
+        assert_close(&[moved.apply([0.0, 0.0])], &[[3.0, -4.0]]);
+        assert!(Affine::default().is_identity());
+    }
+
+    #[test]
+    fn then_after_applies_the_inner_map_first() {
+        let inner = Affine::about([0.0, 0.0], 1.0, 0.0, [5.0, 0.0]);
+        let outer = Affine::about([0.0, 0.0], 2.0, 0.0, [0.0, 0.0]);
+        let both = outer.then_after(&inner);
+        // (1, 1) → (6, 1) → (12, 2).
+        assert_close(&[both.apply([1.0, 1.0])], &[[12.0, 2.0]]);
+        let p = [3.0, -7.0];
+        let a = Affine::about([1.0, 2.0], 0.7, 0.3, [4.0, 5.0]);
+        let b = Affine::about([-3.0, 8.0], 1.3, -1.1, [-2.0, 1.0]);
+        assert_close(&[a.then_after(&b).apply(p)], &[a.apply(b.apply(p))]);
+    }
+
+    #[test]
+    fn transformed_projection_projects_the_mapped_point() {
+        let projection = Projection::pixels(Extent::new(800, 600));
+        let map = Affine::about([400.0, 300.0], 0.85, 0.017, [0.0, 10.0]);
+        let scaled = projection.transformed(&map).scaled(1.5, [100.0, 50.0]);
+        for p in [[0.0, 0.0], [12.0, -30.0], [200.0, 150.0]] {
+            let placed = [100.0 + p[0] * 1.5, 50.0 + p[1] * 1.5];
+            assert_close(&[scaled.apply(p)], &[projection.apply(map.apply(placed))]);
+        }
+        assert_eq!(projection.transformed(&Affine::IDENTITY), projection);
+    }
+
+    #[test]
+    fn transform_from_moves_and_tints_only_the_later_sprites() {
+        let mut batch = SpriteBatch::new();
+        batch.push(&sprite(1, Blend::Alpha));
+        batch.push(&Sprite {
+            colour: Color {
+                r: 0.2,
+                g: 1.0,
+                b: 0.0,
+                a: 0.5,
+            },
+            ..sprite(1, Blend::Alpha)
+        });
+        let map = Affine::about([0.0, 0.0], 1.0, 0.0, [10.0, 0.0]);
+        let grey = 128.0 / 255.0;
+        batch.transform_from(1, &map, [grey, grey, grey, 0.5]);
+        assert_eq!(batch.vertices()[0].position, [0.0, 0.0]);
+        assert_eq!(batch.vertices()[0].colour, [1.0; 4]);
+        assert_eq!(batch.vertices()[4].position, [10.0, 0.0]);
+        let [r, g, b, a] = batch.vertices()[4].colour;
+        // In linear light: white times the grey is the grey, 0.2 goes darker than 0.2·grey.
+        assert!((g - grey).abs() < 1e-5);
+        assert!((r - 0.080).abs() < 0.002, "{r}");
+        assert_eq!((b, a), (0.0, 0.25));
+    }
+
+    #[test]
+    fn tint_srgb_with_white_changes_nothing() {
+        let c = [0.3, 0.6, 0.9, 0.7];
+        assert_eq!(tint_srgb(c, [1.0; 4]), c);
     }
 
     #[test]

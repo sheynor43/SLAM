@@ -828,6 +828,8 @@ struct PlayHost {
     /// Apart from `game`: a mixer that stops taking commands (lost device) keeps this
     /// session to the end, not the next play from starting.
     retiring: Option<Retiring>,
+    /// The track still has to be given its plain sound after a play.
+    track_reset: bool,
     next_request: u64,
     /// The window in points, as gameplay input takes it.
     points: [f32; 2],
@@ -913,6 +915,17 @@ impl PlayHost {
     /// when a play is asked for, starts or ends; logs and frees on the loader thread.
     fn advance(&mut self, now_ns: u64, state: &mut ShellState) {
         self.end_game(now_ns, state);
+        // Tried until the queue takes it, while no play owns the track.
+        if self.track_reset
+            && self.game.is_none()
+            && self
+                .audio
+                .player
+                .adjust(&slam_play::fail::neutral_track())
+                .is_ok()
+        {
+            self.track_reset = false;
+        }
         if state.take_track_stop() {
             // A failed command leaves the track playing under the song select.
             let _ = self.audio.player.pause();
@@ -1046,6 +1059,9 @@ impl PlayHost {
             if results.is_none() {
                 let _ = self.audio.player.pause();
             }
+            // A failed play leaves the track stopped and filtered; the next play resets it
+            // too, but the song select may play it before.
+            self.track_reset = true;
             if let Some(map) = game.map.take() {
                 self.beatmap_offsets
                     .insert(map, game.session.beatmap_offset());
@@ -1717,6 +1733,7 @@ pub fn run(settings: Settings) -> Result<(), String> {
         pending: Pending::Idle,
         game: None,
         retiring: None,
+        track_reset: false,
         next_request: 0,
         points: [
             pixels_w as f32 * points_per_pixel,
