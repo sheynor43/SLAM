@@ -3,9 +3,11 @@
 
 use slam_audio::Backend;
 use slam_engine::RATE_PRESETS;
+use slam_osu::replay::Actions;
 use slam_ui::i18n::{FluentArgs, Localizer};
 use slam_ui::settings_screen::{RowKind, RowLabels, RowSpec, RowValue, SettingsLabels};
 
+use super::keybinds;
 use crate::settings::{DrawRate, Settings, Timing};
 
 /// Sections, in order; the keys of their names are in [`SECTION_KEYS`].
@@ -35,6 +37,13 @@ pub enum Row {
     BufferFrames,
     GlobalOffset,
     MouseButtons,
+    LeftKey1,
+    LeftKey2,
+    RightKey1,
+    RightKey2,
+    SmokeKey1,
+    SmokeKey2,
+    ResetKeys,
     UpdateHz,
     DrawHz,
     MenuDrawHz,
@@ -43,7 +52,7 @@ pub enum Row {
 }
 
 impl Row {
-    pub const ALL: [Row; 13] = [
+    pub const ALL: [Row; 20] = [
         Row::MasterVolume,
         Row::MusicVolume,
         Row::HitsoundVolume,
@@ -52,12 +61,39 @@ impl Row {
         Row::BufferFrames,
         Row::GlobalOffset,
         Row::MouseButtons,
+        Row::LeftKey1,
+        Row::LeftKey2,
+        Row::RightKey1,
+        Row::RightKey2,
+        Row::SmokeKey1,
+        Row::SmokeKey2,
+        Row::ResetKeys,
         Row::UpdateHz,
         Row::DrawHz,
         Row::MenuDrawHz,
         Row::Dim,
         Row::BeatmapColours,
     ];
+
+    /// The action and binding slot a key row edits.
+    pub fn key_slot(self) -> Option<(Actions, usize)> {
+        Some(match self {
+            Row::LeftKey1 => (Actions::LEFT, 0),
+            Row::LeftKey2 => (Actions::LEFT, 1),
+            Row::RightKey1 => (Actions::RIGHT, 0),
+            Row::RightKey2 => (Actions::RIGHT, 1),
+            Row::SmokeKey1 => (Actions::SMOKE, 0),
+            Row::SmokeKey2 => (Actions::SMOKE, 1),
+            _ => return None,
+        })
+    }
+
+    /// The screen's row index of the key row for `action`'s `slot`.
+    pub fn key_row(action: Actions, slot: usize) -> Option<usize> {
+        Row::ALL
+            .iter()
+            .position(|row| row.key_slot() == Some((action, slot)))
+    }
 
     fn section(self) -> usize {
         match self {
@@ -68,7 +104,14 @@ impl Row {
             | Row::Backend
             | Row::BufferFrames => 0,
             Row::GlobalOffset => 1,
-            Row::MouseButtons => 2,
+            Row::MouseButtons
+            | Row::LeftKey1
+            | Row::LeftKey2
+            | Row::RightKey1
+            | Row::RightKey2
+            | Row::SmokeKey1
+            | Row::SmokeKey2
+            | Row::ResetKeys => 2,
             Row::UpdateHz | Row::DrawHz | Row::MenuDrawHz => 3,
             Row::Dim | Row::BeatmapColours => 4,
         }
@@ -84,6 +127,13 @@ impl Row {
             Row::BufferFrames => "settings-audio-buffer",
             Row::GlobalOffset => "settings-offset-global",
             Row::MouseButtons => "settings-keys-mouse-buttons",
+            Row::LeftKey1 => "settings-keys-left-1",
+            Row::LeftKey2 => "settings-keys-left-2",
+            Row::RightKey1 => "settings-keys-right-1",
+            Row::RightKey2 => "settings-keys-right-2",
+            Row::SmokeKey1 => "settings-keys-smoke-1",
+            Row::SmokeKey2 => "settings-keys-smoke-2",
+            Row::ResetKeys => "settings-keys-reset",
             Row::UpdateHz => "settings-frame-update-rate",
             Row::DrawHz => "settings-frame-draw-rate",
             Row::MenuDrawHz => "settings-frame-menu-draw-rate",
@@ -174,7 +224,13 @@ impl Rows {
             options: len,
             selected: at.unwrap_or(0),
         };
+        if let Some((action, slot)) = row.key_slot() {
+            return RowKind::Key {
+                value: keybinds::key_value(s.input.slot(action, slot)),
+            };
+        }
         match row {
+            Row::ResetKeys => RowKind::Button,
             Row::MasterVolume => percent(s.audio.master_volume),
             Row::MusicVolume => percent(s.audio.music_volume),
             Row::HitsoundVolume => percent(s.audio.hitsound_volume),
@@ -214,6 +270,13 @@ impl Rows {
             Row::BeatmapColours => RowKind::Toggle {
                 value: s.gameplay.beatmap_colours,
             },
+            // Handled above.
+            Row::LeftKey1
+            | Row::LeftKey2
+            | Row::RightKey1
+            | Row::RightKey2
+            | Row::SmokeKey1
+            | Row::SmokeKey2 => RowKind::Button,
         }
     }
 
@@ -314,10 +377,15 @@ impl Rows {
                     | Row::Dim => text("settings-unit-percent"),
                     _ => String::new(),
                 };
+                let button = match row {
+                    Row::ResetKeys => text("settings-keys-reset-button"),
+                    _ => String::new(),
+                };
                 RowLabels {
                     label: text(row.label_key()),
                     unit,
                     options,
+                    button,
                 }
             })
             .collect();
@@ -326,6 +394,7 @@ impl Rows {
             sections: SECTION_KEYS.iter().map(|key| text(key)).collect(),
             rows,
             restart: text("settings-restart-marker"),
+            keys: keybinds::key_labels(localizer),
         }
     }
 }

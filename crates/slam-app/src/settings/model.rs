@@ -6,8 +6,9 @@ use serde::{Serialize, Serializer};
 use slam_audio::StreamConfig;
 use slam_engine::EngineConfig;
 use slam_engine::limiter::{InvalidRate, LimiterMode, MAX_HZ, MIN_HZ};
+use slam_osu::replay::Actions;
 use slam_play::BackgroundSettings;
-use slam_play::input::{Binding, Bindings, MAX_BINDINGS};
+use slam_play::input::{Binding, Bindings, Input, MAX_BINDINGS};
 
 use super::keys;
 
@@ -194,21 +195,115 @@ impl BindingEntry {
     }
 }
 
-/// Input settings.
-#[derive(Clone, Debug, PartialEq, Serialize)]
+/// Bindings each action shows on the settings screen; bindings past them stay but are hidden.
+pub const BINDING_SLOTS: usize = 2;
+
+/// Input settings. The bindings have a fixed capacity, so editing them allocates nothing.
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
 pub struct InputSettings {
-    pub bindings: Vec<BindingEntry>,
+    pub bindings: Bindings,
 }
 
-impl Default for InputSettings {
-    fn default() -> InputSettings {
-        InputSettings {
-            bindings: Bindings::default()
-                .as_slice()
-                .iter()
-                .filter_map(BindingEntry::from_binding)
-                .collect(),
+impl InputSettings {
+    /// The index in the list of `action`'s binding number `slot`.
+    fn slot_index(&self, action: Actions, slot: usize) -> Option<usize> {
+        self.bindings
+            .as_slice()
+            .iter()
+            .enumerate()
+            .filter(|(_, b)| b.action == action)
+            .nth(slot)
+            .map(|(i, _)| i)
+    }
+
+    /// The input in `action`'s binding number `slot`, `None` if the slot is empty.
+    pub fn slot(&self, action: Actions, slot: usize) -> Option<Input> {
+        self.slot_index(action, slot)
+            .map(|i| self.bindings.as_slice()[i].input)
+    }
+
+    /// Where else `input` is bound when it goes into `action`'s binding number `slot`: the
+    /// action and its slot number of the first other binding of the same input.
+    pub fn conflict(&self, action: Actions, slot: usize, input: Input) -> Option<(Actions, usize)> {
+        let own = self.slot_index(action, slot);
+        let list = self.bindings.as_slice();
+        let (i, other) = list
+            .iter()
+            .enumerate()
+            .find(|&(i, b)| b.input == input && Some(i) != own)?;
+        let other_slot = list[..i]
+            .iter()
+            .filter(|b| b.action == other.action)
+            .count();
+        Some((other.action, other_slot))
+    }
+
+    /// Puts `input` into `action`'s binding number `slot` and removes every other binding of
+    /// the same input. An empty slot takes the next free place of the action. Returns `false`
+    /// and changes nothing when the list is full.
+    pub fn bind(&mut self, action: Actions, slot: usize, input: Input) -> bool {
+        let mut list = [Binding { input, action }; MAX_BINDINGS];
+        let current = self.bindings.as_slice();
+        list[..current.len()].copy_from_slice(current);
+        let mut len = current.len();
+        let target = match self.slot_index(action, slot) {
+            Some(i) => i,
+            None if len < MAX_BINDINGS => {
+                len += 1;
+                len - 1
+            }
+            None => return false,
+        };
+        list[target] = Binding { input, action };
+        let mut kept = 0;
+        for i in 0..len {
+            if i == target || list[i].input != input {
+                list[kept] = list[i];
+                kept += 1;
+            }
         }
+        self.bindings = Bindings::new(&list[..kept]);
+        true
+    }
+
+    /// Empties `action`'s binding number `slot`; later bindings of the action move up.
+    pub fn clear(&mut self, action: Actions, slot: usize) {
+        let Some(target) = self.slot_index(action, slot) else {
+            return;
+        };
+        let current = self.bindings.as_slice();
+        let mut list = [current[0]; MAX_BINDINGS];
+        let mut kept = 0;
+        for (i, binding) in current.iter().enumerate() {
+            if i != target {
+                list[kept] = *binding;
+                kept += 1;
+            }
+        }
+        self.bindings = Bindings::new(&list[..kept]);
+    }
+
+    /// Lazer's default bindings.
+    pub fn reset(&mut self) {
+        self.bindings = Bindings::default();
+    }
+}
+
+impl Serialize for InputSettings {
+    /// Writes `bindings` as a list of named entries, see [`BindingEntry`].
+    fn serialize<S: Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        use serde::ser::SerializeStruct;
+
+        struct Entries<'a>(&'a [Binding]);
+        impl Serialize for Entries<'_> {
+            fn serialize<S: Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+                serializer.collect_seq(self.0.iter().filter_map(BindingEntry::from_binding))
+            }
+        }
+
+        let mut state = serializer.serialize_struct("InputSettings", 1)?;
+        state.serialize_field("bindings", &Entries(self.bindings.as_slice()))?;
+        state.end()
     }
 }
 
@@ -224,27 +319,8 @@ pub struct Settings {
 }
 
 impl Settings {
-    /// The gameplay key bindings; entries that do not parse are skipped and bindings past
-    /// the capacity are dropped, both with a warning.
+    /// The gameplay key bindings.
     pub fn bindings(&self) -> Bindings {
-        let mut list = Vec::with_capacity(self.input.bindings.len());
-        for entry in &self.input.bindings {
-            match entry.to_binding() {
-                Some(binding) => list.push(binding),
-                None => tracing::warn!(
-                    input = %entry.input,
-                    action = %entry.action,
-                    "input.bindings: unknown input or action, entry skipped"
-                ),
-            }
-        }
-        if list.len() > MAX_BINDINGS {
-            tracing::warn!(
-                count = list.len(),
-                max = MAX_BINDINGS,
-                "input.bindings: too many bindings, the rest are dropped"
-            );
-        }
-        Bindings::new(&list)
+        self.input.bindings
     }
 }

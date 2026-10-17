@@ -6,13 +6,14 @@ use slam_audio::StreamConfig;
 use slam_engine::EngineConfig;
 use slam_engine::limiter::LimiterMode;
 use slam_input::MouseButton;
+use slam_osu::replay::Actions;
 use slam_play::BackgroundSettings;
 use slam_play::input::{Binding, Bindings, Input, MAX_BINDINGS};
 
 use super::dirs::{Os, resolve};
 use super::file::{self, LoadStatus};
 use super::keys;
-use super::model::{BindingEntry, DrawRate, Frame, Settings};
+use super::model::{DrawRate, Frame, InputSettings, Settings};
 
 fn temp_dir(tag: &str) -> PathBuf {
     static N: AtomicU32 = AtomicU32::new(0);
@@ -59,16 +60,16 @@ fn round_trip_non_default() {
     s.gameplay.dim = 0.3;
     s.gameplay.beatmap_colours = false;
     s.gameplay.mouse_buttons = false;
-    s.input.bindings = vec![
-        BindingEntry {
-            input: "F".into(),
-            action: "left".into(),
+    s.input.bindings = Bindings::new(&[
+        Binding {
+            input: keys::input_from_name("F").unwrap(),
+            action: Actions::LEFT,
         },
-        BindingEntry {
-            input: "MouseX1".into(),
-            action: "smoke".into(),
+        Binding {
+            input: Input::Mouse(MouseButton::X1),
+            action: Actions::SMOKE,
         },
-    ];
+    ]);
     file::save(&path, &s).unwrap();
     assert!(!dir.join("sub").join("slam.toml.tmp").exists());
     let loaded = file::load(&path);
@@ -262,11 +263,11 @@ action = "RIGHT"
     let expected = Bindings::new(&[
         Binding {
             input: Input::Key(20),
-            action: slam_osu::replay::Actions::LEFT,
+            action: Actions::LEFT,
         },
         Binding {
             input: Input::Mouse(MouseButton::Left),
-            action: slam_osu::replay::Actions::RIGHT,
+            action: Actions::RIGHT,
         },
     ]);
     assert_eq!(loaded.settings.bindings(), expected);
@@ -278,14 +279,111 @@ action = "RIGHT"
 
 #[test]
 fn too_many_bindings_are_dropped() {
-    let mut s = Settings::default();
-    s.input.bindings = (0..MAX_BINDINGS + 3)
-        .map(|i| BindingEntry {
-            input: format!("Scancode{}", 100 + i),
-            action: "left".into(),
+    let text: String = (0..MAX_BINDINGS + 3)
+        .map(|i| {
+            format!(
+                "[[input.bindings]]\ninput = \"Scancode{}\"\naction = \"left\"\n",
+                100 + i
+            )
         })
         .collect();
-    assert_eq!(s.bindings().as_slice().len(), MAX_BINDINGS);
+    let loaded = file::from_toml_str(&text);
+    assert_eq!(loaded.status, LoadStatus::Recovered);
+    assert_eq!(loaded.settings.bindings().as_slice().len(), MAX_BINDINGS);
+    assert_eq!(
+        loaded.settings.bindings().as_slice()[0].input,
+        Input::Key(100)
+    );
+}
+
+fn key(name: &str) -> Input {
+    keys::input_from_name(name).unwrap()
+}
+
+#[test]
+fn default_slots_follow_lazer() {
+    let input = InputSettings::default();
+    assert_eq!(input.slot(Actions::LEFT, 0), Some(key("Z")));
+    assert_eq!(
+        input.slot(Actions::LEFT, 1),
+        Some(Input::Mouse(MouseButton::Left))
+    );
+    assert_eq!(input.slot(Actions::RIGHT, 0), Some(key("X")));
+    assert_eq!(
+        input.slot(Actions::RIGHT, 1),
+        Some(Input::Mouse(MouseButton::Right))
+    );
+    assert_eq!(input.slot(Actions::SMOKE, 0), Some(key("C")));
+    assert_eq!(input.slot(Actions::SMOKE, 1), None);
+}
+
+#[test]
+fn binding_a_slot_replaces_its_input_or_appends() {
+    let mut input = InputSettings::default();
+    assert!(input.bind(Actions::LEFT, 0, key("A")));
+    assert_eq!(input.slot(Actions::LEFT, 0), Some(key("A")));
+    assert_eq!(
+        input.slot(Actions::LEFT, 1),
+        Some(Input::Mouse(MouseButton::Left))
+    );
+
+    assert!(input.bind(Actions::SMOKE, 1, key("V")));
+    assert_eq!(input.slot(Actions::SMOKE, 1), Some(key("V")));
+    assert_eq!(input.bindings.as_slice().len(), 6);
+}
+
+#[test]
+fn conflicts_name_the_other_slot() {
+    let input = InputSettings::default();
+    assert_eq!(
+        input.conflict(Actions::LEFT, 0, key("X")),
+        Some((Actions::RIGHT, 0))
+    );
+    assert_eq!(
+        input.conflict(Actions::SMOKE, 1, Input::Mouse(MouseButton::Left)),
+        Some((Actions::LEFT, 1))
+    );
+    assert_eq!(input.conflict(Actions::LEFT, 0, key("Z")), None);
+    assert_eq!(input.conflict(Actions::LEFT, 0, key("Q")), None);
+}
+
+#[test]
+fn binding_a_taken_input_moves_it() {
+    let mut input = InputSettings::default();
+    assert!(input.bind(Actions::LEFT, 0, key("X")));
+    assert_eq!(input.slot(Actions::LEFT, 0), Some(key("X")));
+    assert_eq!(
+        input.slot(Actions::RIGHT, 0),
+        Some(Input::Mouse(MouseButton::Right))
+    );
+    assert_eq!(input.slot(Actions::RIGHT, 1), None);
+    assert_eq!(input.bindings.actions_of(key("X")), Actions::LEFT);
+}
+
+#[test]
+fn clearing_moves_later_bindings_up() {
+    let mut input = InputSettings::default();
+    input.clear(Actions::LEFT, 0);
+    assert_eq!(
+        input.slot(Actions::LEFT, 0),
+        Some(Input::Mouse(MouseButton::Left))
+    );
+    assert_eq!(input.slot(Actions::LEFT, 1), None);
+    input.clear(Actions::SMOKE, 1);
+    assert_eq!(input.bindings.as_slice().len(), 4);
+
+    input.reset();
+    assert_eq!(input, InputSettings::default());
+}
+
+#[test]
+fn a_full_list_takes_no_new_slot() {
+    let mut input = InputSettings::default();
+    for i in input.bindings.as_slice().len()..MAX_BINDINGS {
+        assert!(input.bind(Actions::SMOKE, i, Input::Key(100 + i as u16)));
+    }
+    assert!(!input.bind(Actions::RIGHT, 2, key("Q")));
+    assert!(input.bind(Actions::RIGHT, 0, key("Q")));
 }
 
 #[test]

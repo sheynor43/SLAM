@@ -6,6 +6,7 @@ use std::path::{Path, PathBuf};
 use serde::de::DeserializeOwned;
 use slam_engine::MAX_UPDATE_HZ;
 use slam_engine::limiter::MIN_HZ;
+use slam_play::input::{Bindings, MAX_BINDINGS};
 use toml::{Table, Value};
 
 use super::model::{BindingEntry, DrawRate, Settings, Timing};
@@ -323,8 +324,8 @@ fn from_table(mut table: Table) -> Loaded {
                                 input: raw.input,
                                 action: raw.action,
                             };
-                            if entry.to_binding().is_some() {
-                                entries.push(entry);
+                            if let Some(binding) = entry.to_binding() {
+                                entries.push(binding);
                             } else {
                                 skipped += 1;
                                 cx.warn(format!(
@@ -342,7 +343,13 @@ fn from_table(mut table: Table) -> Loaded {
                 if entries.is_empty() && skipped > 0 {
                     cx.warn("input.bindings: no valid entry, using the defaults".to_string());
                 } else {
-                    settings.input.bindings = entries;
+                    if entries.len() > MAX_BINDINGS {
+                        cx.warn(format!(
+                            "input.bindings: {} entries, only the first {MAX_BINDINGS} are used",
+                            entries.len()
+                        ));
+                    }
+                    settings.input.bindings = Bindings::new(&entries);
                 }
             }
             other => cx.warn(format!(

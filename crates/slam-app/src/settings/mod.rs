@@ -12,7 +12,8 @@ pub mod saver;
 pub use dirs::{Dirs, Os};
 pub use file::{CURRENT_VERSION, LoadStatus, Loaded, load, load_or_create, save};
 pub use model::{
-    Audio, BindingEntry, DrawRate, Frame, Gameplay, InputSettings, Paths, Settings, Timing,
+    Audio, BINDING_SLOTS, BindingEntry, DrawRate, Frame, Gameplay, InputSettings, Paths, Settings,
+    Timing,
 };
 
 /// File name of the settings file inside the config directory.

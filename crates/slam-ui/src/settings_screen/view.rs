@@ -8,7 +8,8 @@ use slam_render::sprite::SpriteBatch;
 use slam_text::{FontRegistry, Glyph, GlyphCache, GlyphKey};
 
 use super::{
-    MAX_ROWS, RowKind, RowSpec, RowWidget, SettingsLayout, SettingsScreen, SettingsSnapshot,
+    Conflict, KeyValue, MAX_ROWS, MouseKey, RowKind, RowSpec, RowWidget, SettingsLayout,
+    SettingsScreen, SettingsSnapshot,
 };
 use crate::menu::view::{Frame, Line, Typesetter};
 use crate::screen::Pose;
@@ -26,6 +27,29 @@ pub struct RowLabels {
     pub unit: String,
     /// The texts of a dropdown's options.
     pub options: Vec<String>,
+    /// The text on a button row's button.
+    pub button: String,
+}
+
+/// The texts of key bindings and of the question about a taken key. The application
+/// formats them all when the screen opens, so that nothing is formatted later.
+#[derive(Clone, Debug, Default)]
+pub struct KeyLabels {
+    /// An empty slot.
+    pub empty: String,
+    /// Shown by a key row that waits for a key.
+    pub prompt: String,
+    /// The name of each keyboard key, indexed by scancode. A scancode past the end shows
+    /// as an empty slot.
+    pub keys: Vec<String>,
+    /// The name of each mouse button, in the order of [`MouseKey::ALL`].
+    pub mouse: [String; 5],
+    /// "This input is already bound:".
+    pub conflict_title: String,
+    /// The answer that keeps the old binding.
+    pub conflict_keep: String,
+    /// The answer that takes the new one.
+    pub conflict_apply: String,
 }
 
 /// The screen's localised texts, already formatted.
@@ -38,9 +62,75 @@ pub struct SettingsLabels {
     pub rows: Vec<RowLabels>,
     /// The marker of a row that needs a restart.
     pub restart: String,
+    pub keys: KeyLabels,
+}
+
+/// The lines of [`KeyLabels`], laid out.
+struct KeyLines {
+    empty: Line,
+    prompt: Line,
+    keys: Vec<Line>,
+    mouse: Vec<Line>,
+    title: Line,
+    keep: Line,
+    apply: Line,
+}
+
+impl KeyLines {
+    fn new(labels: &KeyLabels) -> KeyLines {
+        KeyLines {
+            empty: Line::new(&labels.empty),
+            prompt: Line::new(&labels.prompt),
+            keys: labels.keys.iter().map(|k| Line::new(k)).collect(),
+            mouse: labels.mouse.iter().map(|k| Line::new(k)).collect(),
+            title: Line::new(&labels.conflict_title),
+            keep: Line::new(&labels.conflict_keep),
+            apply: Line::new(&labels.conflict_apply),
+        }
+    }
+
+    fn all(&self) -> impl Iterator<Item = &Line> {
+        [
+            &self.empty,
+            &self.prompt,
+            &self.title,
+            &self.keep,
+            &self.apply,
+        ]
+        .into_iter()
+        .chain(&self.keys)
+        .chain(&self.mouse)
+    }
+
+    fn all_mut(&mut self) -> impl Iterator<Item = &mut Line> {
+        [
+            &mut self.empty,
+            &mut self.prompt,
+            &mut self.title,
+            &mut self.keep,
+            &mut self.apply,
+        ]
+        .into_iter()
+        .chain(&mut self.keys)
+        .chain(&mut self.mouse)
+    }
+
+    /// The label of `value`.
+    fn line(&self, value: KeyValue) -> &Line {
+        match value {
+            KeyValue::Empty => &self.empty,
+            KeyValue::Key(code) => self.keys.get(usize::from(code)).unwrap_or(&self.empty),
+            KeyValue::Mouse(button) => self
+                .mouse
+                .get(MouseKey::index(button))
+                .unwrap_or(&self.empty),
+        }
+    }
 }
 
 enum RowView {
+    Key,
+    Button(Line),
     Toggle(ToggleView),
     Slider(SliderView),
     Dropdown(DropdownView),
@@ -59,6 +149,7 @@ pub struct SettingsView {
     /// Per row: its section, its position in it and whether it needs a restart.
     meta: Vec<(usize, usize, bool)>,
     views: Vec<RowView>,
+    keys: KeyLines,
 }
 
 impl std::fmt::Debug for SettingsView {
@@ -104,6 +195,8 @@ impl SettingsView {
             .map(|(i, spec)| {
                 let row = labels.rows.get(i).cloned().unwrap_or_default();
                 match spec.kind {
+                    RowKind::Key { .. } => RowView::Key,
+                    RowKind::Button => RowView::Button(Line::new(&row.button)),
                     RowKind::Toggle { .. } => RowView::Toggle(ToggleView::new(theme)),
                     RowKind::Slider { step, .. } => RowView::Slider(SliderView::new(
                         Arc::clone(&registry),
@@ -130,6 +223,7 @@ impl SettingsView {
                 .map(|i| Line::new(labels.rows.get(i).map_or("", |r| &r.label)))
                 .collect(),
             marker: Line::new(&labels.restart),
+            keys: KeyLines::new(&labels.keys),
             meta,
             views,
             theme,
@@ -150,6 +244,14 @@ impl SettingsView {
         }
         self.type_setter
             .lay_out(&mut self.marker, self.theme.settings_marker_size * scale);
+        for line in self.keys.all_mut() {
+            self.type_setter.lay_out(line, text);
+        }
+        for view in &mut self.views {
+            if let RowView::Button(line) = view {
+                self.type_setter.lay_out(line, text);
+            }
+        }
     }
 
     /// Asks `glyphs` for every glyph the screen shows. Returns how many are not ready yet;
@@ -159,6 +261,7 @@ impl SettingsView {
             .chain(&self.tabs)
             .chain(&self.labels)
             .chain(std::iter::once(&self.marker))
+            .chain(self.keys.all())
             .flat_map(|line| line.layout.glyphs())
             .filter(|g| matches!(glyphs.glyph(GlyphKey::of(g)), Glyph::Pending))
             .count();
@@ -166,7 +269,13 @@ impl SettingsView {
             .views
             .iter()
             .map(|view| match view {
-                RowView::Toggle(_) => 0,
+                RowView::Toggle(_) | RowView::Key => 0,
+                RowView::Button(line) => line
+                    .layout
+                    .glyphs()
+                    .iter()
+                    .filter(|g| matches!(glyphs.glyph(GlyphKey::of(g)), Glyph::Pending))
+                    .count(),
                 RowView::Slider(v) => v.request_glyphs(glyphs),
                 RowView::Dropdown(v) => v.request_glyphs(glyphs),
             })
@@ -222,6 +331,11 @@ impl SettingsView {
             );
         }
 
+        if let Some(conflict) = snapshot.conflict {
+            self.push_conflict(shapes, text, glyphs, &layout, &conflict, opacity, white);
+            return;
+        }
+
         // An open list covers the rows below it, whose texts would show through (all
         // texts are drawn over all rectangles): those rows are left out.
         let open_slot = (0..snapshot.len).find_map(|i| match &snapshot.widgets[i] {
@@ -266,6 +380,24 @@ impl SettingsView {
             }
             let widget = layout.widget(slot);
             match (&mut self.views[i], &snapshot.widgets[i]) {
+                (RowView::Key, RowWidget::Key(key)) => {
+                    let (colour, line) = if key.is_listening() {
+                        (theme.button_hover_fill, &self.keys.prompt)
+                    } else {
+                        (theme.button_fill, self.keys.line(key.value()))
+                    };
+                    fill(shapes, white, &widget, faded(colour, opacity));
+                    push_left(text, line, &widget, pad, faded(theme.text, opacity), glyphs);
+                }
+                (RowView::Button(line), RowWidget::Button) => {
+                    let colour = if i == snapshot.focus {
+                        theme.button_hover_fill
+                    } else {
+                        theme.button_fill
+                    };
+                    fill(shapes, white, &widget, faded(colour, opacity));
+                    push_left(text, line, &widget, pad, faded(theme.text, opacity), glyphs);
+                }
                 (RowView::Toggle(view), RowWidget::Toggle(toggle)) => {
                     let bounds = ToggleLayout::new(layout.row(slot), &theme, layout.scale);
                     view.push(shapes, toggle, &bounds, opacity, white);
@@ -295,6 +427,61 @@ impl SettingsView {
                 layout.scale,
             );
             view.push(shapes, text, glyphs, dropdown, &bounds, opacity, white);
+        }
+    }
+
+    /// The question about a taken key, in place of the rows.
+    #[allow(clippy::too_many_arguments)]
+    fn push_conflict(
+        &self,
+        shapes: &mut SpriteBatch,
+        text: &mut SpriteBatch,
+        glyphs: &mut GlyphCache,
+        layout: &SettingsLayout,
+        conflict: &Conflict,
+        opacity: f32,
+        white: AtlasRegion,
+    ) {
+        let theme = &self.theme;
+        let pad = theme.widget_pad * layout.scale;
+        let colour = faded(theme.text, opacity);
+        fill(
+            shapes,
+            white,
+            &layout.dialog(),
+            faded(theme.widget_popup_fill, opacity),
+        );
+        push_left(
+            text,
+            &self.keys.title,
+            &layout.dialog_row(0),
+            pad,
+            colour,
+            glyphs,
+        );
+        push_left(
+            text,
+            self.keys.line(conflict.key),
+            &layout.dialog_row(1),
+            pad,
+            colour,
+            glyphs,
+        );
+        if let Some(other) = conflict.other.and_then(|row| self.labels.get(row)) {
+            push_left(text, other, &layout.dialog_row(2), pad, colour, glyphs);
+        }
+        let [keep, apply] = layout.conflict_buttons();
+        for (rect, line, chosen) in [
+            (keep, &self.keys.keep, !conflict.apply),
+            (apply, &self.keys.apply, conflict.apply),
+        ] {
+            let fill_colour = if chosen {
+                theme.button_hover_fill
+            } else {
+                theme.button_fill
+            };
+            fill(shapes, white, &rect, faded(fill_colour, opacity));
+            push_left(text, line, &rect, pad, colour, glyphs);
         }
     }
 }

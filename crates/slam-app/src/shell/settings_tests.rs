@@ -1,7 +1,11 @@
 //! The settings screen in the shell: opening, editing, committing and saving.
 
 use slam_engine::limiter::LimiterMode;
+use slam_osu::replay::Actions;
+use slam_play::Bindings;
+use slam_play::input::Input;
 use slam_ui::screen::TRANSITION_NS;
+use slam_ui::settings_screen::{KeyValue, MouseKey, RowWidget};
 
 use super::*;
 
@@ -229,4 +233,231 @@ fn a_save_the_full_ring_refused_is_retried_on_the_next_tick() {
     shell.apply_settings(1);
     assert!(shell.state.save_request.is_none());
     assert_eq!(taken.pop().unwrap().audio.master_volume, 0.25);
+}
+
+fn mouse(button: MouseButton, down: bool) -> InputEvent {
+    InputEvent {
+        time_ns: 0,
+        kind: InputKind::MouseButton { button, down },
+    }
+}
+
+fn move_to(x: f32, y: f32) -> InputEvent {
+    InputEvent {
+        time_ns: 0,
+        kind: InputKind::MouseMove { x, y },
+    }
+}
+
+/// Opens the settings on the keys section, focusing the first key row (left, slot 1).
+fn on_keys(s: &mut ShellState, snap: &mut ShellSnapshot) {
+    opened(s, snap);
+    s.tick(LATER, &[key(KEY_TAB), key(KEY_TAB), key(KEY_DOWN)], snap);
+    assert_eq!(settings_screen(s).focus(), Row::LeftKey1 as usize);
+}
+
+fn settings_screen(s: &ShellState) -> &SettingsScreen {
+    match s.stack().top() {
+        AppScreen::Settings(screen) => screen,
+        other => panic!("not the settings: {other:?}"),
+    }
+}
+
+fn edited(s: &ShellState) -> &Settings {
+    s.editing.as_ref().expect("the screen is open")
+}
+
+const KEY_Q: u16 = 20;
+const KEY_X: u16 = 27;
+const KEY_Z: u16 = 29;
+
+#[test]
+fn a_key_the_menus_do_not_know_is_captured_and_saved_on_close() {
+    let mut s = state();
+    let mut snap = ShellSnapshot::default();
+    on_keys(&mut s, &mut snap);
+    s.tick(LATER, &[key(KEY_ENTER)], &mut snap);
+    assert!(settings_screen(&s).is_listening());
+    s.tick(LATER, &[key(KEY_Q)], &mut snap);
+    assert!(!settings_screen(&s).is_listening());
+    assert_eq!(
+        edited(&s).input.slot(Actions::LEFT, 0),
+        Some(Input::Key(KEY_Q))
+    );
+    // Z was this slot's key and is gone; the settings in force wait for the close.
+    assert_eq!(
+        s.settings().input.slot(Actions::LEFT, 0),
+        Some(Input::Key(KEY_Z))
+    );
+    s.tick(LATER, &[key(KEY_ESCAPE)], &mut snap);
+    assert!(matches!(s.stack().top(), AppScreen::Menu(_)));
+    assert_eq!(
+        s.settings().input.slot(Actions::LEFT, 0),
+        Some(Input::Key(KEY_Q))
+    );
+    let saved = s.take_save_request().expect("a save is asked for");
+    assert_eq!(saved.input.slot(Actions::LEFT, 0), Some(Input::Key(KEY_Q)));
+}
+
+#[test]
+fn the_screen_shows_the_new_binding() {
+    let mut s = state();
+    let mut snap = ShellSnapshot::default();
+    on_keys(&mut s, &mut snap);
+    s.tick(LATER, &[key(KEY_ENTER), key(KEY_Q)], &mut snap);
+    let Some(RowWidget::Key(row)) = settings_screen(&s).widget(Row::LeftKey1 as usize) else {
+        panic!("a key row");
+    };
+    assert_eq!(row.value(), KeyValue::Key(KEY_Q));
+}
+
+#[test]
+fn escape_while_listening_cancels_and_keeps_the_screen_open() {
+    let mut s = state();
+    let mut snap = ShellSnapshot::default();
+    on_keys(&mut s, &mut snap);
+    s.tick(LATER, &[key(KEY_ENTER), key(KEY_ESCAPE)], &mut snap);
+    assert!(matches!(s.stack().top(), AppScreen::Settings(_)));
+    assert!(!settings_screen(&s).is_listening());
+    assert_eq!(*edited(&s), Settings::default());
+    // Now it closes.
+    s.tick(LATER, &[key(KEY_ESCAPE)], &mut snap);
+    assert!(matches!(s.stack().top(), AppScreen::Menu(_)));
+    assert!(s.take_save_request().is_none());
+}
+
+#[test]
+fn delete_while_listening_clears_the_slot() {
+    let mut s = state();
+    let mut snap = ShellSnapshot::default();
+    on_keys(&mut s, &mut snap);
+    s.tick(LATER, &[key(KEY_ENTER), key(KEY_DELETE)], &mut snap);
+    assert!(matches!(s.stack().top(), AppScreen::Settings(_)));
+    // The mouse button moved up into the first slot.
+    assert_eq!(
+        edited(&s).input.slot(Actions::LEFT, 0),
+        Some(Input::Mouse(MouseButton::Left))
+    );
+    assert_eq!(edited(&s).input.slot(Actions::LEFT, 1), None);
+    let Some(RowWidget::Key(row)) = settings_screen(&s).widget(Row::LeftKey2 as usize) else {
+        panic!("a key row");
+    };
+    assert_eq!(row.value(), KeyValue::Empty);
+}
+
+#[test]
+fn a_click_starts_listening_and_the_next_press_of_any_button_is_captured() {
+    let mut s = state();
+    let mut snap = ShellSnapshot::default();
+    on_keys(&mut s, &mut snap);
+    let layout = s.settings_layout;
+    let widget = layout.widget(layout_slot(Row::LeftKey2));
+    let (x, y) = (widget.x + 4.0, widget.y + 4.0);
+    s.tick(
+        LATER,
+        &[
+            move_to(x, y),
+            mouse(MouseButton::Left, true),
+            mouse(MouseButton::Left, false),
+        ],
+        &mut snap,
+    );
+    // The click itself was not taken as the binding.
+    assert!(settings_screen(&s).is_listening());
+    assert_eq!(*edited(&s), Settings::default());
+    s.tick(LATER, &[mouse(MouseButton::X1, true)], &mut snap);
+    assert!(!settings_screen(&s).is_listening());
+    assert!(matches!(s.stack().top(), AppScreen::Settings(_)));
+    assert_eq!(
+        edited(&s).input.slot(Actions::LEFT, 1),
+        Some(Input::Mouse(MouseButton::X1))
+    );
+    // The primary button counts too.
+    s.tick(LATER, &[key(KEY_DOWN), key(KEY_ENTER)], &mut snap);
+    s.tick(LATER, &[mouse(MouseButton::Middle, true)], &mut snap);
+    assert_eq!(
+        edited(&s).input.slot(Actions::RIGHT, 0),
+        Some(Input::Mouse(MouseButton::Middle))
+    );
+}
+
+/// The position of `row` in its section.
+fn layout_slot(row: Row) -> usize {
+    // The keys section starts with the mouse toggle.
+    row as usize - Row::MouseButtons as usize
+}
+
+#[test]
+fn a_taken_key_asks_and_keeping_changes_nothing() {
+    let mut s = state();
+    let mut snap = ShellSnapshot::default();
+    on_keys(&mut s, &mut snap);
+    s.tick(LATER, &[key(KEY_ENTER), key(KEY_X)], &mut snap);
+    let conflict = settings_screen(&s).conflict().copied().expect("asked");
+    assert_eq!(conflict.row, Row::LeftKey1 as usize);
+    assert_eq!(conflict.key, KeyValue::Key(KEY_X));
+    assert_eq!(conflict.other, Some(Row::RightKey1 as usize));
+    assert_eq!(*edited(&s), Settings::default());
+    // Escape keeps and does not close.
+    s.tick(LATER, &[key(KEY_ESCAPE)], &mut snap);
+    assert!(matches!(s.stack().top(), AppScreen::Settings(_)));
+    assert!(settings_screen(&s).conflict().is_none());
+    assert_eq!(*edited(&s), Settings::default());
+    // Activate keeps by default.
+    s.tick(
+        LATER,
+        &[key(KEY_ENTER), key(KEY_X), key(KEY_ENTER)],
+        &mut snap,
+    );
+    assert!(settings_screen(&s).conflict().is_none());
+    assert_eq!(*edited(&s), Settings::default());
+}
+
+#[test]
+fn applying_a_taken_key_moves_it() {
+    let mut s = state();
+    let mut snap = ShellSnapshot::default();
+    on_keys(&mut s, &mut snap);
+    s.tick(
+        LATER,
+        &[key(KEY_ENTER), key(KEY_X), key(KEY_RIGHT), key(KEY_ENTER)],
+        &mut snap,
+    );
+    assert!(settings_screen(&s).conflict().is_none());
+    let input = &edited(&s).input;
+    assert_eq!(input.slot(Actions::LEFT, 0), Some(Input::Key(KEY_X)));
+    // X left the right button; its mouse button moved up.
+    assert_eq!(
+        input.slot(Actions::RIGHT, 0),
+        Some(Input::Mouse(MouseButton::Right))
+    );
+    assert_eq!(input.slot(Actions::RIGHT, 1), None);
+    let Some(RowWidget::Key(row)) = settings_screen(&s).widget(Row::RightKey2 as usize) else {
+        panic!("a key row");
+    };
+    assert_eq!(row.value(), KeyValue::Empty);
+    let Some(RowWidget::Key(row)) = settings_screen(&s).widget(Row::RightKey1 as usize) else {
+        panic!("a key row");
+    };
+    assert_eq!(row.value(), KeyValue::Mouse(MouseKey::Right));
+}
+
+#[test]
+fn the_reset_button_restores_the_default_bindings() {
+    let mut s = state();
+    let mut snap = ShellSnapshot::default();
+    on_keys(&mut s, &mut snap);
+    s.tick(LATER, &[key(KEY_ENTER), key(KEY_Q)], &mut snap);
+    assert_ne!(edited(&s).input.bindings, Bindings::default());
+    let downs = [key(KEY_DOWN); Row::ResetKeys as usize - Row::LeftKey1 as usize];
+    s.tick(LATER, &downs, &mut snap);
+    s.tick(LATER, &[key(KEY_ENTER)], &mut snap);
+    assert_eq!(edited(&s).input.bindings, Bindings::default());
+    let Some(RowWidget::Key(row)) = settings_screen(&s).widget(Row::LeftKey1 as usize) else {
+        panic!("a key row");
+    };
+    assert_eq!(row.value(), KeyValue::Key(KEY_Z));
+    // Back to the starting bindings: nothing to save.
+    s.tick(LATER, &[key(KEY_ESCAPE)], &mut snap);
+    assert!(s.take_save_request().is_none());
 }
