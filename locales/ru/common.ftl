@@ -81,6 +81,7 @@ settings-frame-draw-rate = Частота кадров в игре
 settings-frame-menu-draw-rate = Частота кадров в меню
 settings-gameplay-dim = Затемнение фона
 settings-gameplay-beatmap-colours = Цвета карты
+settings-gameplay-beatmap-hitsounds = Хитсаунды карты
 settings-gameplay-hit-error-scale = Размер шкалы ошибок
 settings-gameplay-skin = Скин
 settings-option-default-skin = Стандартный

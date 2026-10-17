@@ -266,6 +266,11 @@ fn skins_never_use_custom_sample_bank_suffixes() {
         r.files_of(FILE_SAMPLE, Sound::Hit),
         ["user/normal-hitnormal.wav"]
     );
+    // Custom index 1 also leaves the beatmap folder, keeping its volume.
+    assert_eq!(
+        r.play(CUSTOM_INDEX_1, Sound::Hit),
+        [("user/normal-hitnormal.wav".to_owned(), 0.7)]
+    );
 }
 
 #[test]
