@@ -21,8 +21,9 @@ use slam_play::sliders::{
 };
 use slam_play::spinners::{HitSpinners, SpinnerStyle, SpinnerVisuals};
 use slam_play::{
-    BackgroundSettings, BackgroundView, GameplaySounds, Hitsounds, HudLabels, HudView,
-    PlaySnapshot, PlayTextures, PlayView, PlayfieldLayout, SampleCache, SampleSkins, SoundSettings,
+    BackgroundSettings, BackgroundView, GameplaySounds, Hitsounds, HudLabels, HudView, MenuLabels,
+    MenuView, PlaySnapshot, PlayTextures, PlayView, PlayfieldLayout, SampleCache, SampleSkins,
+    SoundSettings,
 };
 use slam_render::gl::{GlDevice, GlTexture};
 use slam_render::slider::{SliderBuffer, SliderDraw, SliderMesh, SliderRenderer};
@@ -55,6 +56,8 @@ const TEXTURE_REQUEST_CAPACITY: usize = 1024;
 const MAX_TEXTURES: usize = 64;
 /// Glyph sprites of one frame: the HUD's numbers and the skip button.
 const MAX_GLYPH_SPRITES: usize = 256;
+/// The menu's background and buttons.
+const MAX_MENU_SPRITES: usize = 1 + slam_play::menu_overlay::MAX_BUTTONS;
 
 type Gl = GlDevice<SdlGlSurface>;
 
@@ -155,6 +158,7 @@ pub fn hud_labels(localizer: &Localizer) -> HudLabels {
     let text = |key: &str| {
         let mut args = FluentArgs::new();
         args.set("offset", OFFSET_PLACEHOLDER);
+        args.set("value", OFFSET_PLACEHOLDER);
         localizer.format(key, Some(&args)).into_owned()
     };
     HudLabels {
@@ -162,6 +166,16 @@ pub fn hud_labels(localizer: &Localizer) -> HudLabels {
         offset_zero: text("play-offset"),
         offset_earlier: text("play-offset-earlier"),
         offset_later: text("play-offset-later"),
+        menu: MenuLabels {
+            paused: text("play-menu-paused"),
+            failed: text("play-menu-failed"),
+            continue_button: text("play-menu-continue"),
+            retry_button: text("play-menu-retry"),
+            quit_button: text("play-menu-quit"),
+            retry_count: text("play-menu-retry-count"),
+            song_progress: text("play-menu-song-progress"),
+            accuracy: text("play-menu-accuracy"),
+        },
     }
 }
 
@@ -257,6 +271,7 @@ pub fn prepare(
     });
     let glyphs = glyph_atlas(Arc::clone(&registry), &GlyphAtlasConfig::new(limits))
         .map_err(|e| e.to_string())?;
+    let menu = MenuView::new(Arc::clone(&registry), &labels.menu);
     let hud = HudView::new(registry, labels);
     let scene = PlayScene {
         _requests: requests,
@@ -276,6 +291,9 @@ pub fn prepare(
         objects: beatmap.hit_objects.len(),
         text: SpriteBatch::with_capacity(MAX_GLYPH_SPRITES),
         cursor: SpriteBatch::with_capacity(MAX_CURSOR_SPRITES + MAX_TARGET_SPRITES),
+        menu,
+        menu_shapes: SpriteBatch::with_capacity(MAX_MENU_SPRITES),
+        menu_text: SpriteBatch::with_capacity(MAX_GLYPH_SPRITES),
         gpu: None,
     };
     Ok(Prepared {
@@ -323,6 +341,10 @@ pub struct PlayScene {
     text: SpriteBatch,
     /// The cursor, on top of the HUD.
     cursor: SpriteBatch,
+    /// The pause and fail menus, on top of everything (ADR-0052).
+    menu: MenuView,
+    menu_shapes: SpriteBatch,
+    menu_text: SpriteBatch,
     gpu: Option<SceneGpu>,
 }
 
@@ -344,10 +366,11 @@ impl PlayScene {
     pub fn start(&mut self, device: &mut Gl, glyph_wait: Duration) {
         // The device made these with the same context before; failing now is a driver
         // fault the application does not recover from.
-        // Two draws a frame (playfield and HUD, cursor), each with its spare slots.
-        let renderer = SpriteRenderer::new(device, 2 * DEFAULT_SLOTS).expect("renderer");
+        // Three draws a frame (playfield and HUD, cursor, menu), each with its spare slots;
+        // two of text (HUD, menu).
+        let renderer = SpriteRenderer::new(device, 3 * DEFAULT_SLOTS).expect("renderer");
         let text_renderer =
-            SpriteRenderer::with_shader(device, DEFAULT_SLOTS, &shaders::MSDF).expect("text");
+            SpriteRenderer::with_shader(device, 2 * DEFAULT_SLOTS, &shaders::MSDF).expect("text");
         let mut sliders = SliderRenderer::new(device, MAX_LIVE_SLIDERS).expect("slider renderer");
         let mut slider_buffers: Vec<_> = (0..self.objects).map(|_| None).collect();
         for (index, mesh) in &self.meshes {
@@ -359,7 +382,10 @@ impl PlayScene {
         }
         let mut textures = Textures::with_capacity(MAX_TEXTURES);
         let deadline = Instant::now() + glyph_wait;
-        while self.hud.request_glyphs(&mut self.glyphs) > 0 && Instant::now() < deadline {
+        while self.hud.request_glyphs(&mut self.glyphs) + self.menu.request_glyphs(&mut self.glyphs)
+            > 0
+            && Instant::now() < deadline
+        {
             self.glyphs.process(device, &mut textures);
             std::thread::sleep(Duration::from_millis(1));
         }
@@ -389,9 +415,12 @@ impl PlayScene {
             &snapshot.hud,
             snapshot.offset_panel.offset_ms,
         );
+        self.menu.update(width, height, &snapshot.menu);
         self.batch.clear();
         self.text.clear();
         self.cursor.clear();
+        self.menu_shapes.clear();
+        self.menu_text.clear();
         let background = self
             .background
             .and_then(|handle| match self.uploads.get(handle) {
@@ -418,6 +447,16 @@ impl PlayScene {
             .push_text(&mut self.text, snapshot, now_ns, &mut self.glyphs);
         self.view
             .push_cursor(&mut self.cursor, &layout, snapshot, now_ns, &textures);
+        if let Some(white) = textures.white {
+            self.menu
+                .push_shapes(&mut self.menu_shapes, &snapshot.menu, now_ns, white);
+        }
+        self.menu.push_text(
+            &mut self.menu_text,
+            &snapshot.menu,
+            now_ns,
+            &mut self.glyphs,
+        );
         r.renderer.begin_frame();
         r.text_renderer.begin_frame();
         let gpu_textures = &r.textures;
@@ -463,6 +502,14 @@ impl PlayScene {
             .text_renderer
             .draw(device, &self.text, &projection, texture);
         let _ = r.renderer.draw(device, &self.cursor, &projection, texture);
+        if !self.menu_shapes.is_empty() {
+            let _ = r
+                .renderer
+                .draw(device, &self.menu_shapes, &projection, texture);
+            let _ = r
+                .text_renderer
+                .draw(device, &self.menu_text, &projection, texture);
+        }
     }
 
     /// Destroys the play's GPU resources. Navigation: frees.

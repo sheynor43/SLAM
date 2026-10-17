@@ -13,6 +13,7 @@ pub mod input;
 pub mod judgements;
 pub mod legacy_hit_error;
 pub mod legacy_text;
+pub mod menu_overlay;
 pub mod offset;
 pub mod playfield;
 pub mod resume;
@@ -29,6 +30,7 @@ pub use hitsounds::{Hitsound, Hitsounds, SampleCache, SampleSkins, Sound};
 pub use hotkeys::{GlobalAction, Hotkeys};
 pub use hud::{HudLabels, HudView};
 pub use input::{Binding, Bindings, ClockTime, GameTime, Input, LiveInput};
+pub use menu_overlay::{MenuLabels, MenuView};
 pub use playfield::PlayfieldLayout;
 pub use session::{
     FrameTextures, HudValues, PlayResults, PlaySession, PlaySnapshot, PlayState, PlayTextures,

@@ -226,6 +226,11 @@ impl LiveInput {
         }
     }
 
+    /// Where the playfield sits in the window.
+    pub fn layout(&self) -> PlayfieldLayout {
+        self.layout
+    }
+
     /// Changes the bindings. Inputs already held keep the actions they pressed until released.
     pub fn set_bindings(&mut self, bindings: Bindings) {
         self.bindings = bindings;

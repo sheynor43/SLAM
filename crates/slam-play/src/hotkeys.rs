@@ -7,6 +7,7 @@ use slam_input::{InputEvent, InputKind, MouseButton};
 
 // SDL scancodes (USB HID usage ids).
 const SCANCODE_R: u16 = 21;
+const SCANCODE_RETURN: u16 = 40;
 const SCANCODE_ESCAPE: u16 = 41;
 const SCANCODE_SPACE: u16 = 44;
 const SCANCODE_MINUS: u16 = 45;
@@ -14,6 +15,9 @@ const SCANCODE_MINUS: u16 = 45;
 const SCANCODE_EQUALS: u16 = 46;
 const SCANCODE_GRAVE: u16 = 53;
 const SCANCODE_F10: u16 = 67;
+const SCANCODE_DOWN: u16 = 81;
+const SCANCODE_UP: u16 = 82;
+const SCANCODE_KP_ENTER: u16 = 88;
 /// Left control; the eight modifiers follow: shift, alt, GUI, then the right ones.
 const SCANCODE_LCTRL: u16 = 224;
 const SCANCODE_RGUI: u16 = 231;
@@ -48,6 +52,17 @@ pub enum GlobalAction {
     IncreaseOffset,
     /// `-`: the beatmap offset goes down by a step.
     DecreaseOffset,
+}
+
+/// A global action the pause and fail menus take ([`crate::menu_overlay`]).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum MenuKey {
+    /// Up.
+    SelectPrevious,
+    /// Down.
+    SelectNext,
+    /// Space, Enter or the keypad's Enter.
+    Select,
 }
 
 /// A hold-to-confirm action (lazer's `HoldToConfirmContainer`).
@@ -169,6 +184,25 @@ impl Hotkeys {
         }
     }
 
+    /// The menu action `event` presses, if any. Call it after [`on_event`](Self::on_event)
+    /// took the event (for the modifiers held). Space is also
+    /// [`GlobalAction::SkipCutscene`]: the menu takes it first while it shows.
+    // Ported from osu!lazer 2026.1005.0-lazer: osu.Game/Input/Bindings/GlobalActionContainer.cs (globalKeyBindings)
+    pub fn menu_key(&self, event: &InputEvent) -> Option<MenuKey> {
+        match event.kind {
+            InputKind::Key {
+                scancode,
+                down: true,
+            } if self.kinds() == 0 => match scancode {
+                SCANCODE_UP => Some(MenuKey::SelectPrevious),
+                SCANCODE_DOWN => Some(MenuKey::SelectNext),
+                SCANCODE_SPACE | SCANCODE_RETURN | SCANCODE_KP_ENTER => Some(MenuKey::Select),
+                _ => None,
+            },
+            _ => None,
+        }
+    }
+
     /// The hold action that fires at engine time `now_ns`, once per press.
     pub fn fire(&mut self, now_ns: u64) -> Option<GlobalAction> {
         if self.retry.fire(now_ns) {
@@ -264,6 +298,26 @@ mod tests {
         );
         assert_eq!(h.on_event(&key(0, SCANCODE_ESCAPE, false)), None);
         assert_eq!(h.on_event(&button(0, MouseButton::Left)), None);
+    }
+
+    #[test]
+    fn menu_keys_need_no_modifiers() {
+        let mut h = Hotkeys::default();
+        for (scancode, menu_key) in [
+            (SCANCODE_UP, MenuKey::SelectPrevious),
+            (SCANCODE_DOWN, MenuKey::SelectNext),
+            (SCANCODE_SPACE, MenuKey::Select),
+            (SCANCODE_RETURN, MenuKey::Select),
+            (SCANCODE_KP_ENTER, MenuKey::Select),
+        ] {
+            let event = key(0, scancode, true);
+            h.on_event(&event);
+            assert_eq!(h.menu_key(&event), Some(menu_key), "{scancode}");
+            assert_eq!(h.menu_key(&key(0, scancode, false)), None);
+        }
+        assert_eq!(h.menu_key(&key(0, SCANCODE_ESCAPE, true)), None);
+        h.on_event(&key(1, SCANCODE_LCTRL + 1, true));
+        assert_eq!(h.menu_key(&key(1, SCANCODE_RETURN, true)), None);
     }
 
     #[test]
