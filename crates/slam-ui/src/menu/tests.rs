@@ -19,11 +19,17 @@ fn starts_on_play_and_activates_it() {
 }
 
 #[test]
-fn keyboard_wraps_and_skips_the_disabled_item() {
+fn keyboard_wraps_through_every_item() {
     let mut menu = MainMenu::new();
     assert_eq!(press(&mut menu, MenuInput::Down), None);
+    assert_eq!(menu.selected(), MenuItem::Settings);
+    assert_eq!(
+        press(&mut menu, MenuInput::Activate),
+        Some(MenuAction::Settings)
+    );
+    press(&mut menu, MenuInput::Down);
     assert_eq!(menu.selected(), MenuItem::Exit);
-    assert_eq!(press(&mut menu, MenuInput::Down), None);
+    press(&mut menu, MenuInput::Down);
     assert_eq!(menu.selected(), MenuItem::Play);
     press(&mut menu, MenuInput::Up);
     assert_eq!(menu.selected(), MenuItem::Exit);
@@ -31,6 +37,7 @@ fn keyboard_wraps_and_skips_the_disabled_item() {
         press(&mut menu, MenuInput::Activate),
         Some(MenuAction::Exit)
     );
+    press(&mut menu, MenuInput::Up);
     press(&mut menu, MenuInput::Up);
     assert_eq!(menu.selected(), MenuItem::Play);
 }
@@ -68,17 +75,20 @@ fn pointer_hover_selects_and_press_activates() {
 }
 
 #[test]
-fn pointer_ignores_the_disabled_item_and_empty_space() {
+fn pointer_on_settings_selects_and_opens_it_and_empty_space_does_nothing() {
     let mut menu = MainMenu::new();
     let (x, y) = centre(MenuItem::Settings);
     assert_eq!(press(&mut menu, MenuInput::PointerMove { x, y }), None);
-    assert_eq!(menu.selected(), MenuItem::Play);
-    assert_eq!(press(&mut menu, MenuInput::PointerPress { x, y }), None);
+    assert_eq!(menu.selected(), MenuItem::Settings);
+    assert_eq!(
+        press(&mut menu, MenuInput::PointerPress { x, y }),
+        Some(MenuAction::Settings)
+    );
     assert_eq!(
         press(&mut menu, MenuInput::PointerPress { x: 1.0, y: 1.0 }),
         None
     );
-    assert_eq!(menu.selected(), MenuItem::Play);
+    assert_eq!(menu.selected(), MenuItem::Settings);
 }
 
 #[test]

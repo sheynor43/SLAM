@@ -7,6 +7,7 @@ pub mod dirs;
 pub mod file;
 pub mod keys;
 pub mod model;
+pub mod saver;
 
 pub use dirs::{Dirs, Os};
 pub use file::{CURRENT_VERSION, LoadStatus, Loaded, load, load_or_create, save};

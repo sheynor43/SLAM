@@ -131,7 +131,10 @@ impl Timing {
 #[derive(Clone, Debug, PartialEq, Serialize)]
 pub struct Frame {
     pub update_hz: f64,
+    /// Draw rate during gameplay.
     pub draw: DrawRate,
+    /// Draw rate on every other screen (ADR-0047).
+    pub menu_draw: DrawRate,
 }
 
 impl Default for Frame {
@@ -140,6 +143,7 @@ impl Default for Frame {
         Frame {
             update_hz: engine.update_hz,
             draw: engine.draw.into(),
+            menu_draw: engine.draw.into(),
         }
     }
 }

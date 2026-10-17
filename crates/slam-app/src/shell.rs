@@ -14,7 +14,9 @@ use slam_audio::{
 };
 use slam_engine::clock::now_ns;
 use slam_engine::gl::SdlGlSurface;
-use slam_engine::{Draw, Engine, EngineConfig, FrameInfo, TickInfo, Update};
+use slam_engine::{
+    Draw, DrawRateControl, Engine, EngineConfig, EngineShared, FrameInfo, TickInfo, Update,
+};
 use slam_input::{
     CursorVisibility, InputEvent, InputKind, InputWindow, MouseButton, TickMapper, event_ring,
     sdl_ticks_ns,
@@ -37,6 +39,9 @@ use slam_ui::results::{
     ResultsSnapshot, ResultsView, StatKind,
 };
 use slam_ui::screen::{MAX_LAYERS, Nav, Navigated, Pose, ScreenStack};
+use slam_ui::settings_screen::{
+    SettingsAction, SettingsInput, SettingsLayout, SettingsScreen, SettingsSnapshot, SettingsView,
+};
 use slam_ui::song_select::{
     SongList, SongSelect, SongSelectAction, SongSelectInput, SongSelectLabels, SongSelectLayout,
     SongSelectSnapshot, SongSelectStatus, SongSelectView,
@@ -46,10 +51,16 @@ use slam_ui::theme::Theme;
 use crate::loader::{LoaderConfig, LoaderLink, SceneTrash, Trash};
 use crate::play::scene::{CHANNELS, PlayScene, PlaySettings, Prepared, SAMPLE_RATE};
 use crate::play::{device_limits, pack_size};
+use crate::settings::saver::SaveLink;
 use crate::settings::{Dirs, Settings};
 use crate::songs::{SongFiles, SongsLink};
 
+mod draw_rate;
 mod results;
+mod rows;
+
+pub use draw_rate::DrawRateSwitch;
+pub use rows::{Row, Rows, SECTIONS, round_for_save};
 
 pub const USAGE: &str = "usage: slam-app [--songs DIR]\n\
                          slam-app [bench|click|click-analyze|play|i18n] ...\n\
@@ -71,6 +82,7 @@ const GLYPH_WARM_TIMEOUT: Duration = Duration::from_secs(1);
 const KEY_ENTER: u16 = 40;
 const KEY_ESCAPE: u16 = 41;
 const KEY_R: u16 = 21;
+const KEY_TAB: u16 = 43;
 const KEY_HOME: u16 = 74;
 const KEY_PAGE_UP: u16 = 75;
 const KEY_END: u16 = 77;
@@ -92,10 +104,16 @@ pub enum AppScreen {
     Play(u64),
     /// The score of a passed play.
     Results(Results),
+    /// The settings; the values being edited live in [`ShellState`].
+    Settings(Box<SettingsScreen>),
 }
 
-/// What the draw thread needs to draw a screen.
+/// What the draw thread needs to draw a screen. The settings' snapshot is large (about 24
+/// row widgets, roughly 1 KB per `ScreenView`, times `MAX_LAYERS`, copied through the
+/// triple buffer every tick), but it is written every tick: a box would allocate on the
+/// update thread.
 #[derive(Clone, Debug)]
+#[allow(clippy::large_enum_variant)]
 pub enum ScreenView {
     Menu(MenuSnapshot),
     SongSelect(SongSelectSnapshot),
@@ -103,6 +121,7 @@ pub enum ScreenView {
     /// a play going out leaves at once instead of sliding with a stale snapshot.
     Play(u64),
     Results(ResultsSnapshot),
+    Settings(SettingsSnapshot),
 }
 
 #[derive(Clone, Debug)]
@@ -127,6 +146,7 @@ pub struct ShellState {
     layout: MenuLayout,
     song_layout: SongSelectLayout,
     results_layout: ResultsLayout,
+    settings_layout: SettingsLayout,
     song_select: SongSelect,
     /// The library's end, without a songs folder `None`.
     songs: Option<SongsLink>,
@@ -154,6 +174,14 @@ pub struct ShellState {
     /// The results went back to the song select: the track they played on stops, not yet
     /// taken by [`ShellState::take_track_stop`].
     track_stop: bool,
+    /// The settings in force: what the file said, then what the settings screen committed.
+    settings: Settings,
+    /// The options of the settings screen's dropdowns, fixed for the run.
+    rows: Rows,
+    /// The settings being edited while the screen is open; committed when it closes.
+    editing: Option<Settings>,
+    /// Settings to write to the file, not yet taken by [`ShellState::take_save_request`].
+    save_request: Option<Box<Settings>>,
     /// Last cursor position in pixels.
     cursor: [f32; 2],
     /// Input arrives in window points, layout is in pixels.
@@ -172,6 +200,7 @@ impl ShellState {
             layout: MenuLayout::new(width, height, &theme),
             song_layout: SongSelectLayout::new(width, height, &theme),
             results_layout: ResultsLayout::new(width, height, &theme),
+            settings_layout: SettingsLayout::new(width, height, &theme),
             song_select,
             songs: None,
             files: Arc::clone(&empty.1),
@@ -184,6 +213,10 @@ impl ShellState {
             held_results: Vec::new(),
             retry_request: false,
             track_stop: false,
+            settings: Settings::default(),
+            rows: Rows::new(&Settings::default()),
+            editing: None,
+            save_request: None,
             theme,
             cursor: [0.0, 0.0],
             pixels_per_point,
@@ -197,6 +230,53 @@ impl ShellState {
         self.song_select.set_status(self.library_status);
         self.songs = Some(songs);
         self
+    }
+
+    /// A shell for a window started with `settings`.
+    pub fn with_settings(mut self, settings: Settings) -> ShellState {
+        self.rows = Rows::new(&settings);
+        self.settings = settings;
+        self
+    }
+
+    /// The settings in force.
+    pub fn settings(&self) -> &Settings {
+        &self.settings
+    }
+
+    /// The options of the settings screen's rows.
+    pub fn rows(&self) -> &Rows {
+        &self.rows
+    }
+
+    /// The settings the player changed, to write to the file, once. Taking them is up to
+    /// the update thread, which hands them to the saver thread.
+    pub fn take_save_request(&mut self) -> Option<Box<Settings>> {
+        self.save_request.take()
+    }
+
+    /// Puts back a request the saver could not take yet.
+    pub fn requeue_save_request(&mut self, settings: Box<Settings>) {
+        // A newer request wins.
+        self.save_request.get_or_insert(settings);
+    }
+
+    /// Commits the edits of a settings screen still open, as closing it does.
+    pub fn commit_editing(&mut self) {
+        commit_settings(
+            &mut self.settings,
+            &mut self.editing,
+            &mut self.save_request,
+        );
+    }
+
+    /// Whether a play is on a visible layer, in a transition too (ADR-0047).
+    pub fn gameplay_visible(&self, now_ns: u64) -> bool {
+        self.stack
+            .layers(now_ns)
+            .iter()
+            .flatten()
+            .any(|(screen, _)| matches!(screen, AppScreen::Play(_)))
     }
 
     /// Whether a difficulty is being prepared to play.
@@ -312,6 +392,7 @@ impl ShellState {
         self.layout = MenuLayout::new(width, height, &self.theme);
         self.song_layout = SongSelectLayout::new(width, height, &self.theme);
         self.results_layout = ResultsLayout::new(width, height, &self.theme);
+        self.settings_layout = SettingsLayout::new(width, height, &self.theme);
     }
 
     /// The input of the screens, as the song select (the larger set) understands it, and
@@ -323,6 +404,7 @@ impl ShellState {
                 down: true,
             } => match scancode {
                 KEY_R => return Some(ScreenInput::Retry),
+                KEY_TAB => return Some(ScreenInput::Tab),
                 KEY_UP => SongSelectInput::Up,
                 KEY_DOWN => SongSelectInput::Down,
                 KEY_LEFT => SongSelectInput::Left,
@@ -339,6 +421,10 @@ impl ShellState {
                 button: MouseButton::X1,
                 down: true,
             } => SongSelectInput::Back,
+            InputKind::MouseButton {
+                button: MouseButton::Left,
+                down: false,
+            } => return Some(ScreenInput::Release),
             InputKind::MouseButton {
                 button: MouseButton::Left,
                 down: true,
@@ -388,6 +474,11 @@ impl ShellState {
                         .and_then(|input| menu.input(input, &self.layout))
                     {
                         Some(MenuAction::Play) => Some(Nav::Push(AppScreen::SongSelect)),
+                        Some(MenuAction::Settings) => Some(Nav::Push(open_settings(
+                            &self.rows,
+                            &self.settings,
+                            &mut self.editing,
+                        ))),
                         Some(MenuAction::Exit) => Some(Nav::Exit),
                         None => None,
                     }
@@ -438,6 +529,27 @@ impl ShellState {
                         None => None,
                     }
                 }
+                AppScreen::Settings(screen) => {
+                    let action = settings_input(input)
+                        .and_then(|input| screen.input(input, &self.settings_layout));
+                    match action {
+                        Some(SettingsAction::Changed { row, value }) => {
+                            if let Some(editing) = &mut self.editing {
+                                self.rows.apply(editing, row, value);
+                            }
+                            None
+                        }
+                        Some(SettingsAction::Close) => {
+                            commit_settings(
+                                &mut self.settings,
+                                &mut self.editing,
+                                &mut self.save_request,
+                            );
+                            Some(Nav::Pop)
+                        }
+                        None => None,
+                    }
+                }
                 // The play takes its input from the window's play host.
                 AppScreen::Play(_) => None,
             };
@@ -468,6 +580,7 @@ impl ShellState {
                     AppScreen::Menu(menu) => ScreenView::Menu(menu.snapshot()),
                     AppScreen::SongSelect => ScreenView::SongSelect(self.song_select.snapshot()),
                     AppScreen::Results(results) => ScreenView::Results(results.snapshot()),
+                    AppScreen::Settings(settings) => ScreenView::Settings(settings.snapshot()),
                     AppScreen::Play(id) if std::ptr::eq(screen, top) => ScreenView::Play(*id),
                     AppScreen::Play(_) => return None,
                 };
@@ -478,20 +591,74 @@ impl ShellState {
     }
 }
 
-/// The input of a screen: the song select's set, plus the key of the results.
+/// The input of a screen: the song select's set, plus the key of the results and the two
+/// only the settings use.
 #[derive(Clone, Copy, Debug, PartialEq)]
 enum ScreenInput {
     Common(SongSelectInput),
     Retry,
+    /// The Tab key.
+    Tab,
+    /// The primary button released.
+    Release,
 }
 
 impl ScreenInput {
     fn common(self) -> Option<SongSelectInput> {
         match self {
             ScreenInput::Common(input) => Some(input),
-            ScreenInput::Retry => None,
+            _ => None,
         }
     }
+}
+
+/// The settings screen with the values in `editing` for the player to change; a snapshot
+/// of `settings` when it opens. Navigation.
+fn open_settings(rows: &Rows, settings: &Settings, editing: &mut Option<Settings>) -> AppScreen {
+    *editing = Some(settings.clone());
+    AppScreen::Settings(Box::new(SettingsScreen::new(
+        &rows.specs(settings),
+        SECTIONS,
+    )))
+}
+
+/// Makes the edited settings the ones in force, and asks for them to be saved, if they
+/// differ. The sliders' values are rounded to their steps first.
+fn commit_settings(
+    settings: &mut Settings,
+    editing: &mut Option<Settings>,
+    save_request: &mut Option<Box<Settings>>,
+) {
+    let Some(mut edited) = editing.take() else {
+        return;
+    };
+    round_for_save(&mut edited);
+    if edited != *settings {
+        *settings = edited.clone();
+        *save_request = Some(Box::new(edited));
+    }
+}
+
+/// The input as the settings screen understands it.
+fn settings_input(input: ScreenInput) -> Option<SettingsInput> {
+    Some(match input {
+        ScreenInput::Tab => SettingsInput::NextSection,
+        ScreenInput::Release => SettingsInput::PointerRelease,
+        ScreenInput::Retry => return None,
+        ScreenInput::Common(input) => match input {
+            SongSelectInput::Up => SettingsInput::Up,
+            SongSelectInput::Down => SettingsInput::Down,
+            SongSelectInput::Left => SettingsInput::Left,
+            SongSelectInput::Right => SettingsInput::Right,
+            SongSelectInput::PageUp => SettingsInput::PrevSection,
+            SongSelectInput::PageDown => SettingsInput::NextSection,
+            SongSelectInput::Activate => SettingsInput::Activate,
+            SongSelectInput::Back => SettingsInput::Back,
+            SongSelectInput::PointerMove { x, y } => SettingsInput::PointerMove { x, y },
+            SongSelectInput::PointerPress { x, y } => SettingsInput::PointerPress { x, y },
+            _ => return None,
+        },
+    })
 }
 
 /// Whether the play screen goes: the player quit, or the results show (a second after
@@ -512,6 +679,7 @@ fn after_play(results: Option<ResultsData>) -> Nav<AppScreen> {
 /// The input as the results understand it.
 fn results_input(input: ScreenInput) -> Option<ResultsInput> {
     Some(match input {
+        ScreenInput::Tab | ScreenInput::Release => return None,
         ScreenInput::Retry => ResultsInput::Retry,
         ScreenInput::Common(SongSelectInput::Back) => ResultsInput::Back,
         ScreenInput::Common(SongSelectInput::PointerMove { x, y }) => {
@@ -902,6 +1070,32 @@ struct Shell {
     points_per_pixel: f32,
     /// Set when the menu quits; the window closes then.
     exited: Arc<AtomicBool>,
+    /// Changes the draw thread's rate (ADR-0047).
+    draw_rate: DrawRateControl,
+    rate_switch: DrawRateSwitch,
+    /// Writes the settings file on its own thread; without a settings folder, `None`.
+    saver: Option<SaveLink>,
+}
+
+impl Shell {
+    /// Asks for the draw rate the visible screens call for, and hands changed settings to
+    /// the saver. Neither blocks, allocates or touches the disk.
+    fn apply_settings(&mut self, now_ns: u64) {
+        let gameplay = self.state.gameplay_visible(now_ns);
+        if let Some(mode) = self
+            .rate_switch
+            .next(gameplay, &self.state.settings().frame)
+        {
+            // Validated when the settings were read.
+            let _ = self.draw_rate.set_mode(mode);
+        }
+        if let Some(request) = self.state.take_save_request()
+            && let Some(saver) = &mut self.saver
+            && let Err(request) = saver.request(request)
+        {
+            self.state.requeue_save_request(request);
+        }
+    }
 }
 
 impl Update for Shell {
@@ -946,6 +1140,7 @@ impl Update for Shell {
                 }
             }
         }
+        self.apply_settings(now);
     }
 }
 
@@ -967,6 +1162,7 @@ struct View {
     menu: MenuView,
     song_select: SongSelectView,
     results: ResultsView,
+    settings: SettingsView,
     shapes: SpriteBatch,
     text: SpriteBatch,
     /// Scenes of plays the update thread starts, and the one shown.
@@ -1104,6 +1300,16 @@ impl Draw<ShellSnapshot> for View {
                     layer.pose,
                     r.white,
                 ),
+                ScreenView::Settings(settings) => self.settings.push(
+                    &mut self.shapes,
+                    &mut self.text,
+                    &mut self.glyphs,
+                    width,
+                    height,
+                    settings,
+                    layer.pose,
+                    r.white,
+                ),
                 // Drawn whole, without the transition's slide.
                 ScreenView::Play(_) => {}
             }
@@ -1181,6 +1387,7 @@ impl View {
         self.menu.request_glyphs(&mut self.glyphs)
             + self.song_select.request_glyphs(&mut self.glyphs)
             + self.results.request_glyphs(&mut self.glyphs)
+            + self.settings.request_glyphs(&mut self.glyphs)
     }
 }
 
@@ -1355,7 +1562,25 @@ pub fn run(settings: Settings) -> Result<(), String> {
     };
     let results = ResultsView::new(Arc::clone(&registry), theme, &results_labels);
 
-    let mut state = ShellState::new(theme, pixels_w as f32, pixels_h as f32, pixels_per_point);
+    let mut state = ShellState::new(theme, pixels_w as f32, pixels_h as f32, pixels_per_point)
+        .with_settings(settings.clone());
+    let settings_view = SettingsView::new(
+        Arc::clone(&registry),
+        theme,
+        &state.rows().specs(&settings),
+        &state.rows().labels(&localizer),
+    );
+    // Joined when `run` returns, after the engine: it writes what is still queued.
+    let (saver, saver_thread) = match Dirs::detect() {
+        Some(dirs) => match crate::settings::saver::spawn(dirs.settings_file()) {
+            Ok((link, thread)) => (Some(link), Some(thread)),
+            Err(e) => {
+                tracing::warn!("settings: cannot start the saver: {e}");
+                (None, None)
+            }
+        },
+        None => (None, None),
+    };
     // Joined when `run` returns, after the engine.
     let mut _library = None;
     if let Some(songs) = settings.paths.songs.clone() {
@@ -1411,6 +1636,9 @@ pub fn run(settings: Settings) -> Result<(), String> {
     });
 
     let exited = Arc::new(AtomicBool::new(false));
+    // The window opens on the menu: it starts at the menu's rate.
+    let menu_rate = settings.frame.menu_draw.to_limiter();
+    let draw_rate = DrawRateControl::new();
     let shell = Shell {
         state,
         host,
@@ -1418,6 +1646,9 @@ pub fn run(settings: Settings) -> Result<(), String> {
         layout_size: initial_size,
         points_per_pixel,
         exited: Arc::clone(&exited),
+        draw_rate: draw_rate.clone(),
+        rate_switch: DrawRateSwitch::new(menu_rate),
+        saver,
     };
     let draw = View {
         surface: Some(surface),
@@ -1427,6 +1658,7 @@ pub fn run(settings: Settings) -> Result<(), String> {
         menu,
         song_select,
         results,
+        settings: settings_view,
         shapes: SpriteBatch::with_capacity(MAX_SHAPES),
         text: SpriteBatch::with_capacity(MAX_GLYPH_SPRITES),
         scenes: Some(scene_rx),
@@ -1437,16 +1669,20 @@ pub fn run(settings: Settings) -> Result<(), String> {
         _quit: crate::bench::QuitOnDrop(window.quit_handle()),
     };
     let (mut sink, source) = event_ring(1024);
-    let engine = Engine::spawn(
+    let engine = Engine::spawn_shared(
         EngineConfig {
             update_hz: settings.frame.update_hz,
-            draw: settings.frame.draw.to_limiter(),
+            draw: menu_rate,
             ..EngineConfig::default()
         },
         shell,
         draw,
         ShellSnapshot::default(),
         source,
+        EngineShared {
+            counters: Arc::default(),
+            draw_rate,
+        },
     )
     .map_err(|e| e.to_string())?;
     sink.set_notify(engine.waker().as_notify());
@@ -1492,10 +1728,29 @@ pub fn run(settings: Settings) -> Result<(), String> {
         }
     }
     drop(stream);
+    // Closing the window saves, as leaving the settings screen does.
+    shell.state.commit_editing();
+    if let Some(mut link) = shell.saver.take() {
+        let deadline = Instant::now() + Duration::from_secs(1);
+        while let Some(request) = shell.state.take_save_request() {
+            if let Err(request) = link.request(request) {
+                shell.state.requeue_save_request(request);
+                if Instant::now() >= deadline {
+                    break;
+                }
+                std::thread::sleep(Duration::from_millis(5));
+            }
+        }
+    }
     drop(shell);
+    if let Some(thread) = saver_thread {
+        thread.finish();
+    }
     drop(window);
     ran.map_err(|e| e.to_string())
 }
 
+#[cfg(test)]
+mod settings_tests;
 #[cfg(test)]
 mod tests;
