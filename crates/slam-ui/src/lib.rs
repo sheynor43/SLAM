@@ -7,3 +7,4 @@ pub mod results;
 pub mod screen;
 pub mod song_select;
 pub mod theme;
+pub mod widgets;

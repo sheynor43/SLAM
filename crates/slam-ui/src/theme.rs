@@ -66,6 +66,29 @@ pub struct Theme {
     pub results_column_gap: f32,
     /// Colour of the rank letter of a silver rank (Hidden, Flashlight).
     pub rank_silver: Color,
+    /// Height of a settings widget row (toggle, slider, dropdown box, key binding box).
+    pub widget_height: f32,
+    /// Size of the texts inside widgets.
+    pub widget_text_size: f32,
+    /// Padding between a widget's edge and its text.
+    pub widget_pad: f32,
+    /// Size of a toggle's track.
+    pub widget_toggle_width: f32,
+    pub widget_toggle_height: f32,
+    /// Gap between a toggle's track and its knob.
+    pub widget_knob_pad: f32,
+    /// Thickness of a slider's track.
+    pub widget_track_height: f32,
+    /// Size of a slider's knob.
+    pub widget_knob_width: f32,
+    pub widget_knob_height: f32,
+    /// Width reserved for a slider's value text, and the gap before it.
+    pub widget_value_width: f32,
+    pub widget_value_gap: f32,
+    /// Fill of a switched-on toggle and of the filled part of a slider.
+    pub widget_accent_fill: Color,
+    /// Fill of an open dropdown list.
+    pub widget_popup_fill: Color,
 }
 
 impl Default for Theme {
@@ -124,6 +147,29 @@ impl Default for Theme {
             results_panel_width: 400.0,
             results_column_gap: 48.0,
             rank_silver: Color::rgb(0.78, 0.82, 0.88),
+            widget_height: 40.0,
+            widget_text_size: 20.0,
+            widget_pad: 12.0,
+            widget_toggle_width: 52.0,
+            widget_toggle_height: 28.0,
+            widget_knob_pad: 3.0,
+            widget_track_height: 6.0,
+            widget_knob_width: 14.0,
+            widget_knob_height: 26.0,
+            widget_value_width: 84.0,
+            widget_value_gap: 16.0,
+            widget_accent_fill: Color {
+                r: 1.0,
+                g: 0.4,
+                b: 0.7,
+                a: 0.85,
+            },
+            widget_popup_fill: Color {
+                r: 0.12,
+                g: 0.12,
+                b: 0.16,
+                a: 0.98,
+            },
         }
     }
 }
