@@ -2,6 +2,7 @@
 
 #[cfg(target_os = "linux")]
 mod alsa_delay;
+mod filter;
 mod game_clock;
 mod hal;
 mod mixer;
@@ -14,6 +15,7 @@ mod seqlock;
 mod tone;
 mod wasapi;
 
+pub use filter::{FilterKind, MAX_LOW_PASS_CUTOFF, MIN_HIGH_PASS_CUTOFF};
 pub use game_clock::{ClockError, ClockSnapshot, GameClock, TrackControl};
 pub use hal::{
     AudioCallback, AudioError, Backend, CallbackInfo, DeviceInfo, OutputStream, StreamConfig,
@@ -24,9 +26,9 @@ pub use mixer::{
     SAMPLE_CONCURRENCY, VoiceGroup, VoiceId, VoiceParams, VoiceStart, mixer,
 };
 pub use music::{
-    MAX_MUSIC_RATE, MIN_MUSIC_RATE, MUSIC_FADE_MS, MusicAnchor, MusicConfig, MusicError,
-    MusicEvent, MusicPlayer, MusicPosition, MusicSnapshot, MusicSource, MusicStats, TrackSource,
-    music,
+    MAX_MUSIC_FREQUENCY, MAX_MUSIC_RATE, MIN_MUSIC_RATE, MUSIC_FADE_MS, MusicAnchor, MusicConfig,
+    MusicError, MusicEvent, MusicPlayer, MusicPosition, MusicSnapshot, MusicSource, MusicStats,
+    TrackAdjustment, TrackSource, music,
 };
 pub use position::{AudioPosition, PositionSnapshot};
 pub use sample::{MAX_CHANNELS, MAX_SAMPLE_VALUES, Sample, SampleError};

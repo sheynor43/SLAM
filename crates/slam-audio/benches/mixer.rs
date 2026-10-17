@@ -16,7 +16,8 @@ mod bench {
 
     use criterion::{BenchmarkId, Criterion, criterion_group};
     use slam_audio::{
-        AudioCallback, CallbackInfo, MixerConfig, MusicConfig, Sample, TrackSource, VoiceParams,
+        AudioCallback, CallbackInfo, FilterKind, MixerConfig, MusicConfig, Sample, TrackAdjustment,
+        TrackSource, VoiceParams,
     };
 
     const RATE: u32 = 48_000;
@@ -240,12 +241,78 @@ mod bench {
         group.finish();
     }
 
+    /// Mixing the music read between frames, filtered, or both, as while failing
+    /// (ADR-0054). The frequency stays just under 1 so that the decoded audio lasts.
+    fn process_with_music_effects(c: &mut Criterion) {
+        let mut group = c.benchmark_group("mixer/process_128_frames_with_music_effects");
+        let frequency = TrackAdjustment::Frequency {
+            frequency: 0.9,
+            duration_ms: 0.0,
+        };
+        let filters = [
+            TrackAdjustment::Filter {
+                kind: FilterKind::LowPass,
+                cutoff_hz: 300.0,
+                duration_ms: 0.0,
+            },
+            TrackAdjustment::Filter {
+                kind: FilterKind::HighPass,
+                cutoff_hz: 300.0,
+                duration_ms: 0.0,
+            },
+        ];
+        let cases: [(&str, &[TrackAdjustment]); 3] = [
+            ("frequency", &[frequency]),
+            ("filters", &filters),
+            ("both", &[frequency, filters[0], filters[1]]),
+        ];
+        for (name, adjustments) in cases {
+            let (mut mixer, _handle) = slam_audio::mixer(&MixerConfig::default()).unwrap();
+            let (music, mut player) = slam_audio::music(&MusicConfig {
+                blocks: 32,
+                ..MusicConfig::default()
+            })
+            .unwrap();
+            mixer.set_music(music).unwrap();
+            player.load(track(10)).unwrap();
+            player.play().unwrap();
+            player.adjust(adjustments).unwrap();
+            let mut out = vec![0.0f32; 2 * BUFFER_FRAMES];
+            group.bench_function(name, |b| {
+                b.iter_custom(|iters| {
+                    let mut total = Duration::ZERO;
+                    for chunk_start in (0..iters).step_by(200) {
+                        player.seek(0).unwrap();
+                        mixer.process(&mut out, &info());
+                        std::thread::sleep(Duration::from_millis(20));
+                        let n = (iters - chunk_start).min(200);
+                        let start = Instant::now();
+                        for _ in 0..n {
+                            mixer.process(black_box(&mut out), &info());
+                        }
+                        total += start.elapsed();
+                    }
+                    total
+                });
+            });
+            let underruns = player
+                .stats()
+                .underruns
+                .load(std::sync::atomic::Ordering::Relaxed);
+            if underruns > 0 {
+                eprintln!("warning: {underruns} music underruns while measuring");
+            }
+        }
+        group.finish();
+    }
+
     criterion_group!(
         benches,
         enqueue,
         process,
         process_controlled,
-        process_with_music
+        process_with_music,
+        process_with_music_effects
     );
 }
 

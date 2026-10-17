@@ -12,6 +12,7 @@ use slam_play::circles::{
     CircleMods, CircleSettings, CircleSkinConfig, CircleStyle, CircleVisuals, HitCircles,
 };
 use slam_play::cursor::{CursorView, MAX_CURSOR_SPRITES};
+use slam_play::fail::FailFrame;
 use slam_play::hud::OFFSET_PLACEHOLDER;
 use slam_play::judgements::JudgementView;
 use slam_play::resume::MAX_TARGET_SPRITES;
@@ -27,13 +28,15 @@ use slam_play::{
 };
 use slam_render::gl::{GlDevice, GlTexture};
 use slam_render::slider::{SliderBuffer, SliderDraw, SliderMesh, SliderRenderer};
-use slam_render::sprite::{DEFAULT_SLOTS, Projection, SpriteBatch, SpriteRenderer};
+use slam_render::sprite::{
+    Affine, DEFAULT_SLOTS, Projection, Sprite, SpriteBatch, SpriteRenderer, tint_srgb,
+};
 use slam_render::textures::Textures;
 use slam_render::upload::{
     TextureHandle, TextureKind, TextureLoaderConfig, TextureRequests, TextureState, TextureUploads,
     texture_loader,
 };
-use slam_render::{Device, Extent, Limits, shaders};
+use slam_render::{Color, Device, Extent, Limits, shaders};
 use slam_skin::{Skin, SkinChain};
 use slam_text::{FontRegistry, GlyphAtlasConfig, GlyphCache, glyph_atlas};
 use slam_ui::i18n::{FluentArgs, Localizer};
@@ -207,17 +210,17 @@ pub fn prepare(
     let beatmap = &loaded.beatmap;
 
     let mut cache = SampleCache::new(SAMPLE_RATE, CHANNELS);
-    let hitsounds = Hitsounds::new(
-        beatmap,
-        SampleSkins {
-            // Like lazer's `AllowSampleLookup`, disabled beatmap hitsounds drop the whole
-            // beatmap skin from the sample lookup.
-            beatmap: settings.beatmap_hitsounds.then_some(&loaded.beatmap_skin),
-            chain: &loaded.skins,
-        },
-        &mut cache,
-    );
-    let sounds = GameplaySounds::new(beatmap, hitsounds, SoundSettings::for_mods(mods));
+    let sample_skins = SampleSkins {
+        // Like lazer's `AllowSampleLookup`, disabled beatmap hitsounds drop the whole
+        // beatmap skin from the sample lookup.
+        beatmap: settings.beatmap_hitsounds.then_some(&loaded.beatmap_skin),
+        chain: &loaded.skins,
+    };
+    let hitsounds = Hitsounds::new(beatmap, sample_skins, &mut cache);
+    // Ported from osu!lazer 2026.1005.0-lazer: osu.Game/Screens/Play/FailAnimationContainer.cs (load)
+    let fail_sound = slam_play::hitsounds::effect("Gameplay/failsound", sample_skins, &mut cache);
+    let sounds = GameplaySounds::new(beatmap, hitsounds, SoundSettings::for_mods(mods))
+        .with_fail_sound(fail_sound);
     let circle_mods = CircleMods::new(mods);
     let windows = slam_osu::hit_windows::HitWindows::new(beatmap.difficulty.overall_difficulty);
     let circle_settings = CircleSettings {
@@ -467,8 +470,23 @@ impl PlayScene {
                 TextureState::Ready(region) => Some(region),
                 _ => None,
             });
+        let time = snapshot.time_at(now_ns);
+        let fail = FailFrame::new(snapshot.fail, time, now_ns, width, height);
         self.background_view
             .push(&mut self.batch, width, height, snapshot, now_ns, background);
+        // The game layer: everything up to the menus (lazer's `FailAnimationContainer`
+        // content), with a black box behind it once the play fails.
+        let layer_first = self.batch.len();
+        if let Some(fail) = &fail {
+            let grey = fail.background_grey;
+            self.batch
+                .transform_from(0, &Affine::IDENTITY, [grey, grey, grey, 1.0]);
+            if let Some(white) = textures.white {
+                let mut black = Sprite::new(white.texture, white.uv, [0.0, 0.0], [width, height]);
+                black.colour = Color::BLACK;
+                self.batch.push(&black);
+            }
+        }
         self.view.push(
             &mut self.batch,
             &mut self.bodies,
@@ -487,6 +505,13 @@ impl PlayScene {
             .push_text(&mut self.text, snapshot, now_ns, &mut self.glyphs);
         self.view
             .push_cursor(&mut self.cursor, &layout, snapshot, now_ns, &textures);
+        let layer = fail.map_or(Affine::IDENTITY, |fail| fail.layer);
+        let layer_tint = fail.map_or([1.0; 4], |fail| fail.layer_tint());
+        if fail.is_some() {
+            self.batch.transform_from(layer_first, &layer, layer_tint);
+            self.text.transform_from(0, &layer, layer_tint);
+            self.cursor.transform_from(0, &layer, layer_tint);
+        }
         if let Some(white) = textures.white {
             self.menu
                 .push_shapes(&mut self.menu_shapes, &snapshot.menu, now_ns, white);
@@ -527,7 +552,10 @@ impl PlayScene {
                     continue;
                 };
                 let origin = layout.to_window(body.position);
-                let path = projection.scaled(layout.scale(), [origin.x, origin.y]);
+                let path = projection
+                    .transformed(&layer.then_after(&body.transform))
+                    .scaled(layout.scale(), [origin.x, origin.y]);
+                let tint = tint_srgb(body.tint, layer_tint);
                 let _ = r.sliders.draw(
                     device,
                     buffer,
@@ -535,7 +563,7 @@ impl PlayScene {
                         projection: &path,
                         radius: body.radius,
                         range: body.range,
-                        tint: body.tint,
+                        tint,
                         gradient: self.view.sliders.visuals.gradient(body.gradient),
                     },
                     None,

@@ -575,6 +575,7 @@ fn host(name: &str, with_track: bool) -> HostFixture {
         pending: Pending::Idle,
         game: None,
         retiring: None,
+        track_reset: false,
         next_request: 0,
         points: [1280.0, 720.0],
         input: PlayInput::new(&Settings::default()),
@@ -655,6 +656,43 @@ fn a_play_starts_with_its_scene_and_ends_back_in_the_list() {
     fixture.host.advance(now + 2 + VOICES_IDLE_NS, &mut s);
     assert!(fixture.host.retiring.is_none());
     assert!(matches!(fixture.host.pending, Pending::Idle));
+}
+
+#[test]
+fn a_play_that_ends_resets_the_track_once_its_queue_takes_it() {
+    let mut fixture = host("track-reset", true);
+    let (mut s, mut snap) = listing(&fixture);
+    s.tick(TRANSITION_NS + 1, &[key(KEY_ENTER)], &mut snap);
+    let now = advance_until(&mut fixture, &mut s, TRANSITION_NS + 1, |_, s| s.playing());
+    // While a play owns the track, its session gives it its sound.
+    fixture.host.track_reset = true;
+    fixture.host.advance(now + 1, &mut s);
+    assert!(fixture.host.track_reset);
+    fixture.host.track_reset = false;
+
+    // No callback runs: fill the music queue, then quit.
+    while fixture.host.audio.player.pause().is_ok() {}
+    fixture.host.game.as_mut().unwrap().ending = Ending::Sounds;
+    fixture.host.advance(now + 2, &mut s);
+    assert!(fixture.host.game.is_none());
+    assert!(
+        fixture.host.track_reset,
+        "the queue is full: tried again later"
+    );
+    fixture.host.advance(now + 3, &mut s);
+    assert!(fixture.host.track_reset);
+    // The callback takes the queued commands; the next tick resets the track.
+    let mut out = vec![0.0f32; usize::from(CHANNELS) * 64];
+    let info = slam_audio::CallbackInfo {
+        frame: 0,
+        timestamp_ns: 0,
+        latency_ns: 0,
+        sample_rate: SAMPLE_RATE,
+        channels: CHANNELS,
+    };
+    slam_audio::AudioCallback::process(&mut fixture._mixer, &mut out, &info);
+    fixture.host.advance(now + 4, &mut s);
+    assert!(!fixture.host.track_reset);
 }
 
 #[test]

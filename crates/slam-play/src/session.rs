@@ -32,6 +32,7 @@ use crate::cursor::{
     CursorFrame, CursorPath, CursorSkinConfig, CursorSources, CursorTextures, CursorView,
     ExpandTimes, ExpandTracker,
 };
+use crate::fail::{FailFrame, FailView, TrackEffects};
 use crate::follow_points::{FollowPoints, MAX_FOLLOW_POINT_SIZE};
 use crate::gameplay_sounds::{GameplaySounds, VoiceSink};
 use crate::hit_error::{
@@ -63,9 +64,9 @@ use crate::time::Offsets;
 pub const PAUSE_COOLDOWN: f64 = 1000.0;
 
 // Ported from osu!lazer 2026.1005.0-lazer: osu.Game/Screens/Play/FailAnimationContainer.cs (duration)
-/// How long gameplay runs on after failing, in nanoseconds of real time. Lazer slows the
-/// track down to a stop meanwhile; here it runs at its speed, then stops.
-pub const FAIL_ANIMATION_NS: u64 = 2_500_000_000;
+/// How long gameplay runs on after failing, in nanoseconds of real time, while the track
+/// slows down to a stop ([`crate::fail`]).
+pub const FAIL_ANIMATION_NS: u64 = crate::fail::FAIL_DURATION_NS;
 
 // Ported from osu!lazer 2026.1005.0-lazer: osu.Game/Screens/Play/Player.cs (RESULTS_DISPLAY_DELAY)
 /// How long gameplay runs on after passing before the results show, in nanoseconds of real
@@ -205,6 +206,8 @@ pub struct PlaySnapshot {
     pub restarts: u32,
     /// The pause or fail menu.
     pub menu: MenuSnapshot,
+    /// When the play failed: the fail animation runs from then on.
+    pub fail: Option<FailView>,
     /// The beatmap offset and its panel.
     pub offset_panel: OffsetPanel,
     pub circles: LiveCircles,
@@ -236,6 +239,7 @@ impl Default for PlaySnapshot {
             exit_progress: 0.0,
             restarts: 0,
             menu: MenuSnapshot::default(),
+            fail: None,
             offset_panel: OffsetPanel::default(),
             circles: LiveCircles::new(),
             sliders: LiveSliders::new(),
@@ -345,6 +349,12 @@ pub struct PlaySession {
     initial: Initial,
     /// Clock commands that failed (queue full); retried on the next tick.
     clock_errors: u64,
+    /// What the track should sound like, and what it was last given (`None` before the
+    /// first tick: the previous play may have left it failing).
+    track_effects: TrackEffects,
+    applied_effects: Option<TrackEffects>,
+    /// When the play failed.
+    fail: Option<FailView>,
 }
 
 impl PlaySession {
@@ -435,6 +445,9 @@ impl PlaySession {
             menu_restart: false,
             playable,
             clock_errors: 0,
+            track_effects: TrackEffects::Neutral,
+            applied_effects: None,
+            fail: None,
         }
     }
 
@@ -537,6 +550,7 @@ impl PlaySession {
                     Ok(()) => self.started = true,
                     Err(_) => self.clock_errors += 1,
                 }
+                self.sync_track(track);
                 return self.waiting(events, snapshot);
             }
             None => return self.waiting(events, snapshot),
@@ -648,7 +662,7 @@ impl PlaySession {
         if let Phase::Failing { until_ns } = self.phase
             && now_ns >= until_ns
         {
-            self.complete_fail(now_ns, sink);
+            self.complete_fail(now_ns, sink, false);
         }
         if let Phase::Passed { results_at_ns } = self.phase
             && now_ns >= results_at_ns
@@ -696,6 +710,7 @@ impl PlaySession {
         if self.sync_clock(now_ns, track).is_err() {
             self.clock_errors += 1;
         }
+        self.sync_track(track);
 
         snapshot.state = match self.phase {
             Phase::Playing => PlayState::Playing,
@@ -798,9 +813,17 @@ impl PlaySession {
             if self.mods.restart_on_fail() {
                 self.restart_on_fail = true;
             } else {
+                // Ported from osu!lazer 2026.1005.0-lazer: osu.Game/Screens/Play/FailAnimationContainer.cs (Start)
                 self.phase = Phase::Failing {
                     until_ns: now_ns.saturating_add(FAIL_ANIMATION_NS),
                 };
+                self.track_effects = TrackEffects::Failing;
+                self.sounds.play_fail(sink);
+                self.fail = Some(FailView {
+                    time: step_time,
+                    at_ns: now_ns,
+                    cut: false,
+                });
             }
         }
 
@@ -839,7 +862,7 @@ impl PlaySession {
                 }
             }
             // The fail animation is cut short; the fail overlay shows.
-            Phase::Failing { .. } => self.complete_fail(now_ns, sink),
+            Phase::Failing { .. } => self.complete_fail(now_ns, sink, true),
             // Passed, pausing is over (`ValidForResume` is false): the exit goes on.
             Phase::Passed { .. } | Phase::Results => self.perform_exit(sink),
             Phase::Exited => {}
@@ -941,10 +964,17 @@ impl PlaySession {
         self.input.resume();
     }
 
-    // Ported from osu!lazer 2026.1005.0-lazer: osu.Game/Screens/Play/Player.cs (onFailComplete)
-    fn complete_fail(&mut self, now_ns: u64, sink: &mut impl VoiceSink) {
+    // Ported from osu!lazer 2026.1005.0-lazer: osu.Game/Screens/Play/Player.cs (onFailComplete, PerformExitWithConfirmation)
+    // Ported from osu!lazer 2026.1005.0-lazer: osu.Game/Screens/Play/FailAnimationContainer.cs (Start)
+    /// The fail animation ends, or Back cut it short (`cut`): its transforms jump to their
+    /// end.
+    fn complete_fail(&mut self, now_ns: u64, sink: &mut impl VoiceSink, cut: bool) {
         self.phase = Phase::Failed;
         self.run = false;
+        self.track_effects = TrackEffects::Failed;
+        if let Some(fail) = &mut self.fail {
+            fail.cut = cut;
+        }
         self.sounds.stop_all(sink);
         self.input.suspend();
         self.show_menu(MenuKind::Fail, now_ns);
@@ -957,6 +987,9 @@ impl PlaySession {
         self.phase = Phase::Exited;
         self.run = false;
         self.sounds.stop_all(sink);
+        // Ported from osu!lazer 2026.1005.0-lazer: osu.Game/Screens/Play/Player.cs (OnExiting)
+        self.sounds.stop_fail(sink);
+        self.track_effects = TrackEffects::Neutral;
         self.input.suspend();
         // The player screen goes with its menu.
         self.menu.reset();
@@ -976,6 +1009,10 @@ impl PlaySession {
         self.skip = self.initial.skip;
         // A stop that did not queue is retried by the sounds' next update.
         self.sounds.reset(sink);
+        // The old player's fail animation goes with it (`OnExiting`).
+        self.sounds.stop_fail(sink);
+        self.track_effects = TrackEffects::Neutral;
+        self.fail = None;
         self.input.reset();
         self.phase = Phase::Playing;
         self.pending_seek = Some(self.start_time);
@@ -1019,6 +1056,18 @@ impl PlaySession {
         }
     }
 
+    /// Gives the track the effects wanted, if it does not have them; a full queue retries on
+    /// the next tick.
+    fn sync_track(&mut self, track: &mut impl TrackControl) {
+        if self.applied_effects == Some(self.track_effects) {
+            return;
+        }
+        match track.adjust(&self.track_effects.adjustments()) {
+            Ok(()) => self.applied_effects = Some(self.track_effects),
+            Err(_) => self.clock_errors += 1,
+        }
+    }
+
     fn waiting(&mut self, events: &[InputEvent], snapshot: &mut PlaySnapshot) {
         // The modifiers held count once the play starts; actions do nothing yet.
         for event in events {
@@ -1043,6 +1092,7 @@ impl PlaySession {
         snapshot.exit_progress = 0.0;
         snapshot.restarts = self.restarts;
         snapshot.menu = self.menu.snapshot();
+        snapshot.fail = None;
         snapshot.offset_panel = self.offset_panel;
         snapshot.judgements.clone_from(&self.popups);
         snapshot.hit_errors.clone_from(&self.hit_errors);
@@ -1065,6 +1115,7 @@ impl PlaySession {
         snapshot.exit_progress = self.hotkeys.exit_progress(now_ns);
         snapshot.restarts = self.restarts;
         snapshot.menu = self.menu.snapshot();
+        snapshot.fail = self.fail;
         snapshot.judgements.clone_from(&self.popups);
         snapshot.hit_errors.clone_from(&self.hit_errors);
         snapshot.circles.capture(&self.rules);
@@ -1702,12 +1753,16 @@ impl PlayView {
         bodies.clear();
         if snapshot.state != PlayState::Waiting {
             let time = snapshot.time_at(now_ns);
+            let [width, height] = layout.window_size();
+            let fail = FailFrame::new(snapshot.fail, time, now_ns, width, height);
+            let fail = fail.as_ref();
             self.spinners.push(
                 batch,
                 layout,
                 snapshot.spinners.as_slice(),
                 time,
                 &textures.spinners,
+                fail,
             );
             self.follow_points
                 .push(batch, layout, time, &textures.follow_points);
@@ -1727,6 +1782,7 @@ impl PlayView {
                     circles: &textures.circles,
                     sliders: &textures.sliders,
                 },
+                fail,
             );
             judgements.push_above(batch, layout, time, &textures.judgements);
             push_approaches(
@@ -1738,6 +1794,7 @@ impl PlayView {
                 snapshot.sliders.as_slice(),
                 time,
                 &textures.circles,
+                fail,
             );
         }
     }

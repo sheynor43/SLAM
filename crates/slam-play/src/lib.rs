@@ -3,6 +3,7 @@
 pub mod background;
 pub mod circles;
 pub mod cursor;
+pub mod fail;
 pub mod follow_points;
 pub mod fps_counter;
 pub mod gameplay_sounds;

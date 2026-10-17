@@ -71,6 +71,13 @@ const HITSOUND: VoiceParams = VoiceParams {
     group: VoiceGroup::Hitsounds,
 };
 
+/// Start of the fail sound: lazer's `FailAnimationContainer` plays it outside the
+/// ruleset's samples, under the effects volume.
+const EFFECT: VoiceParams = VoiceParams {
+    group: VoiceGroup::Effects,
+    ..HITSOUND
+};
+
 /// Where gameplay sounds go: the mixer, or a recorder in tests.
 pub trait VoiceSink {
     /// Starts a voice (see [`MixerHandle::play_voice`]).
@@ -303,6 +310,10 @@ pub struct GameplaySounds {
     previous_time: f64,
     /// Mixer commands that failed (queue full or a sample in the wrong format).
     failed: u64,
+    /// The skin's `failsound`, if it has one.
+    fail: Option<Arc<Sample>>,
+    /// The fail sound playing, or [`VoiceId::NONE`].
+    fail_voice: VoiceId,
 }
 
 impl GameplaySounds {
@@ -379,14 +390,43 @@ impl GameplaySounds {
                 })
                 .collect(),
             spinning: Vec::with_capacity(spinners as usize),
+            // And the fail sound: one at a time; a second one whose stop never queued (a
+            // full queue over restarts) is left to the shell's `stop_all`.
             pending_stops: Vec::with_capacity(
-                balls.len() * MAX_SLIDING_SAMPLES + spinners as usize,
+                balls.len() * MAX_SLIDING_SAMPLES + spinners as usize + 1,
             ),
             balls,
             seen: 0,
             previous_time: f64::NEG_INFINITY,
             failed: 0,
+            fail: None,
+            fail_voice: VoiceId::NONE,
         }
+    }
+
+    /// Plays `sample` on failing ([`hitsounds::effect`](crate::hitsounds::effect) of
+    /// `failsound`); no sound without one.
+    pub fn with_fail_sound(mut self, sample: Option<Arc<Sample>>) -> Self {
+        self.fail = sample;
+        self
+    }
+
+    // Ported from osu!lazer 2026.1005.0-lazer: osu.Game/Screens/Play/FailAnimationContainer.cs (Start)
+    /// Plays the fail sound, as the fail animation starts.
+    pub fn play_fail(&mut self, sink: &mut impl VoiceSink) {
+        let Some(sample) = &self.fail else { return };
+        match sink.play_voice(sample, EFFECT) {
+            Ok(voice) => self.fail_voice = voice,
+            Err(_) => self.failed += 1,
+        }
+    }
+
+    // Ported from osu!lazer 2026.1005.0-lazer: osu.Game/Screens/Play/FailAnimationContainer.cs (Stop)
+    /// Stops the fail sound, as the player screen goes; it plays on under the fail menu.
+    /// A stop that does not queue is retried with the looping samples' stops.
+    pub fn stop_fail(&mut self, sink: &mut impl VoiceSink) {
+        let voice = std::mem::replace(&mut self.fail_voice, VoiceId::NONE);
+        self.stop_looping(voice, sink);
     }
 
     /// The settings in use.

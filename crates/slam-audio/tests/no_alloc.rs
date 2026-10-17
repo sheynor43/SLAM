@@ -4,9 +4,9 @@
 use std::sync::Arc;
 
 use slam_audio::{
-    AudioCallback, AudioPosition, CallbackInfo, ClockError, GameClock, MixerConfig, MusicConfig,
-    MusicEvent, PlayError, PositionSnapshot, Sample, SineTone, TrackSource, VoiceGroup, VoiceId,
-    VoiceParams,
+    AudioCallback, AudioPosition, CallbackInfo, ClockError, FilterKind, GameClock, MixerConfig,
+    MusicConfig, MusicEvent, PlayError, PositionSnapshot, Sample, SineTone, TrackAdjustment,
+    TrackSource, VoiceGroup, VoiceId, VoiceParams,
 };
 use slam_testkit::assert_no_alloc;
 
@@ -209,14 +209,33 @@ fn music_commands_and_mixing_do_not_allocate() {
     // The decoder thread allocates freely; only this thread is counted.
     assert_no_alloc(|| {
         for round in 0..200u64 {
-            match round % 6 {
+            match round % 7 {
                 0 => player.play().unwrap(),
                 // The decoder may lag behind this burst of commands: a full queue
                 // is a valid answer, not an allocation.
                 1 => queued(player.seek(round * 37 % 4_000)),
                 2 => player.set_volume(0.5).unwrap(),
                 3 => player.pause().unwrap(),
-                4 => queued(player.set_rate(if round % 12 == 4 { 1.5 } else { 1.0 })),
+                4 => queued(player.set_rate(if round % 14 == 4 { 1.5 } else { 1.0 })),
+                // Frequency moves and filters: the callback reads between frames and
+                // filters in chunks.
+                5 => queued(player.adjust(&[
+                    TrackAdjustment::Frequency {
+                        frequency: if round % 14 == 5 { 0.0 } else { 1.0 },
+                        duration_ms: 20.0,
+                    },
+                    TrackAdjustment::Volume(0.5),
+                    TrackAdjustment::Filter {
+                        kind: FilterKind::LowPass,
+                        cutoff_hz: if round % 14 == 5 { 300.0 } else { 22_049.0 },
+                        duration_ms: 20.0,
+                    },
+                    TrackAdjustment::Filter {
+                        kind: FilterKind::HighPass,
+                        cutoff_hz: if round % 14 == 5 { 300.0 } else { 1.0 },
+                        duration_ms: 0.0,
+                    },
+                ])),
                 _ => handle.play(&hit, 0.5).unwrap(),
             }
             for frames in [1usize, 64, 128, 1024] {

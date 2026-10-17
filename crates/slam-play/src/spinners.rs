@@ -32,6 +32,7 @@ use slam_render::{Blend, Color};
 use slam_skin::{Rgba, SkinChain, SkinSource};
 
 use crate::circles::{CircleMods, Easing, Kind, SkinSprite, Track, centred, to_linear, to_srgb};
+use crate::fail::FailFrame;
 use crate::legacy_text::{Digits, LegacyFont};
 use crate::playfield::PlayfieldLayout;
 
@@ -890,14 +891,22 @@ impl HitSpinners {
         spinners: &[SpinnerEntry],
         time: f64,
         textures: &SpinnerTextures,
+        fail: Option<&FailFrame>,
     ) {
         let Some(kind) = self.style.kind else {
             return;
         };
         for entry in spinners {
             if let Some(spinner) = self.visuals.get(entry.live.index) {
+                let first = batch.len();
                 let pose = spinner_pose(spinner, entry, time, &self.style);
                 self.push_spinner(batch, layout, kind, entry, spinner, &pose, time, textures);
+                if let Some(fail) = fail {
+                    let appear = spinner.start_time - spinner.time_preempt;
+                    let index = entry.live.index;
+                    let map = fail.drop(index, appear, spinner.position, layout);
+                    batch.transform_from(first, &map, [1.0, 1.0, 1.0, fail.objects_alpha]);
+                }
             }
         }
     }

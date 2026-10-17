@@ -454,7 +454,14 @@ fn the_new_style_draws_its_layers_around_the_centre() {
         tick_fade: None,
         spm: 0.0,
     };
-    spinners(SpinnerKind::NewStyle, &map).push(&mut batch, &layout, &[state], START, &textures());
+    spinners(SpinnerKind::NewStyle, &map).push(
+        &mut batch,
+        &layout,
+        &[state],
+        START,
+        &textures(),
+        None,
+    );
     assert_eq!(
         order(&batch),
         [
@@ -494,7 +501,14 @@ fn the_new_style_draws_its_layers_around_the_centre() {
         spm: 0.0,
     };
     batch.clear();
-    spinners(SpinnerKind::NewStyle, &map).push(&mut batch, &layout, &[glowing], START, &textures());
+    spinners(SpinnerKind::NewStyle, &map).push(
+        &mut batch,
+        &layout,
+        &[glowing],
+        START,
+        &textures(),
+        None,
+    );
     assert_eq!(order(&batch)[0], (GLOW.0, Blend::Additive));
     assert_eq!(batch.vertices()[0].colour[3], 0.5);
 }
@@ -508,7 +522,14 @@ fn the_old_style_draws_its_background_disc_and_metre() {
         progress: 0.3,
         ..live()
     });
-    spinners(SpinnerKind::OldStyle, &map).push(&mut batch, &layout, &[state], START, &textures());
+    spinners(SpinnerKind::OldStyle, &map).push(
+        &mut batch,
+        &layout,
+        &[state],
+        START,
+        &textures(),
+        None,
+    );
     assert_eq!(
         order(&batch).iter().map(|b| b.0).collect::<Vec<_>>(),
         [BACKGROUND.0, CIRCLE.0, METRE.0, APPROACH.0, SPIN.0]
@@ -534,7 +555,14 @@ fn nothing_is_drawn_without_a_legacy_spinner_or_before_the_fade_in() {
     let mut batch = SpriteBatch::new();
     let mut none = spinners(SpinnerKind::NewStyle, &map);
     none.style.kind = None;
-    none.push(&mut batch, &layout, &[entry(live())], START, &textures());
+    none.push(
+        &mut batch,
+        &layout,
+        &[entry(live())],
+        START,
+        &textures(),
+        None,
+    );
     assert_eq!(batch.len(), 0);
     spinners(SpinnerKind::NewStyle, &map).push(
         &mut batch,
@@ -542,6 +570,7 @@ fn nothing_is_drawn_without_a_legacy_spinner_or_before_the_fade_in() {
         &[entry(live())],
         START - 400.0,
         &textures(),
+        None,
     );
     assert_eq!(batch.len(), 0);
 }
@@ -566,6 +595,58 @@ fn spin_frames(from: f64, to: f64, period: f64) -> Vec<InputFrame> {
         time += 10.0;
     }
     frames
+}
+
+#[test]
+fn a_failed_spinner_falls_and_fades_without_allocating() {
+    let map = beatmap(&ModSet::default());
+    let layout = common::layout();
+    let hit = spinners(SpinnerKind::NewStyle, &map);
+    let textures = textures();
+    let entries = [entry(live())];
+    let time = START + 500.0;
+    let fail = slam_play::fail::FailView {
+        time: START,
+        at_ns: 0,
+        cut: false,
+    };
+    let (mut plain, mut failing) = (
+        SpriteBatch::with_capacity(64),
+        SpriteBatch::with_capacity(64),
+    );
+    assert_no_alloc(|| {
+        let [width, height] = layout.window_size();
+        let frame = slam_play::fail::FailFrame::new(Some(fail), time, 0, width, height);
+        hit.push(&mut plain, &layout, &entries, time, &textures, None);
+        hit.push(
+            &mut failing,
+            &layout,
+            &entries,
+            time,
+            &textures,
+            frame.as_ref(),
+        );
+    });
+    assert!(!plain.is_empty());
+    assert_eq!(plain.len(), failing.len());
+    // Every vertex where the fall takes it: about the spinner's position, from the fail
+    // (it was alive then).
+    let index = entries[0].live.index;
+    let position = map.hit_objects[index as usize].stacked_position();
+    let [width, height] = layout.window_size();
+    let frame = slam_play::fail::FailFrame::new(Some(fail), time, 0, width, height).unwrap();
+    let drop = frame.drop(index, f64::NEG_INFINITY, position, &layout);
+    for (f, p) in failing.vertices().iter().zip(plain.vertices()) {
+        let [x, y] = drop.apply(p.position);
+        assert!((f.position[0] - x).abs() < 1e-3 && (f.position[1] - y).abs() < 1e-3);
+    }
+    let pivot = layout.to_window(position);
+    let [_, y] = drop.apply([pivot.x, pivot.y]);
+    // 500 ms of 2500: a fifth of the way down (400 osu!px).
+    assert!((y - pivot.y - 80.0 * layout.scale()).abs() < 1e-3);
+    for (f, p) in failing.vertices().iter().zip(plain.vertices()) {
+        assert!((f.colour[3] - p.colour[3] * 0.6).abs() < 1e-5);
+    }
 }
 
 #[test]
@@ -599,8 +680,8 @@ fn a_frame_does_not_allocate() {
             spm.update(sim.rules(), time);
             live.capture(sim.rules(), &spm);
             batch.clear();
-            old.push(&mut batch, &layout, live.as_slice(), time, &textures);
-            new.push(&mut batch, &layout, live.as_slice(), time, &textures);
+            old.push(&mut batch, &layout, live.as_slice(), time, &textures, None);
+            new.push(&mut batch, &layout, live.as_slice(), time, &textures, None);
         });
         drawn += batch.len();
         if let Some(s) = live.as_slice().first() {
@@ -816,7 +897,14 @@ fn the_counters_are_drawn_in_the_score_font_below_the_spinner() {
     };
     let mut hit = spinners(SpinnerKind::NewStyle, &map);
     hit.style.score_overlap = 2.0;
-    hit.push(&mut batch, &layout, &[state], START, &counter_textures());
+    hit.push(
+        &mut batch,
+        &layout,
+        &[state],
+        START,
+        &counter_textures(),
+        None,
+    );
     let ids: Vec<u32> = order(&batch).iter().map(|b| b.0).collect();
     // The layers and approach circle, then the bonus "1050", the background, "307" and
     // "spin".

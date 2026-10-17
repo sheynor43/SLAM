@@ -18,7 +18,7 @@ use slam_osu::objects::{NestedKind, OBJECT_RADIUS, OsuHitObjectKind, curve_posit
 use slam_osu::rules::{CircleJudgement, LiveCircle, LiveSlider, OsuRules};
 use slam_osu::{Beatmap, SliderPath, Vec2};
 use slam_render::slider::{SliderGradient, SliderMesh};
-use slam_render::sprite::SpriteBatch;
+use slam_render::sprite::{Affine, SpriteBatch};
 use slam_skin::{Skin, SkinChain};
 
 use crate::circles::{
@@ -26,6 +26,7 @@ use crate::circles::{
     HitCircles, Kind, LEGACY_FADE_DURATION, MISS_WINDOW, PieceLayers, PieceTextures, SkinSprite,
     Track, centred, circle_pose, combo_colour, push_approach, tint, value_at,
 };
+use crate::fail::FailFrame;
 use crate::playfield::PlayfieldLayout;
 use crate::slider_body::{
     LegacyBodyColours, Snaking, SnakingTiming, body_mesh, range_distances, snaking_range,
@@ -1167,6 +1168,8 @@ pub struct BodyDraw {
     pub tint: [f32; 4],
     /// Index of the gradient in [`SliderVisuals::gradient`].
     pub gradient: usize,
+    /// Where the body goes in window pixels after it is placed (the fail animation's fall).
+    pub transform: Affine,
 }
 
 /// The slider bodies of a frame, in drawing order. Holds [`MAX_LIVE_SLIDERS`] without
@@ -1203,6 +1206,22 @@ impl SliderBodies {
             self.draws.push(draw);
         }
     }
+
+    pub fn len(&self) -> usize {
+        self.draws.len()
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.draws.is_empty()
+    }
+
+    /// Moves the bodies from the `first`-th on by `map` and multiplies their alpha.
+    pub fn transform_from(&mut self, first: usize, map: &Affine, alpha: f32) {
+        for draw in self.draws.iter_mut().skip(first) {
+            draw.transform = map.then_after(&draw.transform);
+            draw.tint[3] *= alpha;
+        }
+    }
 }
 
 /// Everything the draw side keeps to draw the sliders of a play.
@@ -1237,6 +1256,7 @@ pub fn push_objects(
     live_sliders: &LiveSliders,
     time: f64,
     textures: ObjectTextures<'_>,
+    fail: Option<&FailFrame>,
 ) {
     let style = &hit_circles.style;
     let snaking = hit_sliders.snaking;
@@ -1251,16 +1271,22 @@ pub fn push_objects(
             c -= 1;
             let live = &circles[c];
             if let Some(circle) = hit_circles.visuals.get(live.index) {
+                let first = batch.len();
                 let pose = circle_pose(circle, live.judgement, time, style);
                 let piece = PieceTextures::from(textures.circles);
                 let all = PieceLayers::All;
                 let circles = textures.circles;
                 hit_circles.push_piece(batch, layout, circle, &pose, 1.0, piece, circles, all);
+                if let Some(fail) = fail {
+                    let map = fail.drop(live.index, appear(circle), circle.position, layout);
+                    batch.transform_from(first, &map, [1.0, 1.0, 1.0, fail.objects_alpha]);
+                }
             }
         } else {
             s -= 1;
             let live = &sliders[s];
             if let Some(slider) = visuals.get(live.index) {
+                let (first, first_body) = (batch.len(), bodies.len());
                 let pose = slider_pose(slider, live, time, style, snaking);
                 let nested = Nested {
                     visuals: visuals.nested(slider),
@@ -1279,9 +1305,24 @@ pub fn push_objects(
                     time,
                     textures,
                 );
+                if let Some(fail) = fail {
+                    // Lazer's `DrawableSlider` pivots at its head (`OriginPosition` is the
+                    // path's start).
+                    let head = &slider.head;
+                    let map = fail.drop(live.index, appear(head), head.position, layout);
+                    let alpha = fail.objects_alpha;
+                    batch.transform_from(first, &map, [1.0, 1.0, 1.0, alpha]);
+                    bodies.transform_from(first_body, &map, alpha);
+                }
             }
         }
     }
+}
+
+/// When an object becomes alive (lazer's `LifetimeStart` of an osu! object): its fade-in
+/// starts a preempt before it.
+fn appear(circle: &CircleVisual) -> f64 {
+    circle.start_time - circle.time_preempt
 }
 
 /// Writes the approach circles of the live `circles` and `sliders`' heads at game `time`, in
@@ -1297,9 +1338,17 @@ pub fn push_approaches(
     sliders: &[LiveSlider],
     time: f64,
     textures: &CircleTextures,
+    fail: Option<&FailFrame>,
 ) {
     let style = &hit_circles.style;
     let visuals = &hit_sliders.visuals;
+    // Lazer's proxies draw the approach circles where their objects are.
+    let drop = |batch: &mut SpriteBatch, first: usize, index: u32, circle: &CircleVisual| {
+        if let Some(fail) = fail {
+            let map = fail.drop(index, appear(circle), circle.position, layout);
+            batch.transform_from(first, &map, [1.0, 1.0, 1.0, fail.objects_alpha]);
+        }
+    };
     let Some(approach) = &textures.approach else {
         return;
     };
@@ -1311,16 +1360,20 @@ pub fn push_approaches(
             let live = &circles[c];
             c += 1;
             if let Some(circle) = hit_circles.visuals.get(live.index) {
+                let first = batch.len();
                 let pose = circle_pose(circle, live.judgement, time, style);
                 push_approach(batch, layout, circle, &pose, 1.0, approach);
+                drop(batch, first, live.index, circle);
             }
         } else {
             let live = &sliders[s];
             s += 1;
             if let Some(slider) = visuals.get(live.index) {
+                let first = batch.len();
                 let pose = circle_pose(&slider.head, live.head, time, style);
                 let parent = slider_alpha(slider, live, time);
                 push_approach(batch, layout, &slider.head, &pose, parent, approach);
+                drop(batch, first, live.index, &slider.head);
             }
         }
     }
@@ -1414,6 +1467,7 @@ fn push_slider(
             range: range_distances(slider.distance, pose.range),
             tint: [b, b, b, body_alpha],
             gradient: slider.gradient,
+            transform: Affine::IDENTITY,
         });
     }
 
