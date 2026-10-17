@@ -308,6 +308,14 @@ fn from_table(mut table: Table) -> Loaded {
         &mut settings.gameplay.mouse_buttons,
         |_| Ok(()),
     );
+    cx.float(
+        &mut gameplay,
+        "gameplay",
+        "hit_error_scale",
+        &mut settings.gameplay.hit_error_scale,
+        0.5..=2.0,
+    );
+    settings.gameplay.hit_error_scale = (settings.gameplay.hit_error_scale * 100.0).round() / 100.0;
     cx.unknown(&gameplay, "gameplay");
 
     let mut input = cx.section(&mut table, "input");

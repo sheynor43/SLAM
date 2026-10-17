@@ -75,6 +75,8 @@ pub struct Options {
     /// How dark the background is in gameplay, 0 ..= 1 (lazer's `DimLevel`); `--dim` takes
     /// it in whole percent.
     pub dim: f64,
+    /// Size multiplier of the hit error meter.
+    pub hit_error_scale: f64,
 }
 
 impl Options {
@@ -85,6 +87,7 @@ impl Options {
             beatmap_colours: self.beatmap_colours,
             mods: self.mods.clone(),
             dim: self.dim,
+            hit_error_scale: self.hit_error_scale,
         }
     }
 
@@ -104,6 +107,7 @@ impl Options {
             mouse_buttons: true,
             mods: ModSet::default(),
             dim: BackgroundSettings::default().dim_level,
+            hit_error_scale: 1.0,
         };
         let mut args = args.into_iter();
         while let Some(arg) = args.next() {

@@ -327,6 +327,7 @@ fn textures() -> MeterTextures {
         white: region(WHITE),
         disc: region(DISC),
         gradient: region(GRADIENT),
+        triangle: region(DISC),
     }
 }
 
@@ -461,4 +462,17 @@ fn drawing_the_most_lines_does_not_allocate() {
     });
     assert_eq!(view.lines().len(), MAX_LINES);
     assert!(batch.len() <= MAX_METER_SPRITES);
+}
+
+#[test]
+fn the_meter_size_multiplies_the_window_scale() {
+    let view = view().sized(1.5);
+    let mut batch = SpriteBatch::with_capacity(MAX_METER_SPRITES);
+    view.push(&mut batch, 1024.0, 768.0, 0.0, &textures());
+    let quads = quads(&batch);
+    let bars = &quads[1..9];
+    let min = bars.iter().map(|q| q.min[0]).fold(f32::MAX, f32::min);
+    let max = bars.iter().map(|q| q.max[0]).fold(f32::MIN, f32::max);
+    assert_close!(min, 512.0 - 100.0 * 1.5);
+    assert_close!(max, 512.0 + 100.0 * 1.5);
 }
