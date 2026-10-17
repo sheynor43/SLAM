@@ -9,6 +9,9 @@ use slam_input::{InputEvent, InputKind, MouseButton};
 const SCANCODE_R: u16 = 21;
 const SCANCODE_ESCAPE: u16 = 41;
 const SCANCODE_SPACE: u16 = 44;
+const SCANCODE_MINUS: u16 = 45;
+/// `=`, lazer's `Plus` key.
+const SCANCODE_EQUALS: u16 = 46;
 const SCANCODE_GRAVE: u16 = 53;
 const SCANCODE_F10: u16 = 67;
 /// Left control; the eight modifiers follow: shift, alt, GUI, then the right ones.
@@ -41,6 +44,10 @@ pub enum GlobalAction {
     QuickExit,
     /// F10: turns the mouse buttons off or on in gameplay (lazer's `MouseDisableButtons`).
     ToggleGameplayMouseButtons,
+    /// `=` (the main row's plus): the beatmap offset goes up by a step.
+    IncreaseOffset,
+    /// `-`: the beatmap offset goes down by a step.
+    DecreaseOffset,
 }
 
 /// A hold-to-confirm action (lazer's `HoldToConfirmContainer`).
@@ -139,6 +146,8 @@ impl Hotkeys {
                     (SCANCODE_ESCAPE, 0) => Some(GlobalAction::Back),
                     (SCANCODE_SPACE, 0) => Some(GlobalAction::SkipCutscene),
                     (SCANCODE_F10, 0) => Some(GlobalAction::ToggleGameplayMouseButtons),
+                    (SCANCODE_EQUALS, 0) => Some(GlobalAction::IncreaseOffset),
+                    (SCANCODE_MINUS, 0) => Some(GlobalAction::DecreaseOffset),
                     (SCANCODE_GRAVE, 0) | (SCANCODE_R, CTRL) => {
                         self.retry.press(scancode, event.time_ns);
                         None
@@ -244,6 +253,14 @@ mod tests {
         assert_eq!(
             h.on_event(&key(0, SCANCODE_F10, true)),
             Some(GlobalAction::ToggleGameplayMouseButtons)
+        );
+        assert_eq!(
+            h.on_event(&key(0, SCANCODE_EQUALS, true)),
+            Some(GlobalAction::IncreaseOffset)
+        );
+        assert_eq!(
+            h.on_event(&key(0, SCANCODE_MINUS, true)),
+            Some(GlobalAction::DecreaseOffset)
         );
         assert_eq!(h.on_event(&key(0, SCANCODE_ESCAPE, false)), None);
         assert_eq!(h.on_event(&button(0, MouseButton::Left)), None);

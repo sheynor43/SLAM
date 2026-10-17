@@ -12,6 +12,7 @@ pub mod hud;
 pub mod input;
 pub mod judgements;
 pub mod legacy_text;
+pub mod offset;
 pub mod playfield;
 pub mod resume;
 pub mod ring;
@@ -25,7 +26,7 @@ pub use background::{BackgroundSettings, BackgroundView};
 pub use gameplay_sounds::{GameplaySounds, SoundSettings, VoiceSink};
 pub use hitsounds::{Hitsound, Hitsounds, SampleCache, SampleSkins, Sound};
 pub use hotkeys::{GlobalAction, Hotkeys};
-pub use hud::HudView;
+pub use hud::{HudLabels, HudView};
 pub use input::{Binding, Bindings, ClockTime, GameTime, Input, LiveInput};
 pub use playfield::PlayfieldLayout;
 pub use session::{

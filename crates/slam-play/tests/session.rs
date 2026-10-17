@@ -25,9 +25,11 @@ use slam_play::circles::{
 use slam_play::cursor::{
     CursorSkinConfig, CursorTextures, CursorView, ExpandTimes, MAX_CURSOR_SPRITES,
 };
+use slam_play::hud::OFFSET_PLACEHOLDER;
+use slam_play::offset::OffsetPanel;
 use slam_play::slider_body::Snaking;
 use slam_play::sliders::{AnimationSprites, HitSliders, SliderBodies, SliderVisuals};
-use slam_play::{BackgroundSettings, BackgroundView, HudValues, HudView};
+use slam_play::{BackgroundSettings, BackgroundView, HudLabels, HudValues, HudView};
 use slam_play::{
     Bindings, FrameTextures, GameTime, GameplaySounds, LiveInput, Offsets, PlaySession,
     PlaySnapshot, PlayState, PlayView, SoundSettings, VoiceSink,
@@ -474,7 +476,7 @@ fn ticks_and_frames_do_not_allocate() {
     // The HUD's glyphs are only requested here: without a device they stay pending.
     let registry = Arc::new(FontRegistry::with_builtin());
     let mut glyphs = glyph_atlas(Arc::clone(&registry), &GlyphAtlasConfig::new(LIMITS)).unwrap();
-    let mut hud = HudView::new(registry, "Пропустить");
+    let mut hud = HudView::new(registry, &labels());
     hud.request_glyphs(&mut glyphs);
     let mut text = SpriteBatch::with_capacity(256);
     let mut pending = 0;
@@ -511,8 +513,13 @@ fn ticks_and_frames_do_not_allocate() {
                 &textures,
             );
             bodies_drawn += bodies.as_slice().len();
-            hud.update(1280.0, 720.0, &snapshot.hud);
-            hud.push_shapes(&mut batch, &snapshot, white);
+            hud.update(
+                1280.0,
+                720.0,
+                &snapshot.hud,
+                snapshot.offset_panel.offset_ms,
+            );
+            hud.push_shapes(&mut batch, &snapshot, now, white);
             view.push_hit_error(
                 &mut batch,
                 1280.0,
@@ -521,7 +528,9 @@ fn ticks_and_frames_do_not_allocate() {
                 now + MS / 2,
                 &textures,
             );
-            pending += hud.push_text(&mut text, &snapshot, &mut glyphs).pending;
+            pending += hud
+                .push_text(&mut text, &snapshot, now, &mut glyphs)
+                .pending;
             view.push_cursor(&mut batch, &layout(), &snapshot, now + MS / 2, &textures);
             drawn += snapshot.circles.as_slice().len();
             follow_points_drawn += view
@@ -538,6 +547,16 @@ fn ticks_and_frames_do_not_allocate() {
     assert!(pending > 0);
     assert!(snapshot.hud.score > 0);
     assert_eq!(hud.texts()[0], format!("{:06}", snapshot.hud.score));
+}
+
+/// The HUD's texts in Russian: the longest.
+fn labels() -> HudLabels {
+    HudLabels {
+        skip: "Пропустить".to_owned(),
+        offset_zero: format!("{OFFSET_PLACEHOLDER} мс"),
+        offset_earlier: format!("{OFFSET_PLACEHOLDER} мс (объекты появляются раньше)"),
+        offset_later: format!("{OFFSET_PLACEHOLDER} мс (объекты появляются позже)"),
+    }
 }
 
 const LIMITS: Limits = Limits {
@@ -1024,6 +1043,8 @@ const GRAVE: u16 = 53;
 const LCTRL: u16 = 224;
 const Z: u16 = 29;
 const F10: u16 = 67;
+const MINUS: u16 = 45;
+const EQUALS: u16 = 46;
 
 /// A play ticked every millisecond by hand, with the events of each tick given.
 struct Driver {
@@ -1709,6 +1730,8 @@ fn pausing_failing_and_ticks_after_a_restart_do_not_allocate() {
     let moved = d.mouse(Vec2::new(300.0, 300.0));
     let ticks = |d: &mut Driver| {
         d.run_to(1500.0);
+        d.tap(MINUS);
+        d.tap(EQUALS);
         d.tap(ESCAPE);
         d.run(50);
         d.tap(ESCAPE);
@@ -1774,7 +1797,7 @@ fn failing_comes_before_a_pause_in_the_same_tick() {
 fn hud_updates_and_frames_do_not_allocate() {
     let registry = Arc::new(FontRegistry::with_builtin());
     let mut glyphs = glyph_atlas(Arc::clone(&registry), &GlyphAtlasConfig::new(LIMITS)).unwrap();
-    let mut hud = HudView::new(registry, "Пропустить");
+    let mut hud = HudView::new(registry, &labels());
     hud.request_glyphs(&mut glyphs);
     let mut text = SpriteBatch::with_capacity(256);
     let mut batch = SpriteBatch::with_capacity(256);
@@ -1801,19 +1824,30 @@ fn hud_updates_and_frames_do_not_allocate() {
             combo: 0,
         },
     ];
+    let offsets = [0.0, -1.0, 12.5, 50.0, -50.0];
     assert_no_alloc(|| {
         for (index, values) in values.iter().cycle().take(16).enumerate() {
             let height = [720.0, 1080.0, 1.0, 0.0][index % 4];
-            hud.update(1280.0, height, values);
+            let offset = offsets[index % offsets.len()];
+            hud.update(1280.0, height, values, offset);
             snapshot.hud = *values;
+            snapshot.offset_panel = OffsetPanel::new(0.0);
+            snapshot.offset_panel.changed(offset, 0);
             batch.clear();
             text.clear();
-            hud.push_shapes(&mut batch, &snapshot, WHITE);
-            hud.push_text(&mut text, &snapshot, &mut glyphs);
+            hud.push_shapes(&mut batch, &snapshot, 100 * MS, WHITE);
+            hud.push_text(&mut text, &snapshot, 100 * MS, &mut glyphs);
         }
     });
-    // Health bar (two) and skip button; the resume target goes with the cursor.
-    assert_eq!(batch.len(), 3);
+    // Health bar (two), skip button and offset panel; the resume target goes with the
+    // cursor.
+    assert_eq!(batch.len(), 4);
+    hud.update(1280.0, 720.0, &HudValues::default(), -0.0001);
+    assert_eq!(hud.offset_text(), "0 мс");
+    hud.update(1280.0, 720.0, &HudValues::default(), 12.5);
+    assert_eq!(hud.offset_text(), "12.5 мс (объекты появляются раньше)");
+    hud.update(1280.0, 720.0, &HudValues::default(), -3.0);
+    assert_eq!(hud.offset_text(), "-3 мс (объекты появляются позже)");
 }
 
 #[test]
@@ -2014,4 +2048,141 @@ fn the_os_cursor_hides_while_the_gameplay_cursor_is_the_one_to_follow() {
     assert!(d.state().hides_os_cursor());
     d.tap(ESCAPE);
     assert!(!d.state().hides_os_cursor());
+}
+
+#[test]
+fn offset_hotkeys_change_the_beatmap_offset_and_time_at_once() {
+    let map = beatmap();
+    let mut d = Driver::new(&map, ModSet::default());
+    d.run_to(1500.0);
+    assert_eq!(d.snapshot.offset_panel.alpha(d.now), 0.0);
+    let before = d.snapshot.time;
+    d.run(1);
+    let step = d.snapshot.time - before;
+    let before = d.snapshot.time;
+    d.tap(MINUS);
+    assert_eq!(d.session.beatmap_offset(), -1.0);
+    assert_eq!(d.snapshot.offset_panel.offset_ms, -1.0);
+    // Time never goes back: it stands for the millisecond the offset took.
+    d.run(1);
+    let moved = d.snapshot.time - before;
+    assert!(
+        (moved - (2.0 * step - 1.0)).abs() < 0.1,
+        "{moved} after steps of {step}"
+    );
+    d.tap(EQUALS);
+    d.tap(EQUALS);
+    assert_eq!(d.session.beatmap_offset(), 1.0);
+    // The panel shows, then goes 500 ms after the last change.
+    d.run(250);
+    assert!(d.snapshot.offset_panel.alpha(d.now) > 0.9);
+    d.run(1000);
+    assert_eq!(d.snapshot.offset_panel.alpha(d.now), 0.0);
+}
+
+#[test]
+fn the_offset_stays_within_fifty_ms() {
+    let map = beatmap();
+    let mut d = Driver::new(&map, ModSet::default());
+    for _ in 0..55 {
+        d.tap(EQUALS);
+    }
+    assert_eq!(d.session.beatmap_offset(), 50.0);
+    for _ in 0..105 {
+        d.tap(MINUS);
+    }
+    assert_eq!(d.session.beatmap_offset(), -50.0);
+    assert_eq!(d.snapshot.offset_panel.offset_ms, -50.0);
+}
+
+#[test]
+fn the_offset_is_fixed_while_paused_resuming_or_turned_off() {
+    let map = beatmap();
+    let mut d = Driver::new(&map, ModSet::default());
+    let moved = d.mouse(Vec2::new(300.0, 300.0));
+    d.tick(&[moved]);
+    d.run_to(1500.0);
+    d.tap(ESCAPE);
+    assert_eq!(d.state(), PlayState::Paused);
+    d.tap(MINUS);
+    assert_eq!(d.session.beatmap_offset(), 0.0);
+    d.tap(ESCAPE);
+    assert_eq!(d.state(), PlayState::Resuming);
+    d.tap(MINUS);
+    assert_eq!(d.session.beatmap_offset(), 0.0);
+    assert_eq!(d.snapshot.offset_panel.alpha(d.now), 0.0);
+
+    let mut d = Driver::new(&map, ModSet::default());
+    d.session.set_offset_adjustable(false);
+    d.tap(MINUS);
+    assert_eq!(d.session.beatmap_offset(), 0.0);
+}
+
+/// The test map with a circle at 20 s and a break before it, effective from 7 s to
+/// 18.675 s.
+fn long_break() -> Beatmap {
+    let mut map =
+        Beatmap::decode(format!("{}256,192,20000,1,0\n", common::MAP).as_bytes()).unwrap();
+    map.breaks.push(slam_osu::breaks::Break {
+        start: 7000.0,
+        end: 19000.0,
+    });
+    map
+}
+
+#[test]
+fn the_offset_changes_only_in_the_first_ten_seconds_or_in_breaks() {
+    let map = long_break();
+    let start = slam_osu::lead_in::gameplay_start_time(&map);
+    let mut d = Driver::new(&map, mods(vec![slam_osu::mods::Mod::NoFail]));
+    d.run_to(start + 10_000.0);
+    d.tap(MINUS);
+    assert_eq!(d.session.beatmap_offset(), -1.0);
+    // Past ten seconds, in the break.
+    d.run_to(start + 10_100.0);
+    assert!(d.snapshot.is_break_time);
+    d.tap(MINUS);
+    assert_eq!(d.session.beatmap_offset(), -2.0);
+    // After the break.
+    d.run_to(19_000.0);
+    assert!(!d.snapshot.is_break_time);
+    d.tap(MINUS);
+    assert_eq!(d.session.beatmap_offset(), -2.0);
+}
+
+#[test]
+fn the_offset_outlives_a_quick_retry_and_its_panel_does_not() {
+    let map = beatmap();
+    let mut d = Driver::new(&map, ModSet::default());
+    d.run_to(1500.0);
+    d.tap(MINUS);
+    d.hold(None, GRAVE, 200);
+    assert_eq!(d.snapshot.restarts, 1);
+    assert_eq!(d.session.beatmap_offset(), -1.0);
+    assert_eq!(d.snapshot.offset_panel.offset_ms, -1.0);
+    assert_eq!(d.snapshot.offset_panel.alpha(d.now), 0.0);
+}
+
+#[test]
+fn offset_presses_in_one_tick_apply_in_order_and_time_never_goes_back() {
+    let map = beatmap();
+    let mut d = Driver::new(&map, ModSet::default());
+    d.run_to(1500.0);
+    let presses = [
+        d.key(Z, true),
+        d.key(MINUS, true),
+        d.key(MINUS, true),
+        d.key(EQUALS, true),
+        d.key(Z, false),
+    ];
+    let mut last = d.snapshot.time;
+    d.tick(&presses);
+    assert_eq!(d.session.beatmap_offset(), -1.0);
+    for _ in 0..5 {
+        assert!(d.snapshot.time >= last);
+        last = d.snapshot.time;
+        d.run(1);
+    }
+    // Z went to gameplay around the presses: pressed, then released.
+    assert!(!d.session.input().held().contains(Actions::LEFT));
 }
