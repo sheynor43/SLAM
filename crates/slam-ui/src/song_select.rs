@@ -11,8 +11,10 @@ use std::sync::Arc;
 use crate::menu::Rect;
 use crate::theme::Theme;
 
+pub mod mod_select;
 pub mod view;
 
+pub use mod_select::{ModColumns, ModSelect, ModSelectAction, ModSelectLayout, ModSelectSnapshot};
 pub use view::{SongSelectLabels, SongSelectView};
 
 /// The sets to show, built by the application from the library. Immutable once built;
@@ -67,6 +69,16 @@ pub enum SongSelectInput {
     End,
     Activate,
     Back,
+    /// F1: opens the mod select panel (and closes it).
+    ToggleMods,
+    /// Backspace: deselects every mod.
+    DeselectMods,
+    /// A mod hotkey: the tile `index` of `column` of the mod select panel. The application
+    /// maps its key rows to the columns that have hotkeys.
+    ModHotkey {
+        column: usize,
+        index: usize,
+    },
     /// Wheel: positive `lines` scroll towards the end of the list. Selection stays.
     Scroll {
         lines: f32,
@@ -84,8 +96,19 @@ pub enum SongSelectInput {
 /// What the screen asks the application to do; indices are into the current list.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum SongSelectAction {
-    Play { set: usize, difficulty: usize },
+    Play {
+        set: usize,
+        difficulty: usize,
+    },
     Back,
+    /// The mod select panel toggled a tile; the application resolves the new selection and
+    /// writes the flags back through [`SongSelect::mods_mut`].
+    ToggleMod {
+        column: usize,
+        index: usize,
+    },
+    /// Deselect every mod.
+    DeselectMods,
 }
 
 /// One row of the flat column.
@@ -132,6 +155,8 @@ pub struct SongSelectLayout {
     pub list: Rect,
     /// Key hints below the list.
     pub hint: Rect,
+    /// The mod select panel.
+    pub mods: ModSelectLayout,
     /// Pitch of the rows.
     pub row_height: f32,
     /// Extra left offset of difficulty rows.
@@ -170,6 +195,7 @@ impl SongSelectLayout {
             header,
             list,
             hint,
+            mods: ModSelectLayout::new(width, height, theme),
             row_height: theme.song_row_height * scale,
             indent: theme.song_indent * scale,
             scale,
@@ -229,6 +255,7 @@ pub struct SongSelectSnapshot {
     /// Changes whenever the list is replaced; the view's row texts are valid for one
     /// generation.
     pub generation: u64,
+    pub mods: ModSelectSnapshot,
 }
 
 /// The screen's state on the update thread.
@@ -243,6 +270,7 @@ pub struct SongSelect {
     status: SongSelectStatus,
     scanning_text: Arc<str>,
     generation: u64,
+    mods: ModSelect,
     /// Rows that fit the list area at the last input; keeps the selection in view.
     viewport: f32,
 }
@@ -265,6 +293,7 @@ impl SongSelect {
             status: SongSelectStatus::default(),
             scanning_text: Arc::from(""),
             generation: 0,
+            mods: ModSelect::default(),
             viewport: 10.0,
         }
     }
@@ -320,7 +349,18 @@ impl SongSelect {
             status: self.status,
             scanning_text: Arc::clone(&self.scanning_text),
             generation: self.generation,
+            mods: self.mods.snapshot(),
         }
+    }
+
+    /// The mod select panel.
+    pub fn mods(&self) -> &ModSelect {
+        &self.mods
+    }
+
+    /// The panel, for the application to write the active flags and to set its columns.
+    pub fn mods_mut(&mut self) -> &mut ModSelect {
+        &mut self.mods
     }
 
     fn selected_row(&self) -> usize {
@@ -386,6 +426,21 @@ impl SongSelect {
         layout: &SongSelectLayout,
     ) -> Option<SongSelectAction> {
         use SongSelectInput as I;
+        // The open panel takes every input; Back closes it instead of leaving.
+        if self.mods.is_open() {
+            if let I::PointerMove { x, y } | I::PointerPress { x, y } = input {
+                self.pointer = Some((x, y));
+            }
+            return self
+                .mods
+                .input(input, &layout.mods)
+                .map(|action| match action {
+                    ModSelectAction::Toggle { column, index } => {
+                        SongSelectAction::ToggleMod { column, index }
+                    }
+                    ModSelectAction::DeselectAll => SongSelectAction::DeselectMods,
+                });
+        }
         if input == I::Back {
             return Some(SongSelectAction::Back);
         }
@@ -407,7 +462,15 @@ impl SongSelect {
             I::Home => self.select_set(0),
             I::End => self.select_set(last),
             I::Activate => action = self.play(),
-            I::Back => {}
+            I::Back | I::ModHotkey { .. } => moved = false,
+            I::ToggleMods => {
+                self.mods.open();
+                moved = false;
+            }
+            I::DeselectMods => {
+                action = Some(SongSelectAction::DeselectMods);
+                moved = false;
+            }
             I::Scroll { lines } => {
                 self.scroll += lines;
                 self.clamp_scroll();

@@ -50,6 +50,11 @@ pub struct Theme {
     /// Height of the status line above the list, and its text size.
     pub song_header_height: f32,
     pub song_status_size: f32,
+    /// Width of a mod tile of the mod select panel, and the gap between its columns.
+    pub mod_tile_width: f32,
+    pub mod_column_gap: f32,
+    /// Fill over the screen under the mod select panel.
+    pub mod_backdrop_fill: Color,
     /// Margin around the results screen.
     pub results_margin: f32,
     /// Size of the beatmap line on top of the results.
@@ -151,6 +156,14 @@ impl Default for Theme {
             song_detail_size: 14.0,
             song_header_height: 36.0,
             song_status_size: 22.0,
+            mod_tile_width: 150.0,
+            mod_column_gap: 32.0,
+            mod_backdrop_fill: Color {
+                r: 0.0,
+                g: 0.0,
+                b: 0.0,
+                a: 0.8,
+            },
             results_margin: 24.0,
             results_title_size: 24.0,
             results_rank_size: 160.0,

@@ -22,6 +22,7 @@ use slam_input::{
     CursorVisibility, InputEvent, InputKind, InputWindow, MouseButton, TickMapper, event_ring,
     sdl_ticks_ns,
 };
+use slam_osu::mods::{Mod, ModSet, ModType, mods_for};
 use slam_play::input::Input;
 use slam_play::{
     Bindings, LiveInput, Offsets, PlaySession, PlaySnapshot, PlayState, PlayfieldLayout,
@@ -46,12 +47,12 @@ use slam_ui::settings_screen::{
     SettingsView,
 };
 use slam_ui::song_select::{
-    SongList, SongSelect, SongSelectAction, SongSelectInput, SongSelectLabels, SongSelectLayout,
-    SongSelectSnapshot, SongSelectStatus, SongSelectView,
+    ModColumns, ModSelect, SongList, SongSelect, SongSelectAction, SongSelectInput,
+    SongSelectLabels, SongSelectLayout, SongSelectSnapshot, SongSelectStatus, SongSelectView,
 };
 use slam_ui::theme::Theme;
 
-use crate::loader::{LoaderConfig, LoaderLink, SceneTrash, Trash};
+use crate::loader::{LoaderConfig, LoaderLink, PlayOptions, SceneTrash, Trash};
 use crate::play::fps::FpsSource;
 use crate::play::scene::{CHANNELS, PlayScene, PlaySettings, Prepared, SAMPLE_RATE};
 use crate::play::{device_limits, pack_size};
@@ -90,6 +91,8 @@ const GLYPH_WARM_TIMEOUT: Duration = Duration::from_secs(1);
 const KEY_ENTER: u16 = 40;
 const KEY_ESCAPE: u16 = 41;
 const KEY_R: u16 = 21;
+const KEY_BACKSPACE: u16 = 42;
+const KEY_F1: u16 = 58;
 const KEY_TAB: u16 = 43;
 const KEY_HOME: u16 = 74;
 const KEY_DELETE: u16 = 76;
@@ -101,6 +104,42 @@ const KEY_LEFT: u16 = 80;
 const KEY_DOWN: u16 = 81;
 const KEY_UP: u16 = 82;
 const KEY_KEYPAD_ENTER: u16 = 88;
+
+/// The keys of the mod select's hotkeys, by key row, as lazer's sequential hotkey handler maps
+/// them: the top letter row is the first column, the home row the second (the third column,
+/// conversion, has none). Keys are USB HID scancodes.
+const MOD_HOTKEY_ROWS: [&[u16]; 2] = [
+    // Q W E R T Y U I O P
+    &[20, 26, 8, 21, 23, 28, 24, 12, 18, 19],
+    // A S D F G H J K L
+    &[4, 22, 7, 9, 10, 11, 13, 14, 15],
+];
+
+/// The song select input of a mod hotkey.
+fn mod_hotkey(scancode: u16) -> Option<SongSelectInput> {
+    MOD_HOTKEY_ROWS
+        .iter()
+        .enumerate()
+        .find_map(|(column, row)| {
+            let index = row.iter().position(|&key| key == scancode)?;
+            Some(SongSelectInput::ModHotkey { column, index })
+        })
+}
+
+/// The columns of the mod select panel: lazer's mod types, with the mods SLAM has.
+pub fn mod_columns() -> ModColumns {
+    [
+        mods_for(ModType::DifficultyReduction),
+        DIFFICULTY_INCREASE,
+        mods_for(ModType::Conversion),
+    ]
+}
+
+/// `mods_for(DifficultyIncrease)` without Traceable: the play draws it as no mod yet (#207).
+const DIFFICULTY_INCREASE: &[&str] = &["HR", "SD", "PF", "DT", "NC", "HD"];
+
+/// The mods the player can have selected at the most (every tile of the panel).
+const SELECTED_MODS_CAPACITY: usize = 16;
 
 /// The application's screens, as the update thread holds them. The song select's state
 /// lives in [`ShellState`]: its list and selection outlast a visit.
@@ -191,6 +230,13 @@ pub struct ShellState {
     editing: Option<Settings>,
     /// Settings to write to the file, not yet taken by [`ShellState::take_save_request`].
     save_request: Option<Box<Settings>>,
+    /// The mods the next play takes: they outlast a play and the results, and are not saved.
+    selected_mods: ModSet,
+    /// The panel's mods with default settings, by column and tile: a toggle clones one
+    /// (`Mod::from_acronym` allocates).
+    mod_templates: Vec<Vec<Mod>>,
+    /// The mod select's selection being built on a toggle; kept for its capacity.
+    mod_buffer: Vec<Mod>,
     /// Last cursor position in pixels.
     cursor: [f32; 2],
     /// Input arrives in window points, layout is in pixels.
@@ -204,6 +250,7 @@ impl ShellState {
         let mut song_select = SongSelect::new();
         song_select.set_list(Arc::clone(&empty.0));
         song_select.set_scanning_text(Arc::clone(&empty.2));
+        *song_select.mods_mut() = ModSelect::new(mod_columns());
         ShellState {
             stack: ScreenStack::new(AppScreen::Menu(MainMenu::new())),
             layout: MenuLayout::new(width, height, &theme),
@@ -226,6 +273,14 @@ impl ShellState {
             rows: Rows::new(&Settings::default()),
             editing: None,
             save_request: None,
+            // An empty set is always compatible; the capacity keeps a toggle from allocating.
+            selected_mods: ModSet::new(Vec::with_capacity(SELECTED_MODS_CAPACITY))
+                .unwrap_or_default(),
+            mod_templates: mod_columns()
+                .iter()
+                .map(|c| c.iter().map(|a| Mod::from_acronym(a)).collect())
+                .collect(),
+            mod_buffer: Vec::with_capacity(SELECTED_MODS_CAPACITY),
             theme,
             cursor: [0.0, 0.0],
             pixels_per_point,
@@ -320,6 +375,45 @@ impl ShellState {
         match (row, row.and_then(|r| r.difficulties.get(difficulty))) {
             (Some(row), Some(d)) => results::title(&row.artist, &row.title, &d.version),
             _ => String::new(),
+        }
+    }
+
+    /// The mods the mod select has selected.
+    pub fn selected_mods(&self) -> &ModSet {
+        &self.selected_mods
+    }
+
+    /// A toggle of the mod select panel: the active tiles in column order, as lazer's overlay
+    /// has them, make the new selection (which drops what the added mod conflicts with); then
+    /// every tile shows what is selected. Does not allocate.
+    fn toggle_mod(&mut self, column: usize, index: usize) {
+        self.mod_buffer.clear();
+        for (c, i, acronym, active) in self.song_select.mods().iter() {
+            if active != (c == column && i == index) {
+                // The selected instance stays, with its settings.
+                let selected = self.selected_mods.get(acronym).cloned();
+                self.mod_buffer
+                    .extend(selected.or_else(|| self.mod_templates.get(c)?.get(i).cloned()));
+            }
+        }
+        self.selected_mods.apply_selection(&self.mod_buffer);
+        self.sync_mod_flags();
+    }
+
+    /// Deselects every mod.
+    fn deselect_mods(&mut self) {
+        self.selected_mods.apply_selection(&[]);
+        self.sync_mod_flags();
+    }
+
+    /// Makes the panel's tiles show the selection.
+    fn sync_mod_flags(&mut self) {
+        let columns = *self.song_select.mods().columns();
+        for (c, acronyms) in columns.iter().enumerate() {
+            for (i, acronym) in acronyms.iter().enumerate() {
+                let on = self.selected_mods.get(acronym).is_some();
+                self.song_select.mods_mut().set_active(c, i, on);
+            }
         }
     }
 
@@ -429,12 +523,16 @@ impl ShellState {
                 _ => {}
             }
         }
+        // The letters are the mod hotkeys on the song select, and Retry on the results.
+        let song_select = matches!(self.stack.top(), AppScreen::SongSelect);
         Some(ScreenInput::Common(match kind {
             InputKind::Key {
                 scancode,
                 down: true,
             } => match scancode {
-                KEY_R => return Some(ScreenInput::Retry),
+                KEY_R if !song_select => return Some(ScreenInput::Retry),
+                KEY_F1 => SongSelectInput::ToggleMods,
+                KEY_BACKSPACE => SongSelectInput::DeselectMods,
                 KEY_TAB => return Some(ScreenInput::Tab),
                 KEY_UP => SongSelectInput::Up,
                 KEY_DOWN => SongSelectInput::Down,
@@ -446,7 +544,11 @@ impl ShellState {
                 KEY_END => SongSelectInput::End,
                 KEY_ENTER | KEY_KEYPAD_ENTER => SongSelectInput::Activate,
                 KEY_ESCAPE => SongSelectInput::Back,
-                _ => return None,
+                code => {
+                    return mod_hotkey(code)
+                        .filter(|_| song_select)
+                        .map(ScreenInput::Common);
+                }
             },
             InputKind::MouseButton {
                 button: MouseButton::X1,
@@ -524,6 +626,14 @@ impl ShellState {
                             None
                         }
                         Some(SongSelectAction::Back) => Some(Nav::Pop),
+                        Some(SongSelectAction::ToggleMod { column, index }) => {
+                            self.toggle_mod(column, index);
+                            None
+                        }
+                        Some(SongSelectAction::DeselectMods) => {
+                            self.deselect_mods();
+                            None
+                        }
                         Some(SongSelectAction::Play { set, difficulty }) => {
                             if let Some(file) = self.file(set, difficulty) {
                                 self.last_file = Some(file.clone());
@@ -939,7 +1049,10 @@ impl PlayHost {
             self.next_request += 1;
             let asked = match map {
                 Some(map) if self.game.is_none() => {
-                    let options = live::play_options(state.settings());
+                    let options = PlayOptions {
+                        mods: state.selected_mods().clone(),
+                        ..live::play_options(state.settings())
+                    };
                     self.loader.request(self.next_request, map, options)
                 }
                 _ => false,
@@ -1646,6 +1759,14 @@ pub fn run(settings: Settings) -> Result<(), String> {
         loading: text("song-select-loading"),
         empty: text("song-select-empty"),
         hint: text("song-select-hint"),
+        mods_title: text("song-select-mods-title"),
+        mods_hint: text("song-select-mods-hint"),
+        mod_column_titles: [
+            text("song-select-mods-reduction"),
+            text("song-select-mods-increase"),
+            text("song-select-mods-conversion"),
+        ],
+        mod_columns: mod_columns(),
     };
     let song_select = SongSelectView::new(Arc::clone(&registry), theme, &song_labels);
     let results_labels = ResultsLabels {

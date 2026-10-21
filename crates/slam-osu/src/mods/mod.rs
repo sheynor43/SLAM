@@ -10,6 +10,7 @@
 //! [`GameplayMod`]; [`ModSet::playable_beatmap`] runs them in lazer's order.
 
 mod multiplier;
+mod select;
 mod setting;
 
 use slam_formats::osr::{ApiMod, OsrError, Replay, ScoreInfo, SettingValue};
@@ -23,6 +24,7 @@ use crate::scoring::ScoreRank;
 use setting::DifficultyRange;
 
 pub use multiplier::{MultiplierVersion, TOTAL_SCORE_VERSION_MULTIPLIER_REBALANCE};
+pub use select::{ModType, mods_for};
 
 /// Lazer's `LegacyScoreEncoder.FIRST_LAZER_VERSION`: replays of older versions come from
 /// stable and are played with Classic.

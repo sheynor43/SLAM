@@ -1,5 +1,6 @@
 use std::path::Path;
 
+use slam_osu::mods::GameplayMod as _;
 use slam_osu::replay::Actions;
 use slam_ui::screen::TRANSITION_NS;
 
@@ -844,4 +845,177 @@ fn an_unknown_backend_falls_back_to_the_first_available() {
         assert_eq!(pick_backend(Some(backend.name()), available), Some(backend));
     }
     assert_eq!(pick_backend(Some("pipewire"), &[]), None);
+}
+
+// Mod hotkeys: the top letter row is the first column, the home row the second.
+const KEY_Q: u16 = 20; // EZ
+const KEY_W: u16 = 26; // NF
+const KEY_E: u16 = 8; // HT
+const KEY_R_HOTKEY: u16 = 21; // DC
+const KEY_A: u16 = 4; // HR
+const KEY_F: u16 = 9; // DT
+const KEY_G: u16 = 10; // NC
+const KEY_L: u16 = 15; // past the column
+const KEY_Z: u16 = 29;
+
+/// The selected acronyms, sorted.
+fn acronyms(s: &ShellState) -> Vec<&str> {
+    let mut list: Vec<_> = s
+        .selected_mods()
+        .mods()
+        .iter()
+        .map(|m| m.acronym())
+        .collect();
+    list.sort_unstable();
+    list
+}
+
+/// A tick `n` after the song select came in.
+fn at(n: u64) -> u64 {
+    TRANSITION_NS + n
+}
+
+#[test]
+fn f1_opens_the_mod_panel_and_escape_closes_it_without_leaving() {
+    let (mut s, mut snap, _producer) = in_song_select();
+    s.tick(at(1), &[key(KEY_F1)], &mut snap);
+    assert!(song_view(&snap).mods.open);
+    // The panel takes the arrows: the carousel stays.
+    s.tick(at(2), &[key(KEY_DOWN), key(KEY_END)], &mut snap);
+    assert_eq!(s.song_select().selected(), Some((0, 0)));
+    s.tick(at(3), &[key(KEY_ESCAPE)], &mut snap);
+    assert!(!song_view(&snap).mods.open);
+    assert_eq!(*s.stack().top(), AppScreen::SongSelect);
+    // Enter closes it instead of playing; F1 closes it too.
+    s.tick(at(4), &[key(KEY_F1), key(KEY_ENTER)], &mut snap);
+    assert!(!song_view(&snap).mods.open);
+    assert_eq!(s.take_play_request(), None);
+    s.tick(at(5), &[key(KEY_F1), key(KEY_F1)], &mut snap);
+    assert!(!song_view(&snap).mods.open);
+    // Closed, Escape leaves.
+    s.tick(at(6), &[key(KEY_ESCAPE)], &mut snap);
+    assert!(matches!(s.stack().top(), AppScreen::Menu(_)));
+}
+
+#[test]
+fn hotkeys_toggle_mods_by_key_row_and_sync_the_tiles() {
+    let (mut s, mut snap, _producer) = in_song_select();
+    // Closed, letters do nothing.
+    s.tick(at(1), &[key(KEY_Q)], &mut snap);
+    assert!(acronyms(&s).is_empty());
+    s.tick(at(2), &[key(KEY_F1)], &mut snap);
+    // Easy, then Hard Rock, which it conflicts with: the added one wins.
+    s.tick(at(3), &[key(KEY_Q), key(KEY_A)], &mut snap);
+    assert_eq!(acronyms(&s), ["HR"]);
+    assert_eq!(song_view(&snap).mods.active, [0, 0b1, 0]);
+    s.tick(at(4), &[key(KEY_W), key(KEY_G)], &mut snap);
+    assert_eq!(acronyms(&s), ["HR", "NC", "NF"]);
+    assert_eq!(song_view(&snap).mods.active, [0b10, 0b10001, 0]);
+    // A selected mod's key deselects it.
+    s.tick(at(5), &[key(KEY_W)], &mut snap);
+    assert_eq!(acronyms(&s), ["HR", "NC"]);
+    // Keys past the column's last mod and other keys do nothing.
+    s.tick(at(6), &[key(KEY_L), key(KEY_Z)], &mut snap);
+    assert_eq!(acronyms(&s), ["HR", "NC"]);
+    // R is a hotkey here, not Retry; Daycore and Nightcore conflict.
+    s.tick(at(7), &[key(KEY_R_HOTKEY)], &mut snap);
+    assert_eq!(acronyms(&s), ["DC", "HR"]);
+    assert_eq!(song_view(&snap).mods.active, [0b1000, 0b1, 0]);
+    assert!(!s.is_loading());
+}
+
+#[test]
+fn a_conflicting_mod_replaces_the_selected_one() {
+    let (mut s, mut snap, _producer) = in_song_select();
+    // DT, then HT: only HT is left.
+    s.tick(at(1), &[key(KEY_F1), key(KEY_F)], &mut snap);
+    assert_eq!(acronyms(&s), ["DT"]);
+    s.tick(at(2), &[key(KEY_E)], &mut snap);
+    assert_eq!(acronyms(&s), ["HT"]);
+    assert_eq!(song_view(&snap).mods.active, [0b100, 0, 0]);
+}
+
+#[test]
+fn backspace_deselects_all_with_the_panel_open_or_closed() {
+    let (mut s, mut snap, _producer) = in_song_select();
+    s.tick(at(1), &[key(KEY_F1), key(KEY_Q), key(KEY_F)], &mut snap);
+    assert_eq!(acronyms(&s), ["DT", "EZ"]);
+    s.tick(at(2), &[key(KEY_BACKSPACE)], &mut snap);
+    assert!(acronyms(&s).is_empty());
+    assert_eq!(song_view(&snap).mods.active, [0, 0, 0]);
+    assert!(song_view(&snap).mods.open);
+    s.tick(at(3), &[key(KEY_Q), key(KEY_ESCAPE)], &mut snap);
+    assert_eq!(acronyms(&s), ["EZ"]);
+    s.tick(at(4), &[key(KEY_BACKSPACE)], &mut snap);
+    assert!(acronyms(&s).is_empty());
+    assert_eq!(*s.stack().top(), AppScreen::SongSelect);
+}
+
+#[test]
+fn a_click_on_a_tile_toggles_it() {
+    let (mut s, mut snap, _producer) = in_song_select();
+    s.tick(at(1), &[key(KEY_F1)], &mut snap);
+    // The conversion column has no hotkeys but takes the mouse.
+    let [x, y] = s.song_layout.mods.tile_rect(2, 0).centre();
+    let click = [
+        mouse(InputKind::MouseMove { x, y }),
+        mouse(InputKind::MouseButton {
+            button: MouseButton::Left,
+            down: true,
+        }),
+    ];
+    s.tick(at(2), &click, &mut snap);
+    assert_eq!(acronyms(&s), ["DA"]);
+    assert_eq!(song_view(&snap).mods.hover, Some((2, 0)));
+}
+
+#[test]
+fn the_mods_outlast_a_visit_and_the_menu_ignores_the_panel_keys() {
+    let (mut s, mut snap, _producer) = in_song_select();
+    s.tick(
+        at(1),
+        &[key(KEY_F1), key(KEY_Q), key(KEY_ESCAPE)],
+        &mut snap,
+    );
+    s.tick(at(2), &[key(KEY_ESCAPE)], &mut snap);
+    assert!(matches!(s.stack().top(), AppScreen::Menu(_)));
+    assert_eq!(acronyms(&s), ["EZ"]);
+    s.tick(
+        at(3),
+        &[key(KEY_F1), key(KEY_BACKSPACE), key(KEY_A)],
+        &mut snap,
+    );
+    assert_eq!(acronyms(&s), ["EZ"]);
+}
+
+#[test]
+fn a_play_takes_the_selected_mods() {
+    let mut fixture = host("mods", true);
+    let (mut s, mut snap) = listing(&fixture);
+    s.tick(
+        at(1),
+        &[key(KEY_F1), key(KEY_F), key(KEY_ESCAPE)],
+        &mut snap,
+    );
+    s.tick(at(2), &[key(KEY_ENTER)], &mut snap);
+    let now = advance_until(&mut fixture, &mut s, at(2), |_, s| s.playing());
+    let game = fixture.host.game.as_mut().unwrap();
+    assert_eq!(
+        game.mods.iter().map(|a| a.as_str()).collect::<Vec<_>>(),
+        ["DT"]
+    );
+    game.ending = Ending::Sounds;
+    fixture.host.advance(now + 1, &mut s);
+    // They stay for the next play.
+    assert_eq!(acronyms(&s), ["DT"]);
+}
+
+#[test]
+fn the_panel_shows_every_difficulty_increase_mod_but_traceable() {
+    let expected: Vec<&str> = mods_for(ModType::DifficultyIncrease)
+        .iter()
+        .copied()
+        .filter(|&acronym| acronym != "TC")
+        .collect();
+    assert_eq!(mod_columns()[1], expected);
 }

@@ -14,7 +14,11 @@ use slam_render::atlas::AtlasRegion;
 use slam_render::sprite::{Sprite, SpriteBatch};
 use slam_text::{FontRegistry, Glyph, GlyphCache, GlyphKey, push_layout};
 
-use super::{Row, SongList, SongSelectLayout, SongSelectSnapshot, SongSelectStatus};
+use super::mod_select::MAX_COLUMNS;
+use super::{
+    ModColumns, ModSelectSnapshot, Row, SongList, SongSelectLayout, SongSelectSnapshot,
+    SongSelectStatus,
+};
 use crate::menu::Rect;
 use crate::menu::view::{Frame, Line, Typesetter};
 use crate::screen::Pose;
@@ -32,6 +36,12 @@ pub struct SongSelectLabels {
     pub loading: String,
     pub empty: String,
     pub hint: String,
+    /// The mod select panel's title; also prefixes the selected mods shown under the list.
+    pub mods_title: String,
+    pub mods_hint: String,
+    pub mod_column_titles: [String; MAX_COLUMNS],
+    /// The acronyms of the panel's columns: the same as [`super::ModSelect::new`] gets.
+    pub mod_columns: ModColumns,
 }
 
 impl std::fmt::Debug for SongSelectLabels {
@@ -81,6 +91,15 @@ pub struct SongSelectView {
     loading: Line,
     empty: Line,
     hint: Line,
+    mods_title: Line,
+    mods_hint: Line,
+    mod_column_titles: [Line; MAX_COLUMNS],
+    /// The acronym of every tile, by column.
+    mod_tiles: Vec<Vec<Line>>,
+    /// "Mods: HD DT" under the list, for the flags it was written for.
+    mods_selected: Line,
+    mods_selected_for: Option<[u16; MAX_COLUMNS]>,
+    mod_columns: ModColumns,
     slots: Vec<RowSlot>,
     /// Widths of the ellipsis at the title and detail sizes.
     ellipsis: [f32; 2],
@@ -146,11 +165,23 @@ impl SongSelectView {
             loading: Line::new(&labels.loading),
             empty: Line::new(&labels.empty),
             hint: Line::new(&labels.hint),
+            mods_title: Line::new(&labels.mods_title),
+            mods_hint: Line::new(&labels.mods_hint),
+            mod_column_titles: std::array::from_fn(|i| Line::new(&labels.mod_column_titles[i])),
+            mod_tiles: labels
+                .mod_columns
+                .iter()
+                .map(|c| c.iter().map(|a| Line::new(a)).collect())
+                .collect(),
+            mods_selected: Line::new(""),
+            mods_selected_for: None,
+            mod_columns: labels.mod_columns,
             slots: Vec::new(),
             ellipsis: [0.0; 2],
             theme,
         };
         view.scanning.text.reserve(TEXT_CAPACITY);
+        view.mods_selected.text.reserve(TEXT_CAPACITY);
         view.lay_out();
         view
     }
@@ -171,6 +202,18 @@ impl SongSelectView {
         }
         self.type_setter
             .lay_out(&mut self.hint, self.theme.song_detail_size * scale);
+        let detail = self.theme.song_detail_size * scale;
+        self.type_setter.lay_out(&mut self.mods_hint, detail);
+        self.type_setter
+            .lay_out(&mut self.mods_title, self.theme.song_status_size * scale);
+        for line in &mut self.mod_column_titles {
+            self.type_setter.lay_out(line, detail);
+        }
+        for line in self.mod_tiles.iter_mut().flatten() {
+            self.type_setter
+                .lay_out(line, self.theme.song_title_size * scale);
+        }
+        self.mods_selected_for = None;
         // The ellipsis widths and the row slots depend on the scale and the window.
         let mut probe = Line::new(&ELLIPSIS.to_string());
         for (width, size) in self
@@ -196,13 +239,21 @@ impl SongSelectView {
             &self.loading,
             &self.empty,
             &self.hint,
+            &self.mods_title,
+            &self.mods_hint,
+            &self.mods_selected,
         ];
+        let mods = self
+            .mod_column_titles
+            .iter()
+            .chain(self.mod_tiles.iter().flatten());
         let rows = self
             .slots
             .iter()
             .flat_map(|slot| [&slot.primary, &slot.secondary]);
         statics
             .into_iter()
+            .chain(mods)
             .chain(rows)
             .flat_map(|line| line.layout.glyphs())
             .filter(|g| matches!(glyphs.glyph(GlyphKey::of(g)), Glyph::Pending))
@@ -298,6 +349,7 @@ impl SongSelectView {
             self.type_setter.lay_out(&mut self.scanning, size);
         }
 
+        self.refresh_selected(&snapshot.mods);
         let shift = pose.offset * width;
         let opacity = pose.opacity;
         let theme = &self.theme;
@@ -323,6 +375,45 @@ impl SongSelectView {
             push_layout(text, &line.layout, position, faded(colour, opacity), glyphs);
         };
 
+        if snapshot.mods.open {
+            let full = Rect {
+                x: 0.0,
+                y: 0.0,
+                width,
+                height,
+            };
+            rect(&full, theme.mod_backdrop_fill);
+            let panel = &layout.mods;
+            let centred = |line: &Line, area: &Rect| {
+                (
+                    area.x + (area.width - line.layout.width()) / 2.0,
+                    area.y + area.height / 2.0,
+                )
+            };
+            let (x, y) = centred(&self.mods_title, &panel.title);
+            left(&self.mods_title, x, y, theme.text);
+            let (x, y) = centred(&self.mods_hint, &panel.hint);
+            left(&self.mods_hint, x, y, theme.disabled_text);
+            for (column, titles) in self.mod_column_titles.iter().enumerate() {
+                let (x, y) = centred(titles, &panel.column_titles[column]);
+                left(titles, x, y, theme.disabled_text);
+                for (index, line) in self.mod_tiles[column].iter().enumerate() {
+                    let area = panel.tile_rect(column, index);
+                    let on = snapshot.mods.active[column] >> index & 1 != 0;
+                    let fill = if on {
+                        theme.widget_accent_fill
+                    } else if snapshot.mods.hover == Some((column, index)) {
+                        theme.button_hover_fill
+                    } else {
+                        theme.button_fill
+                    };
+                    rect(&area, fill);
+                    let (x, y) = centred(line, &area);
+                    left(line, x, y, theme.text);
+                }
+            }
+            return;
+        }
         let status_line = match snapshot.status {
             SongSelectStatus::NoFolder => Some(&self.no_folder),
             SongSelectStatus::Scanning { .. } => Some(&self.scanning),
@@ -410,6 +501,38 @@ impl SongSelectView {
             layout.hint.y + layout.hint.height / 2.0,
             theme.disabled_text,
         );
+        // The selection, left of the list panel.
+        if snapshot.mods.active != [0; MAX_COLUMNS] {
+            let margin = theme.song_margin * layout.scale;
+            left(
+                &self.mods_selected,
+                margin,
+                layout.hint.y + layout.hint.height / 2.0,
+                theme.text,
+            );
+        }
+    }
+
+    /// Writes "Mods: HD DT" for the active tiles unless it already shows them.
+    fn refresh_selected(&mut self, mods: &ModSelectSnapshot) {
+        if self.mods_selected_for == Some(mods.active) {
+            return;
+        }
+        self.mods_selected_for = Some(mods.active);
+        let line = &mut self.mods_selected;
+        line.text.clear();
+        line.text.push_str(&self.mods_title.text);
+        line.text.push(':');
+        for (column, acronyms) in self.mod_columns.iter().enumerate() {
+            for (index, acronym) in acronyms.iter().enumerate() {
+                if mods.active[column] >> index & 1 != 0 {
+                    line.text.push(' ');
+                    line.text.push_str(acronym);
+                }
+            }
+        }
+        let size = self.theme.song_detail_size * self.layout.scale;
+        self.type_setter.lay_out(line, size);
     }
 }
 

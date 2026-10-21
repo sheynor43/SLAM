@@ -138,6 +138,38 @@ fn song_select_ticks_and_new_lists_do_not_allocate() {
             state.tick(now, &input, &mut snapshot);
         }
     });
+    // The mod select: F1, toggles that drop conflicts, Backspace, F1 again. The selection has
+    // room reserved, so toggling allocates nothing.
+    let [tile_x, tile_y] =
+        slam_ui::song_select::SongSelectLayout::new(1280.0, 720.0, &Theme::default())
+            .mods
+            .tile_rect(1, 3)
+            .centre();
+    let click = [
+        event(InputKind::MouseMove {
+            x: tile_x,
+            y: tile_y,
+        }),
+        event(InputKind::MouseButton {
+            button: slam_input::MouseButton::Left,
+            down: true,
+        }),
+    ];
+    let mods: Vec<InputEvent> = [58, 20, 4, 9, 20, 10, 26, 42, 20, 29]
+        .into_iter()
+        .map(key)
+        .chain(click)
+        .chain([key(58)])
+        .collect();
+    state.tick(3 * TRANSITION_NS + 99, &mods, &mut snapshot);
+    assert_no_alloc(|| {
+        let start = 3 * TRANSITION_NS + 100;
+        for now in start..start + 50 {
+            state.tick(now, &mods, &mut snapshot);
+        }
+    });
+    // The panel is closed again (a click on a tile toggles; F1 opens next round).
+    state.tick(3 * TRANSITION_NS + 200, &[key(42)], &mut snapshot);
     // A load comes and the play screen goes on top: navigation may allocate, its ticks not.
     state.tick(4 * TRANSITION_NS, &[key(40)], &mut snapshot);
     assert_eq!(state.take_play_request(), Some((0, 0)));

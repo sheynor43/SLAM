@@ -8,6 +8,7 @@ use std::thread::JoinHandle;
 use std::time::Duration;
 
 use slam_audio::{MusicEvent, PlayError};
+use slam_osu::mods::ModSet;
 use slam_play::HudLabels;
 use slam_render::Limits;
 use slam_text::FontRegistry;
@@ -42,6 +43,8 @@ pub struct PlayOptions {
     pub hit_error_scale: f64,
     /// The chosen skin's folder (ADR-0051); `None` plays on the default skin.
     pub skin: Option<PathBuf>,
+    /// The mods the player selected; the settings' fixed field is replaced by this.
+    pub mods: ModSet,
 }
 
 /// A prepared play, or why it could not be.
@@ -162,6 +165,7 @@ pub fn spawn(mut config: LoaderConfig) -> std::io::Result<(LoaderLink, SceneTras
                     config.settings.show_fps = options.show_fps;
                     config.settings.hit_error_scale = options.hit_error_scale;
                     config.settings.skin = options.skin;
+                    config.settings.mods = options.mods;
                     let result = prepare(
                         &map,
                         &config.settings,
@@ -210,6 +214,7 @@ mod tests {
             show_fps: false,
             hit_error_scale: 1.0,
             skin: None,
+            mods: ModSet::default(),
         }
     }
 
@@ -287,6 +292,26 @@ mod tests {
             assert_eq!(result.id, id);
             let prepared = result.result.unwrap();
             assert_eq!(prepared.scene.dim(), dim);
+            link.free(Trash::Prepared(prepared));
+        }
+        drop(thread);
+    }
+
+    #[test]
+    fn a_play_takes_the_mods_of_its_request_and_the_next_does_not_keep_them() {
+        use slam_osu::mods::Mod;
+        let (mut link, _scenes, thread) = spawn(config()).unwrap();
+        let map =
+            Path::new(env!("CARGO_MANIFEST_DIR")).join("../slam-osu/tests/data/slider-samples.osu");
+        let dt = ModSet::new(vec![Mod::from_acronym("DT")]).unwrap();
+        for (id, mods) in [(1, dt), (2, ModSet::default())] {
+            let options = PlayOptions {
+                mods: mods.clone(),
+                ..options()
+            };
+            assert!(link.request(id, map.clone(), options));
+            let prepared = wait(&mut link).result.unwrap();
+            assert_eq!(prepared.mods, mods);
             link.free(Trash::Prepared(prepared));
         }
         drop(thread);
