@@ -172,7 +172,7 @@ impl Options {
 }
 
 /// The mods of `--mods`: two-letter acronyms run together, in any letter case and order.
-/// Only mods that keep the track speed are taken; the set must be one lazer accepts.
+/// The mods take their default settings; the set must be one lazer accepts.
 fn parse_mods(value: &str) -> Result<ModSet, String> {
     if value.is_empty() || !value.is_ascii() || !value.len().is_multiple_of(2) {
         return Err(format!(
@@ -189,15 +189,18 @@ fn parse_mods(value: &str) -> Result<ModSet, String> {
             | Mod::HardRock
             | Mod::Hidden { .. }
             | Mod::SuddenDeath { .. }
-            | Mod::Perfect { .. } => mods.push(m),
-            Mod::HalfTime(_) | Mod::Daycore { .. } | Mod::DoubleTime(_) | Mod::Nightcore { .. } => {
-                return Err(format!(
-                    "--mods: {acronym} changes the track speed, which play does not support yet"
-                ));
-            }
+            | Mod::Perfect { .. }
+            | Mod::HalfTime(_)
+            | Mod::Daycore { .. }
+            | Mod::DoubleTime(_)
+            | Mod::Nightcore { .. }
+            | Mod::DifficultyAdjust(_)
+            | Mod::Mirror { .. }
+            | Mod::Classic(_) => mods.push(m),
             _ => {
                 return Err(format!(
-                    "--mods: {acronym} is not supported (NF, EZ, HR, HD, SD, PF are)"
+                    "--mods: {acronym} is not supported \
+                     (NF, EZ, HT, DC, HR, SD, PF, DT, NC, HD, DA, CL, MR are)"
                 ));
             }
         }
@@ -730,6 +733,13 @@ mod tests {
             ["EZ", "HD", "SD"]
         );
         assert_eq!(acronyms(&["map.osu", "--mods", "PFHR"]), ["PF", "HR"]);
+        assert_eq!(acronyms(&["map.osu", "--mods", "HDDT"]), ["HD", "DT"]);
+        assert_eq!(acronyms(&["map.osu", "--mods", "nc"]), ["NC"]);
+        assert_eq!(acronyms(&["map.osu", "--mods", "HTCL"]), ["HT", "CL"]);
+        assert_eq!(
+            acronyms(&["map.osu", "--mods", "DCMRDA"]),
+            ["DC", "MR", "DA"]
+        );
         // The mods reach the beatmap with their default settings.
         let mods = parse(&["map.osu", "--mods", "EZ"]).unwrap().mods;
         assert_eq!(mods, ModSet::new(vec![Mod::from_acronym("EZ")]).unwrap());
@@ -742,18 +752,17 @@ mod tests {
         for value in ["", "H", "HDH", "HDé", "HD HR"] {
             assert!(bad(value).contains("two-letter"), "{value}");
         }
-        // Speed changes and other mods.
-        for value in ["DT", "HDNC", "ht", "DC"] {
-            assert!(bad(value).contains("track speed"), "{value}");
-        }
-        for value in ["FL", "HDCL", "TC", "DA", "MR", "XX", "RX"] {
+        for value in ["FL", "HDTC", "XX", "RX"] {
             assert!(bad(value).contains("not supported"), "{value}");
         }
         // Sets lazer does not accept.
         for value in ["HDHD", "hdHD"] {
             assert!(bad(value).contains("more than once"), "{value}");
         }
-        for value in ["HREZ", "EZHR", "SDPF", "NFSD", "PFNF", "HDNFHRPF"] {
+        for value in [
+            "HREZ", "EZHR", "SDPF", "NFSD", "PFNF", "HDNFHRPF", "DTHT", "NCDT", "DCHT", "HRMR",
+            "DAHR", "EZDA",
+        ] {
             assert!(bad(value).contains("incompatible"), "{value}");
         }
         assert!(parse(&["map.osu", "--mods"]).is_err());

@@ -85,6 +85,10 @@ struct Track {
     refuse_adjust: bool,
     /// Frequency moves given: stream frame, target, frames.
     frequencies: Vec<(u64, f64, u64)>,
+    /// Tempos given; the last one holds from the start (sessions set it before playing).
+    rates: Vec<f64>,
+    /// Refuse the next tempo once.
+    refuse_rate: bool,
 }
 
 impl Track {
@@ -94,6 +98,7 @@ impl Track {
         self.issued.reserve(n);
         self.adjustments.reserve(n);
         self.frequencies.reserve(n);
+        self.rates.reserve(n);
     }
 
     fn log(&mut self, command: Command) {
@@ -140,6 +145,7 @@ impl Track {
             target: 1.0,
         };
         let mut move_end = None;
+        let tempo = self.rates.last().copied().unwrap_or(1.0);
         let position = |anchors: &Option<(MusicAnchor, MusicAnchor)>, at: u64| {
             anchors.map_or(0.0, |(_, a)| a.at(at as f64))
         };
@@ -149,7 +155,8 @@ impl Track {
                     playing: bool,
                     frequency: &Move| {
             let (speed, accel) = if playing {
-                frequency.at(at)
+                let (speed, accel) = frequency.at(at);
+                (speed * tempo, accel * tempo)
             } else {
                 (0.0, 0.0)
             };
@@ -305,8 +312,12 @@ impl TrackControl for Track {
         Ok(())
     }
 
-    fn set_rate(&mut self, _: f64) -> Result<(), PlayError> {
-        unreachable!("no rate mods")
+    fn set_rate(&mut self, rate: f64) -> Result<(), PlayError> {
+        if std::mem::take(&mut self.refuse_rate) {
+            return Err(PlayError::QueueFull);
+        }
+        self.rates.push(rate);
+        Ok(())
     }
 
     fn adjust(&mut self, adjustments: &[TrackAdjustment]) -> Result<(), PlayError> {
@@ -395,8 +406,11 @@ fn session(map: &Beatmap, track: &Track) -> PlaySession {
 
 /// A session with No Fail: the scripted player would run out of health.
 fn session_with(map: &Beatmap, track: &Track, offsets: Offsets) -> PlaySession {
+    session_with_mods(map, track, offsets, mods(vec![slam_osu::mods::Mod::NoFail]))
+}
+
+fn session_with_mods(map: &Beatmap, track: &Track, offsets: Offsets, mods: ModSet) -> PlaySession {
     let (sounds, _) = hitsounds(map, &["normal-hitnormal.wav", "soft-hitnormal.wav"]);
-    let mods = mods(vec![slam_osu::mods::Mod::NoFail]);
     PlaySession::new(
         map,
         &mods,
@@ -2858,4 +2872,140 @@ fn the_menu_is_hit_in_the_units_of_the_input() {
     let (down, up) = (left(true), left(false));
     d.tick(&[over, down, up]);
     assert_eq!(d.state(), PlayState::Exited);
+}
+
+fn rate_mod(acronym: &str) -> ModSet {
+    mods(vec![slam_osu::mods::Mod::from_acronym(acronym)])
+}
+
+/// Ticks until the track plays, then checks that game time runs `rate` times as fast as the
+/// output from the start time on.
+fn assert_runs_at(d: &mut Driver, rate: f64) {
+    d.run(2_000);
+    let real_ms = (d.now - MS - T0) as f64 / MS as f64;
+    let expected = d.session.start_time() + rate * real_ms;
+    assert!(
+        (d.snapshot.time - expected).abs() < 0.5,
+        "{} for {expected}",
+        d.snapshot.time
+    );
+}
+
+// Ported from osu!lazer 2026.1005.0-lazer: osu.Game/Rulesets/Mods/ModRateAdjust.cs (ApplyToTrack)
+#[test]
+fn rate_mods_set_the_track_tempo_or_frequency_and_the_clock_rate() {
+    let map = beatmap();
+    // Mod, tempo, frequency, rate: Double Time and Half Time keep the pitch, Nightcore and
+    // Daycore take their speed as frequency.
+    for (acronym, tempo, freq, rate) in [
+        ("DT", 1.5, 1.0, 1.5_f64),
+        ("HT", 0.75, 1.0, 0.75),
+        ("NC", 1.0, 1.5, 1.5),
+        ("DC", 1.0, 0.75, 0.75),
+    ] {
+        let mut d = Driver::new(&map, rate_mod(acronym));
+        assert_eq!(d.track.rates, [tempo], "{acronym}");
+        assert_eq!(d.track.adjustments[0], frequency(freq, 0.0), "{acronym}");
+        // The lead-in runs at the clock's rate: the track starts when game time reaches 0.
+        let frame = (1000.0 / rate * 48.0).round() as u64;
+        assert_eq!(
+            d.track.commands,
+            [Command::Pause, Command::Seek(0), Command::PlayAt(frame)],
+            "{acronym}"
+        );
+        assert_runs_at(&mut d, rate);
+    }
+}
+
+#[test]
+fn a_restart_keeps_the_rate() {
+    let map = beatmap();
+    let mut d = Driver::new(&map, rate_mod("DT"));
+    d.run_to(1_500.0);
+    d.hold(None, GRAVE, 200);
+    assert_eq!(d.snapshot.restarts, 1);
+    d.run(5);
+    // The tempo stays with the track; the clock keeps its rate.
+    assert_eq!(d.track.rates, [1.5]);
+    let since_start = d.snapshot.time - d.session.start_time();
+    assert!((0.0..10.0).contains(&since_start), "{since_start}");
+    let time = d.snapshot.time;
+    d.run(100);
+    assert!(
+        (d.snapshot.time - time - 150.0).abs() < 0.5,
+        "{}",
+        d.snapshot.time
+    );
+}
+
+// Ported from osu!lazer 2026.1005.0-lazer: osu.Game/Screens/Play/FailAnimationContainer.cs (Start)
+#[test]
+fn failing_with_nightcore_slows_its_frequency_to_a_stop_and_a_restart_brings_it_back() {
+    let map = beatmap();
+    let mut d = Driver::new(&map, rate_mod("NC"));
+    d.run_until(10_000, |s| s.state == PlayState::Failing);
+    // The fall from the mods' frequency: lazer multiplies 1 → 0 by it.
+    assert_eq!(d.track.adjustments[4], frequency(0.0, 2_500.0));
+    let frame = d.track.frame.get();
+    let speed = d.track.music(frame).unwrap().anchor.speed_at(frame as f64);
+    assert!(speed > 1.4 && speed <= 1.5, "{speed}");
+    d.run_until(10_000, |s| s.state == PlayState::Failed);
+    d.hold(None, GRAVE, 200);
+    assert_eq!(d.snapshot.restarts, 1);
+    assert_eq!(d.track.adjustments[12], frequency(1.5, 0.0));
+    assert_eq!(d.track.rates, [1.0]);
+}
+
+#[test]
+fn a_refused_rate_is_set_again_before_the_start() {
+    let map = beatmap();
+    let track = Track {
+        refuse_rate: true,
+        ..Track::default()
+    };
+    let session = session_with_mods(&map, &track, Offsets::default(), rate_mod("DT"));
+    let mut states = Vec::new();
+    let (session, track, _) = run_with(&map, session, track, MS, T0 + 100 * MS, |s| {
+        states.push(s.state);
+    });
+    assert_eq!(session.clock_errors(), 1);
+    assert_eq!(states[11], PlayState::Waiting);
+    assert_eq!(states[12], PlayState::Playing);
+    // Nothing went to the track on the refused tick: the retry 1 ms later seeks and starts
+    // at the new rate.
+    assert_eq!(track.rates, [1.5]);
+    assert_eq!(
+        track.commands,
+        [
+            Command::Pause,
+            Command::Seek(0),
+            Command::PlayAt(48 + 32_000)
+        ]
+    );
+}
+
+// Ported from osu!lazer 2026.1005.0-lazer: osu.Game/Beatmaps/FramedBeatmapClock.cs (TotalAppliedOffset)
+#[test]
+fn the_global_offset_scales_with_the_rate() {
+    let map = beatmap();
+    let offsets = Offsets {
+        global_ms: 20.0,
+        beatmap_ms: 0.0,
+    };
+    let track = Track::default();
+    let session = session_with_mods(&map, &track, offsets, rate_mod("DT"));
+    let mut states = Vec::new();
+    let (_, track, _) = run_with(&map, session, track, MS, T0 + 100 * MS, |s| {
+        states.push((s.state, s.time));
+    });
+    assert_eq!(states[11].0, PlayState::Playing);
+    // Track time is game time less 20 × 1.5 ms: the track starts 1030 ms of track time
+    // after the start, 686.7 ms of real time.
+    let frame = (1030.0 / 1.5 * 48.0_f64).round() as u64;
+    assert_eq!(track.commands.last(), Some(&Command::PlayAt(frame)));
+    assert!(
+        (states[11].1 - (-1000.0 + 1.5)).abs() < 0.1,
+        "{}",
+        states[11].1
+    );
 }
