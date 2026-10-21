@@ -380,21 +380,25 @@ impl GameClock {
         Ok(())
     }
 
-    /// Sets the rate of the clock and the track: how fast time runs off the track,
-    /// and the factor of real-time offsets. The track takes it when the change is
-    /// heard; on the track, time follows the music position. A queued lead-in start is
-    /// rescheduled. If that fails, the track already has the new rate: repeat the call.
+    /// Sets the rate of the clock: how fast time runs off the track, and the factor of
+    /// real-time offsets. The track gets `tempo` (see [`MusicPlayer::set_rate`]); the
+    /// rest of the rate is the track's frequency, which the caller sets with
+    /// [`TrackControl::adjust`] (ADR-0055). The track takes it when the change is heard;
+    /// on the track, time follows the music position. A queued lead-in start is
+    /// rescheduled. If that fails, the track already has the new tempo: repeat the call.
     pub fn set_rate(
         &mut self,
         now_ns: u64,
         rate: f64,
+        tempo: f64,
         track: &mut impl TrackControl,
     ) -> Result<(), ClockError> {
-        if !(crate::MIN_MUSIC_RATE..=crate::MAX_MUSIC_RATE).contains(&rate) {
+        let range = crate::MIN_MUSIC_RATE..=crate::MAX_MUSIC_RATE;
+        if !range.contains(&rate) || !range.contains(&tempo) {
             return Err(ClockError::InvalidRate);
         }
         let frame = self.now_frame(now_ns)?;
-        track.set_rate(rate)?;
+        track.set_rate(tempo)?;
         if let Mode::Free { lead_in, .. } = self.mode {
             let time_ms = self.free_time(frame);
             if lead_in == Some(true) {
@@ -1068,7 +1072,7 @@ mod tests {
         };
         let now = device.start_ns + 100 * MS;
         clock.seek(now, -3_000.0, &mut track).unwrap();
-        clock.set_rate(now, 1.5, &mut track).unwrap();
+        clock.set_rate(now, 1.5, 1.5, &mut track).unwrap();
         clock.start(now, &mut track).unwrap();
         assert_eq!(
             track.commands.last(),
@@ -1196,7 +1200,11 @@ mod tests {
         let now = 1_100 * MS;
         for bad in [0.0, -1.0, 0.04, 4.5, f64::NAN, f64::INFINITY] {
             assert_eq!(
-                clock.set_rate(now, bad, &mut track),
+                clock.set_rate(now, bad, bad, &mut track),
+                Err(ClockError::InvalidRate)
+            );
+            assert_eq!(
+                clock.set_rate(now, 1.0, bad, &mut track),
                 Err(ClockError::InvalidRate)
             );
         }
@@ -1207,11 +1215,28 @@ mod tests {
             track.commands.last(),
             Some(&Command::PlayAt(4_800 + 48_000))
         );
-        clock.set_rate(now, 2.0, &mut track).unwrap();
+        clock.set_rate(now, 2.0, 2.0, &mut track).unwrap();
         let n = track.commands.len();
         assert_eq!(
             track.commands[n - 2..],
             [Command::Rate(2.0), Command::PlayAt(4_800 + 24_000)]
+        );
+    }
+
+    #[test]
+    fn the_track_tempo_is_set_apart_from_the_clock_rate() {
+        // Nightcore: the frequency makes up the rate, the tempo stays 1.
+        let idle = playing_from(0, 0, 0.0);
+        let (_, mut clock, mut track) = settled(100, idle);
+        let now = 1_100 * MS;
+        clock.seek(now, -1_000.0, &mut track).unwrap();
+        clock.start(now, &mut track).unwrap();
+        clock.set_rate(now, 1.5, 1.0, &mut track).unwrap();
+        let n = track.commands.len();
+        // The lead-in runs at the clock rate: 1000 ms of game time in 32 000 frames.
+        assert_eq!(
+            track.commands[n - 2..],
+            [Command::Rate(1.0), Command::PlayAt(4_800 + 32_000)]
         );
     }
 

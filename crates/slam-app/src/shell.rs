@@ -918,17 +918,15 @@ impl PlayHost {
         // Tried until the queue takes it, while no play owns the track.
         if self.track_reset
             && self.game.is_none()
-            && self
-                .audio
-                .player
-                .adjust(&slam_play::fail::neutral_track())
-                .is_ok()
+            && slam_play::fail::reset_track(&mut self.audio.player).is_ok()
         {
             self.track_reset = false;
         }
         if state.take_track_stop() {
             // A failed command leaves the track playing under the song select.
             let _ = self.audio.player.pause();
+            // The results go: the track loses the play's mods.
+            self.track_reset = true;
         }
         // From the song select, or the results playing their beatmap again.
         let request = match state.take_play_request() {
@@ -1059,9 +1057,11 @@ impl PlayHost {
             if results.is_none() {
                 let _ = self.audio.player.pause();
             }
-            // A failed play leaves the track stopped and filtered; the next play resets it
-            // too, but the song select may play it before.
-            self.track_reset = true;
+            // A failed play leaves the track stopped and filtered, a play with rate mods
+            // sped up; the next play resets it too, but the song select may play it before.
+            // Under the results the track keeps the mods until they go, as lazer's
+            // `Player.OnExiting` resets it (ADR-0055).
+            self.track_reset = results.is_none();
             if let Some(map) = game.map.take() {
                 self.beatmap_offsets
                     .insert(map, game.session.beatmap_offset());

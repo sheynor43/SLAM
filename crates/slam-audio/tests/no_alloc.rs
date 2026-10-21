@@ -299,7 +299,7 @@ fn game_clock_does_not_allocate() {
                     2 => clock.start(now, &mut player),
                     20 => clock.stop(now, &mut player),
                     21 => clock.seek(now, 500.0, &mut player),
-                    22 => clock.set_rate(now, 1.5, &mut player),
+                    22 => clock.set_rate(now, 1.5, 1.5, &mut player),
                     23 => clock.start(now, &mut player),
                     _ => Ok(()),
                 };

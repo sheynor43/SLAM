@@ -4,7 +4,9 @@
 //! [`FailView`] in the snapshot; the draw side turns it into the objects' fall and the
 //! game layer's shrink and grey.
 
-use slam_audio::{FilterKind, MAX_LOW_PASS_CUTOFF, MIN_HIGH_PASS_CUTOFF, TrackAdjustment};
+use slam_audio::{
+    FilterKind, MAX_LOW_PASS_CUTOFF, MIN_HIGH_PASS_CUTOFF, PlayError, TrackAdjustment, TrackControl,
+};
 use slam_osu::Vec2;
 use slam_render::sprite::Affine;
 
@@ -66,10 +68,18 @@ pub(crate) enum TrackEffects {
 }
 
 impl TrackEffects {
+    /// The track's adjustments with the mods' frequency `mods_frequency` (ADR-0055): the
+    /// animation's frequency multiplies it, so the fall from 1 to 0 is one from it to 0.
     // Ported from osu!lazer 2026.1005.0-lazer: osu.Game/Screens/Play/FailAnimationContainer.cs (Start, removeFilters)
-    pub(crate) fn adjustments(self) -> [TrackAdjustment; 4] {
+    pub(crate) fn adjustments(self, mods_frequency: f64) -> [TrackAdjustment; 4] {
         let (frequency, duration_ms, volume, low, high) = match self {
-            TrackEffects::Neutral => (1.0, 0.0, 1.0, MAX_LOW_PASS_CUTOFF, MIN_HIGH_PASS_CUTOFF),
+            TrackEffects::Neutral => (
+                mods_frequency,
+                0.0,
+                1.0,
+                MAX_LOW_PASS_CUTOFF,
+                MIN_HIGH_PASS_CUTOFF,
+            ),
             TrackEffects::Failing => (0.0, FAIL_DURATION, FAIL_VOLUME, FAIL_CUTOFF, FAIL_CUTOFF),
             // Lazer leaves the frequency at 0 so that the menu does not sweep it again.
             TrackEffects::Failed => (0.0, 0.0, 1.0, MAX_LOW_PASS_CUTOFF, MIN_HIGH_PASS_CUTOFF),
@@ -95,10 +105,18 @@ impl TrackEffects {
     }
 }
 
-/// The track as a new player finds it: for the shell to reset the track when a play goes,
-/// before the session can.
+/// The track as a new player without mods finds it.
 pub fn neutral_track() -> [TrackAdjustment; 4] {
-    TrackEffects::Neutral.adjustments()
+    TrackEffects::Neutral.adjustments(1.0)
+}
+
+/// Takes the play's effects and rate mods off the track: tempo 1 and the adjustments of a
+/// play without mods, for the shell when a play goes (ADR-0055). On an error, call again
+/// until the queue takes both.
+// Ported from osu!lazer 2026.1005.0-lazer: osu.Game/Overlays/MusicController.cs (ResetTrackAdjustments)
+pub fn reset_track(track: &mut impl TrackControl) -> Result<(), PlayError> {
+    track.set_rate(1.0)?;
+    track.adjust(&neutral_track())
 }
 
 /// When the play failed, for the draw side.
@@ -239,6 +257,99 @@ mod tests {
             at_ns: 1_000 * MS,
             cut,
         }
+    }
+
+    /// Logs the tempo and the adjustments; refuses the first `refuse` calls.
+    #[derive(Default)]
+    struct Track {
+        rates: Vec<f64>,
+        adjustments: Vec<TrackAdjustment>,
+        refuse: usize,
+    }
+
+    impl Track {
+        fn refused(&mut self) -> bool {
+            let refused = self.refuse > 0;
+            self.refuse = self.refuse.saturating_sub(1);
+            refused
+        }
+    }
+
+    impl TrackControl for Track {
+        fn play(&mut self) -> Result<(), PlayError> {
+            unreachable!()
+        }
+        fn play_at(&mut self, _: u64) -> Result<(), PlayError> {
+            unreachable!()
+        }
+        fn pause(&mut self) -> Result<(), PlayError> {
+            unreachable!()
+        }
+        fn seek(&mut self, _: u64) -> Result<(), PlayError> {
+            unreachable!()
+        }
+        fn set_rate(&mut self, rate: f64) -> Result<(), PlayError> {
+            if self.refused() {
+                return Err(PlayError::QueueFull);
+            }
+            self.rates.push(rate);
+            Ok(())
+        }
+        fn adjust(&mut self, adjustments: &[TrackAdjustment]) -> Result<(), PlayError> {
+            if self.refused() {
+                return Err(PlayError::QueueFull);
+            }
+            self.adjustments.extend_from_slice(adjustments);
+            Ok(())
+        }
+        fn generation(&self) -> u32 {
+            0
+        }
+    }
+
+    fn frequency(adjustments: [TrackAdjustment; 4]) -> (f64, f64) {
+        match adjustments[0] {
+            TrackAdjustment::Frequency {
+                frequency,
+                duration_ms,
+            } => (frequency, duration_ms),
+            other => panic!("{other:?}"),
+        }
+    }
+
+    #[test]
+    fn the_mods_frequency_is_the_neutral_one_and_the_fall_starts_from_it() {
+        assert_eq!(
+            frequency(TrackEffects::Neutral.adjustments(1.5)),
+            (1.5, 0.0)
+        );
+        // The move to 0 starts where the track is: at the mods' frequency.
+        assert_eq!(
+            frequency(TrackEffects::Failing.adjustments(1.5)),
+            (0.0, FAIL_DURATION)
+        );
+        assert_eq!(frequency(TrackEffects::Failed.adjustments(1.5)), (0.0, 0.0));
+        assert_eq!(
+            TrackEffects::Failing.adjustments(1.5)[1..],
+            TrackEffects::Failing.adjustments(1.0)[1..]
+        );
+        assert_eq!(frequency(neutral_track()), (1.0, 0.0));
+    }
+
+    #[test]
+    fn a_reset_takes_the_tempo_and_the_effects_off_until_both_are_taken() {
+        let mut track = Track::default();
+        assert!(reset_track(&mut track).is_ok());
+        assert_eq!(track.rates, [1.0]);
+        assert_eq!(track.adjustments, neutral_track());
+        // A refused adjustment fails the reset: the shell calls again.
+        let mut track = Track {
+            refuse: 1,
+            ..Track::default()
+        };
+        assert_eq!(reset_track(&mut track), Err(PlayError::QueueFull));
+        assert!(reset_track(&mut track).is_ok());
+        assert_eq!(track.rates, [1.0]);
     }
 
     #[test]

@@ -948,7 +948,7 @@ mod tests {
                 ended: false,
             }),
         );
-        clock.set_rate(0, 1.5, &mut NoTrack).unwrap();
+        clock.set_rate(0, 1.5, 1.5, &mut NoTrack).unwrap();
         let clock = clock.update(0, None, None).unwrap();
         let offsets = Offsets {
             global_ms: 20.0,

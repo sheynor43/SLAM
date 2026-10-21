@@ -353,8 +353,35 @@ pub struct PlaySession {
     /// first tick: the previous play may have left it failing).
     track_effects: TrackEffects,
     applied_effects: Option<TrackEffects>,
+    /// The rate mods' speed (ADR-0055): the clock's rate, the track's tempo and its
+    /// frequency, set once the clock takes commands.
+    speed: Speed,
+    speed_set: bool,
     /// When the play failed.
     fail: Option<FailView>,
+}
+
+/// How fast a play runs: lazer's track adjustments from the rate mods.
+#[derive(Debug, Clone, Copy, PartialEq)]
+struct Speed {
+    /// The gameplay clock's rate (lazer's `GetTrueGameplayRate`).
+    rate: f64,
+    /// The track's tempo, pitch kept.
+    tempo: f64,
+    /// The track's frequency, with the pitch.
+    frequency: f64,
+}
+
+impl Speed {
+    // Ported from osu!lazer 2026.1005.0-lazer: osu.Game/Rulesets/Mods/ModRateAdjust.cs (ApplyToTrack)
+    fn of(mods: &ModSet) -> Speed {
+        let change = mods.rate();
+        Speed {
+            rate: mods.true_gameplay_rate(),
+            tempo: change.rate / change.frequency,
+            frequency: change.frequency,
+        }
+    }
 }
 
 impl PlaySession {
@@ -447,6 +474,8 @@ impl PlaySession {
             clock_errors: 0,
             track_effects: TrackEffects::Neutral,
             applied_effects: None,
+            speed: Speed::of(mods),
+            speed_set: false,
             fail: None,
         }
     }
@@ -1042,10 +1071,15 @@ impl PlaySession {
     /// Sends the pending seek, then starts or stops the clock as wanted. A failed seek may
     /// leave it stopped; the start is sent with the seek's retry.
     fn sync_clock(&mut self, now_ns: u64, track: &mut impl TrackControl) -> Result<(), ClockError> {
+        if !self.speed_set {
+            // Before the first seek: it converts game time at the clock's rate.
+            self.clock
+                .set_rate(now_ns, self.speed.rate, self.speed.tempo, track)?;
+            self.speed_set = true;
+        }
         if let Some(target) = self.pending_seek {
-            // Game time includes the offsets; the clock runs in track time. Rate 1: no rate
-            // mods exist yet (take the clock's rate once they do).
-            let track_time = crate::time::track_time_for(target, 1.0, &self.offsets);
+            // Game time includes the offsets; the clock runs in track time.
+            let track_time = crate::time::track_time_for(target, self.speed.rate, &self.offsets);
             self.clock.seek(now_ns, track_time, track)?;
             self.pending_seek = None;
         }
@@ -1062,7 +1096,7 @@ impl PlaySession {
         if self.applied_effects == Some(self.track_effects) {
             return;
         }
-        match track.adjust(&self.track_effects.adjustments()) {
+        match track.adjust(&self.track_effects.adjustments(self.speed.frequency)) {
             Ok(()) => self.applied_effects = Some(self.track_effects),
             Err(_) => self.clock_errors += 1,
         }

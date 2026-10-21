@@ -92,7 +92,7 @@ mod tests {
         };
         let mut clock = GameClock::new(&NoTrack);
         clock.update(0, Some(report), Some(music));
-        clock.set_rate(0, rate, &mut NoTrack).unwrap();
+        clock.set_rate(0, rate, rate, &mut NoTrack).unwrap();
         clock.update(0, None, None).unwrap()
     }
 
