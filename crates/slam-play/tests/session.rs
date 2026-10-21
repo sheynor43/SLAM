@@ -809,6 +809,7 @@ fn view(map: &Beatmap) -> PlayView {
             &windows,
             1.0,
         ),
+        hit_error_hiding: slam_play::hit_error::SpinnerHiding::new(map),
         cursor: CursorView::default(),
         resume: slam_play::resume::ResumeView::default(),
     }
@@ -3008,4 +3009,45 @@ fn the_global_offset_scales_with_the_rate() {
         "{}",
         states[11].1
     );
+}
+
+#[test]
+fn the_hit_error_meter_hides_during_a_spinner_and_keeps_its_lines() {
+    // The shared map's spinner runs from 3200 to 4700.
+    let map = beatmap();
+    let mut view = view(&map);
+    let textures = FrameTextures {
+        meter: Some(slam_play::hit_error::MeterTextures {
+            white: WHITE,
+            disc: WHITE,
+            gradient: WHITE,
+            triangle: WHITE,
+        }),
+        ..FrameTextures::default()
+    };
+    let mut snapshot = PlaySnapshot::default();
+    snapshot.hit_errors.push(slam_play::hit_error::HitError {
+        time: 3000.0,
+        offset: 10.0,
+        result: HitResult::Great,
+    });
+    let mut batch = SpriteBatch::with_capacity(slam_play::hit_error::MAX_HIT_ERROR_SPRITES);
+    let mut draw = |time: f64| {
+        snapshot.time = time;
+        batch.clear();
+        view.push_hit_error(&mut batch, 1280.0, 720.0, &snapshot, 0, &textures);
+        let alpha = batch
+            .vertices()
+            .iter()
+            .map(|v| v.colour[3])
+            .fold(0.0_f32, f32::max);
+        (batch.len(), alpha)
+    };
+    let (before, before_alpha) = draw(3100.0);
+    assert!(before > 0);
+    assert_eq!(draw(3500.0).0, 0, "hidden during the spinner");
+    let (fading, fading_alpha) = draw(4700.0 + 100.0);
+    assert_eq!(fading, before, "the same sprites, the line included");
+    assert!((fading_alpha - before_alpha / 2.0).abs() < 1e-3);
+    assert_eq!(draw(5000.0), (before, before_alpha));
 }

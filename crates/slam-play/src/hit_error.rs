@@ -189,6 +189,78 @@ impl HitErrorMeter {
     }
 }
 
+/// How long the meter takes to fade out when a spinner starts and back in when it ends.
+/// Chosen, not ported: stable's timing was not checked (ADR-0059).
+pub const SPINNER_HIDE_DURATION: f64 = 200.0;
+
+/// A spinner run the meter hides for.
+#[derive(Debug, Clone, Copy, PartialEq)]
+struct HiddenSpan {
+    start: f64,
+    end: f64,
+    /// The meter's alpha at `start`: below 1 when it had not come back from the previous span.
+    alpha_at_start: f64,
+}
+
+/// The meter hides during spinners, as in stable, so that it does not cover the spins per
+/// minute counter at the bottom centre (lazer keeps it shown, ADR-0059). The judgements keep
+/// arriving and fading meanwhile; only the meter's alpha changes. Built at load.
+#[derive(Debug, Clone, Default)]
+pub struct SpinnerHiding {
+    /// The spinners, overlapping ones merged, in order.
+    spans: Box<[HiddenSpan]>,
+}
+
+impl SpinnerHiding {
+    pub fn new(beatmap: &Beatmap) -> Self {
+        let mut spans: Vec<HiddenSpan> = Vec::new();
+        for object in &beatmap.hit_objects {
+            let OsuHitObjectKind::Spinner(spinner) = &object.kind else {
+                continue;
+            };
+            let (start, end) = (object.start_time, spinner.end_time.max(object.start_time));
+            match spans.last_mut() {
+                Some(last) if start <= last.end => last.end = last.end.max(end),
+                last => {
+                    let alpha_at_start = last.map_or(1.0, |last| last.alpha_after(start));
+                    spans.push(HiddenSpan {
+                        start,
+                        end,
+                        alpha_at_start,
+                    });
+                }
+            }
+        }
+        SpinnerHiding {
+            spans: spans.into_boxed_slice(),
+        }
+    }
+
+    /// The meter's alpha at game `time`: moves linearly towards 0 during a spinner and towards
+    /// 1 outside, taking [`SPINNER_HIDE_DURATION`] for the whole way, from wherever it was.
+    pub fn alpha(&self, time: f64) -> f32 {
+        let started = self.spans.partition_point(|span| span.start <= time);
+        match started.checked_sub(1) {
+            Some(last) => self.spans[last].alpha_after(time) as f32,
+            None => 1.0,
+        }
+    }
+}
+
+impl HiddenSpan {
+    /// The alpha at `time`, at or after `start` and before the next span.
+    fn alpha_after(&self, time: f64) -> f64 {
+        let hidden = (self.alpha_at_start
+            - (time.min(self.end) - self.start) / SPINNER_HIDE_DURATION)
+            .max(0.0);
+        if time > self.end {
+            (hidden + (time - self.end) / SPINNER_HIDE_DURATION).min(1.0)
+        } else {
+            hidden
+        }
+    }
+}
+
 /// The most sprites [`HitErrorMeter::push`] writes in any style.
 pub const MAX_HIT_ERROR_SPRITES: usize = if MAX_METER_SPRITES > MAX_LEGACY_METER_SPRITES {
     MAX_METER_SPRITES

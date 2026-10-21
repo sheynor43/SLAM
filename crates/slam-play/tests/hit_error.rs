@@ -10,7 +10,7 @@ use slam_osu::judgement::{HitResult, Judgement, ObjectRef};
 use slam_osu::objects::{NestedKind, OsuHitObjectKind};
 use slam_play::hit_error::{
     HitError, HitErrorRing, HitErrorTargets, HitErrorView, MAX_LINES, MAX_METER_SPRITES,
-    MeterTextures, colour_for, relative_position,
+    MeterTextures, SPINNER_HIDE_DURATION, SpinnerHiding, colour_for, relative_position,
 };
 use slam_render::atlas::{AtlasRegion, UvRect};
 use slam_render::sprite::SpriteBatch;
@@ -475,4 +475,100 @@ fn the_meter_size_multiplies_the_window_scale() {
     let max = bars.iter().map(|q| q.max[0]).fold(f32::MIN, f32::max);
     assert_close!(min, 512.0 - 100.0 * 1.5);
     assert_close!(max, 512.0 + 100.0 * 1.5);
+}
+
+// ---- Hiding during spinners ----
+
+fn spinner_map(objects: &str) -> slam_osu::Beatmap {
+    let text = format!(
+        "osu file format v14\n\n[Difficulty]\nOverallDifficulty:8\n\n[TimingPoints]\n0,300,4,2,0,100,1,0\n\n[HitObjects]\n{objects}"
+    );
+    slam_osu::Beatmap::decode(text.as_bytes()).unwrap()
+}
+
+#[test]
+fn the_meter_fades_out_over_a_spinner_and_back_after_it() {
+    let hiding = SpinnerHiding::new(&spinner_map(
+        "256,192,500,1,0\n256,192,1000,12,0,3000\n256,192,4000,1,0\n",
+    ));
+    assert_close!(hiding.alpha(0.0), 1.0);
+    assert_close!(hiding.alpha(999.0), 1.0);
+    assert_close!(hiding.alpha(1000.0), 1.0);
+    assert_close!(hiding.alpha(1000.0 + SPINNER_HIDE_DURATION / 2.0), 0.5);
+    assert_close!(hiding.alpha(1000.0 + SPINNER_HIDE_DURATION), 0.0);
+    assert_close!(hiding.alpha(2500.0), 0.0);
+    assert_close!(hiding.alpha(3000.0), 0.0);
+    assert_close!(hiding.alpha(3000.0 + SPINNER_HIDE_DURATION / 4.0), 0.25);
+    assert_close!(hiding.alpha(3000.0 + SPINNER_HIDE_DURATION), 1.0);
+    assert_close!(hiding.alpha(10_000.0), 1.0);
+}
+
+#[test]
+fn a_short_spinner_comes_back_from_the_alpha_it_reached() {
+    let hiding = SpinnerHiding::new(&spinner_map("256,192,1000,12,0,1050\n"));
+    // A quarter of the fade by the end, then back up at the same pace.
+    assert_close!(hiding.alpha(1050.0), 0.75);
+    assert_close!(hiding.alpha(1100.0), 1.0);
+}
+
+#[test]
+fn close_spinners_keep_the_lowest_alpha() {
+    let hiding = SpinnerHiding::new(&spinner_map(
+        "256,192,1000,12,0,2000\n256,192,2100,12,0,3000\n",
+    ));
+    // Halfway back from the first when the second starts: the fade goes on from there.
+    assert_close!(hiding.alpha(2100.0), 0.5);
+    assert_close!(hiding.alpha(2150.0), 0.25);
+    assert_close!(hiding.alpha(2200.0), 0.0);
+    assert_close!(hiding.alpha(3100.0), 0.5);
+}
+
+#[test]
+fn overlapping_spinners_hide_the_meter_until_the_last_ends() {
+    let hiding = SpinnerHiding::new(&spinner_map(
+        "256,192,1000,12,0,3000\n256,192,2000,12,0,2500\n",
+    ));
+    assert_close!(hiding.alpha(2700.0), 0.0);
+    assert_close!(hiding.alpha(3000.0 + SPINNER_HIDE_DURATION), 1.0);
+}
+
+#[test]
+fn a_map_without_spinners_never_hides_the_meter() {
+    let hiding = SpinnerHiding::new(&spinner_map("256,192,1000,1,0\n"));
+    assert_close!(hiding.alpha(1000.0), 1.0);
+    assert_close!(SpinnerHiding::default().alpha(0.0), 1.0);
+}
+
+#[test]
+fn a_spinner_without_length_never_hides_the_meter() {
+    let hiding = SpinnerHiding::new(&spinner_map("256,192,1000,12,0,1000\n"));
+    assert_close!(hiding.alpha(1000.0), 1.0);
+    // Ending before it starts counts as no length.
+    let hiding = SpinnerHiding::new(&spinner_map("256,192,1000,12,0,900\n"));
+    assert_close!(hiding.alpha(1000.0), 1.0);
+    assert_close!(hiding.alpha(1100.0), 1.0);
+}
+
+#[test]
+fn a_run_of_short_spinners_carries_the_alpha_through() {
+    // Each 50 ms long and 50 ms apart: down a quarter, up a quarter.
+    let hiding = SpinnerHiding::new(&spinner_map(
+        "256,192,1000,12,0,1100\n256,192,1150,12,0,1250\n256,192,1300,12,0,1400\n",
+    ));
+    assert_close!(hiding.alpha(1100.0), 0.5);
+    assert_close!(hiding.alpha(1150.0), 0.75);
+    assert_close!(hiding.alpha(1250.0), 0.25);
+    assert_close!(hiding.alpha(1300.0), 0.5);
+    assert_close!(hiding.alpha(1400.0), 0.0);
+    assert_close!(hiding.alpha(1500.0), 0.5);
+}
+
+#[test]
+fn a_gap_of_the_whole_fade_brings_the_meter_back_fully() {
+    let hiding = SpinnerHiding::new(&spinner_map(&format!(
+        "256,192,1000,12,0,2000\n256,192,{},12,0,3000\n",
+        2000.0 + SPINNER_HIDE_DURATION
+    )));
+    assert_close!(hiding.alpha(2000.0 + SPINNER_HIDE_DURATION), 1.0);
+    assert_close!(hiding.alpha(2000.0 + SPINNER_HIDE_DURATION * 1.5), 0.5);
 }
