@@ -23,8 +23,8 @@ use slam_input::{
     sdl_ticks_ns,
 };
 use slam_osu::mods::{
-    APPROACH_RATE_STEP, Mod, ModSet, ModType, SPEED_STEP, SpeedHotkeys, change_approach_rate,
-    mods_for,
+    APPROACH_RATE_STEP, Mod, ModSet, ModType, SPEED_STEP, SliderBounds, SpeedHotkeys,
+    change_approach_rate, mods_for,
 };
 use slam_play::input::Input;
 use slam_play::{
@@ -50,7 +50,7 @@ use slam_ui::settings_screen::{
     SettingsView,
 };
 use slam_ui::song_select::{
-    ModColumns, ModSelect, SongList, SongSelect, SongSelectAction, SongSelectInput,
+    ModColumns, ModSelect, SettingValue, SongList, SongSelect, SongSelectAction, SongSelectInput,
     SongSelectLabels, SongSelectLayout, SongSelectSnapshot, SongSelectStatus, SongSelectView,
     TileDetail,
 };
@@ -69,6 +69,7 @@ mod live;
 
 use live::{AppliedUpdateRate, AppliedVolumes, Volumes};
 mod keybinds;
+mod mod_settings;
 mod results;
 mod rows;
 
@@ -100,6 +101,7 @@ const KEY_F1: u16 = 58;
 const KEY_F3: u16 = 60;
 const KEY_F4: u16 = 61;
 const KEY_TAB: u16 = 43;
+const KEY_SPACE: u16 = 44;
 const KEY_HOME: u16 = 74;
 const KEY_DELETE: u16 = 76;
 const KEY_PAGE_UP: u16 = 75;
@@ -268,6 +270,12 @@ pub struct ShellState {
     mod_buffer: Vec<Mod>,
     /// What the mod speed hotkeys remember of the selection.
     speed_hotkeys: SpeedHotkeys,
+    /// The bounds of the settings panel's sliders, kept as lazer's bindables keep them.
+    slider_bounds: SliderBounds,
+    /// The settings panel's rows and the settings they stand for.
+    setting_rows: mod_settings::SettingRows,
+    /// The difficulty (and library state) the rows' beatmap values were built for.
+    setting_rows_for: Option<(usize, usize, usize)>,
     /// The Control keys held: bit 0 the left one, bit 1 the right one.
     ctrl: u8,
     /// Last cursor position in pixels.
@@ -315,6 +323,9 @@ impl ShellState {
                 .collect(),
             mod_buffer: Vec::with_capacity(SELECTED_MODS_CAPACITY),
             speed_hotkeys: SpeedHotkeys::default(),
+            slider_bounds: SliderBounds::default(),
+            setting_rows: mod_settings::SettingRows::default(),
+            setting_rows_for: None,
             ctrl: 0,
             theme,
             cursor: [0.0, 0.0],
@@ -468,10 +479,14 @@ impl ShellState {
         self.sync_mod_flags();
     }
 
-    /// Makes the panel's tiles show the selection and its settings; the speed hotkeys
-    /// remember its rate mod.
+    /// Makes the panel's tiles show the selection and its settings; the speed hotkeys and
+    /// the slider bounds observe it, and the settings rows follow it. As in lazer, a change
+    /// of which mods are selected collapses the settings panel, and selecting a mod that
+    /// needs configuring expands it.
     fn sync_mod_flags(&mut self) {
         self.speed_hotkeys.observe(&self.selected_mods);
+        self.slider_bounds.observe(&self.selected_mods);
+        let before = self.song_select.mods().active_flags();
         let columns = *self.song_select.mods().columns();
         for (c, acronyms) in columns.iter().enumerate() {
             for (i, acronym) in acronyms.iter().enumerate() {
@@ -481,6 +496,70 @@ impl ShellState {
                 mods.set_detail(c, i, selected.map_or(TileDetail::None, tile_detail));
             }
         }
+        let after = self.song_select.mods().active_flags();
+        if before != after {
+            self.song_select.mods_mut().collapse_customisation();
+        }
+        self.rebuild_setting_rows();
+        if before == after {
+            return;
+        }
+        let configure = columns.iter().enumerate().any(|(c, acronyms)| {
+            acronyms.iter().enumerate().any(|(i, acronym)| {
+                let new = (after[c] & !before[c]) >> i & 1 != 0;
+                new && self
+                    .selected_mods
+                    .get(acronym)
+                    .is_some_and(Mod::requires_configuration)
+            })
+        });
+        if configure {
+            self.song_select.mods_mut().expand_customisation_by_mod();
+        }
+    }
+
+    /// Gives the settings panel the rows of the selected mods, with the beatmap values of
+    /// the selected difficulty.
+    fn rebuild_setting_rows(&mut self) {
+        self.setting_rows_for = Some(self.rows_key());
+        let file = self
+            .song_select
+            .selected()
+            .and_then(|(set, difficulty)| self.files.get(set)?.get(difficulty));
+        self.setting_rows
+            .build(&self.selected_mods, &self.slider_bounds, file);
+        self.song_select
+            .mods_mut()
+            .set_setting_rows(self.setting_rows.rows());
+    }
+
+    /// What the rows' beatmap values depend on: the selected difficulty and the library's
+    /// files.
+    fn rows_key(&self) -> (usize, usize, usize) {
+        let (set, difficulty) = self.song_select.selected().unwrap_or((usize::MAX, 0));
+        (
+            set,
+            difficulty,
+            Arc::as_ptr(&self.files).cast::<()>() as usize,
+        )
+    }
+
+    /// The settings panel changed a row (`Some`) or reset it (`None`): writes it to the mod.
+    fn apply_setting(&mut self, row: usize, value: Option<SettingValue>) {
+        if self.loading {
+            return;
+        }
+        let Some(target) = self.setting_rows.target(row) else {
+            return;
+        };
+        let state = value.map_or_else(|| target.kind.default_state(), mod_settings::state_of);
+        self.selected_mods.set_setting_state(
+            target.acronym,
+            target.key,
+            state,
+            &mut self.slider_bounds,
+        );
+        self.sync_mod_flags();
     }
 
     /// The `.osu` file of the last play asked for.
@@ -632,6 +711,9 @@ impl ShellState {
                 KEY_R if !song_select => return Some(ScreenInput::Retry),
                 KEY_F1 => SongSelectInput::ToggleMods,
                 KEY_BACKSPACE => SongSelectInput::DeselectMods,
+                KEY_TAB if song_select => SongSelectInput::ToggleCustomisation,
+                KEY_DELETE if song_select => SongSelectInput::ResetSetting,
+                KEY_SPACE if song_select => SongSelectInput::Space,
                 KEY_TAB => return Some(ScreenInput::Tab),
                 KEY_UP => SongSelectInput::Up,
                 KEY_DOWN => SongSelectInput::Down,
@@ -741,6 +823,14 @@ impl ShellState {
                             self.deselect_mods();
                             None
                         }
+                        Some(SongSelectAction::SetModSetting { row, value }) => {
+                            self.apply_setting(row, Some(value));
+                            None
+                        }
+                        Some(SongSelectAction::ResetModSetting { row }) => {
+                            self.apply_setting(row, None);
+                            None
+                        }
                         Some(SongSelectAction::Play { set, difficulty }) => {
                             if let Some(file) = self.file(set, difficulty) {
                                 self.last_file = Some(file.clone());
@@ -832,6 +922,10 @@ impl ShellState {
         self.stack.tick(now_ns);
         self.receive_songs();
         let navigated = self.handle(events, now_ns);
+        self.song_select.tick(now_ns, &self.song_layout);
+        if self.setting_rows_for != Some(self.rows_key()) {
+            self.rebuild_setting_rows();
+        }
         let top: *const AppScreen = self.stack.top();
         for (slot, layer) in snapshot.layers.iter_mut().zip(self.stack.layers(now_ns)) {
             *slot = layer.and_then(|(screen, pose)| {
@@ -874,6 +968,7 @@ impl ScreenInput {
     fn common(self) -> Option<SongSelectInput> {
         match self {
             ScreenInput::Common(input) => Some(input),
+            ScreenInput::Release => Some(SongSelectInput::PointerRelease),
             _ => None,
         }
     }
@@ -1879,6 +1974,11 @@ pub fn run(settings: Settings) -> Result<(), String> {
         hint: text("song-select-hint"),
         mods_title: text("song-select-mods-title"),
         mods_hint: text("song-select-mods-hint"),
+        mods_customise: text("song-select-mods-customise"),
+        setting_texts: mod_settings::TEXT_KEYS
+            .iter()
+            .map(|key| (*key, text(key)))
+            .collect(),
         mod_column_titles: [
             text("song-select-mods-reduction"),
             text("song-select-mods-increase"),

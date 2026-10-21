@@ -27,6 +27,12 @@ pub struct SongFile {
     pub path: PathBuf,
     /// The approach rate of the file, without mods.
     pub approach_rate: f32,
+    /// The circle size of the file, without mods.
+    pub circle_size: f32,
+    /// The HP drain rate of the file, without mods.
+    pub drain_rate: f32,
+    /// The overall difficulty of the file, without mods.
+    pub overall_difficulty: f32,
 }
 
 /// The difficulties of a published list, by set and difficulty, in the list's order.
@@ -144,6 +150,9 @@ pub fn publish(
                 .map(|d| SongFile {
                     path: d.path.clone(),
                     approach_rate: d.approach_rate,
+                    circle_size: d.circle_size,
+                    drain_rate: d.hp,
+                    overall_difficulty: d.overall_difficulty,
                 })
                 .collect()
         })
