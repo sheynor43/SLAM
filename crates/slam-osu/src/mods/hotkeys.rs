@@ -1,6 +1,7 @@
 //! Song select hotkeys that change mod settings: the speed of the rate mods, as lazer's
 //! `ModSpeedHotkeyHandler`, and SLAM's approach rate through Difficulty Adjust (ADR-0056).
 
+use super::customise::DA_DECIMALS;
 use super::setting::DifficultyRange;
 use super::setting::set_bindable_double;
 use super::{
@@ -14,9 +15,6 @@ pub const SPEED_STEP: f64 = 0.05;
 
 /// The step of the approach rate hotkeys.
 pub const APPROACH_RATE_STEP: f64 = 0.1;
-
-/// `Precision = 0.1` of Difficulty Adjust's settings, as decimal places.
-const DA_DECIMALS: u32 = 1;
 
 /// Whether a mod is one of lazer's `ModRateAdjust`s.
 fn is_rate_adjust(m: &Mod) -> bool {

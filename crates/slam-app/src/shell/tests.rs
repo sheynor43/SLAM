@@ -1118,3 +1118,127 @@ fn the_panel_shows_every_difficulty_increase_mod_but_traceable() {
         .collect();
     assert_eq!(mod_columns()[1], expected);
 }
+
+fn customise(snap: &ShellSnapshot) -> slam_ui::song_select::CustomisationSnapshot {
+    song_view(snap).mods.customise
+}
+
+fn state_of(s: &ShellState, acronym: &str, key: &str) -> Option<slam_osu::mods::SettingState> {
+    s.selected_mods().get(acronym)?.setting_state(key)
+}
+
+#[test]
+fn the_settings_panel_lists_the_selected_mods_and_edits_them() {
+    use slam_osu::mods::SettingState;
+    use slam_ui::song_select::{CustomisationState, SettingRowKind};
+    let (mut s, mut snap, _producer) = in_song_select();
+    // Nothing selected: nothing to customise, Tab does nothing.
+    s.tick(at(1), &[key(KEY_F1), key(KEY_TAB)], &mut snap);
+    assert!(!customise(&snap).is_enabled());
+    assert_eq!(customise(&snap).state, CustomisationState::Collapsed);
+    // Double Time: a section header, the speed and the pitch.
+    s.tick(at(2), &[key(KEY_F)], &mut snap);
+    let c = customise(&snap);
+    assert_eq!(c.len, 3);
+    assert_eq!(c.rows[0].kind, SettingRowKind::Header);
+    assert_eq!(c.rows[1].label, "song-select-mods-setting-speed-increase");
+    assert_eq!(c.rows[1].suffix, "x");
+    assert_eq!(c.state, CustomisationState::Collapsed);
+    // Tab expands; the arrows now act on the panel, the carousel stays.
+    s.tick(
+        at(3),
+        &[key(KEY_TAB), key(KEY_RIGHT), key(KEY_RIGHT)],
+        &mut snap,
+    );
+    assert_eq!(customise(&snap).state, CustomisationState::Expanded);
+    assert_eq!(
+        state_of(&s, "DT", "speed_change"),
+        Some(SettingState::Number(Some(1.52)))
+    );
+    assert_eq!(detail(&snap, 1, 3), TileDetail::Speed(152));
+    assert_eq!(s.song_select().selected(), Some((0, 0)));
+    // The panel took the keys: a hotkey and Backspace do nothing.
+    s.tick(at(4), &[key(KEY_A), key(KEY_BACKSPACE)], &mut snap);
+    assert_eq!(acronyms(&s), ["DT"]);
+    // Space flips the pitch toggle, Delete resets it.
+    s.tick(at(5), &[key(KEY_DOWN), key(KEY_SPACE)], &mut snap);
+    assert_eq!(
+        state_of(&s, "DT", "adjust_pitch"),
+        Some(SettingState::Toggle(true))
+    );
+    s.tick(at(6), &[key(KEY_DELETE)], &mut snap);
+    assert_eq!(
+        state_of(&s, "DT", "adjust_pitch"),
+        Some(SettingState::Toggle(false))
+    );
+    // Edits from the panel keep it open; Esc collapses it, a second Esc closes the select.
+    assert!(customise(&snap).state != CustomisationState::Collapsed);
+    s.tick(at(7), &[key(KEY_ESCAPE)], &mut snap);
+    assert_eq!(customise(&snap).state, CustomisationState::Collapsed);
+    assert!(song_view(&snap).mods.open);
+    s.tick(at(8), &[key(KEY_ESCAPE)], &mut snap);
+    assert!(!song_view(&snap).mods.open);
+}
+
+#[test]
+fn changing_the_selection_collapses_the_panel() {
+    use slam_ui::song_select::CustomisationState;
+    let (mut s, mut snap, _producer) = in_song_select();
+    s.tick(at(1), &[key(KEY_F1), key(KEY_F), key(KEY_TAB)], &mut snap);
+    assert_eq!(customise(&snap).state, CustomisationState::Expanded);
+    // The speed hotkey changes the speed only: the panel stays.
+    s.tick(at(2), &[key(KEY_LEFT_CTRL), key(KEY_UP)], &mut snap);
+    assert_eq!(customise(&snap).state, CustomisationState::Expanded);
+    s.tick(
+        at(3),
+        &[key_up(KEY_LEFT_CTRL), key(KEY_TAB), key(KEY_G)],
+        &mut snap,
+    );
+    assert_eq!(acronyms(&s), ["NC"]);
+    assert_eq!(customise(&snap).state, CustomisationState::Collapsed);
+}
+
+#[test]
+fn difficulty_adjust_expands_the_panel_and_shows_the_beatmap_values() {
+    use slam_osu::mods::SettingState;
+    use slam_ui::song_select::{CustomisationState, SettingRowKind};
+    let (mut s, mut snap, _producer) = in_song_select();
+    s.tick(
+        at(1),
+        &[key(KEY_F1), key(KEY_LEFT_CTRL), key(KEY_F4)],
+        &mut snap,
+    );
+    assert_eq!(acronyms(&s), ["DA"]);
+    let c = customise(&snap);
+    assert_eq!(c.state, CustomisationState::ExpandedByMod);
+    // Header, CS, HP, OD, AR and Extended Limits.
+    assert_eq!(c.len, 6);
+    // The test difficulties have CS 4, HP 5, OD 5; the hotkey set the approach rate only.
+    let number = |row: usize| match c.rows[row].kind {
+        SettingRowKind::Number { value, unset, .. } => (value, unset),
+        other => panic!("{other:?}"),
+    };
+    assert_eq!(number(1), (4.0, true));
+    assert_eq!(number(2), (5.0, true));
+    assert_eq!(number(3), (5.0, true));
+    assert!(!number(4).1);
+    // Stepping an unset value sets it from the beatmap's; Delete unsets it again.
+    s.tick(at(2), &[key_up(KEY_LEFT_CTRL), key(KEY_RIGHT)], &mut snap);
+    // Stored as an f32, as lazer does.
+    assert!(matches!(
+        state_of(&s, "DA", "circle_size"),
+        Some(SettingState::Number(Some(v))) if (v - 4.1).abs() < 1e-6
+    ));
+    s.tick(at(3), &[key(KEY_DELETE)], &mut snap);
+    assert_eq!(
+        state_of(&s, "DA", "circle_size"),
+        Some(SettingState::Number(None))
+    );
+    // Another difficulty brings its own values.
+    s.tick(
+        at(4),
+        &[key(KEY_ESCAPE), key(KEY_ESCAPE), key(KEY_DOWN)],
+        &mut snap,
+    );
+    assert_eq!(s.song_select().selected(), Some((0, 1)));
+}

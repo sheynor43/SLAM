@@ -15,8 +15,9 @@ pub mod mod_select;
 pub mod view;
 
 pub use mod_select::{
-    ModColumns, ModSelect, ModSelectAction, ModSelectLayout, ModSelectSnapshot, TileDetail,
-    TileDetails,
+    CustomisationLayout, CustomisationSnapshot, CustomisationState, MAX_CHOICES, MAX_SETTING_ROWS,
+    ModColumns, ModSelect, ModSelectAction, ModSelectLayout, ModSelectSnapshot, SettingRow,
+    SettingRowKind, SettingValue, TileDetail, TileDetails,
 };
 pub use view::{SongSelectLabels, SongSelectView};
 
@@ -82,6 +83,12 @@ pub enum SongSelectInput {
         column: usize,
         index: usize,
     },
+    /// Tab: expands or collapses the mod settings panel while the mod select is open.
+    ToggleCustomisation,
+    /// Delete: resets the selected row of the expanded settings panel to its default.
+    ResetSetting,
+    /// Space: like Activate in the expanded settings panel, nothing elsewhere.
+    Space,
     /// Wheel: positive `lines` scroll towards the end of the list. Selection stays.
     Scroll {
         lines: f32,
@@ -94,10 +101,12 @@ pub enum SongSelectInput {
         x: f32,
         y: f32,
     },
+    /// The primary button was released: ends a slider drag in the settings panel.
+    PointerRelease,
 }
 
 /// What the screen asks the application to do; indices are into the current list.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq)]
 pub enum SongSelectAction {
     Play {
         set: usize,
@@ -112,6 +121,16 @@ pub enum SongSelectAction {
     },
     /// Deselect every mod.
     DeselectMods,
+    /// The settings panel changed row `row` (an index into the rows the application gave
+    /// [`ModSelect::set_setting_rows`]).
+    SetModSetting {
+        row: usize,
+        value: SettingValue,
+    },
+    /// The settings panel resets row `row` to its default.
+    ResetModSetting {
+        row: usize,
+    },
 }
 
 /// One row of the flat column.
@@ -361,6 +380,14 @@ impl SongSelect {
         &self.mods
     }
 
+    /// Advances the time-driven parts of the screen (the settings panel's collapse delay) to
+    /// `now_ns`, a monotonic clock in nanoseconds. Does not allocate.
+    pub fn tick(&mut self, now_ns: u64, layout: &SongSelectLayout) {
+        if self.mods.is_open() {
+            self.mods.tick(now_ns, &layout.mods);
+        }
+    }
+
     /// The panel, for the application to write the active flags and to set its columns.
     pub fn mods_mut(&mut self) -> &mut ModSelect {
         &mut self.mods
@@ -442,6 +469,12 @@ impl SongSelect {
                         SongSelectAction::ToggleMod { column, index }
                     }
                     ModSelectAction::DeselectAll => SongSelectAction::DeselectMods,
+                    ModSelectAction::SetSetting { row, value } => {
+                        SongSelectAction::SetModSetting { row, value }
+                    }
+                    ModSelectAction::ResetSetting { row } => {
+                        SongSelectAction::ResetModSetting { row }
+                    }
                 });
         }
         if input == I::Back {
@@ -465,7 +498,12 @@ impl SongSelect {
             I::Home => self.select_set(0),
             I::End => self.select_set(last),
             I::Activate => action = self.play(),
-            I::Back | I::ModHotkey { .. } => moved = false,
+            I::Back
+            | I::ModHotkey { .. }
+            | I::ToggleCustomisation
+            | I::ResetSetting
+            | I::Space
+            | I::PointerRelease => moved = false,
             I::ToggleMods => {
                 self.mods.open();
                 moved = false;

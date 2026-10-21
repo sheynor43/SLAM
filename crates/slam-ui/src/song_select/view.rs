@@ -14,7 +14,9 @@ use slam_render::atlas::AtlasRegion;
 use slam_render::sprite::{Sprite, SpriteBatch};
 use slam_text::{FontRegistry, Glyph, GlyphCache, GlyphKey, push_layout};
 
-use super::mod_select::{MAX_COLUMNS, TileDetail, TileDetails};
+use super::mod_select::{
+    CustomisationState, MAX_COLUMNS, MAX_SETTING_ROWS, SettingRowKind, TileDetail, TileDetails,
+};
 use super::{
     ModColumns, ModSelectSnapshot, Row, SongList, SongSelectLayout, SongSelectSnapshot,
     SongSelectStatus,
@@ -23,10 +25,16 @@ use crate::menu::Rect;
 use crate::menu::view::{Frame, Line, Typesetter};
 use crate::screen::Pose;
 use crate::theme::{Theme, faded};
+use crate::widgets::ToggleLayout;
 
 const ELLIPSIS: char = '\u{2026}';
 /// Bytes reserved up front in every text buffer.
 const TEXT_CAPACITY: usize = 256;
+/// How much of its colour a dimmed element keeps: the mod tiles under the expanded settings
+/// panel, an inactive panel header.
+const DIMMED: f32 = 0.35;
+/// What the settings values are made of; asked for up front.
+const VALUE_CHARS: &str = "0123456789.-x";
 
 /// The screen's localised texts, already formatted.
 #[derive(Clone)]
@@ -39,6 +47,11 @@ pub struct SongSelectLabels {
     /// The mod select panel's title; also prefixes the selected mods shown under the list.
     pub mods_title: String,
     pub mods_hint: String,
+    /// The header of the settings panel.
+    pub mods_customise: String,
+    /// The texts of the settings panel by Fluent key: section headers (mod names), setting
+    /// labels and the names of choice values. A key a row uses and this lacks draws nothing.
+    pub setting_texts: Vec<(&'static str, String)>,
     pub mod_column_titles: [String; MAX_COLUMNS],
     /// The acronyms of the panel's columns: the same as [`super::ModSelect::new`] gets.
     pub mod_columns: ModColumns,
@@ -75,6 +88,12 @@ impl RowSlot {
     }
 }
 
+/// The text of one visible settings row's number, laid out again only when it changes.
+struct ValueSlot {
+    shown: Option<(u64, u8)>,
+    line: Line,
+}
+
 /// The draw side of [`super::SongSelect`].
 pub struct SongSelectView {
     theme: Theme,
@@ -94,6 +113,10 @@ pub struct SongSelectView {
     mods_title: Line,
     mods_hint: Line,
     mod_column_titles: [Line; MAX_COLUMNS],
+    customise_title: Line,
+    setting_lines: Vec<(&'static str, Line)>,
+    value_slots: Vec<ValueSlot>,
+    value_charset: Line,
     /// The acronym of every tile, by column.
     mod_tiles: Vec<Vec<Line>>,
     /// "Mods: HD DT" under the list, for the flags it was written for.
@@ -168,6 +191,20 @@ impl SongSelectView {
             mods_title: Line::new(&labels.mods_title),
             mods_hint: Line::new(&labels.mods_hint),
             mod_column_titles: std::array::from_fn(|i| Line::new(&labels.mod_column_titles[i])),
+            customise_title: Line::new(&labels.mods_customise),
+            setting_lines: labels
+                .setting_texts
+                .iter()
+                .map(|(key, text)| (*key, Line::new(text)))
+                .collect(),
+            value_slots: (0..MAX_SETTING_ROWS)
+                .map(|_| {
+                    let mut line = Line::new("");
+                    line.text.reserve(TEXT_CAPACITY);
+                    ValueSlot { shown: None, line }
+                })
+                .collect(),
+            value_charset: Line::new(VALUE_CHARS),
             mod_tiles: labels
                 .mod_columns
                 .iter()
@@ -209,6 +246,17 @@ impl SongSelectView {
         for line in &mut self.mod_column_titles {
             self.type_setter.lay_out(line, detail);
         }
+        for line in self
+            .setting_lines
+            .iter_mut()
+            .map(|(_, line)| line)
+            .chain([&mut self.customise_title, &mut self.value_charset])
+        {
+            self.type_setter.lay_out(line, detail);
+        }
+        for slot in &mut self.value_slots {
+            slot.shown = None;
+        }
         for line in self.mod_tiles.iter_mut().flatten() {
             self.type_setter
                 .lay_out(line, self.theme.song_title_size * scale);
@@ -246,7 +294,10 @@ impl SongSelectView {
         let mods = self
             .mod_column_titles
             .iter()
-            .chain(self.mod_tiles.iter().flatten());
+            .chain(self.mod_tiles.iter().flatten())
+            .chain([&self.customise_title, &self.value_charset])
+            .chain(self.setting_lines.iter().map(|(_, line)| line))
+            .chain(self.value_slots.iter().map(|slot| &slot.line));
         let rows = self
             .slots
             .iter()
@@ -394,9 +445,12 @@ impl SongSelectView {
             left(&self.mods_title, x, y, theme.text);
             let (x, y) = centred(&self.mods_hint, &panel.hint);
             left(&self.mods_hint, x, y, theme.disabled_text);
+            let custom = &snapshot.mods.customise;
+            let expanded = custom.state != CustomisationState::Collapsed;
+            let dim = if expanded { DIMMED } else { 1.0 };
             for (column, titles) in self.mod_column_titles.iter().enumerate() {
                 let (x, y) = centred(titles, &panel.column_titles[column]);
-                left(titles, x, y, theme.disabled_text);
+                left(titles, x, y, faded(theme.disabled_text, dim));
                 for (index, line) in self.mod_tiles[column].iter().enumerate() {
                     let area = panel.tile_rect(column, index);
                     let on = snapshot.mods.active[column] >> index & 1 != 0;
@@ -407,9 +461,163 @@ impl SongSelectView {
                     } else {
                         theme.button_fill
                     };
-                    rect(&area, fill);
+                    rect(&area, faded(fill, dim));
                     let (x, y) = centred(line, &area);
-                    left(line, x, y, theme.text);
+                    left(line, x, y, faded(theme.text, dim));
+                }
+            }
+            // The settings panel: its header, and the rows while expanded.
+            let cl = &panel.customise;
+            let enabled = custom.is_enabled();
+            let header_fill = if custom.header_hover || expanded {
+                theme.button_hover_fill
+            } else {
+                theme.button_fill
+            };
+            let active = if enabled { 1.0 } else { DIMMED };
+            rect(&cl.header, faded(header_fill, active));
+            left(
+                &self.customise_title,
+                cl.header.x + cl.pad,
+                cl.header.y + cl.header.height / 2.0,
+                faded(theme.text, active),
+            );
+            if expanded {
+                rect(&cl.content(custom.len), theme.widget_popup_fill);
+                let text_of = |key: &str| {
+                    self.setting_lines
+                        .iter()
+                        .find_map(|(k, line)| (*k == key).then_some(line))
+                };
+                for slot in 0..cl.visible_rows(custom.len) {
+                    let index = custom.first + slot;
+                    let Some(row) = custom.rows.get(index).filter(|_| index < custom.len) else {
+                        break;
+                    };
+                    let area = cl.row_rect(slot);
+                    let label = text_of(row.label);
+                    if matches!(row.kind, SettingRowKind::Header) {
+                        rect(&area, theme.button_fill);
+                        if let Some(line) = label {
+                            left(
+                                line,
+                                area.x + cl.pad,
+                                area.y + area.height / 2.0,
+                                theme.text,
+                            );
+                        }
+                        continue;
+                    }
+                    if index == custom.selected {
+                        rect(&area, theme.button_hover_fill);
+                    } else if custom.hover == Some(index) {
+                        rect(&area, theme.row_hover_fill);
+                    }
+                    let name = cl.label_rect(&area);
+                    if let Some(line) = label {
+                        left(line, name.x, name.y + name.height / 2.0, theme.text);
+                    }
+                    let control = cl.control_rect(&area);
+                    match row.kind {
+                        SettingRowKind::Header => {}
+                        SettingRowKind::Number {
+                            value,
+                            min,
+                            max,
+                            decimals,
+                            unset,
+                            ..
+                        } => {
+                            let sl = cl.slider(&area);
+                            let fraction = if max > min {
+                                ((value - min) / (max - min)).clamp(0.0, 1.0) as f32
+                            } else {
+                                0.0
+                            };
+                            let tint = if unset { DIMMED } else { 1.0 };
+                            rect(&sl.track, theme.button_fill);
+                            let filled = Rect {
+                                width: sl.track.width * fraction,
+                                ..sl.track
+                            };
+                            rect(&filled, faded(theme.widget_accent_fill, tint));
+                            let knob = (
+                                theme.widget_knob_width * cl.scale,
+                                theme.widget_knob_height * cl.scale,
+                            );
+                            rect(
+                                &Rect {
+                                    x: filled.x + filled.width - knob.0 / 2.0,
+                                    y: sl.bounds.y + (sl.bounds.height - knob.1) / 2.0,
+                                    width: knob.0,
+                                    height: knob.1,
+                                },
+                                faded(theme.text, tint),
+                            );
+                            let shown = &mut self.value_slots[slot];
+                            let key = (value.to_bits(), decimals);
+                            if shown.shown != Some(key) {
+                                shown.shown = Some(key);
+                                shown.line.text.clear();
+                                let _ = write!(
+                                    shown.line.text,
+                                    "{value:.decimals$}{suffix}",
+                                    decimals = usize::from(decimals),
+                                    suffix = row.suffix
+                                );
+                                self.type_setter.lay_out(
+                                    &mut shown.line,
+                                    theme.song_detail_size * layout.scale,
+                                );
+                            }
+                            let colour = if unset {
+                                theme.disabled_text
+                            } else {
+                                theme.text
+                            };
+                            left(
+                                &shown.line,
+                                sl.value.x + sl.value.width - shown.line.layout.width(),
+                                sl.value.y + sl.value.height / 2.0,
+                                colour,
+                            );
+                        }
+                        SettingRowKind::Toggle { value } => {
+                            let sw = ToggleLayout::new(control, theme, cl.scale);
+                            let fill = if value {
+                                theme.widget_accent_fill
+                            } else {
+                                theme.button_fill
+                            };
+                            rect(&sw.track, fill);
+                            let pad = theme.widget_knob_pad * cl.scale;
+                            let size = sw.track.height - 2.0 * pad;
+                            let travel = sw.track.width - 2.0 * pad - size;
+                            rect(
+                                &Rect {
+                                    x: sw.track.x + pad + if value { travel } else { 0.0 },
+                                    y: sw.track.y + pad,
+                                    width: size,
+                                    height: size,
+                                },
+                                theme.text,
+                            );
+                        }
+                        SettingRowKind::Choice {
+                            index: chosen,
+                            count,
+                            values,
+                        } => {
+                            rect(&control, theme.button_fill);
+                            let name = chosen
+                                .filter(|&i| i < count.min(values.len()))
+                                .and_then(|i| text_of(values[i]));
+                            if let Some(line) = name {
+                                let (x, y) = centred(line, &control);
+                                left(line, x, y, theme.text);
+                            }
+                        }
+                    }
                 }
             }
             return;

@@ -181,6 +181,20 @@ fn song_select_ticks_and_new_lists_do_not_allocate() {
     });
     // The panel is closed again (a click on a tile toggles; F1 opens next round).
     state.tick(3 * TRANSITION_NS + 200, &[key(42)], &mut snapshot);
+    // The settings panel: select Double Time and Difficulty Adjust's hotkey, Tab, edit the
+    // rows with the keyboard, Delete, Escape twice, Backspace.
+    let settings: Vec<InputEvent> = [58, 9, 43, 79, 79, 81, 44, 76, 82, 80, 43, 43, 41, 41, 42]
+        .into_iter()
+        .map(key)
+        .chain([event(InputKind::MouseWheel { y: 1.0 })])
+        .collect();
+    state.tick(3 * TRANSITION_NS + 300, &settings, &mut snapshot);
+    assert_no_alloc(|| {
+        let start = 3 * TRANSITION_NS + 400;
+        for now in start..start + 50 {
+            state.tick(now, &settings, &mut snapshot);
+        }
+    });
     // A load comes and the play screen goes on top: navigation may allocate, its ticks not.
     state.tick(4 * TRANSITION_NS, &[key(40)], &mut snapshot);
     assert_eq!(state.take_play_request(), Some((0, 0)));
