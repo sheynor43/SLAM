@@ -19,7 +19,7 @@ use slam_osu::{Beatmap, HealthProcessor, ModSet, Vec2};
 use slam_render::Extent;
 use slam_render::atlas::AtlasRegion;
 use slam_render::image::Image;
-use slam_render::sprite::SpriteBatch;
+use slam_render::sprite::{Affine, SpriteBatch};
 use slam_render::upload::{
     TextureHandle, TextureKind, TextureRequests, TextureState, TextureUploads,
 };
@@ -36,7 +36,8 @@ use crate::fail::{FailFrame, FailView, TrackEffects};
 use crate::follow_points::{FollowPoints, MAX_FOLLOW_POINT_SIZE};
 use crate::gameplay_sounds::{GameplaySounds, VoiceSink};
 use crate::hit_error::{
-    HitErrorMeter, HitErrorRing, HitErrorTargets, MeterTextures, disc_image, gradient_image,
+    HitErrorMeter, HitErrorRing, HitErrorTargets, MeterTextures, SpinnerHiding, disc_image,
+    gradient_image,
 };
 use crate::hotkeys::{GlobalAction, Hotkeys};
 use crate::input::{ClockTime, GameTime, LiveInput};
@@ -1766,6 +1767,7 @@ pub struct PlayView {
     pub follow_points: FollowPoints,
     pub judgements: JudgementView,
     pub hit_error: HitErrorMeter,
+    pub hit_error_hiding: SpinnerHiding,
     pub cursor: CursorView,
     pub resume: ResumeView,
 }
@@ -1834,7 +1836,8 @@ impl PlayView {
     }
 
     /// Writes the hit error meter of `snapshot` drawn at engine time `now_ns` on a window of
-    /// `width` × `height` pixels: part of the HUD, above the playfield. Allocation-free once
+    /// `width` × `height` pixels: part of the HUD, above the playfield; it fades out during
+    /// spinners ([`SpinnerHiding`]). Allocation-free once
     /// `batch` has room for [`MAX_HIT_ERROR_SPRITES`](crate::hit_error::MAX_HIT_ERROR_SPRITES).
     pub fn push_hit_error(
         &mut self,
@@ -1848,8 +1851,15 @@ impl PlayView {
         let time = snapshot.time_at(now_ns);
         self.hit_error
             .update(&snapshot.hit_errors, snapshot.restarts, time);
-        if let Some(meter) = &textures.meter {
+        let alpha = self.hit_error_hiding.alpha(time);
+        if let Some(meter) = &textures.meter
+            && alpha > 0.0
+        {
+            let first = batch.len();
             self.hit_error.push(batch, width, height, time, meter);
+            if alpha < 1.0 {
+                batch.transform_from(first, &Affine::IDENTITY, [1.0, 1.0, 1.0, alpha]);
+            }
         }
     }
 

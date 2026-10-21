@@ -267,6 +267,7 @@ pub fn prepare(
             &windows,
             settings.hit_error_scale as f32,
         ),
+        hit_error_hiding: slam_play::hit_error::SpinnerHiding::new(beatmap),
         cursor: CursorView::default(),
         resume: slam_play::resume::ResumeView::default(),
     };
