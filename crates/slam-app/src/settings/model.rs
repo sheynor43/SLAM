@@ -166,6 +166,9 @@ impl Default for Frame {
 pub struct Gameplay {
     /// Background dim, 0 ..= 1.
     pub dim: f64,
+    /// Beatmap skin textures and configuration (lazer's `BeatmapSkins`): skin elements from the
+    /// beatmap's folder. Colours stay under `beatmap_colours`, samples under `beatmap_hitsounds`.
+    pub beatmap_skins: bool,
     pub beatmap_colours: bool,
     /// Play the beatmap's own hitsound samples (lazer's `BeatmapHitsounds`).
     pub beatmap_hitsounds: bool,
@@ -179,6 +182,7 @@ impl Default for Gameplay {
     fn default() -> Gameplay {
         Gameplay {
             dim: BackgroundSettings::default().dim_level,
+            beatmap_skins: true,
             beatmap_colours: true,
             beatmap_hitsounds: true,
             mouse_buttons: true,

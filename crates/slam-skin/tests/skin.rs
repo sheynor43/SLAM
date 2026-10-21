@@ -469,6 +469,92 @@ fn chain_config_and_provider() {
     assert_eq!((f.source, f.value.as_str()), (SkinSource::User, "u"));
 }
 
+/// A beatmap folder with `files` whose `.osu` configuration is `osu`.
+fn beatmap_skin(dir: &TempSkin, osu: &str) -> Skin {
+    Skin::load_beatmap(&dir.0, osu.as_bytes()).unwrap()
+}
+
+#[test]
+fn beatmap_layer_comes_first_without_high_resolution_sprites() {
+    let beatmap = TempSkin::new().with(&["hitcircle.png", "hitcircleoverlay@2x.png", "a@2x.png"]);
+    let user = TempSkin::new().with(&["hitcircle@2x.png", "hitcircleoverlay.png"]);
+    let default = TempSkin::new().with(&["approachcircle.png"]);
+    let chain = SkinChain::new(Some(user.load()), default.load())
+        .with_beatmap(Some(beatmap_skin(&beatmap, "osu file format v14\n")));
+
+    let hc = chain.texture("hitcircle").unwrap();
+    assert_eq!((hc.source, hc.value.scale), (SkinSource::Beatmap, 1.0));
+    // The beatmap's `@2x` file is not a sprite of `hitcircleoverlay`: the user's 1x wins.
+    let overlay = chain.texture("hitcircleoverlay").unwrap();
+    assert_eq!(overlay.source, SkinSource::User);
+    // `@2x` in a requested name is kept, as `LegacyBeatmapSkin` does not strip it.
+    let named = chain.texture("a@2x").unwrap();
+    assert_eq!(
+        (named.source, named.value.scale),
+        (SkinSource::Beatmap, 1.0)
+    );
+    assert_eq!(
+        chain.texture("approachcircle").unwrap().source,
+        SkinSource::Default
+    );
+    assert_eq!(
+        chain.find_provider(|s| s.texture("hitcircle").is_some()),
+        Some(SkinSource::Beatmap)
+    );
+    assert_eq!(chain.skin(SkinSource::Beatmap).root(), beatmap.0);
+}
+
+#[test]
+fn without_the_beatmap_layer_the_user_skin_draws() {
+    let beatmap = TempSkin::new().with(&["hitcircle.png"]);
+    let user = TempSkin::new().with(&["hitcircle.png"]);
+    let default = TempSkin::new();
+    let skin = beatmap_skin(&beatmap, "");
+    let chain = SkinChain::new(Some(user.load()), default.load()).with_beatmap(None);
+    assert_eq!(chain.texture("hitcircle").unwrap().source, SkinSource::User);
+    assert_eq!(chain.skin(SkinSource::Beatmap).root(), user.0);
+    let no_user = SkinChain::new(None, default.load()).with_beatmap(Some(skin));
+    assert_eq!(
+        no_user.texture("hitcircle").unwrap().source,
+        SkinSource::Beatmap
+    );
+}
+
+#[test]
+fn beatmap_configuration_has_no_version_and_its_samples_stay_out() {
+    let beatmap = TempSkin::new().with(&["normal-hitnormal.wav"]);
+    let user = TempSkin::new()
+        .ini("[General]\nVersion: 2.3\n")
+        .with(&["normal-hitnormal.wav"]);
+    let default = TempSkin::new();
+    let osu = "osu file format v14\n\n[General]\nVersion: 1.7\n\n[Colours]\nSliderBorder: 1,2,3\n";
+    let chain = SkinChain::new(Some(user.load()), default.load())
+        .with_beatmap(Some(beatmap_skin(&beatmap, osu)));
+
+    let beatmap = chain.skin(SkinSource::Beatmap);
+    assert!(beatmap.is_beatmap());
+    assert_eq!(beatmap.config_version(), None);
+    // `TestSetBeatmapVersionFallsBackToUserSkin`.
+    let version = chain.config(Skin::config_version).unwrap();
+    assert_eq!(
+        (version.source, version.value),
+        (SkinSource::User, SkinVersion::new(23, 1))
+    );
+    let border = chain.config(Skin::slider_border).unwrap();
+    assert_eq!(
+        (border.source, border.value),
+        (SkinSource::Beatmap, Rgba::rgb(1, 2, 3))
+    );
+    assert_eq!(
+        chain.sample("normal-hitnormal").unwrap().source,
+        SkinSource::User
+    );
+    assert_eq!(
+        chain.skin_sources().map(|(s, _)| s).collect::<Vec<_>>(),
+        [SkinSource::User, SkinSource::Default]
+    );
+}
+
 #[test]
 fn registry_basics() {
     assert!(registry::element("hitcircle").is_some());

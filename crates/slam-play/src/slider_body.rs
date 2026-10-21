@@ -25,16 +25,17 @@ pub struct LegacyBodyColours {
 }
 
 impl LegacyBodyColours {
-    /// The colours lazer's `LegacySliderBody` reads through the skin source: the
-    /// beatmap skin first (when given), then the first skin of the chain that sets the
-    /// key. `combo` is the slider's combo colour (its `AccentColour`).
+    /// The colours lazer's `LegacySliderBody` reads through the skin source: the first
+    /// skin of the chain that sets the key. `combo` is the slider's combo colour (its
+    /// `AccentColour`).
+    ///
+    /// These are `OsuSkinColour` lookups, which lazer gates by `BeatmapSkins` rather than
+    /// `BeatmapColours`: the beatmap's `SliderBorder` and `SliderTrackOverride` apply only
+    /// when the chain has its beatmap layer.
     // Ported from osu!lazer 2026.1005.0-lazer: osu.Game.Rulesets.Osu/Skinning/Legacy/LegacySliderBody.cs (GetBorderColour, GetBodyAccentColour)
-    pub fn new(combo: Colour4, beatmap: Option<&Skin>, skins: &SkinChain) -> Self {
-        let lookup = |get: fn(&Skin) -> Option<Rgba>| {
-            beatmap
-                .and_then(get)
-                .or_else(|| skins.config(get).map(|found| found.value))
-        };
+    // Ported from osu!lazer 2026.1005.0-lazer: osu.Game/Skinning/SkinProvidingContainer.cs (DisableableSkinSource.GetConfig)
+    pub fn new(combo: Colour4, skins: &SkinChain) -> Self {
+        let lookup = |get: fn(&Skin) -> Option<Rgba>| skins.config(get).map(|found| found.value);
         let [r, g, b, _] = lookup(Skin::slider_track_override).map_or(combo, colour4);
         Self {
             // Legacy skins use a constant slider track alpha whatever the source colour.

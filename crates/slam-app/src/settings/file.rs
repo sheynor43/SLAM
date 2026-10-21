@@ -312,6 +312,13 @@ fn from_table(mut table: Table) -> Loaded {
     cx.field(
         &mut gameplay,
         "gameplay",
+        "beatmap_skins",
+        &mut settings.gameplay.beatmap_skins,
+        |_| Ok(()),
+    );
+    cx.field(
+        &mut gameplay,
+        "gameplay",
         "beatmap_colours",
         &mut settings.gameplay.beatmap_colours,
         |_| Ok(()),

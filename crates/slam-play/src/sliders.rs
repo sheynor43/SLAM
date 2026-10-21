@@ -283,7 +283,7 @@ impl SliderVisuals {
                 let gradient = match gradient_colours.iter().position(|c| *c == accent) {
                     Some(g) => g,
                     None => {
-                        let colours = LegacyBodyColours::new(accent, beatmap_skin, skins);
+                        let colours = LegacyBodyColours::new(accent, skins);
                         gradients.push(colours.gradient(radius));
                         gradient_colours.push(accent);
                         gradients.len() - 1
@@ -651,7 +651,7 @@ impl ArrowStyle {
     /// The style of the reverse arrows drawn with `skins`.
     // Ported from osu!lazer 2026.1005.0-lazer: osu.Game.Rulesets.Osu/Skinning/Legacy/LegacyReverseArrow.cs (load)
     pub fn new(skins: &SkinChain) -> Self {
-        let version = skins.config(|s| Some(s.version())).map(|f| f.value);
+        let version = skins.config(Skin::config_version).map(|f| f.value);
         ArrowStyle {
             rotate: version.is_some_and(|v| v <= SkinVersion::V1),
             default_texture: skins

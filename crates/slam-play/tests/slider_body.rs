@@ -81,8 +81,13 @@ fn assert_colour(actual: [f32; 4], expected: [f32; 4]) {
     assert!(close, "colour {actual:?}, expected {expected:?}");
 }
 
-/// Body colours with optional `[Colours]` in the beatmap and the user's skin.ini.
-fn colours(beatmap_colours: &str, user_ini: Option<&str>) -> LegacyBodyColours {
+/// Body colours with optional `[Colours]` in the beatmap and the user's skin.ini, with the
+/// beatmap's skin in the chain or (`BeatmapSkins` off) not.
+fn colours_with(
+    beatmap_colours: &str,
+    user_ini: Option<&str>,
+    beatmap_skins: bool,
+) -> LegacyBodyColours {
     let (_, osu) = beatmap(beatmap_colours);
     let beatmap_dir = TempDir::new("beatmap", None);
     let user_dir = TempDir::new("user", user_ini);
@@ -91,8 +96,13 @@ fn colours(beatmap_colours: &str, user_ini: Option<&str>) -> LegacyBodyColours {
     let chain = SkinChain::new(
         Some(Skin::load(&user_dir.0).unwrap()),
         Skin::load(&default_dir.0).unwrap(),
-    );
-    LegacyBodyColours::new([1.0, 192.0 / 255.0, 0.0, 1.0], Some(&beatmap_skin), &chain)
+    )
+    .with_beatmap(beatmap_skins.then_some(beatmap_skin));
+    LegacyBodyColours::new([1.0, 192.0 / 255.0, 0.0, 1.0], &chain)
+}
+
+fn colours(beatmap_colours: &str, user_ini: Option<&str>) -> LegacyBodyColours {
+    colours_with(beatmap_colours, user_ini, true)
 }
 
 #[test]
@@ -114,6 +124,18 @@ fn skin_overrides_track_and_border_and_the_beatmap_comes_first() {
     assert_colour(c.accent, [0.0, 53.0 / 255.0, 69.0 / 255.0, 0.7]);
     let grey = 80.0 / 255.0;
     assert_colour(c.border, [grey, grey, grey, 1.0]);
+}
+
+#[test]
+fn beatmap_slider_colours_need_the_beatmap_skin_layer() {
+    // `OsuSkinColour` lookups are gated by `BeatmapSkins`, not `BeatmapColours`.
+    let user = "[Colours]\nSliderBorder: 0,255,255\n";
+    let beatmap = "[Colours]\nSliderBorder: 80,80,80\nSliderTrackOverride: 10,20,30\n";
+    let c = colours_with(beatmap, Some(user), false);
+    assert_colour(c.accent, [1.0, 192.0 / 255.0, 0.0, 0.7]);
+    assert_colour(c.border, [0.0, 1.0, 1.0, 1.0]);
+    let c = colours_with(beatmap, Some(user), true);
+    assert_colour(c.accent, [10.0 / 255.0, 20.0 / 255.0, 30.0 / 255.0, 0.7]);
 }
 
 #[test]

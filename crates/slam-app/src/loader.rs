@@ -35,6 +35,7 @@ pub struct LoadRequest {
 pub struct PlayOptions {
     /// How dark the background is, 0 ..= 1.
     pub dim: f64,
+    pub beatmap_skins: bool,
     pub beatmap_colours: bool,
     pub beatmap_hitsounds: bool,
     /// Show the FPS counter (ADR-0053).
@@ -160,6 +161,7 @@ pub fn spawn(mut config: LoaderConfig) -> std::io::Result<(LoaderLink, SceneTras
                 {
                     idle = false;
                     config.settings.dim = options.dim;
+                    config.settings.beatmap_skins = options.beatmap_skins;
                     config.settings.beatmap_colours = options.beatmap_colours;
                     config.settings.beatmap_hitsounds = options.beatmap_hitsounds;
                     config.settings.show_fps = options.show_fps;
@@ -209,6 +211,7 @@ mod tests {
     fn options() -> PlayOptions {
         PlayOptions {
             dim: 0.7,
+            beatmap_skins: true,
             beatmap_colours: true,
             beatmap_hitsounds: true,
             show_fps: false,

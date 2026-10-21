@@ -72,6 +72,8 @@ type Gl = GlDevice<SdlGlSurface>;
 pub struct PlaySettings {
     /// User skin folder; without it, the default skin.
     pub skin: Option<PathBuf>,
+    /// Use the beatmap's own skin textures and configuration (lazer's `BeatmapSkins`).
+    pub beatmap_skins: bool,
     /// Take colours from the beatmap's skin (lazer's `BeatmapColours`).
     pub beatmap_colours: bool,
     /// Play the beatmap's own hitsound samples (lazer's `BeatmapHitsounds`).
@@ -89,6 +91,7 @@ impl Default for PlaySettings {
     fn default() -> Self {
         Self {
             skin: None,
+            beatmap_skins: true,
             beatmap_colours: true,
             beatmap_hitsounds: true,
             show_fps: false,
@@ -143,12 +146,16 @@ pub(crate) fn load(map: &Path, settings: &PlaySettings) -> Result<Loaded, String
             })
             .ok()
     });
+    // `BeatmapSkins` puts the beatmap's textures and configuration in front of the skins; its
+    // combo colours and samples keep their own settings and read `beatmap_skin`.
+    let skins = SkinChain::new(user, default)
+        .with_beatmap(settings.beatmap_skins.then(|| beatmap_skin.clone()));
     Ok(Loaded {
         beatmap,
         mods,
         audio,
         beatmap_skin,
-        skins: SkinChain::new(user, default),
+        skins,
         background,
     })
 }

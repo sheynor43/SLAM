@@ -2040,6 +2040,7 @@ pub fn run(settings: Settings) -> Result<(), String> {
         settings: {
             let options = live::play_options(&settings);
             PlaySettings {
+                beatmap_skins: options.beatmap_skins,
                 beatmap_colours: options.beatmap_colours,
                 beatmap_hitsounds: options.beatmap_hitsounds,
                 show_fps: options.show_fps,
