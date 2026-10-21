@@ -110,12 +110,28 @@ impl ModSelectLayout {
     }
 }
 
+/// A setting of an active mod the selected mods line shows after its acronym, as lazer's
+/// `ExtendedIconInformation`. Fixed point, so that the snapshot stays `Eq`.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum TileDetail {
+    #[default]
+    None,
+    /// A speed change in hundredths: "1.05x".
+    Speed(u16),
+    /// An approach rate in tenths: "AR9.4".
+    ApproachRate(i16),
+}
+
+/// The details of every tile, by column.
+pub type TileDetails = [[TileDetail; MAX_COLUMN_MODS]; MAX_COLUMNS];
+
 /// What the draw side needs; `Copy`, so a snapshot allocates nothing.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct ModSelectSnapshot {
     pub open: bool,
     /// Bit `i` of column `c`: the tile `i` of that column is active.
     pub active: [u16; MAX_COLUMNS],
+    pub details: TileDetails,
     pub hover: Option<(usize, usize)>,
 }
 
@@ -125,6 +141,7 @@ pub struct ModSelect {
     columns: ModColumns,
     open: bool,
     active: [u16; MAX_COLUMNS],
+    details: TileDetails,
     hover: Option<(usize, usize)>,
 }
 
@@ -141,6 +158,7 @@ impl ModSelect {
             columns: columns.map(|c| &c[..c.len().min(MAX_COLUMN_MODS)]),
             open: false,
             active: [0; MAX_COLUMNS],
+            details: TileDetails::default(),
             hover: None,
         }
     }
@@ -180,6 +198,13 @@ impl ModSelect {
         }
     }
 
+    /// Sets the detail of a tile; out-of-range tiles are ignored.
+    pub fn set_detail(&mut self, column: usize, index: usize, detail: TileDetail) {
+        if index < self.columns.get(column).map_or(0, |c| c.len()) {
+            self.details[column][index] = detail;
+        }
+    }
+
     /// Every acronym of the panel, column by column, with its flag.
     pub fn iter(&self) -> impl Iterator<Item = (usize, usize, &'static str, bool)> + '_ {
         self.columns.iter().enumerate().flat_map(move |(c, mods)| {
@@ -193,6 +218,7 @@ impl ModSelect {
         ModSelectSnapshot {
             open: self.open,
             active: self.active,
+            details: self.details,
             hover: self.hover,
         }
     }

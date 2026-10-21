@@ -14,7 +14,10 @@ use crate::theme::Theme;
 pub mod mod_select;
 pub mod view;
 
-pub use mod_select::{ModColumns, ModSelect, ModSelectAction, ModSelectLayout, ModSelectSnapshot};
+pub use mod_select::{
+    ModColumns, ModSelect, ModSelectAction, ModSelectLayout, ModSelectSnapshot, TileDetail,
+    TileDetails,
+};
 pub use view::{SongSelectLabels, SongSelectView};
 
 /// The sets to show, built by the application from the library. Immutable once built;

@@ -9,6 +9,7 @@
 //! Mods that change the beatmap (HR, EZ, DA, Mirror) do so through the beatmap hooks of
 //! [`GameplayMod`]; [`ModSet::playable_beatmap`] runs them in lazer's order.
 
+mod hotkeys;
 mod multiplier;
 mod select;
 mod setting;
@@ -23,6 +24,7 @@ use crate::objects::{ObjectDefaults, OsuHitObject, OsuHitObjectKind};
 use crate::scoring::ScoreRank;
 use setting::DifficultyRange;
 
+pub use hotkeys::{APPROACH_RATE_STEP, SPEED_STEP, SpeedHotkeys, change_approach_rate};
 pub use multiplier::{MultiplierVersion, TOTAL_SCORE_VERSION_MULTIPLIER_REBALANCE};
 pub use select::{ModType, mods_for};
 

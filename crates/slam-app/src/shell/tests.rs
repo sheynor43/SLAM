@@ -988,6 +988,105 @@ fn the_mods_outlast_a_visit_and_the_menu_ignores_the_panel_keys() {
     assert_eq!(acronyms(&s), ["EZ"]);
 }
 
+fn key_up(scancode: u16) -> InputEvent {
+    InputEvent {
+        time_ns: 0,
+        kind: InputKind::Key {
+            scancode,
+            down: false,
+        },
+    }
+}
+
+/// The mods line's detail of the tile `index` of `column`.
+fn detail(snap: &ShellSnapshot, column: usize, index: usize) -> TileDetail {
+    song_view(snap).mods.details[column][index]
+}
+
+#[test]
+fn ctrl_up_and_down_change_the_mod_speed() {
+    let (mut s, mut snap, _producer) = in_song_select();
+    s.tick(at(1), &[key(KEY_LEFT_CTRL), key(KEY_UP)], &mut snap);
+    assert_eq!(acronyms(&s), ["DT"]);
+    // Double Time is the fourth tile of the second column.
+    assert_eq!(song_view(&snap).mods.active, [0, 0b1000, 0]);
+    assert_eq!(detail(&snap, 1, 3), TileDetail::Speed(105));
+    // The carousel stays while Control is held.
+    assert_eq!(s.song_select().selected(), Some((0, 0)));
+    s.tick(at(2), &[key(KEY_DOWN), key(KEY_DOWN)], &mut snap);
+    assert_eq!(acronyms(&s), ["HT"]);
+    assert_eq!(detail(&snap, 0, 2), TileDetail::Speed(95));
+    // Released, Down moves through the list again.
+    s.tick(at(3), &[key_up(KEY_LEFT_CTRL), key(KEY_DOWN)], &mut snap);
+    assert_eq!(s.song_select().selected(), Some((0, 1)));
+    assert_eq!(acronyms(&s), ["HT"]);
+    // The right Control works too, with the panel open; Nightcore stays Nightcore.
+    s.tick(
+        at(4),
+        &[key(KEY_BACKSPACE), key(KEY_F1), key(KEY_G)],
+        &mut snap,
+    );
+    assert_eq!(acronyms(&s), ["NC"]);
+    assert_eq!(detail(&snap, 1, 4), TileDetail::None);
+    s.tick(at(5), &[key(KEY_RIGHT_CTRL), key(KEY_UP)], &mut snap);
+    assert_eq!(acronyms(&s), ["NC"]);
+    assert_eq!(detail(&snap, 1, 4), TileDetail::Speed(155));
+}
+
+#[test]
+fn ctrl_f3_and_f4_change_the_approach_rate() {
+    let (mut s, mut snap, _producer) = in_song_select();
+    // The test difficulties have an approach rate of 5.
+    s.tick(
+        at(1),
+        &[key(KEY_LEFT_CTRL), key(KEY_F4), key(KEY_F4)],
+        &mut snap,
+    );
+    assert_eq!(acronyms(&s), ["DA"]);
+    assert_eq!(song_view(&snap).mods.active, [0, 0, 0b1]);
+    assert_eq!(detail(&snap, 2, 0), TileDetail::ApproachRate(52));
+    s.tick(at(2), &[key(KEY_F3), key(KEY_F3)], &mut snap);
+    assert!(acronyms(&s).is_empty());
+    s.tick(at(3), &[key(KEY_F3)], &mut snap);
+    assert_eq!(detail(&snap, 2, 0), TileDetail::ApproachRate(49));
+    // Hard Rock and Difficulty Adjust do not go together: the hotkey does nothing.
+    s.tick(
+        at(4),
+        &[key(KEY_BACKSPACE), key(KEY_F1), key(KEY_A), key(KEY_F4)],
+        &mut snap,
+    );
+    assert_eq!(acronyms(&s), ["HR"]);
+    // Without Control, F3 and F4 do nothing.
+    s.tick(
+        at(5),
+        &[key_up(KEY_LEFT_CTRL), key(KEY_ESCAPE), key(KEY_F4)],
+        &mut snap,
+    );
+    assert_eq!(acronyms(&s), ["HR"]);
+}
+
+#[test]
+fn the_control_hotkeys_wait_while_a_play_loads() {
+    let (mut s, mut snap, _producer) = in_song_select();
+    s.tick(at(1), &[key(KEY_ENTER)], &mut snap);
+    assert!(s.is_loading());
+    s.tick(
+        at(2),
+        &[key(KEY_LEFT_CTRL), key(KEY_UP), key(KEY_F4)],
+        &mut snap,
+    );
+    assert!(acronyms(&s).is_empty());
+}
+
+#[test]
+fn control_released_during_a_play_is_released_after_it() {
+    let (mut s, _snap, _producer) = in_song_select();
+    s.follow_pointer(&[key(KEY_LEFT_CTRL), key_up(KEY_LEFT_CTRL)]);
+    assert_eq!(s.ctrl, 0);
+    s.follow_pointer(&[key(KEY_RIGHT_CTRL)]);
+    assert_eq!(s.ctrl, 2);
+}
+
 #[test]
 fn a_play_takes_the_selected_mods() {
     let mut fixture = host("mods", true);

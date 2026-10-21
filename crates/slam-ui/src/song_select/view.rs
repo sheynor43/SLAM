@@ -14,7 +14,7 @@ use slam_render::atlas::AtlasRegion;
 use slam_render::sprite::{Sprite, SpriteBatch};
 use slam_text::{FontRegistry, Glyph, GlyphCache, GlyphKey, push_layout};
 
-use super::mod_select::MAX_COLUMNS;
+use super::mod_select::{MAX_COLUMNS, TileDetail, TileDetails};
 use super::{
     ModColumns, ModSelectSnapshot, Row, SongList, SongSelectLayout, SongSelectSnapshot,
     SongSelectStatus,
@@ -98,7 +98,7 @@ pub struct SongSelectView {
     mod_tiles: Vec<Vec<Line>>,
     /// "Mods: HD DT" under the list, for the flags it was written for.
     mods_selected: Line,
-    mods_selected_for: Option<[u16; MAX_COLUMNS]>,
+    mods_selected_for: Option<([u16; MAX_COLUMNS], TileDetails)>,
     mod_columns: ModColumns,
     slots: Vec<RowSlot>,
     /// Widths of the ellipsis at the title and detail sizes.
@@ -513,12 +513,14 @@ impl SongSelectView {
         }
     }
 
-    /// Writes "Mods: HD DT" for the active tiles unless it already shows them.
+    /// Writes "Mods: HD DT 1.05x" for the active tiles and their details unless it already
+    /// shows them.
     fn refresh_selected(&mut self, mods: &ModSelectSnapshot) {
-        if self.mods_selected_for == Some(mods.active) {
+        let key = (mods.active, mods.details);
+        if self.mods_selected_for == Some(key) {
             return;
         }
-        self.mods_selected_for = Some(mods.active);
+        self.mods_selected_for = Some(key);
         let line = &mut self.mods_selected;
         line.text.clear();
         line.text.push_str(&self.mods_title.text);
@@ -528,6 +530,7 @@ impl SongSelectView {
                 if mods.active[column] >> index & 1 != 0 {
                     line.text.push(' ');
                     line.text.push_str(acronym);
+                    push_detail(&mut line.text, mods.details[column][index]);
                 }
             }
         }
@@ -536,9 +539,33 @@ impl SongSelectView {
     }
 }
 
+/// Appends a tile's detail after its acronym: " 1.05x", " AR9.4", " AR10" (lazer's
+/// `ToStandardFormattedString(1)` drops a zero decimal).
+fn push_detail(text: &mut String, detail: TileDetail) {
+    // Writing to a `String` cannot fail.
+    let _ = match detail {
+        TileDetail::None => Ok(()),
+        TileDetail::Speed(hundredths) => write!(text, " {:.2}x", f64::from(hundredths) / 100.0),
+        TileDetail::ApproachRate(tenths) if tenths % 10 == 0 => write!(text, " AR{}", tenths / 10),
+        TileDetail::ApproachRate(tenths) => write!(text, " AR{:.1}", f64::from(tenths) / 10.0),
+    };
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn details_follow_the_acronym() {
+        let mut text = String::from("DT");
+        push_detail(&mut text, TileDetail::Speed(105));
+        push_detail(&mut text, TileDetail::None);
+        push_detail(&mut text, TileDetail::ApproachRate(-5));
+        push_detail(&mut text, TileDetail::ApproachRate(94));
+        push_detail(&mut text, TileDetail::ApproachRate(100));
+        push_detail(&mut text, TileDetail::ApproachRate(-100));
+        assert_eq!(text, "DT 1.05x AR-0.5 AR9.4 AR10 AR-10");
+    }
 
     #[test]
     fn long_texts_are_cut_to_the_available_width() {

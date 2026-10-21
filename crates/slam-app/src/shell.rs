@@ -22,7 +22,10 @@ use slam_input::{
     CursorVisibility, InputEvent, InputKind, InputWindow, MouseButton, TickMapper, event_ring,
     sdl_ticks_ns,
 };
-use slam_osu::mods::{Mod, ModSet, ModType, mods_for};
+use slam_osu::mods::{
+    APPROACH_RATE_STEP, Mod, ModSet, ModType, SPEED_STEP, SpeedHotkeys, change_approach_rate,
+    mods_for,
+};
 use slam_play::input::Input;
 use slam_play::{
     Bindings, LiveInput, Offsets, PlaySession, PlaySnapshot, PlayState, PlayfieldLayout,
@@ -49,6 +52,7 @@ use slam_ui::settings_screen::{
 use slam_ui::song_select::{
     ModColumns, ModSelect, SongList, SongSelect, SongSelectAction, SongSelectInput,
     SongSelectLabels, SongSelectLayout, SongSelectSnapshot, SongSelectStatus, SongSelectView,
+    TileDetail,
 };
 use slam_ui::theme::Theme;
 
@@ -93,6 +97,8 @@ const KEY_ESCAPE: u16 = 41;
 const KEY_R: u16 = 21;
 const KEY_BACKSPACE: u16 = 42;
 const KEY_F1: u16 = 58;
+const KEY_F3: u16 = 60;
+const KEY_F4: u16 = 61;
 const KEY_TAB: u16 = 43;
 const KEY_HOME: u16 = 74;
 const KEY_DELETE: u16 = 76;
@@ -104,6 +110,8 @@ const KEY_LEFT: u16 = 80;
 const KEY_DOWN: u16 = 81;
 const KEY_UP: u16 = 82;
 const KEY_KEYPAD_ENTER: u16 = 88;
+const KEY_LEFT_CTRL: u16 = 224;
+const KEY_RIGHT_CTRL: u16 = 228;
 
 /// The keys of the mod select's hotkeys, by key row, as lazer's sequential hotkey handler maps
 /// them: the top letter row is the first column, the home row the second (the third column,
@@ -114,6 +122,27 @@ const MOD_HOTKEY_ROWS: [&[u16]; 2] = [
     // A S D F G H J K L
     &[4, 22, 7, 9, 10, 11, 13, 14, 15],
 ];
+
+/// The setting a selected mod shows after its acronym, as lazer's `ExtendedIconInformation`:
+/// a speed off the default, or the approach rate when it is the only setting Difficulty
+/// Adjust changes. Does not allocate.
+fn tile_detail(m: &Mod) -> TileDetail {
+    if let Some(speed) = m.custom_speed() {
+        return TileDetail::Speed((speed * 100.0).round() as u16);
+    }
+    match m {
+        Mod::DifficultyAdjust(d)
+            if d.circle_size.is_none()
+                && d.drain_rate.is_none()
+                && d.overall_difficulty.is_none() =>
+        {
+            d.approach_rate.map_or(TileDetail::None, |ar| {
+                TileDetail::ApproachRate((ar * 10.0).round() as i16)
+            })
+        }
+        _ => TileDetail::None,
+    }
+}
 
 /// The song select input of a mod hotkey.
 fn mod_hotkey(scancode: u16) -> Option<SongSelectInput> {
@@ -237,6 +266,10 @@ pub struct ShellState {
     mod_templates: Vec<Vec<Mod>>,
     /// The mod select's selection being built on a toggle; kept for its capacity.
     mod_buffer: Vec<Mod>,
+    /// What the mod speed hotkeys remember of the selection.
+    speed_hotkeys: SpeedHotkeys,
+    /// The Control keys held: bit 0 the left one, bit 1 the right one.
+    ctrl: u8,
     /// Last cursor position in pixels.
     cursor: [f32; 2],
     /// Input arrives in window points, layout is in pixels.
@@ -281,6 +314,8 @@ impl ShellState {
                 .map(|c| c.iter().map(|a| Mod::from_acronym(a)).collect())
                 .collect(),
             mod_buffer: Vec::with_capacity(SELECTED_MODS_CAPACITY),
+            speed_hotkeys: SpeedHotkeys::default(),
+            ctrl: 0,
             theme,
             cursor: [0.0, 0.0],
             pixels_per_point,
@@ -406,13 +441,44 @@ impl ShellState {
         self.sync_mod_flags();
     }
 
-    /// Makes the panel's tiles show the selection.
+    /// Ctrl+Up/Down: the speed of the selection by `delta` (ADR-0056). A play being
+    /// prepared has taken the mods already, so nothing changes while it loads.
+    fn change_mod_speed(&mut self, delta: f64) {
+        if self.loading {
+            return;
+        }
+        self.speed_hotkeys
+            .change_speed(&mut self.selected_mods, delta);
+        self.sync_mod_flags();
+    }
+
+    /// Ctrl+F3/F4: the approach rate by `delta` from the selected difficulty's (ADR-0056);
+    /// not while a play loads.
+    fn change_approach_rate(&mut self, delta: f64) {
+        if self.loading {
+            return;
+        }
+        let Some((set, difficulty)) = self.song_select.selected() else {
+            return;
+        };
+        let Some(file) = self.files.get(set).and_then(|s| s.get(difficulty)) else {
+            return;
+        };
+        change_approach_rate(&mut self.selected_mods, file.approach_rate, delta);
+        self.sync_mod_flags();
+    }
+
+    /// Makes the panel's tiles show the selection and its settings; the speed hotkeys
+    /// remember its rate mod.
     fn sync_mod_flags(&mut self) {
+        self.speed_hotkeys.observe(&self.selected_mods);
         let columns = *self.song_select.mods().columns();
         for (c, acronyms) in columns.iter().enumerate() {
             for (i, acronym) in acronyms.iter().enumerate() {
-                let on = self.selected_mods.get(acronym).is_some();
-                self.song_select.mods_mut().set_active(c, i, on);
+                let selected = self.selected_mods.get(acronym);
+                let mods = self.song_select.mods_mut();
+                mods.set_active(c, i, selected.is_some());
+                mods.set_detail(c, i, selected.map_or(TileDetail::None, tile_detail));
             }
         }
     }
@@ -458,12 +524,29 @@ impl ShellState {
         }
     }
 
-    /// Follows the pointer while the play has the input, so that the screen under it
-    /// knows where it is when the play goes.
+    /// Follows the pointer and the Control keys while the play has the input, so that the
+    /// screen under it knows where they are when the play goes.
     pub fn follow_pointer(&mut self, events: &[InputEvent]) {
         for event in events {
+            self.track_ctrl(event.kind);
             if let InputKind::MouseMove { x, y } = event.kind {
                 self.cursor = [x * self.pixels_per_point, y * self.pixels_per_point];
+            }
+        }
+    }
+
+    /// Notes a Control key going down or up.
+    fn track_ctrl(&mut self, kind: InputKind) {
+        if let InputKind::Key { scancode, down } = kind {
+            let bit = match scancode {
+                KEY_LEFT_CTRL => 1,
+                KEY_RIGHT_CTRL => 2,
+                _ => return,
+            };
+            if down {
+                self.ctrl |= bit;
+            } else {
+                self.ctrl &= !bit;
             }
         }
     }
@@ -487,7 +570,7 @@ impl ShellState {
 
     /// The `.osu` file of a difficulty of the song select's list.
     pub fn file(&self, set: usize, difficulty: usize) -> Option<&PathBuf> {
-        self.files.get(set)?.get(difficulty)
+        self.files.get(set)?.get(difficulty).map(|f| &f.path)
     }
 
     /// Lays the screens out for a window of `width` × `height` pixels.
@@ -501,6 +584,7 @@ impl ShellState {
     /// The input of the screens, as the song select (the larger set) understands it, and
     /// the key only the results use.
     fn screen_input(&mut self, kind: InputKind) -> Option<ScreenInput> {
+        self.track_ctrl(kind);
         // A key row that listens takes every key and mouse button, whatever the menus make
         // of them; Escape still goes through, as it cancels.
         if matches!(self.stack.top(), AppScreen::Settings(s) if s.is_listening()) {
@@ -525,6 +609,21 @@ impl ShellState {
         }
         // The letters are the mod hotkeys on the song select, and Retry on the results.
         let song_select = matches!(self.stack.top(), AppScreen::SongSelect);
+        if let InputKind::Key {
+            scancode,
+            down: true,
+        } = kind
+            && song_select
+            && self.ctrl != 0
+        {
+            match scancode {
+                KEY_UP => return Some(ScreenInput::ModSpeed(SPEED_STEP)),
+                KEY_DOWN => return Some(ScreenInput::ModSpeed(-SPEED_STEP)),
+                KEY_F3 => return Some(ScreenInput::ApproachRate(-APPROACH_RATE_STEP)),
+                KEY_F4 => return Some(ScreenInput::ApproachRate(APPROACH_RATE_STEP)),
+                _ => {}
+            }
+        }
         Some(ScreenInput::Common(match kind {
             InputKind::Key {
                 scancode,
@@ -615,6 +714,14 @@ impl ShellState {
                         Some(MenuAction::Exit) => Some(Nav::Exit),
                         None => None,
                     }
+                }
+                AppScreen::SongSelect if let ScreenInput::ModSpeed(delta) = input => {
+                    self.change_mod_speed(delta);
+                    None
+                }
+                AppScreen::SongSelect if let ScreenInput::ApproachRate(delta) = input => {
+                    self.change_approach_rate(delta);
+                    None
                 }
                 AppScreen::SongSelect => {
                     match common.and_then(|input| self.song_select.input(input, &self.song_layout))
@@ -757,6 +864,10 @@ enum ScreenInput {
     Capture(KeyValue),
     /// Delete, while a key row listens.
     Clear,
+    /// Ctrl+Up/Down on the song select: the mod speed by this much.
+    ModSpeed(f64),
+    /// Ctrl+F3/F4 on the song select: the approach rate by this much.
+    ApproachRate(f64),
 }
 
 impl ScreenInput {
@@ -802,7 +913,9 @@ fn settings_input(input: ScreenInput) -> Option<SettingsInput> {
         ScreenInput::Release => SettingsInput::PointerRelease,
         ScreenInput::Capture(key) => SettingsInput::Captured(key),
         ScreenInput::Clear => SettingsInput::Clear,
-        ScreenInput::Retry => return None,
+        ScreenInput::Retry | ScreenInput::ModSpeed(_) | ScreenInput::ApproachRate(_) => {
+            return None;
+        }
         ScreenInput::Common(input) => match input {
             SongSelectInput::Up => SettingsInput::Up,
             SongSelectInput::Down => SettingsInput::Down,
@@ -838,7 +951,12 @@ fn after_play(results: Option<ResultsData>) -> Nav<AppScreen> {
 /// The input as the results understand it.
 fn results_input(input: ScreenInput) -> Option<ResultsInput> {
     Some(match input {
-        ScreenInput::Tab | ScreenInput::Release | ScreenInput::Capture(_) | ScreenInput::Clear => {
+        ScreenInput::Tab
+        | ScreenInput::Release
+        | ScreenInput::Capture(_)
+        | ScreenInput::Clear
+        | ScreenInput::ModSpeed(_)
+        | ScreenInput::ApproachRate(_) => {
             return None;
         }
         ScreenInput::Retry => ResultsInput::Retry,
