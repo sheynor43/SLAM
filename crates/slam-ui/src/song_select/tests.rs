@@ -273,3 +273,115 @@ fn visible_rows_cover_the_list_area() {
     assert_eq!(l.visible_rows(0.0, 3), 0..3);
     assert_eq!(l.visible_rows(5.5, 1000).start, 5);
 }
+
+const MOD_COLUMNS: ModColumns = [&["EZ", "NF"], &["HR", "SD"], &["DA"]];
+
+fn with_mods() -> SongSelect {
+    let mut s = screen(&[(1, 2), (2, 3)]);
+    s.mods_mut().clone_from(&ModSelect::new(MOD_COLUMNS));
+    s
+}
+
+#[test]
+fn f1_opens_the_panel_which_takes_every_key() {
+    let mut s = with_mods();
+    assert_eq!(press(&mut s, I::ToggleMods), None);
+    assert!(s.snapshot().mods.open);
+    // The carousel does not move and Enter does not play.
+    for key in [
+        I::Down,
+        I::Right,
+        I::End,
+        I::PageDown,
+        I::Scroll { lines: 3.0 },
+    ] {
+        assert_eq!(press(&mut s, key), None);
+    }
+    assert_eq!(s.selected(), Some((0, 0)));
+    // Esc closes the panel and stays in the song select.
+    assert_eq!(press(&mut s, I::Back), None);
+    assert!(!s.snapshot().mods.open);
+    assert_eq!(
+        press(&mut s, I::Activate),
+        Some(SongSelectAction::Play {
+            set: 0,
+            difficulty: 0
+        })
+    );
+    // Enter and F1 close it too; the next Esc leaves.
+    for key in [I::Activate, I::ToggleMods] {
+        press(&mut s, I::ToggleMods);
+        assert_eq!(press(&mut s, key), None);
+        assert!(!s.mods().is_open());
+    }
+    assert_eq!(press(&mut s, I::Back), Some(SongSelectAction::Back));
+}
+
+#[test]
+fn the_panel_turns_toggles_and_deselect_into_actions() {
+    let mut s = with_mods();
+    // Closed: hotkeys do nothing, Backspace deselects.
+    assert_eq!(
+        press(
+            &mut s,
+            I::ModHotkey {
+                column: 0,
+                index: 0
+            }
+        ),
+        None
+    );
+    assert_eq!(
+        press(&mut s, I::DeselectMods),
+        Some(SongSelectAction::DeselectMods)
+    );
+    press(&mut s, I::ToggleMods);
+    assert_eq!(
+        press(
+            &mut s,
+            I::ModHotkey {
+                column: 1,
+                index: 1
+            }
+        ),
+        Some(SongSelectAction::ToggleMod {
+            column: 1,
+            index: 1
+        })
+    );
+    assert_eq!(
+        press(
+            &mut s,
+            I::ModHotkey {
+                column: 2,
+                index: 0
+            }
+        ),
+        None
+    );
+    assert_eq!(
+        press(&mut s, I::DeselectMods),
+        Some(SongSelectAction::DeselectMods)
+    );
+    // The application writes the flags back.
+    s.mods_mut().set_active(1, 1, true);
+    assert_eq!(s.snapshot().mods.active, [0, 2, 0]);
+    // A click on a tile toggles it.
+    let [x, y] = layout().mods.tile_rect(0, 1).centre();
+    assert_eq!(
+        press(&mut s, I::PointerPress { x, y }),
+        Some(SongSelectAction::ToggleMod {
+            column: 0,
+            index: 1
+        })
+    );
+}
+
+#[test]
+fn the_panel_does_not_open_while_loading() {
+    let mut s = with_mods();
+    s.set_status(SongSelectStatus::Loading);
+    assert_eq!(press(&mut s, I::ToggleMods), None);
+    assert!(!s.mods().is_open());
+    assert_eq!(press(&mut s, I::DeselectMods), None);
+}

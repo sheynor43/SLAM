@@ -11,12 +11,18 @@ use slam_testkit::assert_no_alloc;
 use slam_text::{FontRegistry, GlyphAtlasConfig, glyph_atlas};
 use slam_ui::screen::Pose;
 use slam_ui::song_select::{
-    DifficultyRow, SetRow, SongList, SongSelect, SongSelectInput, SongSelectLabels,
+    DifficultyRow, ModColumns, SetRow, SongList, SongSelect, SongSelectInput, SongSelectLabels,
     SongSelectLayout, SongSelectStatus, SongSelectView,
 };
 use slam_ui::theme::Theme;
 
 slam_testkit::install_counting_allocator!();
+
+const MOD_COLUMNS: ModColumns = [
+    &["EZ", "NF", "HT", "DC"],
+    &["HR", "SD", "PF"],
+    &["DA", "CL"],
+];
 
 fn list_of(count: u64) -> Arc<SongList> {
     Arc::new(SongList {
@@ -90,6 +96,10 @@ fn labels() -> SongSelectLabels {
         loading: "loading".into(),
         empty: "empty".into(),
         hint: "hint".into(),
+        mods_title: "Mods".into(),
+        mods_hint: "mods hint".into(),
+        mod_column_titles: ["Reduction".into(), "Increase".into(), "Conversion".into()],
+        mod_columns: MOD_COLUMNS,
     }
 }
 
@@ -189,4 +199,73 @@ fn scrolling_a_long_list_does_not_allocate_once_warm() {
     };
     pass(&mut rig, &mut screen);
     slam_testkit::assert_no_alloc(|| pass(&mut rig, &mut screen));
+}
+
+#[test]
+fn mod_panel_input_does_not_allocate() {
+    let layout = SongSelectLayout::new(1280.0, 720.0, &Theme::default());
+    let mut screen = SongSelect::new();
+    screen.set_list(list_of(10));
+    *screen.mods_mut() = slam_ui::song_select::ModSelect::new(MOD_COLUMNS);
+    let [x, y] = layout.mods.tile_rect(1, 1).centre();
+    assert_no_alloc(|| {
+        for input in [
+            SongSelectInput::ToggleMods,
+            SongSelectInput::ModHotkey {
+                column: 0,
+                index: 1,
+            },
+            SongSelectInput::ModHotkey {
+                column: 2,
+                index: 0,
+            },
+            SongSelectInput::PointerMove { x, y },
+            SongSelectInput::PointerPress { x, y },
+            SongSelectInput::DeselectMods,
+            SongSelectInput::Down,
+            SongSelectInput::Back,
+            SongSelectInput::ToggleMods,
+            SongSelectInput::Activate,
+            SongSelectInput::DeselectMods,
+        ] {
+            std::hint::black_box(screen.input(input, &layout));
+            screen.mods_mut().set_active(0, 1, true);
+            std::hint::black_box(screen.snapshot());
+        }
+    });
+}
+
+#[test]
+fn mod_panel_and_selected_line_push_without_allocating_once_warm() {
+    let mut rig = Rig::new();
+    let mut screen = SongSelect::new();
+    screen.set_list(list_of(10));
+    screen.set_status(SongSelectStatus::Ready);
+    let layout = SongSelectLayout::new(1280.0, 720.0, &Theme::default());
+    *screen.mods_mut() = slam_ui::song_select::ModSelect::new(MOD_COLUMNS);
+    let [x, y] = layout.mods.tile_rect(0, 0).centre();
+    // Every shape of the view once, so the buffers have grown.
+    let states: Vec<_> = (0..4)
+        .map(|i| {
+            screen.mods_mut().set_active(0, i % 3, i % 2 == 0);
+            screen.mods_mut().set_active(1, 1, true);
+            screen.input(SongSelectInput::PointerMove { x, y }, &layout);
+            if i % 2 == 0 {
+                screen.mods_mut().open();
+            } else {
+                screen.mods_mut().close();
+            }
+            screen.snapshot()
+        })
+        .collect();
+    for _ in 0..2 {
+        for snapshot in &states {
+            rig.frame(snapshot);
+        }
+    }
+    assert_no_alloc(|| {
+        for snapshot in states.iter().cycle().take(40) {
+            rig.frame(snapshot);
+        }
+    });
 }

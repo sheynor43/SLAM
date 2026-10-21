@@ -5,6 +5,8 @@
 use slam_audio::{MixerHandle, MusicPlayer, VoiceGroup};
 use slam_engine::UpdateRateControl;
 
+use slam_osu::mods::ModSet;
+
 use crate::loader::PlayOptions;
 use crate::settings::{Audio, Settings, skins};
 
@@ -136,6 +138,7 @@ pub fn play_options(settings: &Settings) -> PlayOptions {
             settings.paths.songs.as_deref(),
             settings.skin.name.as_deref(),
         ),
+        mods: ModSet::default(),
     }
 }
 
@@ -262,6 +265,7 @@ mod tests {
                 show_fps: true,
                 hit_error_scale: 1.5,
                 skin: None,
+                mods: ModSet::default(),
             }
         );
         // The skin is a folder of `Skins`, next to the songs folder.

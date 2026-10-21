@@ -600,3 +600,168 @@ fn compatible_sets_pass() {
         assert!(compatible(acronyms), "{acronyms}");
     }
 }
+
+fn selected(list: &[&str]) -> ModSet {
+    ModSet::new(list.iter().map(|a| Mod::from_acronym(a)).collect()).unwrap()
+}
+
+/// The overlay's selection after toggling `acronym` in `old`: the active mods in column
+/// order, as lazer's `updateFromInternalSelection` collects them.
+fn toggle(old: &ModSet, acronym: &str) -> ModSet {
+    let columns = [
+        ModType::DifficultyReduction,
+        ModType::DifficultyIncrease,
+        ModType::Conversion,
+    ];
+    let selection: Vec<Mod> = columns
+        .iter()
+        .flat_map(|&ty| mods_for(ty))
+        .filter(|&&a| (a == acronym) != old.get(a).is_some())
+        .map(|a| Mod::from_acronym(a))
+        .collect();
+    let mut new = old.clone();
+    new.apply_selection(&selection);
+    new
+}
+
+#[test]
+fn every_column_mod_is_supported_and_of_its_column_type() {
+    for ty in [
+        ModType::DifficultyReduction,
+        ModType::DifficultyIncrease,
+        ModType::Conversion,
+    ] {
+        for acronym in mods_for(ty) {
+            let m = Mod::from_acronym(acronym);
+            assert!(m.is_supported(), "{acronym}");
+            assert_eq!(m.mod_type(), ty, "{acronym}");
+        }
+    }
+    assert_eq!(
+        Mod::from_acronym("fl").mod_type(),
+        ModType::DifficultyIncrease
+    );
+    assert_eq!(Mod::from_acronym("AT").mod_type(), ModType::Automation);
+    assert_eq!(Mod::from_acronym("WU").mod_type(), ModType::Fun);
+    assert_eq!(Mod::from_acronym("SV2").mod_type(), ModType::System);
+    assert_eq!(Mod::from_acronym("XX").mod_type(), ModType::System);
+}
+
+#[test]
+fn selecting_a_mod_drops_the_mods_it_conflicts_with() {
+    let cases: &[(&[&str], &str, &[&str])] = &[
+        (&[], "DT", &["DT"]),
+        (&["DT"], "HT", &["HT"]),
+        (&["HD", "DT"], "NC", &["HD", "NC"]),
+        (&["EZ", "HD"], "HR", &["HD", "HR"]),
+        (&["HR"], "EZ", &["EZ"]),
+        (&["HR"], "DA", &["DA"]),
+        (&["HR", "HD"], "MR", &["HD", "MR"]),
+        (&["MR", "DA"], "HR", &["HR"]),
+        (&["SD"], "PF", &["PF"]),
+        (&["NF"], "SD", &["SD"]),
+        (&["PF", "HD"], "NF", &["HD", "NF"]),
+        (&["HD"], "TC", &["TC"]),
+        // A kept mod follows the column order, the new one goes last.
+        (&["HD", "EZ"], "CL", &["EZ", "HD", "CL"]),
+    ];
+    for &(old, added, expected) in cases {
+        let new = toggle(&selected(old), added);
+        assert_eq!(acronyms(&new), expected, "{old:?} + {added}");
+        new.check_compatible().unwrap();
+    }
+}
+
+#[test]
+fn deselecting_a_mod_keeps_the_rest_in_column_order() {
+    let new = toggle(&selected(&["HD", "DT", "EZ"]), "DT");
+    assert_eq!(acronyms(&new), ["EZ", "HD"]);
+}
+
+#[test]
+fn applying_a_selection_with_already_conflicting_mods_drops_both() {
+    // Lazer's `CheckCompatibleSet` names both sides of a pair already in the set.
+    let mut mods = selected(&["HR"]);
+    let selection = [
+        Mod::from_acronym("EZ"),
+        Mod::from_acronym("HR"),
+        Mod::from_acronym("DT"),
+        Mod::from_acronym("HT"),
+    ];
+    mods.apply_selection(&selection);
+    assert_eq!(acronyms(&mods), ["EZ", "HT"]);
+}
+
+#[test]
+fn a_mod_with_other_settings_counts_as_added() {
+    let mut old = selected(&["DT"]);
+    let Mod::DoubleTime(rate) = Mod::from_acronym("DT") else {
+        unreachable!()
+    };
+    let faster = Mod::DoubleTime(RateAdjust {
+        speed_change: 1.75,
+        ..rate
+    });
+    old.apply_selection(&[Mod::HardRock, faster.clone()]);
+    assert_eq!(old.mods(), [Mod::HardRock, faster]);
+}
+
+// Ported from osu!lazer 2026.1005.0-lazer: osu.Game/Rulesets/Mods/ModExtensions.cs (AsOrdered)
+#[test]
+fn mods_are_ordered_by_type_then_acronym() {
+    let mods = selected(&[
+        "MR", "HD", "XX", "NF", "DT", "AT", "CL", "FL", "EZ", "WU", "AB",
+    ]);
+    let ordered: Vec<&str> = mods.ordered().map(GameplayMod::acronym).collect();
+    assert_eq!(
+        ordered,
+        [
+            "EZ", "NF", "DT", "FL", "HD", "CL", "MR", "AT", "WU", "AB", "XX"
+        ]
+    );
+    assert_eq!(ModSet::default().ordered().count(), 0);
+}
+
+#[test]
+fn a_mod_selected_twice_is_added_once() {
+    let mut mods = ModSet::default();
+    mods.apply_selection(&[Mod::HardRock, Mod::Traceable, Mod::HardRock]);
+    assert_eq!(acronyms(&mods), ["HR", "TC"]);
+}
+
+#[test]
+fn an_empty_selection_deselects_everything() {
+    let mut mods = selected(&["HD", "DT", "FL"]);
+    mods.apply_selection(&[]);
+    assert!(mods.mods().is_empty());
+}
+
+#[test]
+fn a_mod_slam_does_not_implement_takes_part_in_the_selection() {
+    let mut mods = selected(&["FL"]);
+    mods.apply_selection(&[Mod::from_acronym("FL"), Mod::from_acronym("HD")]);
+    assert_eq!(acronyms(&mods), ["FL", "HD"]);
+}
+
+#[test]
+#[should_panic(expected = "too many mods selected")]
+fn a_selection_of_more_than_63_mods_panics() {
+    let selection: Vec<Mod> = (0..64)
+        .map(|i| Mod::from_acronym(&format!("X{i}")))
+        .collect();
+    ModSet::default().apply_selection(&selection);
+}
+
+#[test]
+#[should_panic(expected = "two different mods with one acronym selected")]
+fn a_selection_with_two_settings_of_one_mod_panics() {
+    let mut mods = ModSet::default();
+    mods.apply_selection(&[
+        Mod::Hidden {
+            only_fade_approach_circles: false,
+        },
+        Mod::Hidden {
+            only_fade_approach_circles: true,
+        },
+    ]);
+}

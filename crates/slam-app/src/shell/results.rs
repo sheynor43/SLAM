@@ -40,8 +40,9 @@ pub fn title(artist: &str, title: &str, version: &str) -> String {
     format!("{artist} - {title} [{version}]")
 }
 
+/// The mods of the results in lazer's display order (`AsOrdered`).
 pub fn mods(mods: &ModSet) -> ResultsMods {
-    ResultsMods::new(mods.mods().iter().map(|m| m.acronym()))
+    ResultsMods::new(mods.ordered().map(|m| m.acronym()))
 }
 
 /// The results of play `id`.
@@ -70,6 +71,20 @@ mod tests {
     use slam_osu::judgement::Statistics;
 
     use super::*;
+
+    #[test]
+    fn mods_are_shown_in_lazers_order() {
+        let set = slam_osu::ModSet::new(
+            ["MR", "DT", "HD", "EZ"]
+                .into_iter()
+                .map(slam_osu::Mod::from_acronym)
+                .collect(),
+        )
+        .unwrap();
+        let shown = mods(&set);
+        let shown: Vec<&str> = shown.iter().map(|a| a.as_str()).collect();
+        assert_eq!(shown, ["EZ", "DT", "HD", "MR"]);
+    }
 
     #[test]
     fn rows_count_their_judgement_and_the_perfect_plays_maximum() {
