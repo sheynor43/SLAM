@@ -20,8 +20,17 @@ const PUBLISH_EVERY: Duration = Duration::from_millis(100);
 /// How long the library thread sleeps between polls.
 const POLL: Duration = Duration::from_millis(10);
 
-/// The `.osu` files of a published list, by set and difficulty, in the list's order.
-pub type SongFiles = [Box<[PathBuf]>];
+/// A difficulty of a published list, beyond what its row shows.
+#[derive(Debug, Clone, PartialEq)]
+pub struct SongFile {
+    /// The `.osu` file.
+    pub path: PathBuf,
+    /// The approach rate of the file, without mods.
+    pub approach_rate: f32,
+}
+
+/// The difficulties of a published list, by set and difficulty, in the list's order.
+pub type SongFiles = [Box<[SongFile]>];
 
 /// One state of the library as the update thread sees it.
 pub struct Published {
@@ -129,7 +138,15 @@ pub fn publish(
     };
     let files = sets
         .iter()
-        .map(|set| set.difficulties.iter().map(|d| d.path.clone()).collect())
+        .map(|set| {
+            set.difficulties
+                .iter()
+                .map(|d| SongFile {
+                    path: d.path.clone(),
+                    approach_rate: d.approach_rate,
+                })
+                .collect()
+        })
         .collect();
     Published {
         list: Arc::new(list),
@@ -258,8 +275,15 @@ mod tests {
         assert_eq!(list.sets.len(), 2);
         assert_eq!(list.sets[0].title, "a title");
         assert_eq!(list.sets[0].difficulties[1].version, "Hard");
-        assert_eq!(published.files[0][1], PathBuf::from("a").join("Hard.osu"));
-        assert_eq!(published.files[1][0], PathBuf::from("b").join("Insane.osu"));
+        assert_eq!(
+            published.files[0][1].path,
+            PathBuf::from("a").join("Hard.osu")
+        );
+        assert_eq!(
+            published.files[1][0].path,
+            PathBuf::from("b").join("Insane.osu")
+        );
+        assert_eq!(published.files[1][0].approach_rate, 5.0);
         assert_eq!(published.status, SongSelectStatus::Ready);
     }
 
@@ -322,7 +346,7 @@ mod tests {
         let artists: Vec<_> = published.list.sets.iter().map(|s| &s.artist).collect();
         assert_eq!(artists, ["alpha", "Zed"]);
         assert_eq!(
-            published.files[0][0],
+            published.files[0][0].path,
             root.0.join("2 alpha").join("map.osu")
         );
         // Once nobody else holds the final list, the library thread frees it.

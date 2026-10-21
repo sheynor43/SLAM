@@ -138,7 +138,8 @@ fn song_select_ticks_and_new_lists_do_not_allocate() {
             state.tick(now, &input, &mut snapshot);
         }
     });
-    // The mod select: F1, toggles that drop conflicts, Backspace, F1 again. The selection has
+    // The mod select: F1, toggles that drop conflicts, Backspace, the Control hotkeys, F1
+    // again. The selection has
     // room reserved, so toggling allocates nothing.
     let [tile_x, tile_y] =
         slam_ui::song_select::SongSelectLayout::new(1280.0, 720.0, &Theme::default())
@@ -155,12 +156,22 @@ fn song_select_ticks_and_new_lists_do_not_allocate() {
             down: true,
         }),
     ];
-    let mods: Vec<InputEvent> = [58, 20, 4, 9, 20, 10, 26, 42, 20, 29]
-        .into_iter()
-        .map(key)
-        .chain(click)
-        .chain([key(58)])
-        .collect();
+    // Control with Up and Down changes the speed (back to 1: Double Time goes), F4 and F3 the
+    // approach rate (Difficulty Adjust comes; Easy then drops it).
+    let ctrl_up = event(InputKind::Key {
+        scancode: 224,
+        down: false,
+    });
+    let mods: Vec<InputEvent> = [
+        58, 20, 4, 9, 20, 10, 26, 42, 224, 82, 82, 81, 81, 82, 61, 61, 60,
+    ]
+    .into_iter()
+    .map(key)
+    .chain([ctrl_up])
+    .chain([20, 29].map(key))
+    .chain(click)
+    .chain([key(58)])
+    .collect();
     state.tick(3 * TRANSITION_NS + 99, &mods, &mut snapshot);
     assert_no_alloc(|| {
         let start = 3 * TRANSITION_NS + 100;
