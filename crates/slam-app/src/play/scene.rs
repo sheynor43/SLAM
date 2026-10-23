@@ -22,9 +22,9 @@ use slam_play::sliders::{
 };
 use slam_play::spinners::{HitSpinners, SpinnerStyle, SpinnerVisuals};
 use slam_play::{
-    BackgroundSettings, BackgroundView, FpsCounter, FpsLabels, FpsView, GameplaySounds, Hitsounds,
-    HudLabels, HudView, MenuLabels, MenuView, PlaySnapshot, PlayTextures, PlayView,
-    PlayfieldLayout, SampleCache, SampleSkins, SoundSettings,
+    BackgroundSettings, BackgroundView, FpsLabels, FpsView, GameplaySounds, Hitsounds, HudLabels,
+    HudView, MenuLabels, MenuView, PlaySnapshot, PlayTextures, PlayView, PlayfieldLayout,
+    SampleCache, SampleSkins, SoundSettings,
 };
 use slam_render::gl::{GlDevice, GlTexture};
 use slam_render::slider::{SliderBuffer, SliderDraw, SliderMesh, SliderRenderer};
@@ -41,7 +41,7 @@ use slam_skin::{Skin, SkinChain};
 use slam_text::{FontRegistry, GlyphAtlasConfig, GlyphCache, glyph_atlas};
 use slam_ui::i18n::{FluentArgs, Localizer};
 
-use super::fps::FpsInputs;
+use super::fps::{FpsOverlay, MAX_FPS_GLYPHS};
 use super::{default_skin_dir, find_beatmap_file};
 
 /// The mixer's format; the shell's output and the `play` command's use it.
@@ -62,8 +62,6 @@ const MAX_TEXTURES: usize = 64;
 const MAX_GLYPH_SPRITES: usize = 256;
 /// The menu's background and buttons, and the FPS counter's box.
 const MAX_MENU_SPRITES: usize = 2 + slam_play::menu_overlay::MAX_BUTTONS;
-/// Room in the menu's text batch for the FPS counter's two numbers.
-const MAX_FPS_GLYPHS: usize = 48;
 
 type Gl = GlDevice<SdlGlSurface>;
 
@@ -78,8 +76,6 @@ pub struct PlaySettings {
     pub beatmap_colours: bool,
     /// Play the beatmap's own hitsound samples (lazer's `BeatmapHitsounds`).
     pub beatmap_hitsounds: bool,
-    /// Show the FPS counter (ADR-0053).
-    pub show_fps: bool,
     pub mods: ModSet,
     /// How dark the background is, 0 ..= 1 (lazer's `DimLevel`).
     pub dim: f64,
@@ -94,7 +90,6 @@ impl Default for PlaySettings {
             beatmap_skins: true,
             beatmap_colours: true,
             beatmap_hitsounds: true,
-            show_fps: false,
             mods: ModSet::default(),
             dim: BackgroundSettings::default().dim_level,
             hit_error_scale: 1.0,
@@ -298,12 +293,6 @@ pub fn prepare(
     let glyphs = glyph_atlas(Arc::clone(&registry), &GlyphAtlasConfig::new(limits))
         .map_err(|e| e.to_string())?;
     let menu = MenuView::new(Arc::clone(&registry), &labels.menu);
-    let fps = settings.show_fps.then(|| {
-        (
-            FpsCounter::new(),
-            FpsView::new(Arc::clone(&registry), &labels.fps),
-        )
-    });
     let hud = HudView::new(registry, labels);
     let scene = PlayScene {
         _requests: requests,
@@ -326,7 +315,6 @@ pub fn prepare(
         menu,
         menu_shapes: SpriteBatch::with_capacity(MAX_MENU_SPRITES),
         menu_text: SpriteBatch::with_capacity(MAX_GLYPH_SPRITES + MAX_FPS_GLYPHS),
-        fps,
         gpu: None,
     };
     Ok(Prepared {
@@ -378,8 +366,6 @@ pub struct PlayScene {
     menu: MenuView,
     menu_shapes: SpriteBatch,
     menu_text: SpriteBatch,
-    /// The FPS counter, if the play shows it: on top of the menus (ADR-0053).
-    fps: Option<(FpsCounter, FpsView)>,
     gpu: Option<SceneGpu>,
 }
 
@@ -396,9 +382,10 @@ impl PlayScene {
     }
 
     /// Makes the play's GPU resources on the draw thread and waits up to `glyph_wait` for
-    /// the HUD's glyphs (a glyph takes several frames to appear; late ones show when
-    /// ready). Navigation: allocates and uploads.
-    pub fn start(&mut self, device: &mut Gl, glyph_wait: Duration) {
+    /// the HUD's glyphs and those of `fps`, the counter the play draws (a glyph takes
+    /// several frames to appear; late ones show when ready). Navigation: allocates and
+    /// uploads.
+    pub fn start(&mut self, device: &mut Gl, glyph_wait: Duration, fps: Option<&FpsOverlay>) {
         // The device made these with the same context before; failing now is a driver
         // fault the application does not recover from.
         // Three draws a frame (playfield and HUD, cursor, menu), each with its spare slots;
@@ -419,10 +406,7 @@ impl PlayScene {
         let deadline = Instant::now() + glyph_wait;
         while self.hud.request_glyphs(&mut self.glyphs)
             + self.menu.request_glyphs(&mut self.glyphs)
-            + self
-                .fps
-                .as_ref()
-                .map_or(0, |(_, view)| view.request_glyphs(&mut self.glyphs))
+            + fps.map_or(0, |overlay| overlay.request_glyphs(&mut self.glyphs))
             > 0
             && Instant::now() < deadline
         {
@@ -438,15 +422,15 @@ impl PlayScene {
         });
     }
 
-    /// Draws the play into the frame `device` began at `size`. Does nothing before
-    /// [`PlayScene::start`].
+    /// Draws the play into the frame `device` began at `size`, with the FPS counter `fps`
+    /// on top (ADR-0060). Does nothing before [`PlayScene::start`].
     pub fn draw(
         &mut self,
         device: &mut Gl,
         size: Extent,
         now_ns: u64,
         snapshot: &PlaySnapshot,
-        fps: FpsInputs,
+        fps: Option<&FpsView>,
     ) {
         let Some(r) = self.gpu.as_mut() else {
             return;
@@ -463,10 +447,6 @@ impl PlayScene {
             snapshot.offset_panel.offset_ms,
         );
         self.menu.update(width, height, &snapshot.menu);
-        if let Some((counter, view)) = &mut self.fps {
-            counter.frame(now_ns, fps.update_interval_ns, fps.aim_draw, fps.aim_update);
-            view.update(width, height, counter);
-        }
         self.batch.clear();
         self.text.clear();
         self.cursor.clear();
@@ -531,7 +511,7 @@ impl PlayScene {
             &mut self.glyphs,
         );
         // Last: the counter is on top of the menus.
-        if let Some((_, view)) = &self.fps {
+        if let Some(view) = fps {
             if let Some(white) = textures.white {
                 view.push_shapes(&mut self.menu_shapes, white);
             }

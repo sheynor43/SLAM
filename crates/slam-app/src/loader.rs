@@ -38,8 +38,6 @@ pub struct PlayOptions {
     pub beatmap_skins: bool,
     pub beatmap_colours: bool,
     pub beatmap_hitsounds: bool,
-    /// Show the FPS counter (ADR-0053).
-    pub show_fps: bool,
     /// Size multiplier of the hit error meter (ADR-0050).
     pub hit_error_scale: f64,
     /// The chosen skin's folder (ADR-0051); `None` plays on the default skin.
@@ -164,7 +162,6 @@ pub fn spawn(mut config: LoaderConfig) -> std::io::Result<(LoaderLink, SceneTras
                     config.settings.beatmap_skins = options.beatmap_skins;
                     config.settings.beatmap_colours = options.beatmap_colours;
                     config.settings.beatmap_hitsounds = options.beatmap_hitsounds;
-                    config.settings.show_fps = options.show_fps;
                     config.settings.hit_error_scale = options.hit_error_scale;
                     config.settings.skin = options.skin;
                     config.settings.mods = options.mods;
@@ -214,7 +211,6 @@ mod tests {
             beatmap_skins: true,
             beatmap_colours: true,
             beatmap_hitsounds: true,
-            show_fps: false,
             hit_error_scale: 1.0,
             skin: None,
             mods: ModSet::default(),

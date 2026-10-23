@@ -486,6 +486,14 @@ impl SettingsScreen {
         }
     }
 
+    /// Shows `value` in toggle row `row`, changed from outside the screen (a hotkey).
+    /// Anything else is left alone.
+    pub fn set_toggle(&mut self, row: usize, value: bool) {
+        if let Some(RowWidget::Toggle(t)) = self.widgets[..self.len].get_mut(row) {
+            t.set(value);
+        }
+    }
+
     /// Asks whether to take `key` for key row `row` although the key row `other` (if on the
     /// screen) has it. The screen answers with [`SettingsAction::ConflictResolved`].
     pub fn ask_conflict(&mut self, row: usize, key: KeyValue, other: Option<usize>) {

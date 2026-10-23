@@ -57,7 +57,7 @@ use slam_ui::song_select::{
 use slam_ui::theme::Theme;
 
 use crate::loader::{LoaderConfig, LoaderLink, PlayOptions, SceneTrash, Trash};
-use crate::play::fps::FpsSource;
+use crate::play::fps::{FpsDisplay, FpsOverlay, FpsSource, MAX_FPS_GLYPHS};
 use crate::play::scene::{CHANNELS, PlayScene, PlaySettings, Prepared, SAMPLE_RATE};
 use crate::play::{device_limits, pack_size};
 use crate::settings::saver::SaveLink;
@@ -85,10 +85,11 @@ pub const USAGE: &str = "usage: slam-app [--songs DIR]\n\
 const WINDOW: (i32, i32) = (1280, 720);
 /// Textures of the draw thread: the white square and the glyph pages.
 const MAX_TEXTURES: usize = 16;
-/// Rectangles of one frame: the buttons or rows of up to two layers.
-const MAX_SHAPES: usize = 256;
-/// Glyph sprites of one frame: the texts of up to two layers.
-const MAX_GLYPH_SPRITES: usize = 8192;
+/// Rectangles of one frame: the buttons or rows of up to two layers, and the FPS counter's
+/// box.
+const MAX_SHAPES: usize = 256 + 1;
+/// Glyph sprites of one frame: the texts of up to two layers and the FPS counter.
+const MAX_GLYPH_SPRITES: usize = 8192 + MAX_FPS_GLYPHS;
 /// How long the draw thread waits for the glyphs before the first frame.
 const GLYPH_WARM_TIMEOUT: Duration = Duration::from_secs(1);
 
@@ -215,6 +216,8 @@ pub struct ShellSnapshot {
     pub layers: [Option<LayerSnapshot>; MAX_LAYERS],
     /// The play, while its screen is shown; too large for a layer (ADR-0044).
     pub play: PlaySnapshot,
+    /// The FPS counter's settings, in force or being edited (ADR-0060).
+    pub fps: FpsDisplay,
 }
 
 /// The update logic without the window: input to navigation to snapshot.
@@ -614,6 +617,47 @@ impl ShellState {
         }
     }
 
+    /// Watches for the hotkeys of the whole window while the play has the input: they
+    /// reach the play too, which has no binding on them (ADR-0060).
+    pub fn watch_hotkeys(&mut self, events: &[InputEvent]) {
+        for event in events {
+            if self.is_toggle_fps(event.kind) {
+                self.toggle_fps();
+            }
+        }
+    }
+
+    /// Whether `kind` presses the FPS counter's hotkey.
+    fn is_toggle_fps(&self, kind: InputKind) -> bool {
+        let pressed = match kind {
+            InputKind::Key {
+                scancode,
+                down: true,
+            } => Input::Key(scancode),
+            InputKind::MouseButton { button, down: true } => Input::Mouse(button),
+            _ => return false,
+        };
+        self.settings.hotkeys.toggle_fps == Some(pressed)
+    }
+
+    /// Shows or hides the FPS counter and saves the settings, as lazer's
+    /// `ToggleFPSDisplay`. An open settings screen shows the change. Allocates for the save:
+    /// a rare action of the player, as navigation (ADR-0060).
+    pub fn toggle_fps(&mut self) {
+        let show = !self.settings.frame.show_fps;
+        self.settings.frame.show_fps = show;
+        if let Some(editing) = &mut self.editing {
+            editing.frame.show_fps = show;
+        }
+        if let (AppScreen::Settings(screen), Some(row)) = (
+            self.stack.top_mut(),
+            Row::ALL.iter().position(|r| *r == Row::ShowFps),
+        ) {
+            screen.set_toggle(row, show);
+        }
+        self.save_request = Some(Box::new(self.settings.clone()));
+    }
+
     /// Notes a Control key going down or up.
     fn track_ctrl(&mut self, kind: InputKind) {
         if let InputKind::Key { scancode, down } = kind {
@@ -685,6 +729,9 @@ impl ShellState {
                 }
                 _ => {}
             }
+        }
+        if self.is_toggle_fps(kind) {
+            return Some(ScreenInput::ToggleFps);
         }
         // The letters are the mod hotkeys on the song select, and Retry on the results.
         let song_select = matches!(self.stack.top(), AppScreen::SongSelect);
@@ -780,6 +827,10 @@ impl ShellState {
             let Some(input) = self.screen_input(event.kind) else {
                 continue;
             };
+            if input == ScreenInput::ToggleFps {
+                self.toggle_fps();
+                continue;
+            }
             let common = input.common();
             let nav = match self.stack.top_mut() {
                 AppScreen::Menu(menu) => {
@@ -926,6 +977,7 @@ impl ShellState {
         if self.setting_rows_for != Some(self.rows_key()) {
             self.rebuild_setting_rows();
         }
+        snapshot.fps = FpsDisplay::of(&self.editing.as_ref().unwrap_or(&self.settings).frame);
         let top: *const AppScreen = self.stack.top();
         for (slot, layer) in snapshot.layers.iter_mut().zip(self.stack.layers(now_ns)) {
             *slot = layer.and_then(|(screen, pose)| {
@@ -962,6 +1014,8 @@ enum ScreenInput {
     ModSpeed(f64),
     /// Ctrl+F3/F4 on the song select: the approach rate by this much.
     ApproachRate(f64),
+    /// The FPS counter's hotkey, on any screen (ADR-0060).
+    ToggleFps,
 }
 
 impl ScreenInput {
@@ -1008,7 +1062,10 @@ fn settings_input(input: ScreenInput) -> Option<SettingsInput> {
         ScreenInput::Release => SettingsInput::PointerRelease,
         ScreenInput::Capture(key) => SettingsInput::Captured(key),
         ScreenInput::Clear => SettingsInput::Clear,
-        ScreenInput::Retry | ScreenInput::ModSpeed(_) | ScreenInput::ApproachRate(_) => {
+        ScreenInput::Retry
+        | ScreenInput::ModSpeed(_)
+        | ScreenInput::ApproachRate(_)
+        | ScreenInput::ToggleFps => {
             return None;
         }
         ScreenInput::Common(input) => match input {
@@ -1051,7 +1108,8 @@ fn results_input(input: ScreenInput) -> Option<ResultsInput> {
         | ScreenInput::Capture(_)
         | ScreenInput::Clear
         | ScreenInput::ModSpeed(_)
-        | ScreenInput::ApproachRate(_) => {
+        | ScreenInput::ApproachRate(_)
+        | ScreenInput::ToggleFps => {
             return None;
         }
         ScreenInput::Retry => ResultsInput::Retry,
@@ -1544,6 +1602,7 @@ impl Update for Shell {
             Some(host) if playing => {
                 host.tick_game(now, events, &mut snapshot.play);
                 self.state.follow_pointer(events);
+                self.state.watch_hotkeys(events);
                 self.state.tick(now, &[], snapshot)
             }
             _ => self.state.tick(now, events, snapshot),
@@ -1596,8 +1655,8 @@ struct View {
     scene_trash: Option<SceneTrash>,
     /// Read by the update thread for the layout.
     surface_size: Arc<AtomicU64>,
-    /// The counter's inputs from the engine (ADR-0053).
-    fps: FpsSource,
+    /// The FPS counter over every screen (ADR-0060).
+    fps: FpsOverlay,
     _quit: crate::bench::QuitOnDrop,
 }
 
@@ -1667,7 +1726,7 @@ impl Draw<ShellSnapshot> for View {
         {
             retire(&mut self.scene, &mut self.scene_trash, &mut r.device);
             // The glyphs come in over the first frames; the lead-in runs meanwhile.
-            scene.start(&mut r.device, Duration::ZERO);
+            scene.start(&mut r.device, Duration::ZERO, None);
             self.scene = Some((id, scene));
             self.scene_shown = false;
         }
@@ -1685,6 +1744,14 @@ impl Draw<ShellSnapshot> for View {
             .store(pack_size(size.width, size.height), Ordering::Relaxed);
         self.glyphs.process(&mut r.device, &mut r.textures);
         let (width, height) = (size.width as f32, size.height as f32);
+        let gameplay = snapshot
+            .layers
+            .iter()
+            .flatten()
+            .last()
+            .is_some_and(|layer| matches!(layer.view, ScreenView::Play(_)));
+        self.fps
+            .frame(info.wait.woke_ns, width, height, snapshot.fps, gameplay);
         self.shapes.clear();
         self.text.clear();
         // Where each layer's sprites end: layers are drawn one after another, shapes then
@@ -1740,6 +1807,10 @@ impl Draw<ShellSnapshot> for View {
             ends[layers] = (self.shapes.len() as u32, self.text.len() as u32, play);
             layers += 1;
         }
+        // Last, over every screen and the play (ADR-0060).
+        let overlay_from = (self.shapes.len() as u32, self.text.len() as u32);
+        self.fps
+            .push(&mut self.shapes, &mut self.text, &mut self.glyphs, r.white);
         r.renderer.begin_frame();
         r.text_renderer.begin_frame();
         let gpu_textures = &r.textures;
@@ -1760,13 +1831,7 @@ impl Draw<ShellSnapshot> for View {
                 if let Some((id, scene)) = &mut self.scene
                     && scene_on_layers(snapshot, *id)
                 {
-                    scene.draw(
-                        &mut r.device,
-                        size,
-                        info.wait.woke_ns,
-                        &snapshot.play,
-                        self.fps.sample(),
-                    );
+                    scene.draw(&mut r.device, size, info.wait.woke_ns, &snapshot.play, None);
                 }
                 continue;
             }
@@ -1789,6 +1854,24 @@ impl Draw<ShellSnapshot> for View {
                 );
             }
             from = (shapes_end, text_end);
+        }
+        if let Ok(uploaded) = &shapes {
+            let _ = r.renderer.draw_range(
+                &mut r.device,
+                uploaded,
+                &self.shapes,
+                overlay_from.0..self.shapes.len() as u32,
+                texture,
+            );
+        }
+        if let Ok(uploaded) = &text {
+            let _ = r.text_renderer.draw_range(
+                &mut r.device,
+                uploaded,
+                &self.text,
+                overlay_from.1..self.text.len() as u32,
+                texture,
+            );
         }
         let _ = r.device.present();
     }
@@ -1817,6 +1900,7 @@ impl View {
             + self.song_select.request_glyphs(&mut self.glyphs)
             + self.results.request_glyphs(&mut self.glyphs)
             + self.settings.request_glyphs(&mut self.glyphs)
+            + self.fps.request_glyphs(&mut self.glyphs)
     }
 }
 
@@ -2035,6 +2119,7 @@ pub fn run(settings: Settings) -> Result<(), String> {
         _library = Some(thread);
     }
     // The play: a loader thread, scenes for the draw thread, the audio output.
+    let hud_labels = crate::play::scene::hud_labels(&localizer);
     let (loader, scene_trash, _loader) = crate::loader::spawn(LoaderConfig {
         // The skin travels with each request; this is what the first one starts from.
         settings: {
@@ -2043,7 +2128,6 @@ pub fn run(settings: Settings) -> Result<(), String> {
                 beatmap_skins: options.beatmap_skins,
                 beatmap_colours: options.beatmap_colours,
                 beatmap_hitsounds: options.beatmap_hitsounds,
-                show_fps: options.show_fps,
                 dim: options.dim,
                 hit_error_scale: options.hit_error_scale,
                 skin: options.skin,
@@ -2052,7 +2136,7 @@ pub fn run(settings: Settings) -> Result<(), String> {
         },
         limits,
         registry: Arc::clone(&registry),
-        hud_labels: crate::play::scene::hud_labels(&localizer),
+        hud_labels: hud_labels.clone(),
     })
     .map_err(|e| e.to_string())?;
     let (scene_tx, scene_rx) = rtrb::RingBuffer::<(u64, PlayScene)>::new(2);
@@ -2117,10 +2201,14 @@ pub fn run(settings: Settings) -> Result<(), String> {
         scene_shown: false,
         scene_trash: Some(scene_trash),
         surface_size,
-        fps: FpsSource::new(
-            Arc::clone(&counters),
-            update_rate.clone(),
-            draw_rate.clone(),
+        fps: FpsOverlay::new(
+            FpsSource::new(
+                Arc::clone(&counters),
+                update_rate.clone(),
+                draw_rate.clone(),
+            ),
+            Arc::clone(&registry),
+            &hud_labels.fps,
         ),
         _quit: crate::bench::QuitOnDrop(window.quit_handle()),
     };

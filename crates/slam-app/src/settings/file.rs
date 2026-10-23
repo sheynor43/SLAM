@@ -9,7 +9,10 @@ use slam_engine::limiter::MIN_HZ;
 use slam_play::input::{Bindings, MAX_BINDINGS};
 use toml::{Table, Value};
 
-use super::model::{BindingEntry, DrawRate, Settings, Timing};
+use super::keys;
+use super::model::{
+    BindingEntry, DrawRate, FpsScreens, KeySlot, Settings, Timing, corner_from_name,
+};
 
 /// The schema version this build writes.
 pub const CURRENT_VERSION: i64 = 1;
@@ -299,6 +302,26 @@ fn from_table(mut table: Table) -> Loaded {
         &mut settings.frame.show_fps,
         |_| Ok(()),
     );
+    let mut corner: Option<String> = None;
+    cx.opt(&mut frame, "frame", "fps_corner", &mut corner);
+    if let Some(name) = corner {
+        match corner_from_name(&name) {
+            Some(corner) => settings.frame.fps_corner = corner,
+            None => cx.warn(format!(
+                "frame.fps_corner: unknown corner \"{name}\", using the default"
+            )),
+        }
+    }
+    let mut screens: Option<String> = None;
+    cx.opt(&mut frame, "frame", "fps_screens", &mut screens);
+    if let Some(name) = screens {
+        match FpsScreens::from_name(&name) {
+            Some(screens) => settings.frame.fps_screens = screens,
+            None => cx.warn(format!(
+                "frame.fps_screens: unknown value \"{name}\", using the default"
+            )),
+        }
+    }
     cx.unknown(&frame, "frame");
 
     let mut gameplay = cx.section(&mut table, "gameplay");
@@ -396,6 +419,36 @@ fn from_table(mut table: Table) -> Loaded {
         }
     }
     cx.unknown(&input, "input");
+
+    let mut hotkeys = cx.section(&mut table, "hotkeys");
+    let mut toggle_fps: Option<String> = None;
+    cx.opt(&mut hotkeys, "hotkeys", "toggle_fps", &mut toggle_fps);
+    if let Some(name) = toggle_fps {
+        match keys::input_from_name(&name) {
+            Some(input) => settings.hotkeys.toggle_fps = Some(input),
+            None => cx.warn(format!(
+                "hotkeys.toggle_fps: unknown input \"{name}\", left unbound"
+            )),
+        }
+    }
+    cx.unknown(&hotkeys, "hotkeys");
+    // A hotkey on a gameplay or menu key would do both: the other wins, as the settings
+    // screen cannot write it so.
+    if let Some(input) = settings.hotkeys.toggle_fps
+        && (settings
+            .input
+            .bindings
+            .as_slice()
+            .iter()
+            .any(|b| b.input == input)
+            || !Settings::key_allowed(KeySlot::ToggleFps, input))
+    {
+        cx.warn(format!(
+            "hotkeys.toggle_fps: {} is a gameplay or menu key, left unbound",
+            keys::input_name(input)
+        ));
+        settings.hotkeys.toggle_fps = None;
+    }
 
     cx.unknown(&table, "");
 

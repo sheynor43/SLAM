@@ -4,11 +4,12 @@
 use slam_audio::Backend;
 use slam_engine::RATE_PRESETS;
 use slam_osu::replay::Actions;
+use slam_play::FpsCorner;
 use slam_ui::i18n::{FluentArgs, Localizer};
 use slam_ui::settings_screen::{RowKind, RowLabels, RowSpec, RowValue, SettingsLabels};
 
 use super::keybinds;
-use crate::settings::{DrawRate, Settings, Timing, skins};
+use crate::settings::{DrawRate, FpsScreens, KeySlot, Settings, Timing, skins};
 
 /// Sections, in order; the keys of their names are in [`SECTION_KEYS`].
 const SECTION_KEYS: [&str; 5] = [
@@ -46,11 +47,14 @@ pub enum Row {
     RightKey2,
     SmokeKey1,
     SmokeKey2,
+    ToggleFpsKey,
     ResetKeys,
     UpdateHz,
     DrawHz,
     MenuDrawHz,
     ShowFps,
+    FpsCorner,
+    FpsScreens,
     Dim,
     BeatmapSkins,
     BeatmapColours,
@@ -60,7 +64,7 @@ pub enum Row {
 }
 
 impl Row {
-    pub const ALL: [Row; 25] = [
+    pub const ALL: [Row; 28] = [
         Row::MasterVolume,
         Row::MusicVolume,
         Row::HitsoundVolume,
@@ -75,11 +79,14 @@ impl Row {
         Row::RightKey2,
         Row::SmokeKey1,
         Row::SmokeKey2,
+        Row::ToggleFpsKey,
         Row::ResetKeys,
         Row::UpdateHz,
         Row::DrawHz,
         Row::MenuDrawHz,
         Row::ShowFps,
+        Row::FpsCorner,
+        Row::FpsScreens,
         Row::Dim,
         Row::BeatmapSkins,
         Row::BeatmapColours,
@@ -88,24 +95,23 @@ impl Row {
         Row::Skin,
     ];
 
-    /// The action and binding slot a key row edits.
-    pub fn key_slot(self) -> Option<(Actions, usize)> {
+    /// The key a key row edits.
+    pub fn key_slot(self) -> Option<KeySlot> {
         Some(match self {
-            Row::LeftKey1 => (Actions::LEFT, 0),
-            Row::LeftKey2 => (Actions::LEFT, 1),
-            Row::RightKey1 => (Actions::RIGHT, 0),
-            Row::RightKey2 => (Actions::RIGHT, 1),
-            Row::SmokeKey1 => (Actions::SMOKE, 0),
-            Row::SmokeKey2 => (Actions::SMOKE, 1),
+            Row::LeftKey1 => KeySlot::Play(Actions::LEFT, 0),
+            Row::LeftKey2 => KeySlot::Play(Actions::LEFT, 1),
+            Row::RightKey1 => KeySlot::Play(Actions::RIGHT, 0),
+            Row::RightKey2 => KeySlot::Play(Actions::RIGHT, 1),
+            Row::SmokeKey1 => KeySlot::Play(Actions::SMOKE, 0),
+            Row::SmokeKey2 => KeySlot::Play(Actions::SMOKE, 1),
+            Row::ToggleFpsKey => KeySlot::ToggleFps,
             _ => return None,
         })
     }
 
-    /// The screen's row index of the key row for `action`'s `slot`.
-    pub fn key_row(action: Actions, slot: usize) -> Option<usize> {
-        Row::ALL
-            .iter()
-            .position(|row| row.key_slot() == Some((action, slot)))
+    /// The screen's row index of the key row for `slot`.
+    pub fn key_row(slot: KeySlot) -> Option<usize> {
+        Row::ALL.iter().position(|row| row.key_slot() == Some(slot))
     }
 
     fn section(self) -> usize {
@@ -124,8 +130,14 @@ impl Row {
             | Row::RightKey2
             | Row::SmokeKey1
             | Row::SmokeKey2
+            | Row::ToggleFpsKey
             | Row::ResetKeys => 2,
-            Row::UpdateHz | Row::DrawHz | Row::MenuDrawHz | Row::ShowFps => 3,
+            Row::UpdateHz
+            | Row::DrawHz
+            | Row::MenuDrawHz
+            | Row::ShowFps
+            | Row::FpsCorner
+            | Row::FpsScreens => 3,
             Row::Dim
             | Row::BeatmapSkins
             | Row::BeatmapColours
@@ -151,11 +163,14 @@ impl Row {
             Row::RightKey2 => "settings-keys-right-2",
             Row::SmokeKey1 => "settings-keys-smoke-1",
             Row::SmokeKey2 => "settings-keys-smoke-2",
+            Row::ToggleFpsKey => "settings-keys-toggle-fps",
             Row::ResetKeys => "settings-keys-reset",
             Row::UpdateHz => "settings-frame-update-rate",
             Row::DrawHz => "settings-frame-draw-rate",
             Row::MenuDrawHz => "settings-frame-menu-draw-rate",
             Row::ShowFps => "settings-frame-show-fps",
+            Row::FpsCorner => "settings-frame-fps-corner",
+            Row::FpsScreens => "settings-frame-fps-screens",
             Row::Dim => "settings-gameplay-dim",
             Row::BeatmapSkins => "settings-gameplay-beatmap-skins",
             Row::BeatmapColours => "settings-gameplay-beatmap-colours",
@@ -185,6 +200,25 @@ pub struct Rows {
     /// The folder names in `Skins`; option `i + 1` of the skin row is `skins[i]`, option 0
     /// the default skin.
     skins: Vec<String>,
+}
+
+/// The Fluent key of a corner option.
+fn corner_key(corner: FpsCorner) -> &'static str {
+    match corner {
+        FpsCorner::TopLeft => "settings-option-top-left",
+        FpsCorner::TopRight => "settings-option-top-right",
+        FpsCorner::BottomLeft => "settings-option-bottom-left",
+        FpsCorner::BottomRight => "settings-option-bottom-right",
+    }
+}
+
+/// The Fluent key of an option of where the FPS counter shows.
+fn screens_key(screens: FpsScreens) -> &'static str {
+    match screens {
+        FpsScreens::Everywhere => "settings-option-fps-everywhere",
+        FpsScreens::Gameplay => "settings-option-fps-gameplay",
+        FpsScreens::Menus => "settings-option-fps-menus",
+    }
 }
 
 /// `presets` with `current` in its place if it is not one of them.
@@ -259,9 +293,9 @@ impl Rows {
             options: len,
             selected: at.unwrap_or(0),
         };
-        if let Some((action, slot)) = row.key_slot() {
+        if let Some(slot) = row.key_slot() {
             return RowKind::Key {
-                value: keybinds::key_value(s.input.slot(action, slot)),
+                value: keybinds::key_value(s.key(slot)),
             };
         }
         match row {
@@ -311,6 +345,16 @@ impl Rows {
             Row::ShowFps => RowKind::Toggle {
                 value: s.frame.show_fps,
             },
+            Row::FpsCorner => choice(
+                FpsCorner::ALL.len(),
+                FpsCorner::ALL.iter().position(|c| *c == s.frame.fps_corner),
+            ),
+            Row::FpsScreens => choice(
+                FpsScreens::ALL.len(),
+                FpsScreens::ALL
+                    .iter()
+                    .position(|w| *w == s.frame.fps_screens),
+            ),
             Row::BeatmapSkins => RowKind::Toggle {
                 value: s.gameplay.beatmap_skins,
             },
@@ -337,7 +381,8 @@ impl Rows {
             | Row::RightKey1
             | Row::RightKey2
             | Row::SmokeKey1
-            | Row::SmokeKey2 => RowKind::Button,
+            | Row::SmokeKey2
+            | Row::ToggleFpsKey => RowKind::Button,
         }
     }
 
@@ -403,6 +448,16 @@ impl Rows {
                     settings.frame.menu_draw = *rate;
                 }
             }
+            (Row::FpsCorner, RowValue::Choice(i)) => {
+                if let Some(corner) = FpsCorner::ALL.get(i) {
+                    settings.frame.fps_corner = *corner;
+                }
+            }
+            (Row::FpsScreens, RowValue::Choice(i)) => {
+                if let Some(screens) = FpsScreens::ALL.get(i) {
+                    settings.frame.fps_screens = *screens;
+                }
+            }
             _ => {}
         }
     }
@@ -442,6 +497,14 @@ impl Rows {
                         .map(|hz| number("settings-option-hz", hz.to_string()))
                         .collect(),
                     Row::DrawHz | Row::MenuDrawHz => self.draw.iter().map(rate).collect(),
+                    Row::FpsCorner => FpsCorner::ALL
+                        .iter()
+                        .map(|corner| text(corner_key(*corner)))
+                        .collect(),
+                    Row::FpsScreens => FpsScreens::ALL
+                        .iter()
+                        .map(|screens| text(screens_key(*screens)))
+                        .collect(),
                     Row::Skin => std::iter::once(text("settings-option-default-skin"))
                         .chain(self.skins.iter().cloned())
                         .collect(),

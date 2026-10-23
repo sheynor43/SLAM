@@ -7,7 +7,7 @@ use slam_ui::i18n::{FluentArgs, Localizer};
 use slam_ui::settings_screen::{KeyLabels, KeyValue, MouseKey, SettingsAction, SettingsScreen};
 
 use super::rows::Row;
-use crate::settings::{BINDING_SLOTS, Settings};
+use crate::settings::{BINDING_SLOTS, KeySlot, Settings};
 
 /// How many scancodes get a label: SDL's scancodes are below 512.
 const SCANCODES: usize = 512;
@@ -115,8 +115,8 @@ pub fn key_labels(localizer: &Localizer) -> KeyLabels {
 /// Shows the bindings of `settings` in every key row of `screen`.
 pub fn refresh(screen: &mut SettingsScreen, settings: &Settings) {
     for (row, kind) in Row::ALL.iter().enumerate() {
-        if let Some((action, slot)) = kind.key_slot() {
-            screen.set_key(row, key_value(settings.input.slot(action, slot)));
+        if let Some(slot) = kind.key_slot() {
+            screen.set_key(row, key_value(settings.key(slot)));
         }
     }
 }
@@ -126,20 +126,24 @@ pub fn refresh(screen: &mut SettingsScreen, settings: &Settings) {
 pub fn apply(screen: &mut SettingsScreen, settings: &mut Settings, action: SettingsAction) {
     match action {
         SettingsAction::KeyCaptured { row, key } => {
-            let (Some((action, slot)), Some(input)) =
+            let (Some(slot), Some(input)) =
                 (Row::ALL.get(row).and_then(|r| r.key_slot()), input_of(key))
             else {
                 return;
             };
-            match settings.input.conflict(action, slot, input) {
+            // A key the slot may not take leaves it as it was.
+            if !Settings::key_allowed(slot, input) {
+                refresh(screen, settings);
+                return;
+            }
+            match settings.key_conflict(slot, input) {
                 None => {
-                    settings.input.bind(action, slot, input);
+                    settings.bind_key(slot, input);
                 }
-                Some((other, other_slot)) => {
-                    let other_row = if other_slot < BINDING_SLOTS {
-                        Row::key_row(other, other_slot)
-                    } else {
-                        None
+                Some(other) => {
+                    let other_row = match other {
+                        KeySlot::Play(_, n) if n >= BINDING_SLOTS => None,
+                        other => Row::key_row(other),
                     };
                     screen.ask_conflict(row, key, other_row);
                 }
@@ -150,20 +154,20 @@ pub fn apply(screen: &mut SettingsScreen, settings: &mut Settings, action: Setti
             key,
             apply: true,
         } => {
-            if let (Some((action, slot)), Some(input)) =
+            if let (Some(slot), Some(input)) =
                 (Row::ALL.get(row).and_then(|r| r.key_slot()), input_of(key))
             {
-                settings.input.bind(action, slot, input);
+                settings.bind_key(slot, input);
             }
         }
         SettingsAction::KeyCleared { row } => {
-            if let Some((action, slot)) = Row::ALL.get(row).and_then(|r| r.key_slot()) {
-                settings.input.clear(action, slot);
+            if let Some(slot) = Row::ALL.get(row).and_then(|r| r.key_slot()) {
+                settings.clear_key(slot);
             }
         }
         SettingsAction::Pressed { row } => {
             if Row::ALL.get(row) == Some(&Row::ResetKeys) {
-                settings.input.reset();
+                settings.reset_keys();
             }
         }
         _ => return,
