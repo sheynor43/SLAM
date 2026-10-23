@@ -20,6 +20,29 @@ use slam_render::image::Image;
 
 use crate::{FontId, FontRegistry, PositionedGlyph};
 
+// Own MSDF generator ported from msdfgen (ADR-0062). Not yet used by
+// `generate_glyph`; it switches over together with error correction.
+#[allow(dead_code)]
+mod coloring;
+#[allow(dead_code)]
+mod generate;
+#[allow(dead_code)]
+mod outline;
+#[allow(dead_code)]
+mod scanline;
+#[allow(dead_code)]
+mod segment;
+#[allow(dead_code)]
+mod selector;
+#[allow(dead_code)]
+mod shape;
+#[allow(dead_code)]
+mod solver;
+#[cfg(test)]
+mod tests;
+#[allow(dead_code)]
+mod vector;
+
 /// Atlas pixels per em: glyph bitmaps are generated at this size; the renderer
 /// scales by `font_size / EM_PX`.
 pub const EM_PX: f32 = 32.0;
