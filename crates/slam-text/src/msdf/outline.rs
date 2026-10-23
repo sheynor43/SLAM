@@ -1,7 +1,7 @@
 // Copyright (c) 2014 - 2025 Viktor Chlumsky (msdfgen, MIT licence; see THIRD_PARTY_NOTICES).
 // Ported from msdfgen v1.13: ext/import-font.cpp (outline decomposition), main.cpp (pipeline)
 
-//! Glyph outline to [`Shape`] and the field pipeline of ADR-0062.
+//! Glyph outline to [`Shape`] and the field pipelines of ADR-0063 and ADR-0062.
 
 use skrifa::outline::OutlinePen;
 
@@ -11,6 +11,7 @@ use super::generate::{MsdfField, Projection, Range, distance_sign_correction, ge
 use super::scanline::FillRule;
 use super::segment::EdgeSegment;
 use super::shape::{Contour, Shape};
+use super::union::resolve_union;
 use super::vector::{Point2, cross};
 
 /// Corner angle threshold of the edge coloring, radians (msdfgen `DEFAULT_ANGLE_THRESHOLD`).
@@ -99,10 +100,38 @@ impl OutlineShapePen {
     }
 }
 
+/// The msdfgen utility pipeline with geometry preprocessing (ADR-0063):
+/// non-zero union of the contours, normalize, simple edge coloring, MSDF
+/// without overlap support and without the scanline pass, then error
+/// correction. Falls back to [`overlapping_msdf`] if the union fails.
+pub fn shape_msdf(
+    shape: Shape,
+    width: usize,
+    height: usize,
+    projection: &Projection,
+    range: Range,
+) -> MsdfField {
+    // msdfgen normalizes before `resolveShapeGeometry` too; that only splits
+    // single-edge contours, which the union handles as they are.
+    match resolve_union(&shape) {
+        Ok(union) => {
+            let shape = colored_shape(union);
+            let mut field = MsdfField::new(width, height);
+            generate_msdf(&mut field, &shape, projection, range, false);
+            msdf_error_correction(&mut field, &shape, projection, range);
+            field
+        }
+        Err(error) => {
+            tracing::debug!(%error, "contour union failed, generating from the original outline");
+            overlapping_msdf(shape, width, height, projection, range)
+        }
+    }
+}
+
 /// The msdfgen utility pipeline of ADR-0062: normalize, simple edge coloring,
 /// MSDF with overlap support, scanline sign correction with the non-zero rule,
 /// then error correction.
-pub fn shape_msdf(
+pub fn overlapping_msdf(
     shape: Shape,
     width: usize,
     height: usize,
@@ -122,7 +151,8 @@ pub fn colored_shape(mut shape: Shape) -> Shape {
     shape
 }
 
-/// The field of a [`colored_shape`] with sign correction, before error correction.
+/// The field of a [`colored_shape`] by the ADR-0062 pipeline (overlap
+/// support, sign correction), before error correction.
 pub fn uncorrected_msdf(
     shape: &Shape,
     width: usize,
@@ -131,7 +161,7 @@ pub fn uncorrected_msdf(
     range: Range,
 ) -> MsdfField {
     let mut field = MsdfField::new(width, height);
-    generate_msdf(&mut field, shape, projection, range);
+    generate_msdf(&mut field, shape, projection, range, true);
     distance_sign_correction(
         &mut field,
         shape,

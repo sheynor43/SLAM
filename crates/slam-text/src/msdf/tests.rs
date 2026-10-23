@@ -9,16 +9,21 @@ use skrifa::{FontRef, MetadataProvider, Tag};
 
 use super::coloring::edge_coloring_simple;
 use super::error_correction::{corrected_pixels, msdf_error_correction};
-use super::generate::{MsdfField, Projection, Range};
-use super::outline::{OutlineShapePen, colored_shape, shape_msdf, uncorrected_msdf};
-use super::segment::EdgeSegment;
+use super::generate::{MsdfField, Projection, Range, generate_msdf};
+use super::outline::{
+    OutlineShapePen, colored_shape, overlapping_msdf, shape_msdf, uncorrected_msdf,
+};
+use super::scanline::{FillRule, Scanline};
+use super::segment::{Curve, EdgeSegment, WHITE};
 use super::shape::{Contour, Shape};
 use super::solver::{solve_cubic, solve_quadratic};
+use super::union::resolve_union;
 use super::vector::{Point2, Vector2, median};
 use crate::{FontRegistry, UI_FAMILY};
 
 const FIELDS: &str = include_str!("../../tests/data/msdfgen-fields.txt");
 const CORRECTED: &str = include_str!("../../tests/data/msdfgen-corrected.txt");
+const SIMPLE: &str = include_str!("../../tests/data/msdfgen-simple.txt");
 
 fn p(x: f64, y: f64) -> Point2 {
     Point2::new(x, y)
@@ -225,6 +230,11 @@ fn reference_shape(name: &str) -> Shape {
         "ring" => vec![
             circle(p(7.0, 7.0), 5.0, true),
             circle(p(7.0, 7.0), 2.5, false),
+        ],
+        // Both contours the wrong way round, for `orient_contours`.
+        "ring_inverted" => vec![
+            circle(p(7.0, 7.0), 5.0, false),
+            circle(p(7.0, 7.0), 2.5, true),
         ],
         "line_quad" => vec![Contour {
             edges: vec![
@@ -464,7 +474,7 @@ fn corrected_fields_match_msdfgen() {
         assert_field_bits(name, &field, &expected);
         assert_eq!(
             field,
-            shape_msdf(
+            overlapping_msdf(
                 reference_shape(shape_name),
                 width,
                 height,
@@ -478,6 +488,42 @@ fn corrected_fields_match_msdfgen() {
     assert_eq!(checked, 22);
     // msdfgen corrects 195 texels in these fields.
     assert_eq!(corrected, 195);
+}
+
+/// The pipeline after the union, bit for bit: `orient_contours`, normalize,
+/// coloring, the field without overlap support and without the scanline
+/// pass, error correction.
+#[test]
+fn simple_fields_match_msdfgen() {
+    let mut checked = 0;
+    for line in SIMPLE.lines().filter(|l| l.starts_with("simple ")) {
+        let mut values = line.split(' ').skip(1);
+        let name = values.next().unwrap();
+        let width: usize = values.next().unwrap().parse().unwrap();
+        let height: usize = values.next().unwrap().parse().unwrap();
+        let expected: Vec<f32> = values.map(|v| v.parse().unwrap()).collect();
+        let (shape_name, projection, range) = match name.strip_suffix("@scaled") {
+            Some(base) => (
+                base,
+                Projection {
+                    scale: Vector2::new(1.5, 2.0),
+                    translate: Vector2::new(0.5, -0.25),
+                },
+                Range::symmetric(3.0),
+            ),
+            None => (name, UNIT, Range::symmetric(4.0)),
+        };
+
+        let mut shape = reference_shape(shape_name);
+        shape.orient_contours();
+        let shape = colored_shape(shape);
+        let mut field = MsdfField::new(width, height);
+        generate_msdf(&mut field, &shape, &projection, range, false);
+        msdf_error_correction(&mut field, &shape, &projection, range);
+        assert_field_bits(name, &field, &expected);
+        checked += 1;
+    }
+    assert_eq!(checked, 17);
 }
 
 #[test]
@@ -611,7 +657,7 @@ fn overlapping_glyph_sign_matches_nonzero_fill() {
     }
 }
 
-/// A glyph of a built-in family at weight 700, laid out like `generate_glyph`.
+/// A glyph of a built-in family, laid out like `generate_glyph`.
 struct GlyphCase {
     shape: Shape,
     /// The outline flattened independently of the generator.
@@ -625,21 +671,25 @@ struct GlyphCase {
 }
 
 fn glyph_case(registry: &FontRegistry, family: &str, c: char) -> GlyphCase {
+    glyph_case_at(registry, family, 700, c).unwrap()
+}
+
+/// `None` if the face has no glyph for `c` or its outline is empty.
+fn glyph_case_at(registry: &FontRegistry, family: &str, weight: u16, c: char) -> Option<GlyphCase> {
     const EM_PX: f64 = 32.0;
     const PAD: f64 = 2.0;
     let face = registry
-        .resolve(registry.family(family).unwrap(), 700)
+        .resolve(registry.family(family).unwrap(), weight)
         .unwrap();
     let (data, index) = registry.face_data(face.font).unwrap();
     let font = FontRef::from_index(data, index).unwrap();
-    let location: Location = font.axes().location([(Tag::new(b"wght"), 700.0)]);
+    let location: Location = font
+        .axes()
+        .location([(Tag::new(b"wght"), f32::from(weight))]);
     let upem = f64::from(font.metrics(Size::unscaled(), &location).units_per_em);
     let s = EM_PX / upem;
 
-    let glyph = font
-        .outline_glyphs()
-        .get(font.charmap().map(c).unwrap())
-        .unwrap();
+    let glyph = font.outline_glyphs().get(font.charmap().map(c)?)?;
     let settings = || DrawSettings::unhinted(Size::unscaled(), &location);
     let mut pen = OutlineShapePen::default();
     glyph.draw(settings(), &mut pen).unwrap();
@@ -648,10 +698,10 @@ fn glyph_case(registry: &FontRegistry, family: &str, c: char) -> GlyphCase {
     glyph.draw(settings(), &mut reference).unwrap();
     reference.flush();
 
-    let [l, b, r, t] = shape.bounds().unwrap();
+    let [l, b, r, t] = shape.bounds()?;
     let x0 = (l * s).floor() - PAD;
     let y0 = (b * s).floor() - PAD;
-    GlyphCase {
+    Some(GlyphCase {
         shape,
         polylines: reference.polylines,
         projection: Projection {
@@ -662,7 +712,7 @@ fn glyph_case(registry: &FontRegistry, family: &str, c: char) -> GlyphCase {
         width: ((r * s).ceil() - x0 + PAD) as usize,
         height: ((t * s).ceil() - y0 + PAD) as usize,
         s,
-    }
+    })
 }
 
 fn check_glyph_sign(registry: &FontRegistry, family: &str, chars: &[char]) {
@@ -809,4 +859,465 @@ fn glyph_bitmap_rows_are_top_first() {
         .collect();
     assert_eq!(bitmap.image.pixels, expected);
     assert_ne!(field.pixels[..width], field.pixels[(height - 1) * width..]);
+}
+
+// Contour union (ADR-0063)
+
+fn shape_winding(shape: &Shape, line: &mut Scanline, q: Point2) -> i32 {
+    shape.scanline(line, q.y);
+    line.sum_intersections(q.x)
+}
+
+/// Signed area of a shape made of lines.
+fn polygon_area(shape: &Shape) -> f64 {
+    let mut area = 0.0;
+    for edge in shape.contours.iter().flat_map(|c| &c.edges) {
+        let (a, b) = (edge.point(0.0), edge.point(1.0));
+        area += 0.5 * (a.x * b.y - b.x * a.y);
+    }
+    area
+}
+
+/// The union of `shape`, checked on a grid off the integer coordinates of
+/// the test shapes: the same non-zero fill as `shape`, and winding 0 or one
+/// common ±1 everywhere (no overlaps left, consistent orientation).
+fn checked_union(shape: &Shape, contours: usize) -> Shape {
+    const STEPS: usize = 97;
+    let union = resolve_union(shape).unwrap();
+    assert_eq!(union.contours.len(), contours, "{union:?}");
+    let [x0, y0, x1, y1] = shape.bounds().unwrap();
+    let mut line = Scanline::default();
+    let mut filled_sign = 0;
+    for j in 0..=STEPS {
+        for i in 0..=STEPS {
+            let q = p(
+                x0 - 0.5 + (x1 - x0 + 1.0) * (i as f64 + 0.31) / STEPS as f64,
+                y0 - 0.5 + (y1 - y0 + 1.0) * (j as f64 + 0.27) / STEPS as f64,
+            );
+            let (before, after) = (
+                shape_winding(shape, &mut line, q),
+                shape_winding(&union, &mut line, q),
+            );
+            assert_eq!(before != 0, after != 0, "fill at {q:?}");
+            assert!(after.abs() <= 1, "winding {after} at {q:?}");
+            if after != 0 {
+                assert!(
+                    filled_sign == 0 || filled_sign == after,
+                    "orientation at {q:?}"
+                );
+                filled_sign = after;
+            }
+        }
+    }
+    union
+}
+
+fn shape_of(contours: Vec<Contour>) -> Shape {
+    Shape { contours }
+}
+
+/// A circle of eight quadratic curves.
+fn quadratic_circle(c: Point2, r: f64) -> Contour {
+    let step = std::f64::consts::FRAC_PI_4;
+    let control = r / (0.5 * step).cos();
+    let at = |radius: f64, angle: f64| p(c.x + radius * angle.cos(), c.y + radius * angle.sin());
+    // Ends computed once, so consecutive edges meet exactly.
+    let ends: Vec<Point2> = (0..8).map(|i| at(r, i as f64 * step)).collect();
+    Contour {
+        edges: (0..8)
+            .map(|i| {
+                let control = at(control, (i as f64 + 0.5) * step);
+                EdgeSegment::quadratic(ends[i], control, ends[(i + 1) % 8])
+            })
+            .collect(),
+    }
+}
+
+/// Two bars of a plus drawn as one contour: the horizontal bar from (-1, -1)
+/// around back to (-1, -1), then the vertical bar from there.
+#[test]
+fn union_of_a_cross_drawn_as_one_contour() {
+    let cross = polygon(&[
+        p(-1.0, -1.0),
+        p(3.0, -1.0),
+        p(3.0, 1.0),
+        p(-3.0, 1.0),
+        p(-3.0, -1.0),
+        p(-1.0, -1.0),
+        p(-1.0, -3.0),
+        p(1.0, -3.0),
+        p(1.0, 3.0),
+        p(-1.0, 3.0),
+    ]);
+    let union = checked_union(&shape_of(vec![cross]), 1);
+    assert_eq!(union.edge_count(), 12);
+    assert_eq!(polygon_area(&union).abs(), 20.0);
+}
+
+/// A bow tie crossing itself at (1, 1): two triangles of opposite
+/// orientation, both filled by the non-zero rule.
+#[test]
+fn union_splits_a_figure_eight() {
+    let eight = polygon(&[p(0.0, 0.0), p(2.0, 2.0), p(2.0, 0.0), p(0.0, 2.0)]);
+    let union = checked_union(&shape_of(vec![eight]), 2);
+    assert!(union.contours.iter().all(|c| c.edges.len() == 3));
+    assert_eq!(polygon_area(&union).abs(), 2.0);
+}
+
+/// Squares touching at a corner stay two contours.
+#[test]
+fn union_keeps_squares_touching_at_a_corner_apart() {
+    let shape = shape_of(vec![square(0.0, 0.0, 1.0, 1.0), square(1.0, 1.0, 2.0, 2.0)]);
+    let union = checked_union(&shape, 2);
+    assert!(union.contours.iter().all(|c| c.edges.len() == 4));
+}
+
+/// Squares sharing an edge merge; the shared edge disappears.
+#[test]
+fn union_merges_squares_sharing_an_edge() {
+    let shape = shape_of(vec![square(0.0, 0.0, 1.0, 1.0), square(1.0, 0.0, 2.0, 1.0)]);
+    let union = checked_union(&shape, 1);
+    assert_eq!(union.edge_count(), 6);
+    assert_eq!(polygon_area(&union).abs(), 2.0);
+}
+
+/// A triangle whose vertex lies on the bottom edge of a square and which
+/// crosses the right edge: the bottom edge is split at the vertex.
+#[test]
+fn union_splits_an_edge_at_a_vertex_on_it() {
+    let triangle = polygon(&[p(2.0, 0.0), p(6.0, -2.0), p(6.0, 2.0)]);
+    let shape = shape_of(vec![square(0.0, 0.0, 4.0, 4.0), triangle]);
+    let union = checked_union(&shape, 1);
+    // Square 16, triangle 8, overlap: the triangle (2,0) (4,1) (4,0) of area 1.
+    assert!((polygon_area(&union).abs() - 23.0).abs() < 1e-9);
+}
+
+/// A hole of opposite orientation stays; one of the same orientation is
+/// filled by the non-zero rule and disappears.
+#[test]
+fn union_keeps_holes_and_drops_same_orientation_insets() {
+    let mut hole = square(1.0, 1.0, 3.0, 3.0);
+    hole.reverse();
+    let union = checked_union(&shape_of(vec![square(0.0, 0.0, 4.0, 4.0), hole]), 2);
+    assert_eq!(polygon_area(&union).abs(), 12.0);
+
+    let inset = square(1.0, 1.0, 3.0, 3.0);
+    let union = checked_union(&shape_of(vec![square(0.0, 0.0, 4.0, 4.0), inset]), 1);
+    assert_eq!(polygon_area(&union).abs(), 16.0);
+}
+
+/// A contour drawn twice is kept once (reversed: the union orients outer
+/// contours clockwise).
+#[test]
+fn union_drops_duplicate_contours() {
+    let shape = shape_of(vec![quadratic_circle(p(0.0, 0.0), 2.0); 2]);
+    let union = checked_union(&shape, 1);
+    let mut contour = shape.contours[0].clone();
+    contour.reverse();
+    assert_eq!(union.contours[0].edges.len(), contour.edges.len());
+    assert!(
+        contour
+            .edges
+            .iter()
+            .all(|e| union.contours[0].edges.contains(e))
+    );
+}
+
+/// Curve with curve (quadratic and cubic) and line with curve crossings.
+#[test]
+fn union_of_overlapping_curves() {
+    checked_union(
+        &shape_of(vec![
+            quadratic_circle(p(0.0, 0.0), 2.0),
+            quadratic_circle(p(1.5, 0.5), 2.0),
+        ]),
+        1,
+    );
+    checked_union(
+        &shape_of(vec![
+            circle(p(0.0, 0.0), 2.0, true),
+            circle(p(1.5, 0.5), 2.0, true),
+        ]),
+        1,
+    );
+    // The reversed circle cancels the corner of the square and stays filled
+    // outside it: two contours touching at (0, 2) and (1, 3).
+    checked_union(
+        &shape_of(vec![
+            square(0.0, 0.0, 3.0, 3.0),
+            quadratic_circle(p(3.0, 1.5), 1.2),
+            circle(p(0.0, 3.0), 1.0, false),
+        ]),
+        2,
+    );
+}
+
+/// Collinear edges overlapping in part, with ends inside each other.
+#[test]
+fn union_of_partly_overlapping_collinear_edges() {
+    let shape = shape_of(vec![square(0.0, 0.0, 1.0, 1.0), square(1.0, 0.5, 2.0, 1.5)]);
+    let union = checked_union(&shape, 1);
+    assert_eq!(polygon_area(&union).abs(), 2.0);
+}
+
+/// Neighbouring edges that are collinear within the snap distance but not
+/// parallel, as fractional stems of variable fonts.
+#[test]
+fn union_of_nearly_collinear_edges() {
+    let shape = shape_of(vec![
+        square(0.0, 0.0, 1.0, 1.0),
+        polygon(&[p(1.0, 0.2), p(2.0, 0.2), p(2.0, 0.8), p(1.0 + 1e-9, 0.8)]),
+    ]);
+    checked_union(&shape, 1);
+}
+
+/// A short edge nearly collinear with a much longer one, skewed so that the
+/// far end of the long edge leaves the snap distance of the short one.
+#[test]
+fn union_of_a_short_edge_skewed_along_a_long_one() {
+    // Square side 1000; the second contour's left edge runs from (1000, 400)
+    // to (1000 + 1e-6, 410): within snap (1e-4) of the square's edge, which
+    // is not within snap of the short edge's line far away.
+    let shape = shape_of(vec![
+        square(0.0, 0.0, 1000.0, 1000.0),
+        polygon(&[
+            p(1000.0, 400.0),
+            p(1010.0, 400.0),
+            p(1010.0, 410.0),
+            p(1000.0 + 1e-6, 410.0),
+        ]),
+    ]);
+    checked_union(&shape, 1);
+}
+
+/// A nearly flat quadratic curve along a line, as a fractional stem of a
+/// variable font, overlapped by a square.
+#[test]
+fn union_of_a_nearly_flat_curve_on_a_line() {
+    let flat = EdgeSegment::quadratic(p(1.0, 0.0), p(1.5, 1e-9), p(2.0, 0.0));
+    let mut contour = polygon(&[
+        p(0.0, 0.0),
+        p(1.0, 0.0),
+        p(2.0, 0.0),
+        p(2.0, 1.0),
+        p(0.0, 1.0),
+    ]);
+    contour.edges[1] = flat;
+    let shape = shape_of(vec![contour, square(1.5, -1.0, 3.0, 0.0)]);
+    checked_union(&shape, 1);
+}
+
+/// A circle touching a square at its vertex on the square's edge.
+#[test]
+fn union_of_a_curve_touching_a_line() {
+    let shape = shape_of(vec![
+        quadratic_circle(p(0.0, 0.0), 1.0),
+        square(1.0, -1.0, 3.0, 1.0),
+    ]);
+    checked_union(&shape, 2);
+}
+
+/// A quadratic curve with collinear control points continuing a line,
+/// overlapped by a square.
+#[test]
+fn union_of_a_degenerate_curve_on_a_line() {
+    let flat = EdgeSegment {
+        curve: Curve::Quadratic([p(1.0, 0.0), p(1.5, 0.0), p(2.0, 0.0)]),
+        color: WHITE,
+    };
+    let mut contour = polygon(&[
+        p(0.0, 0.0),
+        p(1.0, 0.0),
+        p(2.0, 0.0),
+        p(2.0, 1.0),
+        p(0.0, 1.0),
+    ]);
+    contour.edges[1] = flat;
+    let shape = shape_of(vec![contour, square(1.5, -1.0, 3.0, 0.5)]);
+    checked_union(&shape, 1);
+}
+
+/// Curves running along each other make the union fail; the glyph is then
+/// generated by the overlapping-contour pipeline.
+#[test]
+fn failed_union_falls_back_to_the_overlapping_pipeline() {
+    let circle = quadratic_circle(p(7.0, 7.0), 5.0);
+    let mut halved = circle.clone();
+    let Curve::Quadratic([a, b, c]) = halved.edges[0].curve else {
+        unreachable!("quadratic_circle is made of quadratic curves")
+    };
+    let (ab, bc) = (0.5 * (a + b), 0.5 * (b + c));
+    let m = 0.5 * (ab + bc);
+    halved.edges.splice(
+        0..1,
+        [
+            EdgeSegment::quadratic(a, ab, m),
+            EdgeSegment::quadratic(m, bc, c),
+        ],
+    );
+    let shape = shape_of(vec![circle, halved]);
+    assert!(resolve_union(&shape).is_err());
+    let range = Range::symmetric(4.0);
+    assert_eq!(
+        shape_msdf(shape.clone(), 14, 14, &UNIT, range),
+        overlapping_msdf(shape, 14, 14, &UNIT, range)
+    );
+}
+
+/// ASCII and Cyrillic of the built-in families at weights 400 and 700.
+fn glyph_set(registry: &FontRegistry) -> Vec<(&'static str, u16, char, GlyphCase)> {
+    let chars: Vec<char> = ('\u{21}'..='\u{7e}')
+        .chain('А'..='я')
+        .chain(['Ё', 'ё'])
+        .collect();
+    let mut set = Vec::new();
+    for family in [UI_FAMILY, "Exo 2"] {
+        for weight in [400, 700] {
+            for &c in &chars {
+                if let Some(g) = glyph_case_at(registry, family, weight, c) {
+                    set.push((family, weight, c, g));
+                }
+            }
+        }
+    }
+    set
+}
+
+/// Every glyph of the set resolves without the fallback, and the inside of
+/// its field matches a non-zero fill of the outline except within a pixel of
+/// the outline.
+#[test]
+fn glyph_set_unions_and_keeps_the_nonzero_fill() {
+    let registry = FontRegistry::with_builtin();
+    let set = glyph_set(&registry);
+    assert!(set.len() > 600, "{} glyphs", set.len());
+    let mut line = Scanline::default();
+    let failed: Vec<String> = set
+        .iter()
+        .filter_map(|(family, weight, c, g)| {
+            let union = resolve_union(&g.shape);
+            union
+                .is_err()
+                .then(|| format!("{family} {weight} '{c}': {union:?}"))
+        })
+        .collect();
+    assert!(failed.is_empty(), "{failed:#?}");
+    for (family, weight, c, g) in set {
+        let (width, height) = (g.width, g.height);
+        let field = shape_msdf(g.shape.clone(), width, height, &g.projection, g.range);
+        for y in 0..height {
+            g.shape
+                .scanline(&mut line, g.projection.unproject_y(y as f64 + 0.5));
+            for x in 0..width {
+                let fill = line.filled(g.projection.unproject_x(x as f64 + 0.5), FillRule::NonZero);
+                let px = field.pixels[y * width + x];
+                if (median(px[0], px[1], px[2]) > 0.5) == fill {
+                    continue;
+                }
+                let q = g.projection.unproject(p(x as f64 + 0.5, y as f64 + 0.5));
+                assert!(
+                    distance_to_polylines(&g.polylines, q) * g.s < 1.0,
+                    "{family} {weight} '{c}': pixel ({x}, {y})"
+                );
+            }
+        }
+    }
+}
+
+/// Rendering error of `field` at `scale` screen pixels per atlas pixel: the
+/// coverage of a bilinear median sample with the screen-space range against
+/// a 4×4 non-zero fill of the outline. Returns the number of screen pixels
+/// off by more than 0.5 and the summed absolute difference.
+fn render_error(g: &GlyphCase, field: &MsdfField, scale: usize) -> (usize, f64) {
+    const SS: usize = 4;
+    let (w, h, s) = (g.width * scale, g.height * scale, scale as f64);
+    let mut exact = vec![0u8; w * h];
+    let mut line = Scanline::default();
+    for sy in 0..h {
+        for j in 0..SS {
+            let y = (sy as f64 + (j as f64 + 0.5) / SS as f64) / s;
+            g.shape.scanline(&mut line, g.projection.unproject_y(y));
+            for sx in 0..w {
+                for i in 0..SS {
+                    let x = (sx as f64 + (i as f64 + 0.5) / SS as f64) / s;
+                    exact[sy * w + sx] +=
+                        u8::from(line.filled(g.projection.unproject_x(x), FillRule::NonZero));
+                }
+            }
+        }
+    }
+    let (mut wrong, mut sum) = (0, 0.0);
+    for sy in 0..h {
+        for sx in 0..w {
+            let m = sample_median(field, (sx as f64 + 0.5) / s, (sy as f64 + 0.5) / s);
+            let distance = (f64::from(m) - 0.5) * 4.0 * s;
+            let coverage = (distance + 0.5).clamp(0.0, 1.0);
+            let diff = (coverage - f64::from(exact[sy * w + sx]) / (SS * SS) as f64).abs();
+            wrong += usize::from(diff > 0.5);
+            sum += diff;
+        }
+    }
+    (wrong, sum)
+}
+
+/// `(union, overlapping)` rendering errors of a glyph at scales 1 and 4,
+/// with the fields quantized to 8 bits like the atlas (a channel without
+/// edges of its colour holds `-inf`).
+fn union_and_overlapping_errors(g: &GlyphCase) -> [[(usize, f64); 2]; 2] {
+    let union = shape_msdf(g.shape.clone(), g.width, g.height, &g.projection, g.range);
+    let overlapping = overlapping_msdf(g.shape.clone(), g.width, g.height, &g.projection, g.range);
+    [union, overlapping].map(|mut field| {
+        for v in field.pixels.iter_mut().flatten() {
+            *v = f32::from(super::to_u8(*v)) / 255.0;
+        }
+        [1, 4].map(|scale| render_error(g, &field, scale))
+    })
+}
+
+/// With the union the glyph set renders no worse than with the
+/// overlapping-contour pipeline (ADR-0062): in screen pixels off by more than
+/// 0.5 and in summed error at scales 1 and 4, over the whole set and for each
+/// glyph measured in ADR-0063 (weight 700).
+#[test]
+fn union_renders_no_worse_than_overlapping() {
+    const ADR_GLYPHS: [(&str, char); 8] = [
+        (UI_FAMILY, '1'),
+        (UI_FAMILY, 'x'),
+        (UI_FAMILY, 'M'),
+        (UI_FAMILY, 'W'),
+        (UI_FAMILY, '4'),
+        (UI_FAMILY, 'A'),
+        ("Exo 2", 'x'),
+        ("Exo 2", 'A'),
+    ];
+    let registry = FontRegistry::with_builtin();
+    let mut totals = [[(0, 0.0); 2]; 2];
+    let mut checked = 0;
+    for (family, weight, c, g) in glyph_set(&registry) {
+        let errors = union_and_overlapping_errors(&g);
+        for (total, e) in totals.iter_mut().flatten().zip(errors.iter().flatten()) {
+            total.0 += e.0;
+            total.1 += e.1;
+        }
+        if weight == 700 && ADR_GLYPHS.contains(&(family, c)) {
+            for (u, o) in errors[0].iter().zip(&errors[1]) {
+                assert!(
+                    u.0 <= o.0,
+                    "{family} '{c}': union {:?}, overlapping {:?}",
+                    errors[0],
+                    errors[1]
+                );
+            }
+            checked += 1;
+        }
+    }
+    assert_eq!(checked, ADR_GLYPHS.len());
+    for (u, o) in totals[0].iter().zip(&totals[1]) {
+        assert!(
+            u.0 <= o.0 && u.1 <= o.1,
+            "union {:?}, overlapping {:?}",
+            totals[0],
+            totals[1]
+        );
+    }
 }

@@ -1,11 +1,11 @@
 // Copyright (c) 2014 - 2025 Viktor Chlumsky (msdfgen, MIT licence; see THIRD_PARTY_NOTICES).
-// Ported from msdfgen v1.13: core/Shape.cpp, core/Contour.cpp, core/convergent-curve-ordering.cpp
+// Ported from msdfgen v1.13: core/Shape.cpp (incl. orientContours), core/Contour.cpp, core/convergent-curve-ordering.cpp
 
 //! Shapes made of closed contours.
 
 use super::scanline::{Intersection, Scanline};
 use super::segment::{Curve, EdgeSegment};
-use super::vector::{Point2, Vector2, cross, dot, sign};
+use super::vector::{Point2, Vector2, cross, dot, mix_f, sign};
 
 /// Threshold of the dot product of adjacent edge directions to be considered convergent.
 const CORNER_DOT_EPSILON: f64 = 0.000001;
@@ -59,7 +59,6 @@ impl Contour {
     }
 
     /// Reverses the direction of the contour.
-    #[cfg(test)]
     pub fn reverse(&mut self) {
         self.edges.reverse();
         for edge in &mut self.edges {
@@ -105,6 +104,85 @@ impl Shape {
                     }
                     prev = cur;
                 }
+            }
+        }
+    }
+
+    /// Reverses contours whose orientation is opposite to the one implied by
+    /// their position: an even-odd scanline through each contour decides
+    /// whether it is an outer contour or a hole.
+    pub fn orient_contours(&mut self) {
+        struct Hit {
+            x: f64,
+            direction: i32,
+            contour: usize,
+        }
+
+        // an irrational number to minimize chance of intersecting a corner or other point of interest
+        let ratio = 0.5 * (5.0f64.sqrt() - 1.0);
+        let mut orientations = vec![0i32; self.contours.len()];
+        let mut hits: Vec<Hit> = Vec::new();
+        for i in 0..self.contours.len() {
+            let edges = &self.contours[i].edges;
+            if orientations[i] != 0 || edges.is_empty() {
+                continue;
+            }
+            // Find an Y that crosses the contour
+            let y0 = edges[0].point(0.0).y;
+            let mut y1 = y0;
+            for edge in edges {
+                if y0 != y1 {
+                    break;
+                }
+                y1 = edge.point(1.0).y;
+            }
+            for edge in edges {
+                if y0 != y1 {
+                    break;
+                }
+                y1 = edge.point(ratio).y; // in case all endpoints are in a horizontal line
+            }
+            let y = mix_f(y0, y1, ratio);
+            // Scanline through whole shape at Y
+            let mut x = [0.0; 3];
+            let mut dy = [0; 3];
+            for (j, contour) in self.contours.iter().enumerate() {
+                for edge in &contour.edges {
+                    let n = edge.scanline_intersections(&mut x, &mut dy, y);
+                    for k in 0..n {
+                        hits.push(Hit {
+                            x: x[k],
+                            direction: dy[k],
+                            contour: j,
+                        });
+                    }
+                }
+            }
+            if !hits.is_empty() {
+                // `qsort` is not stable; a stable sort keeps the result deterministic
+                // and only reorders hits at equal X, which are disqualified below.
+                hits.sort_by(|a, b| a.x.total_cmp(&b.x));
+                // Disqualify multiple intersections
+                for j in 1..hits.len() {
+                    if hits[j].x == hits[j - 1].x {
+                        hits[j].direction = 0;
+                        hits[j - 1].direction = 0;
+                    }
+                }
+                // Inspect scanline and deduce orientations of intersected contours
+                for (j, hit) in hits.iter().enumerate() {
+                    if hit.direction != 0 {
+                        orientations[hit.contour] +=
+                            2 * (((j & 1) as i32) ^ i32::from(hit.direction > 0)) - 1;
+                    }
+                }
+                hits.clear();
+            }
+        }
+        // Reverse contours that have the opposite orientation
+        for (contour, orientation) in self.contours.iter_mut().zip(orientations) {
+            if orientation < 0 {
+                contour.reverse();
             }
         }
     }

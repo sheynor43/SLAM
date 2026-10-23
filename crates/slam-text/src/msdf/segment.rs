@@ -358,7 +358,6 @@ impl EdgeSegment {
     }
 
     /// Swaps the start and end of the edge.
-    #[cfg(test)]
     pub fn reverse(&mut self) {
         match &mut self.curve {
             Curve::Linear(p) => p.swap(0, 1),

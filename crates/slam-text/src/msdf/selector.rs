@@ -360,18 +360,56 @@ impl OverlappingContourCombiner {
     }
 }
 
-/// `ShapeDistanceFinder<OverlappingContourCombiner<MultiDistanceSelector>>`.
+/// `SimpleContourCombiner<MultiDistanceSelector>` or
+/// `OverlappingContourCombiner<MultiDistanceSelector>`.
+enum Combiner {
+    // Boxed: the selector is several times larger than the other variant.
+    Simple(Box<MultiDistanceSelector>),
+    Overlapping(OverlappingContourCombiner),
+}
+
+impl Combiner {
+    fn reset(&mut self, p: Point2) {
+        match self {
+            Self::Simple(selector) => selector.reset(p),
+            Self::Overlapping(combiner) => combiner.reset(p),
+        }
+    }
+
+    fn edge_selector(&mut self, i: usize) -> &mut MultiDistanceSelector {
+        match self {
+            Self::Simple(selector) => selector,
+            Self::Overlapping(combiner) => combiner.edge_selector(i),
+        }
+    }
+
+    fn distance(&self) -> MultiDistance {
+        match self {
+            Self::Simple(selector) => selector.distance(),
+            Self::Overlapping(combiner) => combiner.distance(),
+        }
+    }
+}
+
+/// `ShapeDistanceFinder<ContourCombiner<MultiDistanceSelector>>`.
 pub struct ShapeDistanceFinder<'a> {
     shape: &'a Shape,
-    combiner: OverlappingContourCombiner,
+    combiner: Combiner,
     edge_cache: Vec<EdgeCache>,
 }
 
 impl<'a> ShapeDistanceFinder<'a> {
-    pub fn new(shape: &'a Shape) -> Self {
+    /// `overlap_support` selects `OverlappingContourCombiner` over
+    /// `SimpleContourCombiner`, as in `MSDFGeneratorConfig`.
+    pub fn new(shape: &'a Shape, overlap_support: bool) -> Self {
+        let combiner = if overlap_support {
+            Combiner::Overlapping(OverlappingContourCombiner::new(shape))
+        } else {
+            Combiner::Simple(Box::default())
+        };
         Self {
             shape,
-            combiner: OverlappingContourCombiner::new(shape),
+            combiner,
             edge_cache: vec![EdgeCache::default(); shape.edge_count()],
         }
     }
