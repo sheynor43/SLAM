@@ -108,10 +108,17 @@ impl MsdfField {
     }
 }
 
-/// `generateMSDF` with overlap support and without error correction.
-pub fn generate_msdf(output: &mut MsdfField, shape: &Shape, projection: &Projection, range: Range) {
+/// `generateMSDF` without error correction; `overlap_support` as in
+/// `MSDFGeneratorConfig`.
+pub fn generate_msdf(
+    output: &mut MsdfField,
+    shape: &Shape,
+    projection: &Projection,
+    range: Range,
+    overlap_support: bool,
+) {
     let mapping = DistanceMapping::new(range);
-    let mut finder = ShapeDistanceFinder::new(shape);
+    let mut finder = ShapeDistanceFinder::new(shape, overlap_support);
     let (w, h) = (output.width, output.height);
     // Rows alternate direction so the edge cache sees neighbouring pixels.
     let mut left_to_right = true;

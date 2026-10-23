@@ -15,7 +15,7 @@ use self::generate::{Projection, Range};
 use self::outline::{OutlineShapePen, shape_msdf};
 use self::vector::Vector2;
 
-// MSDF generator ported from msdfgen (ADR-0062).
+// MSDF generator ported from msdfgen (ADR-0062) with contour union (ADR-0063).
 mod coloring;
 mod error_correction;
 mod generate;
@@ -27,6 +27,7 @@ mod shape;
 mod solver;
 #[cfg(test)]
 mod tests;
+mod union;
 mod vector;
 
 /// Atlas pixels per em: glyph bitmaps are generated at this size; the renderer
