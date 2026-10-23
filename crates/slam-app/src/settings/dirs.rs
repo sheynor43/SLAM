@@ -103,4 +103,9 @@ impl Dirs {
     pub fn settings_file(&self) -> PathBuf {
         self.config.join(super::FILE_NAME)
     }
+
+    /// Where replays are saved (ARCHITECTURE §17).
+    pub fn replays(&self) -> PathBuf {
+        self.data.join("replays")
+    }
 }

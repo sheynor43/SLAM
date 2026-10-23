@@ -1,7 +1,7 @@
 //! The shell's play loader thread (ADR-0045): prepares plays off the hot paths and frees
 //! what the update and draw threads are done with, so neither frees a play's memory.
 
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::thread::JoinHandle;
@@ -14,6 +14,7 @@ use slam_render::Limits;
 use slam_text::FontRegistry;
 
 use crate::play::scene::{PlayScene, PlaySettings, Prepared, prepare};
+use crate::replays::ReplayJob;
 
 /// Requests and results in flight: one play is prepared at a time.
 const RING: usize = 4;
@@ -57,6 +58,8 @@ pub enum Trash {
     Prepared(Box<Prepared>),
     /// Any other value: a finished play's session and beatmap.
     Other(Box<dyn Send>),
+    /// A finished play: its replay is saved if it passed.
+    Replay(Box<ReplayJob>),
     /// A failed preparation's message, logged when it failed.
     Message(String),
     /// A track that failed to open.
@@ -65,8 +68,15 @@ pub enum Trash {
     TrackCommand(PlayError),
 }
 
-fn log(trash: Trash) {
+fn log(trash: Trash, replays: Option<&Path>) {
     match trash {
+        Trash::Replay(job) => match replays {
+            Some(dir) => crate::replays::save(&job, dir),
+            None if job.session.results().is_some() => {
+                tracing::warn!("replay not saved: no data folder");
+            }
+            None => {}
+        },
         Trash::Music(MusicEvent::Failed { error, .. }) => tracing::warn!("track: {error}"),
         Trash::TrackCommand(error) => tracing::warn!("track: {error}"),
         _ => {}
@@ -81,6 +91,8 @@ pub struct LoaderConfig {
     pub registry: Arc<FontRegistry>,
     /// The HUD's texts.
     pub hud_labels: HudLabels,
+    /// Where replays of passed plays are saved; `None` saves none.
+    pub replays: Option<PathBuf>,
 }
 
 /// The update thread's end.
@@ -103,7 +115,9 @@ impl LoaderLink {
 
     /// Hands `trash` to the loader to free; frees it here if the loader is behind.
     pub fn free(&mut self, trash: Trash) {
-        let _ = self.trash.push(trash);
+        if let Err(rtrb::PushError::Full(Trash::Replay(_))) = self.trash.push(trash) {
+            tracing::warn!("replay not saved: the loader is behind");
+        }
     }
 }
 
@@ -148,7 +162,7 @@ pub fn spawn(mut config: LoaderConfig) -> std::io::Result<(LoaderLink, SceneTras
             while !flag.load(Ordering::Relaxed) {
                 let mut idle = true;
                 while let Ok(trash) = trash_rx.pop() {
-                    log(trash);
+                    log(trash, config.replays.as_deref());
                     idle = false;
                 }
                 while scene_rx.pop().is_ok() {
@@ -180,6 +194,10 @@ pub fn spawn(mut config: LoaderConfig) -> std::io::Result<(LoaderLink, SceneTras
                 if idle {
                     std::thread::sleep(POLL);
                 }
+            }
+            // Replays of the last plays are still saved when the game closes.
+            while let Ok(trash) = trash_rx.pop() {
+                log(trash, config.replays.as_deref());
             }
         })?;
     Ok((
@@ -228,6 +246,7 @@ mod tests {
             },
             registry: Arc::new(FontRegistry::with_builtin()),
             hud_labels: crate::play::scene::hud_labels(&Localizer::builtin().unwrap()),
+            replays: None,
         }
     }
 

@@ -17,6 +17,8 @@ toml = { version = "1.1.8", default-features = false, features = ["parse", "serd
 serde = { version = "1", features = ["derive"] }
 # Corpus harness: SHA-256 of map files (slam-osu tests).
 sha2 = "0.11.0"
+# MD5 of beatmap files for the replays of live plays (lazer matches a replay to its beatmap by it).
+md-5 = { version = "0.11.0", default-features = false }
 libc = "0.2.190"
 criterion = { version = "0.8.2", default-features = false, features = ["cargo_bench_support"] }
 glow = "0.18.0"

@@ -108,6 +108,7 @@ mod tests {
         }
         let results = PlayResults {
             score: 123_456,
+            score_without_mods: 120_000,
             accuracy: 0.9,
             rank: ScoreRank::SH,
             statistics: played,

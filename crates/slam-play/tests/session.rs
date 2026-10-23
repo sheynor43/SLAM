@@ -423,8 +423,12 @@ fn session_with_mods(map: &Beatmap, track: &Track, offsets: Offsets, mods: ModSe
 
 /// The scripted play's events in engine time, for a clock started at `start_ns`.
 fn events(map: &Beatmap, start_time: f64, start_ns: u64) -> Vec<InputEvent> {
-    play(map, 3)
-        .events
+    shifted(play(map, 3), start_time, start_ns)
+}
+
+/// `play`'s events in engine time, for a clock started at `start_ns`.
+fn shifted(play: common::Play, start_time: f64, start_ns: u64) -> Vec<InputEvent> {
+    play.events
         .into_iter()
         .map(|mut e| {
             let game_ms = e.time_ns as f64 / MS as f64;
@@ -449,6 +453,19 @@ fn run(
 
 fn run_with(
     map: &Beatmap,
+    session: PlaySession,
+    track: Track,
+    step_ns: u64,
+    end_ns: u64,
+    record: impl FnMut(&PlaySnapshot),
+) -> (PlaySession, Track, Sink) {
+    // The clock starts on the first tick with a report, at `T0`.
+    let events = events(map, session.start_time(), T0);
+    run_events(&events, session, track, step_ns, end_ns, record)
+}
+
+fn run_events(
+    events: &[InputEvent],
     mut session: PlaySession,
     mut track: Track,
     step_ns: u64,
@@ -456,8 +473,6 @@ fn run_with(
     mut record: impl FnMut(&PlaySnapshot),
 ) -> (PlaySession, Track, Sink) {
     let mut sink = Sink::default();
-    // The clock starts on the first tick with a report, at `T0`.
-    let events = events(map, session.start_time(), T0);
     let mut snapshot = PlaySnapshot::default();
     let mut next = 0;
     let mut now = T0 - 10 * MS;
@@ -3051,4 +3066,86 @@ fn the_hit_error_meter_hides_during_a_spinner_and_keeps_its_lines() {
     assert_eq!(fading, before, "the same sprites, the line included");
     assert!((fading_alpha - before_alpha / 2.0).abs() < 1e-3);
     assert_eq!(draw(5000.0), (before, before_alpha));
+}
+
+// ---- Replay recording ----
+
+#[test]
+fn a_passed_play_replays_to_the_same_score() {
+    use slam_osu::replay::{PlayScore, ReplayInfo, ReplayInput, Simulator, replay_of_play};
+
+    let map = beatmap();
+    let track = Track::default();
+    let session = session(&map, &track);
+    let end = end_ns(&map, session.start_time());
+    // A smooth cursor: between the frames recorded at 60 Hz, a replay moves the cursor in a
+    // straight line, so a jittery one would follow sliders differently (a recording artifact,
+    // as in lazer; ADR-0029).
+    let events = shifted(
+        common::play_with_jitter(&map, 3, 0),
+        session.start_time(),
+        T0,
+    );
+    let (session, _, _) = run_events(&events, session, track, MS, end, |_| {});
+    let results = session.results().expect("the play passed");
+    let frames = session.replay_frames().expect("the play recorded");
+    assert!(results.statistics.count(HitResult::Great) > 0);
+    assert!(!frames.is_empty());
+    assert!(frames.windows(2).all(|w| w[0].time <= w[1].time));
+
+    let mods = session.mods().clone();
+    let replay = replay_of_play(
+        frames,
+        &PlayScore {
+            mods: &mods,
+            statistics: &results.statistics,
+            maximum_statistics: &results.maximum_statistics,
+            total_score: results.score,
+            total_score_without_mods: results.score_without_mods,
+            rank: results.rank,
+        },
+        &ReplayInfo {
+            beatmap_hash: String::new(),
+            beatmap_format_version: map.format_version,
+            player_name: String::new(),
+            date_ticks: 0,
+            client_version: String::new(),
+        },
+    );
+    let input = ReplayInput::from_replay(&replay, map.format_version);
+    let mut sim = Simulator::new(&map, input, OsuRules::new(&map, &mods))
+        .with_health(
+            slam_osu::HealthProcessor::for_play(&map, &mods),
+            mods.clone(),
+        )
+        .with_scoring(ScoreProcessor::for_play(&map, &mods));
+    sim.run();
+
+    let judged = |log: &[slam_osu::judgement::Judgement]| -> Vec<(u32, HitResult)> {
+        log.iter().map(|j| (j.object.index, j.result)).collect()
+    };
+    assert_eq!(judged(sim.log().events()), judged(session.log().events()));
+    let score = sim.score().unwrap();
+    assert_eq!(*score.statistics(), results.statistics);
+    assert_eq!(score.total_score(), results.score);
+}
+
+#[test]
+fn a_restart_records_anew() {
+    let map = beatmap();
+    let mut d = passed(&map);
+    let first = d.session.replay_frames().unwrap().to_vec();
+    assert!(!first.is_empty());
+    d.hold(None, GRAVE, 200);
+    assert_eq!(d.state(), PlayState::Playing);
+    assert!(d.session.replay_frames().is_none());
+    // The same play without input records the same frames, from the start again.
+    d.run_until(12_000, |s| s.state == PlayState::Passed);
+    let second = d.session.replay_frames().unwrap();
+    assert!(
+        (second[0].time - first[0].time).abs() < 2.0,
+        "{}",
+        second[0].time
+    );
+    assert!(second.len().abs_diff(first.len()) <= 2);
 }

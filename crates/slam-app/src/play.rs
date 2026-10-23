@@ -462,6 +462,7 @@ pub fn run(options: &Options) -> Result<(), String> {
         sounds,
         scene,
         background_name,
+        ..
     } = scene::prepare(
         &options.map,
         &options.settings(),
