@@ -109,6 +109,8 @@ pub(crate) struct Loaded {
     /// The background image's name and bytes; `None` when the beatmap names none or it
     /// cannot be read.
     pub background: Option<(String, Vec<u8>)>,
+    /// MD5 of the beatmap file, lowercase hex: its replays name it.
+    pub beatmap_hash: String,
 }
 
 pub(crate) fn load(map: &Path, settings: &PlaySettings) -> Result<Loaded, String> {
@@ -152,6 +154,7 @@ pub(crate) fn load(map: &Path, settings: &PlaySettings) -> Result<Loaded, String
         beatmap_skin,
         skins,
         background,
+        beatmap_hash: crate::replays::md5_hex(&bytes),
     })
 }
 
@@ -165,6 +168,8 @@ pub struct Prepared {
     pub scene: PlayScene,
     /// The background image's name, for the console.
     pub background_name: Option<String>,
+    /// MD5 of the beatmap file, lowercase hex.
+    pub beatmap_hash: String,
 }
 
 /// The HUD's texts in the language of `localizer`.
@@ -324,6 +329,7 @@ pub fn prepare(
         background_name,
         beatmap: loaded.beatmap,
         mods: loaded.mods,
+        beatmap_hash: loaded.beatmap_hash,
     })
 }
 

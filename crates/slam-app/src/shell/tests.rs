@@ -546,6 +546,7 @@ fn host(name: &str, with_track: bool) -> HostFixture {
         },
         registry: Arc::new(FontRegistry::with_builtin()),
         hud_labels: crate::play::scene::hud_labels(&Localizer::builtin().unwrap()),
+        replays: Some(dir.join("replays")),
     })
     .unwrap();
     let (mut mixer, mixer_handle) = slam_audio::mixer(&MixerConfig {

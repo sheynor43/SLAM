@@ -6,7 +6,7 @@ use std::collections::HashMap;
 use std::path::PathBuf;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
-use std::time::{Duration, Instant};
+use std::time::{Duration, Instant, SystemTime};
 
 use slam_audio::{
     AudioPosition, Backend, MixerConfig, MixerHandle, MusicConfig, MusicEvent, MusicPlayer,
@@ -60,6 +60,7 @@ use crate::loader::{LoaderConfig, LoaderLink, PlayOptions, SceneTrash, Trash};
 use crate::play::fps::{FpsDisplay, FpsOverlay, FpsSource, MAX_FPS_GLYPHS};
 use crate::play::scene::{CHANNELS, PlayScene, PlaySettings, Prepared, SAMPLE_RATE};
 use crate::play::{device_limits, pack_size};
+use crate::replays::{ReplayBeatmap, ReplayJob};
 use crate::settings::saver::SaveLink;
 use crate::settings::{Dirs, Settings};
 use crate::songs::{SongFiles, SongsLink};
@@ -1185,6 +1186,8 @@ struct Game {
     mods: ResultsMods,
     /// The beatmap file played: its offset is kept when the play ends.
     map: Option<PathBuf>,
+    /// What the play's replay names its beatmap by.
+    beatmap: ReplayBeatmap,
 }
 
 /// A quit play whose voices the mixer silences. The session keeps its samples until the
@@ -1194,6 +1197,31 @@ struct Retiring {
     session: Box<PlaySession>,
     /// Since when the mixer has had no voice.
     idle_since: Option<u64>,
+    /// A passed play's replay to save.
+    replay: Option<ReplaySource>,
+}
+
+/// What a passed play's replay is made of besides the session.
+struct ReplaySource {
+    beatmap: ReplayBeatmap,
+    /// The beatmap file's name, for the replay's.
+    name: String,
+    ended: SystemTime,
+}
+
+impl Retiring {
+    /// What the loader takes to free the session, saving its replay first.
+    fn into_trash(self) -> Trash {
+        match self.replay {
+            Some(source) => Trash::Replay(Box::new(ReplayJob {
+                session: self.session,
+                beatmap: source.beatmap,
+                name: source.name,
+                ended: source.ended,
+            })),
+            None => Trash::Other(self.session),
+        }
+    }
 }
 
 /// The update side of plays: loads them, runs the one on top, frees them via the loader.
@@ -1446,6 +1474,16 @@ impl PlayHost {
             // Under the results the track keeps the mods until they go, as lazer's
             // `Player.OnExiting` resets it (ADR-0055).
             self.track_reset = results.is_none();
+            // A passed play's replay is saved by the loader when it frees the session.
+            let replay = game.session.replay_frames().map(|_| ReplaySource {
+                beatmap: std::mem::take(&mut game.beatmap),
+                name: game.map.as_ref().map_or_else(String::new, |map| {
+                    map.file_stem()
+                        .map(|s| s.to_string_lossy().into_owned())
+                        .unwrap_or_default()
+                }),
+                ended: SystemTime::now(),
+            });
             if let Some(map) = game.map.take() {
                 self.beatmap_offsets
                     .insert(map, game.session.beatmap_offset());
@@ -1455,8 +1493,9 @@ impl PlayHost {
             if let Some(old) = self.retiring.replace(Retiring {
                 session: game.session,
                 idle_since: None,
+                replay,
             }) {
-                self.loader.free(Trash::Other(old.session));
+                self.loader.free(old.into_trash());
             }
         }
         if let Some(retiring) = &mut self.retiring {
@@ -1467,7 +1506,7 @@ impl PlayHost {
                 if now_ns.saturating_sub(since) >= VOICES_IDLE_NS {
                     mixer.collect();
                     if let Some(retiring) = self.retiring.take() {
-                        self.loader.free(Trash::Other(retiring.session));
+                        self.loader.free(retiring.into_trash());
                     }
                 }
             } else {
@@ -1492,8 +1531,13 @@ impl PlayHost {
             mods,
             sounds,
             scene,
+            beatmap_hash,
             ..
         } = prepared;
+        let replay_beatmap = ReplayBeatmap {
+            hash: beatmap_hash,
+            format_version: beatmap.format_version,
+        };
         let shown_mods = results::mods(&mods);
         let mut input = LiveInput::new(
             self.input.bindings,
@@ -1525,6 +1569,7 @@ impl PlayHost {
             title,
             mods: shown_mods,
             map,
+            beatmap: replay_beatmap,
         });
     }
 }
@@ -2137,6 +2182,7 @@ pub fn run(settings: Settings) -> Result<(), String> {
         limits,
         registry: Arc::clone(&registry),
         hud_labels: hud_labels.clone(),
+        replays: Dirs::detect().map(|dirs| dirs.replays()),
     })
     .map_err(|e| e.to_string())?;
     let (scene_tx, scene_rx) = rtrb::RingBuffer::<(u64, PlayScene)>::new(2);

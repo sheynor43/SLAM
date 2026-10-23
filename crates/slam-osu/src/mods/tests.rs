@@ -69,6 +69,47 @@ fn legacy_bitmask_converts_like_lazer() {
     );
 }
 
+// Ported from osu!lazer 2026.1005.0-lazer: osu.Game.Rulesets.Osu.Tests/OsuLegacyModConversionTest.cs (TestToLegacy)
+#[test]
+fn mods_convert_to_the_legacy_bitmask_like_lazer() {
+    use legacy::*;
+    let set = |acronyms: &[&str]| {
+        ModSet::new(acronyms.iter().map(|a| Mod::from_acronym(a)).collect()).unwrap()
+    };
+    let cases: &[(&[&str], u32)] = &[
+        (&["NF"], NO_FAIL),
+        (&["EZ"], EASY),
+        (&["TD"], TOUCH_DEVICE),
+        (&["HD"], HIDDEN),
+        (&["HR"], HARD_ROCK),
+        (&["SD"], SUDDEN_DEATH),
+        (&["DT"], DOUBLE_TIME),
+        (&["RX"], RELAX),
+        (&["HT"], HALF_TIME),
+        (&["FL"], FLASHLIGHT),
+        (&["AT"], AUTOPLAY),
+        (&["SO"], SPUN_OUT),
+        (&["AP"], AUTOPILOT),
+        (&["TP"], TARGET),
+        (&["HR", "DT"], HARD_ROCK | DOUBLE_TIME),
+        (&["SV2"], SCORE_V2),
+        (&["CN"], CINEMA | AUTOPLAY),
+        (&["NC"], NIGHTCORE | DOUBLE_TIME),
+        (&["PF"], PERFECT | SUDDEN_DEATH),
+        // No bit: lazer converts by mod type.
+        (&["CL", "DC", "TC", "DA", "MR"], 0),
+    ];
+    for (acronyms, mask) in cases {
+        assert_eq!(set(acronyms).to_legacy(), *mask, "{acronyms:?}");
+    }
+    // A custom speed keeps the bit.
+    let mut dt = Mod::from_acronym("DT");
+    if let Mod::DoubleTime(rate) = &mut dt {
+        rate.speed_change = 1.2;
+    }
+    assert_eq!(ModSet::new(vec![dt]).unwrap().to_legacy(), DOUBLE_TIME);
+}
+
 #[test]
 fn stable_replays_get_classic() {
     let mask = legacy::HIDDEN | legacy::DOUBLE_TIME;

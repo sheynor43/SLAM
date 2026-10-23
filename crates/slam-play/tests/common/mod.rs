@@ -75,6 +75,12 @@ pub struct Play {
 /// millisecond and at most one input changes per millisecond, after the move, so that replay
 /// frames on the same milliseconds describe the same input.
 pub fn play(beatmap: &Beatmap, seed: u64) -> Play {
+    play_with_jitter(beatmap, seed, 20)
+}
+
+/// [`play`] with the cursor up to `jitter` osu!pixels off its target on each axis; the presses
+/// do not depend on it.
+pub fn play_with_jitter(beatmap: &Beatmap, seed: u64, jitter: u32) -> Play {
     let mut state = seed;
     let mut next = move || {
         state = state
@@ -97,8 +103,8 @@ pub fn play(beatmap: &Beatmap, seed: u64) -> Play {
         let target = target(beatmap, time);
         // Whole osu!pixels, so the window position converts back exactly.
         let position = Vec2::new(
-            target.x.round() + (next() % 41) as f32 - 20.0,
-            target.y.round() + (next() % 41) as f32 - 20.0,
+            target.x.round() + (next() % (2 * jitter + 1)) as f32 - jitter as f32,
+            target.y.round() + (next() % (2 * jitter + 1)) as f32 - jitter as f32,
         );
         let window = layout.to_window(position);
         events.push(InputEvent {

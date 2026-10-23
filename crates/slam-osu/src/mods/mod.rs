@@ -989,6 +989,39 @@ impl ModSet {
         ModSet { mods }
     }
 
+    // Ported from osu!lazer 2026.1005.0-lazer: osu.Game/Rulesets/Ruleset.cs (ConvertToLegacyMods)
+    // Ported from osu!lazer 2026.1005.0-lazer: osu.Game.Rulesets.Osu/OsuRuleset.cs (ConvertToLegacyMods)
+    /// Stable's bitmask of the set, as lazer writes it into a replay. Nightcore adds Double
+    /// Time, Perfect adds Sudden Death and Cinema adds Autoplay; mods without a bit (Classic,
+    /// Daycore, Traceable, ...) add nothing, and rate mods give their bit at any speed.
+    pub fn to_legacy(&self) -> u32 {
+        use legacy::*;
+        self.mods
+            .iter()
+            .map(|m| match m.acronym() {
+                "NF" => NO_FAIL,
+                "EZ" => EASY,
+                "HD" => HIDDEN,
+                "HR" => HARD_ROCK,
+                "PF" => PERFECT | SUDDEN_DEATH,
+                "SD" => SUDDEN_DEATH,
+                "NC" => NIGHTCORE | DOUBLE_TIME,
+                "DT" => DOUBLE_TIME,
+                "RX" => RELAX,
+                "HT" => HALF_TIME,
+                "FL" => FLASHLIGHT,
+                "CN" => CINEMA | AUTOPLAY,
+                "AT" => AUTOPLAY,
+                "SV2" => SCORE_V2,
+                "AP" => AUTOPILOT,
+                "SO" => SPUN_OUT,
+                "TP" => TARGET,
+                "TD" => TOUCH_DEVICE,
+                _ => 0,
+            })
+            .fold(0, |mask, bit| mask | bit)
+    }
+
     // Ported from osu!lazer 2026.1005.0-lazer: osu.Game/Scoring/Legacy/LegacyScoreDecoder.cs (Parse)
     /// The mods of a replay from its parts: the score block's mods when it has a non-empty
     /// block, otherwise the bitmask, plus Classic for versions before lazer. The version is

@@ -12,7 +12,7 @@ use slam_input::InputEvent;
 use slam_osu::breaks::BreakTracker;
 use slam_osu::judgement::{JudgementLog, Statistics};
 use slam_osu::lead_in::{IntroSkip, earliest_start_time, gameplay_start_time};
-use slam_osu::replay::{Actions, Rules};
+use slam_osu::replay::{Actions, InputFrame, ReplayRecorder, Rules};
 use slam_osu::rules::OsuRules;
 use slam_osu::scoring::{ScoreProcessor, ScoreRank};
 use slam_osu::{Beatmap, HealthProcessor, ModSet, Vec2};
@@ -73,6 +73,10 @@ pub const FAIL_ANIMATION_NS: u64 = crate::fail::FAIL_DURATION_NS;
 /// How long gameplay runs on after passing before the results show, in nanoseconds of real
 /// time (lazer schedules them on the player's clock, not the gameplay clock).
 pub const RESULTS_DISPLAY_DELAY_NS: u64 = 1_000_000_000;
+
+/// Gameplay time past the end of the last object the replay buffer has room for: the play
+/// passes after the last object's hit window, and important frames can pile up there.
+const RECORD_TAIL_MS: f64 = 30_000.0;
 
 // Ported from osu!lazer 2026.1005.0-lazer: osu.Game.Rulesets.Osu/UI/Cursor/OsuCursor.cs (SIZE)
 /// Size of the click-to-resume cursor's hit area, in osu!pixels.
@@ -155,6 +159,8 @@ impl HudValues {
 pub struct PlayResults {
     /// Total score with the mods' multiplier.
     pub score: i64,
+    /// Total score without the mods' multiplier.
+    pub score_without_mods: i64,
     /// Accuracy, 0..=1.
     pub accuracy: f64,
     pub rank: ScoreRank,
@@ -360,6 +366,8 @@ pub struct PlaySession {
     speed_set: bool,
     /// When the play failed.
     fail: Option<FailView>,
+    /// The play's input as replay frames, until it passes.
+    recorder: ReplayRecorder,
 }
 
 /// How fast a play runs: lazer's track adjustments from the rate mods.
@@ -424,6 +432,13 @@ impl PlaySession {
             ),
             None => (0.0, 0.0),
         };
+        let speed = Speed::of(mods);
+        // Room for frames from the start to past the last object, where the play passes.
+        let recorder = ReplayRecorder::new(
+            playable.1 - start_time + RECORD_TAIL_MS,
+            speed.rate,
+            rules.max_judgements(),
+        );
         PlaySession {
             clock: GameClock::new(track),
             offsets,
@@ -475,9 +490,10 @@ impl PlaySession {
             clock_errors: 0,
             track_effects: TrackEffects::Neutral,
             applied_effects: None,
-            speed: Speed::of(mods),
+            speed,
             speed_set: false,
             fail: None,
+            recorder,
         }
     }
 
@@ -505,6 +521,11 @@ impl PlaySession {
         &self.score
     }
 
+    /// The mods the play started with.
+    pub fn mods(&self) -> &ModSet {
+        &self.initial.mods
+    }
+
     pub fn input(&self) -> &LiveInput {
         &self.input
     }
@@ -519,11 +540,18 @@ impl PlaySession {
     pub fn results(&self) -> Option<PlayResults> {
         self.passed.then(|| PlayResults {
             score: self.score.total_score(),
+            score_without_mods: self.score.total_score_without_mods(),
             accuracy: self.score.accuracy(),
             rank: self.score.rank(&self.initial.mods),
             statistics: *self.score.statistics(),
             maximum_statistics: *self.score.maximum_statistics(),
         })
+    }
+
+    /// The play's input as replay frames, once it passed: the frames recorded until then.
+    /// `None` before passing, or if the recording overflowed its buffer.
+    pub fn replay_frames(&self) -> Option<&[InputFrame]> {
+        (self.passed && !self.recorder.overflowed()).then(|| self.recorder.frames())
     }
 
     /// Whether the player quit.
@@ -806,7 +834,15 @@ impl PlaySession {
         // The health processor is a frame-stable component ahead of the playfield: it drains
         // first, then takes the step's judgements as they come.
         self.health.update(step_time);
+        let judged_before = self.log.events().len();
         self.rules.update(&step, &mut self.log);
+        // Ported from osu!lazer 2026.1005.0-lazer: osu.Game/Rulesets/UI/DrawableRuleset.cs (SetRecordTarget)
+        // Recording stops once the play completes (lazer's `SetRecordTarget(null)`); every
+        // judgement records an important frame.
+        if !self.passed {
+            let judged = self.log.events().len() > judged_before;
+            self.recorder.record_step(&step, judged);
+        }
         // Lazer's spinners count their rate after their children, in the playfield's update.
         self.spm.update(&self.rules, step_time);
         self.sounds.update(step_time, &self.log, &self.rules, sink);
@@ -1043,6 +1079,7 @@ impl PlaySession {
         self.sounds.stop_fail(sink);
         self.track_effects = TrackEffects::Neutral;
         self.fail = None;
+        self.recorder.clear();
         self.input.reset();
         self.phase = Phase::Playing;
         self.pending_seek = Some(self.start_time);
