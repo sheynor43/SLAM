@@ -60,10 +60,6 @@ harfrust = "0.14.0"
 # Font tables, metrics, charmap and variations (ADR-0037); re-exports read-fonts.
 skrifa = "0.48.0"
 # Multi-channel signed distance fields of glyph outlines (ADR-0037); pure Rust.
-fdsm = "0.8.0"
-# Types in the fdsm API: Affine2 for the outline transform, image buffers for the field.
-nalgebra = "0.34.2"
-image = { version = "0.25.10", default-features = false }
 # UAX #14 line break opportunities for text layout (ADR-0037).
 unicode-linebreak = "0.1.5"
 tracing-subscriber = { version = "0.3.23", default-features = false, features = ["fmt", "ansi", "env-filter", "std"] }

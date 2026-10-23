@@ -8,8 +8,9 @@ use skrifa::outline::{DrawSettings, OutlinePen};
 use skrifa::{FontRef, MetadataProvider, Tag};
 
 use super::coloring::edge_coloring_simple;
+use super::error_correction::{corrected_pixels, msdf_error_correction};
 use super::generate::{MsdfField, Projection, Range};
-use super::outline::{OutlineShapePen, shape_msdf};
+use super::outline::{OutlineShapePen, colored_shape, shape_msdf, uncorrected_msdf};
 use super::segment::EdgeSegment;
 use super::shape::{Contour, Shape};
 use super::solver::{solve_cubic, solve_quadratic};
@@ -17,6 +18,7 @@ use super::vector::{Point2, Vector2, median};
 use crate::{FontRegistry, UI_FAMILY};
 
 const FIELDS: &str = include_str!("../../tests/data/msdfgen-fields.txt");
+const CORRECTED: &str = include_str!("../../tests/data/msdfgen-corrected.txt");
 
 fn p(x: f64, y: f64) -> Point2 {
     Point2::new(x, y)
@@ -402,28 +404,80 @@ fn reference_fields_match_msdfgen() {
         let expected: Vec<f32> = values.map(|v| v.parse().unwrap()).collect();
         assert_eq!(expected.len(), width * height * 3);
 
-        let field = shape_msdf(
-            reference_shape(name),
+        let field = uncorrected_msdf(
+            &colored_shape(reference_shape(name)),
             width,
             height,
             &UNIT,
             Range::symmetric(4.0),
         );
-        for (i, (px, e)) in field.pixels.iter().zip(expected.chunks(3)).enumerate() {
-            for c in 0..3 {
-                assert!(
-                    px[c].to_bits() == e[c].to_bits(),
-                    "{name}: pixel ({}, {}) channel {c}: {} != {}",
-                    i % width,
-                    i / width,
-                    px[c],
-                    e[c],
-                );
-            }
-        }
+        assert_field_bits(name, &field, &expected);
         checked += 1;
     }
     assert_eq!(checked, 19);
+}
+
+fn assert_field_bits(name: &str, field: &MsdfField, expected: &[f32]) {
+    assert_eq!(expected.len(), field.pixels.len() * 3);
+    for (i, (px, e)) in field.pixels.iter().zip(expected.chunks(3)).enumerate() {
+        for c in 0..3 {
+            assert!(
+                px[c].to_bits() == e[c].to_bits(),
+                "{name}: pixel ({}, {}) channel {c}: {} != {}",
+                i % field.width,
+                i / field.width,
+                px[c],
+                e[c],
+            );
+        }
+    }
+}
+
+/// The whole pipeline with error correction, bit for bit, at a unit and a
+/// non-uniform projection.
+#[test]
+fn corrected_fields_match_msdfgen() {
+    let mut checked = 0;
+    let mut corrected = 0;
+    for line in CORRECTED.lines().filter(|l| l.starts_with("corrected ")) {
+        let mut values = line.split(' ').skip(1);
+        let name = values.next().unwrap();
+        let width: usize = values.next().unwrap().parse().unwrap();
+        let height: usize = values.next().unwrap().parse().unwrap();
+        let expected: Vec<f32> = values.map(|v| v.parse().unwrap()).collect();
+        let (shape_name, projection, range) = match name.strip_suffix("@scaled") {
+            Some(base) => (
+                base,
+                Projection {
+                    scale: Vector2::new(1.5, 2.0),
+                    translate: Vector2::new(0.5, -0.25),
+                },
+                Range::symmetric(3.0),
+            ),
+            None => (name, UNIT, Range::symmetric(4.0)),
+        };
+
+        let shape = colored_shape(reference_shape(shape_name));
+        let before = uncorrected_msdf(&shape, width, height, &projection, range);
+        let mut field = before.clone();
+        msdf_error_correction(&mut field, &shape, &projection, range);
+        assert_field_bits(name, &field, &expected);
+        assert_eq!(
+            field,
+            shape_msdf(
+                reference_shape(shape_name),
+                width,
+                height,
+                &projection,
+                range
+            )
+        );
+        corrected += corrected_pixels(&before, &field);
+        checked += 1;
+    }
+    assert_eq!(checked, 22);
+    // msdfgen corrects 195 texels in these fields.
+    assert_eq!(corrected, 195);
 }
 
 #[test]
@@ -557,7 +611,20 @@ fn overlapping_glyph_sign_matches_nonzero_fill() {
     }
 }
 
-fn check_glyph_sign(registry: &FontRegistry, family: &str, chars: &[char]) {
+/// A glyph of a built-in family at weight 700, laid out like `generate_glyph`.
+struct GlyphCase {
+    shape: Shape,
+    /// The outline flattened independently of the generator.
+    polylines: Vec<Vec<Point2>>,
+    projection: Projection,
+    range: Range,
+    width: usize,
+    height: usize,
+    /// Atlas pixels per font unit.
+    s: f64,
+}
+
+fn glyph_case(registry: &FontRegistry, family: &str, c: char) -> GlyphCase {
     const EM_PX: f64 = 32.0;
     const PAD: f64 = 2.0;
     let face = registry
@@ -569,39 +636,50 @@ fn check_glyph_sign(registry: &FontRegistry, family: &str, chars: &[char]) {
     let upem = f64::from(font.metrics(Size::unscaled(), &location).units_per_em);
     let s = EM_PX / upem;
 
-    for &c in chars {
-        let glyph = font
-            .outline_glyphs()
-            .get(font.charmap().map(c).unwrap())
-            .unwrap();
-        let settings = || DrawSettings::unhinted(Size::unscaled(), &location);
-        let mut pen = OutlineShapePen::default();
-        glyph.draw(settings(), &mut pen).unwrap();
-        let shape = pen.finish();
-        let mut reference = PolylinePen::default();
-        glyph.draw(settings(), &mut reference).unwrap();
-        reference.flush();
+    let glyph = font
+        .outline_glyphs()
+        .get(font.charmap().map(c).unwrap())
+        .unwrap();
+    let settings = || DrawSettings::unhinted(Size::unscaled(), &location);
+    let mut pen = OutlineShapePen::default();
+    glyph.draw(settings(), &mut pen).unwrap();
+    let shape = pen.finish();
+    let mut reference = PolylinePen::default();
+    glyph.draw(settings(), &mut reference).unwrap();
+    reference.flush();
 
-        let [l, b, r, t] = shape.bounds().unwrap();
-        let x0 = (l * s).floor() - PAD;
-        let y0 = (b * s).floor() - PAD;
-        let width = ((r * s).ceil() - x0 + PAD) as usize;
-        let height = ((t * s).ceil() - y0 + PAD) as usize;
-        let projection = Projection {
+    let [l, b, r, t] = shape.bounds().unwrap();
+    let x0 = (l * s).floor() - PAD;
+    let y0 = (b * s).floor() - PAD;
+    GlyphCase {
+        shape,
+        polylines: reference.polylines,
+        projection: Projection {
             scale: Vector2::new(s, s),
             translate: Vector2::new(-x0 / s, -y0 / s),
-        };
-        let field = shape_msdf(shape, width, height, &projection, Range::symmetric(4.0 / s));
+        },
+        range: Range::symmetric(4.0 / s),
+        width: ((r * s).ceil() - x0 + PAD) as usize,
+        height: ((t * s).ceil() - y0 + PAD) as usize,
+        s,
+    }
+}
+
+fn check_glyph_sign(registry: &FontRegistry, family: &str, chars: &[char]) {
+    for &c in chars {
+        let g = glyph_case(registry, family, c);
+        let (width, height) = (g.width, g.height);
+        let field = shape_msdf(g.shape, width, height, &g.projection, g.range);
 
         let mut compared = 0;
         let mut filled = 0;
         for y in 0..height {
             for x in 0..width {
-                let q = projection.unproject(p(x as f64 + 0.5, y as f64 + 0.5));
-                if distance_to_polylines(&reference.polylines, q) * s < 1.0 {
+                let q = g.projection.unproject(p(x as f64 + 0.5, y as f64 + 0.5));
+                if distance_to_polylines(&g.polylines, q) * g.s < 1.0 {
                     continue;
                 }
-                let fill = winding_number(&reference.polylines, q) != 0;
+                let fill = winding_number(&g.polylines, q) != 0;
                 let px = field.pixels[y * width + x];
                 let inside = median(px[0], px[1], px[2]) > 0.5;
                 assert_eq!(inside, fill, "{family} '{c}': pixel ({x}, {y})");
@@ -615,4 +693,120 @@ fn check_glyph_sign(registry: &FontRegistry, family: &str, chars: &[char]) {
         );
         assert!(filled > 20, "{family} '{c}': glyph should cover pixels");
     }
+}
+
+/// Bilinear sample of the field median at pixel coordinates `(x, y)`, as the
+/// shader samples the atlas.
+fn sample_median(field: &MsdfField, x: f64, y: f64) -> f32 {
+    let (fx, fy) = (x - 0.5, y - 0.5);
+    let (x0, y0) = (fx.floor(), fy.floor());
+    let (tx, ty) = ((fx - x0) as f32, (fy - y0) as f32);
+    let at = |dx: f64, dy: f64| {
+        let cx = (x0 + dx).clamp(0.0, field.width as f64 - 1.0) as usize;
+        let cy = (y0 + dy).clamp(0.0, field.height as f64 - 1.0) as usize;
+        field.pixels[cy * field.width + cx]
+    };
+    let (a, b, c, d) = (at(0.0, 0.0), at(1.0, 0.0), at(0.0, 1.0), at(1.0, 1.0));
+    let ch = |i: usize| {
+        let bottom = a[i] + (b[i] - a[i]) * tx;
+        let top = c[i] + (d[i] - c[i]) * tx;
+        bottom + (top - bottom) * ty
+    };
+    median(ch(0), ch(1), ch(2))
+}
+
+/// Subpixel samples at least a pixel away from the outline whose interpolated
+/// sign disagrees with a non-zero fill of the outline.
+fn interpolation_artifacts(g: &GlyphCase, field: &MsdfField) -> usize {
+    const STEPS: usize = 4;
+    let mut artifacts = 0;
+    for sy in 0..(g.height - 1) * STEPS {
+        for sx in 0..(g.width - 1) * STEPS {
+            let x = 0.5 + (sx as f64 + 0.5) / STEPS as f64;
+            let y = 0.5 + (sy as f64 + 0.5) / STEPS as f64;
+            let q = g.projection.unproject(p(x, y));
+            if distance_to_polylines(&g.polylines, q) * g.s < 1.0 {
+                continue;
+            }
+            let fill = winding_number(&g.polylines, q) != 0;
+            artifacts += usize::from((sample_median(field, x, y) > 0.5) != fill);
+        }
+    }
+    artifacts
+}
+
+/// Error correction removes interpolation artifacts at sharp corners and
+/// overlaps without introducing new ones.
+#[test]
+fn error_correction_reduces_glyph_artifacts() {
+    let registry = FontRegistry::with_builtin();
+    let (mut total_before, mut total_after, mut corrected) = (0, 0, 0);
+    for (family, chars) in [
+        (UI_FAMILY, ['A', '4', 'V', 'W', 'M', 'x', '1', 'Ж']),
+        ("Exo 2", ['A', '4', 'V', 'W', 'M', 'x', 'k', 'Ж']),
+    ] {
+        for c in chars {
+            let g = glyph_case(&registry, family, c);
+            let shape = colored_shape(g.shape.clone());
+            let before = uncorrected_msdf(&shape, g.width, g.height, &g.projection, g.range);
+            let mut after = before.clone();
+            msdf_error_correction(&mut after, &shape, &g.projection, g.range);
+
+            let (b, a) = (
+                interpolation_artifacts(&g, &before),
+                interpolation_artifacts(&g, &after),
+            );
+            assert!(a <= b, "{family} '{c}': {b} artifacts before, {a} after");
+            total_before += b;
+            total_after += a;
+            corrected += corrected_pixels(&before, &after);
+        }
+    }
+    assert!(corrected > 0);
+    assert!(
+        total_after < total_before,
+        "{total_before} artifacts before correction, {total_after} after"
+    );
+}
+
+/// `generate_glyph` emits the field top row first: row `r` of the bitmap is
+/// row `height - 1 - r` of the field (row 0 at the bottom). "T" is not
+/// vertically symmetric.
+#[test]
+fn glyph_bitmap_rows_are_top_first() {
+    let registry = FontRegistry::with_builtin();
+    let face = registry
+        .resolve(registry.family(UI_FAMILY).unwrap(), 700)
+        .unwrap();
+    let (data, index) = registry.face_data(face.font).unwrap();
+    let font = FontRef::from_index(data, index).unwrap();
+    let glyph_id = font.charmap().map('T').unwrap().to_u32() as u16;
+    let bitmap = super::generate_glyph(
+        &registry,
+        super::GlyphKey {
+            font: face.font,
+            weight: 700,
+            glyph_id,
+        },
+    )
+    .unwrap()
+    .unwrap();
+
+    let g = glyph_case(&registry, UI_FAMILY, 'T');
+    let (width, height) = (g.width, g.height);
+    let field = shape_msdf(g.shape, width, height, &g.projection, g.range);
+    assert_eq!(bitmap.image.size.width as usize, width);
+    assert_eq!(bitmap.image.size.height as usize, height);
+    let expected: Vec<u8> = field
+        .pixels
+        .chunks_exact(width)
+        .rev()
+        .flatten()
+        .flat_map(|px| {
+            let [r, g, b] = px.map(super::to_u8);
+            [r, g, b, 255]
+        })
+        .collect();
+    assert_eq!(bitmap.image.pixels, expected);
+    assert_ne!(field.pixels[..width], field.pixels[(height - 1) * width..]);
 }

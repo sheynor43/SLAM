@@ -59,6 +59,7 @@ impl Contour {
     }
 
     /// Reverses the direction of the contour.
+    #[cfg(test)]
     pub fn reverse(&mut self) {
         self.edges.reverse();
         for edge in &mut self.edges {

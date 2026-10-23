@@ -16,8 +16,12 @@ pub struct Intersection {
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum FillRule {
     NonZero,
+    // msdfgen's other rules; the glyph pipeline only uses `NonZero` (ADR-0062).
+    #[allow(dead_code)]
     Odd,
+    #[allow(dead_code)]
     Positive,
+    #[allow(dead_code)]
     Negative,
 }
 

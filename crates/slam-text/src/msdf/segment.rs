@@ -12,7 +12,6 @@ const CUBIC_SEARCH_STEPS: i32 = 4;
 
 /// Colour channels an edge belongs to (bit mask, `EdgeColor` in msdfgen).
 pub type EdgeColor = u8;
-pub const BLACK: EdgeColor = 0;
 pub const RED: EdgeColor = 1;
 pub const GREEN: EdgeColor = 2;
 pub const YELLOW: EdgeColor = 3;
@@ -359,6 +358,7 @@ impl EdgeSegment {
     }
 
     /// Swaps the start and end of the edge.
+    #[cfg(test)]
     pub fn reverse(&mut self) {
         match &mut self.curve {
             Curve::Linear(p) => p.swap(0, 1),

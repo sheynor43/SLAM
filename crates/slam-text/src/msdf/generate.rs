@@ -16,6 +16,17 @@ pub struct Projection {
 }
 
 impl Projection {
+    pub fn project(&self, coord: Point2) -> Point2 {
+        Point2::new(
+            self.scale.x * (coord.x + self.translate.x),
+            self.scale.y * (coord.y + self.translate.y),
+        )
+    }
+
+    pub fn unproject_vector(&self, vector: Vector2) -> Vector2 {
+        Vector2::new(vector.x / self.scale.x, vector.y / self.scale.y)
+    }
+
     pub fn unproject(&self, coord: Point2) -> Point2 {
         Point2::new(
             coord.x / self.scale.x - self.translate.x,
