@@ -94,7 +94,6 @@ impl Options {
             beatmap_skins: self.beatmap_skins,
             beatmap_colours: self.beatmap_colours,
             beatmap_hitsounds: self.beatmap_hitsounds,
-            show_fps: self.show_fps,
             mods: self.mods.clone(),
             dim: self.dim,
             hit_error_scale: self.hit_error_scale,
@@ -286,8 +285,8 @@ struct View {
     surface: Option<SdlGlSurface>,
     device: Option<GlDevice<SdlGlSurface>>,
     scene: PlayScene,
-    /// The FPS counter's inputs from the engine (ADR-0053).
-    fps: fps::FpsSource,
+    /// The FPS counter with `--show-fps` (ADR-0053).
+    fps: Option<fps::FpsOverlay>,
     /// Read by the update thread for the input layout.
     surface_size: Arc<AtomicU64>,
     /// Frame times for the console report; `None` with `--no-stats`.
@@ -303,7 +302,8 @@ impl Draw<PlaySnapshot> for View {
         // driver fault this developer command does not recover from.
         let mut device = GlDevice::new(surface, GlDebug::for_build()).expect("GL device");
         // The update thread does not wait for the glyphs (the lead-in runs on).
-        self.scene.start(&mut device, GLYPH_WARM_TIMEOUT);
+        self.scene
+            .start(&mut device, GLYPH_WARM_TIMEOUT, self.fps.as_ref());
         self.device = Some(device);
     }
 
@@ -315,8 +315,22 @@ impl Draw<PlaySnapshot> for View {
         let size = device.begin_frame(Color::rgb(0.0, 0.0, 0.0));
         self.surface_size
             .store(pack_size(size.width, size.height), Ordering::Relaxed);
-        self.scene
-            .draw(device, size, info.wait.woke_ns, snapshot, self.fps.sample());
+        let fps = self.fps.as_mut().map(|overlay| {
+            let display = fps::FpsDisplay {
+                show: true,
+                ..fps::FpsDisplay::default()
+            };
+            let (width, height) = (size.width as f32, size.height as f32);
+            overlay.frame(info.wait.woke_ns, width, height, display, true);
+            &*overlay
+        });
+        self.scene.draw(
+            device,
+            size,
+            info.wait.woke_ns,
+            snapshot,
+            fps.and_then(fps::FpsOverlay::view),
+        );
         // A failed present loses one frame; the next one tries again.
         let _ = device.present();
     }
@@ -440,6 +454,7 @@ pub fn run(options: &Options) -> Result<(), String> {
     let registry = Arc::new(FontRegistry::with_builtin());
     // English until the language setting exists (#98).
     let localizer = Localizer::builtin().map_err(|e| e.to_string())?;
+    let labels = scene::hud_labels(&localizer);
     let Prepared {
         beatmap,
         mods,
@@ -451,8 +466,8 @@ pub fn run(options: &Options) -> Result<(), String> {
         &options.map,
         &options.settings(),
         limits,
-        registry,
-        &scene::hud_labels(&localizer),
+        Arc::clone(&registry),
+        &labels,
     )?;
     load_track(&mut player, &audio)?;
     let mut input = LiveInput::new(
@@ -491,11 +506,17 @@ pub fn run(options: &Options) -> Result<(), String> {
         surface: Some(surface),
         device: None,
         scene,
-        fps: fps::FpsSource::new(
-            Arc::clone(&counters),
-            update_rate.clone(),
-            draw_rate.clone(),
-        ),
+        fps: options.show_fps.then(|| {
+            fps::FpsOverlay::new(
+                fps::FpsSource::new(
+                    Arc::clone(&counters),
+                    update_rate.clone(),
+                    draw_rate.clone(),
+                ),
+                registry,
+                &labels.fps,
+            )
+        }),
         surface_size,
         perf: frame_times
             .as_ref()

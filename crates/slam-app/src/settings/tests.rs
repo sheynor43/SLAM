@@ -7,13 +7,13 @@ use slam_engine::EngineConfig;
 use slam_engine::limiter::LimiterMode;
 use slam_input::MouseButton;
 use slam_osu::replay::Actions;
-use slam_play::BackgroundSettings;
 use slam_play::input::{Binding, Bindings, Input, MAX_BINDINGS};
+use slam_play::{BackgroundSettings, FpsCorner};
 
 use super::dirs::{Os, resolve};
 use super::file::{self, LoadStatus};
 use super::keys;
-use super::model::{DrawRate, Frame, InputSettings, Settings};
+use super::model::{DrawRate, FpsScreens, Frame, InputSettings, KeySlot, Settings};
 
 fn temp_dir(tag: &str) -> PathBuf {
     static N: AtomicU32 = AtomicU32::new(0);
@@ -61,6 +61,9 @@ fn round_trip_non_default() {
     s.frame.draw = DrawRate::Hz(240.0);
     s.frame.menu_draw = DrawRate::Hz(60.0);
     s.frame.show_fps = true;
+    s.frame.fps_corner = FpsCorner::TopLeft;
+    s.frame.fps_screens = FpsScreens::Gameplay;
+    s.hotkeys.toggle_fps = Some(keys::input_from_name("F11").unwrap());
     s.gameplay.dim = 0.3;
     s.gameplay.beatmap_skins = false;
     s.gameplay.beatmap_colours = false;
@@ -651,4 +654,113 @@ mod saver_tests {
         thread.finish();
         assert_eq!(file::load(&path).settings.audio.master_volume, 0.7);
     }
+}
+
+#[test]
+fn the_fps_counter_defaults_follow_lazer() {
+    let s = Settings::default();
+    assert!(!s.frame.show_fps);
+    assert_eq!(s.frame.fps_corner, FpsCorner::BottomRight);
+    assert_eq!(s.frame.fps_screens, FpsScreens::Everywhere);
+    assert_eq!(s.hotkeys.toggle_fps, None);
+}
+
+#[test]
+fn fps_counter_values_are_read_by_name() {
+    let loaded = file::from_toml_str(
+        "[frame]\nfps_corner = \"top_right\"\nfps_screens = \"menus\"\n\
+         [hotkeys]\ntoggle_fps = \"f11\"\n",
+    );
+    assert_eq!(loaded.status, LoadStatus::Ok, "{:?}", loaded.warnings);
+    assert_eq!(loaded.settings.frame.fps_corner, FpsCorner::TopRight);
+    assert_eq!(loaded.settings.frame.fps_screens, FpsScreens::Menus);
+    assert_eq!(loaded.settings.hotkeys.toggle_fps, Some(key("F11")));
+
+    let loaded = file::from_toml_str(
+        "[frame]\nfps_corner = \"middle\"\nfps_screens = 3\n[hotkeys]\ntoggle_fps = \"Nope\"\n",
+    );
+    assert_eq!(loaded.status, LoadStatus::Recovered);
+    assert_eq!(loaded.warnings.len(), 3, "{:?}", loaded.warnings);
+    assert_eq!(loaded.settings.frame, Frame::default());
+    assert_eq!(loaded.settings.hotkeys.toggle_fps, None);
+}
+
+#[test]
+fn a_hotkey_on_a_gameplay_key_is_dropped() {
+    let loaded = file::from_toml_str("[hotkeys]\ntoggle_fps = \"Z\"\n");
+    assert_eq!(loaded.status, LoadStatus::Recovered);
+    assert_eq!(loaded.settings.hotkeys.toggle_fps, None);
+}
+
+#[test]
+fn hotkeys_and_gameplay_keys_conflict_both_ways() {
+    let mut s = Settings::default();
+    let fps = KeySlot::ToggleFps;
+    assert_eq!(
+        s.key_conflict(fps, Input::Mouse(MouseButton::Right)),
+        Some(KeySlot::Play(Actions::RIGHT, 1))
+    );
+    assert_eq!(s.key_conflict(fps, key("F11")), None);
+    assert!(s.bind_key(fps, key("F11")));
+    assert_eq!(s.key(fps), Some(key("F11")));
+    assert_eq!(
+        s.key_conflict(KeySlot::Play(Actions::SMOKE, 1), key("F11")),
+        Some(fps)
+    );
+    // Taking the hotkey's input for gameplay unbinds the hotkey, and the other way round.
+    assert!(s.bind_key(KeySlot::Play(Actions::SMOKE, 1), key("F11")));
+    assert_eq!(s.key(fps), None);
+    assert!(s.bind_key(fps, key("Z")));
+    assert_eq!(s.key(fps), Some(key("Z")));
+    assert_eq!(
+        s.input.slot(Actions::LEFT, 0),
+        Some(Input::Mouse(MouseButton::Left))
+    );
+    assert!(
+        !s.input
+            .bindings
+            .as_slice()
+            .iter()
+            .any(|b| b.input == key("Z"))
+    );
+
+    s.clear_key(fps);
+    assert_eq!(s.key(fps), None);
+    s.bind_key(fps, key("F11"));
+    s.reset_keys();
+    assert_eq!(s.key(fps), None);
+    assert_eq!(s.bindings(), Bindings::default());
+}
+
+#[test]
+fn a_hotkey_cannot_take_menu_or_gameplay_screen_keys() {
+    let fps = KeySlot::ToggleFps;
+    for name in [
+        "Space", "Escape", "Enter", "Up", "Left", "Tab", "=", "-", "`", "F10",
+    ] {
+        assert!(!Settings::key_allowed(fps, key(name)), "{name}");
+    }
+    for button in [
+        MouseButton::Left,
+        MouseButton::Right,
+        MouseButton::Middle,
+        MouseButton::X1,
+        MouseButton::X2,
+    ] {
+        assert!(
+            !Settings::key_allowed(fps, Input::Mouse(button)),
+            "{button:?}"
+        );
+    }
+    assert!(Settings::key_allowed(fps, key("F11")));
+    assert!(Settings::key_allowed(fps, key("Q")));
+    // Gameplay slots take anything, as before.
+    assert!(Settings::key_allowed(
+        KeySlot::Play(Actions::LEFT, 0),
+        Input::Mouse(MouseButton::Left)
+    ));
+
+    let loaded = file::from_toml_str("[hotkeys]\ntoggle_fps = \"Space\"\n");
+    assert_eq!(loaded.status, LoadStatus::Recovered);
+    assert_eq!(loaded.settings.hotkeys.toggle_fps, None);
 }

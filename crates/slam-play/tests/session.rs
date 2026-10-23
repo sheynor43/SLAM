@@ -33,8 +33,8 @@ use slam_play::offset::OffsetPanel;
 use slam_play::slider_body::Snaking;
 use slam_play::sliders::{AnimationSprites, HitSliders, SliderBodies, SliderVisuals};
 use slam_play::{
-    BackgroundSettings, BackgroundView, FpsCounter, FpsLabels, FpsView, HudLabels, HudValues,
-    HudView, MenuLabels,
+    BackgroundSettings, BackgroundView, FpsCorner, FpsCounter, FpsLabels, FpsView, HudLabels,
+    HudValues, HudView, MenuLabels,
 };
 use slam_play::{
     Bindings, FrameTextures, GameTime, GameplaySounds, LiveInput, Offsets, PlaySession,
@@ -2250,6 +2250,7 @@ fn fps_counter_frames_do_not_allocate() {
             };
             counter.frame(now, update, aim, 1000.0);
             let height = [720.0, 1080.0, 1.0, 0.0][(frame / 500) as usize % 4];
+            view.set_corner(FpsCorner::ALL[(frame / 300) as usize % 4]);
             view.update(1280.0, height, &counter);
             batch.clear();
             text.clear();

@@ -54,6 +54,32 @@ pub enum GlobalAction {
     DecreaseOffset,
 }
 
+/// Whether the gameplay screen gives `input` (without modifiers) an action of its own:
+/// [`GlobalAction`]s and the pause and fail menus' keys. A hotkey of the whole window must
+/// not take it, or both would fire (ADR-0060).
+pub fn is_gameplay_hotkey(input: crate::input::Input) -> bool {
+    use crate::input::Input;
+    match input {
+        Input::Key(scancode) => matches!(
+            scancode,
+            SCANCODE_RETURN
+                | SCANCODE_ESCAPE
+                | SCANCODE_SPACE
+                | SCANCODE_MINUS
+                | SCANCODE_EQUALS
+                | SCANCODE_GRAVE
+                | SCANCODE_F10
+                | SCANCODE_DOWN
+                | SCANCODE_UP
+                | SCANCODE_KP_ENTER
+        ),
+        Input::Mouse(button) => matches!(
+            button,
+            MouseButton::X1 | MouseButton::Middle | MouseButton::X2
+        ),
+    }
+}
+
 /// A global action the pause and fail menus take ([`crate::menu_overlay`]).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum MenuKey {
@@ -357,5 +383,29 @@ mod tests {
         h.on_event(&key(400, SCANCODE_GRAVE, true));
         h.on_event(&key(500, SCANCODE_GRAVE, false));
         assert_eq!(h.fire(700 * MS), None);
+    }
+
+    #[test]
+    fn the_gameplay_hotkeys_are_reserved() {
+        use crate::input::Input;
+        for scancode in [
+            SCANCODE_ESCAPE,
+            SCANCODE_SPACE,
+            SCANCODE_F10,
+            SCANCODE_EQUALS,
+            SCANCODE_MINUS,
+            SCANCODE_GRAVE,
+            SCANCODE_RETURN,
+            SCANCODE_UP,
+        ] {
+            assert!(is_gameplay_hotkey(Input::Key(scancode)), "{scancode}");
+        }
+        for button in [MouseButton::X1, MouseButton::Middle, MouseButton::X2] {
+            assert!(is_gameplay_hotkey(Input::Mouse(button)), "{button:?}");
+        }
+        // F11, R (retry needs Ctrl) and the main buttons (gameplay bindings) are free here.
+        assert!(!is_gameplay_hotkey(Input::Key(68)));
+        assert!(!is_gameplay_hotkey(Input::Key(SCANCODE_R)));
+        assert!(!is_gameplay_hotkey(Input::Mouse(MouseButton::Left)));
     }
 }
