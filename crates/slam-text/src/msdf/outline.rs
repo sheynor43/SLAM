@@ -6,6 +6,7 @@
 use skrifa::outline::OutlinePen;
 
 use super::coloring::edge_coloring_simple;
+use super::error_correction::msdf_error_correction;
 use super::generate::{MsdfField, Projection, Range, distance_sign_correction, generate_msdf};
 use super::scanline::FillRule;
 use super::segment::EdgeSegment;
@@ -98,23 +99,42 @@ impl OutlineShapePen {
     }
 }
 
-/// The msdfgen utility pipeline without error correction: normalize,
-/// simple edge coloring, MSDF with overlap support, scanline sign correction
-/// with the non-zero rule.
+/// The msdfgen utility pipeline of ADR-0062: normalize, simple edge coloring,
+/// MSDF with overlap support, scanline sign correction with the non-zero rule,
+/// then error correction.
 pub fn shape_msdf(
-    mut shape: Shape,
+    shape: Shape,
     width: usize,
     height: usize,
     projection: &Projection,
     range: Range,
 ) -> MsdfField {
+    let shape = colored_shape(shape);
+    let mut field = uncorrected_msdf(&shape, width, height, projection, range);
+    msdf_error_correction(&mut field, &shape, projection, range);
+    field
+}
+
+/// Normalizes `shape` and applies the simple edge coloring.
+pub fn colored_shape(mut shape: Shape) -> Shape {
     shape.normalize();
     edge_coloring_simple(&mut shape, ANGLE_THRESHOLD, COLORING_SEED);
+    shape
+}
+
+/// The field of a [`colored_shape`] with sign correction, before error correction.
+pub fn uncorrected_msdf(
+    shape: &Shape,
+    width: usize,
+    height: usize,
+    projection: &Projection,
+    range: Range,
+) -> MsdfField {
     let mut field = MsdfField::new(width, height);
-    generate_msdf(&mut field, &shape, projection, range);
+    generate_msdf(&mut field, shape, projection, range);
     distance_sign_correction(
         &mut field,
-        &shape,
+        shape,
         projection,
         range.zero_value(),
         FillRule::NonZero,

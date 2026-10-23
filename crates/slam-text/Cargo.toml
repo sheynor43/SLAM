@@ -8,10 +8,7 @@ publish.workspace = true
 
 [dependencies]
 slam-render = { path = "../slam-render" }
-fdsm = { workspace = true }
 harfrust = { workspace = true }
-image = { workspace = true }
-nalgebra = { workspace = true }
 rtrb = { workspace = true }
 skrifa = { workspace = true }
 unicode-linebreak = { workspace = true }
