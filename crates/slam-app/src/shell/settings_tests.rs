@@ -461,3 +461,100 @@ fn the_reset_button_restores_the_default_bindings() {
     s.tick(LATER, &[key(KEY_ESCAPE)], &mut snap);
     assert!(s.take_save_request().is_none());
 }
+
+const KEY_F11: u16 = 68;
+
+fn with_fps_hotkey() -> ShellState {
+    let mut s = state();
+    s.settings.hotkeys.toggle_fps = Some(Input::Key(KEY_F11));
+    s
+}
+
+#[test]
+fn the_fps_hotkey_toggles_the_counter_on_the_menu_and_saves() {
+    let mut s = with_fps_hotkey();
+    let mut snap = ShellSnapshot::default();
+    s.tick(0, &[], &mut snap);
+    assert!(!snap.fps.show);
+    s.tick(LATER, &[key(KEY_F11)], &mut snap);
+    assert!(snap.fps.show);
+    assert!(matches!(s.stack().top(), AppScreen::Menu(_)));
+    let saved = s.take_save_request().expect("a save is asked for");
+    assert!(saved.frame.show_fps);
+    s.tick(LATER, &[key(KEY_F11)], &mut snap);
+    assert!(!snap.fps.show);
+    assert!(!s.settings().frame.show_fps);
+}
+
+#[test]
+fn without_a_hotkey_nothing_toggles() {
+    let mut s = state();
+    let mut snap = ShellSnapshot::default();
+    s.tick(0, &[key(KEY_F11)], &mut snap);
+    assert!(!snap.fps.show);
+    assert!(s.take_save_request().is_none());
+}
+
+#[test]
+fn the_fps_hotkey_is_watched_while_the_play_has_the_input() {
+    let mut s = with_fps_hotkey();
+    s.watch_hotkeys(&[key(KEY_Q), key(KEY_F11)]);
+    assert!(s.settings().frame.show_fps);
+    assert!(s.take_save_request().is_some());
+}
+
+#[test]
+fn the_snapshot_follows_the_edited_fps_settings() {
+    let mut s = with_fps_hotkey();
+    let mut snap = ShellSnapshot::default();
+    opened(&mut s, &mut snap);
+    s.editing.as_mut().unwrap().frame.fps_corner = slam_play::FpsCorner::TopLeft;
+    s.editing.as_mut().unwrap().frame.fps_screens = crate::settings::FpsScreens::Menus;
+    s.tick(LATER, &[], &mut snap);
+    assert_eq!(snap.fps.corner, slam_play::FpsCorner::TopLeft);
+    assert_eq!(snap.fps.screens, crate::settings::FpsScreens::Menus);
+    // The hotkey changes the setting in force, the edited one and the row.
+    s.tick(LATER, &[key(KEY_F11)], &mut snap);
+    assert!(snap.fps.show);
+    assert!(s.settings().frame.show_fps);
+    assert!(edited(&s).frame.show_fps);
+    let Some(RowWidget::Toggle(row)) = settings_screen(&s).widget(Row::ShowFps as usize) else {
+        panic!("a toggle row");
+    };
+    assert!(row.value());
+}
+
+#[test]
+fn the_fps_hotkey_row_captures_a_key_and_a_gameplay_key_asks() {
+    let mut s = state();
+    let mut snap = ShellSnapshot::default();
+    on_keys(&mut s, &mut snap);
+    let downs = [key(KEY_DOWN); Row::ToggleFpsKey as usize - Row::LeftKey1 as usize];
+    s.tick(LATER, &downs, &mut snap);
+    assert_eq!(settings_screen(&s).focus(), Row::ToggleFpsKey as usize);
+    s.tick(LATER, &[key(KEY_ENTER), key(KEY_F11)], &mut snap);
+    assert_eq!(edited(&s).hotkeys.toggle_fps, Some(Input::Key(KEY_F11)));
+    // Captured, not toggled: the hotkey in force is still unbound.
+    assert!(!edited(&s).frame.show_fps);
+    // Space skips in gameplay and a left click works the menus: refused, F11 stays.
+    s.tick(LATER, &[key(KEY_ENTER), key(KEY_SPACE)], &mut snap);
+    assert_eq!(edited(&s).hotkeys.toggle_fps, Some(Input::Key(KEY_F11)));
+    let Some(RowWidget::Key(row)) = settings_screen(&s).widget(Row::ToggleFpsKey as usize) else {
+        panic!("a key row");
+    };
+    assert_eq!(row.value(), KeyValue::Key(KEY_F11));
+    s.tick(
+        LATER,
+        &[key(KEY_ENTER), mouse(MouseButton::Left, true)],
+        &mut snap,
+    );
+    assert_eq!(edited(&s).hotkeys.toggle_fps, Some(Input::Key(KEY_F11)));
+    assert!(settings_screen(&s).conflict().is_none());
+    // Z is the left key: the screen asks before taking it.
+    s.tick(LATER, &[key(KEY_ENTER), key(KEY_Z)], &mut snap);
+    assert_eq!(
+        settings_screen(&s).conflict().map(|c| c.other),
+        Some(Some(Row::LeftKey1 as usize))
+    );
+    assert_eq!(edited(&s).hotkeys.toggle_fps, Some(Input::Key(KEY_F11)));
+}

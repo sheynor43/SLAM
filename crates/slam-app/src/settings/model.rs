@@ -6,9 +6,10 @@ use serde::{Serialize, Serializer};
 use slam_audio::StreamConfig;
 use slam_engine::EngineConfig;
 use slam_engine::limiter::{InvalidRate, LimiterMode, MAX_HZ, MIN_HZ};
+use slam_input::MouseButton;
 use slam_osu::replay::Actions;
-use slam_play::BackgroundSettings;
 use slam_play::input::{Binding, Bindings, Input, MAX_BINDINGS};
+use slam_play::{BackgroundSettings, FpsCorner};
 
 use super::keys;
 
@@ -145,8 +146,73 @@ pub struct Frame {
     pub draw: DrawRate,
     /// Draw rate on every other screen (ADR-0047).
     pub menu_draw: DrawRate,
-    /// Show the FPS counter in gameplay (lazer's `ShowFpsDisplay`; ADR-0053).
+    /// Show the FPS counter (lazer's `ShowFpsDisplay`; ADR-0053).
     pub show_fps: bool,
+    /// The window corner of the FPS counter (ADR-0060).
+    #[serde(serialize_with = "serialize_corner")]
+    pub fps_corner: FpsCorner,
+    /// The screens the FPS counter shows on (ADR-0060).
+    pub fps_screens: FpsScreens,
+}
+
+/// Where the FPS counter shows (ADR-0060); lazer shows it everywhere.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum FpsScreens {
+    #[default]
+    Everywhere,
+    Gameplay,
+    Menus,
+}
+
+impl FpsScreens {
+    pub const ALL: [FpsScreens; 3] = [
+        FpsScreens::Everywhere,
+        FpsScreens::Gameplay,
+        FpsScreens::Menus,
+    ];
+
+    /// The name in the settings file.
+    pub fn name(self) -> &'static str {
+        match self {
+            FpsScreens::Everywhere => "everywhere",
+            FpsScreens::Gameplay => "gameplay",
+            FpsScreens::Menus => "menus",
+        }
+    }
+
+    /// The value called `name`.
+    pub fn from_name(name: &str) -> Option<FpsScreens> {
+        FpsScreens::ALL.into_iter().find(|s| s.name() == name)
+    }
+
+    /// Whether the counter shows while the play is (`true`) or is not on top.
+    pub fn shows(self, gameplay: bool) -> bool {
+        match self {
+            FpsScreens::Everywhere => true,
+            FpsScreens::Gameplay => gameplay,
+            FpsScreens::Menus => !gameplay,
+        }
+    }
+}
+
+/// The name of a corner in the settings file.
+pub fn corner_name(corner: FpsCorner) -> &'static str {
+    match corner {
+        FpsCorner::TopLeft => "top_left",
+        FpsCorner::TopRight => "top_right",
+        FpsCorner::BottomLeft => "bottom_left",
+        FpsCorner::BottomRight => "bottom_right",
+    }
+}
+
+/// The corner called `name`.
+pub fn corner_from_name(name: &str) -> Option<FpsCorner> {
+    FpsCorner::ALL.into_iter().find(|c| corner_name(*c) == name)
+}
+
+fn serialize_corner<S: Serializer>(corner: &FpsCorner, serializer: S) -> Result<S::Ok, S::Error> {
+    serializer.serialize_str(corner_name(*corner))
 }
 
 impl Default for Frame {
@@ -157,6 +223,8 @@ impl Default for Frame {
             draw: engine.draw.into(),
             menu_draw: engine.draw.into(),
             show_fps: false,
+            fps_corner: FpsCorner::default(),
+            fps_screens: FpsScreens::default(),
         }
     }
 }
@@ -330,6 +398,40 @@ impl Serialize for InputSettings {
     }
 }
 
+/// Keys of the whole window, outside the gameplay bindings (ADR-0060). Unbound by default,
+/// as lazer's.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Serialize)]
+pub struct Hotkeys {
+    /// Shows or hides the FPS counter (lazer's `ToggleFPSDisplay`).
+    #[serde(
+        skip_serializing_if = "Option::is_none",
+        serialize_with = "serialize_input"
+    )]
+    pub toggle_fps: Option<Input>,
+}
+
+fn serialize_input<S: Serializer>(input: &Option<Input>, serializer: S) -> Result<S::Ok, S::Error> {
+    match input {
+        Some(input) => serializer.serialize_str(&keys::input_name(*input)),
+        None => serializer.serialize_none(),
+    }
+}
+
+/// The arrows, which the menus move with (SDL scancodes, Right to Up).
+const MENU_KEYS_FIRST: u16 = 79;
+const MENU_KEYS_LAST: u16 = 82;
+const KEY_BACKSPACE: u16 = 42;
+const KEY_TAB: u16 = 43;
+const KEY_DELETE: u16 = 76;
+
+/// A key the settings screen edits: a gameplay binding slot or a hotkey.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum KeySlot {
+    /// `action`'s binding number `slot`.
+    Play(Actions, usize),
+    ToggleFps,
+}
+
 /// All user settings.
 #[derive(Clone, Debug, Default, PartialEq, Serialize)]
 pub struct Settings {
@@ -340,11 +442,93 @@ pub struct Settings {
     pub frame: Frame,
     pub gameplay: Gameplay,
     pub input: InputSettings,
+    pub hotkeys: Hotkeys,
 }
 
 impl Settings {
     /// The gameplay key bindings.
     pub fn bindings(&self) -> Bindings {
         self.input.bindings
+    }
+
+    /// The input in `slot`, `None` if it is empty.
+    pub fn key(&self, slot: KeySlot) -> Option<Input> {
+        match slot {
+            KeySlot::Play(action, n) => self.input.slot(action, n),
+            KeySlot::ToggleFps => self.hotkeys.toggle_fps,
+        }
+    }
+
+    /// Where else `input` is bound when it goes into `slot`: one input does one thing,
+    /// gameplay or hotkey. A gameplay slot past [`BINDING_SLOTS`] is still a conflict.
+    pub fn key_conflict(&self, slot: KeySlot, input: Input) -> Option<KeySlot> {
+        match slot {
+            KeySlot::Play(action, n) => {
+                if let Some((other, other_slot)) = self.input.conflict(action, n, input) {
+                    return Some(KeySlot::Play(other, other_slot));
+                }
+                (self.hotkeys.toggle_fps == Some(input)).then_some(KeySlot::ToggleFps)
+            }
+            KeySlot::ToggleFps => {
+                let list = self.input.bindings.as_slice();
+                let i = list.iter().position(|b| b.input == input)?;
+                let action = list[i].action;
+                let n = list[..i].iter().filter(|b| b.action == action).count();
+                Some(KeySlot::Play(action, n))
+            }
+        }
+    }
+
+    /// Whether `input` may go into `slot`. Not for a hotkey: the main mouse buttons (lazer's
+    /// `AllowMainMouseButtons = false` for global bindings), the menus' keys and the
+    /// gameplay screen's own keys (ADR-0060).
+    pub fn key_allowed(slot: KeySlot, input: Input) -> bool {
+        match slot {
+            KeySlot::Play(..) => true,
+            KeySlot::ToggleFps => {
+                !matches!(
+                    input,
+                    Input::Mouse(MouseButton::Left | MouseButton::Right)
+                        | Input::Key(MENU_KEYS_FIRST..=MENU_KEYS_LAST)
+                        | Input::Key(KEY_TAB | KEY_BACKSPACE | KEY_DELETE)
+                ) && !slam_play::hotkeys::is_gameplay_hotkey(input)
+            }
+        }
+    }
+
+    /// Puts `input` into `slot` and takes it out of every other slot. Returns `false` and
+    /// changes nothing when the gameplay bindings are full.
+    pub fn bind_key(&mut self, slot: KeySlot, input: Input) -> bool {
+        match slot {
+            KeySlot::Play(action, n) => {
+                if !self.input.bind(action, n, input) {
+                    return false;
+                }
+                if self.hotkeys.toggle_fps == Some(input) {
+                    self.hotkeys.toggle_fps = None;
+                }
+            }
+            KeySlot::ToggleFps => {
+                while let Some(KeySlot::Play(action, n)) = self.key_conflict(slot, input) {
+                    self.input.clear(action, n);
+                }
+                self.hotkeys.toggle_fps = Some(input);
+            }
+        }
+        true
+    }
+
+    /// Empties `slot`.
+    pub fn clear_key(&mut self, slot: KeySlot) {
+        match slot {
+            KeySlot::Play(action, n) => self.input.clear(action, n),
+            KeySlot::ToggleFps => self.hotkeys.toggle_fps = None,
+        }
+    }
+
+    /// The default gameplay bindings (lazer's) and no hotkeys.
+    pub fn reset_keys(&mut self) {
+        self.input.reset();
+        self.hotkeys = Hotkeys::default();
     }
 }

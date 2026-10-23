@@ -439,6 +439,33 @@ const BACKGROUND: Color = Color {
     a: 1.0,
 };
 
+/// The window corner the counter sits in (ADR-0060); lazer's is the bottom right.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Hash)]
+pub enum FpsCorner {
+    TopLeft,
+    TopRight,
+    BottomLeft,
+    #[default]
+    BottomRight,
+}
+
+impl FpsCorner {
+    pub const ALL: [FpsCorner; 4] = [
+        FpsCorner::TopLeft,
+        FpsCorner::TopRight,
+        FpsCorner::BottomLeft,
+        FpsCorner::BottomRight,
+    ];
+
+    fn left(self) -> bool {
+        matches!(self, FpsCorner::TopLeft | FpsCorner::BottomLeft)
+    }
+
+    fn top(self) -> bool {
+        matches!(self, FpsCorner::TopLeft | FpsCorner::TopRight)
+    }
+}
+
 /// Text sizes and positions of one window size.
 #[derive(Debug, Clone, Copy, PartialEq)]
 struct Frame {
@@ -453,6 +480,7 @@ pub struct FpsView {
     family: FamilyId,
     context: LayoutContext,
     frame: Frame,
+    corner: FpsCorner,
     /// Frame time, then fps.
     templates: [Template; 2],
     text: String,
@@ -472,6 +500,7 @@ impl fmt::Debug for FpsView {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.debug_struct("FpsView")
             .field("frame", &self.frame)
+            .field("corner", &self.corner)
             .field("box_width", &self.box_width)
             .field("shown", &self.shown)
             .finish_non_exhaustive()
@@ -499,6 +528,7 @@ impl FpsView {
                 height: 0.0,
                 scale: 0.0,
             },
+            corner: FpsCorner::default(),
             templates,
             text: String::with_capacity(longest + NUMBER_TEXT_LEN),
             layouts: [Layout::new(), Layout::new()],
@@ -530,6 +560,11 @@ impl FpsView {
             .flat_map(Layout::glyphs)
             .filter(|g| matches!(glyphs.glyph(GlyphKey::of(g)), slam_text::Glyph::Pending))
             .count()
+    }
+
+    /// Puts the box in `corner` from the next frame on.
+    pub fn set_corner(&mut self, corner: FpsCorner) {
+        self.corner = corner;
     }
 
     /// Lays out what changed for `counter` on a window of `width` × `height` pixels.
@@ -580,7 +615,17 @@ impl FpsView {
         } = self.frame;
         let size = [self.box_width, BOX_HEIGHT * scale];
         let margin = BOX_MARGIN * scale;
-        ([width - margin - size[0], height - margin - size[1]], size)
+        let x = if self.corner.left() {
+            margin
+        } else {
+            width - margin - size[0]
+        };
+        let y = if self.corner.top() {
+            margin
+        } else {
+            height - margin - size[1]
+        };
+        ([x, y], size)
     }
 
     /// Writes the counter's background, tinting `white` (an opaque white image).
@@ -766,5 +811,31 @@ pub(crate) mod tests {
         assert_eq!(size[1], 2.0 * BOX_HEIGHT);
         assert!(size[0] < 2.0 * wider);
         assert!((position[1] + size[1] - (1536.0 - 2.0 * BOX_MARGIN)).abs() < 1e-3);
+    }
+
+    #[test]
+    fn the_box_sits_in_the_chosen_corner() {
+        let mut c = FpsCounter::new();
+        run(&mut c, 1, 2000, 1, 1.0);
+        let mut view = FpsView::new(Arc::new(FontRegistry::with_builtin()), &labels());
+        let (width, height) = (1280.0, 768.0);
+        for corner in FpsCorner::ALL {
+            view.set_corner(corner);
+            view.update(width, height, &c);
+            let ([x, y], [w, h]) = view.bounds();
+            let expected_x = if corner.left() {
+                BOX_MARGIN
+            } else {
+                width - BOX_MARGIN - w
+            };
+            let expected_y = if corner.top() {
+                BOX_MARGIN
+            } else {
+                height - BOX_MARGIN - h
+            };
+            assert!((x - expected_x).abs() < 1e-3, "{corner:?}");
+            assert!((y - expected_y).abs() < 1e-3, "{corner:?}");
+        }
+        assert_eq!(FpsCorner::default(), FpsCorner::BottomRight);
     }
 }

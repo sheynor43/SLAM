@@ -27,7 +27,7 @@ pub mod spinners;
 pub mod time;
 
 pub use background::{BackgroundSettings, BackgroundView};
-pub use fps_counter::{FpsCounter, FpsLabels, FpsTexts, FpsView};
+pub use fps_counter::{FpsCorner, FpsCounter, FpsLabels, FpsTexts, FpsView};
 pub use gameplay_sounds::{GameplaySounds, SoundSettings, VoiceSink};
 pub use hitsounds::{Hitsound, Hitsounds, SampleCache, SampleSkins, Sound};
 pub use hotkeys::{GlobalAction, Hotkeys};

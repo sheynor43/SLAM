@@ -633,3 +633,21 @@ fn the_wheel_scrolls_an_open_long_dropdown_and_is_ignored_otherwise() {
     assert_eq!(d.highlight(), 20);
     assert!(d.scroll() <= 20 && 20 < d.scroll() + crate::widgets::MAX_VISIBLE_OPTIONS);
 }
+
+#[test]
+fn a_toggle_changed_from_outside_shows_without_an_action() {
+    let mut s = screen();
+    let row = (0..s.len)
+        .find(|&r| matches!(s.widget(r), Some(RowWidget::Toggle(_))))
+        .unwrap();
+    let before = matches!(s.widget(row), Some(RowWidget::Toggle(t)) if t.value());
+    s.set_toggle(row, !before);
+    assert!(matches!(s.widget(row), Some(RowWidget::Toggle(t)) if t.value() == !before));
+    // Other rows are left alone.
+    let other = (0..s.len)
+        .find(|&r| !matches!(s.widget(r), Some(RowWidget::Toggle(_))))
+        .unwrap();
+    let widget = *s.widget(other).unwrap();
+    s.set_toggle(other, true);
+    assert_eq!(*s.widget(other).unwrap(), widget);
+}
