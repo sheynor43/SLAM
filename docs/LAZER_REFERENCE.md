@@ -29,3 +29,12 @@ git clone --depth 1 --branch 2026.918.0 https://github.com/ppy/osu-resources ../
 2. Просмотреть изменения в портированных файлах (по меткам `Ported from osu!lazer`) и перенести их.
 3. Прогнать корпус реплеев (`just corpus`), разобрать все расхождения.
 4. Только после зелёного корпуса слить изменения.
+
+## Прочие эталоны
+
+| Репозиторий | Тег | Коммит | Путь | Для чего |
+|---|---|---|---|---|
+| [Chlumsky/msdfgen](https://github.com/Chlumsky/msdfgen) (MIT) | `v1.13` | `1874bcf7d9624ccc85b4bc9a85d78116f690f35b` | `../slam-refs/msdfgen` | генератор MSDF в `slam-text` ([ADR-0062](adr/0062-own-msdf-generator.md)) |
+
+- Метка в портированном коде: `// Ported from msdfgen v1.13: <path>`.
+- Восстановление: `git clone --depth 1 --branch v1.13 https://github.com/Chlumsky/msdfgen ../slam-refs/msdfgen`.
