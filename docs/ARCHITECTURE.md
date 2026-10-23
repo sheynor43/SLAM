@@ -167,7 +167,7 @@ graph TD
 
 ## 5. Рендер
 
-Подробности — [ADR-0003]; основной бэкенд по платформам — [ADR-0024](adr/0024-render-backend-per-platform.md); шейдеры и координаты — [ADR-0019](adr/0019-wgsl-shaders-and-coordinates.md); контекст и поверхность — [ADR-0018](adr/0018-gl-context-on-draw-thread.md); батчер, атлас и цвет — [ADR-0020](adr/0020-sprite-batcher-and-colour-space.md); загрузка текстур — [ADR-0034](adr/0034-texture-loading.md), JPEG — [ADR-0040](adr/0040-jpeg-decoding.md); MSDF-текст — [ADR-0038](adr/0038-msdf-glyph-atlas.md); тела слайдеров — [ADR-0041](adr/0041-slider-body-rendering.md).
+Подробности — [ADR-0003]; основной бэкенд по платформам — [ADR-0024](adr/0024-render-backend-per-platform.md); шейдеры и координаты — [ADR-0019](adr/0019-wgsl-shaders-and-coordinates.md); контекст и поверхность — [ADR-0018](adr/0018-gl-context-on-draw-thread.md); батчер, атлас и цвет — [ADR-0020](adr/0020-sprite-batcher-and-colour-space.md); загрузка текстур — [ADR-0034](adr/0034-texture-loading.md), JPEG — [ADR-0040](adr/0040-jpeg-decoding.md); MSDF-текст — [ADR-0038](adr/0038-msdf-glyph-atlas.md), генератор — [ADR-0062](adr/0062-own-msdf-generator.md); тела слайдеров — [ADR-0041](adr/0041-slider-body-rendering.md).
 
 - Свой тонкий HAL с небольшой поверхностью: текстуры и атласы, батчер спрайтов, меши (тела слайдеров), рендер-таргеты, MSDF-текст, обрезка.
 - Бэкенды по порядку: **OpenGL 3.3** (первый, работает везде, фолбэк; основной на Linux) → **D3D11** (основной на Windows, этап M2) → **Vulkan** (для Linux — только если задержки `present` в OpenGL не устраняются, условие в [ADR-0024](adr/0024-render-backend-per-platform.md)) → **Metal** (при возвращении macOS).
@@ -340,7 +340,7 @@ graph TD
 - Фолбэк для CJK — системные шрифты (поиск через `fontdb`); Noto CJK — опциональный пакет.
 - Пользовательские шрифты: TTF/OTF/WOFF2, включая вариативные; папка `fonts/`, выбор в настройках; скины и темы могут приносить свои.
 - Общий реестр семейств; любой компонент ссылается на семейство по имени.
-- Разбор шрифтов `skrifa`, шейпинг `harfrust`, своя раскладка (перенос по UAX #14, выравнивание); глифы в MSDF-атлас (`fdsm`) по требованию в потоке генерации, кадр рисует только готовые, шейдер `msdf.wgsl` ([ADR-0038](adr/0038-msdf-glyph-atlas.md)); кеш на диске — позже.
+- Разбор шрифтов `skrifa`, шейпинг `harfrust`, своя раскладка (перенос по UAX #14, выравнивание); глифы в MSDF-атлас (свой генератор по msdfgen с поддержкой перекрывающихся контуров, [ADR-0062](adr/0062-own-msdf-generator.md)) по требованию в потоке генерации, кадр рисует только готовые, шейдер `msdf.wgsl` ([ADR-0038](adr/0038-msdf-glyph-atlas.md)); кеш на диске — позже.
 
 ## 13. Локализация
 
