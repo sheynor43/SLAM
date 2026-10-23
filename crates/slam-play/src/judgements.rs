@@ -575,8 +575,8 @@ impl JudgementView {
             .iter()
             .map(|o| combo_colour(&o.combo, beatmap_colours, skins))
             .collect();
-        // The version the skin source gives: the first skin's.
-        let version = skins.config(|s| Some(s.version())).map(|f| f.value);
+        // The version the skin source gives: the first skin that has one (not the beatmap's).
+        let version = skins.config(Skin::config_version).map(|f| f.value);
         JudgementView {
             style: JudgementStyle {
                 miss_falls: version.is_some_and(|v| v > SkinVersion::V1),
@@ -805,9 +805,13 @@ pub fn piece_sources(skins: &SkinChain) -> [PieceSource; PIECE_SLOTS] {
 
 /// What `skin` draws for `result`; `None` to ask the next skin.
 fn piece_source(skin: &Skin, result: HitResult) -> Option<PieceSource> {
-    // Skins older than version 2 draw slider ticks and ends with stable's score points.
+    // Skins older than version 2 draw slider ticks and ends with stable's score points. The
+    // beatmap's skin has no version, so it never does.
     let slider_point = |result| {
-        if skin.version() >= SkinVersion::new(2, 0) {
+        if !skin
+            .config_version()
+            .is_some_and(|v| v < SkinVersion::new(2, 0))
+        {
             return None;
         }
         skin.texture(if result == HitResult::LargeTickHit {

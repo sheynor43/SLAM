@@ -95,8 +95,23 @@ impl Skin {
     /// Zero-length files are not indexed. Images are not decoded here: a file that fails to
     /// decode must be treated by the consumer as missing (lazer then continues with the 1x
     /// file and the next skin). [`crate::SkinChain`] cannot fall through for that case yet.
+    ///
+    /// A beatmap's skin ([`Skin::load_beatmap`]) has no high-resolution sprites: only `name`
+    /// is tried, unchanged, at scale 1 (`LegacyBeatmapSkin.AllowHighResolutionSprites`).
     pub fn texture(&self, name: &str) -> Option<TextureFile> {
         // Ported from osu!lazer 2026.1005.0-lazer: osu.Game/Skinning/LegacySkin.cs
+        // Ported from osu!lazer 2026.1005.0-lazer: osu.Game/Skinning/LegacyBeatmapSkin.cs (AllowHighResolutionSprites)
+        if self.is_beatmap() {
+            if name.is_empty() {
+                return None;
+            }
+            return self
+                .find_with_extensions(name, &TEXTURE_EXTENSIONS)
+                .map(|path| TextureFile {
+                    path: path.to_path_buf(),
+                    scale: 1.0,
+                });
+        }
         let name = name.replace("@2x", "");
         if name.is_empty() {
             return None;

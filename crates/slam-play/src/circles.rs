@@ -26,7 +26,7 @@ use slam_render::atlas::{AtlasRegion, UvRect};
 use slam_render::sprite::{Sprite, SpriteBatch};
 use slam_render::textures::TextureId;
 use slam_render::{Blend, Color};
-use slam_skin::{Rgba, Skin, SkinChain, SkinVersion};
+use slam_skin::{Rgba, Skin, SkinChain, SkinSource, SkinVersion};
 
 use crate::legacy_text::{Digits, LegacyFont};
 use crate::playfield::PlayfieldLayout;
@@ -206,7 +206,7 @@ impl CircleStyle {
     /// The style for a play with `mods` and `windows`, drawn with `skins`.
     pub fn new(mods: CircleMods, windows: &HitWindows, skins: &SkinChain) -> Self {
         // Ported from osu!lazer 2026.1005.0-lazer: osu.Game.Rulesets.Osu/Skinning/Legacy/LegacyMainCirclePiece.cs (updateStateTransforms)
-        let version = skins.config(|s| Some(s.version())).map(|f| f.value);
+        let version = skins.config(Skin::config_version).map(|f| f.value);
         CircleStyle {
             mods,
             ok_window: windows.window_for(HitResult::Ok),
@@ -272,11 +272,14 @@ impl CircleVisuals {
 // Ported from osu!lazer 2026.1005.0-lazer: osu.Game/Skinning/LegacyBeatmapSkin.cs (GetComboColour)
 // Ported from osu!lazer 2026.1005.0-lazer: osu.Game/Skinning/LegacyColourCompatibility.cs (DisallowZeroAlpha)
 pub(crate) fn combo_colour(combo: &ComboInfo, beatmap: Option<&Skin>, skins: &SkinChain) -> Color {
-    let [r, g, b, a] = match (beatmap, skins.sources().next()) {
+    let [r, g, b, a] = match beatmap {
         // A beatmap skin has no default colours to fall back on; the caller checked it has some.
-        (Some(skin), _) => pick(&skin.ini().combo_colours, combo.combo_index_with_offsets),
-        (None, Some((_, skin))) => pick(skin.combo_colours(), combo.combo_index),
-        (None, None) => [255; 4],
+        Some(skin) => pick(&skin.ini().combo_colours, combo.combo_index_with_offsets),
+        // Combo colours of the beatmap layer are gated by `BeatmapColours`, not by the chain.
+        None => pick(
+            skins.skin(SkinSource::User).combo_colours(),
+            combo.combo_index,
+        ),
     };
     let a = if a == 0 { 255 } else { a };
     Color {

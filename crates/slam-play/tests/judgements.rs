@@ -620,6 +620,30 @@ const DEFAULT_SKIN: (&[&str], &str) = (
 );
 
 #[test]
+fn a_beatmap_skin_has_no_version_and_draws_no_slider_points() {
+    // `Version: 1.0` in the beatmap is ignored (`LegacyBeatmapSkin.GetConfig`), so its score
+    // points are not used, though the user skin's `Version` would allow them.
+    let beatmap_dir = skin_dir(&["sliderpoint30", "sliderpoint10"], "");
+    let osu = "osu file format v14\n\n[General]\nVersion: 1.0\n";
+    let user = skin_dir(&[], "[General]\n");
+    let default = skin_dir(DEFAULT_SKIN.0, DEFAULT_SKIN.1);
+    let chain = SkinChain::new(
+        Some(Skin::load(&user.0).unwrap()),
+        Skin::load(&default.0).unwrap(),
+    )
+    .with_beatmap(Some(
+        Skin::load_beatmap(&beatmap_dir.0, osu.as_bytes()).unwrap(),
+    ));
+    let kinds: Vec<_> = piece_sources(&chain)
+        .iter()
+        .map(|s| (s.kind, s.frames.len()))
+        .collect();
+    assert_eq!(kinds[6], (PieceKind::None, 0));
+    assert_eq!(kinds[7], (PieceKind::None, 0));
+    assert_eq!(kinds[4], (PieceKind::Old, 1));
+}
+
+#[test]
 fn particles_choose_the_new_style() {
     // Slots: Miss, Meh, Ok, Great, LargeTickMiss, IgnoreMiss, LargeTickHit, SliderTailHit.
     let kinds = sources((&[], "[General]\nVersion: 2.5\n"), DEFAULT_SKIN);

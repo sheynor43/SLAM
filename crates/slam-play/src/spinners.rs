@@ -528,10 +528,9 @@ impl SpinnerStyle {
         });
         let approach = match kind {
             Some(SpinnerKind::OldStyle) => true,
-            Some(SpinnerKind::NewStyle) => {
-                skins.find_provider(|s| s.texture("spinner-top").is_some())
-                    == Some(SkinSource::User)
-            }
+            Some(SpinnerKind::NewStyle) => skins
+                .find_provider(|s| s.texture("spinner-top").is_some())
+                .is_some_and(|source| source != SkinSource::Default),
             None => false,
         };
         let background = skins

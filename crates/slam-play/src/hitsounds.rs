@@ -41,6 +41,7 @@ pub enum SampleSource {
 impl From<SkinSource> for SampleSource {
     fn from(source: SkinSource) -> SampleSource {
         match source {
+            SkinSource::Beatmap => SampleSource::Beatmap,
             SkinSource::User => SampleSource::User,
             SkinSource::Default => SampleSource::Default,
         }
@@ -53,7 +54,7 @@ pub struct SampleSkins<'a> {
     /// The beatmap's skin ([`Skin::load_beatmap`]); `None` when beatmap hitsounds are turned
     /// off (lazer's `BeatmapHitsounds` setting) or the folder could not be read.
     pub beatmap: Option<&'a Skin>,
-    /// The user and default skins.
+    /// The user and default skins; the chain's beatmap layer is not asked.
     pub chain: &'a SkinChain,
 }
 
@@ -65,8 +66,9 @@ impl<'a> SampleSkins<'a> {
             .map(|s| (SampleSource::Beatmap, s, true))
             .into_iter()
             .chain(
+                // The chain's beatmap layer is gated by `BeatmapSkins`; samples by `beatmap`.
                 self.chain
-                    .sources()
+                    .skin_sources()
                     .map(|(source, s)| (source.into(), s, false)),
             )
     }

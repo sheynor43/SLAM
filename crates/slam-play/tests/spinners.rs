@@ -167,6 +167,18 @@ fn the_first_skin_with_a_legacy_spinner_gives_its_style() {
 }
 
 #[test]
+fn a_beatmap_spinner_top_shows_the_approach_circle() {
+    let beatmap_dir = skin_dir(&["spinner-top"], "");
+    let default_dir = skin_dir(&["spinner-top"], "");
+    let osu = "osu file format v14\n";
+    let chain = SkinChain::new(None, Skin::load(&default_dir.0).unwrap()).with_beatmap(Some(
+        Skin::load_beatmap(&beatmap_dir.0, osu.as_bytes()).unwrap(),
+    ));
+    let s = SpinnerStyle::new(CircleMods::new(&ModSet::default()), &chain);
+    assert_eq!((s.kind, s.approach), (Some(SpinnerKind::NewStyle), true));
+}
+
+#[test]
 fn spinner_settings_come_through_the_skins() {
     let none: &[&str] = &[];
     let s = style_of(Some((none, "")), &["spinner-top", "spinner-middle2"]);

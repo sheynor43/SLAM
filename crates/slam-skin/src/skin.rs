@@ -40,6 +40,8 @@ pub struct Skin {
     ini: SkinIni,
     has_ini: bool,
     warnings: Vec<Warning>,
+    /// Loaded by [`Skin::load_beatmap`]: lookups follow `LegacyBeatmapSkin`.
+    beatmap: bool,
 }
 
 /// `ToStandardisedPath().ToLowerInvariant()`.
@@ -112,8 +114,8 @@ impl Skin {
     /// folder are indexed and the configuration is read from the `.osu` file's bytes, which
     /// lazer decodes as a `skin.ini`.
     ///
-    /// Only sample lookups and configuration follow `LegacyBeatmapSkin` so far; its texture rules
-    /// (no `@2x` sprites, no `Version`) are not applied.
+    /// Textures are looked up without `@2x` sprites ([`Skin::texture`]) and the configuration has
+    /// no version ([`Skin::config_version`]), as in stable and lazer.
     // Ported from osu!lazer 2026.1005.0-lazer: osu.Game/Skinning/LegacyBeatmapSkin.cs
     pub fn load_beatmap(dir: impl AsRef<Path>, osu: &[u8]) -> Result<Self, LoadError> {
         Self::load_with(dir.as_ref(), Some(osu))
@@ -159,6 +161,7 @@ impl Skin {
             ini,
             has_ini,
             warnings,
+            beatmap: config.is_some(),
         };
         tracing::debug!(
             skin = %root.display(),
@@ -264,6 +267,18 @@ impl Skin {
     /// The skin version (`GetConfig<LegacySetting, decimal>(Version)`).
     pub fn version(&self) -> SkinVersion {
         self.ini.version
+    }
+
+    /// The version a configuration lookup gives (`LegacySetting.Version`): `None` for a
+    /// beatmap's skin, which ignores beatmap-level versions (`LegacyBeatmapSkin.GetConfig`).
+    // Ported from osu!lazer 2026.1005.0-lazer: osu.Game/Skinning/LegacyBeatmapSkin.cs (GetConfig)
+    pub fn config_version(&self) -> Option<SkinVersion> {
+        (!self.beatmap).then_some(self.ini.version)
+    }
+
+    /// Whether this is a beatmap's skin ([`Skin::load_beatmap`]).
+    pub fn is_beatmap(&self) -> bool {
+        self.beatmap
     }
 
     /// Whether the version was `latest`.

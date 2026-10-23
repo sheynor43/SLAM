@@ -161,10 +161,13 @@ impl Fixture {
     fn resolve(&self) -> Resolved {
         let map = Beatmap::decode(self.osu.as_bytes()).unwrap();
         let beatmap_skin = Skin::load_beatmap(&self.beatmap_dir.0, self.osu.as_bytes()).unwrap();
+        // The chain also has the beatmap layer (`BeatmapSkins` on), which must not answer
+        // samples: only `beatmap` below, gated by `BeatmapHitsounds`, does.
         let chain = SkinChain::new(
             Some(Skin::load(&self.user_dir.0).unwrap()),
             Skin::load(&self.default_dir.0).unwrap(),
-        );
+        )
+        .with_beatmap(Some(beatmap_skin.clone()));
         let skins = SampleSkins {
             beatmap: self.beatmap_hitsounds.then_some(&beatmap_skin),
             chain: &chain,

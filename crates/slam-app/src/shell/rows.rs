@@ -52,6 +52,7 @@ pub enum Row {
     MenuDrawHz,
     ShowFps,
     Dim,
+    BeatmapSkins,
     BeatmapColours,
     BeatmapHitsounds,
     HitErrorScale,
@@ -59,7 +60,7 @@ pub enum Row {
 }
 
 impl Row {
-    pub const ALL: [Row; 24] = [
+    pub const ALL: [Row; 25] = [
         Row::MasterVolume,
         Row::MusicVolume,
         Row::HitsoundVolume,
@@ -80,6 +81,7 @@ impl Row {
         Row::MenuDrawHz,
         Row::ShowFps,
         Row::Dim,
+        Row::BeatmapSkins,
         Row::BeatmapColours,
         Row::BeatmapHitsounds,
         Row::HitErrorScale,
@@ -125,6 +127,7 @@ impl Row {
             | Row::ResetKeys => 2,
             Row::UpdateHz | Row::DrawHz | Row::MenuDrawHz | Row::ShowFps => 3,
             Row::Dim
+            | Row::BeatmapSkins
             | Row::BeatmapColours
             | Row::BeatmapHitsounds
             | Row::HitErrorScale
@@ -154,6 +157,7 @@ impl Row {
             Row::MenuDrawHz => "settings-frame-menu-draw-rate",
             Row::ShowFps => "settings-frame-show-fps",
             Row::Dim => "settings-gameplay-dim",
+            Row::BeatmapSkins => "settings-gameplay-beatmap-skins",
             Row::BeatmapColours => "settings-gameplay-beatmap-colours",
             Row::BeatmapHitsounds => "settings-gameplay-beatmap-hitsounds",
             Row::HitErrorScale => "settings-gameplay-hit-error-scale",
@@ -307,6 +311,9 @@ impl Rows {
             Row::ShowFps => RowKind::Toggle {
                 value: s.frame.show_fps,
             },
+            Row::BeatmapSkins => RowKind::Toggle {
+                value: s.gameplay.beatmap_skins,
+            },
             Row::BeatmapColours => RowKind::Toggle {
                 value: s.gameplay.beatmap_colours,
             },
@@ -360,6 +367,7 @@ impl Rows {
             }
             (Row::MouseButtons, RowValue::Toggle(v)) => settings.gameplay.mouse_buttons = v,
             (Row::ShowFps, RowValue::Toggle(v)) => settings.frame.show_fps = v,
+            (Row::BeatmapSkins, RowValue::Toggle(v)) => settings.gameplay.beatmap_skins = v,
             (Row::BeatmapColours, RowValue::Toggle(v)) => settings.gameplay.beatmap_colours = v,
             (Row::BeatmapHitsounds, RowValue::Toggle(v)) => settings.gameplay.beatmap_hitsounds = v,
             (Row::Skin, RowValue::Choice(i)) => match i {
@@ -545,6 +553,7 @@ mod tests {
         rows.apply(&mut s, index(Row::MasterVolume), RowValue::Slider(30.0));
         rows.apply(&mut s, index(Row::Dim), RowValue::Slider(7.0));
         rows.apply(&mut s, index(Row::GlobalOffset), RowValue::Slider(-3.0));
+        rows.apply(&mut s, index(Row::BeatmapSkins), RowValue::Toggle(false));
         rows.apply(&mut s, index(Row::BeatmapColours), RowValue::Toggle(false));
         rows.apply(
             &mut s,
@@ -563,6 +572,7 @@ mod tests {
         assert_eq!(s.audio.master_volume, 0.3);
         assert_eq!(s.gameplay.dim, 0.07);
         assert_eq!(s.timing.global_offset_ms, -3.0);
+        assert!(!s.gameplay.beatmap_skins);
         assert!(!s.gameplay.beatmap_colours);
         assert!(!s.gameplay.beatmap_hitsounds);
         rows.apply(&mut s, index(Row::ShowFps), RowValue::Toggle(true));

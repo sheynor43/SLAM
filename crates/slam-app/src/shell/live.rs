@@ -130,6 +130,7 @@ impl AppliedUpdateRate {
 pub fn play_options(settings: &Settings) -> PlayOptions {
     PlayOptions {
         dim: settings.gameplay.dim,
+        beatmap_skins: settings.gameplay.beatmap_skins,
         beatmap_colours: settings.gameplay.beatmap_colours,
         beatmap_hitsounds: settings.gameplay.beatmap_hitsounds,
         show_fps: settings.frame.show_fps,
@@ -252,6 +253,7 @@ mod tests {
     fn the_next_play_takes_the_dim_beatmap_settings_and_fps_counter() {
         let mut settings = Settings::default();
         settings.gameplay.dim = 0.3;
+        settings.gameplay.beatmap_skins = false;
         settings.gameplay.beatmap_colours = false;
         settings.gameplay.beatmap_hitsounds = false;
         settings.frame.show_fps = true;
@@ -260,6 +262,7 @@ mod tests {
             play_options(&settings),
             PlayOptions {
                 dim: 0.3,
+                beatmap_skins: false,
                 beatmap_colours: false,
                 beatmap_hitsounds: false,
                 show_fps: true,
