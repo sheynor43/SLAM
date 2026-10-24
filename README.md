@@ -42,6 +42,7 @@ ln -sf ../../scripts/pre-commit .git/hooks/pre-commit
 | `just clippy` | линтер с `-D warnings` |
 | `just deny` | проверка лицензий и уязвимостей зависимостей |
 | `just bench` | бенчмарки |
+| `just clean` | удалить сборочные артефакты из `target/`, кроме базы бенчмарков |
 | `just run` | запустить клиент (release) |
 | `just corpus` | прогнать корпус реплеев (`SLAM_CORPUS`, по умолчанию `../slam-corpus`) |
 
