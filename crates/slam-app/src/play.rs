@@ -44,11 +44,6 @@ const LOAD_TIMEOUT: Duration = Duration::from_secs(10);
 /// How long the draw thread waits for the HUD's glyphs before the first frame.
 const GLYPH_WARM_TIMEOUT: Duration = Duration::from_secs(1);
 
-/// The bundled default skin, in the source tree.
-pub(crate) fn default_skin_dir() -> PathBuf {
-    Path::new(env!("CARGO_MANIFEST_DIR")).join("../../assets/default-skin")
-}
-
 #[derive(Clone, Debug, PartialEq)]
 pub struct Options {
     pub map: PathBuf,
@@ -823,10 +818,5 @@ mod tests {
         assert_eq!(easy.circle_size, plain.circle_size * 0.5);
         assert_eq!(easy.approach_rate, plain.approach_rate * 0.5);
         assert_eq!(difficulty(&["--mods", "HDNF"]), plain);
-    }
-
-    #[test]
-    fn the_default_skin_is_in_the_source_tree() {
-        assert!(slam_skin::Skin::load_default(default_skin_dir()).is_ok());
     }
 }

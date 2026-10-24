@@ -41,8 +41,8 @@ use slam_skin::{Skin, SkinChain};
 use slam_text::{FontRegistry, GlyphAtlasConfig, GlyphCache, glyph_atlas};
 use slam_ui::i18n::{FluentArgs, Localizer};
 
+use super::find_beatmap_file;
 use super::fps::{FpsOverlay, MAX_FPS_GLYPHS};
-use super::{default_skin_dir, find_beatmap_file};
 
 /// The mixer's format; the shell's output and the `play` command's use it.
 pub(crate) const SAMPLE_RATE: u32 = 48_000;
@@ -133,8 +133,9 @@ pub(crate) fn load(map: &Path, settings: &PlaySettings) -> Result<Loaded, String
         .playable_beatmap(file)
         .map_err(|e| format!("{}: {e}", map.display()))?;
     let beatmap_skin = Skin::load_beatmap(dir, &bytes).map_err(|e| format!("beatmap skin: {e}"))?;
-    let default = Skin::load_default(default_skin_dir())
-        .map_err(|e| format!("default skin {}: {e}", default_skin_dir().display()))?;
+    let default_dir = crate::default_skin::dir()?;
+    let default = Skin::load_default(&default_dir)
+        .map_err(|e| format!("default skin {}: {e}", default_dir.display()))?;
     // A skin that does not load is not worth cancelling the play: play on the default one.
     let user = settings.skin.as_ref().and_then(|dir| {
         Skin::load(dir)

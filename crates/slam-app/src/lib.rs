@@ -3,6 +3,7 @@
 pub mod backgrounds;
 pub mod bench;
 pub mod click;
+pub mod default_skin;
 pub mod details;
 pub mod i18n;
 pub mod loader;

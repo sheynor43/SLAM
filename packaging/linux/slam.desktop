@@ -1,0 +1,8 @@
+[Desktop Entry]
+Type=Application
+Name=SLAM
+Comment=Rhythm game client for osu!standard beatmaps
+Exec=slam
+Icon=slam
+Categories=Game;
+Terminal=false
