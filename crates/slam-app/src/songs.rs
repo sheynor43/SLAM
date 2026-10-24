@@ -17,6 +17,7 @@ use std::time::{Duration, Instant};
 use slam_input::{FolderCallback, FolderPick};
 
 use crate::backgrounds::BackgroundLoader;
+use crate::details::DetailsReader;
 use slam_library::scan::{BeatmapSetEntry, ScanEvent, Scanner, sort_sets};
 use slam_ui::song_select::{
     DifficultyRow, SetRow, SongFilter, SongList, SongSelectStatus, search_text,
@@ -253,12 +254,14 @@ fn link_with_ends() -> (
 
 /// Starts the library thread, named `slam-library`, listing `root` if given; `folders`
 /// changes the folder on request, `scanning_text` formats the status line as sets are
-/// found, `backgrounds` loads the song select's backgrounds (ADR-0066).
+/// found, `backgrounds` loads the song select's backgrounds (ADR-0066) and `details` reads
+/// the selected difficulty's statistics (ADR-0067).
 pub fn spawn(
     root: Option<PathBuf>,
     folders: Folders,
     scanning_text: ScanningText,
     backgrounds: Option<BackgroundLoader>,
+    details: Option<DetailsReader>,
 ) -> std::io::Result<(SongsLink, SkinViews, LibraryThread)> {
     let (producer, link, commands, old_filters) = link_with_ends();
     let (views_tx, views) = rtrb::RingBuffer::new(SKIN_VIEWS);
@@ -270,6 +273,7 @@ pub fn spawn(
         old_views: old_rx,
         old_filters,
         backgrounds,
+        details,
     };
     let stop = Arc::new(AtomicBool::new(false));
     let flag = Arc::clone(&stop);
@@ -510,6 +514,7 @@ struct Ends {
     old_views: rtrb::Consumer<DropdownView>,
     old_filters: rtrb::Consumer<SongFilter>,
     backgrounds: Option<BackgroundLoader>,
+    details: Option<DetailsReader>,
 }
 
 fn run(
@@ -545,6 +550,9 @@ fn run(
         library.receive_pick();
         if let Some(backgrounds) = &mut ends.backgrounds {
             backgrounds.poll();
+        }
+        if let Some(details) = &mut ends.details {
+            details.poll();
         }
         // The dropdown follows the change it belongs to, so the draw thread does not show
         // the new skins with the old choice.
@@ -740,7 +748,7 @@ mod tests {
             }),
         };
         let (mut link, _views, _thread) =
-            spawn(None, folders, Box::new(|n| format!("{n} sets")), None).unwrap();
+            spawn(None, folders, Box::new(|n| format!("{n} sets")), None, None).unwrap();
         let first = wait_for(&mut link, |_| true);
         assert_eq!(first.status, SongSelectStatus::NoFolder);
         assert_eq!(&*first.folder, "");
@@ -952,6 +960,7 @@ mod tests {
             no_folders(),
             Box::new(|n| format!("{n} sets")),
             None,
+            None,
         )
         .unwrap();
         let published = wait_for(&mut link, |p| p.status == SongSelectStatus::Ready);
@@ -982,6 +991,7 @@ mod tests {
             Some(missing),
             no_folders(),
             Box::new(|n| format!("{n} sets")),
+            None,
             None,
         )
         .unwrap();

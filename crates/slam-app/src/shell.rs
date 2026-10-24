@@ -22,10 +22,12 @@ use slam_input::{
     CursorVisibility, InputEvent, InputKind, InputWindow, MouseButton, TextInput, TickMapper,
     event_ring, sdl_ticks_ns,
 };
+use slam_osu::Difficulty;
 use slam_osu::mods::{
     APPROACH_RATE_STEP, Mod, ModSet, ModType, SPEED_STEP, SliderBounds, SpeedHotkeys,
     change_approach_rate, mods_for,
 };
+use slam_osu::statistics::{adjusted_display_difficulty, round_bpm};
 use slam_play::input::Input;
 use slam_play::{
     Bindings, LiveInput, Offsets, PlaySession, PlaySnapshot, PlayState, PlayfieldLayout,
@@ -51,14 +53,15 @@ use slam_ui::settings_screen::{
     SettingsView,
 };
 use slam_ui::song_select::{
-    ModColumns, ModSelect, SettingValue, SongFilter, SongList, SongSelect, SongSelectAction,
-    SongSelectInput, SongSelectLabels, SongSelectLayout, SongSelectSnapshot, SongSelectStatus,
-    SongSelectView, TileDetail,
+    BeatmapDetails, DetailLabels, DetailStats, ModColumns, ModSelect, SettingValue, SongFilter,
+    SongList, SongSelect, SongSelectAction, SongSelectInput, SongSelectLabels, SongSelectLayout,
+    SongSelectSnapshot, SongSelectStatus, SongSelectView, TileDetail,
 };
 use slam_ui::theme::Theme;
 use slam_ui::widgets::DropdownView;
 
 use crate::backgrounds::{BackgroundFade, BackgroundPicker, BackgroundTarget, MAX_BACKGROUNDS};
+use crate::details::DetailsPicker;
 use crate::loader::{LoaderConfig, LoaderLink, PlayOptions, SceneTrash, Trash};
 use crate::play::fps::{FpsDisplay, FpsOverlay, FpsSource, MAX_FPS_GLYPHS};
 use crate::play::scene::{CHANNELS, PlayScene, PlaySettings, Prepared, SAMPLE_RATE};
@@ -297,6 +300,8 @@ pub struct ShellState {
     pixels_per_point: f32,
     /// Asks for the song select's background; without a menu texture loader `None`.
     backgrounds: Option<BackgroundPicker>,
+    /// Asks for the selected difficulty's statistics; without a library thread `None`.
+    details: Option<DetailsPicker>,
 }
 
 impl ShellState {
@@ -347,7 +352,54 @@ impl ShellState {
             cursor: [0.0, 0.0],
             pixels_per_point,
             backgrounds: None,
+            details: None,
         }
+    }
+
+    /// A shell whose song select shows the selected difficulty's length, BPM and objects
+    /// (ADR-0067); the difficulty values show without it.
+    pub fn with_details(mut self, details: DetailsPicker) -> ShellState {
+        self.details = Some(details);
+        self
+    }
+
+    /// The selected difficulty's details with the selected mods. Neither blocks nor
+    /// allocates.
+    fn beatmap_details(&mut self, now_ns: u64) -> Option<BeatmapDetails> {
+        let selected = self.song_select.selected();
+        let statistics = self
+            .details
+            .as_mut()
+            .and_then(|details| details.tick(now_ns, &self.files, selected));
+        let (set, difficulty) = selected?;
+        let file = self.files.get(set)?.get(difficulty)?;
+        let base = Difficulty {
+            drain_rate: file.drain_rate.clamp(0.0, 10.0),
+            circle_size: file.circle_size.clamp(0.0, 10.0),
+            overall_difficulty: file.overall_difficulty.clamp(0.0, 10.0),
+            approach_rate: file.approach_rate.clamp(0.0, 10.0),
+            // Not shown, and no mod changes the others by them.
+            slider_multiplier: 1.0,
+            slider_tick_rate: 1.0,
+        };
+        let shown = adjusted_display_difficulty(base, &self.selected_mods);
+        let rate = self.selected_mods.rate().rate;
+        Some(BeatmapDetails {
+            circle_size: shown.circle_size,
+            approach_rate: shown.approach_rate,
+            overall_difficulty: shown.overall_difficulty,
+            drain_rate: shown.drain_rate,
+            // Ported from osu!lazer 2026.1005.0-lazer: osu.Game/Screens/Select/BeatmapTitleWedge.cs (updateLengthAndBpmStatistics)
+            stats: statistics.map(|s| DetailStats {
+                length_ms: (s.length / rate).round_ties_even().max(0.0) as u64,
+                bpm_minimum: round_bpm(s.bpm_minimum, rate),
+                bpm_maximum: round_bpm(s.bpm_maximum, rate),
+                bpm_most_common: round_bpm(s.bpm_most_common, rate),
+                circles: s.circles,
+                sliders: s.sliders,
+                spinners: s.spinners,
+            }),
+        })
     }
 
     /// A shell whose song select shows the selected beatmap's background (ADR-0066).
@@ -1062,6 +1114,8 @@ impl ShellState {
             self.rebuild_setting_rows();
         }
         snapshot.fps = FpsDisplay::of(&self.editing.as_ref().unwrap_or(&self.settings).frame);
+        let details = self.beatmap_details(now_ns);
+        self.song_select.set_details(details);
         if let Some(backgrounds) = &mut self.backgrounds {
             snapshot.background =
                 backgrounds.tick(now_ns, &self.files, self.song_select.selected());
@@ -2260,6 +2314,17 @@ pub fn run(settings: Settings) -> Result<(), String> {
             text("song-select-mods-increase"),
             text("song-select-mods-conversion"),
         ],
+        details: DetailLabels {
+            length: text("song-select-details-length"),
+            bpm: text("song-select-details-bpm"),
+            circles: text("song-select-details-circles"),
+            sliders: text("song-select-details-sliders"),
+            spinners: text("song-select-details-spinners"),
+            circle_size: text("song-select-details-circle-size"),
+            approach_rate: text("song-select-details-approach-rate"),
+            overall_difficulty: text("song-select-details-overall-difficulty"),
+            drain_rate: text("song-select-details-drain-rate"),
+        },
         mod_columns: mod_columns(),
     };
     let song_select = SongSelectView::new(Arc::clone(&registry), theme, &song_labels);
@@ -2352,9 +2417,16 @@ pub fn run(settings: Settings) -> Result<(), String> {
                 (None, None)
             }
         };
-        let (link, skin_views, thread) =
-            crate::songs::spawn(settings.paths.songs.clone(), folders, scanning, loader)
-                .map_err(|e| e.to_string())?;
+        let (picker, reader) = crate::details::link();
+        state = state.with_details(picker);
+        let (link, skin_views, thread) = crate::songs::spawn(
+            settings.paths.songs.clone(),
+            folders,
+            scanning,
+            loader,
+            Some(reader),
+        )
+        .map_err(|e| e.to_string())?;
         state = state.with_songs(link);
         (Some(skin_views), thread, fade)
     };

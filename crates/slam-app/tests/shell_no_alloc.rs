@@ -400,7 +400,7 @@ fn a_folder_change_on_the_open_settings_screen_does_not_allocate() {
 }
 
 #[test]
-fn background_changes_do_not_allocate_on_the_update_or_draw_thread() {
+fn background_and_detail_changes_do_not_allocate_on_the_update_or_draw_thread() {
     use std::sync::Arc;
 
     use slam_app::backgrounds::link;
@@ -447,10 +447,12 @@ fn background_changes_do_not_allocate_on_the_update_or_draw_thread() {
     }))
     .unwrap();
     let (picker, mut loader, mut fade) = link(requests);
+    let (details, mut reader) = slam_app::details::link();
     let (mut producer, songs) = songs_link();
     let mut state = ShellState::new(Theme::default(), 1280.0, 720.0, 1.0)
         .with_songs(songs)
-        .with_backgrounds(picker);
+        .with_backgrounds(picker)
+        .with_details(details);
     let mut snapshot = ShellSnapshot::default();
     let key = |scancode| InputEvent {
         time_ns: 0,
@@ -487,6 +489,7 @@ fn background_changes_do_not_allocate_on_the_update_or_draw_thread() {
             fade.push(&mut batch, 1280.0, 720.0, now, 1.0, |_| None);
         });
         loader.poll();
+        reader.poll();
         if generations.last() != Some(&snapshot.background.generation) {
             generations.push(snapshot.background.generation);
         }

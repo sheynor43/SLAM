@@ -31,6 +31,19 @@ impl DifficultyRange {
         self.mid
     }
 
+    // Ported from osu!lazer 2026.1005.0-lazer: osu.Game/Beatmaps/IBeatmapDifficultyInfo.cs (InverseDifficultyRange)
+    /// The difficulty that [`value`](Self::value) maps to `value`, extrapolated outside the
+    /// range.
+    pub fn inverse(&self, value: f64) -> f64 {
+        // `Math.Sign`: 0 for 0, unlike `signum`.
+        let sign = |x: f64| (x > 0.0) as i32 - (x < 0.0) as i32;
+        if sign(value - self.mid) == sign(self.max - self.mid) {
+            (value - self.mid) / (self.max - self.mid) * 5.0 + 5.0
+        } else {
+            (value - self.mid) / (self.mid - self.min) * 5.0 + 5.0
+        }
+    }
+
     // Ported from osu!lazer 2026.1005.0-lazer: osu.Game/Beatmaps/IBeatmapDifficultyInfo.cs (DifficultyRangeInt)
     /// [`value`](Self::value) truncated towards zero, like a C# `(int)` cast.
     pub fn value_int(&self, difficulty: f64) -> i32 {
@@ -81,6 +94,18 @@ mod tests {
     #[test]
     fn range_int_truncates_towards_zero() {
         assert_eq!(DifficultyRange::new(0.0, 0.0, 9.9).value_int(10.0), 9);
+    }
+
+    #[test]
+    fn inverse_undoes_value_on_both_sides_and_outside() {
+        for difficulty in [-1.0, 0.0, 2.5, 5.0, 7.5, 10.0, 11.0] {
+            assert_eq!(PREEMPT.inverse(PREEMPT.value(difficulty)), difficulty);
+        }
+        let great = DifficultyRange::new(80.0, 50.0, 20.0);
+        assert_eq!(great.inverse(50.0), 5.0);
+        assert_eq!(great.inverse(35.0), 7.5);
+        assert_eq!(great.inverse(65.0), 2.5);
+        assert_eq!(great.inverse(95.0), -2.5);
         assert_eq!(DifficultyRange::new(0.0, 0.0, -9.9).value_int(10.0), -9);
     }
 
