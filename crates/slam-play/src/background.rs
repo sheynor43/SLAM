@@ -187,7 +187,7 @@ fn fade_in(current: f64) -> f32 {
 // Ported from osu-framework 2026.921.1: osu.Framework/Graphics/Drawable.cs (FillMode.Fill)
 /// Position and size of an `image`-sized sprite covering `frame`, centred, keeping its
 /// aspect ratio (cropped on one axis).
-fn cover(image: [f32; 2], frame: [f32; 2]) -> ([f32; 2], [f32; 2]) {
+pub fn cover(image: [f32; 2], frame: [f32; 2]) -> ([f32; 2], [f32; 2]) {
     if image[0] <= 0.0 || image[1] <= 0.0 {
         return ([0.0, 0.0], frame);
     }

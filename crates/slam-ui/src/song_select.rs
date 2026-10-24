@@ -25,7 +25,7 @@ pub use mod_select::{
     ModColumns, ModSelect, ModSelectAction, ModSelectLayout, ModSelectSnapshot, SettingRow,
     SettingRowKind, SettingValue, TileDetail, TileDetails,
 };
-pub use view::{SongSelectLabels, SongSelectView};
+pub use view::{DetailLabels, SongSelectLabels, SongSelectView};
 
 /// The sets to show, built by the application from the library. Immutable once built;
 /// shared as `Arc<SongList>` and replaced wholesale when the library changes.
@@ -166,9 +166,12 @@ pub enum Row {
 /// function of the window size and theme, shared by hit testing (update) and drawing.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct SongSelectLayout {
-    /// Status line above the list.
+    /// Status line at the top: the first line of `details`, shown instead of it until the
+    /// list is ready.
     pub header: Rect,
-    /// The search line between the status line and the list.
+    /// Two lines of the selected beatmap's details at the top of the panel (ADR-0067).
+    pub details: Rect,
+    /// The search line between the details and the list.
     pub search: Rect,
     /// The rows' area; row 0 is at its top when not scrolled.
     pub list: Rect,
@@ -192,13 +195,13 @@ impl SongSelectLayout {
         let margin = theme.song_margin * scale;
         let panel = width * theme.song_panel_ratio;
         let x = width - margin - panel;
+        let hint_height = theme.song_detail_size * scale * 1.5;
         let header = Rect {
             x,
             y: margin,
             width: panel,
-            height: theme.song_header_height * scale,
+            height: hint_height,
         };
-        let hint_height = theme.song_detail_size * scale * 1.5;
         let hint = Rect {
             x,
             y: height - margin - hint_height,
@@ -206,9 +209,15 @@ impl SongSelectLayout {
             height: hint_height,
         };
         let row_height = theme.song_row_height * scale;
+        let details = Rect {
+            x,
+            y: header.y,
+            width: panel,
+            height: 2.0 * hint_height,
+        };
         let search = Rect {
             x,
-            y: header.y + header.height + margin / 2.0,
+            y: details.y + details.height + margin / 2.0,
             width: panel,
             height: row_height - theme.song_row_gap * scale,
         };
@@ -227,6 +236,7 @@ impl SongSelectLayout {
         };
         SongSelectLayout {
             header,
+            details,
             search,
             list,
             hint,
@@ -309,6 +319,33 @@ pub struct SongSelectSnapshot {
     /// generation.
     pub generation: u64,
     pub mods: ModSelectSnapshot,
+    /// The selected difficulty's details, as [`SongSelect::set_details`] gave them.
+    pub details: Option<BeatmapDetails>,
+}
+
+/// What the song select shows of the selected difficulty (ADR-0067), computed by the
+/// application with the selected mods.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct BeatmapDetails {
+    pub circle_size: f32,
+    pub approach_rate: f32,
+    pub overall_difficulty: f32,
+    pub drain_rate: f32,
+    /// `None` until the file is read.
+    pub stats: Option<DetailStats>,
+}
+
+/// The read part of [`BeatmapDetails`], at the mods' rate.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct DetailStats {
+    /// Whole milliseconds.
+    pub length_ms: u64,
+    pub bpm_minimum: i32,
+    pub bpm_maximum: i32,
+    pub bpm_most_common: i32,
+    pub circles: u32,
+    pub sliders: u32,
+    pub spinners: u32,
 }
 
 impl SongSelectSnapshot {
@@ -338,6 +375,7 @@ pub struct SongSelect {
     mods: ModSelect,
     /// Rows that fit the list area at the last input; keeps the selection in view.
     viewport: f32,
+    details: Option<BeatmapDetails>,
 }
 
 impl Default for SongSelect {
@@ -373,7 +411,13 @@ impl SongSelect {
             generation: 0,
             mods: ModSelect::default(),
             viewport: 10.0,
+            details: None,
         }
+    }
+
+    /// Sets the selected difficulty's details for the next snapshots.
+    pub fn set_details(&mut self, details: Option<BeatmapDetails>) {
+        self.details = details;
     }
 
     pub fn status(&self) -> SongSelectStatus {
@@ -536,6 +580,7 @@ impl SongSelect {
             scanning_text: Arc::clone(&self.scanning_text),
             generation: self.generation,
             mods: self.mods.snapshot(),
+            details: self.details,
         }
     }
 

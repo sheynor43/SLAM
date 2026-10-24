@@ -86,6 +86,7 @@ fn song_select_ticks_and_new_lists_do_not_allocate() {
                     approach_rate: 5.0,
                     circle_size: 4.0,
                     hp: 5.0,
+                    background: None,
                 })
                 .collect(),
         })
@@ -259,6 +260,7 @@ fn on_results() -> (
             approach_rate: 5.0,
             circle_size: 4.0,
             hp: 5.0,
+            background: None,
         }],
     }];
     let (mut producer, songs) = link();
@@ -395,4 +397,107 @@ fn a_folder_change_on_the_open_settings_screen_does_not_allocate() {
     assert!(old.skins.is_empty());
     assert!(commands.pop().is_err());
     drop(kept);
+}
+
+#[test]
+fn background_and_detail_changes_do_not_allocate_on_the_update_or_draw_thread() {
+    use std::sync::Arc;
+
+    use slam_app::backgrounds::link;
+    use slam_app::songs::{link as songs_link, publish};
+    use slam_library::scan::{BeatmapSetEntry, DifficultyEntry};
+    use slam_render::hal::Limits;
+    use slam_render::sprite::SpriteBatch;
+    use slam_render::upload::{LoadError, TextureLoaderConfig, TextureState, texture_loader};
+    use slam_ui::song_select::SongSelectStatus;
+
+    let root = std::env::temp_dir().join(format!("slam-bg-no-alloc-{}", std::process::id()));
+    let sets: Vec<BeatmapSetEntry> = (0..6)
+        .map(|i| {
+            let dir = root.join(format!("set {i}"));
+            std::fs::create_dir_all(&dir).unwrap();
+            std::fs::write(dir.join("bg.jpg"), b"not an image").unwrap();
+            BeatmapSetEntry {
+                dir: dir.clone(),
+                artist: format!("artist {i}"),
+                title: format!("title {i}"),
+                creator: "mapper".to_owned(),
+                artist_unicode: String::new(),
+                title_unicode: String::new(),
+                source: String::new(),
+                tags: String::new(),
+                difficulties: vec![DifficultyEntry {
+                    path: dir.join("map.osu"),
+                    version: "diff".to_owned(),
+                    overall_difficulty: 5.0,
+                    approach_rate: 5.0,
+                    circle_size: 4.0,
+                    hp: 5.0,
+                    // Every other set has none.
+                    background: (i % 2 == 0).then(|| "bg.jpg".to_owned()),
+                }],
+            }
+        })
+        .collect();
+    let (requests, _uploads) = texture_loader(&TextureLoaderConfig::new(Limits {
+        max_texture_size: 4096,
+        max_uniform_block_size: 16384,
+        max_uniform_buffer_slots: 12,
+        max_texture_slots: 16,
+    }))
+    .unwrap();
+    let (picker, mut loader, mut fade) = link(requests);
+    let (details, mut reader) = slam_app::details::link();
+    let (mut producer, songs) = songs_link();
+    let mut state = ShellState::new(Theme::default(), 1280.0, 720.0, 1.0)
+        .with_songs(songs)
+        .with_backgrounds(picker)
+        .with_details(details);
+    let mut snapshot = ShellSnapshot::default();
+    let key = |scancode| InputEvent {
+        time_ns: 0,
+        kind: InputKind::Key {
+            scancode,
+            down: true,
+        },
+    };
+    state.tick(0, &[key(40)], &mut snapshot);
+    state.tick(TRANSITION_NS, &[], &mut snapshot);
+    let published = publish(&sets, SongSelectStatus::Ready, Arc::from(""));
+    let kept = (Arc::clone(&published.list), Arc::clone(&published.files));
+    producer.push(published).unwrap();
+    state.tick(TRANSITION_NS + 1, &[], &mut snapshot);
+
+    // The images do not decode: each background fades out to the theme, and the draw end
+    // confirms it.
+    let failed = |_| TextureState::Failed(LoadError::Decode);
+    let mut batch = SpriteBatch::with_capacity(8);
+    let mut generations = Vec::new();
+    let start = 2 * TRANSITION_NS;
+    let step = 5_000_000;
+    for now in (start..start + 4_000_000_000).step_by(step as usize) {
+        // Down a set every 400 ms: the selection settles in between.
+        let input = if (now - start).is_multiple_of(400_000_000) {
+            &[key(81)][..]
+        } else {
+            &[]
+        };
+        assert_no_alloc(|| {
+            state.tick(now, input, &mut snapshot);
+            fade.advance(snapshot.background, now, failed);
+            batch.clear();
+            fade.push(&mut batch, 1280.0, 720.0, now, 1.0, |_| None);
+        });
+        loader.poll();
+        reader.poll();
+        if generations.last() != Some(&snapshot.background.generation) {
+            generations.push(snapshot.background.generation);
+        }
+    }
+    assert!(
+        generations.len() >= 5,
+        "backgrounds changed: {generations:?}"
+    );
+    drop(kept);
+    let _ = std::fs::remove_dir_all(&root);
 }

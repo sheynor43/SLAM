@@ -182,3 +182,32 @@ fn sort_order() {
     let dirs: Vec<_> = v.iter().map(|s| s.dir.to_str().unwrap()).collect();
     assert_eq!(dirs, ["1", "2", "3", "4"]);
 }
+
+#[test]
+fn each_difficulty_keeps_its_background() {
+    let t = Tmp::new("background");
+    let d = t.0.join("set");
+    let with =
+        |version: &str, events: &str| format!("{}\n[Events]\n{events}", osu(0, "A", "S", version));
+    write(&d, "a.osu", &with("Easy", "0,0,\"BG.jpg\",0,0\n"));
+    write(
+        &d,
+        "b.osu",
+        &with("Hard", "2,100,200\n0,0,\"sub\\hard.png\",0,0\n"),
+    );
+    write(&d, "c.osu", &osu(0, "A", "S", "Insane"));
+    let e = scan_set(&d).unwrap().unwrap();
+    let backgrounds: Vec<_> = e
+        .difficulties
+        .iter()
+        .map(|d| (d.version.as_str(), d.background.as_deref()))
+        .collect();
+    assert_eq!(
+        backgrounds,
+        [
+            ("Easy", Some("BG.jpg")),
+            ("Hard", Some("sub/hard.png")),
+            ("Insane", None),
+        ]
+    );
+}

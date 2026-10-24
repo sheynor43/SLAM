@@ -120,6 +120,18 @@ fn labels() -> SongSelectLabels {
         ],
         mod_column_titles: ["Reduction".into(), "Increase".into(), "Conversion".into()],
         mod_columns: MOD_COLUMNS,
+        // The longest labels: Russian.
+        details: slam_ui::song_select::DetailLabels {
+            length: "Длина".into(),
+            bpm: "BPM".into(),
+            circles: "Круги".into(),
+            sliders: "Слайдеры".into(),
+            spinners: "Спиннеры".into(),
+            circle_size: "CS".into(),
+            approach_rate: "AR".into(),
+            overall_difficulty: "OD".into(),
+            drain_rate: "HP".into(),
+        },
     }
 }
 
@@ -518,4 +530,45 @@ fn rows_scrolled_part_way_stay_inside_the_list() {
     // scroll: rows cut part-way add nothing there.
     assert_eq!(outside(3.5), outside(3.0));
     assert_eq!(outside(3.25), outside(3.0));
+}
+
+#[test]
+fn changing_details_push_without_allocating_once_warm() {
+    use slam_ui::song_select::{BeatmapDetails, DetailStats};
+
+    let mut rig = Rig::new();
+    let mut screen = SongSelect::new();
+    put(&mut screen, list_of(40));
+    let details = |i: u32| BeatmapDetails {
+        circle_size: 4.0 + i as f32 / 10.0,
+        approach_rate: 9.25,
+        overall_difficulty: 8.0,
+        drain_rate: 6.0,
+        stats: i.is_multiple_of(2).then_some(DetailStats {
+            length_ms: 205_000 + u64::from(i) * 1000,
+            bpm_minimum: 150,
+            bpm_maximum: 200 + i as i32,
+            bpm_most_common: 180,
+            circles: 512 + i,
+            sliders: 300,
+            spinners: 2,
+        }),
+    };
+    let snapshots: Vec<_> = (0..6)
+        .map(|i| {
+            screen.set_details(Some(details(i)));
+            screen.snapshot()
+        })
+        .collect();
+    for snapshot in &snapshots {
+        rig.frame(snapshot);
+    }
+    assert_no_alloc(|| {
+        for snapshot in snapshots.iter().rev() {
+            rig.frame(snapshot);
+        }
+        for snapshot in &snapshots {
+            rig.frame(snapshot);
+        }
+    });
 }

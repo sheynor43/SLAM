@@ -70,11 +70,13 @@ pub struct DecodeOptions {
     /// `osu file format vN` header. Default false, which is lazer's behaviour: the file is
     /// decoded as version 14 with a warning and the first line is parsed like any other.
     pub require_header: bool,
-    /// Parse only `[General]`, `[Editor]`, `[Metadata]` and `[Difficulty]`. Lines inside
-    /// `[Events]`, `[TimingPoints]`, `[Colours]` and `[HitObjects]` are skipped (section
-    /// headers are still tracked, so sections in unusual order work), leaving those parts of
-    /// the [`Beatmap`] empty. Skipped sections produce no warnings. Meant for library scans.
-    /// Default false.
+    /// Parse only `[General]`, `[Editor]`, `[Metadata]`, `[Difficulty]` and the background
+    /// of `[Events]` (ADR-0066). Lines inside `[TimingPoints]`, `[Colours]` and
+    /// `[HitObjects]` are skipped (section headers are still tracked, so sections in unusual
+    /// order work), leaving those parts of the [`Beatmap`] empty; of `[Events]` only the
+    /// lines that name the background are read, breaks stay empty and other events are
+    /// skipped by their type. Skipped lines and `[Events]` produce no
+    /// warnings. Meant for library scans. Default false.
     pub headers_only: bool,
 }
 
@@ -346,13 +348,24 @@ impl Decoder {
                 continue;
             }
 
-            if self.headers_only
-                && matches!(
-                    section,
-                    SECTION_EVENTS | SECTION_TIMING_POINTS | SECTION_COLOURS | SECTION_HIT_OBJECTS
-                )
-            {
-                continue;
+            if self.headers_only {
+                match section {
+                    SECTION_TIMING_POINTS | SECTION_COLOURS | SECTION_HIT_OBJECTS => continue,
+                    SECTION_EVENTS => {
+                        // Only the types that may name the background, picked by the first
+                        // field as `handle_event` parses it: storyboard commands, samples and
+                        // animations are skipped without splitting the line.
+                        let kind = line.split(',').next().unwrap_or("");
+                        if matches!(
+                            enum_try_parse(kind, EVENT_TYPES),
+                            Some(EVENT_BACKGROUND | EVENT_VIDEO | EVENT_SPRITE)
+                        ) {
+                            let _ = self.handle_event(line);
+                        }
+                        continue;
+                    }
+                    _ => {}
+                }
             }
 
             if let Err(kind) = self.parse_line(section, line) {
@@ -509,7 +522,7 @@ impl Decoder {
                 let name = clean_filename(field(&split, 2)?);
                 events.background = (!name.is_empty()).then_some(name);
             }
-            EVENT_BREAK => {
+            EVENT_BREAK if !self.headers_only => {
                 let start = num(parsing::double(field(&split, 1)?))? + self.offset;
                 let end = num(parsing::double(field(&split, 2)?))? + self.offset;
                 events.breaks.push(Break {

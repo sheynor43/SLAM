@@ -23,6 +23,7 @@ pub mod rules;
 pub mod samples;
 pub mod scoring;
 pub mod stacking;
+pub mod statistics;
 
 pub use beatmap::{Beatmap, BeatmapError, Difficulty};
 pub use health::HealthProcessor;
