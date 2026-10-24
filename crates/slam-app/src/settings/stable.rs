@@ -204,7 +204,16 @@ mod tests {
         }
     }
 
-    fn env_of(pairs: &[(&str, &str)]) -> impl Fn(&str) -> Option<OsString> {
+    /// `path` made absolute on this OS: a Unix-style path is not absolute on Windows.
+    fn abs(path: &str) -> String {
+        if cfg!(windows) {
+            format!("C:{path}")
+        } else {
+            path.to_owned()
+        }
+    }
+
+    fn env_of(pairs: &[(&str, &str)]) -> impl Fn(&str) -> Option<OsString> + use<> {
         let map: HashMap<String, String> = pairs
             .iter()
             .map(|(k, v)| (k.to_string(), v.to_string()))
@@ -289,27 +298,29 @@ mod tests {
     #[test]
     fn unix_osu_winello() {
         let fs = FakeFs::default()
-            .file("/h/.local/share/osu-wine/OSU/osu!.exe", "")
-            .dir("/h/.local/share/osu-wine/OSU/Songs");
-        let env = env_of(&[("HOME", "/h")]);
+            .file(&abs("/h/.local/share/osu-wine/OSU/osu!.exe"), "")
+            .dir(&abs("/h/.local/share/osu-wine/OSU/Songs"));
+        let home = abs("/h");
+        let env = env_of(&[("HOME", &home)]);
         assert_eq!(
             find_stable_songs(&env, &fs, Os::Unix),
-            Some(PathBuf::from("/h/.local/share/osu-wine/OSU/Songs"))
+            Some(PathBuf::from(abs("/h/.local/share/osu-wine/OSU/Songs")))
         );
     }
 
     #[test]
     fn wine_prefix_scans_users() {
         let fs = FakeFs::default()
-            .dir("/pfx/drive_c/users/Public")
-            .dir("/pfx/drive_c/users/alice/AppData/Local/Other")
-            .dir("/pfx/drive_c/users/bob/AppData/Local/osu!/Songs");
-        let env = env_of(&[("HOME", "/h"), ("WINEPREFIX", "/pfx")]);
+            .dir(&abs("/pfx/drive_c/users/Public"))
+            .dir(&abs("/pfx/drive_c/users/alice/AppData/Local/Other"))
+            .dir(&abs("/pfx/drive_c/users/bob/AppData/Local/osu!/Songs"));
+        let (home, prefix) = (abs("/h"), abs("/pfx"));
+        let env = env_of(&[("HOME", &home), ("WINEPREFIX", &prefix)]);
         assert_eq!(
             find_stable_songs(&env, &fs, Os::Unix),
-            Some(PathBuf::from(
+            Some(PathBuf::from(&abs(
                 "/pfx/drive_c/users/bob/AppData/Local/osu!/Songs"
-            ))
+            )))
         );
     }
 
@@ -326,14 +337,15 @@ mod tests {
     #[test]
     fn install_without_songs_dir_is_skipped() {
         let fs = FakeFs::default()
-            .file("/h/.local/share/osu-wine/osu!/osu!.exe", "")
-            .dir("/h/.wine/drive_c/users/me/AppData/Local/osu!/Songs");
-        let env = env_of(&[("HOME", "/h")]);
+            .file(&abs("/h/.local/share/osu-wine/osu!/osu!.exe"), "")
+            .dir(&abs("/h/.wine/drive_c/users/me/AppData/Local/osu!/Songs"));
+        let home = abs("/h");
+        let env = env_of(&[("HOME", &home)]);
         assert_eq!(
             find_stable_songs(&env, &fs, Os::Unix),
-            Some(PathBuf::from(
+            Some(PathBuf::from(&abs(
                 "/h/.wine/drive_c/users/me/AppData/Local/osu!/Songs"
-            ))
+            )))
         );
     }
 }
