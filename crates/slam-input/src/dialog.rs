@@ -3,6 +3,10 @@
 //! [`crate::InputWindow::run`] opens the dialog when it gets there. SDL answers on any
 //! thread; the answer goes to the request's callback, not through the event ring: a path
 //! is allocated and not `Copy`.
+//!
+//! On Linux SDL prefers the desktop portal. A broken portal (its file chooser backend
+//! crashing, common outside GNOME and KDE) answers a request like a cancel, after seconds,
+//! and SDL does not try zenity then; so zenity is used whenever it is installed.
 
 use std::ffi::{CStr, CString, c_char, c_int, c_void};
 use std::path::{Path, PathBuf};
@@ -10,6 +14,7 @@ use std::sync::{Arc, Mutex, PoisonError};
 
 use sdl3_sys::dialog::SDL_ShowOpenFolderDialog;
 use sdl3_sys::events::{SDL_Event, SDL_GETEVENT, SDL_PeepEvents, SDL_PushEvent, SDL_UserEvent};
+use sdl3_sys::hints::{SDL_HINT_FILE_DIALOG_DRIVER, SDL_SetHint};
 use sdl3_sys::video::SDL_Window;
 
 use crate::window::sdl_error;
@@ -28,6 +33,9 @@ pub enum FolderPick {
 /// Receives the answer of a dialog, once, on whichever thread SDL answers on. Must not
 /// panic: it runs inside a C callback, where a panic aborts.
 pub type FolderCallback = Box<dyn FnOnce(FolderPick) + Send>;
+
+/// Whether SDL chooses between the desktop portal and zenity.
+const PORTAL_OR_ZENITY: bool = cfg!(all(unix, not(target_os = "macos")));
 
 /// What a queued user event carries to the main thread.
 struct Request {
@@ -92,6 +100,15 @@ impl FolderDialog {
 /// `event` must be a user event queued by [`FolderDialog::open`], handled once; SDL video
 /// must be initialised on this thread and `window` valid.
 pub(crate) unsafe fn show(window: *mut SDL_Window, event: &SDL_Event) {
+    // Looked up on every request: `SDL_Quit` resets hints, and zenity may be installed
+    // meanwhile.
+    if PORTAL_OR_ZENITY {
+        let path = std::env::var_os("PATH").unwrap_or_default();
+        if on_path(&path, "zenity", &|p| p.is_file()) {
+            // SAFETY: valid C strings, on the thread that owns SDL.
+            unsafe { SDL_SetHint(SDL_HINT_FILE_DIALOG_DRIVER, c"zenity".as_ptr()) };
+        }
+    }
     // SAFETY: by the contract, `data1` is the `Request` that `open` leaked for this event.
     let request = unsafe { Box::from_raw(event.user.data1.cast::<Request>()) };
     let Request { start, done } = *request;
@@ -101,6 +118,11 @@ pub(crate) unsafe fn show(window: *mut SDL_Window, event: &SDL_Event) {
     // SDL copies `start` before returning and calls `answer` exactly once with
     // `userdata`, which `answer` frees.
     unsafe { SDL_ShowOpenFolderDialog(Some(answer), userdata.cast(), window, start, false) };
+}
+
+/// Whether an executable `name` is in one of the directories of `path` (a `PATH` value).
+fn on_path(path: &std::ffi::OsStr, name: &str, is_file: &dyn Fn(&Path) -> bool) -> bool {
+    std::env::split_paths(path).any(|dir| is_file(&dir.join(name)))
 }
 
 /// Fails the requests still queued, so their callbacks are freed. Main thread only.
@@ -191,6 +213,15 @@ mod tests {
                 Some(FolderPick::Cancelled)
             );
         }
+    }
+
+    #[test]
+    fn zenity_is_looked_up_in_every_path_directory() {
+        let path = std::env::join_paths(["/usr/local/bin", "/usr/bin"]).unwrap();
+        let installed = |p: &Path| p == Path::new("/usr/bin/zenity");
+        assert!(on_path(&path, "zenity", &installed));
+        assert!(!on_path(&path, "zenity", &|_| false));
+        assert!(!on_path(std::ffi::OsStr::new(""), "zenity", &installed));
     }
 
     #[test]
