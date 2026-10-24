@@ -1,10 +1,15 @@
 //! SLAM entry point.
 
+// Release builds on Windows open no console window (ADR-0068); run from a terminal, they print
+// into it (see `attach_parent_console`).
+#![cfg_attr(all(windows, not(debug_assertions)), windows_subsystem = "windows")]
+
 use std::process::ExitCode;
 
 use slam_app::{bench, click, i18n, play, shell};
 
 fn main() -> ExitCode {
+    attach_parent_console();
     tracing_subscriber::fmt()
         .with_env_filter(tracing_subscriber::EnvFilter::from_default_env())
         .init();
@@ -99,6 +104,20 @@ fn usage() -> String {
         i18n::USAGE
     )
 }
+
+/// A GUI-subsystem process has no console; attaching to the parent's (if started from a
+/// terminal) brings back the logs and the developer commands' output.
+#[cfg(all(windows, not(debug_assertions)))]
+fn attach_parent_console() {
+    use windows_sys::Win32::System::Console::{ATTACH_PARENT_PROCESS, AttachConsole};
+    // SAFETY: no pointers; fails harmlessly when there is no parent console.
+    unsafe {
+        AttachConsole(ATTACH_PARENT_PROCESS);
+    }
+}
+
+#[cfg(not(all(windows, not(debug_assertions))))]
+fn attach_parent_console() {}
 
 fn print_usage() {
     println!("{}", usage());

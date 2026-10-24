@@ -4,6 +4,31 @@
 
 > SLAM — независимый проект и не связан с ppy Pty Ltd. «osu!» — товарный знак ppy.
 
+## Альфа-версия для тестеров
+
+Сборки лежат в [Releases](https://github.com/sheynor43/SLAM/releases) с пометкой pre-release. Это ранняя альфа: многого нет, возможны вылеты. Решения типичных проблем — в описании релиза.
+
+**Системные требования**
+- Windows 10+ x64 или Linux x64 (X11 или Wayland, glibc не старше Ubuntu 24.04).
+- Видеокарта с OpenGL 3.3.
+- Linux: PipeWire (звук), для выбора папки — xdg-desktop-portal или zenity.
+
+**Запуск**
+- Windows: распакуйте `SLAM-…-windows-x64.zip` в любую папку и запустите `slam.exe`.
+- Linux: `chmod +x SLAM-…-x86_64.AppImage` и запустите файл.
+- Если папка с картами не нашлась сама, укажите её в настройках: `Songs` из osu!stable или любая папка с распакованными `.osz`.
+
+**Где лежат настройки**
+- Windows: `%APPDATA%\SLAM`; Linux: `~/.config/slam` (настройки) и `~/.local/share/slam` (реплеи, кэш).
+- Портативный режим: положите пустой файл `portable` рядом с `slam.exe` — настройки и данные будут храниться рядом с ним.
+
+**Как сообщить об ошибке**
+Создайте [issue](https://github.com/sheynor43/SLAM/issues/new) и укажите:
+- версию SLAM и ОС;
+- что делали, что ожидали и что произошло;
+- карту, если ошибка связана с ней (ссылку на osu.ppy.sh или файл);
+- лог: запустите из терминала с переменной `RUST_LOG=info` (Linux: `RUST_LOG=info ./SLAM-…AppImage`, Windows cmd: `set RUST_LOG=info` и затем `slam.exe`) и приложите вывод.
+
 ## Документация
 - [Архитектура](docs/ARCHITECTURE.md)
 - [Дорожная карта](docs/ROADMAP.md)

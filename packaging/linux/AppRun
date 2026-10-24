@@ -1,0 +1,4 @@
+#!/bin/sh
+# Starts the bundled binary; the libraries come from the system (ADR-0068).
+here="$(dirname "$(readlink -f "$0")")"
+exec "$here/usr/bin/slam" "$@"
