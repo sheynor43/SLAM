@@ -146,6 +146,7 @@ fn songs(sets: &[(&str, &[&str])]) -> Vec<slam_library::scan::BeatmapSetEntry> {
                     approach_rate: 5.0,
                     circle_size: 4.0,
                     hp: 5.0,
+                    background: None,
                 })
                 .collect(),
         })

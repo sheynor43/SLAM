@@ -15,6 +15,8 @@ use std::thread::JoinHandle;
 use std::time::{Duration, Instant};
 
 use slam_input::{FolderCallback, FolderPick};
+
+use crate::backgrounds::BackgroundLoader;
 use slam_library::scan::{BeatmapSetEntry, ScanEvent, Scanner, sort_sets};
 use slam_ui::song_select::{
     DifficultyRow, SetRow, SongFilter, SongList, SongSelectStatus, search_text,
@@ -44,6 +46,8 @@ pub struct SongFile {
     pub drain_rate: f32,
     /// The overall difficulty of the file, without mods.
     pub overall_difficulty: f32,
+    /// The background image as the file names it, relative to the set folder (ADR-0066).
+    pub background: Option<String>,
 }
 
 /// The difficulties of a published list, by set and difficulty, in the list's order.
@@ -249,11 +253,12 @@ fn link_with_ends() -> (
 
 /// Starts the library thread, named `slam-library`, listing `root` if given; `folders`
 /// changes the folder on request, `scanning_text` formats the status line as sets are
-/// found.
+/// found, `backgrounds` loads the song select's backgrounds (ADR-0066).
 pub fn spawn(
     root: Option<PathBuf>,
     folders: Folders,
     scanning_text: ScanningText,
+    backgrounds: Option<BackgroundLoader>,
 ) -> std::io::Result<(SongsLink, SkinViews, LibraryThread)> {
     let (producer, link, commands, old_filters) = link_with_ends();
     let (views_tx, views) = rtrb::RingBuffer::new(SKIN_VIEWS);
@@ -264,6 +269,7 @@ pub fn spawn(
         views: views_tx,
         old_views: old_rx,
         old_filters,
+        backgrounds,
     };
     let stop = Arc::new(AtomicBool::new(false));
     let flag = Arc::clone(&stop);
@@ -334,6 +340,7 @@ pub fn publish(
                     circle_size: d.circle_size,
                     drain_rate: d.hp,
                     overall_difficulty: d.overall_difficulty,
+                    background: d.background.clone(),
                 })
                 .collect()
         })
@@ -502,6 +509,7 @@ struct Ends {
     views: rtrb::Producer<DropdownView>,
     old_views: rtrb::Consumer<DropdownView>,
     old_filters: rtrb::Consumer<SongFilter>,
+    backgrounds: Option<BackgroundLoader>,
 }
 
 fn run(
@@ -535,6 +543,9 @@ fn run(
             drop(old);
         }
         library.receive_pick();
+        if let Some(backgrounds) = &mut ends.backgrounds {
+            backgrounds.poll();
+        }
         // The dropdown follows the change it belongs to, so the draw thread does not show
         // the new skins with the old choice.
         if library.change.is_none()
@@ -599,6 +610,7 @@ mod tests {
                     approach_rate: 5.0,
                     circle_size: 4.0,
                     hp: 5.0,
+                    background: None,
                 })
                 .collect(),
         }
@@ -728,7 +740,7 @@ mod tests {
             }),
         };
         let (mut link, _views, _thread) =
-            spawn(None, folders, Box::new(|n| format!("{n} sets"))).unwrap();
+            spawn(None, folders, Box::new(|n| format!("{n} sets")), None).unwrap();
         let first = wait_for(&mut link, |_| true);
         assert_eq!(first.status, SongSelectStatus::NoFolder);
         assert_eq!(&*first.folder, "");
@@ -939,6 +951,7 @@ mod tests {
             Some(root.0.clone()),
             no_folders(),
             Box::new(|n| format!("{n} sets")),
+            None,
         )
         .unwrap();
         let published = wait_for(&mut link, |p| p.status == SongSelectStatus::Ready);
@@ -969,6 +982,7 @@ mod tests {
             Some(missing),
             no_folders(),
             Box::new(|n| format!("{n} sets")),
+            None,
         )
         .unwrap();
         let published = wait_for(&mut link, |p| {

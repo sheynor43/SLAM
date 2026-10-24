@@ -56,6 +56,9 @@ pub struct DifficultyEntry {
     pub circle_size: f32,
     /// `HPDrainRate`.
     pub hp: f32,
+    /// The background image named in `[Events]`, relative to the set directory and with
+    /// `/` separators, as the file writes it; its case may not match the file on disk.
+    pub background: Option<String>,
 }
 
 /// Why a set could not be scanned.
@@ -134,6 +137,7 @@ fn scan_set_counted(dir: &Path) -> Result<SetScan, ScanError> {
             approach_rate: b.difficulty.approach_rate,
             circle_size: b.difficulty.circle_size,
             hp: b.difficulty.drain_rate,
+            background: b.events.background,
         });
     }
 

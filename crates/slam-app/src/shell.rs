@@ -34,6 +34,7 @@ use slam_render::atlas::{Atlas, AtlasRegion};
 use slam_render::gl::{GlDebug, GlDevice, GlTexture};
 use slam_render::sprite::{DEFAULT_SLOTS, Projection, SpriteBatch, SpriteRenderer};
 use slam_render::textures::Textures;
+use slam_render::upload::{TextureLoaderConfig, TextureState, TextureUploads, texture_loader};
 use slam_render::{Device, Extent, TextureFormat, shaders};
 use slam_text::{FontRegistry, GlyphAtlasConfig, GlyphCache, glyph_atlas};
 use slam_ui::i18n::Localizer;
@@ -57,6 +58,7 @@ use slam_ui::song_select::{
 use slam_ui::theme::Theme;
 use slam_ui::widgets::DropdownView;
 
+use crate::backgrounds::{BackgroundFade, BackgroundPicker, BackgroundTarget, MAX_BACKGROUNDS};
 use crate::loader::{LoaderConfig, LoaderLink, PlayOptions, SceneTrash, Trash};
 use crate::play::fps::{FpsDisplay, FpsOverlay, FpsSource, MAX_FPS_GLYPHS};
 use crate::play::scene::{CHANNELS, PlayScene, PlaySettings, Prepared, SAMPLE_RATE};
@@ -85,11 +87,12 @@ pub const USAGE: &str = "usage: slam-app [--songs DIR]\n\
                          paths.songs of slam.toml";
 
 const WINDOW: (i32, i32) = (1280, 720);
-/// Textures of the draw thread: the white square and the glyph pages.
-const MAX_TEXTURES: usize = 16;
-/// Rectangles of one frame: the buttons or rows of up to two layers, and the FPS counter's
-/// box.
-const MAX_SHAPES: usize = 256 + 1;
+/// Textures of the draw thread: the white square, the glyph pages and the song select's
+/// backgrounds.
+const MAX_TEXTURES: usize = 16 + MAX_BACKGROUNDS as usize;
+/// Rectangles of one frame: the buttons or rows of up to two layers, the FPS counter's
+/// box and two backgrounds of each layer.
+const MAX_SHAPES: usize = 256 + 1 + 2 * MAX_LAYERS;
 /// Glyph sprites of one frame: the texts of up to two layers and the FPS counter.
 const MAX_GLYPH_SPRITES: usize = 8192 + MAX_FPS_GLYPHS;
 /// How long the draw thread waits for the glyphs before the first frame.
@@ -220,6 +223,8 @@ pub struct ShellSnapshot {
     pub play: PlaySnapshot,
     /// The FPS counter's settings, in force or being edited (ADR-0060).
     pub fps: FpsDisplay,
+    /// The song select's background (ADR-0066).
+    pub background: BackgroundTarget,
 }
 
 /// The update logic without the window: input to navigation to snapshot.
@@ -290,6 +295,8 @@ pub struct ShellState {
     cursor: [f32; 2],
     /// Input arrives in window points, layout is in pixels.
     pixels_per_point: f32,
+    /// Asks for the song select's background; without a menu texture loader `None`.
+    backgrounds: Option<BackgroundPicker>,
 }
 
 impl ShellState {
@@ -339,7 +346,14 @@ impl ShellState {
             theme,
             cursor: [0.0, 0.0],
             pixels_per_point,
+            backgrounds: None,
         }
+    }
+
+    /// A shell whose song select shows the selected beatmap's background (ADR-0066).
+    pub fn with_backgrounds(mut self, backgrounds: BackgroundPicker) -> ShellState {
+        self.backgrounds = Some(backgrounds);
+        self
     }
 
     /// A shell whose song select shows what the library thread publishes; without a
@@ -1048,6 +1062,10 @@ impl ShellState {
             self.rebuild_setting_rows();
         }
         snapshot.fps = FpsDisplay::of(&self.editing.as_ref().unwrap_or(&self.settings).frame);
+        if let Some(backgrounds) = &mut self.backgrounds {
+            snapshot.background =
+                backgrounds.tick(now_ns, &self.files, self.song_select.selected());
+        }
         let top: *const AppScreen = self.stack.top();
         for (slot, layer) in snapshot.layers.iter_mut().zip(self.stack.layers(now_ns)) {
             *slot = layer.and_then(|(screen, pose)| {
@@ -1784,6 +1802,8 @@ struct View {
     surface_size: Arc<AtomicU64>,
     /// The FPS counter over every screen (ADR-0060).
     fps: FpsOverlay,
+    /// The menu's texture loader and the song select's background (ADR-0066).
+    backgrounds: Option<(TextureUploads, BackgroundFade)>,
     _quit: crate::bench::QuitOnDrop,
 }
 
@@ -1877,6 +1897,11 @@ impl Draw<ShellSnapshot> for View {
             views.give_back(view);
         }
         self.glyphs.process(&mut r.device, &mut r.textures);
+        // On every screen: releases queued during a play would otherwise fill the queue.
+        if let Some((uploads, fade)) = &mut self.backgrounds {
+            uploads.process(&mut r.device, &mut r.textures);
+            fade.advance(snapshot.background, info.wait.woke_ns, |h| uploads.get(h));
+        }
         let (width, height) = (size.width as f32, size.height as f32);
         let gameplay = snapshot
             .layers
@@ -1904,16 +1929,32 @@ impl Draw<ShellSnapshot> for View {
                     layer.pose,
                     r.white,
                 ),
-                ScreenView::SongSelect(song_select) => self.song_select.push(
-                    &mut self.shapes,
-                    &mut self.text,
-                    &mut self.glyphs,
-                    width,
-                    height,
-                    song_select,
-                    layer.pose,
-                    r.white,
-                ),
+                ScreenView::SongSelect(song_select) => {
+                    // Under the screen and without its slide, as lazer's background stack.
+                    if let Some((uploads, fade)) = &self.backgrounds {
+                        fade.push(
+                            &mut self.shapes,
+                            width,
+                            height,
+                            info.wait.woke_ns,
+                            layer.pose.opacity,
+                            |h| match uploads.get(h) {
+                                TextureState::Ready(region) => Some(region),
+                                _ => None,
+                            },
+                        );
+                    }
+                    self.song_select.push(
+                        &mut self.shapes,
+                        &mut self.text,
+                        &mut self.glyphs,
+                        width,
+                        height,
+                        song_select,
+                        layer.pose,
+                        r.white,
+                    )
+                }
                 ScreenView::Results(results) => self.results.push(
                     &mut self.shapes,
                     &mut self.text,
@@ -2255,7 +2296,7 @@ pub fn run(settings: Settings) -> Result<(), String> {
         None => (None, None),
     };
     // The library thread is joined when `run` returns, after the engine.
-    let (skin_views, _library) = {
+    let (skin_views, _library, backgrounds) = {
         let scanning_localizer = Arc::clone(&localizer);
         let scanning = Box::new(move |count: usize| {
             let mut args = slam_ui::i18n::FluentArgs::new();
@@ -2294,11 +2335,28 @@ pub fn run(settings: Settings) -> Result<(), String> {
                 })
             },
         };
+        // Without the menu's texture loader the song select shows the theme's background.
+        let (loader, fade) = match texture_loader(&TextureLoaderConfig {
+            max_textures: MAX_BACKGROUNDS,
+            request_capacity: MAX_BACKGROUNDS as usize,
+            job_capacity: 4,
+            ..TextureLoaderConfig::new(limits)
+        }) {
+            Ok((requests, uploads)) => {
+                let (picker, loader, fade) = crate::backgrounds::link(requests);
+                state = state.with_backgrounds(picker);
+                (Some(loader), Some((uploads, fade)))
+            }
+            Err(e) => {
+                tracing::warn!("backgrounds: cannot start the texture loader: {e}");
+                (None, None)
+            }
+        };
         let (link, skin_views, thread) =
-            crate::songs::spawn(settings.paths.songs.clone(), folders, scanning)
+            crate::songs::spawn(settings.paths.songs.clone(), folders, scanning, loader)
                 .map_err(|e| e.to_string())?;
         state = state.with_songs(link);
-        (Some(skin_views), thread)
+        (Some(skin_views), thread, fade)
     };
     // The play: a loader thread, scenes for the draw thread, the audio output.
     let hud_labels = crate::play::scene::hud_labels(&localizer);
@@ -2395,6 +2453,7 @@ pub fn run(settings: Settings) -> Result<(), String> {
             Arc::clone(&registry),
             &hud_labels.fps,
         ),
+        backgrounds,
         _quit: crate::bench::QuitOnDrop(window.quit_handle()),
     };
     let (mut sink, source) = event_ring(1024);
