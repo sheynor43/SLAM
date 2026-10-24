@@ -33,6 +33,12 @@ pub struct Theme {
     pub row_hover_fill: Color,
     /// Fraction of the window width the song select list takes (on the right).
     pub song_panel_ratio: f32,
+    /// Backing of the song select panel, so its texts read over the beatmap background.
+    pub song_panel_fill: Color,
+    /// Fill of the song select search line.
+    pub song_search_fill: Color,
+    /// Text of the song select key hints.
+    pub song_hint_text: Color,
     /// Margin around the song select panel.
     pub song_margin: f32,
     /// Pitch of a song select row.
@@ -147,6 +153,24 @@ impl Default for Theme {
                 a: 0.18,
             },
             song_panel_ratio: 0.55,
+            song_panel_fill: Color {
+                r: 0.07,
+                g: 0.07,
+                b: 0.10,
+                a: 0.85,
+            },
+            song_search_fill: Color {
+                r: 1.0,
+                g: 1.0,
+                b: 1.0,
+                a: 0.16,
+            },
+            song_hint_text: Color {
+                r: 1.0,
+                g: 1.0,
+                b: 1.0,
+                a: 0.7,
+            },
             song_margin: 24.0,
             song_row_height: 52.0,
             song_row_gap: 4.0,

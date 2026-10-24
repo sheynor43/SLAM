@@ -11,8 +11,9 @@ use slam_testkit::assert_no_alloc;
 use slam_text::{FontRegistry, GlyphAtlasConfig, glyph_atlas};
 use slam_ui::screen::Pose;
 use slam_ui::song_select::{
-    DifficultyRow, ModColumns, SetRow, SettingRow, SettingRowKind, SongList, SongSelect,
-    SongSelectInput, SongSelectLabels, SongSelectLayout, SongSelectStatus, SongSelectView,
+    DifficultyRow, ModColumns, SetRow, SettingRow, SettingRowKind, SongFilter, SongList,
+    SongSelect, SongSelectInput, SongSelectLabels, SongSelectLayout, SongSelectStatus,
+    SongSelectView, search_text,
 };
 use slam_ui::theme::Theme;
 
@@ -32,9 +33,11 @@ fn list_of(count: u64) -> Arc<SongList> {
                 artist: format!("artist {k}"),
                 title: format!("title {k}"),
                 creator: "mapper".into(),
+                search: search_text(&["mapper", &format!("artist {k}"), &format!("title {k}")]),
                 difficulties: (0..3)
                     .map(|d| DifficultyRow {
                         version: format!("diff {d}"),
+                        search: format!("diff {d}"),
                     })
                     .collect(),
             })
@@ -42,12 +45,18 @@ fn list_of(count: u64) -> Arc<SongList> {
     })
 }
 
+/// Gives `screen` `list` with filter buffers made for it, as the application does.
+fn put(screen: &mut SongSelect, list: Arc<SongList>) {
+    let filter = SongFilter::for_list(&list);
+    screen.set_list(list, filter);
+}
+
 #[test]
 fn input_does_not_allocate() {
     let list = list_of(40);
     let layout = SongSelectLayout::new(1280.0, 720.0, &Theme::default());
     let mut screen = SongSelect::new();
-    screen.set_list(list);
+    put(&mut screen, list);
     assert_no_alloc(|| {
         for input in [
             SongSelectInput::Down,
@@ -97,6 +106,8 @@ fn labels() -> SongSelectLabels {
         empty: "empty".into(),
         choose_folder: "choose folder".into(),
         hint: "hint".into(),
+        search_placeholder: "search...".into(),
+        search_no_matches: "no matches".into(),
         mods_title: "Mods".into(),
         mods_hint: "mods hint".into(),
         mods_customise: "Customise".into(),
@@ -155,7 +166,7 @@ impl Rig {
 fn view_pushes_without_allocating_once_warm() {
     let mut rig = Rig::new();
     let mut screen = SongSelect::new();
-    screen.set_list(list_of(40));
+    put(&mut screen, list_of(40));
     screen.set_status(SongSelectStatus::Scanning { sets: 40 });
     let snapshot = screen.snapshot();
     rig.frame(&snapshot);
@@ -178,7 +189,7 @@ fn changing_lists_and_scanning_texts_do_not_allocate() {
     let keep: Vec<_> = (0..6u32)
         .map(|i| {
             screen.set_scanning_text(Arc::from(format!("Scanning songs: {i:04} sets")));
-            screen.set_list(list_of(40));
+            put(&mut screen, list_of(40));
             screen.snapshot()
         })
         .collect();
@@ -196,7 +207,7 @@ fn changing_lists_and_scanning_texts_do_not_allocate() {
 fn scrolling_a_long_list_does_not_allocate_once_warm() {
     let mut rig = Rig::new();
     let mut screen = SongSelect::new();
-    screen.set_list(list_of(2000));
+    put(&mut screen, list_of(2000));
     screen.set_status(SongSelectStatus::Ready);
     let layout = SongSelectLayout::new(1280.0, 720.0, &Theme::default());
     let pass = |rig: &mut Rig, screen: &mut SongSelect| {
@@ -214,7 +225,7 @@ fn scrolling_a_long_list_does_not_allocate_once_warm() {
 fn mod_panel_input_does_not_allocate() {
     let layout = SongSelectLayout::new(1280.0, 720.0, &Theme::default());
     let mut screen = SongSelect::new();
-    screen.set_list(list_of(10));
+    put(&mut screen, list_of(10));
     *screen.mods_mut() = slam_ui::song_select::ModSelect::new(MOD_COLUMNS);
     let [x, y] = layout.mods.tile_rect(1, 1).centre();
     assert_no_alloc(|| {
@@ -248,7 +259,7 @@ fn mod_panel_input_does_not_allocate() {
 fn mod_panel_and_selected_line_push_without_allocating_once_warm() {
     let mut rig = Rig::new();
     let mut screen = SongSelect::new();
-    screen.set_list(list_of(10));
+    put(&mut screen, list_of(10));
     screen.set_status(SongSelectStatus::Ready);
     let layout = SongSelectLayout::new(1280.0, 720.0, &Theme::default());
     *screen.mods_mut() = slam_ui::song_select::ModSelect::new(MOD_COLUMNS);
@@ -325,7 +336,7 @@ fn setting_rows() -> [SettingRow; 5] {
 fn settings_panel_input_does_not_allocate() {
     let layout = SongSelectLayout::new(1280.0, 720.0, &Theme::default());
     let mut screen = SongSelect::new();
-    screen.set_list(list_of(10));
+    put(&mut screen, list_of(10));
     *screen.mods_mut() = slam_ui::song_select::ModSelect::new(MOD_COLUMNS);
     let rows = setting_rows();
     let [hx, hy] = layout.mods.customise.header.centre();
@@ -371,7 +382,7 @@ fn settings_panel_input_does_not_allocate() {
 fn settings_panel_pushes_without_allocating_once_warm() {
     let mut rig = Rig::new();
     let mut screen = SongSelect::new();
-    screen.set_list(list_of(10));
+    put(&mut screen, list_of(10));
     screen.set_status(SongSelectStatus::Ready);
     let layout = SongSelectLayout::new(1280.0, 720.0, &Theme::default());
     *screen.mods_mut() = slam_ui::song_select::ModSelect::new(MOD_COLUMNS);
@@ -404,4 +415,107 @@ fn settings_panel_pushes_without_allocating_once_warm() {
             rig.frame(snapshot);
         }
     });
+}
+
+#[test]
+fn searching_does_not_allocate() {
+    let list = list_of(2000);
+    let layout = SongSelectLayout::new(1280.0, 720.0, &Theme::default());
+    let mut screen = SongSelect::new();
+    put(&mut screen, Arc::clone(&list));
+    // A list change with a query keeps it; its buffers are made before, as the library
+    // thread does.
+    let next = SongFilter::for_list(&list);
+    let mut old = SongFilter::default();
+    assert_no_alloc(|| {
+        for input in [
+            SongSelectInput::Type('t'),
+            SongSelectInput::Type('i'),
+            SongSelectInput::Type(' '),
+            SongSelectInput::Type('\u{44b}'),
+            SongSelectInput::Erase,
+            SongSelectInput::Erase,
+            SongSelectInput::Type('1'),
+            SongSelectInput::Down,
+            SongSelectInput::PageDown,
+            SongSelectInput::DeselectMods,
+            SongSelectInput::Type('9'),
+            SongSelectInput::Type('9'),
+            SongSelectInput::Type('9'),
+            SongSelectInput::Type('9'),
+            SongSelectInput::PointerPress { x: 900.0, y: 300.0 },
+            SongSelectInput::Back,
+            SongSelectInput::Type('d'),
+            SongSelectInput::Back,
+            SongSelectInput::Back,
+        ] {
+            std::hint::black_box(screen.input(input, &layout));
+            std::hint::black_box(screen.snapshot());
+        }
+        screen.input(SongSelectInput::Type('t'), &layout);
+        old = screen.set_list(Arc::clone(&list), next);
+        std::hint::black_box(screen.snapshot());
+    });
+    assert_eq!(screen.query().as_str(), "t");
+    drop(old);
+}
+
+#[test]
+fn pushing_with_a_query_does_not_allocate_once_warm() {
+    let mut rig = Rig::new();
+    let mut screen = SongSelect::new();
+    put(&mut screen, list_of(200));
+    screen.set_status(SongSelectStatus::Ready);
+    let layout = SongSelectLayout::new(1280.0, 720.0, &Theme::default());
+    // Typed text, an empty query, and a query that matches nothing, each once to warm up.
+    let mut states = Vec::new();
+    for text in ["title 1", "title 12", "no such title"] {
+        for c in text.chars() {
+            screen.input(SongSelectInput::Type(c), &layout);
+        }
+        states.push(screen.snapshot());
+        screen.input(SongSelectInput::Back, &layout);
+        states.push(screen.snapshot());
+    }
+    for _ in 0..2 {
+        for snapshot in &states {
+            rig.frame(snapshot);
+        }
+    }
+    assert!(states.iter().any(|s| s.row_count == 0));
+    assert_no_alloc(|| {
+        for snapshot in states.iter().cycle().take(60) {
+            rig.frame(snapshot);
+        }
+    });
+}
+
+#[test]
+fn rows_scrolled_part_way_stay_inside_the_list() {
+    let layout = SongSelectLayout::new(1280.0, 720.0, &Theme::default());
+    let (top, bottom) = (layout.list.y, layout.list.y + layout.list.height);
+    // Vertices above and below the list, at a scroll of `lines` rows.
+    let outside = |lines: f32| {
+        let mut rig = Rig::new();
+        let mut screen = SongSelect::new();
+        put(&mut screen, list_of(40));
+        screen.set_status(SongSelectStatus::Ready);
+        screen.input(SongSelectInput::Scroll { lines }, &layout);
+        let snapshot = screen.snapshot();
+        assert_eq!(snapshot.scroll, lines);
+        rig.frame(&snapshot);
+        let mut counts = (0, 0);
+        for batch in [&rig.shapes, &rig.text] {
+            for vertex in batch.vertices() {
+                let y = vertex.position[1];
+                counts.0 += usize::from(y < top - 0.01);
+                counts.1 += usize::from(y > bottom + 0.01);
+            }
+        }
+        counts
+    };
+    // Only the header, search line, hints and backing are drawn outside, whatever the
+    // scroll: rows cut part-way add nothing there.
+    assert_eq!(outside(3.5), outside(3.0));
+    assert_eq!(outside(3.25), outside(3.0));
 }

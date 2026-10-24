@@ -2,8 +2,8 @@
 
 use sdl3_sys::events::{
     SDL_EVENT_KEY_DOWN, SDL_EVENT_KEY_UP, SDL_EVENT_MOUSE_BUTTON_DOWN, SDL_EVENT_MOUSE_BUTTON_UP,
-    SDL_EVENT_MOUSE_MOTION, SDL_Event, SDL_KeyboardEvent, SDL_MouseButtonEvent,
-    SDL_MouseMotionEvent,
+    SDL_EVENT_MOUSE_MOTION, SDL_EVENT_TEXT_INPUT, SDL_Event, SDL_KeyboardEvent,
+    SDL_MouseButtonEvent, SDL_MouseMotionEvent, SDL_TextInputEvent,
 };
 use sdl3_sys::scancode::SDL_Scancode;
 
@@ -47,6 +47,18 @@ pub fn motion(timestamp: u64, x: f32, y: f32) -> SDL_Event {
             timestamp,
             x,
             y,
+            ..Default::default()
+        },
+    }
+}
+
+/// A text input event pointing at `text`, which must outlive it.
+pub fn text(timestamp: u64, text: &std::ffi::CStr) -> SDL_Event {
+    SDL_Event {
+        text: SDL_TextInputEvent {
+            r#type: SDL_EVENT_TEXT_INPUT,
+            timestamp,
+            text: text.as_ptr(),
             ..Default::default()
         },
     }

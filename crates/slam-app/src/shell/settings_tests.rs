@@ -186,6 +186,7 @@ fn shell_with(link: crate::settings::saver::SaveLink) -> Shell {
         rate_switch: DrawRateSwitch::new(LimiterMode::Hz(1000.0)),
         update_rate: AppliedUpdateRate::new(UpdateRateControl::new(), 1000.0),
         saver: Some(link),
+        text_input: slam_input::TextInput::default(),
     }
 }
 

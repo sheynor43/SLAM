@@ -18,8 +18,8 @@ use super::mod_select::{
     CustomisationState, MAX_COLUMNS, MAX_SETTING_ROWS, SettingRowKind, TileDetail, TileDetails,
 };
 use super::{
-    ModColumns, ModSelectSnapshot, Row, SongList, SongSelectLayout, SongSelectSnapshot,
-    SongSelectStatus, can_choose_folder,
+    ModColumns, ModSelectSnapshot, Row, SearchQuery, SongList, SongSelectLayout,
+    SongSelectSnapshot, SongSelectStatus, can_choose_folder,
 };
 use crate::menu::Rect;
 use crate::menu::view::{Frame, Line, Typesetter};
@@ -46,6 +46,10 @@ pub struct SongSelectLabels {
     /// The button shown when there is nothing to play.
     pub choose_folder: String,
     pub hint: String,
+    /// Shown in the search line while the query is empty.
+    pub search_placeholder: String,
+    /// Shown instead of the rows when the query matches nothing.
+    pub search_no_matches: String,
     /// The mod select panel's title; also prefixes the selected mods shown under the list.
     pub mods_title: String,
     pub mods_hint: String,
@@ -113,6 +117,11 @@ pub struct SongSelectView {
     empty: Line,
     choose_folder: Line,
     hint: Line,
+    /// The query, for the query it was laid out for.
+    search: Line,
+    search_for: Option<SearchQuery>,
+    search_placeholder: Line,
+    search_no_matches: Line,
     mods_title: Line,
     mods_hint: Line,
     mod_column_titles: [Line; MAX_COLUMNS],
@@ -169,6 +178,33 @@ pub(crate) fn fit(
     type_setter.lay_out(line, size);
 }
 
+/// Like [`fit`], but keeps the end of the text and cuts its start: the search line shows
+/// the letters just typed.
+fn fit_tail(type_setter: &mut Typesetter, line: &mut Line, size: f32, avail: f32, ellipsis: f32) {
+    type_setter.lay_out(line, size);
+    let total = line.layout.width();
+    if total <= avail {
+        return;
+    }
+    let limit = avail - ellipsis;
+    let cut = line
+        .layout
+        .glyphs()
+        .iter()
+        .find(|g| total - g.x <= limit)
+        .map_or(line.text.len(), |g| g.cluster as usize);
+    let mut cut = cut.min(line.text.len());
+    while !line.text.is_char_boundary(cut) {
+        cut += 1;
+    }
+    // In place: a query of at most `QUERY_CAPACITY` bytes and the ellipsis fit the line's
+    // `TEXT_CAPACITY`.
+    let mut buf = [0; 4];
+    line.text
+        .replace_range(..cut, ELLIPSIS.encode_utf8(&mut buf));
+    type_setter.lay_out(line, size);
+}
+
 impl SongSelectView {
     /// A view with the fonts of `registry`. Lays the static texts out once: call it off
     /// the hot paths.
@@ -192,6 +228,10 @@ impl SongSelectView {
             empty: Line::new(&labels.empty),
             choose_folder: Line::new(&labels.choose_folder),
             hint: Line::new(&labels.hint),
+            search: Line::new(""),
+            search_for: None,
+            search_placeholder: Line::new(&labels.search_placeholder),
+            search_no_matches: Line::new(&labels.search_no_matches),
             mods_title: Line::new(&labels.mods_title),
             mods_hint: Line::new(&labels.mods_hint),
             mod_column_titles: std::array::from_fn(|i| Line::new(&labels.mod_column_titles[i])),
@@ -222,6 +262,7 @@ impl SongSelectView {
             theme,
         };
         view.scanning.text.reserve(TEXT_CAPACITY);
+        view.search.text.reserve(TEXT_CAPACITY);
         view.mods_selected.text.reserve(TEXT_CAPACITY);
         view.lay_out();
         view
@@ -244,6 +285,11 @@ impl SongSelectView {
         }
         self.type_setter
             .lay_out(&mut self.hint, self.theme.song_detail_size * scale);
+        for line in [&mut self.search_placeholder, &mut self.search_no_matches] {
+            self.type_setter
+                .lay_out(line, self.theme.song_title_size * scale);
+        }
+        self.search_for = None;
         let detail = self.theme.song_detail_size * scale;
         self.type_setter.lay_out(&mut self.mods_hint, detail);
         self.type_setter
@@ -293,6 +339,9 @@ impl SongSelectView {
             &self.empty,
             &self.choose_folder,
             &self.hint,
+            &self.search,
+            &self.search_placeholder,
+            &self.search_no_matches,
             &self.mods_title,
             &self.mods_hint,
             &self.mods_selected,
@@ -407,6 +456,7 @@ impl SongSelectView {
         }
 
         self.refresh_selected(&snapshot.mods);
+        self.refresh_search(&snapshot.query);
         let shift = pose.offset * width;
         let opacity = pose.opacity;
         let theme = &self.theme;
@@ -414,8 +464,6 @@ impl SongSelectView {
         let pad = theme.song_text_pad * layout.scale;
         let gap = theme.song_row_gap * layout.scale;
         let list = &*snapshot.list;
-        let total = list.row_count(snapshot.selected_set);
-        let selected_index = snapshot.selected_set + 1 + snapshot.selected_difficulty;
 
         let mut rect = |rect: &Rect, colour: Color| {
             let mut sprite = Sprite::new(
@@ -628,6 +676,17 @@ impl SongSelectView {
             }
             return;
         }
+        // The panel's backing, from the status line to the hints.
+        let inset = theme.song_margin * layout.scale / 2.0;
+        rect(
+            &Rect {
+                x: layout.header.x - inset,
+                y: layout.header.y - inset,
+                width: layout.header.width + 2.0 * inset,
+                height: layout.hint.y + layout.hint.height + 2.0 * inset - layout.header.y,
+            },
+            theme.song_panel_fill,
+        );
         let status_line = match snapshot.status {
             SongSelectStatus::NoFolder => Some(&self.no_folder),
             SongSelectStatus::Scanning { .. } => Some(&self.scanning),
@@ -643,6 +702,19 @@ impl SongSelectView {
                 theme.text,
             );
         }
+        // The search line.
+        rect(&layout.search, theme.song_search_fill);
+        let line = if snapshot.query.is_empty() {
+            (&self.search_placeholder, theme.disabled_text)
+        } else {
+            (&self.search, theme.text)
+        };
+        left(
+            line.0,
+            layout.search.x + pad,
+            layout.search.y + layout.search.height / 2.0,
+            line.1,
+        );
         if list.sets.is_empty() {
             if snapshot.status == SongSelectStatus::Ready {
                 left(
@@ -668,8 +740,21 @@ impl SongSelectView {
                 );
             }
         } else {
-            for index in layout.visible_rows(snapshot.scroll, total) {
-                let Some(row) = list.row(snapshot.selected_set, index) else {
+            if snapshot.row_count == 0 {
+                left(
+                    &self.search_no_matches,
+                    layout.list.x,
+                    layout.list.y + layout.row_height / 2.0,
+                    theme.disabled_text,
+                );
+            }
+            let rows = snapshot.rows();
+            for index in layout.visible_rows(snapshot.scroll, snapshot.row_count) {
+                let Some(row) = index
+                    .checked_sub(snapshot.first_row)
+                    .and_then(|i| rows.get(i))
+                    .copied()
+                else {
                     continue;
                 };
                 let slot_count = self.slots.len();
@@ -697,14 +782,37 @@ impl SongSelectView {
                     width: layout.list.width - indent,
                     height: layout.row_height - gap,
                 };
-                let fill = if index == selected_index {
+                // Rows scrolled part-way out are cut at the list's edges, and their texts
+                // show only whole, so nothing spills over the search line or the hints.
+                let (top_edge, bottom_edge) = (layout.list.y, layout.list.y + layout.list.height);
+                let clipped_top = area.y.max(top_edge);
+                let clipped_bottom = (area.y + area.height).min(bottom_edge);
+                if clipped_bottom <= clipped_top {
+                    continue;
+                }
+                let inside = |line: &Line, centre_y: f32| {
+                    let half = line.layout.height() / 2.0;
+                    centre_y - half >= top_edge && centre_y + half <= bottom_edge
+                };
+                let selected = matches!(
+                    row,
+                    Row::Difficulty { set, difficulty } if snapshot.selected == Some((set, difficulty))
+                );
+                let fill = if selected {
                     theme.button_hover_fill
                 } else if snapshot.hovered == Some(row) {
                     theme.row_hover_fill
                 } else {
                     theme.button_fill
                 };
-                rect(&area, fill);
+                rect(
+                    &Rect {
+                        y: clipped_top,
+                        height: clipped_bottom - clipped_top,
+                        ..area
+                    },
+                    fill,
+                );
                 let x = area.x + pad;
                 if matches!(row, Row::Set(_)) {
                     let (top, bottom) = (
@@ -712,15 +820,18 @@ impl SongSelectView {
                         row_text.secondary.layout.height(),
                     );
                     let start = area.y + (area.height - top - bottom) / 2.0;
-                    left(&row_text.primary, x, start + top / 2.0, theme.text);
-                    left(
-                        &row_text.secondary,
-                        x,
-                        start + top + bottom / 2.0,
-                        theme.disabled_text,
-                    );
+                    let (primary, secondary) = (start + top / 2.0, start + top + bottom / 2.0);
+                    if inside(&row_text.primary, primary) {
+                        left(&row_text.primary, x, primary, theme.text);
+                    }
+                    if inside(&row_text.secondary, secondary) {
+                        left(&row_text.secondary, x, secondary, theme.disabled_text);
+                    }
                 } else {
-                    left(&row_text.primary, x, area.y + area.height / 2.0, theme.text);
+                    let centre = area.y + area.height / 2.0;
+                    if inside(&row_text.primary, centre) {
+                        left(&row_text.primary, x, centre, theme.text);
+                    }
                 }
             }
         }
@@ -728,7 +839,7 @@ impl SongSelectView {
             &self.hint,
             layout.hint.x,
             layout.hint.y + layout.hint.height / 2.0,
-            theme.disabled_text,
+            theme.song_hint_text,
         );
         // The selection, left of the list panel.
         if snapshot.mods.active != [0; MAX_COLUMNS] {
@@ -740,6 +851,25 @@ impl SongSelectView {
                 theme.text,
             );
         }
+    }
+
+    /// Lays the query out unless it already shows it.
+    fn refresh_search(&mut self, query: &SearchQuery) {
+        if self.search_for == Some(*query) {
+            return;
+        }
+        self.search_for = Some(*query);
+        let scale = self.layout.scale;
+        let pad = self.theme.song_text_pad * scale;
+        self.search.text.clear();
+        self.search.text.push_str(query.as_str());
+        fit_tail(
+            &mut self.type_setter,
+            &mut self.search,
+            self.theme.song_title_size * scale,
+            (self.layout.search.width - 2.0 * pad).max(0.0),
+            self.ellipsis[0],
+        );
     }
 
     /// Writes "Mods: HD DT 1.05x" for the active tiles and their details unless it already
@@ -819,5 +949,25 @@ mod tests {
         fit(&mut type_setter, &mut wide, 20.0, avail, ellipsis);
         assert!(wide.text.ends_with(ELLIPSIS));
         assert!(wide.layout.width() <= avail);
+    }
+
+    #[test]
+    fn long_queries_keep_their_end() {
+        let registry = Arc::new(FontRegistry::with_builtin());
+        let mut type_setter = Typesetter::new(registry, 700);
+        let mut probe = Line::new(&ELLIPSIS.to_string());
+        type_setter.lay_out(&mut probe, 20.0);
+        let ellipsis = probe.layout.width();
+        let avail = 300.0;
+        let text = format!("{}end", "\u{44b}".repeat(60));
+        let mut line = Line::new(&text);
+        fit_tail(&mut type_setter, &mut line, 20.0, avail, ellipsis);
+        assert!(line.text.starts_with(ELLIPSIS), "{}", line.text);
+        assert!(line.text.ends_with("end"));
+        assert!(line.layout.width() <= avail, "{}", line.layout.width());
+        assert!(line.layout.width() > avail / 2.0);
+        let mut short = Line::new("short");
+        fit_tail(&mut type_setter, &mut short, 20.0, avail, ellipsis);
+        assert_eq!(short.text, "short");
     }
 }

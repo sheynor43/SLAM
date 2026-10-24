@@ -3,7 +3,10 @@
 //! [`view::SongSelectView`].
 //!
 //! The list is a flat column of rows: every set is a row, and the selected set is expanded,
-//! showing its difficulties as indented rows right beneath it.
+//! showing its difficulties as indented rows right beneath it. Typing filters the list
+//! ([`SearchQuery`], [`SongFilter`]): the sets and difficulties that do not match the query
+//! are left out. Everything public speaks in indices into the [`SongList`]; the state
+//! behind it keeps positions among the visible sets and difficulties.
 
 use std::ops::Range;
 use std::sync::Arc;
@@ -11,8 +14,11 @@ use std::sync::Arc;
 use crate::menu::Rect;
 use crate::theme::Theme;
 
+pub mod filter;
 pub mod mod_select;
 pub mod view;
+
+pub use filter::{QUERY_CAPACITY, SearchQuery, SongFilter, search_text};
 
 pub use mod_select::{
     CustomisationLayout, CustomisationSnapshot, CustomisationState, MAX_CHOICES, MAX_SETTING_ROWS,
@@ -36,12 +42,17 @@ pub struct SetRow {
     pub artist: String,
     pub title: String,
     pub creator: String,
+    /// What the search matches: the set's fields lowercased and joined by `'\n'`, made by
+    /// [`search_text`].
+    pub search: String,
     pub difficulties: Vec<DifficultyRow>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct DifficultyRow {
     pub version: String,
+    /// What the search matches: the version lowercased, made by [`search_text`].
+    pub search: String,
 }
 
 /// What the screen shows besides the list.
@@ -72,10 +83,12 @@ pub enum SongSelectInput {
     Home,
     End,
     Activate,
+    /// Escape: clears the query, or, with none, leaves the screen.
     Back,
     /// F1: opens the mod select panel (and closes it).
     ToggleMods,
-    /// Backspace: deselects every mod.
+    /// Backspace: erases the last character of the query, or, with none, deselects every
+    /// mod.
     DeselectMods,
     /// A mod hotkey: the tile `index` of `column` of the mod select panel. The application
     /// maps its key rows to the columns that have hotkeys.
@@ -87,8 +100,15 @@ pub enum SongSelectInput {
     ToggleCustomisation,
     /// Delete: resets the selected row of the expanded settings panel to its default.
     ResetSetting,
-    /// Space: like Activate in the expanded settings panel, nothing elsewhere.
+    /// Space: like Activate in the expanded settings panel, nothing elsewhere. Typed text
+    /// arrives as [`SongSelectInput::Type`] instead.
     Space,
+    /// A typed character: appended to the search query. Control characters are ignored,
+    /// and so is a space on an empty query. Nothing happens while the mod panel is open
+    /// (letters are mod hotkeys then) or a difficulty is loading.
+    Type(char),
+    /// A key repeat of Backspace: erases the last character of the query, nothing else.
+    Erase,
     /// Wheel: positive `lines` scroll towards the end of the list. Selection stays.
     Scroll {
         lines: f32,
@@ -142,39 +162,14 @@ pub enum Row {
     Difficulty { set: usize, difficulty: usize },
 }
 
-impl SongList {
-    fn difficulty_count(&self, set: usize) -> usize {
-        self.sets.get(set).map_or(0, |s| s.difficulties.len())
-    }
-
-    /// Number of rows when `selected_set` is expanded.
-    pub fn row_count(&self, selected_set: usize) -> usize {
-        self.sets.len() + self.difficulty_count(selected_set)
-    }
-
-    /// The row at flat index `index` when `selected_set` is expanded.
-    pub fn row(&self, selected_set: usize, index: usize) -> Option<Row> {
-        let below = self.difficulty_count(selected_set);
-        if index <= selected_set {
-            (index < self.sets.len()).then_some(Row::Set(index))
-        } else if index <= selected_set + below {
-            Some(Row::Difficulty {
-                set: selected_set,
-                difficulty: index - selected_set - 1,
-            })
-        } else {
-            let set = index - below;
-            (set < self.sets.len()).then_some(Row::Set(set))
-        }
-    }
-}
-
 /// Where the list, status line and hint are: a panel on the right of the window. A pure
 /// function of the window size and theme, shared by hit testing (update) and drawing.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct SongSelectLayout {
     /// Status line above the list.
     pub header: Rect,
+    /// The search line between the status line and the list.
+    pub search: Rect,
     /// The rows' area; row 0 is at its top when not scrolled.
     pub list: Rect,
     /// Key hints below the list.
@@ -210,14 +205,20 @@ impl SongSelectLayout {
             width: panel,
             height: hint_height,
         };
-        let top = header.y + header.height + margin / 2.0;
+        let row_height = theme.song_row_height * scale;
+        let search = Rect {
+            x,
+            y: header.y + header.height + margin / 2.0,
+            width: panel,
+            height: row_height - theme.song_row_gap * scale,
+        };
+        let top = search.y + row_height;
         let list = Rect {
             x,
             y: top,
             width: panel,
             height: (hint.y - margin / 2.0 - top).max(0.0),
         };
-        let row_height = theme.song_row_height * scale;
         let choose_folder = Rect {
             x,
             y: list.y + row_height,
@@ -226,6 +227,7 @@ impl SongSelectLayout {
         };
         SongSelectLayout {
             header,
+            search,
             list,
             hint,
             choose_folder,
@@ -253,13 +255,14 @@ impl SongSelectLayout {
         first.min(total)..last.min(total)
     }
 
-    /// The row under the point, with the list scrolled by `scroll` rows.
+    /// The row under the point, with the list scrolled by `scroll` rows and the visible set
+    /// at position `selected_set` expanded.
     pub fn row_at(
         &self,
         x: f32,
         y: f32,
         scroll: f32,
-        list: &SongList,
+        filter: &SongFilter,
         selected_set: usize,
     ) -> Option<Row> {
         if !self.list.contains(x, y) {
@@ -269,16 +272,30 @@ impl SongSelectLayout {
         if index < 0.0 {
             return None;
         }
-        list.row(selected_set, index.floor() as usize)
+        filter.row(selected_set, index.floor() as usize)
     }
 }
 
-/// What the draw side needs; cloning copies an `Arc`, no allocation.
+/// How many rows the snapshot carries: more than the list area shows at any window size
+/// (its height in rows is the same at every size: about 11 with the default theme) plus
+/// the rows cut at both ends. A theme with a taller area is cut to this many rows.
+pub const MAX_VISIBLE_ROWS: usize = 16;
+
+/// What the draw side needs; cloning copies an `Arc` and some fixed-size data, no
+/// allocation.
 #[derive(Clone, Debug)]
 pub struct SongSelectSnapshot {
     pub list: Arc<SongList>,
-    pub selected_set: usize,
-    pub selected_difficulty: usize,
+    /// The selected `(set, difficulty)` as indices into the list, as
+    /// [`SongSelect::selected`].
+    pub selected: Option<(usize, usize)>,
+    /// What the player typed.
+    pub query: SearchQuery,
+    /// Rows of the flat column, filter applied.
+    pub row_count: usize,
+    /// Flat index of the first of `rows`.
+    pub first_row: usize,
+    rows: [Row; MAX_VISIBLE_ROWS],
     /// Rows scrolled off the top.
     pub scroll: f32,
     pub hovered: Option<Row>,
@@ -294,10 +311,21 @@ pub struct SongSelectSnapshot {
     pub mods: ModSelectSnapshot,
 }
 
+impl SongSelectSnapshot {
+    /// The rows that are in or near the list area, from flat index `first_row`.
+    pub fn rows(&self) -> &[Row] {
+        let len = self.row_count.saturating_sub(self.first_row);
+        &self.rows[..len.min(MAX_VISIBLE_ROWS)]
+    }
+}
+
 /// The screen's state on the update thread.
 #[derive(Clone, Debug)]
 pub struct SongSelect {
     list: Arc<SongList>,
+    filter: SongFilter,
+    query: SearchQuery,
+    /// Positions among the visible sets, and among the visible difficulties of that set.
     set: usize,
     difficulty: usize,
     scroll: f32,
@@ -332,6 +360,8 @@ impl SongSelect {
     pub fn new() -> SongSelect {
         SongSelect {
             list: Arc::default(),
+            filter: SongFilter::default(),
+            query: SearchQuery::default(),
             set: 0,
             difficulty: 0,
             scroll: 0.0,
@@ -365,26 +395,116 @@ impl SongSelect {
         &self.list
     }
 
-    /// The selected `(set, difficulty)`, if the list has a set.
-    pub fn selected(&self) -> Option<(usize, usize)> {
-        (self.set < self.list.sets.len()).then_some((self.set, self.difficulty))
+    /// What the player typed.
+    pub fn query(&self) -> &SearchQuery {
+        &self.query
     }
 
-    /// Replaces the list, keeping the selected set by its key when it is still there
-    /// (the difficulty index is clamped), else the selection stays at the same position.
-    pub fn set_list(&mut self, list: Arc<SongList>) {
-        let key = self.list.sets.get(self.set).map(|s| s.key);
-        let found = key.and_then(|key| list.sets.iter().position(|s| s.key == key));
-        self.set = found.unwrap_or(self.set);
+    /// The sets and difficulties that pass the query.
+    pub fn filter(&self) -> &SongFilter {
+        &self.filter
+    }
+
+    /// The selected `(set, difficulty)` as indices into the list, if a set is visible.
+    pub fn selected(&self) -> Option<(usize, usize)> {
+        let set = self.filter.set_index(self.set)?;
+        Some((set, self.filter.difficulty_index(self.set, self.difficulty)))
+    }
+
+    /// Replaces the list, keeping the selected set by its key when it is still visible
+    /// (the difficulty position is clamped), else the selection stays at the same position.
+    /// The query stays: `filter` is the buffers for the new list ([`SongFilter::for_list`]),
+    /// made off the update thread. Returns the filter it replaces, for the caller to free
+    /// off the update thread too.
+    pub fn set_list(&mut self, list: Arc<SongList>, filter: SongFilter) -> SongFilter {
+        let key = self
+            .selected()
+            .and_then(|(set, _)| self.list.sets.get(set))
+            .map(|s| s.key);
+        let old = std::mem::replace(&mut self.filter, filter);
         self.list = list;
+        self.filter.apply(&self.list, &self.query);
+        let found = key
+            .and_then(|key| self.list.sets.iter().position(|s| s.key == key))
+            .and_then(|index| self.filter.set_position(index));
+        self.set = found.unwrap_or(self.set);
         self.generation += 1;
-        self.set = self.set.min(self.list.sets.len().saturating_sub(1));
+        self.set = self.set.min(self.filter.set_count().saturating_sub(1));
         self.difficulty = self
             .difficulty
-            .min(self.list.difficulty_count(self.set).saturating_sub(1));
+            .min(self.filter.difficulty_count(self.set).saturating_sub(1));
         self.hovered = None;
         self.clamp_scroll();
         self.ensure_visible();
+        old
+    }
+
+    /// Filters the list again after the query changed. The selection stays on its
+    /// difficulty if that is still visible, else moves to the first visible difficulty of
+    /// its set, else to the first visible set.
+    fn refilter(&mut self) {
+        let before = self.selected();
+        self.filter.apply(&self.list, &self.query);
+        let (set, difficulty) = before
+            .and_then(|(set, difficulty)| {
+                let set = self.filter.set_position(set)?;
+                let difficulty = self.filter.difficulty_position(set, difficulty);
+                Some((set, difficulty.unwrap_or(0)))
+            })
+            .unwrap_or((0, 0));
+        self.set = set;
+        self.difficulty = difficulty;
+        self.hovered = None;
+        self.clamp_scroll();
+        self.ensure_visible();
+    }
+
+    /// Appends a typed character to the query.
+    fn type_char(&mut self, c: char) {
+        if self.push_typed(c) {
+            self.refilter();
+        }
+    }
+
+    /// Appends a typed character to the query without filtering again; returns whether it
+    /// changed.
+    fn push_typed(&mut self, c: char) -> bool {
+        if c.is_control() {
+            return false;
+        }
+        let c = if c.is_whitespace() { ' ' } else { c };
+        if c == ' ' && self.query.is_empty() {
+            return false;
+        }
+        self.query.push(c)
+    }
+
+    /// Types `text` as [`SongSelectInput::Type`] does each of its characters, filtering the
+    /// list once at the end (a long IME commit is one pass over the library, not one per
+    /// character). Does not allocate.
+    pub fn type_text(&mut self, text: &str, layout: &SongSelectLayout) {
+        if self.mods.is_open() || self.status == SongSelectStatus::Loading {
+            return;
+        }
+        let mut typed = false;
+        for c in text.chars() {
+            typed |= self.push_typed(c);
+        }
+        if typed {
+            self.refilter();
+            self.hovered = self
+                .pointer
+                .and_then(|(x, y)| layout.row_at(x, y, self.scroll, &self.filter, self.set));
+        }
+    }
+
+    /// Erases the last character of the query; returns whether there was one.
+    fn erase(&mut self) -> bool {
+        let erased = self.query.pop();
+        if erased {
+            self.refilter();
+        }
+        erased
     }
 
     /// Whether the "choose folder" button is shown.
@@ -393,10 +513,22 @@ impl SongSelect {
     }
 
     pub fn snapshot(&self) -> SongSelectSnapshot {
+        let row_count = self.filter.row_count(self.set);
+        let first_row = (self.scroll.max(0.0).floor() as usize).min(row_count);
+        // Every slot `rows` returns is filled, however many rows the view shows.
+        let mut rows = [Row::Set(0); MAX_VISIBLE_ROWS];
+        for (slot, index) in rows.iter_mut().zip(first_row..row_count) {
+            if let Some(row) = self.filter.row(self.set, index) {
+                *slot = row;
+            }
+        }
         SongSelectSnapshot {
             list: Arc::clone(&self.list),
-            selected_set: self.set,
-            selected_difficulty: self.difficulty,
+            selected: self.selected(),
+            query: self.query,
+            row_count,
+            first_row,
+            rows,
             scroll: self.scroll,
             hovered: self.hovered,
             folder_hovered: self.folder_hovered,
@@ -415,6 +547,7 @@ impl SongSelect {
     /// Advances the time-driven parts of the screen (the settings panel's collapse delay) to
     /// `now_ns`, a monotonic clock in nanoseconds. Does not allocate.
     pub fn tick(&mut self, now_ns: u64, layout: &SongSelectLayout) {
+        self.viewport = layout.viewport_rows();
         if self.mods.is_open() {
             self.mods.tick(now_ns, &layout.mods);
         }
@@ -430,7 +563,7 @@ impl SongSelect {
     }
 
     fn max_scroll(&self) -> f32 {
-        (self.list.row_count(self.set) as f32 - self.viewport).max(0.0)
+        (self.filter.row_count(self.set) as f32 - self.viewport).max(0.0)
     }
 
     fn clamp_scroll(&mut self) {
@@ -439,7 +572,7 @@ impl SongSelect {
 
     /// Scrolls the least that shows the selected row.
     fn ensure_visible(&mut self) {
-        if self.list.sets.is_empty() {
+        if self.filter.set_count() == 0 {
             return;
         }
         let row = self.selected_row() as f32;
@@ -453,14 +586,14 @@ impl SongSelect {
     }
 
     fn select_set(&mut self, set: usize) {
-        self.set = set.min(self.list.sets.len().saturating_sub(1));
+        self.set = set.min(self.filter.set_count().saturating_sub(1));
         self.difficulty = 0;
     }
 
     fn next(&mut self) {
-        if self.difficulty + 1 < self.list.difficulty_count(self.set) {
+        if self.difficulty + 1 < self.filter.difficulty_count(self.set) {
             self.difficulty += 1;
-        } else if self.set + 1 < self.list.sets.len() {
+        } else if self.set + 1 < self.filter.set_count() {
             self.select_set(self.set + 1);
         }
     }
@@ -470,13 +603,13 @@ impl SongSelect {
             self.difficulty -= 1;
         } else if self.set > 0 {
             self.set -= 1;
-            self.difficulty = self.list.difficulty_count(self.set).saturating_sub(1);
+            self.difficulty = self.filter.difficulty_count(self.set).saturating_sub(1);
         }
     }
 
     fn play(&self) -> Option<SongSelectAction> {
         let (set, difficulty) = self.selected()?;
-        (difficulty < self.list.difficulty_count(set))
+        (self.difficulty < self.filter.difficulty_count(self.set))
             .then_some(SongSelectAction::Play { set, difficulty })
     }
 
@@ -509,15 +642,21 @@ impl SongSelect {
                     }
                 });
         }
+        let loading = self.status == SongSelectStatus::Loading;
         if input == I::Back {
+            if !loading && !self.query.is_empty() {
+                self.query.clear();
+                self.refilter();
+                return None;
+            }
             return Some(SongSelectAction::Back);
         }
-        if self.status == SongSelectStatus::Loading {
+        if loading {
             return None;
         }
         self.viewport = layout.viewport_rows();
         let page = (self.viewport as usize).max(1);
-        let last = self.list.sets.len().saturating_sub(1);
+        let last = self.filter.set_count().saturating_sub(1);
         let mut action = None;
         let mut moved = true;
         match input {
@@ -542,12 +681,22 @@ impl SongSelect {
             | I::ResetSetting
             | I::Space
             | I::PointerRelease => moved = false,
+            I::Type(c) => {
+                self.type_char(c);
+                moved = false;
+            }
+            I::Erase => {
+                self.erase();
+                moved = false;
+            }
             I::ToggleMods => {
                 self.mods.open();
                 moved = false;
             }
             I::DeselectMods => {
-                action = Some(SongSelectAction::DeselectMods);
+                if !self.erase() {
+                    action = Some(SongSelectAction::DeselectMods);
+                }
                 moved = false;
             }
             I::Scroll { lines } => {
@@ -565,15 +714,25 @@ impl SongSelect {
                 if self.shows_choose_folder() && layout.choose_folder.contains(x, y) {
                     action = Some(SongSelectAction::ChooseFolder);
                 }
-                match layout.row_at(x, y, self.scroll, &self.list, self.set) {
-                    Some(Row::Set(set)) if set != self.set => self.select_set(set),
-                    Some(Row::Difficulty { difficulty, .. }) => {
-                        if difficulty == self.difficulty {
-                            action = self.play();
+                match layout.row_at(x, y, self.scroll, &self.filter, self.set) {
+                    Some(Row::Set(set)) => {
+                        if let Some(position) = self.filter.set_position(set)
+                            && position != self.set
+                        {
+                            self.select_set(position);
                         }
-                        self.difficulty = difficulty;
                     }
-                    _ => {}
+                    Some(Row::Difficulty { difficulty, .. }) => {
+                        if let Some(position) =
+                            self.filter.difficulty_position(self.set, difficulty)
+                        {
+                            if position == self.difficulty {
+                                action = self.play();
+                            }
+                            self.difficulty = position;
+                        }
+                    }
+                    None => {}
                 }
             }
         }
@@ -583,7 +742,7 @@ impl SongSelect {
         self.clamp_scroll();
         self.hovered = self
             .pointer
-            .and_then(|(x, y)| layout.row_at(x, y, self.scroll, &self.list, self.set));
+            .and_then(|(x, y)| layout.row_at(x, y, self.scroll, &self.filter, self.set));
         self.folder_hovered = self.shows_choose_folder()
             && self
                 .pointer
@@ -592,5 +751,7 @@ impl SongSelect {
     }
 }
 
+#[cfg(test)]
+mod search_tests;
 #[cfg(test)]
 mod tests;

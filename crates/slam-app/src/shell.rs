@@ -19,8 +19,8 @@ use slam_engine::{
     UpdateRateControl,
 };
 use slam_input::{
-    CursorVisibility, InputEvent, InputKind, InputWindow, MouseButton, TickMapper, event_ring,
-    sdl_ticks_ns,
+    CursorVisibility, InputEvent, InputKind, InputWindow, MouseButton, TextInput, TickMapper,
+    event_ring, sdl_ticks_ns,
 };
 use slam_osu::mods::{
     APPROACH_RATE_STEP, Mod, ModSet, ModType, SPEED_STEP, SliderBounds, SpeedHotkeys,
@@ -50,9 +50,9 @@ use slam_ui::settings_screen::{
     SettingsView,
 };
 use slam_ui::song_select::{
-    ModColumns, ModSelect, SettingValue, SongList, SongSelect, SongSelectAction, SongSelectInput,
-    SongSelectLabels, SongSelectLayout, SongSelectSnapshot, SongSelectStatus, SongSelectView,
-    TileDetail,
+    ModColumns, ModSelect, SettingValue, SongFilter, SongList, SongSelect, SongSelectAction,
+    SongSelectInput, SongSelectLabels, SongSelectLayout, SongSelectSnapshot, SongSelectStatus,
+    SongSelectView, TileDetail,
 };
 use slam_ui::theme::Theme;
 use slam_ui::widgets::DropdownView;
@@ -297,7 +297,7 @@ impl ShellState {
         let empty: (Arc<SongList>, Arc<SongFiles>, Arc<str>) =
             (Arc::default(), Arc::from([]), Arc::from(""));
         let mut song_select = SongSelect::new();
-        song_select.set_list(Arc::clone(&empty.0));
+        song_select.set_list(Arc::clone(&empty.0), SongFilter::default());
         song_select.set_scanning_text(Arc::clone(&empty.2));
         *song_select.mods_mut() = ModSelect::new(mod_columns());
         ShellState {
@@ -757,6 +757,10 @@ impl ShellState {
             }
         }
         Some(ScreenInput::Common(match kind {
+            // Holding Backspace keeps erasing the search, and only that (ADR-0065).
+            InputKind::KeyRepeat {
+                scancode: KEY_BACKSPACE,
+            } if song_select => SongSelectInput::Erase,
             InputKind::Key {
                 scancode,
                 down: true,
@@ -817,7 +821,10 @@ impl ShellState {
         let Some(published) = self.songs.as_mut().and_then(SongsLink::latest) else {
             return;
         };
-        self.song_select.set_list(published.list);
+        let old = self.song_select.set_list(published.list, published.filter);
+        if let Some(songs) = &mut self.songs {
+            songs.retire_filter(old);
+        }
         self.library_status = published.status;
         if !self.loading {
             self.song_select.set_status(published.status);
@@ -852,6 +859,14 @@ impl ShellState {
         }
     }
 
+    /// Types `text` into the song select's search (ADR-0065); other screens take no text.
+    fn type_text(&mut self, text: &str) {
+        if !matches!(self.stack.top(), AppScreen::SongSelect) {
+            return;
+        }
+        self.song_select.type_text(text, &self.song_layout);
+    }
+
     /// Asks the library thread to show the folder picker (ADR-0064). A full command ring
     /// drops the click; the player clicks again.
     fn pick_folder(&mut self) {
@@ -864,6 +879,10 @@ impl ShellState {
     /// the first exit.
     pub fn handle(&mut self, events: &[InputEvent], now_ns: u64) -> Navigated {
         for event in events {
+            if let InputKind::Text(text) = event.kind {
+                self.type_text(text.as_str());
+                continue;
+            }
             let Some(input) = self.screen_input(event.kind) else {
                 continue;
             };
@@ -1649,6 +1668,8 @@ struct Shell {
     update_rate: AppliedUpdateRate,
     /// Writes the settings file on its own thread; without a settings folder, `None`.
     saver: Option<SaveLink>,
+    /// Typed text is on in the menus and off during plays (ADR-0065).
+    text_input: TextInput,
 }
 
 impl Shell {
@@ -1699,6 +1720,9 @@ impl Update for Shell {
         }
         let now = info.now_ns;
         let playing = self.state.playing();
+        // On from the menus, so the first letter typed on the song select is not lost while
+        // the window applies the wish after its next event.
+        self.text_input.set_enabled(!playing);
         let navigated = match &mut self.host {
             Some(host) if playing => {
                 host.tick_game(now, events, &mut snapshot.play);
@@ -2181,6 +2205,8 @@ pub fn run(settings: Settings) -> Result<(), String> {
         empty: text("song-select-empty"),
         choose_folder: text("song-select-choose-folder"),
         hint: text("song-select-hint"),
+        search_placeholder: text("song-select-search-placeholder"),
+        search_no_matches: text("song-select-search-no-matches"),
         mods_title: text("song-select-mods-title"),
         mods_hint: text("song-select-mods-hint"),
         mods_customise: text("song-select-mods-customise"),
@@ -2337,6 +2363,7 @@ pub fn run(settings: Settings) -> Result<(), String> {
         layout_size: initial_size,
         points_per_pixel,
         exited: Arc::clone(&exited),
+        text_input: window.text_input(),
         draw_rate: draw_rate.clone(),
         rate_switch: DrawRateSwitch::new(menu_rate),
         update_rate: AppliedUpdateRate::new(update_rate.clone(), settings.frame.update_hz),

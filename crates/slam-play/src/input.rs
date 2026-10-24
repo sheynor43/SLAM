@@ -367,7 +367,9 @@ impl LiveInput {
                 self.parent_path.push(self.layout.to_playfield(window));
                 return None;
             }
-            InputKind::MouseWheel { .. } => return None,
+            InputKind::MouseWheel { .. } | InputKind::KeyRepeat { .. } | InputKind::Text(_) => {
+                return None;
+            }
             InputKind::Key { scancode, down } => (Input::Key(scancode), down),
             InputKind::MouseButton { button, down } => (Input::Mouse(button), down),
         };
@@ -570,8 +572,10 @@ impl LiveInput {
                 self.path.push(self.position);
                 return true;
             }
-            // Gameplay does not use the wheel.
-            InputKind::MouseWheel { .. } => return true,
+            // Gameplay does not use the wheel, key repeats or text.
+            InputKind::MouseWheel { .. } | InputKind::KeyRepeat { .. } | InputKind::Text(_) => {
+                return true;
+            }
             InputKind::Key { scancode, down } => (Input::Key(scancode), down),
             InputKind::MouseButton { button, down } => (Input::Mouse(button), down),
         };
@@ -633,8 +637,12 @@ impl LiveInput {
     /// Keeps an event for the next step, or drops it if too many wait. A motion right after a
     /// waiting motion replaces it: only the last position matters.
     fn defer(&mut self, event: InputEvent) {
-        // Gameplay does not use the wheel: it never takes a slot a key may need.
-        if matches!(event.kind, InputKind::MouseWheel { .. }) {
+        // Gameplay does not use the wheel, key repeats or text: they never take a slot a
+        // key may need.
+        if matches!(
+            event.kind,
+            InputKind::MouseWheel { .. } | InputKind::KeyRepeat { .. } | InputKind::Text(_)
+        ) {
             return;
         }
         if self.pending_len > 0 && matches!(event.kind, InputKind::MouseMove { .. }) {
@@ -1225,6 +1233,32 @@ mod tests {
         input.hold(&[key(1.0, SCANCODE_Z, true)]);
         let step = input.step(&[], ms(2.0), &Linear);
         assert_eq!(summary(&step), [(1.0, Actions::LEFT, true)]);
+    }
+
+    #[test]
+    fn held_repeats_and_text_take_no_waiting_slots() {
+        let mut input = live();
+        let mut events = vec![key(1.0, SCANCODE_Z, true)];
+        for _ in 0..2 * MAX_PENDING_EVENTS {
+            events.push(InputEvent {
+                time_ns: ms(1.5),
+                kind: InputKind::KeyRepeat {
+                    scancode: SCANCODE_Z,
+                },
+            });
+            events.push(InputEvent {
+                time_ns: ms(1.5),
+                kind: InputKind::Text(slam_input::TextChunk::new("z").unwrap()),
+            });
+        }
+        events.push(key(2.0, SCANCODE_Z, false));
+        input.hold(&events);
+        assert_eq!(input.dropped(), 0);
+        let step = input.step(&[], ms(3.0), &Linear);
+        assert_eq!(
+            summary(&step),
+            [(1.0, Actions::LEFT, true), (2.0, Actions::LEFT, false)]
+        );
     }
 
     #[test]

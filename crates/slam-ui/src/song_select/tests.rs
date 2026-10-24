@@ -7,9 +7,11 @@ fn set(key: u64, diffs: usize) -> SetRow {
         artist: format!("artist {key}"),
         title: format!("title {key}"),
         creator: "mapper".to_owned(),
+        search: search_text(&["mapper", &format!("artist {key}"), &format!("title {key}")]),
         difficulties: (0..diffs)
             .map(|d| DifficultyRow {
                 version: format!("diff {d}"),
+                search: format!("diff {d}"),
             })
             .collect(),
     }
@@ -21,13 +23,19 @@ fn list(sets: &[(u64, usize)]) -> Arc<SongList> {
     })
 }
 
+/// Gives `s` `list` with filter buffers made for it, as the application does.
+fn put(s: &mut SongSelect, list: Arc<SongList>) {
+    let filter = SongFilter::for_list(&list);
+    s.set_list(list, filter);
+}
+
 fn layout() -> SongSelectLayout {
     SongSelectLayout::new(1280.0, 720.0, &Theme::default())
 }
 
 fn screen(sets: &[(u64, usize)]) -> SongSelect {
     let mut s = SongSelect::new();
-    s.set_list(list(sets));
+    put(&mut s, list(sets));
     s
 }
 
@@ -133,21 +141,21 @@ fn selection_follows_the_key_across_set_list() {
     press(&mut s, I::Down);
     assert_eq!(s.selected(), Some((1, 1)));
     // new sets sorted before, the old ones reordered
-    s.set_list(list(&[(9, 1), (3, 1), (8, 1), (2, 3), (1, 2)]));
+    put(&mut s, list(&[(9, 1), (3, 1), (8, 1), (2, 3), (1, 2)]));
     assert_eq!(s.selected(), Some((3, 1)));
     // the set lost a difficulty: the index is clamped
-    s.set_list(list(&[(2, 1)]));
+    put(&mut s, list(&[(2, 1)]));
     assert_eq!(s.selected(), Some((0, 0)));
     // the set is gone: the position is kept, clamped
-    s.set_list(list(&[(5, 1), (6, 1)]));
+    put(&mut s, list(&[(5, 1), (6, 1)]));
     assert_eq!(s.selected(), Some((0, 0)));
-    s.set_list(Arc::default());
+    put(&mut s, Arc::default());
     assert_eq!(s.selected(), None);
 }
 
 #[test]
 fn row_mapping_expands_the_selected_set() {
-    let l = list(&[(1, 2), (2, 3), (3, 1)]);
+    let l = SongFilter::for_list(&list(&[(1, 2), (2, 3), (3, 1)]));
     assert_eq!(l.row_count(1), 6);
     let rows: Vec<Row> = (0..6).map(|i| l.row(1, i).unwrap()).collect();
     assert_eq!(
@@ -225,10 +233,7 @@ fn hit_testing_follows_the_scroll() {
     assert_eq!(scroll, 10.5);
     assert_eq!(s.selected(), Some((0, 0)));
     let (x, y) = centre_of(&l, 20, scroll);
-    assert_eq!(
-        l.row_at(x, y, scroll, &s.snapshot().list, 0),
-        Some(Row::Set(19))
-    );
+    assert_eq!(l.row_at(x, y, scroll, s.filter(), 0), Some(Row::Set(19)));
     press(&mut s, I::PointerPress { x, y });
     assert_eq!(s.selected(), Some((19, 0)));
 }
@@ -255,7 +260,7 @@ fn keyboard_keeps_the_selection_visible() {
     for _ in 0..80 {
         press(&mut s, I::Down);
         let snap = s.snapshot();
-        let row = (snap.selected_set + 1 + snap.selected_difficulty) as f32;
+        let row = s.selected_row() as f32;
         assert!(row >= snap.scroll && row + 1.0 <= snap.scroll + l.viewport_rows() + 1e-3);
     }
     press(&mut s, I::Home);
@@ -413,7 +418,7 @@ fn choose_folder_is_offered_only_when_nothing_can_play() {
         assert_eq!(s.shows_choose_folder(), shown, "{status:?}");
     }
     s.set_status(S::Ready);
-    s.set_list(list(&[(1, 1)]));
+    put(&mut s, list(&[(1, 1)]));
     assert!(!s.shows_choose_folder());
 }
 

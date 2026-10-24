@@ -8,7 +8,8 @@
 //! update thread after each queued event. A window made with
 //! [`InputWindow::new_opengl`] hands its [`GlContext`] to the draw thread.
 //! [`InputCounters`] count the main thread's wake-ups and queued events. A
-//! [`FolderDialog`] shows the OS folder picker from any thread.
+//! [`FolderDialog`] shows the OS folder picker from any thread. [`TextInput`] turns typed
+//! text ([`InputKind::Text`]) on and off from any thread.
 
 mod clock;
 mod convert;
@@ -23,10 +24,10 @@ pub use clock::{
     MAX_BRACKET_NS, MAX_REJECTIONS, RECALIBRATE_INTERVAL_NS, RETRY_SPACING_NS, TickMapper,
     sdl_ticks_ns,
 };
-pub use convert::convert;
+pub use convert::{convert, convert_text};
 pub use counters::InputCounters;
 pub use dialog::{FolderCallback, FolderDialog, FolderPick};
-pub use event::{InputEvent, InputKind, MouseButton};
+pub use event::{InputEvent, InputKind, MouseButton, TextChunk};
 pub use gl::GlContext;
 pub use ring::{BUTTON_RESERVE, EventSink, EventSource, Notify, event_ring};
-pub use window::{CursorVisibility, InputWindow, QuitHandle, WindowError, dispatch};
+pub use window::{CursorVisibility, InputWindow, QuitHandle, TextInput, WindowError, dispatch};
