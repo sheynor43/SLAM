@@ -15,6 +15,7 @@ use slam_ui::settings_screen::{
     SettingsLabels, SettingsLayout, SettingsScreen, SettingsView,
 };
 use slam_ui::theme::Theme;
+use slam_ui::widgets::DropdownView;
 
 slam_testkit::install_counting_allocator!();
 
@@ -288,4 +289,77 @@ fn the_view_pushes_without_allocating_once_warm() {
         }
     });
     assert!(shapes.len() >= 3);
+}
+
+/// A new songs folder swaps a skin dropdown view in on the draw thread. It is built at
+/// scale 1.0 on the library thread and lays its options out again at the screen's scale when
+/// first drawn: neither the frame after the swap nor the one that opens the list allocates.
+#[test]
+fn a_swapped_in_dropdown_view_draws_without_allocating() {
+    let registry = Arc::new(FontRegistry::with_builtin());
+    let limits = Limits {
+        max_texture_size: 4096,
+        max_uniform_block_size: 16384,
+        max_uniform_buffer_slots: 12,
+        max_texture_slots: 16,
+    };
+    let mut glyphs = glyph_atlas(Arc::clone(&registry), &GlyphAtlasConfig::new(limits)).unwrap();
+    let theme = Theme::default();
+    let specs = rows();
+    let mut screen = SettingsScreen::new(&specs, 3);
+    let mut view = SettingsView::new(Arc::clone(&registry), theme, &specs, &labels());
+    let options = ["60 Hz", "144 Hz", "Unlimited"];
+    let mut spare = DropdownView::new(Arc::clone(&registry), theme, &options);
+    let white = AtlasRegion {
+        texture: TextureId(0),
+        origin: Origin::new(0, 0),
+        size: Extent::new(1, 1),
+        uv: UvRect {
+            u0: 0.0,
+            v0: 0.0,
+            u1: 1.0,
+            v1: 1.0,
+        },
+    };
+    let (mut shapes, mut text) = (
+        SpriteBatch::with_capacity(256),
+        SpriteBatch::with_capacity(1024),
+    );
+    let pose = Pose {
+        opacity: 1.0,
+        offset: 0.0,
+    };
+    let layout = SettingsLayout::new(1920.0, 1080.0, &theme);
+    let mut frame = |view: &mut SettingsView, screen: &SettingsScreen, glyphs: &mut _| {
+        shapes.clear();
+        text.clear();
+        view.push(
+            &mut shapes,
+            &mut text,
+            glyphs,
+            1920.0,
+            1080.0,
+            &screen.snapshot(),
+            pose,
+            white,
+        );
+    };
+    // Warm at a scale other than 1.0, the Frame section's dropdown open.
+    screen.input(SettingsInput::NextSection, &layout);
+    screen.input(SettingsInput::Activate, &layout);
+    for _ in 0..3 {
+        frame(&mut view, &screen, &mut glyphs);
+    }
+    // The swap happens as the screen is drawn; a closed dropdown is reset by `set_dropdown`.
+    screen.set_dropdown(2, 3, 1);
+    assert!(view.swap_dropdown(2, &mut spare));
+    assert_no_alloc(|| frame(&mut view, &screen, &mut glyphs));
+    // Opening the list draws the new options for the first time.
+    screen.input(SettingsInput::Activate, &layout);
+    assert_no_alloc(|| frame(&mut view, &screen, &mut glyphs));
+    assert_no_alloc(|| {
+        for _ in 0..10 {
+            frame(&mut view, &screen, &mut glyphs);
+        }
+    });
 }

@@ -680,6 +680,44 @@ mod tests {
         }
     }
 
+    fn dropdown(options: usize) -> DropdownView {
+        let names: Vec<String> = (0..options).map(|i| i.to_string()).collect();
+        DropdownView::new(
+            Arc::new(slam_text::FontRegistry::with_builtin()),
+            slam_ui::theme::Theme::default(),
+            &names,
+        )
+    }
+
+    fn skin_views() -> (
+        rtrb::Producer<DropdownView>,
+        SkinViews,
+        rtrb::Consumer<DropdownView>,
+    ) {
+        let (producer, views) = rtrb::RingBuffer::new(SKIN_VIEWS);
+        let (old, returned) = rtrb::RingBuffer::new(SKIN_VIEWS);
+        (producer, SkinViews { views, old }, returned)
+    }
+
+    #[test]
+    fn skin_views_take_the_newest_and_give_back_the_older() {
+        let (mut producer, mut views, mut returned) = skin_views();
+        assert!(views.take().is_none());
+        for options in [1, 2, 3] {
+            producer.push(dropdown(options)).ok().unwrap();
+        }
+        let newest = views.take().unwrap();
+        assert!(format!("{newest:?}").contains("options: 3"));
+        for options in ["options: 1", "options: 2"] {
+            let old = returned.pop().unwrap();
+            assert!(format!("{old:?}").contains(options));
+        }
+        assert!(returned.pop().is_err());
+        assert!(views.take().is_none());
+        views.give_back(newest);
+        assert!(returned.pop().is_ok());
+    }
+
     #[test]
     fn latest_keeps_a_change_of_an_older_publication() {
         let (mut producer, mut link, mut commands) = link_with_commands();
