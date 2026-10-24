@@ -131,6 +131,8 @@ pub enum SongSelectAction {
     ResetModSetting {
         row: usize,
     },
+    /// The "choose folder" button was used: the application shows its folder picker.
+    ChooseFolder,
 }
 
 /// One row of the flat column.
@@ -177,6 +179,8 @@ pub struct SongSelectLayout {
     pub list: Rect,
     /// Key hints below the list.
     pub hint: Rect,
+    /// The "choose folder" button: the list's second row, below the empty-list text.
+    pub choose_folder: Rect,
     /// The mod select panel.
     pub mods: ModSelectLayout,
     /// Pitch of the rows.
@@ -213,12 +217,20 @@ impl SongSelectLayout {
             width: panel,
             height: (hint.y - margin / 2.0 - top).max(0.0),
         };
+        let row_height = theme.song_row_height * scale;
+        let choose_folder = Rect {
+            x,
+            y: list.y + row_height,
+            width: panel,
+            height: row_height - theme.song_row_gap * scale,
+        };
         SongSelectLayout {
             header,
             list,
             hint,
+            choose_folder,
             mods: ModSelectLayout::new(width, height, theme),
-            row_height: theme.song_row_height * scale,
+            row_height,
             indent: theme.song_indent * scale,
             scale,
         }
@@ -270,6 +282,8 @@ pub struct SongSelectSnapshot {
     /// Rows scrolled off the top.
     pub scroll: f32,
     pub hovered: Option<Row>,
+    /// The pointer is over the "choose folder" button, which is shown.
+    pub folder_hovered: bool,
     pub status: SongSelectStatus,
     /// The localised "scanning" message, made by the application; the view re-lays it
     /// out when the `Arc` changes (by identity).
@@ -289,6 +303,7 @@ pub struct SongSelect {
     scroll: f32,
     pointer: Option<(f32, f32)>,
     hovered: Option<Row>,
+    folder_hovered: bool,
     status: SongSelectStatus,
     scanning_text: Arc<str>,
     generation: u64,
@@ -303,6 +318,16 @@ impl Default for SongSelect {
     }
 }
 
+/// Whether there is nothing to play and the folder can be chosen: an empty list that is
+/// neither being scanned nor loading.
+pub(crate) fn can_choose_folder(list: &SongList, status: SongSelectStatus) -> bool {
+    list.sets.is_empty()
+        && matches!(
+            status,
+            SongSelectStatus::NoFolder | SongSelectStatus::Failed | SongSelectStatus::Ready
+        )
+}
+
 impl SongSelect {
     pub fn new() -> SongSelect {
         SongSelect {
@@ -312,6 +337,7 @@ impl SongSelect {
             scroll: 0.0,
             pointer: None,
             hovered: None,
+            folder_hovered: false,
             status: SongSelectStatus::default(),
             scanning_text: Arc::from(""),
             generation: 0,
@@ -361,6 +387,11 @@ impl SongSelect {
         self.ensure_visible();
     }
 
+    /// Whether the "choose folder" button is shown.
+    pub fn shows_choose_folder(&self) -> bool {
+        can_choose_folder(&self.list, self.status)
+    }
+
     pub fn snapshot(&self) -> SongSelectSnapshot {
         SongSelectSnapshot {
             list: Arc::clone(&self.list),
@@ -368,6 +399,7 @@ impl SongSelect {
             selected_difficulty: self.difficulty,
             scroll: self.scroll,
             hovered: self.hovered,
+            folder_hovered: self.folder_hovered,
             status: self.status,
             scanning_text: Arc::clone(&self.scanning_text),
             generation: self.generation,
@@ -497,7 +529,13 @@ impl SongSelect {
             I::PageDown => self.select_set(self.set.saturating_add(page)),
             I::Home => self.select_set(0),
             I::End => self.select_set(last),
-            I::Activate => action = self.play(),
+            I::Activate => {
+                action = if self.shows_choose_folder() {
+                    Some(SongSelectAction::ChooseFolder)
+                } else {
+                    self.play()
+                }
+            }
             I::Back
             | I::ModHotkey { .. }
             | I::ToggleCustomisation
@@ -524,6 +562,9 @@ impl SongSelect {
             I::PointerPress { x, y } => {
                 self.pointer = Some((x, y));
                 moved = false;
+                if self.shows_choose_folder() && layout.choose_folder.contains(x, y) {
+                    action = Some(SongSelectAction::ChooseFolder);
+                }
                 match layout.row_at(x, y, self.scroll, &self.list, self.set) {
                     Some(Row::Set(set)) if set != self.set => self.select_set(set),
                     Some(Row::Difficulty { difficulty, .. }) => {
@@ -543,6 +584,10 @@ impl SongSelect {
         self.hovered = self
             .pointer
             .and_then(|(x, y)| layout.row_at(x, y, self.scroll, &self.list, self.set));
+        self.folder_hovered = self.shows_choose_folder()
+            && self
+                .pointer
+                .is_some_and(|(x, y)| layout.choose_folder.contains(x, y));
         action
     }
 }

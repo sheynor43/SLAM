@@ -7,11 +7,13 @@
 //! update thread drains through [`EventSource`]. A [`Notify`] set on the sink wakes the
 //! update thread after each queued event. A window made with
 //! [`InputWindow::new_opengl`] hands its [`GlContext`] to the draw thread.
-//! [`InputCounters`] count the main thread's wake-ups and queued events.
+//! [`InputCounters`] count the main thread's wake-ups and queued events. A
+//! [`FolderDialog`] shows the OS folder picker from any thread.
 
 mod clock;
 mod convert;
 mod counters;
+mod dialog;
 mod event;
 mod gl;
 mod ring;
@@ -23,6 +25,7 @@ pub use clock::{
 };
 pub use convert::convert;
 pub use counters::InputCounters;
+pub use dialog::{FolderCallback, FolderDialog, FolderPick};
 pub use event::{InputEvent, InputKind, MouseButton};
 pub use gl::GlContext;
 pub use ring::{BUTTON_RESERVE, EventSink, EventSource, Notify, event_ring};

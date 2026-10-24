@@ -12,12 +12,13 @@ use super::keybinds;
 use crate::settings::{DrawRate, FpsScreens, KeySlot, Settings, Timing, skins};
 
 /// Sections, in order; the keys of their names are in [`SECTION_KEYS`].
-const SECTION_KEYS: [&str; 5] = [
+const SECTION_KEYS: [&str; 6] = [
     "settings-section-audio",
     "settings-section-offset",
     "settings-section-keys",
     "settings-section-frame",
     "settings-section-gameplay",
+    "settings-section-library",
 ];
 /// The number of sections.
 pub const SECTIONS: usize = SECTION_KEYS.len();
@@ -61,10 +62,11 @@ pub enum Row {
     BeatmapHitsounds,
     HitErrorScale,
     Skin,
+    SongsFolder,
 }
 
 impl Row {
-    pub const ALL: [Row; 28] = [
+    pub const ALL: [Row; 29] = [
         Row::MasterVolume,
         Row::MusicVolume,
         Row::HitsoundVolume,
@@ -93,6 +95,7 @@ impl Row {
         Row::BeatmapHitsounds,
         Row::HitErrorScale,
         Row::Skin,
+        Row::SongsFolder,
     ];
 
     /// The key a key row edits.
@@ -144,6 +147,7 @@ impl Row {
             | Row::BeatmapHitsounds
             | Row::HitErrorScale
             | Row::Skin => 4,
+            Row::SongsFolder => 5,
         }
     }
 
@@ -177,6 +181,7 @@ impl Row {
             Row::BeatmapHitsounds => "settings-gameplay-beatmap-hitsounds",
             Row::HitErrorScale => "settings-gameplay-hit-error-scale",
             Row::Skin => "settings-gameplay-skin",
+            Row::SongsFolder => "settings-library-songs-folder",
         }
     }
 
@@ -299,7 +304,7 @@ impl Rows {
             };
         }
         match row {
-            Row::ResetKeys => RowKind::Button,
+            Row::ResetKeys | Row::SongsFolder => RowKind::Button,
             Row::MasterVolume => percent(s.audio.master_volume),
             Row::MusicVolume => percent(s.audio.music_volume),
             Row::HitsoundVolume => percent(s.audio.hitsound_volume),
@@ -522,6 +527,8 @@ impl Rows {
                 };
                 let button = match row {
                     Row::ResetKeys => text("settings-keys-reset-button"),
+                    // The placeholder of an empty folder.
+                    Row::SongsFolder => text("settings-library-songs-folder-none"),
                     _ => String::new(),
                 };
                 RowLabels {
@@ -529,6 +536,7 @@ impl Rows {
                     unit,
                     options,
                     button,
+                    shows_value: *row == Row::SongsFolder,
                 }
             })
             .collect();
@@ -765,6 +773,26 @@ mod tests {
         let labels = rows.labels(&localizer);
         assert_eq!(labels.rows[index(Row::Skin)].label, "Скин");
         assert_eq!(labels.rows[index(Row::Skin)].options[0], "Стандартный");
+    }
+
+    #[test]
+    fn the_songs_folder_row_is_a_button_in_its_own_section() {
+        let (rows, s) = rows();
+        assert_eq!(Row::SongsFolder.section(), SECTIONS - 1);
+        assert_eq!(
+            rows.specs(&s)[index(Row::SongsFolder)].kind,
+            RowKind::Button
+        );
+        let mut localizer = Localizer::builtin().unwrap();
+        localizer.set_language("en").unwrap();
+        let labels = rows.labels(&localizer);
+        let row = &labels.rows[index(Row::SongsFolder)];
+        assert_eq!(row.label, "Songs folder");
+        assert_eq!(row.button, "Not selected");
+        assert!(row.shows_value);
+        assert_eq!(labels.sections[SECTIONS - 1], "Library");
+        // Only this row shows a value.
+        assert_eq!(labels.rows.iter().filter(|r| r.shows_value).count(), 1);
     }
 
     #[test]

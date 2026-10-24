@@ -19,7 +19,7 @@ use super::mod_select::{
 };
 use super::{
     ModColumns, ModSelectSnapshot, Row, SongList, SongSelectLayout, SongSelectSnapshot,
-    SongSelectStatus,
+    SongSelectStatus, can_choose_folder,
 };
 use crate::menu::Rect;
 use crate::menu::view::{Frame, Line, Typesetter};
@@ -43,6 +43,8 @@ pub struct SongSelectLabels {
     pub failed: String,
     pub loading: String,
     pub empty: String,
+    /// The button shown when there is nothing to play.
+    pub choose_folder: String,
     pub hint: String,
     /// The mod select panel's title; also prefixes the selected mods shown under the list.
     pub mods_title: String,
@@ -109,6 +111,7 @@ pub struct SongSelectView {
     failed: Line,
     loading: Line,
     empty: Line,
+    choose_folder: Line,
     hint: Line,
     mods_title: Line,
     mods_hint: Line,
@@ -187,6 +190,7 @@ impl SongSelectView {
             failed: Line::new(&labels.failed),
             loading: Line::new(&labels.loading),
             empty: Line::new(&labels.empty),
+            choose_folder: Line::new(&labels.choose_folder),
             hint: Line::new(&labels.hint),
             mods_title: Line::new(&labels.mods_title),
             mods_hint: Line::new(&labels.mods_hint),
@@ -234,6 +238,7 @@ impl SongSelectView {
             &mut self.failed,
             &mut self.loading,
             &mut self.empty,
+            &mut self.choose_folder,
         ] {
             self.type_setter.lay_out(line, status);
         }
@@ -286,6 +291,7 @@ impl SongSelectView {
             &self.failed,
             &self.loading,
             &self.empty,
+            &self.choose_folder,
             &self.hint,
             &self.mods_title,
             &self.mods_hint,
@@ -644,6 +650,21 @@ impl SongSelectView {
                     layout.list.x,
                     layout.list.y + layout.row_height / 2.0,
                     theme.disabled_text,
+                );
+            }
+            if can_choose_folder(list, snapshot.status) {
+                let button = &layout.choose_folder;
+                let fill = if snapshot.folder_hovered {
+                    theme.button_hover_fill
+                } else {
+                    theme.button_fill
+                };
+                rect(button, fill);
+                left(
+                    &self.choose_folder,
+                    button.x + pad,
+                    button.y + button.height / 2.0,
+                    theme.text,
                 );
             }
         } else {

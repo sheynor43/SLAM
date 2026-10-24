@@ -28,6 +28,10 @@ pub struct RowLabels {
     pub options: Vec<String>,
     /// The text on a button row's button.
     pub button: String,
+    /// The button row shows the screen's value text ([`SettingsScreen::set_value_text`])
+    /// instead of `button`, which then is the placeholder for an empty value. At most one
+    /// row of a screen does.
+    pub shows_value: bool,
 }
 
 /// The texts of key bindings and of the question about a taken key. The application
@@ -127,6 +131,21 @@ impl KeyLines {
     }
 }
 
+/// The button row that shows a runtime text, such as a folder path.
+struct ValueButton {
+    row: usize,
+    /// The text shown, cut from the left to fit the button; buffers reserved up front.
+    line: Line,
+    /// The whole text `line` was made from, to tell when it changes.
+    seen: String,
+    /// Width of the ellipsis at the widget text size.
+    ellipsis: f32,
+}
+
+/// Bytes reserved up front for the value text; longer ones are cut from the left first.
+const VALUE_CAPACITY: usize = 512;
+const ELLIPSIS: char = '\u{2026}';
+
 enum RowView {
     Key,
     Button(Line),
@@ -148,6 +167,7 @@ pub struct SettingsView {
     /// Per row: its section, its position in it and whether it needs a restart.
     meta: Vec<(usize, usize, bool)>,
     views: Vec<RowView>,
+    value: Option<ValueButton>,
     keys: KeyLines,
 }
 
@@ -211,8 +231,24 @@ impl SettingsView {
                 }
             })
             .collect();
+        let value = rows
+            .iter()
+            .enumerate()
+            .zip(&labels.rows)
+            .find(|(_, row)| row.shows_value)
+            .map(|((row, _), _)| {
+                let mut line = Line::new("");
+                line.text.reserve(VALUE_CAPACITY + ELLIPSIS.len_utf8());
+                ValueButton {
+                    row,
+                    line,
+                    seen: String::with_capacity(VALUE_CAPACITY + ELLIPSIS.len_utf8()),
+                    ellipsis: 0.0,
+                }
+            });
         let (width, height) = (1280.0, theme.reference_height);
         let mut view = SettingsView {
+            value,
             type_setter: Typesetter::new(registry, theme.font_weight),
             frame: Frame { width, height },
             layout: SettingsLayout::new(width, height, &theme),
@@ -251,6 +287,58 @@ impl SettingsView {
                 self.type_setter.lay_out(line, text);
             }
         }
+        if let Some(value) = &mut self.value {
+            let mut probe = Line::new(&ELLIPSIS.to_string());
+            self.type_setter.lay_out(&mut probe, text);
+            value.ellipsis = probe.layout.width();
+        }
+        self.lay_out_value();
+    }
+
+    /// Lays the value text out, cut from the left with an ellipsis to fit its button. Reuses
+    /// the buffers.
+    fn lay_out_value(&mut self) {
+        let Some(value) = &mut self.value else {
+            return;
+        };
+        let size = self.theme.widget_text_size * self.layout.scale;
+        let slot = self.meta.get(value.row).map_or(0, |m| m.1);
+        let avail =
+            self.layout.widget(slot).width - 2.0 * self.theme.widget_pad * self.layout.scale;
+        // Start from the end when the text is longer than the buffer.
+        let mut start = value.seen.len().saturating_sub(VALUE_CAPACITY);
+        while !value.seen.is_char_boundary(start) {
+            start += 1;
+        }
+        value.line.text.clear();
+        if start > 0 {
+            value.line.text.push(ELLIPSIS);
+        }
+        value.line.text.push_str(&value.seen[start..]);
+        self.type_setter.lay_out(&mut value.line, size);
+        let total = value.line.layout.width();
+        if total <= avail {
+            return;
+        }
+        // Drop the head until the rest and an ellipsis fit.
+        let need = total - (avail - value.ellipsis);
+        let cut = value
+            .line
+            .layout
+            .glyphs()
+            .iter()
+            .find(|g| g.x >= need)
+            .map_or(value.line.text.len(), |g| g.cluster as usize)
+            .min(value.line.text.len());
+        let mut cut = cut;
+        while !value.line.text.is_char_boundary(cut) {
+            cut += 1;
+        }
+        // `need` is positive, so the cut is past the first glyph (which may be an ellipsis
+        // already).
+        value.line.text.replace_range(..cut, "");
+        value.line.text.insert(0, ELLIPSIS);
+        self.type_setter.lay_out(&mut value.line, size);
     }
 
     /// Asks `glyphs` for every glyph the screen shows. Returns how many are not ready yet;
@@ -279,6 +367,15 @@ impl SettingsView {
                 RowView::Dropdown(v) => v.request_glyphs(glyphs),
             })
             .sum::<usize>()
+            + self.value.as_ref().map_or(0, |value| {
+                value
+                    .line
+                    .layout
+                    .glyphs()
+                    .iter()
+                    .filter(|g| matches!(glyphs.glyph(GlyphKey::of(g)), Glyph::Pending))
+                    .count()
+            })
     }
 
     /// Writes the screen at `pose` on a `width` × `height` window: rectangles into `shapes`
@@ -300,6 +397,17 @@ impl SettingsView {
         if frame != self.frame {
             self.frame = frame;
             self.lay_out();
+        }
+        if self
+            .value
+            .as_ref()
+            .is_some_and(|value| value.seen != *snapshot.value_text)
+        {
+            if let Some(value) = &mut self.value {
+                value.seen.clear();
+                value.seen.push_str(&snapshot.value_text);
+            }
+            self.lay_out_value();
         }
         let layout = self.layout.shifted(pose.offset * width);
         let (theme, opacity) = (self.theme, pose.opacity);
@@ -395,6 +503,10 @@ impl SettingsView {
                         theme.button_fill
                     };
                     fill(shapes, white, &widget, faded(colour, opacity));
+                    let line = match &self.value {
+                        Some(value) if value.row == i && !value.seen.is_empty() => &value.line,
+                        _ => &*line,
+                    };
                     push_left(text, line, &widget, pad, faded(theme.text, opacity), glyphs);
                 }
                 (RowView::Toggle(view), RowWidget::Toggle(toggle)) => {

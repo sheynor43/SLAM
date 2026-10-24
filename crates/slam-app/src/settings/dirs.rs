@@ -35,7 +35,7 @@ pub const PORTABLE_MARKER: &str = "portable";
 
 /// An absolute, non-empty path from the environment variable `name`, per the XDG rule that
 /// empty and relative values are ignored.
-fn absolute_env(env: &dyn Fn(&str) -> Option<OsString>, name: &str) -> Option<PathBuf> {
+pub(super) fn absolute_env(env: &dyn Fn(&str) -> Option<OsString>, name: &str) -> Option<PathBuf> {
     let value = env(name)?;
     if value.is_empty() {
         return None;

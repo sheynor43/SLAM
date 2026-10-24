@@ -113,6 +113,7 @@ fn song_select_ticks_and_new_lists_do_not_allocate() {
             Arc::clone(&p.list),
             Arc::clone(&p.files),
             Arc::clone(&p.scanning_text),
+            Arc::clone(&p.folder),
         )
     });
     producer.push(first).unwrap();

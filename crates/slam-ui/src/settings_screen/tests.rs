@@ -651,3 +651,13 @@ fn a_toggle_changed_from_outside_shows_without_an_action() {
     s.set_toggle(other, true);
     assert_eq!(*s.widget(other).unwrap(), widget);
 }
+
+#[test]
+fn the_value_text_is_stored_and_snapshotted() {
+    let mut s = SettingsScreen::new(&[button(0)], 1);
+    assert_eq!(s.value_text(), "");
+    let text: Arc<str> = Arc::from("/songs");
+    s.set_value_text(Arc::clone(&text));
+    assert_eq!(s.value_text(), "/songs");
+    assert!(Arc::ptr_eq(&s.snapshot().value_text, &text));
+}
