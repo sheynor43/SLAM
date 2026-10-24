@@ -637,3 +637,40 @@ fn the_songs_folder_row_shows_the_folder_and_opens_the_picker() {
     s.tick(3 * LATER, &[key(KEY_ENTER)], &mut snap);
     assert_eq!(settings_screen(&s).value_text(), "/other");
 }
+
+#[test]
+fn a_new_folder_brings_its_skins_and_survives_closing_the_screen() {
+    use crate::songs::{Command, FolderChange};
+    let (mut s, mut producer, mut commands) = with_folder_commands();
+    let mut snap = ShellSnapshot::default();
+    opened(&mut s, &mut snap);
+    let mut published = published_folder("/picked/Songs");
+    published.change = Some(Box::new(FolderChange {
+        songs: Some("/picked/Songs".into()),
+        skins: vec!["Alpha".to_owned(), "Beta".to_owned()],
+    }));
+    producer.push(published).unwrap_or_else(|_| panic!("ring"));
+    s.tick(LATER, &[], &mut snap);
+    assert_eq!(
+        s.settings().paths.songs.as_deref(),
+        Some(std::path::Path::new("/picked/Songs"))
+    );
+    // The open screen's skin row lists the new skins (and the default one).
+    let Some(RowWidget::Dropdown(skin)) = settings_screen(&s).widget(super::rows::skin_row())
+    else {
+        panic!("the skin row is a dropdown");
+    };
+    assert_eq!(skin.count(), 3);
+    // The old values go back to the library thread.
+    let Ok(Command::Retire(old)) = commands.pop() else {
+        panic!("the change is handed back");
+    };
+    assert_eq!(old.songs, None);
+    assert!(old.skins.is_empty());
+    // Closing the screen keeps the library's folder.
+    s.tick(2 * LATER, &[key(KEY_ESCAPE)], &mut snap);
+    assert_eq!(
+        s.settings().paths.songs.as_deref(),
+        Some(std::path::Path::new("/picked/Songs"))
+    );
+}

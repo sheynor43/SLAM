@@ -481,6 +481,14 @@ impl SettingsScreen {
         self.value_text = text;
     }
 
+    /// Gives the dropdown row `row` `options` options with `selected` chosen (clamped),
+    /// closed: its options changed while the screen was open. Other rows are left alone.
+    pub fn set_dropdown(&mut self, row: usize, options: usize, selected: usize) {
+        if let Some(RowWidget::Dropdown(dropdown)) = self.widgets[..self.len].get_mut(row) {
+            *dropdown = Dropdown::new(options, selected);
+        }
+    }
+
     /// The text set by [`Self::set_value_text`].
     pub fn value_text(&self) -> &str {
         &self.value_text

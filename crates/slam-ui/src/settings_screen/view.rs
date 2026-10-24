@@ -341,6 +341,20 @@ impl SettingsView {
         self.type_setter.lay_out(&mut value.line, size);
     }
 
+    /// Exchanges `view` with the view of the dropdown row `row`; returns whether `row` is a
+    /// dropdown (otherwise `view` is left as it is). The caller frees the old view off the
+    /// hot paths. Does not allocate; the new view lays itself out again at the current
+    /// scale when next drawn.
+    pub fn swap_dropdown(&mut self, row: usize, view: &mut DropdownView) -> bool {
+        match self.views.get_mut(row) {
+            Some(RowView::Dropdown(own)) => {
+                std::mem::swap(own, view);
+                true
+            }
+            _ => false,
+        }
+    }
+
     /// Asks `glyphs` for every glyph the screen shows. Returns how many are not ready yet;
     /// repeat with [`GlyphCache::process`] in between until none are.
     pub fn request_glyphs(&self, glyphs: &mut GlyphCache) -> usize {

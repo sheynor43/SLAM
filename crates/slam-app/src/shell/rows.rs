@@ -20,6 +20,25 @@ const SECTION_KEYS: [&str; 6] = [
     "settings-section-gameplay",
     "settings-section-library",
 ];
+/// The index of the skin row.
+pub fn skin_row() -> usize {
+    Row::ALL
+        .iter()
+        .position(|row| *row == Row::Skin)
+        .expect("Row::ALL lists every row")
+}
+
+/// The skin row's option labels for `skins`: the default skin, then the folders.
+pub fn skin_options(localizer: &Localizer, skins: &[String]) -> Vec<String> {
+    std::iter::once(
+        localizer
+            .format("settings-option-default-skin", None)
+            .into_owned(),
+    )
+    .chain(skins.iter().cloned())
+    .collect()
+}
+
 /// The number of sections.
 pub const SECTIONS: usize = SECTION_KEYS.len();
 
@@ -275,6 +294,24 @@ impl Rows {
         }
     }
 
+    /// The skin row's option count and the option `settings` choose. A saved skin that is
+    /// no longer there shows as the default one, and stays saved until the player picks
+    /// another.
+    pub fn skin_choice(&self, settings: &Settings) -> (usize, usize) {
+        let selected = settings
+            .skin
+            .name
+            .as_ref()
+            .and_then(|name| self.skins.iter().position(|n| n == name))
+            .map_or(0, |i| i + 1);
+        (self.skins.len() + 1, selected)
+    }
+
+    /// Exchanges the skin folder names with `skins`, for a new songs folder (ADR-0064).
+    pub fn swap_skins(&mut self, skins: &mut Vec<String>) {
+        std::mem::swap(&mut self.skins, skins);
+    }
+
     /// The rows for the screen, showing `settings`.
     pub fn specs(&self, settings: &Settings) -> Vec<RowSpec> {
         Row::ALL
@@ -369,17 +406,10 @@ impl Rows {
             Row::BeatmapHitsounds => RowKind::Toggle {
                 value: s.gameplay.beatmap_hitsounds,
             },
-            // A saved skin that is no longer there shows as the default one, and stays
-            // saved until the player picks another.
-            Row::Skin => choice(
-                self.skins.len() + 1,
-                s.skin
-                    .name
-                    .as_ref()
-                    .and_then(|name| self.skins.iter().position(|n| n == name))
-                    .map(|i| i + 1)
-                    .or(Some(0)),
-            ),
+            Row::Skin => {
+                let (options, selected) = self.skin_choice(s);
+                choice(options, Some(selected))
+            }
             // Handled above.
             Row::LeftKey1
             | Row::LeftKey2
@@ -510,9 +540,7 @@ impl Rows {
                         .iter()
                         .map(|screens| text(screens_key(*screens)))
                         .collect(),
-                    Row::Skin => std::iter::once(text("settings-option-default-skin"))
-                        .chain(self.skins.iter().cloned())
-                        .collect(),
+                    Row::Skin => skin_options(localizer, &self.skins),
                     _ => Vec::new(),
                 };
                 let unit = match row {

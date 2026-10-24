@@ -55,6 +55,7 @@ use slam_ui::song_select::{
     TileDetail,
 };
 use slam_ui::theme::Theme;
+use slam_ui::widgets::DropdownView;
 
 use crate::loader::{LoaderConfig, LoaderLink, PlayOptions, SceneTrash, Trash};
 use crate::play::fps::{FpsDisplay, FpsOverlay, FpsSource, MAX_FPS_GLYPHS};
@@ -63,7 +64,7 @@ use crate::play::{device_limits, pack_size};
 use crate::replays::{ReplayBeatmap, ReplayJob};
 use crate::settings::saver::SaveLink;
 use crate::settings::{Dirs, Settings};
-use crate::songs::{SongFiles, SongsLink};
+use crate::songs::{FolderChange, SkinViews, SongFiles, SongsLink};
 
 mod draw_rate;
 mod live;
@@ -823,12 +824,31 @@ impl ShellState {
         }
         self.song_select.set_scanning_text(published.scanning_text);
         self.files = published.files;
+        if let Some(mut change) = published.change {
+            self.change_folder(&mut change);
+            if let Some(songs) = &mut self.songs {
+                songs.retire(change);
+            }
+        }
         // Every publication brings a new `Arc`; the text rarely changes.
         if *published.folder != *self.songs_folder {
             self.songs_folder = published.folder;
             if let AppScreen::Settings(screen) = self.stack.top_mut() {
                 screen.set_value_text(Arc::clone(&self.songs_folder));
             }
+        }
+    }
+
+    /// Takes the songs folder and its skins the player chose (ADR-0064): the next play finds
+    /// the skin there, and the settings screen lists them. The old values go back into
+    /// `change`, to be freed by the library thread.
+    fn change_folder(&mut self, change: &mut FolderChange) {
+        std::mem::swap(&mut self.settings.paths.songs, &mut change.songs);
+        self.rows.swap_skins(&mut change.skins);
+        if let AppScreen::Settings(screen) = self.stack.top_mut() {
+            let settings = self.editing.as_ref().unwrap_or(&self.settings);
+            let (options, selected) = self.rows.skin_choice(settings);
+            screen.set_dropdown(rows::skin_row(), options, selected);
         }
     }
 
@@ -1083,6 +1103,8 @@ fn commit_settings(
     let Some(mut edited) = editing.take() else {
         return;
     };
+    // The songs folder is the library's: it may have changed while the screen was open.
+    edited.paths.songs.clone_from(&settings.paths.songs);
     round_for_save(&mut edited);
     if edited != *settings {
         *settings = edited.clone();
@@ -1722,6 +1744,8 @@ struct View {
     song_select: SongSelectView,
     results: ResultsView,
     settings: SettingsView,
+    /// Skin dropdowns for a new songs folder (ADR-0064).
+    skin_views: Option<SkinViews>,
     shapes: SpriteBatch,
     text: SpriteBatch,
     /// Scenes of plays the update thread starts, and the one shown.
@@ -1821,6 +1845,13 @@ impl Draw<ShellSnapshot> for View {
         }
         self.surface_size
             .store(pack_size(size.width, size.height), Ordering::Relaxed);
+        if let Some(views) = &mut self.skin_views
+            && let Some(mut view) = views.take()
+        {
+            // Its glyphs are requested as it is drawn, like every text's.
+            self.settings.swap_dropdown(rows::skin_row(), &mut view);
+            views.give_back(view);
+        }
         self.glyphs.process(&mut r.device, &mut r.textures);
         let (width, height) = (size.width as f32, size.height as f32);
         let gameplay = snapshot
@@ -2197,13 +2228,13 @@ pub fn run(settings: Settings) -> Result<(), String> {
         },
         None => (None, None),
     };
-    // Joined when `run` returns, after the engine.
-    let _library = {
-        let localizer = Arc::clone(&localizer);
+    // The library thread is joined when `run` returns, after the engine.
+    let (skin_views, _library) = {
+        let scanning_localizer = Arc::clone(&localizer);
         let scanning = Box::new(move |count: usize| {
             let mut args = slam_ui::i18n::FluentArgs::new();
             args.set("count", count);
-            localizer
+            scanning_localizer
                 .format("song-select-scanning", Some(&args))
                 .into_owned()
         });
@@ -2221,11 +2252,27 @@ pub fn run(settings: Settings) -> Result<(), String> {
                     tracing::warn!("settings: {e}");
                 }
             }),
+            skins: {
+                let (registry, localizer) = (Arc::clone(&registry), Arc::clone(&localizer));
+                Box::new(move |songs| {
+                    let names: Vec<String> = crate::settings::skins::skin_dirs(songs)
+                        .into_iter()
+                        .map(|(name, _)| name)
+                        .collect();
+                    let options = rows::skin_options(&localizer, &names);
+                    let view = DropdownView::new(Arc::clone(&registry), theme, &options);
+                    crate::songs::SkinList {
+                        names,
+                        view: Some(view),
+                    }
+                })
+            },
         };
-        let (link, thread) = crate::songs::spawn(settings.paths.songs.clone(), folders, scanning)
-            .map_err(|e| e.to_string())?;
+        let (link, skin_views, thread) =
+            crate::songs::spawn(settings.paths.songs.clone(), folders, scanning)
+                .map_err(|e| e.to_string())?;
         state = state.with_songs(link);
-        thread
+        (Some(skin_views), thread)
     };
     // The play: a loader thread, scenes for the draw thread, the audio output.
     let hud_labels = crate::play::scene::hud_labels(&localizer);
@@ -2304,6 +2351,7 @@ pub fn run(settings: Settings) -> Result<(), String> {
         song_select,
         results,
         settings: settings_view,
+        skin_views,
         shapes: SpriteBatch::with_capacity(MAX_SHAPES),
         text: SpriteBatch::with_capacity(MAX_GLYPH_SPRITES),
         scenes: Some(scene_rx),
