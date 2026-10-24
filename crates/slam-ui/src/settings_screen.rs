@@ -6,6 +6,8 @@
 //! and new value for every change. Section tabs are on the left, the rows of the chosen
 //! section on the right.
 
+use std::sync::Arc;
+
 use crate::menu::Rect;
 use crate::theme::Theme;
 use crate::widgets::{
@@ -19,7 +21,7 @@ pub mod view;
 pub use view::{KeyLabels, RowLabels, SettingsLabels, SettingsView};
 
 /// Most rows; more are ignored.
-pub const MAX_ROWS: usize = 24;
+pub const MAX_ROWS: usize = 32;
 /// Most sections; rows of later ones go into the last.
 pub const MAX_SECTIONS: usize = 6;
 
@@ -372,7 +374,7 @@ impl SettingsLayout {
     }
 }
 
-/// What the draw side needs; `Copy` data of fixed size, no allocation.
+/// What the draw side needs; cloning copies fixed-size data and an `Arc`, no allocation.
 #[derive(Clone, Debug)]
 pub struct SettingsSnapshot {
     pub widgets: [RowWidget; MAX_ROWS],
@@ -381,6 +383,8 @@ pub struct SettingsSnapshot {
     pub focus: usize,
     pub section: usize,
     pub conflict: Option<Conflict>,
+    /// The text of the button row that shows a value (see [`RowLabels::shows_value`]).
+    pub value_text: Arc<str>,
 }
 
 /// The screen's state on the update thread.
@@ -393,6 +397,7 @@ pub struct SettingsScreen {
     focus: usize,
     section: usize,
     conflict: Option<Conflict>,
+    value_text: Arc<str>,
 }
 
 impl SettingsScreen {
@@ -434,6 +439,7 @@ impl SettingsScreen {
             focus: 0,
             section: 0,
             conflict: None,
+            value_text: Arc::from(""),
         };
         screen.focus = screen.first_row(0).unwrap_or(0);
         screen
@@ -464,7 +470,28 @@ impl SettingsScreen {
             focus: self.focus,
             section: self.section,
             conflict: self.conflict,
+            value_text: Arc::clone(&self.value_text),
         }
+    }
+
+    /// Sets the text of the button row that shows a value (an empty text shows the row's
+    /// own button label as a placeholder). The application builds the `Arc` off the update
+    /// thread; this only stores it.
+    pub fn set_value_text(&mut self, text: Arc<str>) {
+        self.value_text = text;
+    }
+
+    /// Gives the dropdown row `row` `options` options with `selected` chosen (clamped),
+    /// closed: its options changed while the screen was open. Other rows are left alone.
+    pub fn set_dropdown(&mut self, row: usize, options: usize, selected: usize) {
+        if let Some(RowWidget::Dropdown(dropdown)) = self.widgets[..self.len].get_mut(row) {
+            *dropdown = Dropdown::new(options, selected);
+        }
+    }
+
+    /// The text set by [`Self::set_value_text`].
+    pub fn value_text(&self) -> &str {
+        &self.value_text
     }
 
     /// Whether a key row waits for a key: the application then gives it every key and mouse

@@ -2,8 +2,8 @@
 //! saver thread through a wait-free ring and wakes it; the file is written there.
 
 use std::path::{Path, PathBuf};
-use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::{Arc, Mutex, PoisonError};
 use std::thread::{JoinHandle, Thread};
 use std::time::Duration;
 
@@ -14,6 +14,10 @@ use super::model::Settings;
 const RING: usize = 4;
 /// How long the saver sleeps without a wake-up before looking at the ring again.
 const POLL: Duration = Duration::from_millis(200);
+
+/// Serialises the read-modify-write of the file between the saver and the library thread,
+/// which saves the songs folder (ADR-0064).
+static FILE_LOCK: Mutex<()> = Mutex::new(());
 
 /// The update thread's end: sends settings to be saved. Never blocks or allocates.
 pub struct SaveLink {
@@ -95,6 +99,7 @@ pub fn spawn(path: PathBuf) -> std::io::Result<(SaveLink, Saver)> {
 /// Writes `settings` to `path`. The songs folder is the file's own: one given on the command
 /// line is not saved. A file that is not TOML is left alone.
 pub fn write(path: &Path, mut settings: Settings) -> Result<(), String> {
+    let _file = FILE_LOCK.lock().unwrap_or_else(PoisonError::into_inner);
     let on_disk = file::load(path);
     if on_disk.status == LoadStatus::Broken {
         return Err(format!(
@@ -104,4 +109,19 @@ pub fn write(path: &Path, mut settings: Settings) -> Result<(), String> {
     }
     settings.paths = on_disk.settings.paths;
     file::save(path, &settings).map_err(|e| format!("cannot write {}: {e}", path.display()))
+}
+
+/// Sets the songs folder of the file at `path`, keeping everything else on disk. A file that
+/// is not TOML is left alone.
+pub fn write_songs(path: &Path, songs: &Path) -> Result<(), String> {
+    let _file = FILE_LOCK.lock().unwrap_or_else(PoisonError::into_inner);
+    let mut on_disk = file::load(path);
+    if on_disk.status == LoadStatus::Broken {
+        return Err(format!(
+            "{} is not valid TOML, not overwriting it",
+            path.display()
+        ));
+    }
+    on_disk.settings.paths.songs = Some(songs.to_path_buf());
+    file::save(path, &on_disk.settings).map_err(|e| format!("cannot write {}: {e}", path.display()))
 }

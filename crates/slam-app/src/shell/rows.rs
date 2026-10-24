@@ -12,13 +12,33 @@ use super::keybinds;
 use crate::settings::{DrawRate, FpsScreens, KeySlot, Settings, Timing, skins};
 
 /// Sections, in order; the keys of their names are in [`SECTION_KEYS`].
-const SECTION_KEYS: [&str; 5] = [
+const SECTION_KEYS: [&str; 6] = [
     "settings-section-audio",
     "settings-section-offset",
     "settings-section-keys",
     "settings-section-frame",
     "settings-section-gameplay",
+    "settings-section-library",
 ];
+/// The index of the skin row.
+pub fn skin_row() -> usize {
+    Row::ALL
+        .iter()
+        .position(|row| *row == Row::Skin)
+        .expect("Row::ALL lists every row")
+}
+
+/// The skin row's option labels for `skins`: the default skin, then the folders.
+pub fn skin_options(localizer: &Localizer, skins: &[String]) -> Vec<String> {
+    std::iter::once(
+        localizer
+            .format("settings-option-default-skin", None)
+            .into_owned(),
+    )
+    .chain(skins.iter().cloned())
+    .collect()
+}
+
 /// The number of sections.
 pub const SECTIONS: usize = SECTION_KEYS.len();
 
@@ -61,10 +81,11 @@ pub enum Row {
     BeatmapHitsounds,
     HitErrorScale,
     Skin,
+    SongsFolder,
 }
 
 impl Row {
-    pub const ALL: [Row; 28] = [
+    pub const ALL: [Row; 29] = [
         Row::MasterVolume,
         Row::MusicVolume,
         Row::HitsoundVolume,
@@ -93,6 +114,7 @@ impl Row {
         Row::BeatmapHitsounds,
         Row::HitErrorScale,
         Row::Skin,
+        Row::SongsFolder,
     ];
 
     /// The key a key row edits.
@@ -144,6 +166,7 @@ impl Row {
             | Row::BeatmapHitsounds
             | Row::HitErrorScale
             | Row::Skin => 4,
+            Row::SongsFolder => 5,
         }
     }
 
@@ -177,6 +200,7 @@ impl Row {
             Row::BeatmapHitsounds => "settings-gameplay-beatmap-hitsounds",
             Row::HitErrorScale => "settings-gameplay-hit-error-scale",
             Row::Skin => "settings-gameplay-skin",
+            Row::SongsFolder => "settings-library-songs-folder",
         }
     }
 
@@ -270,6 +294,24 @@ impl Rows {
         }
     }
 
+    /// The skin row's option count and the option `settings` choose. A saved skin that is
+    /// no longer there shows as the default one, and stays saved until the player picks
+    /// another.
+    pub fn skin_choice(&self, settings: &Settings) -> (usize, usize) {
+        let selected = settings
+            .skin
+            .name
+            .as_ref()
+            .and_then(|name| self.skins.iter().position(|n| n == name))
+            .map_or(0, |i| i + 1);
+        (self.skins.len() + 1, selected)
+    }
+
+    /// Exchanges the skin folder names with `skins`, for a new songs folder (ADR-0064).
+    pub fn swap_skins(&mut self, skins: &mut Vec<String>) {
+        std::mem::swap(&mut self.skins, skins);
+    }
+
     /// The rows for the screen, showing `settings`.
     pub fn specs(&self, settings: &Settings) -> Vec<RowSpec> {
         Row::ALL
@@ -299,7 +341,7 @@ impl Rows {
             };
         }
         match row {
-            Row::ResetKeys => RowKind::Button,
+            Row::ResetKeys | Row::SongsFolder => RowKind::Button,
             Row::MasterVolume => percent(s.audio.master_volume),
             Row::MusicVolume => percent(s.audio.music_volume),
             Row::HitsoundVolume => percent(s.audio.hitsound_volume),
@@ -364,17 +406,10 @@ impl Rows {
             Row::BeatmapHitsounds => RowKind::Toggle {
                 value: s.gameplay.beatmap_hitsounds,
             },
-            // A saved skin that is no longer there shows as the default one, and stays
-            // saved until the player picks another.
-            Row::Skin => choice(
-                self.skins.len() + 1,
-                s.skin
-                    .name
-                    .as_ref()
-                    .and_then(|name| self.skins.iter().position(|n| n == name))
-                    .map(|i| i + 1)
-                    .or(Some(0)),
-            ),
+            Row::Skin => {
+                let (options, selected) = self.skin_choice(s);
+                choice(options, Some(selected))
+            }
             // Handled above.
             Row::LeftKey1
             | Row::LeftKey2
@@ -505,9 +540,7 @@ impl Rows {
                         .iter()
                         .map(|screens| text(screens_key(*screens)))
                         .collect(),
-                    Row::Skin => std::iter::once(text("settings-option-default-skin"))
-                        .chain(self.skins.iter().cloned())
-                        .collect(),
+                    Row::Skin => skin_options(localizer, &self.skins),
                     _ => Vec::new(),
                 };
                 let unit = match row {
@@ -522,6 +555,8 @@ impl Rows {
                 };
                 let button = match row {
                     Row::ResetKeys => text("settings-keys-reset-button"),
+                    // The placeholder of an empty folder.
+                    Row::SongsFolder => text("settings-library-songs-folder-none"),
                     _ => String::new(),
                 };
                 RowLabels {
@@ -529,6 +564,7 @@ impl Rows {
                     unit,
                     options,
                     button,
+                    shows_value: *row == Row::SongsFolder,
                 }
             })
             .collect();
@@ -765,6 +801,26 @@ mod tests {
         let labels = rows.labels(&localizer);
         assert_eq!(labels.rows[index(Row::Skin)].label, "Скин");
         assert_eq!(labels.rows[index(Row::Skin)].options[0], "Стандартный");
+    }
+
+    #[test]
+    fn the_songs_folder_row_is_a_button_in_its_own_section() {
+        let (rows, s) = rows();
+        assert_eq!(Row::SongsFolder.section(), SECTIONS - 1);
+        assert_eq!(
+            rows.specs(&s)[index(Row::SongsFolder)].kind,
+            RowKind::Button
+        );
+        let mut localizer = Localizer::builtin().unwrap();
+        localizer.set_language("en").unwrap();
+        let labels = rows.labels(&localizer);
+        let row = &labels.rows[index(Row::SongsFolder)];
+        assert_eq!(row.label, "Songs folder");
+        assert_eq!(row.button, "Not selected");
+        assert!(row.shows_value);
+        assert_eq!(labels.sections[SECTIONS - 1], "Library");
+        // Only this row shows a value.
+        assert_eq!(labels.rows.iter().filter(|r| r.shows_value).count(), 1);
     }
 
     #[test]

@@ -98,6 +98,8 @@ fn activate_returns_indices() {
 #[test]
 fn empty_list_and_back() {
     let mut s = SongSelect::new();
+    // Scanning: no button, so Enter has nothing to do either.
+    s.set_status(SongSelectStatus::Scanning { sets: 0 });
     for input in [
         I::Up,
         I::Down,
@@ -384,4 +386,72 @@ fn the_panel_does_not_open_while_loading() {
     assert_eq!(press(&mut s, I::ToggleMods), None);
     assert!(!s.mods().is_open());
     assert_eq!(press(&mut s, I::DeselectMods), None);
+}
+
+#[test]
+fn choose_folder_button_sits_in_the_second_list_row() {
+    let l = layout();
+    let b = l.choose_folder;
+    assert!((b.y - (l.list.y + l.row_height)).abs() < 1e-3);
+    assert!((b.x - l.list.x).abs() < 1e-3 && (b.width - l.list.width).abs() < 1e-3);
+    assert!(b.height > 0.0 && b.height < l.row_height);
+    assert!(b.y + b.height <= l.list.y + l.list.height);
+}
+
+#[test]
+fn choose_folder_is_offered_only_when_nothing_can_play() {
+    use SongSelectStatus as S;
+    let mut s = SongSelect::new();
+    for (status, shown) in [
+        (S::NoFolder, true),
+        (S::Failed, true),
+        (S::Ready, true),
+        (S::Scanning { sets: 0 }, false),
+        (S::Loading, false),
+    ] {
+        s.set_status(status);
+        assert_eq!(s.shows_choose_folder(), shown, "{status:?}");
+    }
+    s.set_status(S::Ready);
+    s.set_list(list(&[(1, 1)]));
+    assert!(!s.shows_choose_folder());
+}
+
+#[test]
+fn choose_folder_by_click_and_enter() {
+    let l = layout();
+    let b = l.choose_folder;
+    let (x, y) = (b.x + b.width / 2.0, b.y + b.height / 2.0);
+    let mut s = SongSelect::new();
+    s.set_status(SongSelectStatus::NoFolder);
+    assert_eq!(
+        s.input(I::Activate, &l),
+        Some(SongSelectAction::ChooseFolder)
+    );
+    assert_eq!(s.input(I::PointerMove { x, y }, &l), None);
+    assert!(s.snapshot().folder_hovered);
+    assert_eq!(
+        s.input(I::PointerPress { x, y }, &l),
+        Some(SongSelectAction::ChooseFolder)
+    );
+    // Outside the button: nothing.
+    assert_eq!(s.input(I::PointerPress { x: 1.0, y: 1.0 }, &l), None);
+    assert!(!s.snapshot().folder_hovered);
+    // While scanning the button is absent.
+    s.set_status(SongSelectStatus::Scanning { sets: 0 });
+    assert_eq!(s.input(I::Activate, &l), None);
+    assert_eq!(s.input(I::PointerPress { x, y }, &l), None);
+}
+
+#[test]
+fn enter_with_a_list_still_plays() {
+    let mut s = screen(&[(1, 2)]);
+    s.set_status(SongSelectStatus::Ready);
+    assert_eq!(
+        press(&mut s, I::Activate),
+        Some(SongSelectAction::Play {
+            set: 0,
+            difficulty: 0
+        })
+    );
 }

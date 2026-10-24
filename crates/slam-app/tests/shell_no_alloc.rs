@@ -113,6 +113,7 @@ fn song_select_ticks_and_new_lists_do_not_allocate() {
             Arc::clone(&p.list),
             Arc::clone(&p.files),
             Arc::clone(&p.scanning_text),
+            Arc::clone(&p.folder),
         )
     });
     producer.push(first).unwrap();
@@ -331,4 +332,59 @@ fn back_from_the_results_frees_nothing_on_a_tick() {
 #[test]
 fn retry_from_the_results_frees_nothing_on_a_tick() {
     leaving_results_frees_nothing_on_a_tick(21);
+}
+
+#[test]
+fn a_folder_change_on_the_open_settings_screen_does_not_allocate() {
+    use std::path::PathBuf;
+    use std::sync::Arc;
+
+    use slam_app::songs::{Command, FolderChange, link_with_commands, publish};
+    use slam_ui::song_select::SongSelectStatus;
+
+    let (mut producer, songs, mut commands) = link_with_commands();
+    let mut state = ShellState::new(Theme::default(), 1280.0, 720.0, 1.0).with_songs(songs);
+    let mut snapshot = ShellSnapshot::default();
+    let key = |scancode| InputEvent {
+        time_ns: 0,
+        kind: InputKind::Key {
+            scancode,
+            down: true,
+        },
+    };
+    // The settings screen from the menu (Down, Enter); navigation may allocate.
+    state.tick(0, &[key(81), key(40)], &mut snapshot);
+    state.tick(TRANSITION_NS, &[], &mut snapshot);
+    let start = 2 * TRANSITION_NS;
+    for now in start..start + 20 {
+        state.tick(now, &[], &mut snapshot);
+    }
+    // The library thread's side, allocated before the measured section; it keeps the
+    // list and texts the publication shares.
+    let mut published = publish(&[], SongSelectStatus::Ready, Arc::from(""));
+    published.change = Some(Box::new(FolderChange {
+        songs: Some(PathBuf::from("/new/songs")),
+        skins: vec!["one".to_owned(), "two".to_owned(), "three".to_owned()],
+    }));
+    let kept = (
+        Arc::clone(&published.list),
+        Arc::clone(&published.files),
+        Arc::clone(&published.scanning_text),
+        Arc::clone(&published.folder),
+    );
+    producer.push(published).ok().unwrap();
+    assert_no_alloc(|| {
+        let start = 3 * TRANSITION_NS;
+        for now in start..start + 20 {
+            state.tick(now, &[], &mut snapshot);
+        }
+    });
+    // The old values come back for the library thread to free.
+    let Ok(Command::Retire(old)) = commands.pop() else {
+        panic!("the change is retired");
+    };
+    assert_eq!(old.songs, None);
+    assert!(old.skins.is_empty());
+    assert!(commands.pop().is_err());
+    drop(kept);
 }

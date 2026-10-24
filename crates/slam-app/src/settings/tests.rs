@@ -642,6 +642,29 @@ mod saver_tests {
     }
 
     #[test]
+    fn write_songs_changes_only_the_songs_folder() {
+        let dir = temp_dir("saver-songs");
+        let path = dir.join("slam.toml");
+        let mut on_disk = Settings::default();
+        on_disk.audio.master_volume = 0.4;
+        file::save(&path, &on_disk).unwrap();
+
+        saver::write_songs(&path, Path::new("/picked/Songs")).unwrap();
+        let loaded = file::load(&path).settings;
+        assert_eq!(loaded.paths.songs, Some(PathBuf::from("/picked/Songs")));
+        assert_eq!(loaded.audio.master_volume, 0.4);
+
+        // The saver keeps it afterwards.
+        saver::write(&path, Settings::default()).unwrap();
+        let loaded = file::load(&path).settings;
+        assert_eq!(loaded.paths.songs, Some(PathBuf::from("/picked/Songs")));
+
+        std::fs::write(&path, "= = broken [[[").unwrap();
+        assert!(saver::write_songs(&path, Path::new("/x")).is_err());
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), "= = broken [[[");
+    }
+
+    #[test]
     fn the_thread_writes_what_was_queued_before_it_finished() {
         let dir = temp_dir("saver-thread");
         let path = dir.join("slam.toml");

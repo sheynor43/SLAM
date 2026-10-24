@@ -9,6 +9,7 @@ pub mod keys;
 pub mod model;
 pub mod saver;
 pub mod skins;
+pub mod stable;
 
 pub use dirs::{Dirs, Os};
 pub use file::{CURRENT_VERSION, LoadStatus, Loaded, load, load_or_create, save};

@@ -558,3 +558,119 @@ fn the_fps_hotkey_row_captures_a_key_and_a_gameplay_key_asks() {
     );
     assert_eq!(edited(&s).hotkeys.toggle_fps, Some(Input::Key(KEY_F11)));
 }
+
+fn with_folder_commands() -> (
+    ShellState,
+    rtrb::Producer<crate::songs::Published>,
+    rtrb::Consumer<crate::songs::Command>,
+) {
+    let (producer, link, commands) = crate::songs::link_with_commands();
+    (state().with_songs(link), producer, commands)
+}
+
+fn published_folder(folder: &str) -> crate::songs::Published {
+    let mut published = crate::songs::publish(&[], SongSelectStatus::Ready, Arc::from(""));
+    published.folder = Arc::from(folder);
+    published
+}
+
+#[test]
+fn the_song_select_button_asks_for_the_folder_picker() {
+    use crate::songs::Command;
+    let (mut s, mut producer, mut commands) = with_folder_commands();
+    let mut snap = ShellSnapshot::default();
+    producer
+        .push(published_folder(""))
+        .unwrap_or_else(|_| panic!("ring"));
+    s.tick(0, &[key(KEY_ENTER)], &mut snap);
+    s.tick(TRANSITION_NS, &[], &mut snap);
+    assert!(commands.pop().is_err());
+    let b = s.song_layout.choose_folder;
+    let click = [
+        move_to(b.x + b.width / 2.0, b.y + b.height / 2.0),
+        mouse(MouseButton::Left, true),
+    ];
+    s.tick(LATER, &click, &mut snap);
+    assert_eq!(commands.pop(), Ok(Command::PickFolder));
+    // Enter does the same on an empty list.
+    s.tick(LATER, &[key(KEY_ENTER)], &mut snap);
+    assert_eq!(commands.pop(), Ok(Command::PickFolder));
+    assert!(commands.pop().is_err());
+}
+
+#[test]
+fn the_songs_folder_row_shows_the_folder_and_opens_the_picker() {
+    use crate::songs::Command;
+    let (mut s, mut producer, mut commands) = with_folder_commands();
+    let mut snap = ShellSnapshot::default();
+    producer
+        .push(published_folder("/games/osu/Songs"))
+        .unwrap_or_else(|_| panic!("ring"));
+    opened(&mut s, &mut snap);
+    // The folder arrived while the screen was open.
+    s.tick(LATER, &[], &mut snap);
+    assert_eq!(settings_screen(&s).value_text(), "/games/osu/Songs");
+    let ScreenView::Settings(view) = &snap.layers[0].as_ref().unwrap().view else {
+        panic!("settings");
+    };
+    assert_eq!(&*view.value_text, "/games/osu/Songs");
+    // The library section is the last; its only row is the focused one.
+    let tabs = [key(KEY_TAB); SECTIONS - 1];
+    s.tick(LATER, &tabs, &mut snap);
+    assert_eq!(settings_screen(&s).focus(), Row::SongsFolder as usize);
+    s.tick(LATER, &[key(KEY_ENTER)], &mut snap);
+    assert_eq!(commands.pop(), Ok(Command::PickFolder));
+    // A new folder replaces the text; an unchanged one keeps the same `Arc`.
+    producer
+        .push(published_folder("/other"))
+        .unwrap_or_else(|_| panic!("ring"));
+    s.tick(LATER, &[], &mut snap);
+    assert_eq!(settings_screen(&s).value_text(), "/other");
+    let kept = Arc::clone(&s.songs_folder);
+    producer
+        .push(published_folder("/other"))
+        .unwrap_or_else(|_| panic!("ring"));
+    s.tick(LATER, &[], &mut snap);
+    assert!(Arc::ptr_eq(&kept, &s.songs_folder));
+    // Opened again later, the screen starts with the folder.
+    s.tick(2 * LATER, &[key(KEY_ESCAPE)], &mut snap);
+    s.tick(3 * LATER, &[key(KEY_ENTER)], &mut snap);
+    assert_eq!(settings_screen(&s).value_text(), "/other");
+}
+
+#[test]
+fn a_new_folder_brings_its_skins_and_survives_closing_the_screen() {
+    use crate::songs::{Command, FolderChange};
+    let (mut s, mut producer, mut commands) = with_folder_commands();
+    let mut snap = ShellSnapshot::default();
+    opened(&mut s, &mut snap);
+    let mut published = published_folder("/picked/Songs");
+    published.change = Some(Box::new(FolderChange {
+        songs: Some("/picked/Songs".into()),
+        skins: vec!["Alpha".to_owned(), "Beta".to_owned()],
+    }));
+    producer.push(published).unwrap_or_else(|_| panic!("ring"));
+    s.tick(LATER, &[], &mut snap);
+    assert_eq!(
+        s.settings().paths.songs.as_deref(),
+        Some(std::path::Path::new("/picked/Songs"))
+    );
+    // The open screen's skin row lists the new skins (and the default one).
+    let Some(RowWidget::Dropdown(skin)) = settings_screen(&s).widget(super::rows::skin_row())
+    else {
+        panic!("the skin row is a dropdown");
+    };
+    assert_eq!(skin.count(), 3);
+    // The old values go back to the library thread.
+    let Ok(Command::Retire(old)) = commands.pop() else {
+        panic!("the change is handed back");
+    };
+    assert_eq!(old.songs, None);
+    assert!(old.skins.is_empty());
+    // Closing the screen keeps the library's folder.
+    s.tick(2 * LATER, &[key(KEY_ESCAPE)], &mut snap);
+    assert_eq!(
+        s.settings().paths.songs.as_deref(),
+        Some(std::path::Path::new("/picked/Songs"))
+    );
+}

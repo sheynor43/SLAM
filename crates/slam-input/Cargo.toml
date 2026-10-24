@@ -12,10 +12,10 @@ thiserror.workspace = true
 sdl3-sys.workspace = true
 
 # Linux and Windows (MSVC): build SDL3 from the vendored sources and link statically, so
-# neither CI nor users need a system SDL3. Only the video subsystem (window + events) is
-# enabled.
+# neither CI nor users need a system SDL3. Only the video subsystem (window + events) and
+# the file dialogs (ADR-0064) are enabled.
 [target.'cfg(any(target_os = "linux", all(windows, target_env = "msvc")))'.dependencies]
-sdl3-sys = { workspace = true, features = ["build-from-source-static", "no-default-subsystems", "sdl-video"] }
+sdl3-sys = { workspace = true, features = ["build-from-source-static", "no-default-subsystems", "sdl-video", "sdl-dialog"] }
 
 # Windows GNU (the cross clippy check from Linux, which has no C cross compiler): link
 # against an SDL3 found by pkg-config, else by name.

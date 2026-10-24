@@ -651,3 +651,57 @@ fn a_toggle_changed_from_outside_shows_without_an_action() {
     s.set_toggle(other, true);
     assert_eq!(*s.widget(other).unwrap(), widget);
 }
+
+#[test]
+fn the_value_text_is_stored_and_snapshotted() {
+    let mut s = SettingsScreen::new(&[button(0)], 1);
+    assert_eq!(s.value_text(), "");
+    let text: Arc<str> = Arc::from("/songs");
+    s.set_value_text(Arc::clone(&text));
+    assert_eq!(s.value_text(), "/songs");
+    assert!(Arc::ptr_eq(&s.snapshot().value_text, &text));
+}
+
+#[test]
+fn set_dropdown_changes_only_a_dropdown_row() {
+    let mut s = screen();
+    s.set_dropdown(2, 7, 5);
+    let Some(RowWidget::Dropdown(d)) = s.widget(2) else {
+        panic!("dropdown");
+    };
+    assert_eq!((d.count(), d.selected()), (7, 5));
+    // A selection past the end is clamped; other rows are left alone.
+    s.set_dropdown(2, 2, 9);
+    let Some(RowWidget::Dropdown(d)) = s.widget(2) else {
+        panic!("dropdown");
+    };
+    assert_eq!((d.count(), d.selected()), (2, 1));
+    s.set_dropdown(1, 3, 0);
+    assert!(matches!(s.widget(1), Some(RowWidget::Toggle(_))));
+}
+
+#[test]
+fn swap_dropdown_swaps_only_a_dropdown_row_view() {
+    use crate::widgets::DropdownView;
+    use slam_text::FontRegistry;
+    let registry = Arc::new(FontRegistry::with_builtin());
+    let rows = [toggle(0, false), dropdown(0, 2, 0)];
+    let labels = SettingsLabels {
+        sections: vec!["A".to_owned()],
+        rows: vec![
+            RowLabels::default(),
+            RowLabels {
+                options: vec!["a".to_owned(), "b".to_owned()],
+                ..RowLabels::default()
+            },
+        ],
+        ..SettingsLabels::default()
+    };
+    let mut view = SettingsView::new(Arc::clone(&registry), theme(), &rows, &labels);
+    let mut new = DropdownView::new(Arc::clone(&registry), theme(), &["x", "y", "z"]);
+    assert!(view.swap_dropdown(1, &mut new));
+    // `new` now holds the view built from the labels: two options.
+    assert!(format!("{new:?}").contains("options: 2"));
+    assert!(!view.swap_dropdown(0, &mut new));
+    assert!(format!("{new:?}").contains("options: 2"));
+}

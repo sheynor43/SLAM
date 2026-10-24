@@ -95,6 +95,7 @@ fn labels() -> SongSelectLabels {
         failed: "failed".into(),
         loading: "loading".into(),
         empty: "empty".into(),
+        choose_folder: "choose folder".into(),
         hint: "hint".into(),
         mods_title: "Mods".into(),
         mods_hint: "mods hint".into(),

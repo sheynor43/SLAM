@@ -4,7 +4,7 @@ use std::sync::{Arc, Mutex, PoisonError};
 
 use sdl3_sys::events::{
     SDL_EVENT_QUIT, SDL_EVENT_WINDOW_PIXEL_SIZE_CHANGED, SDL_Event, SDL_EventType, SDL_PushEvent,
-    SDL_QuitEvent, SDL_WaitEvent,
+    SDL_QuitEvent, SDL_RegisterEvents, SDL_WaitEvent,
 };
 use sdl3_sys::hints::{SDL_HINT_INVALID_PARAM_CHECKS, SDL_SetHint};
 use sdl3_sys::init::{SDL_INIT_VIDEO, SDL_Init, SDL_Quit};
@@ -15,6 +15,7 @@ use sdl3_sys::video::{
     SDL_WINDOW_RESIZABLE, SDL_Window, SDL_WindowFlags,
 };
 
+use crate::dialog::{self, FolderDialog};
 use crate::gl::{self, GlContext, PixelSize};
 use crate::{EventSink, InputCounters, InputEvent, TickMapper, convert};
 
@@ -61,6 +62,8 @@ pub struct InputWindow {
     cursor_hidden: Arc<AtomicBool>,
     /// Whether it is hidden now.
     cursor_applied: bool,
+    /// The SDL event type of [`FolderDialog`] requests; 0 when none could be registered.
+    dialog_event: u32,
 }
 
 /// Shows or hides the OS cursor over the window, from any thread, without locks. The
@@ -172,6 +175,8 @@ impl InputWindow {
         if unsafe { SDL_GetWindowSizeInPixels(window, &mut w, &mut h) } {
             size.store(w, h);
         }
+        // SAFETY: SDL is initialised. Returns 0 when no event types are left.
+        let dialog_event = unsafe { SDL_RegisterEvents(1) };
         Ok(Self {
             window,
             opengl,
@@ -180,6 +185,7 @@ impl InputWindow {
             alive: Arc::new(Mutex::new(true)),
             cursor_hidden: Arc::default(),
             cursor_applied: false,
+            dialog_event,
         })
     }
 
@@ -264,6 +270,11 @@ impl InputWindow {
         }
     }
 
+    /// A handle that shows the OS folder picker over this window (ADR-0064).
+    pub fn folder_dialog(&self) -> FolderDialog {
+        FolderDialog::new(Arc::clone(&self.alive), self.dialog_event)
+    }
+
     /// Blocks on OS events until the window is closed or a [`QuitHandle`] asks. Keyboard and mouse events are
     /// stamped with `mapper` and pushed into `sink`; when the ring is full they are
     /// dropped and counted, never waited on. No allocations per event. `mapper` is
@@ -286,6 +297,13 @@ impl InputWindow {
                 return Err(WindowError::WaitEvent(sdl_error()));
             }
             self.counters.record_poll();
+            // SAFETY: `type` is the common prefix of every SDL_Event variant.
+            if self.dialog_event != 0 && unsafe { event.r#type } == self.dialog_event {
+                // SAFETY: only `FolderDialog::open` queues events of this registered type,
+                // each handled once here, on the thread that owns SDL and the window.
+                unsafe { dialog::show(self.window, &event) };
+                continue;
+            }
             // SAFETY: `type` is the common prefix of every SDL_Event variant.
             match SDL_EventType(unsafe { event.r#type }) {
                 SDL_EVENT_QUIT => return Ok(()),
@@ -334,6 +352,11 @@ impl Drop for InputWindow {
             // A GlContext still points at the window, possibly current on the draw
             // thread: leak the window and SDL rather than destroy them under it.
             return;
+        }
+        // SAFETY: SDL is still initialised on this thread, and no request is shown after
+        // `alive` was cleared above.
+        if self.dialog_event != 0 {
+            unsafe { dialog::fail_queued(self.dialog_event) };
         }
         // SAFETY: `window` was created by `new` and is destroyed exactly once, on the
         // thread that owns SDL.

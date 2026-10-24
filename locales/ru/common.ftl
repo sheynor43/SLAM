@@ -32,7 +32,7 @@ menu-title = SLAM
 menu-play-button = Играть
 menu-settings-button = Настройки
 menu-exit-button = Выход
-song-select-no-folder = Папка с песнями не задана. Запустите SLAM с параметром --songs <папка>.
+song-select-no-folder = Папка с песнями не выбрана.
 song-select-scanning =
     { $count ->
         [one] Сканирование песен: пока найден { $count } набор
@@ -42,6 +42,7 @@ song-select-scanning =
     }
 song-select-failed = Не удалось прочитать папку с песнями.
 song-select-empty = В папке с песнями нет карт.
+song-select-choose-folder = Выбрать папку osu!
 song-select-loading = Загрузка карты...
 song-select-hint = Enter: играть · F1: моды · Esc: назад
 song-select-mods-title = Моды
@@ -104,6 +105,7 @@ settings-section-offset = Смещение
 settings-section-keys = Клавиши
 settings-section-frame = Частоты
 settings-section-gameplay = Игра
+settings-section-library = Библиотека
 settings-restart-marker = после перезапуска
 settings-unit-percent = %
 settings-unit-ms = { " " }мс
@@ -135,6 +137,8 @@ settings-gameplay-beatmap-colours = Цвета карты
 settings-gameplay-beatmap-hitsounds = Хитсаунды карты
 settings-gameplay-hit-error-scale = Размер шкалы ошибок
 settings-gameplay-skin = Скин
+settings-library-songs-folder = Папка с песнями
+settings-library-songs-folder-none = Не выбрана
 settings-option-default-skin = Стандартный
 settings-keybind-empty = Не задано
 settings-keybind-conflict-title = Этот ввод уже назначен:

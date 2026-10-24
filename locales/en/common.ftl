@@ -30,7 +30,7 @@ menu-title = SLAM
 menu-play-button = Play
 menu-settings-button = Settings
 menu-exit-button = Exit
-song-select-no-folder = No songs folder. Start SLAM with --songs <folder>.
+song-select-no-folder = No songs folder selected.
 song-select-scanning =
     { $count ->
         [one] Scanning songs: { $count } set found so far
@@ -38,6 +38,7 @@ song-select-scanning =
     }
 song-select-failed = Could not read the songs folder.
 song-select-empty = No beatmaps found in the songs folder.
+song-select-choose-folder = Choose osu! folder
 song-select-loading = Loading beatmap...
 song-select-hint = Enter: play · F1: mods · Esc: back
 song-select-mods-title = Mods
@@ -100,6 +101,7 @@ settings-section-offset = Offset
 settings-section-keys = Keys
 settings-section-frame = Frame rates
 settings-section-gameplay = Gameplay
+settings-section-library = Library
 settings-restart-marker = after restart
 settings-unit-percent = %
 settings-unit-ms = { " " }ms
@@ -131,6 +133,8 @@ settings-gameplay-beatmap-colours = Beatmap colours
 settings-gameplay-beatmap-hitsounds = Beatmap hitsounds
 settings-gameplay-hit-error-scale = Hit error meter size
 settings-gameplay-skin = Skin
+settings-library-songs-folder = Songs folder
+settings-library-songs-folder-none = Not selected
 settings-option-default-skin = Default
 settings-keybind-empty = Not set
 settings-keybind-conflict-title = This input is already bound to:

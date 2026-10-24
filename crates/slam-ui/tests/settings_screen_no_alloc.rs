@@ -15,6 +15,7 @@ use slam_ui::settings_screen::{
     SettingsLabels, SettingsLayout, SettingsScreen, SettingsView,
 };
 use slam_ui::theme::Theme;
+use slam_ui::widgets::DropdownView;
 
 slam_testkit::install_counting_allocator!();
 
@@ -64,6 +65,7 @@ fn labels() -> SettingsLabels {
         unit: unit.into(),
         options: options.iter().map(|o| (*o).to_owned()).collect(),
         button: String::new(),
+        shows_value: false,
     };
     SettingsLabels {
         title: "Settings".into(),
@@ -75,8 +77,9 @@ fn labels() -> SettingsLabels {
             row("Left (1)", "", &[]),
             row("Left (2)", "", &[]),
             RowLabels {
-                button: "Reset".into(),
-                ..row("Reset keys", "", &[])
+                button: "Not selected".into(),
+                shows_value: true,
+                ..row("Songs folder", "", &[])
             },
         ],
         restart: "after restart".into(),
@@ -219,7 +222,27 @@ fn the_view_pushes_without_allocating_once_warm() {
         screen.input(SettingsInput::Back, &layout);
         screen.input(SettingsInput::PrevSection, &layout);
     }
-    // Warm the keys section: listening and the question.
+    // Warm the keys section: listening and the question, and the button that shows a path,
+    // short and longer than the button.
+    let paths: [Arc<str>; 3] = [
+        Arc::from("D:/osu!/Songs"),
+        Arc::from(
+            "/home/player/.local/share/osu-wine/osu!/drive_c/users/steamuser/Games/osu/Songs/with/an/\u{00e9}normously/long/path/that/never/fits",
+        ),
+        Arc::from(""),
+    ];
+    for _ in 0..2 {
+        screen.input(SettingsInput::NextSection, &layout);
+        screen.input(SettingsInput::NextSection, &layout);
+        for path in &paths {
+            screen.set_value_text(Arc::clone(path));
+            frame(&screen, 1280.0, 720.0, &mut glyphs);
+            frame(&screen, 800.0, 600.0, &mut glyphs);
+            frame(&screen, 1280.0, 720.0, &mut glyphs);
+        }
+        screen.input(SettingsInput::PrevSection, &layout);
+        screen.input(SettingsInput::PrevSection, &layout);
+    }
     for _ in 0..2 {
         screen.input(SettingsInput::NextSection, &layout);
         screen.input(SettingsInput::NextSection, &layout);
@@ -233,9 +256,12 @@ fn the_view_pushes_without_allocating_once_warm() {
         screen.input(SettingsInput::PrevSection, &layout);
         screen.input(SettingsInput::PrevSection, &layout);
     }
+    // A resize lays everything out again, allocating; end on the measured size.
+    frame(&screen, 1280.0, 720.0, &mut glyphs);
     assert_no_alloc(|| {
         for i in 0..40 {
             key_flow(&mut screen, &layout);
+            screen.set_value_text(Arc::clone(&paths[i % 3]));
             frame(&screen, 1280.0, 720.0, &mut glyphs);
             // The frames of each state of the keys section.
             screen.input(SettingsInput::NextSection, &layout);
@@ -263,4 +289,77 @@ fn the_view_pushes_without_allocating_once_warm() {
         }
     });
     assert!(shapes.len() >= 3);
+}
+
+/// A new songs folder swaps a skin dropdown view in on the draw thread. It is built at
+/// scale 1.0 on the library thread and lays its options out again at the screen's scale when
+/// first drawn: neither the frame after the swap nor the one that opens the list allocates.
+#[test]
+fn a_swapped_in_dropdown_view_draws_without_allocating() {
+    let registry = Arc::new(FontRegistry::with_builtin());
+    let limits = Limits {
+        max_texture_size: 4096,
+        max_uniform_block_size: 16384,
+        max_uniform_buffer_slots: 12,
+        max_texture_slots: 16,
+    };
+    let mut glyphs = glyph_atlas(Arc::clone(&registry), &GlyphAtlasConfig::new(limits)).unwrap();
+    let theme = Theme::default();
+    let specs = rows();
+    let mut screen = SettingsScreen::new(&specs, 3);
+    let mut view = SettingsView::new(Arc::clone(&registry), theme, &specs, &labels());
+    let options = ["60 Hz", "144 Hz", "Unlimited"];
+    let mut spare = DropdownView::new(Arc::clone(&registry), theme, &options);
+    let white = AtlasRegion {
+        texture: TextureId(0),
+        origin: Origin::new(0, 0),
+        size: Extent::new(1, 1),
+        uv: UvRect {
+            u0: 0.0,
+            v0: 0.0,
+            u1: 1.0,
+            v1: 1.0,
+        },
+    };
+    let (mut shapes, mut text) = (
+        SpriteBatch::with_capacity(256),
+        SpriteBatch::with_capacity(1024),
+    );
+    let pose = Pose {
+        opacity: 1.0,
+        offset: 0.0,
+    };
+    let layout = SettingsLayout::new(1920.0, 1080.0, &theme);
+    let mut frame = |view: &mut SettingsView, screen: &SettingsScreen, glyphs: &mut _| {
+        shapes.clear();
+        text.clear();
+        view.push(
+            &mut shapes,
+            &mut text,
+            glyphs,
+            1920.0,
+            1080.0,
+            &screen.snapshot(),
+            pose,
+            white,
+        );
+    };
+    // Warm at a scale other than 1.0, the Frame section's dropdown open.
+    screen.input(SettingsInput::NextSection, &layout);
+    screen.input(SettingsInput::Activate, &layout);
+    for _ in 0..3 {
+        frame(&mut view, &screen, &mut glyphs);
+    }
+    // The swap happens as the screen is drawn; a closed dropdown is reset by `set_dropdown`.
+    screen.set_dropdown(2, 3, 1);
+    assert!(view.swap_dropdown(2, &mut spare));
+    assert_no_alloc(|| frame(&mut view, &screen, &mut glyphs));
+    // Opening the list draws the new options for the first time.
+    screen.input(SettingsInput::Activate, &layout);
+    assert_no_alloc(|| frame(&mut view, &screen, &mut glyphs));
+    assert_no_alloc(|| {
+        for _ in 0..10 {
+            frame(&mut view, &screen, &mut glyphs);
+        }
+    });
 }
