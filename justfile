@@ -27,6 +27,10 @@ deny:
 bench *ARGS:
     cargo bench --workspace {{ARGS}}
 
+# Удалить сборочные артефакты из target/, кроме базы бенчмарков (target/criterion)
+clean:
+    find target -mindepth 1 -maxdepth 1 ! -name criterion -exec rm -rf {} +
+
 [positional-arguments]
 run *ARGS:
     cargo run -p slam-app --release -- "$@"
