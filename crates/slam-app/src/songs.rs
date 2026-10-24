@@ -16,7 +16,9 @@ use std::time::{Duration, Instant};
 
 use slam_input::{FolderCallback, FolderPick};
 use slam_library::scan::{BeatmapSetEntry, ScanEvent, Scanner, sort_sets};
-use slam_ui::song_select::{DifficultyRow, SetRow, SongList, SongSelectStatus};
+use slam_ui::song_select::{
+    DifficultyRow, SetRow, SongFilter, SongList, SongSelectStatus, search_text,
+};
 use slam_ui::widgets::DropdownView;
 
 /// Lists waiting for the update thread; a newer list supersedes older ones, so a few do.
@@ -50,6 +52,9 @@ pub type SongFiles = [Box<[SongFile]>];
 /// One state of the library as the update thread sees it.
 pub struct Published {
     pub list: Arc<SongList>,
+    /// The search buffers for `list`: the update thread passes them to the song select
+    /// and hands the ones it gets back to the library thread ([`SongsLink::retire_filter`]).
+    pub filter: SongFilter,
     pub files: Arc<SongFiles>,
     pub status: SongSelectStatus,
     /// The status line while scanning, formatted here: Fluent takes a lock.
@@ -81,6 +86,10 @@ pub type ScanningText = Box<dyn Fn(usize) -> String + Send>;
 
 /// Commands waiting for the library thread.
 const COMMANDS: usize = 4;
+
+/// Search buffers waiting to be freed by the library thread: room for several lists between
+/// two polls of the library thread.
+const OLD_FILTERS: usize = 16;
 
 /// Skin dropdowns waiting for the draw thread, and old ones waiting to be freed: room for
 /// several folder changes between two polls of the library thread.
@@ -139,6 +148,7 @@ impl SkinViews {
 pub struct SongsLink {
     updates: rtrb::Consumer<Published>,
     commands: rtrb::Producer<Command>,
+    old_filters: rtrb::Producer<SongFilter>,
 }
 
 impl SongsLink {
@@ -148,10 +158,13 @@ impl SongsLink {
     pub fn latest(&mut self) -> Option<Published> {
         let mut latest: Option<Published> = None;
         while let Ok(mut published) = self.updates.pop() {
-            if let Some(older) = latest.take().and_then(|older| older.change) {
-                match published.change {
-                    Some(_) => self.retire(older),
-                    None => published.change = Some(older),
+            if let Some(older) = latest.take() {
+                self.retire_filter(older.filter);
+                if let Some(older) = older.change {
+                    match published.change {
+                        Some(_) => self.retire(older),
+                        None => published.change = Some(older),
+                    }
                 }
             }
             latest = Some(published);
@@ -163,6 +176,13 @@ impl SongsLink {
     /// queued. Neither blocks nor allocates.
     pub fn pick_folder(&mut self) -> bool {
         self.commands.push(Command::PickFolder).is_ok()
+    }
+
+    /// Hands search buffers back to the library thread to free. With the command ring full
+    /// they are freed here: more than sixteen lists between two polls of the library thread
+    /// (10 ms) do not happen.
+    pub fn retire_filter(&mut self, filter: SongFilter) {
+        let _ = self.old_filters.push(filter);
     }
 
     /// Hands a change back with the old values swapped in, for the library thread to free.
@@ -200,9 +220,31 @@ pub fn link_with_commands() -> (
     SongsLink,
     rtrb::Consumer<Command>,
 ) {
+    let (producer, link, commands, _) = link_with_ends();
+    (producer, link, commands)
+}
+
+/// A link, the end that feeds it, the end that reads its commands and the end that receives
+/// the search buffers it hands back.
+fn link_with_ends() -> (
+    rtrb::Producer<Published>,
+    SongsLink,
+    rtrb::Consumer<Command>,
+    rtrb::Consumer<SongFilter>,
+) {
     let (producer, updates) = rtrb::RingBuffer::new(RING);
     let (commands, consumer) = rtrb::RingBuffer::new(COMMANDS);
-    (producer, SongsLink { updates, commands }, consumer)
+    let (old_filters, old_filters_rx) = rtrb::RingBuffer::new(OLD_FILTERS);
+    (
+        producer,
+        SongsLink {
+            updates,
+            commands,
+            old_filters,
+        },
+        consumer,
+        old_filters_rx,
+    )
 }
 
 /// Starts the library thread, named `slam-library`, listing `root` if given; `folders`
@@ -213,7 +255,7 @@ pub fn spawn(
     folders: Folders,
     scanning_text: ScanningText,
 ) -> std::io::Result<(SongsLink, SkinViews, LibraryThread)> {
-    let (producer, link, commands) = link_with_commands();
+    let (producer, link, commands, old_filters) = link_with_ends();
     let (views_tx, views) = rtrb::RingBuffer::new(SKIN_VIEWS);
     let (old, old_rx) = rtrb::RingBuffer::new(SKIN_VIEWS);
     let ends = Ends {
@@ -221,6 +263,7 @@ pub fn spawn(
         commands,
         views: views_tx,
         old_views: old_rx,
+        old_filters,
     };
     let stop = Arc::new(AtomicBool::new(false));
     let flag = Arc::clone(&stop);
@@ -260,11 +303,21 @@ pub fn publish(
                 artist: set.artist.clone(),
                 title: set.title.clone(),
                 creator: set.creator.clone(),
+                search: search_text(&[
+                    &set.creator,
+                    &set.artist,
+                    &set.artist_unicode,
+                    &set.title,
+                    &set.title_unicode,
+                    &set.source,
+                    &set.tags,
+                ]),
                 difficulties: set
                     .difficulties
                     .iter()
                     .map(|d| DifficultyRow {
                         version: d.version.clone(),
+                        search: search_text(&[&d.version]),
                     })
                     .collect(),
             })
@@ -286,6 +339,7 @@ pub fn publish(
         })
         .collect();
     Published {
+        filter: SongFilter::for_list(&list),
         list: Arc::new(list),
         files,
         status,
@@ -447,6 +501,7 @@ struct Ends {
     commands: rtrb::Consumer<Command>,
     views: rtrb::Producer<DropdownView>,
     old_views: rtrb::Consumer<DropdownView>,
+    old_filters: rtrb::Consumer<SongFilter>,
 }
 
 fn run(
@@ -474,6 +529,9 @@ fn run(
             }
         }
         while let Ok(old) = ends.old_views.pop() {
+            drop(old);
+        }
+        while let Ok(old) = ends.old_filters.pop() {
             drop(old);
         }
         library.receive_pick();
@@ -528,6 +586,10 @@ mod tests {
             artist: format!("{dir} artist"),
             title: format!("{dir} title"),
             creator: "mapper".to_owned(),
+            artist_unicode: String::new(),
+            title_unicode: String::new(),
+            source: String::new(),
+            tags: String::new(),
             difficulties: versions
                 .iter()
                 .map(|v| DifficultyEntry {
@@ -560,6 +622,39 @@ mod tests {
         );
         assert_eq!(published.files[1][0].approach_rate, 5.0);
         assert_eq!(published.status, SongSelectStatus::Ready);
+    }
+
+    #[test]
+    fn published_rows_carry_lowercased_search_text() {
+        let mut entry = set("a", &["Hard Mode"]);
+        entry.artist_unicode = "\u{418}\u{43c}\u{44f}".to_owned();
+        entry.source = "Some Game".to_owned();
+        entry.tags = "Tag One".to_owned();
+        let published = publish(&[entry], SongSelectStatus::Ready, Arc::from(""));
+        let row = &published.list.sets[0];
+        assert_eq!(
+            row.search,
+            "mapper\na artist\n\u{438}\u{43c}\u{44f}\na title\n\nsome game\ntag one"
+        );
+        assert_eq!(row.difficulties[0].search, "hard mode");
+        // The buffers are made for the list, off the update thread.
+        assert_eq!(published.filter.set_count(), 1);
+        assert_eq!(published.filter.set_index(0), Some(0));
+    }
+
+    #[test]
+    fn retired_search_buffers_reach_the_library_thread() {
+        let (mut producer, mut link, _, mut old_filters) = link_with_ends();
+        let first = publish(&[set("a", &["x"])], SongSelectStatus::Ready, Arc::from(""));
+        let second = publish(&[set("b", &["y"])], SongSelectStatus::Ready, Arc::from(""));
+        producer.push(first).ok().unwrap();
+        producer.push(second).ok().unwrap();
+        // The older publication is dropped by `latest`: its buffers go back.
+        let latest = link.latest().unwrap();
+        assert_eq!(old_filters.pop().unwrap().set_count(), 1);
+        assert!(old_filters.pop().is_err());
+        link.retire_filter(latest.filter);
+        assert!(old_filters.pop().is_ok());
     }
 
     #[test]

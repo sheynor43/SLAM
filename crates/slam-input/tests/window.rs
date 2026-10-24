@@ -47,9 +47,14 @@ fn run_delivers_events_and_stops_on_quit() {
     );
     let (mut sink, mut source) = event_ring(BUTTON_RESERVE + 2);
 
+    // Text input turns on before the first wait; on the offscreen driver it only has
+    // to succeed or be retried without effect on the other events.
+    let text_input = window.text_input();
+    text_input.set_enabled(true);
+
     let t0 = slam_input::sdl_ticks_ns();
     push(key(t0, SDL_SCANCODE_Z, true, false));
-    push(key(t0 + 1, SDL_SCANCODE_Z, true, true)); // repeat: filtered out
+    push(key(t0 + 1, SDL_SCANCODE_Z, true, true)); // repeat: queued while room is left
     push(button(t0 + 2, 1, true));
     push(motion(t0 + 3, 1.0, 1.0)); // only the button reserve is left: dropped
     push(SDL_Event {
@@ -70,6 +75,13 @@ fn run_delivers_events_and_stops_on_quit() {
         }
     );
     assert_near(first.time_ns, t0 + 1_000_000);
+    let repeat = source.pop().expect("repeat event");
+    assert_eq!(
+        repeat.kind,
+        InputKind::KeyRepeat {
+            scancode: SDL_SCANCODE_Z.0 as u16
+        }
+    );
     let second = source.pop().expect("button event");
     assert_eq!(
         second.kind,

@@ -133,6 +133,10 @@ fn songs(sets: &[(&str, &[&str])]) -> Vec<slam_library::scan::BeatmapSetEntry> {
             artist: (*dir).to_owned(),
             title: (*dir).to_owned(),
             creator: "mapper".to_owned(),
+            artist_unicode: String::new(),
+            title_unicode: String::new(),
+            source: String::new(),
+            tags: String::new(),
             difficulties: versions
                 .iter()
                 .map(|v| slam_library::scan::DifficultyEntry {
@@ -1242,4 +1246,77 @@ fn difficulty_adjust_expands_the_panel_and_shows_the_beatmap_values() {
         &mut snap,
     );
     assert_eq!(s.song_select().selected(), Some((0, 1)));
+}
+
+fn text(text: &str) -> InputEvent {
+    InputEvent {
+        time_ns: 0,
+        kind: InputKind::Text(slam_input::TextChunk::new(text).unwrap()),
+    }
+}
+
+fn repeat(scancode: u16) -> InputEvent {
+    InputEvent {
+        time_ns: 0,
+        kind: InputKind::KeyRepeat { scancode },
+    }
+}
+
+#[test]
+fn typing_on_the_song_select_searches_and_backspace_and_escape_edit_first() {
+    let (mut s, mut snap, _producer) = in_song_select();
+    s.tick(at(1), &[text("b"), text("ins")], &mut snap);
+    assert_eq!(s.song_select().query().as_str(), "bins");
+    s.tick(
+        at(2),
+        &[key(KEY_BACKSPACE), repeat(KEY_BACKSPACE)],
+        &mut snap,
+    );
+    assert_eq!(s.song_select().query().as_str(), "bi");
+    s.tick(at(3), &[text(" "), text("Ins")], &mut snap);
+    assert_eq!(song_view(&snap).query.as_str(), "bi Ins");
+    // Only set "b" has "Ins" (its difficulty Insane); "bi" is in no field.
+    assert_eq!(song_view(&snap).row_count, 0);
+    s.tick(at(4), &[key(KEY_BACKSPACE); 4], &mut snap);
+    assert_eq!(s.song_select().query().as_str(), "bi");
+    s.tick(
+        at(5),
+        &[key(KEY_BACKSPACE), key(KEY_BACKSPACE), text("Ins")],
+        &mut snap,
+    );
+    assert_eq!(s.song_select().query().as_str(), "Ins");
+    assert_eq!(s.song_select().selected(), Some((1, 0)));
+
+    // Escape clears the query and stays; the next leaves.
+    s.tick(at(6), &[key(KEY_ESCAPE)], &mut snap);
+    assert_eq!(s.song_select().query().as_str(), "");
+    assert_eq!(*s.stack().top(), AppScreen::SongSelect);
+    s.tick(at(7), &[key(KEY_ESCAPE)], &mut snap);
+    assert!(matches!(s.stack().top(), AppScreen::Menu(_)));
+    // The menu takes no text.
+    s.tick(at(8), &[text("a")], &mut snap);
+    assert_eq!(s.song_select().query().as_str(), "");
+}
+
+#[test]
+fn backspace_repeats_only_erase_and_the_open_panel_takes_no_text() {
+    let (mut s, mut snap, _producer) = in_song_select();
+    s.tick(at(1), &[key(KEY_F1), key(KEY_Q)], &mut snap);
+    assert_eq!(acronyms(&s), ["EZ"]);
+    // With the panel open the letters are hotkeys: their text is not typed.
+    s.tick(at(2), &[text("q")], &mut snap);
+    assert_eq!(s.song_select().query().as_str(), "");
+    s.tick(at(3), &[key(KEY_ESCAPE), text("a")], &mut snap);
+    assert_eq!(s.song_select().query().as_str(), "a");
+    // A held Backspace erases the query and then stops; it never drops the mods.
+    s.tick(
+        at(4),
+        &[key(KEY_BACKSPACE), repeat(KEY_BACKSPACE)],
+        &mut snap,
+    );
+    assert_eq!(s.song_select().query().as_str(), "");
+    assert_eq!(acronyms(&s), ["EZ"]);
+    // A fresh press on the empty query deselects them, as before.
+    s.tick(at(5), &[key(KEY_BACKSPACE)], &mut snap);
+    assert!(acronyms(&s).is_empty());
 }

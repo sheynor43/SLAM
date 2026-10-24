@@ -74,6 +74,10 @@ fn song_select_ticks_and_new_lists_do_not_allocate() {
             artist: format!("artist {i}"),
             title: format!("title {i}"),
             creator: "mapper".to_owned(),
+            artist_unicode: String::new(),
+            title_unicode: String::new(),
+            source: String::new(),
+            tags: String::new(),
             difficulties: (0..4)
                 .map(|d| DifficultyEntry {
                     path: PathBuf::from(format!("set {i}/{d}.osu")),
@@ -244,6 +248,10 @@ fn on_results() -> (
         artist: "artist".to_owned(),
         title: "title".to_owned(),
         creator: "mapper".to_owned(),
+        artist_unicode: String::new(),
+        title_unicode: String::new(),
+        source: String::new(),
+        tags: String::new(),
         difficulties: vec![DifficultyEntry {
             path: PathBuf::from("set/0.osu"),
             version: "diff".to_owned(),

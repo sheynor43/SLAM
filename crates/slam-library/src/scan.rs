@@ -29,6 +29,14 @@ pub struct BeatmapSetEntry {
     pub title: String,
     /// Mapper of the first difficulty.
     pub creator: String,
+    /// Artist in the original script of the first difficulty; empty when the file has none.
+    pub artist_unicode: String,
+    /// Title in the original script of the first difficulty; empty when the file has none.
+    pub title_unicode: String,
+    /// Source (the game, anime or album) of the first difficulty.
+    pub source: String,
+    /// Space-separated tags of the first difficulty.
+    pub tags: String,
     /// osu!standard difficulties, sorted by version (case-insensitive), then path.
     pub difficulties: Vec<DifficultyEntry>,
 }
@@ -65,6 +73,17 @@ struct SetScan {
     skipped: usize,
 }
 
+/// The set-level metadata of one difficulty file.
+struct SetMeta {
+    artist: String,
+    title: String,
+    creator: String,
+    artist_unicode: String,
+    title_unicode: String,
+    source: String,
+    tags: String,
+}
+
 fn scan_set_counted(dir: &Path) -> Result<SetScan, ScanError> {
     let options = DecodeOptions {
         headers_only: true,
@@ -72,7 +91,7 @@ fn scan_set_counted(dir: &Path) -> Result<SetScan, ScanError> {
     };
     let mut skipped = 0;
     let mut difficulties = Vec::new();
-    let mut meta: Vec<(String, String, String)> = Vec::new();
+    let mut meta: Vec<SetMeta> = Vec::new();
 
     for item in fs::read_dir(dir)? {
         let Ok(item) = item else {
@@ -99,7 +118,15 @@ fn scan_set_counted(dir: &Path) -> Result<SetScan, ScanError> {
         if b.general.mode != MODE_STANDARD {
             continue;
         }
-        meta.push((b.metadata.artist, b.metadata.title, b.metadata.creator));
+        meta.push(SetMeta {
+            artist: b.metadata.artist,
+            title: b.metadata.title,
+            creator: b.metadata.creator,
+            artist_unicode: b.metadata.artist_unicode,
+            title_unicode: b.metadata.title_unicode,
+            source: b.metadata.source,
+            tags: b.metadata.tags,
+        });
         difficulties.push(DifficultyEntry {
             path,
             version: b.metadata.version,
@@ -119,16 +146,20 @@ fn scan_set_counted(dir: &Path) -> Result<SetScan, ScanError> {
             skipped,
         });
     };
-    let (artist, title, creator) = meta[first].clone();
+    let meta = meta.swap_remove(first);
     let mut slots: Vec<Option<DifficultyEntry>> = difficulties.into_iter().map(Some).collect();
     let difficulties = order.into_iter().filter_map(|i| slots[i].take()).collect();
 
     Ok(SetScan {
         entry: Some(BeatmapSetEntry {
             dir: dir.to_owned(),
-            artist,
-            title,
-            creator,
+            artist: meta.artist,
+            title: meta.title,
+            creator: meta.creator,
+            artist_unicode: meta.artist_unicode,
+            title_unicode: meta.title_unicode,
+            source: meta.source,
+            tags: meta.tags,
             difficulties,
         }),
         skipped,

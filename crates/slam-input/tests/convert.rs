@@ -2,13 +2,13 @@
 
 mod common;
 
-use common::{button, key, motion};
+use common::{button, key, motion, text};
 use sdl3_sys::events::{
     SDL_EVENT_MOUSE_WHEEL, SDL_EVENT_QUIT, SDL_EVENT_WINDOW_FOCUS_LOST, SDL_Event,
     SDL_MouseWheelEvent, SDL_QuitEvent, SDL_WindowEvent,
 };
 use sdl3_sys::scancode::{SDL_SCANCODE_X, SDL_SCANCODE_Z, SDL_Scancode};
-use slam_input::{InputKind, MouseButton, convert};
+use slam_input::{InputKind, MouseButton, TextChunk, convert, convert_text};
 
 #[test]
 fn key_down_and_up_keep_scancode_and_timestamp() {
@@ -35,8 +35,61 @@ fn key_down_and_up_keep_scancode_and_timestamp() {
 }
 
 #[test]
-fn key_repeat_is_dropped() {
-    assert_eq!(convert(&key(1_000, SDL_SCANCODE_Z, true, true)), None);
+fn key_repeat_is_its_own_kind() {
+    assert_eq!(
+        convert(&key(1_000, SDL_SCANCODE_Z, true, true)),
+        Some((
+            1_000,
+            InputKind::KeyRepeat {
+                scancode: SDL_SCANCODE_Z.0 as u16
+            }
+        ))
+    );
+    // A repeat flag on a release is not a repeat.
+    assert_eq!(convert(&key(1_000, SDL_SCANCODE_Z, false, true)), None);
+}
+
+/// `convert_text` on events whose text the test owns.
+fn text_of(event: &SDL_Event) -> Option<(u64, impl Iterator<Item = InputKind> + '_)> {
+    // SAFETY: every event here points at a C string literal.
+    unsafe { convert_text(event) }
+}
+
+fn texts(event: &SDL_Event) -> Option<(u64, Vec<String>)> {
+    let (timestamp, chunks) = text_of(event)?;
+    let chunks = chunks
+        .map(|kind| match kind {
+            InputKind::Text(chunk) => chunk.as_str().to_owned(),
+            other => panic!("not text: {other:?}"),
+        })
+        .collect();
+    Some((timestamp, chunks))
+}
+
+#[test]
+fn text_keeps_timestamp_and_utf8() {
+    assert_eq!(texts(&text(7, c"a")), Some((7, vec!["a".to_owned()])));
+    assert_eq!(texts(&text(8, c"ж")), Some((8, vec!["ж".to_owned()])));
+    // Text is not a key event, and keys are not text.
+    assert_eq!(convert(&text(7, c"a")), None);
+    assert!(text_of(&key(1, SDL_SCANCODE_Z, true, false)).is_none());
+}
+
+#[test]
+fn long_text_splits_at_character_boundaries() {
+    // 9 Cyrillic letters, 2 bytes each: 7 fit in 15 bytes, then 2.
+    let (_, chunks) = texts(&text(1, c"абвгдежзи")).unwrap();
+    assert_eq!(chunks, ["абвгдеж", "зи"]);
+    // 3-byte characters: 5 per chunk.
+    let (_, chunks) = texts(&text(1, c"日本語のテキストです")).unwrap();
+    assert_eq!(chunks, ["日本語のテ", "キストです"]);
+    assert!(chunks.iter().all(|c| c.len() <= TextChunk::CAPACITY));
+}
+
+#[test]
+fn empty_and_invalid_text_is_ignored() {
+    assert!(text_of(&text(1, c"")).is_none());
+    assert!(text_of(&text(1, c"\xff\xfe")).is_none());
 }
 
 #[test]

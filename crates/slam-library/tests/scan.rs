@@ -50,6 +50,27 @@ fn collect(root: PathBuf) -> (Vec<BeatmapSetEntry>, Result<ScanSummary, std::io:
 }
 
 #[test]
+fn keeps_the_searchable_metadata_of_the_first_difficulty() {
+    let t = Tmp::new("meta");
+    let d = t.0.join("set");
+    let file = |version: &str, tags: &str| {
+        osu(0, "Art", "Song", version).replace(
+            "Creator:Mapper\n",
+            &format!(
+                "Creator:Mapper\nArtistUnicode:\u{418}\u{43c}\u{44f}\nTitleUnicode:\u{43f}\u{435}\u{441}\u{43d}\u{44f}\nSource:Game\nTags:{tags}\n"
+            ),
+        )
+    };
+    write(&d, "a.osu", &file("Easy", "first tags"));
+    write(&d, "b.osu", &file("Hard", "second tags"));
+    let e = scan_set(&d).unwrap().unwrap();
+    assert_eq!(e.artist_unicode, "\u{418}\u{43c}\u{44f}");
+    assert_eq!(e.title_unicode, "\u{43f}\u{435}\u{441}\u{43d}\u{44f}");
+    assert_eq!(e.source, "Game");
+    assert_eq!(e.tags, "first tags");
+}
+
+#[test]
 fn keeps_only_standard() {
     let t = Tmp::new("std");
     let d = t.0.join("set");
@@ -145,6 +166,10 @@ fn sort_order() {
         artist: artist.into(),
         title: title.into(),
         creator: String::new(),
+        artist_unicode: String::new(),
+        title_unicode: String::new(),
+        source: String::new(),
+        tags: String::new(),
         difficulties: Vec::new(),
     };
     let mut v = vec![

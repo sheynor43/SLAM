@@ -8,6 +8,7 @@ use sdl3_sys::events::{
 };
 use sdl3_sys::hints::{SDL_HINT_INVALID_PARAM_CHECKS, SDL_SetHint};
 use sdl3_sys::init::{SDL_INIT_VIDEO, SDL_Init, SDL_Quit};
+use sdl3_sys::keyboard::{SDL_StartTextInput, SDL_StopTextInput};
 use sdl3_sys::mouse::{SDL_HideCursor, SDL_ShowCursor};
 use sdl3_sys::video::{
     SDL_CreateWindow, SDL_DestroyWindow, SDL_GetCurrentVideoDriver, SDL_GetWindowSizeInPixels,
@@ -17,7 +18,7 @@ use sdl3_sys::video::{
 
 use crate::dialog::{self, FolderDialog};
 use crate::gl::{self, GlContext, PixelSize};
-use crate::{EventSink, InputCounters, InputEvent, TickMapper, convert};
+use crate::{EventSink, InputCounters, InputEvent, TickMapper, convert, convert_text};
 
 /// SDL supports a single initialisation per process at a time.
 static SDL_ACTIVE: AtomicBool = AtomicBool::new(false);
@@ -62,6 +63,10 @@ pub struct InputWindow {
     cursor_hidden: Arc<AtomicBool>,
     /// Whether it is hidden now.
     cursor_applied: bool,
+    /// Whether typed text should be delivered, set by any thread.
+    text_wanted: Arc<AtomicBool>,
+    /// Whether SDL delivers it now.
+    text_applied: bool,
     /// The SDL event type of [`FolderDialog`] requests; 0 when none could be registered.
     dialog_event: u32,
 }
@@ -86,6 +91,28 @@ impl CursorVisibility {
     /// The last wish.
     pub fn is_hidden(&self) -> bool {
         self.hidden.load(Ordering::Relaxed)
+    }
+}
+
+/// Turns typed text ([`crate::InputKind::Text`]) on or off, from any thread, without
+/// locks (ADR-0065). Like [`CursorVisibility`], the window applies the wish before
+/// waiting for its next event, so a change takes effect after the next event at the
+/// latest. Off at start: SDL then sends no text and shows no on-screen keyboard or IME.
+/// The default handle belongs to no window (for tests).
+#[derive(Clone, Default)]
+pub struct TextInput {
+    wanted: Arc<AtomicBool>,
+}
+
+impl TextInput {
+    /// Asks for typed text to be delivered or not.
+    pub fn set_enabled(&self, enabled: bool) {
+        self.wanted.store(enabled, Ordering::Relaxed);
+    }
+
+    /// The last wish.
+    pub fn is_enabled(&self) -> bool {
+        self.wanted.load(Ordering::Relaxed)
     }
 }
 
@@ -185,6 +212,8 @@ impl InputWindow {
             alive: Arc::new(Mutex::new(true)),
             cursor_hidden: Arc::default(),
             cursor_applied: false,
+            text_wanted: Arc::default(),
+            text_applied: false,
             dialog_event,
         })
     }
@@ -263,6 +292,33 @@ impl InputWindow {
         }
     }
 
+    /// A handle that turns typed text on and off.
+    pub fn text_input(&self) -> TextInput {
+        TextInput {
+            wanted: Arc::clone(&self.text_wanted),
+        }
+    }
+
+    /// Starts or stops SDL text input as [`TextInput`] last asked.
+    fn apply_text_input(&mut self) {
+        let wanted = self.text_wanted.load(Ordering::Relaxed);
+        if wanted == self.text_applied {
+            return;
+        }
+        // SAFETY: SDL video is initialised on this thread, which owns the window.
+        let done = unsafe {
+            if wanted {
+                SDL_StartTextInput(self.window)
+            } else {
+                SDL_StopTextInput(self.window)
+            }
+        };
+        // A failure is tried again after the next event.
+        if done {
+            self.text_applied = wanted;
+        }
+    }
+
     /// A handle that makes [`InputWindow::run`] return as if the window was closed.
     pub fn quit_handle(&self) -> QuitHandle {
         QuitHandle {
@@ -292,6 +348,7 @@ impl InputWindow {
         let mut event = SDL_Event::default();
         loop {
             self.apply_cursor();
+            self.apply_text_input();
             // SAFETY: SDL is initialised on this thread; `event` is a valid out pointer.
             if !unsafe { SDL_WaitEvent(&mut event) } {
                 return Err(WindowError::WaitEvent(sdl_error()));
@@ -313,7 +370,9 @@ impl InputWindow {
                     self.size.store(window.data1, window.data2);
                 }
                 _ => {
-                    if dispatch(&event, sink, mapper) {
+                    // SAFETY: `event` came from SDL_WaitEvent just now; the next poll is
+                    // after this call.
+                    if unsafe { dispatch(&event, sink, mapper) } {
                         self.counters.record_queued();
                     }
                 }
@@ -323,9 +382,13 @@ impl InputWindow {
 }
 
 /// Per-event work of [`InputWindow::run`]: convert, stamp in engine time, push.
-/// Returns whether an event was queued. Public for allocation tests.
+/// Returns whether an event was queued (for text split into chunks, whether any was).
+/// Public for allocation tests.
+///
+/// # Safety
+/// As [`convert_text`]: a text event's pointer must be valid for the call.
 #[doc(hidden)]
-pub fn dispatch<E, S>(
+pub unsafe fn dispatch<E, S>(
     event: &SDL_Event,
     sink: &mut EventSink,
     mapper: &mut TickMapper<E, S>,
@@ -334,13 +397,22 @@ where
     E: FnMut() -> u64,
     S: FnMut() -> u64,
 {
-    match convert(event) {
-        Some((timestamp, kind)) => sink.push(InputEvent {
+    if let Some((timestamp, kind)) = convert(event) {
+        return sink.push(InputEvent {
             time_ns: mapper.map(timestamp),
             kind,
-        }),
-        None => false,
+        });
     }
+    // SAFETY: passed on from the caller.
+    let Some((timestamp, chunks)) = (unsafe { convert_text(event) }) else {
+        return false;
+    };
+    let time_ns = mapper.map(timestamp);
+    let mut queued = false;
+    for kind in chunks {
+        queued |= sink.push(InputEvent { time_ns, kind });
+    }
+    queued
 }
 
 impl Drop for InputWindow {
@@ -392,5 +464,16 @@ mod tests {
         assert!(!a.is_hidden());
         b.set_hidden(true);
         assert!(a.is_hidden());
+    }
+
+    #[test]
+    fn text_input_handles_share_one_wish() {
+        let a = TextInput::default();
+        let b = a.clone();
+        assert!(!a.is_enabled());
+        b.set_enabled(true);
+        assert!(a.is_enabled());
+        a.set_enabled(false);
+        assert!(!b.is_enabled());
     }
 }

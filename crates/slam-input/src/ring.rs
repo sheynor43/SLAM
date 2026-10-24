@@ -55,10 +55,10 @@ impl EventSink {
         self.notify = Some(notify);
     }
 
-    /// Pushes an event without blocking; returns whether it was queued. Mouse moves and
-    /// wheel scrolls are dropped once at most [`BUTTON_RESERVE`] slots are free, keys and
-    /// buttons only when the ring is full. Every drop is counted. A queued event calls the
-    /// [`Notify`] set by [`EventSink::set_notify`].
+    /// Pushes an event without blocking; returns whether it was queued. Mouse moves,
+    /// wheel scrolls and key repeats are dropped once at most [`BUTTON_RESERVE`] slots
+    /// are free, keys, buttons and text only when the ring is full. Every drop is
+    /// counted. A queued event calls the [`Notify`] set by [`EventSink::set_notify`].
     pub fn push(&mut self, event: InputEvent) -> bool {
         if is_motion(event.kind) && self.producer.slots() <= BUTTON_RESERVE {
             self.dropped.total.fetch_add(1, Ordering::Relaxed);
@@ -82,11 +82,11 @@ impl EventSink {
     }
 }
 
-/// Events that may be dropped to keep room for keys and buttons.
+/// Events that may be dropped to keep room for keys, buttons and text.
 fn is_motion(kind: InputKind) -> bool {
     matches!(
         kind,
-        InputKind::MouseMove { .. } | InputKind::MouseWheel { .. }
+        InputKind::MouseMove { .. } | InputKind::MouseWheel { .. } | InputKind::KeyRepeat { .. }
     )
 }
 

@@ -4,7 +4,7 @@ mod common;
 
 use std::cell::Cell;
 
-use common::{button, key, motion};
+use common::{button, key, motion, text};
 use sdl3_sys::scancode::SDL_SCANCODE_Z;
 use slam_input::{RECALIBRATE_INTERVAL_NS, TickMapper, dispatch, event_ring};
 use slam_testkit::count_allocs;
@@ -19,6 +19,7 @@ fn event_path_does_not_allocate() {
         button(3, 1, true),
         button(4, 9, true),
         motion(5, 1.0, 2.0),
+        text(6, c"текст длиннее одного куска"),
     ];
     // Fake engine clock: 1 ns per read (brackets are narrow, so recalibrations are
     // accepted), plus a full recalibration interval per round, so `map` recalibrates
@@ -36,7 +37,8 @@ fn event_path_does_not_allocate() {
         for round in 0..1_000 {
             engine.set(engine.get() + RECALIBRATE_INTERVAL_NS);
             for e in &events {
-                dispatch(e, &mut sink, &mut mapper);
+                // SAFETY: the text event points at a C string literal.
+                unsafe { dispatch(e, &mut sink, &mut mapper) };
             }
             if round % 20 == 0 {
                 while source.pop().is_some() {}

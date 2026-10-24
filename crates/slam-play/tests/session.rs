@@ -12,7 +12,7 @@ use slam_audio::{
     FilterKind, MusicAnchor, MusicSnapshot, PlayError, PositionSnapshot, Sample, TrackAdjustment,
     TrackControl, VoiceGroup, VoiceId, VoiceParams,
 };
-use slam_input::{InputEvent, InputKind, MouseButton};
+use slam_input::{InputEvent, InputKind, MouseButton, TextChunk};
 use slam_osu::judgement::{HitResult, JudgementLog};
 use slam_osu::replay::{Actions, Rules};
 use slam_osu::rules::OsuRules;
@@ -419,6 +419,49 @@ fn session_with_mods(map: &Beatmap, track: &Track, offsets: Offsets, mods: ModSe
         GameplaySounds::new(map, sounds, SoundSettings::for_mods(&mods)),
         offsets,
     )
+}
+
+#[test]
+fn key_repeats_and_text_do_not_change_the_play() {
+    let map = beatmap();
+    let track = Track::default();
+    let start_time = session(&map, &track).start_time();
+    let end = end_ns(&map, start_time);
+    let (plain, _, _) = run(&map, MS, end, |_| {});
+
+    // Each event followed by an OS repeat of a bound key and the text it would type
+    // (ADR-0065).
+    let z = Bindings::default()
+        .as_slice()
+        .iter()
+        .find_map(|b| match b.input {
+            slam_play::input::Input::Key(scancode) => Some(scancode),
+            slam_play::input::Input::Mouse(_) => None,
+        })
+        .unwrap();
+    let mut noisy = Vec::new();
+    for event in events(&map, start_time, T0) {
+        noisy.push(event);
+        let time_ns = event.time_ns;
+        noisy.push(InputEvent {
+            time_ns,
+            kind: InputKind::KeyRepeat { scancode: z },
+        });
+        noisy.push(InputEvent {
+            time_ns,
+            kind: InputKind::Text(TextChunk::new("z").unwrap()),
+        });
+    }
+    assert!(noisy.len() > events(&map, start_time, T0).len());
+    let (with_noise, _, _) = run_events(
+        &noisy,
+        session(&map, &track),
+        Track::default(),
+        MS,
+        end,
+        |_| {},
+    );
+    assert_eq!(with_noise.log().events(), plain.log().events());
 }
 
 /// The scripted play's events in engine time, for a clock started at `start_ns`.
