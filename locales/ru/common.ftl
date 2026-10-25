@@ -136,6 +136,12 @@ settings-audio-backend = Звуковой бэкенд
 settings-audio-buffer = Размер буфера
 settings-offset-global = Общее смещение
 settings-keys-mouse-buttons = Кнопки мыши в игре
+settings-input-high-precision = Высокоточная мышь
+settings-input-sensitivity = Чувствительность курсора
+settings-input-high-precision-warning =
+    На вашей платформе эта настройка работает с ошибками. При проблемах
+    меняйте чувствительность вне игры, а эту настройку пока не включайте.
+settings-input-sensitivity-hint = Включите высокоточную мышь, чтобы менять чувствительность
 settings-frame-update-rate = Частота обновления
 settings-frame-draw-rate = Частота кадров в игре
 settings-frame-menu-draw-rate = Частота кадров в меню

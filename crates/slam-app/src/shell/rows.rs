@@ -6,10 +6,12 @@ use slam_engine::RATE_PRESETS;
 use slam_osu::replay::Actions;
 use slam_play::FpsCorner;
 use slam_ui::i18n::{FluentArgs, Localizer};
-use slam_ui::settings_screen::{RowKind, RowLabels, RowSpec, RowValue, SettingsLabels};
+use slam_ui::settings_screen::{
+    RowKind, RowLabels, RowSpec, RowValue, SettingsLabels, SettingsScreen,
+};
 
 use super::keybinds;
-use crate::settings::{DrawRate, FpsScreens, KeySlot, Settings, Timing, skins};
+use crate::settings::{DrawRate, FpsScreens, InputSettings, KeySlot, Settings, Timing, skins};
 
 /// Sections, in order; the keys of their names are in [`SECTION_KEYS`].
 const SECTION_KEYS: [&str; 6] = [
@@ -50,6 +52,10 @@ const DRAW_PRESETS: [f64; 9] = [
     60.0, 120.0, 144.0, 240.0, 360.0, 1000.0, 2000.0, 4000.0, 8000.0,
 ];
 
+/// Whether the platform has known issues with the high precision mouse (ADR-0069): lazer
+/// switches it off by default and warns on Linux and macOS.
+const PLATFORM_WARNING: bool = cfg!(any(target_os = "linux", target_os = "macos"));
+
 /// A row of the screen; the screen's row index is the position in [`Row::ALL`].
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Row {
@@ -61,6 +67,8 @@ pub enum Row {
     BufferFrames,
     GlobalOffset,
     MouseButtons,
+    HighPrecisionMouse,
+    Sensitivity,
     LeftKey1,
     LeftKey2,
     RightKey1,
@@ -85,7 +93,7 @@ pub enum Row {
 }
 
 impl Row {
-    pub const ALL: [Row; 29] = [
+    pub const ALL: [Row; 31] = [
         Row::MasterVolume,
         Row::MusicVolume,
         Row::HitsoundVolume,
@@ -94,6 +102,8 @@ impl Row {
         Row::BufferFrames,
         Row::GlobalOffset,
         Row::MouseButtons,
+        Row::HighPrecisionMouse,
+        Row::Sensitivity,
         Row::LeftKey1,
         Row::LeftKey2,
         Row::RightKey1,
@@ -146,6 +156,8 @@ impl Row {
             | Row::BufferFrames => 0,
             Row::GlobalOffset => 1,
             Row::MouseButtons
+            | Row::HighPrecisionMouse
+            | Row::Sensitivity
             | Row::LeftKey1
             | Row::LeftKey2
             | Row::RightKey1
@@ -180,6 +192,8 @@ impl Row {
             Row::BufferFrames => "settings-audio-buffer",
             Row::GlobalOffset => "settings-offset-global",
             Row::MouseButtons => "settings-keys-mouse-buttons",
+            Row::HighPrecisionMouse => "settings-input-high-precision",
+            Row::Sensitivity => "settings-input-sensitivity",
             Row::LeftKey1 => "settings-keys-left-1",
             Row::LeftKey2 => "settings-keys-left-2",
             Row::RightKey1 => "settings-keys-right-1",
@@ -372,6 +386,15 @@ impl Rows {
             Row::MouseButtons => RowKind::Toggle {
                 value: s.gameplay.mouse_buttons,
             },
+            Row::HighPrecisionMouse => RowKind::Toggle {
+                value: s.input.high_precision_mouse,
+            },
+            Row::Sensitivity => RowKind::Slider {
+                min: *InputSettings::SENSITIVITY_RANGE.start(),
+                max: *InputSettings::SENSITIVITY_RANGE.end(),
+                step: InputSettings::SENSITIVITY_STEP,
+                value: InputSettings::clean_sensitivity(s.input.sensitivity),
+            },
             Row::UpdateHz => choice(
                 self.update_hz.len(),
                 self.update_hz.iter().position(|h| *h == s.frame.update_hz),
@@ -446,6 +469,12 @@ impl Rows {
                 settings.timing.global_offset_ms = v.round();
             }
             (Row::MouseButtons, RowValue::Toggle(v)) => settings.gameplay.mouse_buttons = v,
+            (Row::HighPrecisionMouse, RowValue::Toggle(v)) => {
+                settings.input.high_precision_mouse = v;
+            }
+            (Row::Sensitivity, RowValue::Slider(v)) => {
+                settings.input.sensitivity = InputSettings::clean_sensitivity(v);
+            }
             (Row::ShowFps, RowValue::Toggle(v)) => settings.frame.show_fps = v,
             (Row::BeatmapSkins, RowValue::Toggle(v)) => settings.gameplay.beatmap_skins = v,
             (Row::BeatmapColours, RowValue::Toggle(v)) => settings.gameplay.beatmap_colours = v,
@@ -494,6 +523,23 @@ impl Rows {
                 }
             }
             _ => {}
+        }
+    }
+
+    /// Shows the rows' disabled and hint states for `settings` on `screen`: the sensitivity
+    /// slider is unchangeable without high precision and says why, and the high precision
+    /// toggle warns where the platform has issues with it. Does not allocate.
+    pub fn refresh(screen: &mut SettingsScreen, settings: &Settings) {
+        let high_precision = settings.input.high_precision_mouse;
+        for (i, row) in Row::ALL.iter().enumerate() {
+            match row {
+                Row::HighPrecisionMouse => screen.set_hint(i, PLATFORM_WARNING && high_precision),
+                Row::Sensitivity => {
+                    screen.set_disabled(i, !high_precision);
+                    screen.set_hint(i, !high_precision);
+                }
+                _ => {}
+            }
         }
     }
 
@@ -550,7 +596,7 @@ impl Rows {
                     | Row::HitsoundVolume
                     | Row::EffectsVolume
                     | Row::Dim => text("settings-unit-percent"),
-                    Row::HitErrorScale => text("settings-unit-times"),
+                    Row::HitErrorScale | Row::Sensitivity => text("settings-unit-times"),
                     _ => String::new(),
                 };
                 let button = match row {
@@ -559,12 +605,21 @@ impl Rows {
                     Row::SongsFolder => text("settings-library-songs-folder-none"),
                     _ => String::new(),
                 };
+                let hint = match row {
+                    Row::HighPrecisionMouse if PLATFORM_WARNING => {
+                        text("settings-input-high-precision-warning")
+                    }
+                    Row::Sensitivity => text("settings-input-sensitivity-hint"),
+                    _ => String::new(),
+                };
                 RowLabels {
                     label: text(row.label_key()),
                     unit,
                     options,
                     button,
                     shows_value: *row == Row::SongsFolder,
+                    trim_zeros: *row == Row::Sensitivity,
+                    hint,
                 }
             })
             .collect();
@@ -598,6 +653,7 @@ pub fn round_for_save(settings: &mut Settings) {
         *volume = round_to(*volume, 2);
     }
     settings.gameplay.hit_error_scale = round_to(settings.gameplay.hit_error_scale, 2);
+    settings.input.sensitivity = InputSettings::clean_sensitivity(settings.input.sensitivity);
     settings.timing.global_offset_ms = settings.timing.global_offset_ms.round();
 }
 
@@ -864,6 +920,13 @@ mod tests {
                 assert!(!text.starts_with("settings-"), "{language}: {text}");
                 assert!(!text.is_empty());
             }
+            for row in &labels.rows {
+                assert!(
+                    !row.hint.starts_with("settings-"),
+                    "{language}: {}",
+                    row.hint
+                );
+            }
             for (spec, row) in specs.iter().zip(&labels.rows) {
                 if let RowKind::Dropdown { options, .. } = spec.kind {
                     assert_eq!(row.options.len(), options);
@@ -882,5 +945,64 @@ mod tests {
         let draw = &labels.rows[index(Row::DrawHz)].options;
         assert_eq!(draw[0], "Без ограничения");
         assert!(draw.contains(&"240 Гц".to_owned()), "{draw:?}");
+    }
+
+    #[test]
+    fn the_mouse_rows_show_and_edit_the_input_settings() {
+        let (rows, mut settings) = rows();
+        settings.input.high_precision_mouse = true;
+        settings.input.sensitivity = 2.25;
+        let specs = rows.specs(&settings);
+        assert_eq!(
+            specs[index(Row::HighPrecisionMouse)].kind,
+            RowKind::Toggle { value: true }
+        );
+        assert!(matches!(
+            specs[index(Row::Sensitivity)].kind,
+            RowKind::Slider { min, max, step, value }
+                if min == 0.1 && max == 10.0 && step == 0.01 && value == 2.25
+        ));
+        assert_eq!(specs[index(Row::Sensitivity)].section, 2);
+        rows.apply(
+            &mut settings,
+            index(Row::Sensitivity),
+            RowValue::Slider(1.2300000000000002),
+        );
+        assert_eq!(settings.input.sensitivity, 1.23);
+        rows.apply(
+            &mut settings,
+            index(Row::Sensitivity),
+            RowValue::Slider(99.0),
+        );
+        assert_eq!(settings.input.sensitivity, 10.0);
+        rows.apply(
+            &mut settings,
+            index(Row::HighPrecisionMouse),
+            RowValue::Toggle(false),
+        );
+        assert!(!settings.input.high_precision_mouse);
+    }
+
+    #[test]
+    fn the_sensitivity_hint_and_unit_are_localised() {
+        let mut localizer = Localizer::builtin().unwrap();
+        localizer.set_language("en").unwrap();
+        let (rows, _) = rows();
+        let labels = rows.labels(&localizer);
+        let sensitivity = &labels.rows[index(Row::Sensitivity)];
+        assert_eq!(sensitivity.label, "Cursor sensitivity");
+        assert!(sensitivity.trim_zeros);
+        assert_eq!(sensitivity.unit, "\u{d7}");
+        assert_eq!(
+            sensitivity.hint,
+            "Enable high precision mouse to adjust sensitivity"
+        );
+        let toggle = &labels.rows[index(Row::HighPrecisionMouse)];
+        assert_eq!(toggle.label, "High precision mouse");
+        assert_eq!(
+            !toggle.hint.is_empty(),
+            cfg!(any(target_os = "linux", target_os = "macos"))
+        );
+        assert!(toggle.hint.lines().count() <= 2);
     }
 }

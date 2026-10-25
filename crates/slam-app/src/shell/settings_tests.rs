@@ -187,6 +187,7 @@ fn shell_with(link: crate::settings::saver::SaveLink) -> Shell {
         update_rate: AppliedUpdateRate::new(UpdateRateControl::new(), 1000.0),
         saver: Some(link),
         text_input: slam_input::TextInput::default(),
+        mouse: slam_input::MouseSettings::default(),
     }
 }
 
@@ -250,10 +251,21 @@ fn move_to(x: f32, y: f32) -> InputEvent {
     }
 }
 
-/// Opens the settings on the keys section, focusing the first key row (left, slot 1).
+/// Opens the settings on the keys section, focusing the first key row (left, slot 1), past
+/// the mouse toggles and the sensitivity.
 fn on_keys(s: &mut ShellState, snap: &mut ShellSnapshot) {
     opened(s, snap);
-    s.tick(LATER, &[key(KEY_TAB), key(KEY_TAB), key(KEY_DOWN)], snap);
+    s.tick(
+        LATER,
+        &[
+            key(KEY_TAB),
+            key(KEY_TAB),
+            key(KEY_DOWN),
+            key(KEY_DOWN),
+            key(KEY_DOWN),
+        ],
+        snap,
+    );
     assert_eq!(settings_screen(s).focus(), Row::LeftKey1 as usize);
 }
 
@@ -674,4 +686,85 @@ fn a_new_folder_brings_its_skins_and_survives_closing_the_screen() {
         s.settings().paths.songs.as_deref(),
         Some(std::path::Path::new("/picked/Songs"))
     );
+}
+
+/// Opens the settings on the keys section, focused on the high precision toggle.
+fn on_mouse_rows(s: &mut ShellState, snap: &mut ShellSnapshot) -> usize {
+    opened(s, snap);
+    s.tick(LATER, &[key(KEY_TAB), key(KEY_TAB), key(KEY_DOWN)], snap);
+    assert_eq!(settings_screen(s).focus(), Row::HighPrecisionMouse as usize);
+    Row::HighPrecisionMouse as usize
+}
+
+#[test]
+fn the_sensitivity_slider_is_locked_with_a_hint_until_high_precision_is_on() {
+    let mut s = state();
+    let mut snap = ShellSnapshot::default();
+    let toggle = on_mouse_rows(&mut s, &mut snap);
+    let slider = Row::Sensitivity as usize;
+    let off = !edited(&s).input.high_precision_mouse;
+    // Whatever the platform's default is, bring the toggle to off first.
+    if !off {
+        s.tick(LATER, &[key(KEY_ENTER)], &mut snap);
+    }
+    assert!(!edited(&s).input.high_precision_mouse);
+    assert!(settings_screen(&s).is_disabled(slider));
+    assert!(settings_screen(&s).is_hinted(slider));
+    assert!(!settings_screen(&s).is_hinted(toggle));
+    // The slider does not move while it is locked.
+    s.tick(LATER, &[key(KEY_DOWN), key(KEY_RIGHT)], &mut snap);
+    assert_eq!(edited(&s).input.sensitivity, 1.0);
+    // Turning high precision on unlocks it; the platform warning shows where it applies.
+    s.tick(LATER, &[key(KEY_UP), key(KEY_ENTER)], &mut snap);
+    assert!(edited(&s).input.high_precision_mouse);
+    assert!(!settings_screen(&s).is_disabled(slider));
+    assert!(!settings_screen(&s).is_hinted(slider));
+    assert_eq!(
+        settings_screen(&s).is_hinted(toggle),
+        cfg!(any(target_os = "linux", target_os = "macos"))
+    );
+    s.tick(LATER, &[key(KEY_DOWN), key(KEY_RIGHT)], &mut snap);
+    assert_eq!(edited(&s).input.sensitivity, 1.01);
+}
+
+#[test]
+fn the_screen_opens_with_the_states_of_the_saved_settings() {
+    let mut settings = Settings::default();
+    settings.input.high_precision_mouse = true;
+    let mut s = state().with_settings(settings);
+    let mut snap = ShellSnapshot::default();
+    opened(&mut s, &mut snap);
+    let slider = Row::Sensitivity as usize;
+    assert!(!settings_screen(&s).is_disabled(slider));
+    assert!(!settings_screen(&s).is_hinted(slider));
+}
+
+#[test]
+fn mouse_edits_reach_the_input_thread_at_once() {
+    let (link, _taken) = crate::settings::saver::detached(1);
+    let mut shell = shell_with(link);
+    let mut snap = ShellSnapshot::default();
+    let mouse = shell.mouse.clone();
+    shell.apply_settings(LATER);
+    assert_eq!(mouse.is_relative(), cfg!(target_os = "windows"));
+    assert_eq!(mouse.sensitivity(), 1.0);
+    on_mouse_rows(&mut shell.state, &mut snap);
+    if !edited(&shell.state).input.high_precision_mouse {
+        shell.state.tick(LATER, &[key(KEY_ENTER)], &mut snap);
+    }
+    shell.state.tick(
+        LATER,
+        &[key(KEY_DOWN), key(KEY_RIGHT), key(KEY_RIGHT)],
+        &mut snap,
+    );
+    // The screen is still open, nothing is committed.
+    assert!(shell.state.editing.is_some());
+    shell.apply_settings(LATER);
+    assert!(mouse.is_relative());
+    assert_eq!(mouse.sensitivity(), 1.02);
+    // Closing commits the edit; the thread keeps it.
+    shell.state.tick(LATER, &[key(KEY_ESCAPE)], &mut snap);
+    shell.apply_settings(LATER);
+    assert!(mouse.is_relative());
+    assert_eq!(mouse.sensitivity(), 1.02);
 }

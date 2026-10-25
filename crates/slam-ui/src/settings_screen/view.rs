@@ -11,6 +11,7 @@ use super::{
     Conflict, KeyValue, MAX_ROWS, MouseKey, RowKind, RowSpec, RowWidget, SettingsLayout,
     SettingsScreen, SettingsSnapshot,
 };
+use crate::menu::Rect;
 use crate::menu::view::{Frame, Line, Typesetter};
 use crate::screen::Pose;
 use crate::theme::{Theme, faded};
@@ -32,7 +33,18 @@ pub struct RowLabels {
     /// instead of `button`, which then is the placeholder for an empty value. At most one
     /// row of a screen does.
     pub shows_value: bool,
+    /// A slider shows its value without trailing zeros (`0.##`).
+    pub trim_zeros: bool,
+    /// A note on the row, shown while [`SettingsScreen::set_hint`] says so: in the room of
+    /// a slider (which is then not drawn), beside a toggle. Lines are split by `\n`, at
+    /// most [`MAX_HINT_LINES`]; each must fit the widget column on one line.
+    pub hint: String,
 }
+
+/// Most lines of a hint; more are dropped.
+pub const MAX_HINT_LINES: usize = 2;
+/// How much a disabled row is faded.
+const DISABLED_OPACITY: f32 = 0.5;
 
 /// The texts of key bindings and of the question about a taken key. The application
 /// formats them all when the screen opens, so that nothing is formatted later.
@@ -146,6 +158,8 @@ struct ValueButton {
 const VALUE_CAPACITY: usize = 512;
 const ELLIPSIS: char = '\u{2026}';
 
+// The views are built once and live in a `Vec`; boxing them would only add a hop per frame.
+#[allow(clippy::large_enum_variant)]
 enum RowView {
     Key,
     Button(Line),
@@ -167,6 +181,8 @@ pub struct SettingsView {
     /// Per row: its section, its position in it and whether it needs a restart.
     meta: Vec<(usize, usize, bool)>,
     views: Vec<RowView>,
+    /// Per row: the lines of its hint, empty without one.
+    hints: Vec<Vec<Line>>,
     value: Option<ValueButton>,
     keys: KeyLines,
 }
@@ -217,12 +233,15 @@ impl SettingsView {
                     RowKind::Key { .. } => RowView::Key,
                     RowKind::Button => RowView::Button(Line::new(&row.button)),
                     RowKind::Toggle { .. } => RowView::Toggle(ToggleView::new(theme)),
-                    RowKind::Slider { step, .. } => RowView::Slider(SliderView::new(
-                        Arc::clone(&registry),
-                        theme,
-                        decimals(step),
-                        &row.unit,
-                    )),
+                    RowKind::Slider { step, .. } => {
+                        let view = SliderView::new(
+                            Arc::clone(&registry),
+                            theme,
+                            decimals(step),
+                            &row.unit,
+                        );
+                        RowView::Slider(if row.trim_zeros { view.trimmed() } else { view })
+                    }
                     RowKind::Dropdown { .. } => RowView::Dropdown(DropdownView::new(
                         Arc::clone(&registry),
                         theme,
@@ -261,6 +280,18 @@ impl SettingsView {
             keys: KeyLines::new(&labels.keys),
             meta,
             views,
+            hints: (0..rows.len())
+                .map(|i| {
+                    labels
+                        .rows
+                        .get(i)
+                        .map_or("", |r| r.hint.as_str())
+                        .lines()
+                        .take(MAX_HINT_LINES)
+                        .map(Line::new)
+                        .collect()
+                })
+                .collect(),
             theme,
         };
         view.lay_out();
@@ -281,6 +312,10 @@ impl SettingsView {
             .lay_out(&mut self.marker, self.theme.settings_marker_size * scale);
         for line in self.keys.all_mut() {
             self.type_setter.lay_out(line, text);
+        }
+        let hint = self.theme.settings_marker_size * scale;
+        for line in self.hints.iter_mut().flatten() {
+            self.type_setter.lay_out(line, hint);
         }
         for view in &mut self.views {
             if let RowView::Button(line) = view {
@@ -363,6 +398,7 @@ impl SettingsView {
             .chain(&self.labels)
             .chain(std::iter::once(&self.marker))
             .chain(self.keys.all())
+            .chain(self.hints.iter().flatten())
             .flat_map(|line| line.layout.glyphs())
             .filter(|g| matches!(glyphs.glyph(GlyphKey::of(g)), Glyph::Pending))
             .count();
@@ -480,15 +516,27 @@ impl SettingsView {
                     faded(theme.row_hover_fill, opacity),
                 );
             }
+            let disabled = snapshot.disabled[i];
+            let hinted = snapshot.hinted[i] && !self.hints[i].is_empty();
             let label = layout.label(slot);
+            let label_colour = if disabled {
+                theme.disabled_text
+            } else {
+                theme.text
+            };
             push_left(
                 text,
                 &self.labels[i],
                 &label,
                 pad,
-                faded(theme.text, opacity),
+                faded(label_colour, opacity),
                 glyphs,
             );
+            let widget_opacity = if disabled {
+                opacity * DISABLED_OPACITY
+            } else {
+                opacity
+            };
             if restart {
                 push_right(
                     text,
@@ -525,11 +573,13 @@ impl SettingsView {
                 }
                 (RowView::Toggle(view), RowWidget::Toggle(toggle)) => {
                     let bounds = ToggleLayout::new(layout.row(slot), &theme, layout.scale);
-                    view.push(shapes, toggle, &bounds, opacity, white);
+                    view.push(shapes, toggle, &bounds, widget_opacity, white);
                 }
+                // A hint takes the room of the slider.
+                (RowView::Slider(_), RowWidget::Slider(_)) if hinted => {}
                 (RowView::Slider(view), RowWidget::Slider(slider)) => {
                     let bounds = SliderLayout::new(widget, &theme, layout.scale);
-                    view.push(shapes, text, glyphs, slider, &bounds, opacity, white);
+                    view.push(shapes, text, glyphs, slider, &bounds, widget_opacity, white);
                 }
                 (RowView::Dropdown(view), RowWidget::Dropdown(dropdown)) => {
                     if dropdown.is_open() {
@@ -540,6 +590,28 @@ impl SettingsView {
                     view.push(shapes, text, glyphs, dropdown, &bounds, opacity, white);
                 }
                 _ => {}
+            }
+            if hinted {
+                // The lines are stacked and centred in the widget column.
+                let lines = &self.hints[i];
+                let total: f32 = lines.iter().map(|l| l.layout.height()).sum();
+                let mut y = widget.y + (widget.height - total) / 2.0;
+                for line in lines {
+                    let rect = Rect {
+                        y,
+                        height: line.layout.height(),
+                        ..widget
+                    };
+                    push_left(
+                        text,
+                        line,
+                        &rect,
+                        pad,
+                        faded(theme.disabled_text, opacity),
+                        glyphs,
+                    );
+                    y += rect.height;
+                }
             }
         }
         if let Some(i) = open_row

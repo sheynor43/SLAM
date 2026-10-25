@@ -9,7 +9,8 @@
 //! [`InputWindow::new_opengl`] hands its [`GlContext`] to the draw thread.
 //! [`InputCounters`] count the main thread's wake-ups and queued events. A
 //! [`FolderDialog`] shows the OS folder picker from any thread. [`TextInput`] turns typed
-//! text ([`InputKind::Text`]) on and off from any thread.
+//! text ([`InputKind::Text`]) on and off from any thread. [`MouseSettings`] turns relative
+//! ("high precision") mouse mode on and sets its sensitivity (ADR-0069).
 
 mod clock;
 mod convert;
@@ -17,6 +18,7 @@ mod counters;
 mod dialog;
 mod event;
 mod gl;
+mod relative;
 mod ring;
 mod window;
 
@@ -29,5 +31,6 @@ pub use counters::InputCounters;
 pub use dialog::{FolderCallback, FolderDialog, FolderPick};
 pub use event::{InputEvent, InputKind, MouseButton, TextChunk};
 pub use gl::GlContext;
+pub use relative::{MAX_SENSITIVITY, MIN_SENSITIVITY, MouseSettings};
 pub use ring::{BUTTON_RESERVE, EventSink, EventSource, Notify, event_ring};
 pub use window::{CursorVisibility, InputWindow, QuitHandle, TextInput, WindowError, dispatch};

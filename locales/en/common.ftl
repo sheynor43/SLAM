@@ -132,6 +132,12 @@ settings-audio-backend = Audio backend
 settings-audio-buffer = Buffer size
 settings-offset-global = Global offset
 settings-keys-mouse-buttons = Mouse buttons in gameplay
+settings-input-high-precision = High precision mouse
+settings-input-sensitivity = Cursor sensitivity
+settings-input-high-precision-warning =
+    This setting has known issues on your platform. If you run into problems,
+    adjust sensitivity externally and keep this disabled for now.
+settings-input-sensitivity-hint = Enable high precision mouse to adjust sensitivity
 settings-frame-update-rate = Update rate
 settings-frame-draw-rate = Gameplay frame rate
 settings-frame-menu-draw-rate = Menu frame rate

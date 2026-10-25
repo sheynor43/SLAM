@@ -787,3 +787,63 @@ fn a_hotkey_cannot_take_menu_or_gameplay_screen_keys() {
     assert_eq!(loaded.status, LoadStatus::Recovered);
     assert_eq!(loaded.settings.hotkeys.toggle_fps, None);
 }
+
+#[test]
+fn mouse_defaults_follow_the_platform() {
+    let input = InputSettings::default();
+    assert_eq!(input.high_precision_mouse, cfg!(target_os = "windows"));
+    assert_eq!(input.sensitivity, 1.0);
+    let loaded = file::from_toml_str("[input]\n");
+    assert_eq!(loaded.status, LoadStatus::Ok, "{:?}", loaded.warnings);
+    assert_eq!(loaded.settings.input, input);
+}
+
+#[test]
+fn mouse_settings_parse() {
+    let loaded = file::from_toml_str("[input]\nhigh_precision_mouse = true\nsensitivity = 2.25\n");
+    assert_eq!(loaded.status, LoadStatus::Ok, "{:?}", loaded.warnings);
+    assert!(loaded.settings.input.high_precision_mouse);
+    assert_eq!(loaded.settings.input.sensitivity, 2.25);
+    let int = file::from_toml_str("[input]\nsensitivity = 3\n");
+    assert_eq!(int.settings.input.sensitivity, 3.0);
+}
+
+#[test]
+fn sensitivity_is_clamped_and_rounded_on_load() {
+    let rounded = file::from_toml_str("[input]\nsensitivity = 1.234\n");
+    assert_eq!(rounded.status, LoadStatus::Ok);
+    assert_eq!(rounded.settings.input.sensitivity, 1.23);
+    for (text, want) in [("0.0", 0.1), ("-4", 0.1), ("50", 10.0), ("10.004", 10.0)] {
+        let loaded = file::from_toml_str(&format!("[input]\nsensitivity = {text}\n"));
+        assert_eq!(loaded.settings.input.sensitivity, want, "{text}");
+    }
+    let clamped = file::from_toml_str("[input]\nsensitivity = 50\n");
+    assert!(
+        clamped
+            .warnings
+            .iter()
+            .any(|w| w.starts_with("input.sensitivity")),
+    );
+}
+
+#[test]
+fn invalid_mouse_values_fall_back_with_a_warning() {
+    let loaded =
+        file::from_toml_str("[input]\nhigh_precision_mouse = \"yes\"\nsensitivity = \"fast\"\n");
+    assert_eq!(loaded.status, LoadStatus::Recovered);
+    assert_eq!(loaded.settings.input, InputSettings::default());
+    assert_eq!(loaded.warnings.len(), 2, "{:?}", loaded.warnings);
+}
+
+#[test]
+fn mouse_settings_round_trip_next_to_the_bindings() {
+    let mut s = Settings::default();
+    s.input.high_precision_mouse = !s.input.high_precision_mouse;
+    s.input.sensitivity = 1.5;
+    let text = file::to_toml_string(&s).unwrap();
+    assert!(text.contains("sensitivity = 1.5"), "{text}");
+    assert!(text.contains("high_precision_mouse"), "{text}");
+    let loaded = file::from_toml_str(&text);
+    assert_eq!(loaded.status, LoadStatus::Ok, "{:?}", loaded.warnings);
+    assert_eq!(loaded.settings, s);
+}

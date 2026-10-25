@@ -224,6 +224,8 @@ pub struct SliderView {
     type_setter: Typesetter,
     scale: f32,
     decimals: usize,
+    /// Drop trailing zeros and a bare point, as `0.##` does.
+    trim_zeros: bool,
     unit: String,
     /// The value `value_line` shows (as bits, so that NaN-free comparison is exact).
     shown: Option<u64>,
@@ -257,6 +259,7 @@ impl SliderView {
             type_setter: Typesetter::new(registry, theme.font_weight),
             scale: 1.0,
             decimals,
+            trim_zeros: false,
             unit: unit.to_owned(),
             shown: None,
             value_line,
@@ -265,6 +268,13 @@ impl SliderView {
         };
         view.lay_out_charset();
         view
+    }
+
+    /// Shows the value without trailing zeros (`1`, `1.5`, `2.25` for two decimals), as
+    /// lazer's `0.##` format.
+    pub fn trimmed(mut self) -> SliderView {
+        self.trim_zeros = true;
+        self
     }
 
     fn lay_out_charset(&mut self) {
@@ -292,10 +302,19 @@ impl SliderView {
         self.value_line.text.clear();
         let _ = write!(
             self.value_line.text,
-            "{value:.decimals$}{unit}",
-            decimals = self.decimals,
-            unit = self.unit
+            "{value:.decimals$}",
+            decimals = self.decimals
         );
+        if self.trim_zeros && self.value_line.text.contains('.') {
+            let kept = self
+                .value_line
+                .text
+                .trim_end_matches('0')
+                .trim_end_matches('.');
+            let len = kept.len();
+            self.value_line.text.truncate(len);
+        }
+        self.value_line.text.push_str(&self.unit);
         let size = self.theme.widget_text_size * self.scale;
         self.type_setter.lay_out(&mut self.value_line, size);
     }
@@ -355,5 +374,43 @@ impl SliderView {
             faded(theme.text, opacity),
             glyphs,
         );
+    }
+}
+
+#[cfg(test)]
+mod view_tests {
+    use super::*;
+
+    fn shown(view: &mut SliderView, value: f64) -> String {
+        view.update_text(value);
+        view.value_line.text.clone()
+    }
+
+    #[test]
+    fn a_fixed_view_keeps_its_zeros() {
+        let registry = Arc::new(FontRegistry::with_builtin());
+        let mut view = SliderView::new(registry, Theme::default(), 2, "x");
+        assert_eq!(shown(&mut view, 1.0), "1.00x");
+        assert_eq!(shown(&mut view, 1.5), "1.50x");
+    }
+
+    #[test]
+    fn a_trimmed_view_drops_trailing_zeros_like_the_0_dot_hash_format() {
+        let registry = Arc::new(FontRegistry::with_builtin());
+        let mut view = SliderView::new(registry, Theme::default(), 2, "x").trimmed();
+        assert_eq!(shown(&mut view, 1.0), "1x");
+        assert_eq!(shown(&mut view, 1.5), "1.5x");
+        assert_eq!(shown(&mut view, 2.25), "2.25x");
+        assert_eq!(shown(&mut view, 10.0), "10x");
+        assert_eq!(shown(&mut view, 0.1), "0.1x");
+        assert_eq!(shown(&mut view, 0.0), "0x");
+    }
+
+    #[test]
+    fn a_trimmed_view_without_decimals_keeps_whole_numbers() {
+        let registry = Arc::new(FontRegistry::with_builtin());
+        let mut view = SliderView::new(registry, Theme::default(), 0, "").trimmed();
+        assert_eq!(shown(&mut view, 100.0), "100");
+        assert_eq!(shown(&mut view, 0.0), "0");
     }
 }

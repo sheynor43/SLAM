@@ -705,3 +705,57 @@ fn swap_dropdown_swaps_only_a_dropdown_row_view() {
     assert!(!view.swap_dropdown(0, &mut new));
     assert!(format!("{new:?}").contains("options: 2"));
 }
+
+#[test]
+fn a_disabled_slider_or_toggle_ignores_input() {
+    let mut s = screen();
+    // Row 0 is the slider, row 1 the toggle.
+    s.set_disabled(0, true);
+    assert!(s.is_disabled(0));
+    assert_eq!(input(&mut s, SettingsInput::Right), None);
+    let l = layout();
+    let slot = s.slot(0);
+    let (x, y) = (
+        l.widget(slot).x + 5.0,
+        l.widget(slot).y + l.widget(slot).height / 2.0,
+    );
+    assert_eq!(input(&mut s, SettingsInput::PointerPress { x, y }), None);
+    assert_eq!(input(&mut s, SettingsInput::PointerRelease), None);
+    assert!(
+        matches!(s.widget(0), Some(RowWidget::Slider(w)) if w.value() == 50.0 && !w.is_dragging())
+    );
+    // The focus still moves over it, and it works again once enabled.
+    input(&mut s, SettingsInput::Down);
+    s.set_disabled(1, true);
+    assert_eq!(input(&mut s, SettingsInput::Activate), None);
+    s.set_disabled(1, false);
+    assert!(matches!(
+        input(&mut s, SettingsInput::Activate),
+        Some(SettingsAction::Changed {
+            row: 1,
+            value: RowValue::Toggle(true)
+        })
+    ));
+    s.set_disabled(0, false);
+    input(&mut s, SettingsInput::Up);
+    assert!(matches!(
+        input(&mut s, SettingsInput::Right),
+        Some(SettingsAction::Changed { row: 0, .. })
+    ));
+}
+
+#[test]
+fn disabled_and_hint_flags_reach_the_snapshot_and_ignore_unknown_rows() {
+    let mut s = screen();
+    s.set_disabled(2, true);
+    s.set_hint(2, true);
+    s.set_disabled(99, true);
+    s.set_hint(99, true);
+    let snapshot = s.snapshot();
+    assert!(snapshot.disabled[2] && snapshot.hinted[2]);
+    assert!(!snapshot.disabled[0] && !snapshot.hinted[0]);
+    assert!(!s.is_disabled(99) && !s.is_hinted(99));
+    assert!(s.is_hinted(2));
+    s.set_hint(2, false);
+    assert!(!s.snapshot().hinted[2]);
+}

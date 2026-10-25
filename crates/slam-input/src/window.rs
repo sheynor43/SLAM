@@ -3,21 +3,28 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex, PoisonError};
 
 use sdl3_sys::events::{
-    SDL_EVENT_QUIT, SDL_EVENT_WINDOW_PIXEL_SIZE_CHANGED, SDL_Event, SDL_EventType, SDL_PushEvent,
-    SDL_QuitEvent, SDL_RegisterEvents, SDL_WaitEvent,
+    SDL_EVENT_MOUSE_MOTION, SDL_EVENT_QUIT, SDL_EVENT_WINDOW_ENTER_FULLSCREEN,
+    SDL_EVENT_WINDOW_FOCUS_GAINED, SDL_EVENT_WINDOW_FOCUS_LOST, SDL_EVENT_WINDOW_LEAVE_FULLSCREEN,
+    SDL_EVENT_WINDOW_MOUSE_ENTER, SDL_EVENT_WINDOW_MOUSE_LEAVE,
+    SDL_EVENT_WINDOW_PIXEL_SIZE_CHANGED, SDL_EVENT_WINDOW_RESIZED, SDL_Event, SDL_EventType,
+    SDL_PushEvent, SDL_QuitEvent, SDL_RegisterEvents, SDL_WaitEvent,
 };
-use sdl3_sys::hints::{SDL_HINT_INVALID_PARAM_CHECKS, SDL_SetHint};
+use sdl3_sys::hints::{SDL_HINT_INVALID_PARAM_CHECKS, SDL_HINT_MOUSE_AUTO_CAPTURE, SDL_SetHint};
 use sdl3_sys::init::{SDL_INIT_VIDEO, SDL_Init, SDL_Quit};
 use sdl3_sys::keyboard::{SDL_StartTextInput, SDL_StopTextInput};
-use sdl3_sys::mouse::{SDL_HideCursor, SDL_ShowCursor};
+use sdl3_sys::mouse::{
+    SDL_HideCursor, SDL_SetWindowRelativeMouseMode, SDL_ShowCursor, SDL_WarpMouseInWindow,
+};
 use sdl3_sys::video::{
-    SDL_CreateWindow, SDL_DestroyWindow, SDL_GetCurrentVideoDriver, SDL_GetWindowSizeInPixels,
-    SDL_SetWindowFullscreen, SDL_WINDOW_HIGH_PIXEL_DENSITY, SDL_WINDOW_OPENGL,
-    SDL_WINDOW_RESIZABLE, SDL_Window, SDL_WindowFlags,
+    SDL_CreateWindow, SDL_DestroyWindow, SDL_GetCurrentVideoDriver, SDL_GetWindowFlags,
+    SDL_GetWindowSize, SDL_GetWindowSizeInPixels, SDL_SetWindowFullscreen, SDL_WINDOW_FULLSCREEN,
+    SDL_WINDOW_HIGH_PIXEL_DENSITY, SDL_WINDOW_INPUT_FOCUS, SDL_WINDOW_MOUSE_FOCUS,
+    SDL_WINDOW_OPENGL, SDL_WINDOW_RESIZABLE, SDL_Window, SDL_WindowFlags,
 };
 
 use crate::dialog::{self, FolderDialog};
 use crate::gl::{self, GlContext, PixelSize};
+use crate::relative::{Change, MouseSettings, RelativeMouse};
 use crate::{EventSink, InputCounters, InputEvent, TickMapper, convert, convert_text};
 
 /// SDL supports a single initialisation per process at a time.
@@ -67,6 +74,11 @@ pub struct InputWindow {
     text_wanted: Arc<AtomicBool>,
     /// Whether SDL delivers it now.
     text_applied: bool,
+    /// Relative mode and sensitivity, set by any thread (ADR-0069).
+    mouse_settings: MouseSettings,
+    /// The relative mode setting applied last.
+    relative_applied: bool,
+    relative: RelativeMouse,
     /// The SDL event type of [`FolderDialog`] requests; 0 when none could be registered.
     dialog_event: u32,
 }
@@ -204,6 +216,19 @@ impl InputWindow {
         }
         // SAFETY: SDL is initialised. Returns 0 when no event types are left.
         let dialog_event = unsafe { SDL_RegisterEvents(1) };
+        // SAFETY: `window` is valid.
+        let window_flags = unsafe { SDL_GetWindowFlags(window) };
+        let (mut w, mut h) = (width, height);
+        // SAFETY: `window` is valid; `w` and `h` are valid out pointers. On failure the
+        // requested size stands.
+        unsafe { SDL_GetWindowSize(window, &mut w, &mut h) };
+        let mut relative = RelativeMouse::new(
+            window_flags.0 & SDL_WINDOW_INPUT_FOCUS.0 != 0,
+            window_flags.0 & SDL_WINDOW_MOUSE_FOCUS.0 != 0,
+            [w as f32, h as f32],
+        );
+        // Off at this point, so nothing to apply.
+        relative.set_confined(window_flags.0 & SDL_WINDOW_FULLSCREEN.0 != 0);
         Ok(Self {
             window,
             opengl,
@@ -214,6 +239,9 @@ impl InputWindow {
             cursor_applied: false,
             text_wanted: Arc::default(),
             text_applied: false,
+            mouse_settings: MouseSettings::default(),
+            relative_applied: false,
+            relative,
             dialog_event,
         })
     }
@@ -319,6 +347,68 @@ impl InputWindow {
         }
     }
 
+    /// A handle that turns relative mouse mode on and sets its sensitivity.
+    pub fn mouse_settings(&self) -> MouseSettings {
+        self.mouse_settings.clone()
+    }
+
+    /// Applies the relative mode setting and the OS cursor's visibility to
+    /// [`RelativeMouse`]. Without the setting SDL captures the mouse while a button is
+    /// held (its default); with it, capture is off, since SDL then sends no
+    /// enter/leave and relative mode would not come back, as osu-framework's
+    /// `MouseAutoCapture`.
+    fn apply_mouse(&mut self) {
+        let relative = self.mouse_settings.is_relative();
+        if relative != self.relative_applied {
+            let capture = if relative { c"0" } else { c"1" };
+            // SAFETY: valid C strings; hints may be set at any time.
+            unsafe { SDL_SetHint(SDL_HINT_MOUSE_AUTO_CAPTURE, capture.as_ptr()) };
+            self.relative_applied = relative;
+            let change = self.relative.set_enabled(relative);
+            self.apply_change(change);
+        }
+        let change = self.relative.set_cursor_hidden(self.cursor_applied);
+        self.apply_change(change);
+    }
+
+    /// Does what [`RelativeMouse`] asked: relative mode first, then the OS cursor.
+    fn apply_change(&mut self, change: Change) {
+        if let Some(on) = change.relative {
+            // SAFETY: `window` is valid and this is the thread that owns it.
+            let done = unsafe { SDL_SetWindowRelativeMouseMode(self.window, on) };
+            if on && !done {
+                self.relative.rejected();
+            }
+        }
+        if let Some([x, y]) = change.warp {
+            // SAFETY: `window` is valid and this is the thread that owns it.
+            unsafe { SDL_WarpMouseInWindow(self.window, x, y) };
+        }
+    }
+
+    /// Window events [`RelativeMouse`] follows. Returns whether `event` was one.
+    fn follow_window(&mut self, event: &SDL_Event) -> bool {
+        // SAFETY: `type` is the common prefix of every SDL_Event variant.
+        let change = match SDL_EventType(unsafe { event.r#type }) {
+            SDL_EVENT_WINDOW_FOCUS_GAINED => self.relative.set_focused(true),
+            SDL_EVENT_WINDOW_FOCUS_LOST => self.relative.set_focused(false),
+            SDL_EVENT_WINDOW_MOUSE_ENTER => self.relative.set_cursor_in_window(true),
+            SDL_EVENT_WINDOW_MOUSE_LEAVE => self.relative.set_cursor_in_window(false),
+            SDL_EVENT_WINDOW_ENTER_FULLSCREEN => self.relative.set_confined(true),
+            SDL_EVENT_WINDOW_LEAVE_FULLSCREEN => self.relative.set_confined(false),
+            SDL_EVENT_WINDOW_RESIZED => {
+                // SAFETY: the event type says this is a window event.
+                let window = unsafe { event.window };
+                self.relative
+                    .set_size(window.data1 as f32, window.data2 as f32);
+                Change::default()
+            }
+            _ => return false,
+        };
+        self.apply_change(change);
+        true
+    }
+
     /// A handle that makes [`InputWindow::run`] return as if the window was closed.
     pub fn quit_handle(&self) -> QuitHandle {
         QuitHandle {
@@ -349,6 +439,7 @@ impl InputWindow {
         loop {
             self.apply_cursor();
             self.apply_text_input();
+            self.apply_mouse();
             // SAFETY: SDL is initialised on this thread; `event` is a valid out pointer.
             if !unsafe { SDL_WaitEvent(&mut event) } {
                 return Err(WindowError::WaitEvent(sdl_error()));
@@ -369,6 +460,29 @@ impl InputWindow {
                     let window = unsafe { event.window };
                     self.size.store(window.data1, window.data2);
                 }
+                SDL_EVENT_MOUSE_MOTION => {
+                    // SAFETY: the event type says this is a motion event.
+                    let motion = unsafe { &mut event.motion };
+                    let sensitivity = self.mouse_settings.sensitivity();
+                    let ([x, y], change) = self.relative.motion(
+                        [motion.x, motion.y],
+                        [motion.xrel, motion.yrel],
+                        sensitivity,
+                    );
+                    // Consumers see the position the game tracks (ADR-0069).
+                    motion.x = x;
+                    motion.y = y;
+                    // When relative mode turns off, SDL first restores the OS cursor to
+                    // its own position (kept inside the window), then the warp below
+                    // moves it to ours: one motion event jumps, as in osu-framework.
+                    // SAFETY: `event` came from SDL_WaitEvent just now; the next poll is
+                    // after this call.
+                    if unsafe { dispatch(&event, sink, mapper) } {
+                        self.counters.record_queued();
+                    }
+                    self.apply_change(change);
+                }
+                _ if self.follow_window(&event) => {}
                 _ => {
                     // SAFETY: `event` came from SDL_WaitEvent just now; the next poll is
                     // after this call.
@@ -425,6 +539,9 @@ impl Drop for InputWindow {
             // thread: leak the window and SDL rather than destroy them under it.
             return;
         }
+        // Leave the OS cursor where the game's was, as osu-framework's `Window.Exited`.
+        let change = self.relative.set_enabled(false);
+        self.apply_change(change);
         // SAFETY: SDL is still initialised on this thread, and no request is shown after
         // `alive` was cleared above.
         if self.dialog_event != 0 {

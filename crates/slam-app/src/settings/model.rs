@@ -290,12 +290,49 @@ impl BindingEntry {
 pub const BINDING_SLOTS: usize = 2;
 
 /// Input settings. The bindings have a fixed capacity, so editing them allocates nothing.
-#[derive(Clone, Copy, Debug, Default, PartialEq)]
+#[derive(Clone, Copy, Debug, PartialEq)]
 pub struct InputSettings {
     pub bindings: Bindings,
+    /// Relative ("high precision") mouse mode (ADR-0069). On by default on Windows only,
+    /// as in lazer.
+    pub high_precision_mouse: bool,
+    /// The multiplier of relative mouse motion, [`InputSettings::SENSITIVITY_RANGE`] in
+    /// steps of [`InputSettings::SENSITIVITY_STEP`].
+    pub sensitivity: f64,
+}
+
+impl Default for InputSettings {
+    fn default() -> InputSettings {
+        InputSettings {
+            bindings: Bindings::default(),
+            high_precision_mouse: cfg!(target_os = "windows"),
+            sensitivity: 1.0,
+        }
+    }
 }
 
 impl InputSettings {
+    /// The sensitivities lazer's slider offers.
+    pub const SENSITIVITY_RANGE: std::ops::RangeInclusive<f64> = 0.1..=10.0;
+    /// Its precision (`BindableDouble.Precision`).
+    pub const SENSITIVITY_STEP: f64 = 0.01;
+
+    /// `value` clamped to [`InputSettings::SENSITIVITY_RANGE`] and rounded to its step.
+    /// NaN gives the default, 1.
+    pub fn clean_sensitivity(value: f64) -> f64 {
+        if value.is_nan() {
+            return 1.0;
+        }
+        let clamped = value.clamp(
+            *Self::SENSITIVITY_RANGE.start(),
+            *Self::SENSITIVITY_RANGE.end(),
+        );
+        ((clamped / Self::SENSITIVITY_STEP).round() * Self::SENSITIVITY_STEP).clamp(
+            *Self::SENSITIVITY_RANGE.start(),
+            *Self::SENSITIVITY_RANGE.end(),
+        )
+    }
+
     /// The index in the list of `action`'s binding number `slot`.
     fn slot_index(&self, action: Actions, slot: usize) -> Option<usize> {
         self.bindings
@@ -392,7 +429,10 @@ impl Serialize for InputSettings {
             }
         }
 
-        let mut state = serializer.serialize_struct("InputSettings", 1)?;
+        let mut state = serializer.serialize_struct("InputSettings", 3)?;
+        // The array of tables goes last: TOML wants the plain values before it.
+        state.serialize_field("high_precision_mouse", &self.high_precision_mouse)?;
+        state.serialize_field("sensitivity", &self.sensitivity)?;
         state.serialize_field("bindings", &Entries(self.bindings.as_slice()))?;
         state.end()
     }

@@ -385,6 +385,10 @@ pub struct SettingsSnapshot {
     pub conflict: Option<Conflict>,
     /// The text of the button row that shows a value (see [`RowLabels::shows_value`]).
     pub value_text: Arc<str>,
+    /// Per row: it cannot be changed; the draw side dims it.
+    pub disabled: [bool; MAX_ROWS],
+    /// Per row: its hint text ([`RowLabels::hint`]) is shown.
+    pub hinted: [bool; MAX_ROWS],
 }
 
 /// The screen's state on the update thread.
@@ -398,6 +402,8 @@ pub struct SettingsScreen {
     section: usize,
     conflict: Option<Conflict>,
     value_text: Arc<str>,
+    disabled: [bool; MAX_ROWS],
+    hinted: [bool; MAX_ROWS],
 }
 
 impl SettingsScreen {
@@ -440,6 +446,8 @@ impl SettingsScreen {
             section: 0,
             conflict: None,
             value_text: Arc::from(""),
+            disabled: [false; MAX_ROWS],
+            hinted: [false; MAX_ROWS],
         };
         screen.focus = screen.first_row(0).unwrap_or(0);
         screen
@@ -471,7 +479,34 @@ impl SettingsScreen {
             section: self.section,
             conflict: self.conflict,
             value_text: Arc::clone(&self.value_text),
+            disabled: self.disabled,
+            hinted: self.hinted,
         }
+    }
+
+    /// Makes toggle or slider row `row` unchangeable (or changeable again): input to it is
+    /// ignored and it is drawn dimmed. Rows of other kinds and unknown rows are left alone.
+    pub fn set_disabled(&mut self, row: usize, disabled: bool) {
+        if row < self.len {
+            self.disabled[row] = disabled;
+        }
+    }
+
+    /// Whether row `row` is unchangeable.
+    pub fn is_disabled(&self, row: usize) -> bool {
+        self.disabled.get(row).copied().unwrap_or(false) && row < self.len
+    }
+
+    /// Shows or hides the hint text of row `row` ([`RowLabels::hint`]).
+    pub fn set_hint(&mut self, row: usize, shown: bool) {
+        if row < self.len {
+            self.hinted[row] = shown;
+        }
+    }
+
+    /// Whether the hint of row `row` is shown.
+    pub fn is_hinted(&self, row: usize) -> bool {
+        self.hinted.get(row).copied().unwrap_or(false) && row < self.len
     }
 
     /// Sets the text of the button row that shows a value (an empty text shows the row's
@@ -611,7 +646,9 @@ impl SettingsScreen {
         layout: &SettingsLayout,
     ) -> Option<SettingsAction> {
         let slot = self.slot(row);
+        let disabled = self.disabled[row];
         let value = match &mut self.widgets[row] {
+            RowWidget::Toggle(_) | RowWidget::Slider(_) if disabled => return None,
             RowWidget::Key(key) => {
                 let input = match input {
                     SettingsInput::Activate => KeyBindInput::Activate,

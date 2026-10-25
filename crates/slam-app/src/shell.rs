@@ -19,8 +19,8 @@ use slam_engine::{
     UpdateRateControl,
 };
 use slam_input::{
-    CursorVisibility, InputEvent, InputKind, InputWindow, MouseButton, TextInput, TickMapper,
-    event_ring, sdl_ticks_ns,
+    CursorVisibility, InputEvent, InputKind, InputWindow, MouseButton, MouseSettings, TextInput,
+    TickMapper, event_ring, sdl_ticks_ns,
 };
 use slam_osu::Difficulty;
 use slam_osu::mods::{
@@ -68,7 +68,7 @@ use crate::play::scene::{CHANNELS, PlayScene, PlaySettings, Prepared, SAMPLE_RAT
 use crate::play::{device_limits, pack_size};
 use crate::replays::{ReplayBeatmap, ReplayJob};
 use crate::settings::saver::SaveLink;
-use crate::settings::{Dirs, Settings};
+use crate::settings::{Dirs, InputSettings, Settings};
 use crate::songs::{FolderChange, SkinViews, SongFiles, SongsLink};
 
 mod draw_rate;
@@ -427,6 +427,12 @@ impl ShellState {
     /// The settings in force.
     pub fn settings(&self) -> &Settings {
         &self.settings
+    }
+
+    /// The input settings the input thread follows: the open settings screen's edits, else
+    /// the ones in force.
+    pub fn live_input(&self) -> &InputSettings {
+        &self.editing.as_ref().unwrap_or(&self.settings).input
     }
 
     /// The options of the settings screen's rows.
@@ -1055,6 +1061,7 @@ impl ShellState {
                         Some(SettingsAction::Changed { row, value }) => {
                             if let Some(editing) = &mut self.editing {
                                 self.rows.apply(editing, row, value);
+                                Rows::refresh(screen, editing);
                             }
                             None
                         }
@@ -1180,6 +1187,7 @@ fn open_settings(
 ) -> AppScreen {
     *editing = Some(settings.clone());
     let mut screen = SettingsScreen::new(&rows.specs(settings), SECTIONS);
+    Rows::refresh(&mut screen, settings);
     screen.set_value_text(Arc::clone(songs_folder));
     AppScreen::Settings(Box::new(screen))
 }
@@ -1742,6 +1750,8 @@ struct Shell {
     saver: Option<SaveLink>,
     /// Typed text is on in the menus and off during plays (ADR-0065).
     text_input: TextInput,
+    /// Relative mouse mode and sensitivity, for the input thread (ADR-0069).
+    mouse: MouseSettings,
 }
 
 impl Shell {
@@ -1751,6 +1761,10 @@ impl Shell {
     fn apply_settings(&mut self, now_ns: u64) {
         let settings = self.state.settings();
         self.update_rate.sync(settings);
+        // The settings screen's edits count at once, not when it closes.
+        let input = self.state.live_input();
+        self.mouse.set_relative(input.high_precision_mouse);
+        self.mouse.set_sensitivity(input.sensitivity);
         if let Some(host) = &mut self.host {
             host.apply_settings(settings);
         }
@@ -2494,6 +2508,12 @@ pub fn run(settings: Settings) -> Result<(), String> {
         points_per_pixel,
         exited: Arc::clone(&exited),
         text_input: window.text_input(),
+        mouse: {
+            let mouse = window.mouse_settings();
+            mouse.set_relative(settings.input.high_precision_mouse);
+            mouse.set_sensitivity(settings.input.sensitivity);
+            mouse
+        },
         draw_rate: draw_rate.clone(),
         rate_switch: DrawRateSwitch::new(menu_rate),
         update_rate: AppliedUpdateRate::new(update_rate.clone(), settings.frame.update_hz),
