@@ -20,7 +20,7 @@ use slam_engine::{
 };
 use slam_input::{
     CursorVisibility, InputEvent, InputKind, InputWindow, MouseButton, MouseSettings, TextInput,
-    TickMapper, event_ring, sdl_ticks_ns,
+    TickMapper, WindowMode, WindowScale, WindowSettings, WindowState, event_ring, sdl_ticks_ns,
 };
 use slam_osu::Difficulty;
 use slam_osu::mods::{
@@ -89,7 +89,6 @@ pub const USAGE: &str = "usage: slam-app [--songs DIR]\n\
                          the folder of beatmap sets (as stable's Songs) and overrides \
                          paths.songs of slam.toml";
 
-const WINDOW: (i32, i32) = (1280, 720);
 /// Textures of the draw thread: the white square, the glyph pages and the song select's
 /// backgrounds.
 const MAX_TEXTURES: usize = 16 + MAX_BACKGROUNDS as usize;
@@ -705,6 +704,27 @@ impl ShellState {
         }
     }
 
+    /// The window switched itself to `mode` (Alt+Enter, F11): keeps it in the settings
+    /// and saves them, as lazer's `CycleMode` changes its `WindowMode` setting. Allocates
+    /// for the save: a rare action of the player, as [`ShellState::toggle_fps`].
+    /// An open settings screen's copy follows on its own, or closing the screen would
+    /// switch back.
+    pub fn window_mode_switched(&mut self, mode: WindowMode) {
+        if let Some(editing) = &mut self.editing {
+            editing.window.mode = mode;
+        }
+        if self.settings.window.mode == mode {
+            return;
+        }
+        self.settings.window.mode = mode;
+        self.save_request = Some(Box::new(self.settings.clone()));
+    }
+
+    /// Input points now map to `pixels_per_point` layout pixels.
+    pub fn set_pixels_per_point(&mut self, pixels_per_point: f32) {
+        self.pixels_per_point = pixels_per_point;
+    }
+
     /// Whether `kind` presses the FPS counter's hotkey.
     fn is_toggle_fps(&self, kind: InputKind) -> bool {
         let pressed = match kind {
@@ -951,6 +971,10 @@ impl ShellState {
     /// the first exit.
     pub fn handle(&mut self, events: &[InputEvent], now_ns: u64) -> Navigated {
         for event in events {
+            // The shell takes window modes from the window itself (`Shell::sync_window`).
+            if let InputKind::WindowMode(_) = event.kind {
+                continue;
+            }
             if let InputKind::Text(text) = event.kind {
                 self.type_text(text.as_str());
                 continue;
@@ -1737,8 +1761,10 @@ struct Shell {
     /// Surface size in pixels the draw thread last drew at, see [`pack_size`].
     surface: Arc<AtomicU64>,
     layout_size: u64,
-    /// Input arrives in window points, the surface is in pixels.
-    points_per_pixel: f32,
+    /// The window's pixels per point: input arrives in points, the surface is in pixels.
+    scale: WindowScale,
+    /// The scale the layouts were made for.
+    pixels_per_point: f32,
     /// Set when the menu quits; the window closes then.
     exited: Arc<AtomicBool>,
     /// Changes the draw thread's rate (ADR-0047).
@@ -1752,9 +1778,56 @@ struct Shell {
     text_input: TextInput,
     /// Relative mouse mode and sensitivity, for the input thread (ADR-0069).
     mouse: MouseSettings,
+    /// Mode, display and sizes of the window, for the input thread (ADR-0070).
+    window: WindowSettings,
+    /// The window state last handed to `window`, or switched to by the window itself.
+    window_sent: WindowState,
 }
 
 impl Shell {
+    /// Remakes the layouts when the surface size or the window's scale changed.
+    fn follow_surface(&mut self) {
+        let size = self.surface.load(Ordering::Relaxed);
+        let ppp = self.scale.pixels_per_point();
+        // A minimised window may report 0×0: keep the last layout.
+        if (size != self.layout_size || ppp != self.pixels_per_point)
+            && size >> 32 != 0
+            && size & 0xffff_ffff != 0
+        {
+            self.layout_size = size;
+            self.pixels_per_point = ppp;
+            let (w, h) = ((size >> 32) as f32, (size & 0xffff_ffff) as f32);
+            self.state.set_pixels_per_point(ppp);
+            self.state.set_size(w, h);
+            if let Some(host) = &mut self.host {
+                host.set_size(w / ppp, h / ppp);
+            }
+        }
+    }
+
+    /// Keeps the window and the settings in step (ADR-0070). The window's wish word is
+    /// the truth: a mode the window switched to by itself (Alt+Enter, F11) is taken into
+    /// the settings even if its [`InputKind::WindowMode`] report was lost to a full ring,
+    /// and a settings change racing a switch loses to it rather than overwriting it.
+    /// One atomic load per tick; a lock and an allocation only on changes.
+    fn sync_window(&mut self) {
+        let actual = self.window.get();
+        if actual != self.window_sent {
+            self.window_sent = actual;
+            self.state.window_mode_switched(actual.mode);
+        }
+        let wanted = self.state.settings().window.state();
+        if wanted != self.window_sent {
+            match self.window.compare_and_set(self.window_sent, wanted) {
+                Ok(stored) => self.window_sent = stored,
+                Err(found) => {
+                    self.window_sent = found;
+                    self.state.window_mode_switched(found.mode);
+                }
+            }
+        }
+    }
+
     /// Asks for the draw rate the visible screens call for, hands changed settings to the
     /// threads that use them (ADR-0048) and to the saver. Neither blocks, allocates or
     /// touches the disk.
@@ -1768,6 +1841,7 @@ impl Shell {
         if let Some(host) = &mut self.host {
             host.apply_settings(settings);
         }
+        self.sync_window();
         let gameplay = self.state.gameplay_visible(now_ns);
         if let Some(mode) = self
             .rate_switch
@@ -1789,17 +1863,7 @@ impl Update for Shell {
     type Snapshot = ShellSnapshot;
 
     fn tick(&mut self, info: &TickInfo, events: &[InputEvent], snapshot: &mut ShellSnapshot) {
-        let size = self.surface.load(Ordering::Relaxed);
-        // A minimised window may report 0×0: keep the last layout.
-        if size != self.layout_size && size >> 32 != 0 && size & 0xffff_ffff != 0 {
-            self.layout_size = size;
-            let (w, h) = ((size >> 32) as f32, (size & 0xffff_ffff) as f32);
-            self.state.set_size(w, h);
-            if let Some(host) = &mut self.host {
-                let ppp = self.points_per_pixel;
-                host.set_size(w * ppp, h * ppp);
-            }
-        }
+        self.follow_surface();
         // Between the exit and the window closing, input no longer navigates.
         if self.exited.load(Ordering::Relaxed) {
             return;
@@ -2281,14 +2345,11 @@ fn with_songs(mut settings: Settings, songs: Option<PathBuf>) -> Settings {
 pub fn run(settings: Settings) -> Result<(), String> {
     let theme = Theme::default();
     let mut window =
-        InputWindow::new_opengl("SLAM", WINDOW.0, WINDOW.1).map_err(|e| e.to_string())?;
+        InputWindow::new_opengl_in("SLAM", settings.window.state()).map_err(|e| e.to_string())?;
     let surface = SdlGlSurface(window.create_gl_context().map_err(|e| e.to_string())?);
     let (pixels_w, pixels_h) = surface.0.size_in_pixels();
-    let pixels_per_point = if pixels_w > 0 {
-        pixels_w as f32 / WINDOW.0 as f32
-    } else {
-        1.0
-    };
+    let scale = window.window_scale();
+    let pixels_per_point = scale.pixels_per_point();
     let initial_size = pack_size(pixels_w, pixels_h);
     let surface_size = Arc::new(AtomicU64::new(initial_size));
     let (surface, limits) = device_limits(surface)?;
@@ -2475,7 +2536,6 @@ pub fn run(settings: Settings) -> Result<(), String> {
             (None, None)
         }
     };
-    let points_per_pixel = 1.0 / pixels_per_point;
     let host = audio.map(|audio| PlayHost {
         audio,
         loader,
@@ -2487,8 +2547,8 @@ pub fn run(settings: Settings) -> Result<(), String> {
         track_reset: false,
         next_request: 0,
         points: [
-            pixels_w as f32 * points_per_pixel,
-            pixels_h as f32 * points_per_pixel,
+            pixels_w as f32 / pixels_per_point,
+            pixels_h as f32 / pixels_per_point,
         ],
         input: PlayInput::new(&settings),
         beatmap_offsets: HashMap::new(),
@@ -2505,7 +2565,8 @@ pub fn run(settings: Settings) -> Result<(), String> {
         host,
         surface: Arc::clone(&surface_size),
         layout_size: initial_size,
-        points_per_pixel,
+        scale,
+        pixels_per_point,
         exited: Arc::clone(&exited),
         text_input: window.text_input(),
         mouse: {
@@ -2514,6 +2575,8 @@ pub fn run(settings: Settings) -> Result<(), String> {
             mouse.set_sensitivity(settings.input.sensitivity);
             mouse
         },
+        window: window.window_settings(),
+        window_sent: settings.window.state(),
         draw_rate: draw_rate.clone(),
         rate_switch: DrawRateSwitch::new(menu_rate),
         update_rate: AppliedUpdateRate::new(update_rate.clone(), settings.frame.update_hz),

@@ -180,7 +180,8 @@ fn shell_with(link: crate::settings::saver::SaveLink) -> Shell {
         host: None,
         surface: Arc::new(AtomicU64::new(0)),
         layout_size: 0,
-        points_per_pixel: 1.0,
+        scale: slam_input::WindowScale::default(),
+        pixels_per_point: 1.0,
         exited: Arc::new(AtomicBool::new(false)),
         draw_rate: DrawRateControl::new(),
         rate_switch: DrawRateSwitch::new(LimiterMode::Hz(1000.0)),
@@ -188,7 +189,101 @@ fn shell_with(link: crate::settings::saver::SaveLink) -> Shell {
         saver: Some(link),
         text_input: slam_input::TextInput::default(),
         mouse: slam_input::MouseSettings::default(),
+        window: slam_input::WindowSettings::default(),
+        window_sent: Settings::default().window.state(),
     }
+}
+
+/// What the window does on Alt+Enter or F11: moves its own wish to the next mode.
+fn switch_window(shell: &Shell) -> WindowState {
+    let mut state = shell.window.get();
+    state.mode = state.mode.next();
+    shell.window.set(state);
+    state
+}
+
+#[test]
+fn a_window_mode_switch_is_saved_and_not_sent_back() {
+    use slam_input::WindowMode;
+    let (link, mut taken) = crate::settings::saver::detached(1);
+    let mut shell = shell_with(link);
+    shell.apply_settings(0);
+    // Nothing changed: the window keeps what it was opened with, nothing is saved.
+    assert_eq!(shell.window.get(), WindowState::default());
+    assert!(taken.pop().is_err());
+    // Its report may be lost to a full ring: the wish word alone tells the shell.
+    let switched = switch_window(&shell);
+    shell.apply_settings(LATER);
+    assert_eq!(shell.state.settings().window.mode, switched.mode);
+    assert_eq!(shell.window.get(), switched);
+    assert_eq!(taken.pop().unwrap().window.mode, switched.mode);
+    // A change in the settings reaches the window.
+    let mut settings = shell.state.settings().clone();
+    settings.window.mode = WindowMode::Windowed;
+    settings.window.windowed_size = [800, 600];
+    shell.state = state().with_settings(settings);
+    shell.apply_settings(LATER);
+    assert_eq!(shell.window.get().mode, WindowMode::Windowed);
+    assert_eq!(shell.window.get().windowed_size, [800, 600]);
+}
+
+#[test]
+fn a_settings_change_racing_a_switch_loses_to_it() {
+    use slam_input::WindowMode;
+    let (link, mut taken) = crate::settings::saver::detached(1);
+    let mut shell = shell_with(link);
+    shell.apply_settings(0);
+    // The window switches while the settings ask for another mode in the same tick.
+    let switched = switch_window(&shell);
+    let mut settings = shell.state.settings().clone();
+    settings.window.mode = WindowMode::Borderless;
+    assert_ne!(switched.mode, WindowMode::Borderless);
+    shell.state = state().with_settings(settings);
+    shell.apply_settings(LATER);
+    // The window and the settings agree on the player's switch.
+    assert_eq!(shell.window.get(), switched);
+    assert_eq!(shell.state.settings().window.mode, switched.mode);
+    assert_eq!(taken.pop().unwrap().window.mode, switched.mode);
+    shell.apply_settings(LATER);
+    assert_eq!(shell.window.get(), switched);
+}
+
+#[test]
+fn window_mode_events_do_not_reach_the_screens() {
+    let mut s = state();
+    let mode = s.settings().window.mode.next();
+    let mut snap = ShellSnapshot::default();
+    s.tick(
+        LATER,
+        &[InputEvent {
+            time_ns: 0,
+            kind: InputKind::WindowMode(mode),
+        }],
+        &mut snap,
+    );
+    // The shell takes the mode from the window's wish, not from the event.
+    assert_ne!(s.settings().window.mode, mode);
+    assert!(s.take_save_request().is_none());
+}
+
+#[test]
+fn a_new_window_scale_remaps_the_pointer() {
+    let (link, _taken) = crate::settings::saver::detached(1);
+    let mut shell = shell_with(link);
+    shell
+        .surface
+        .store(crate::play::pack_size(2560, 1440), Ordering::Relaxed);
+    shell.follow_surface();
+    assert_eq!(shell.state.pixels_per_point, 1.0);
+    // Same surface, the window moved to a 2× display.
+    shell.scale = slam_input::WindowScale::fixed(2.0);
+    shell.follow_surface();
+    assert_eq!(shell.state.pixels_per_point, 2.0);
+    shell.state.follow_pointer(&[InputEvent {
+        time_ns: 0,
+        kind: InputKind::MouseMove { x: 100.0, y: 50.0 },
+    }]);
+    assert_eq!(shell.state.cursor, [200.0, 100.0]);
 }
 
 #[test]
@@ -475,11 +570,11 @@ fn the_reset_button_restores_the_default_bindings() {
     assert!(s.take_save_request().is_none());
 }
 
-const KEY_F11: u16 = 68;
+const KEY_F12: u16 = 69;
 
 fn with_fps_hotkey() -> ShellState {
     let mut s = state();
-    s.settings.hotkeys.toggle_fps = Some(Input::Key(KEY_F11));
+    s.settings.hotkeys.toggle_fps = Some(Input::Key(KEY_F12));
     s
 }
 
@@ -489,12 +584,12 @@ fn the_fps_hotkey_toggles_the_counter_on_the_menu_and_saves() {
     let mut snap = ShellSnapshot::default();
     s.tick(0, &[], &mut snap);
     assert!(!snap.fps.show);
-    s.tick(LATER, &[key(KEY_F11)], &mut snap);
+    s.tick(LATER, &[key(KEY_F12)], &mut snap);
     assert!(snap.fps.show);
     assert!(matches!(s.stack().top(), AppScreen::Menu(_)));
     let saved = s.take_save_request().expect("a save is asked for");
     assert!(saved.frame.show_fps);
-    s.tick(LATER, &[key(KEY_F11)], &mut snap);
+    s.tick(LATER, &[key(KEY_F12)], &mut snap);
     assert!(!snap.fps.show);
     assert!(!s.settings().frame.show_fps);
 }
@@ -503,7 +598,7 @@ fn the_fps_hotkey_toggles_the_counter_on_the_menu_and_saves() {
 fn without_a_hotkey_nothing_toggles() {
     let mut s = state();
     let mut snap = ShellSnapshot::default();
-    s.tick(0, &[key(KEY_F11)], &mut snap);
+    s.tick(0, &[key(KEY_F12)], &mut snap);
     assert!(!snap.fps.show);
     assert!(s.take_save_request().is_none());
 }
@@ -511,7 +606,7 @@ fn without_a_hotkey_nothing_toggles() {
 #[test]
 fn the_fps_hotkey_is_watched_while_the_play_has_the_input() {
     let mut s = with_fps_hotkey();
-    s.watch_hotkeys(&[key(KEY_Q), key(KEY_F11)]);
+    s.watch_hotkeys(&[key(KEY_Q), key(KEY_F12)]);
     assert!(s.settings().frame.show_fps);
     assert!(s.take_save_request().is_some());
 }
@@ -527,7 +622,7 @@ fn the_snapshot_follows_the_edited_fps_settings() {
     assert_eq!(snap.fps.corner, slam_play::FpsCorner::TopLeft);
     assert_eq!(snap.fps.screens, crate::settings::FpsScreens::Menus);
     // The hotkey changes the setting in force, the edited one and the row.
-    s.tick(LATER, &[key(KEY_F11)], &mut snap);
+    s.tick(LATER, &[key(KEY_F12)], &mut snap);
     assert!(snap.fps.show);
     assert!(s.settings().frame.show_fps);
     assert!(edited(&s).frame.show_fps);
@@ -545,23 +640,23 @@ fn the_fps_hotkey_row_captures_a_key_and_a_gameplay_key_asks() {
     let downs = [key(KEY_DOWN); Row::ToggleFpsKey as usize - Row::LeftKey1 as usize];
     s.tick(LATER, &downs, &mut snap);
     assert_eq!(settings_screen(&s).focus(), Row::ToggleFpsKey as usize);
-    s.tick(LATER, &[key(KEY_ENTER), key(KEY_F11)], &mut snap);
-    assert_eq!(edited(&s).hotkeys.toggle_fps, Some(Input::Key(KEY_F11)));
+    s.tick(LATER, &[key(KEY_ENTER), key(KEY_F12)], &mut snap);
+    assert_eq!(edited(&s).hotkeys.toggle_fps, Some(Input::Key(KEY_F12)));
     // Captured, not toggled: the hotkey in force is still unbound.
     assert!(!edited(&s).frame.show_fps);
     // Space skips in gameplay and a left click works the menus: refused, F11 stays.
     s.tick(LATER, &[key(KEY_ENTER), key(KEY_SPACE)], &mut snap);
-    assert_eq!(edited(&s).hotkeys.toggle_fps, Some(Input::Key(KEY_F11)));
+    assert_eq!(edited(&s).hotkeys.toggle_fps, Some(Input::Key(KEY_F12)));
     let Some(RowWidget::Key(row)) = settings_screen(&s).widget(Row::ToggleFpsKey as usize) else {
         panic!("a key row");
     };
-    assert_eq!(row.value(), KeyValue::Key(KEY_F11));
+    assert_eq!(row.value(), KeyValue::Key(KEY_F12));
     s.tick(
         LATER,
         &[key(KEY_ENTER), mouse(MouseButton::Left, true)],
         &mut snap,
     );
-    assert_eq!(edited(&s).hotkeys.toggle_fps, Some(Input::Key(KEY_F11)));
+    assert_eq!(edited(&s).hotkeys.toggle_fps, Some(Input::Key(KEY_F12)));
     assert!(settings_screen(&s).conflict().is_none());
     // Z is the left key: the screen asks before taking it.
     s.tick(LATER, &[key(KEY_ENTER), key(KEY_Z)], &mut snap);
@@ -569,7 +664,7 @@ fn the_fps_hotkey_row_captures_a_key_and_a_gameplay_key_asks() {
         settings_screen(&s).conflict().map(|c| c.other),
         Some(Some(Row::LeftKey1 as usize))
     );
-    assert_eq!(edited(&s).hotkeys.toggle_fps, Some(Input::Key(KEY_F11)));
+    assert_eq!(edited(&s).hotkeys.toggle_fps, Some(Input::Key(KEY_F12)));
 }
 
 fn with_folder_commands() -> (
@@ -767,4 +862,19 @@ fn mouse_edits_reach_the_input_thread_at_once() {
     shell.apply_settings(LATER);
     assert!(mouse.is_relative());
     assert_eq!(mouse.sensitivity(), 1.02);
+}
+
+#[test]
+fn a_window_mode_switch_reaches_an_open_settings_screen() {
+    use slam_input::WindowMode;
+    let mut s = state();
+    let mut snap = ShellSnapshot::default();
+    opened(&mut s, &mut snap);
+    // The edited copy differs from the settings in force (as a mode row will allow).
+    s.editing.as_mut().unwrap().window.mode = WindowMode::Borderless;
+    let applied = s.settings().window.mode;
+    s.window_mode_switched(applied);
+    assert_eq!(edited(&s).window.mode, applied);
+    // Same mode in force: nothing to save.
+    assert!(s.take_save_request().is_none());
 }

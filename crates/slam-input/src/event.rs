@@ -1,3 +1,5 @@
+use crate::WindowMode;
+
 /// One input event, stamped in the engine clock.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct InputEvent {
@@ -39,6 +41,9 @@ pub enum InputKind {
     MouseWheel {
         y: f32,
     },
+    /// Alt+Enter or F11 switched the window to this mode (ADR-0070). The key press itself
+    /// is not delivered; its release is.
+    WindowMode(WindowMode),
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]

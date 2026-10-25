@@ -6,7 +6,10 @@ use serde::{Serialize, Serializer};
 use slam_audio::StreamConfig;
 use slam_engine::EngineConfig;
 use slam_engine::limiter::{InvalidRate, LimiterMode, MAX_HZ, MIN_HZ};
-use slam_input::MouseButton;
+use slam_input::{
+    DEFAULT_WINDOWED_SIZE, MAX_DISPLAY, MAX_SIDE, MIN_WINDOWED_SIZE, MouseButton, WindowMode,
+    WindowState,
+};
 use slam_osu::replay::Actions;
 use slam_play::input::{Binding, Bindings, Input, MAX_BINDINGS};
 use slam_play::{BackgroundSettings, FpsCorner};
@@ -136,6 +139,103 @@ pub struct Timing {
 impl Timing {
     /// Allowed global offset, milliseconds.
     pub const OFFSET_RANGE: std::ops::RangeInclusive<f64> = -500.0..=500.0;
+}
+
+/// The window's mode, display and sizes (ADR-0070), as [`WindowState`] for the window.
+#[derive(Clone, Copy, Debug, PartialEq, Serialize)]
+pub struct Window {
+    #[serde(serialize_with = "serialize_window_mode")]
+    pub mode: WindowMode,
+    /// Video mode size of the fullscreen mode in pixels; `None` is the display's own
+    /// size ("native" in the file, lazer's 9999×9999).
+    #[serde(serialize_with = "serialize_fullscreen_size")]
+    pub fullscreen_size: Option<[u16; 2]>,
+    /// Size of the windowed mode in points.
+    #[serde(serialize_with = "serialize_size")]
+    pub windowed_size: [u16; 2],
+    /// Index in the OS display list; a missing display means the primary one.
+    pub display: u8,
+}
+
+impl Window {
+    /// Smallest fullscreen size, as lazer's `SizeFullscreen` minimum.
+    pub const MIN_FULLSCREEN_SIZE: [u16; 2] = [320, 240];
+    pub const MIN_WINDOWED_SIZE: [u16; 2] = MIN_WINDOWED_SIZE;
+    /// Largest side of either size the window can be asked for.
+    pub const MAX_SIDE: u16 = MAX_SIDE;
+    pub const MAX_DISPLAY: u8 = MAX_DISPLAY;
+
+    /// What the window applies.
+    pub fn state(&self) -> WindowState {
+        WindowState {
+            mode: self.mode,
+            display: self.display,
+            fullscreen_size: self.fullscreen_size,
+            windowed_size: self.windowed_size,
+        }
+    }
+
+    /// Whether `size` fits between `min` and [`Window::MAX_SIDE`].
+    pub fn size_fits(size: [u16; 2], min: [u16; 2]) -> bool {
+        size[0] >= min[0] && size[1] >= min[1] && size.iter().all(|&side| side <= MAX_SIDE)
+    }
+}
+
+impl Default for Window {
+    fn default() -> Window {
+        Window {
+            mode: WindowMode::DEFAULT,
+            fullscreen_size: None,
+            windowed_size: DEFAULT_WINDOWED_SIZE,
+            display: 0,
+        }
+    }
+}
+
+/// The name of `mode` in the settings file.
+pub fn window_mode_name(mode: WindowMode) -> &'static str {
+    match mode {
+        WindowMode::Windowed => "windowed",
+        WindowMode::Borderless => "borderless",
+        WindowMode::Fullscreen => "fullscreen",
+    }
+}
+
+pub fn window_mode_from_name(name: &str) -> Option<WindowMode> {
+    [
+        WindowMode::Windowed,
+        WindowMode::Borderless,
+        WindowMode::Fullscreen,
+    ]
+    .into_iter()
+    .find(|&mode| window_mode_name(mode) == name)
+}
+
+/// Reads `"WIDTHxHEIGHT"`, as `"1920x1080"`.
+pub fn parse_size(text: &str) -> Option<[u16; 2]> {
+    let (w, h) = text.split_once('x')?;
+    Some([w.parse().ok()?, h.parse().ok()?])
+}
+
+fn serialize_window_mode<S: Serializer>(
+    mode: &WindowMode,
+    serializer: S,
+) -> Result<S::Ok, S::Error> {
+    serializer.serialize_str(window_mode_name(*mode))
+}
+
+fn serialize_size<S: Serializer>(size: &[u16; 2], serializer: S) -> Result<S::Ok, S::Error> {
+    serializer.collect_str(&format_args!("{}x{}", size[0], size[1]))
+}
+
+fn serialize_fullscreen_size<S: Serializer>(
+    size: &Option<[u16; 2]>,
+    serializer: S,
+) -> Result<S::Ok, S::Error> {
+    match size {
+        Some(size) => serialize_size(size, serializer),
+        None => serializer.serialize_str("native"),
+    }
 }
 
 /// Update and draw rates.
@@ -463,6 +563,8 @@ const MENU_KEYS_LAST: u16 = 82;
 const KEY_BACKSPACE: u16 = 42;
 const KEY_TAB: u16 = 43;
 const KEY_DELETE: u16 = 76;
+/// Cycles the window mode, alone or with Alt+Enter; the window takes it (ADR-0070).
+const KEY_F11: u16 = 68;
 
 /// A key the settings screen edits: a gameplay binding slot or a hotkey.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -480,6 +582,7 @@ pub struct Settings {
     pub audio: Audio,
     pub timing: Timing,
     pub frame: Frame,
+    pub window: Window,
     pub gameplay: Gameplay,
     pub input: InputSettings,
     pub hotkeys: Hotkeys,
@@ -523,6 +626,9 @@ impl Settings {
     /// `AllowMainMouseButtons = false` for global bindings), the menus' keys and the
     /// gameplay screen's own keys (ADR-0060).
     pub fn key_allowed(slot: KeySlot, input: Input) -> bool {
+        if input == Input::Key(KEY_F11) {
+            return false;
+        }
         match slot {
             KeySlot::Play(..) => true,
             KeySlot::ToggleFps => {
