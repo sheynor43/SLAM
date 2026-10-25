@@ -866,13 +866,16 @@ fn window_defaults_are_lazer_first_start() {
     assert_eq!(window.fullscreen_size, None);
     assert_eq!(window.windowed_size, [1366, 768]);
     assert_eq!(window.display, 0);
+    assert_eq!(window.windowed_position, [0.5, 0.5]);
+    assert!(window.minimise_on_focus_loss);
 }
 
 #[test]
 fn window_section_is_read_and_written() {
     let loaded = file::from_toml_str(
         "[window]\nmode = \"borderless\"\nfullscreen_size = \"1920x1080\"\n\
-         windowed_size = \"1280x720\"\ndisplay = 1\n",
+         windowed_size = \"1280x720\"\ndisplay = 1\nwindowed_position = [0.3, -0.5]\n\
+         minimise_on_focus_loss = false\n",
     );
     assert_eq!(loaded.status, LoadStatus::Ok, "{:?}", loaded.warnings);
     let window = loaded.settings.window;
@@ -883,10 +886,12 @@ fn window_section_is_read_and_written() {
             fullscreen_size: Some([1920, 1080]),
             windowed_size: [1280, 720],
             display: 1,
+            windowed_position: [0.3, -0.5],
+            minimise_on_focus_loss: false,
         }
     );
     let text = file::to_toml_string(&loaded.settings).unwrap();
-    assert!(text.contains("[window]\nmode = \"borderless\"\nfullscreen_size = \"1920x1080\"\nwindowed_size = \"1280x720\"\ndisplay = 1\n"), "{text}");
+    assert!(text.contains("[window]\nmode = \"borderless\"\nfullscreen_size = \"1920x1080\"\nwindowed_size = \"1280x720\"\ndisplay = 1\nwindowed_position = [0.3, -0.5]\nminimise_on_focus_loss = false\n"), "{text}");
     assert_eq!(file::from_toml_str(&text).settings.window, window);
 
     let native = file::to_toml_string(&Settings::default()).unwrap();
@@ -906,6 +911,13 @@ fn invalid_window_values_fall_back_with_a_warning() {
         ("windowed_size = \"1280\"", "window.windowed_size"),
         ("display = 64", "window.display"),
         ("display = -1", "window.display"),
+        ("windowed_position = [0.5]", "window.windowed_position"),
+        ("windowed_position = [0.5, 1.6]", "window.windowed_position"),
+        ("windowed_position = \"centre\"", "window.windowed_position"),
+        (
+            "minimise_on_focus_loss = 1",
+            "window.minimise_on_focus_loss",
+        ),
         ("size = 3", "window.size"),
     ] {
         let loaded = file::from_toml_str(&format!("[window]\n{line}\n"));
@@ -919,7 +931,8 @@ fn invalid_window_values_fall_back_with_a_warning() {
     }
     // The smallest sizes lazer allows are fine.
     let smallest = file::from_toml_str(
-        "[window]\nfullscreen_size = \"320x240\"\nwindowed_size = \"640x480\"\n",
+        "[window]\nfullscreen_size = \"320x240\"\nwindowed_size = \"640x480\"\n\
+         windowed_position = [-0.5, 1]\n",
     );
     assert_eq!(smallest.status, LoadStatus::Ok, "{:?}", smallest.warnings);
 }

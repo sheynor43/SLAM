@@ -7,8 +7,8 @@ use slam_audio::StreamConfig;
 use slam_engine::EngineConfig;
 use slam_engine::limiter::{InvalidRate, LimiterMode, MAX_HZ, MIN_HZ};
 use slam_input::{
-    DEFAULT_WINDOWED_SIZE, MAX_DISPLAY, MAX_SIDE, MIN_WINDOWED_SIZE, MouseButton, WindowMode,
-    WindowState,
+    DEFAULT_POSITION, DEFAULT_WINDOWED_SIZE, MAX_DISPLAY, MAX_SIDE, MIN_WINDOWED_SIZE, MouseButton,
+    POSITION_RANGE, WindowMode, WindowState,
 };
 use slam_osu::replay::Actions;
 use slam_play::input::{Binding, Bindings, Input, MAX_BINDINGS};
@@ -141,7 +141,8 @@ impl Timing {
     pub const OFFSET_RANGE: std::ops::RangeInclusive<f64> = -500.0..=500.0;
 }
 
-/// The window's mode, display and sizes (ADR-0070), as [`WindowState`] for the window.
+/// The window's mode, display, sizes (ADR-0070), windowed position and focus behaviour
+/// (ADR-0073), as [`WindowState`] and the rest of [`slam_input::WindowSettings`].
 #[derive(Clone, Copy, Debug, PartialEq, Serialize)]
 pub struct Window {
     #[serde(serialize_with = "serialize_window_mode")]
@@ -155,6 +156,12 @@ pub struct Window {
     pub windowed_size: [u16; 2],
     /// Index in the OS display list; a missing display means the primary one.
     pub display: u8,
+    /// Place of the windowed mode: fractions of the display's free space, each in
+    /// [`Window::POSITION_RANGE`], as lazer's `WindowedPositionX/Y`.
+    #[serde(serialize_with = "serialize_position")]
+    pub windowed_position: [f32; 2],
+    /// Minimise on focus loss in fullscreen, as lazer's `MinimiseOnFocusLossInFullscreen`.
+    pub minimise_on_focus_loss: bool,
 }
 
 impl Window {
@@ -164,6 +171,7 @@ impl Window {
     /// Largest side of either size the window can be asked for.
     pub const MAX_SIDE: u16 = MAX_SIDE;
     pub const MAX_DISPLAY: u8 = MAX_DISPLAY;
+    pub const POSITION_RANGE: std::ops::RangeInclusive<f32> = POSITION_RANGE;
 
     /// What the window applies.
     pub fn state(&self) -> WindowState {
@@ -188,6 +196,8 @@ impl Default for Window {
             fullscreen_size: None,
             windowed_size: DEFAULT_WINDOWED_SIZE,
             display: 0,
+            windowed_position: DEFAULT_POSITION,
+            minimise_on_focus_loss: true,
         }
     }
 }
@@ -222,6 +232,16 @@ fn serialize_window_mode<S: Serializer>(
     serializer: S,
 ) -> Result<S::Ok, S::Error> {
     serializer.serialize_str(window_mode_name(*mode))
+}
+
+/// Each fraction as its shortest `f32` text, so the file reads `0.3`, not
+/// `0.30000001192092896`.
+fn serialize_position<S: Serializer>(
+    position: &[f32; 2],
+    serializer: S,
+) -> Result<S::Ok, S::Error> {
+    let decimal = |v: f32| v.to_string().parse::<f64>().unwrap_or(f64::from(v));
+    position.map(decimal).serialize(serializer)
 }
 
 fn serialize_size<S: Serializer>(size: &[u16; 2], serializer: S) -> Result<S::Ok, S::Error> {

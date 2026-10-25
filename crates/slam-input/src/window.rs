@@ -5,31 +5,40 @@ use std::sync::{Arc, Mutex, PoisonError};
 
 use sdl3_sys::events::{
     SDL_EVENT_DISPLAY_CURRENT_MODE_CHANGED, SDL_EVENT_DISPLAY_FIRST, SDL_EVENT_DISPLAY_LAST,
-    SDL_EVENT_KEY_DOWN, SDL_EVENT_MOUSE_MOTION, SDL_EVENT_QUIT, SDL_EVENT_WINDOW_ENTER_FULLSCREEN,
-    SDL_EVENT_WINDOW_FOCUS_GAINED, SDL_EVENT_WINDOW_FOCUS_LOST, SDL_EVENT_WINDOW_LEAVE_FULLSCREEN,
-    SDL_EVENT_WINDOW_MOUSE_ENTER, SDL_EVENT_WINDOW_MOUSE_LEAVE,
-    SDL_EVENT_WINDOW_PIXEL_SIZE_CHANGED, SDL_EVENT_WINDOW_RESIZED, SDL_Event, SDL_EventType,
-    SDL_HasEvents, SDL_PushEvent, SDL_QuitEvent, SDL_RegisterEvents, SDL_WaitEvent,
+    SDL_EVENT_KEY_DOWN, SDL_EVENT_MOUSE_MOTION, SDL_EVENT_QUIT, SDL_EVENT_WINDOW_DISPLAY_CHANGED,
+    SDL_EVENT_WINDOW_ENTER_FULLSCREEN, SDL_EVENT_WINDOW_FOCUS_GAINED, SDL_EVENT_WINDOW_FOCUS_LOST,
+    SDL_EVENT_WINDOW_LEAVE_FULLSCREEN, SDL_EVENT_WINDOW_MOUSE_ENTER, SDL_EVENT_WINDOW_MOUSE_LEAVE,
+    SDL_EVENT_WINDOW_MOVED, SDL_EVENT_WINDOW_PIXEL_SIZE_CHANGED, SDL_EVENT_WINDOW_RESIZED,
+    SDL_Event, SDL_EventType, SDL_HasEvents, SDL_PushEvent, SDL_QuitEvent, SDL_RegisterEvents,
+    SDL_WaitEvent,
 };
-use sdl3_sys::hints::{SDL_HINT_INVALID_PARAM_CHECKS, SDL_HINT_MOUSE_AUTO_CAPTURE, SDL_SetHint};
+use sdl3_sys::hints::{
+    SDL_HINT_INVALID_PARAM_CHECKS, SDL_HINT_MOUSE_AUTO_CAPTURE,
+    SDL_HINT_VIDEO_MINIMIZE_ON_FOCUS_LOSS, SDL_SetHint,
+};
 use sdl3_sys::init::{SDL_INIT_VIDEO, SDL_Init, SDL_Quit};
 use sdl3_sys::keyboard::{SDL_GetKeyboardState, SDL_StartTextInput, SDL_StopTextInput};
 use sdl3_sys::mouse::{
     SDL_GetMouseState, SDL_HideCursor, SDL_SetWindowRelativeMouseMode, SDL_ShowCursor,
     SDL_WarpMouseInWindow,
 };
+use sdl3_sys::timer::SDL_GetTicksNS;
 use sdl3_sys::video::{
-    SDL_CreateWindow, SDL_DestroyWindow, SDL_GetCurrentVideoDriver, SDL_GetWindowFlags,
+    SDL_CreateWindow, SDL_DestroyWindow, SDL_DisplayID, SDL_GetCurrentVideoDriver,
+    SDL_GetDisplayForWindow, SDL_GetWindowBordersSize, SDL_GetWindowFlags, SDL_GetWindowPosition,
     SDL_GetWindowSize, SDL_GetWindowSizeInPixels, SDL_SetWindowFullscreen, SDL_ShowWindow,
     SDL_WINDOW_FULLSCREEN, SDL_WINDOW_HIDDEN, SDL_WINDOW_HIGH_PIXEL_DENSITY,
-    SDL_WINDOW_INPUT_FOCUS, SDL_WINDOW_MOUSE_FOCUS, SDL_WINDOW_OPENGL, SDL_WINDOW_RESIZABLE,
-    SDL_Window, SDL_WindowFlags,
+    SDL_WINDOW_INPUT_FOCUS, SDL_WINDOW_MAXIMIZED, SDL_WINDOW_MINIMIZED, SDL_WINDOW_MOUSE_FOCUS,
+    SDL_WINDOW_OPENGL, SDL_WINDOW_RESIZABLE, SDL_Window, SDL_WindowFlags,
 };
 
 use crate::dialog::{self, FolderDialog};
 use crate::displays::{self, DisplaysCallback};
 use crate::gl::{self, GlContext, PixelSize};
-use crate::mode::{WindowMode, WindowScale, WindowSettings, WindowState, cycles_mode, only_held};
+use crate::mode::{
+    MAX_SIDE, MIN_WINDOWED_SIZE, WindowMode, WindowScale, WindowSettings, WindowState, cycles_mode,
+    minimise_hint, only_held, position_fraction,
+};
 use crate::relative::{Change, MouseSettings, RelativeMouse};
 use crate::{
     EventSink, InputCounters, InputEvent, InputKind, TickMapper, convert, convert_text, windowing,
@@ -94,8 +103,19 @@ pub struct InputWindow {
     wake_event: u32,
     /// Mode, display and sizes, set by any thread (ADR-0070).
     window_settings: WindowSettings,
-    /// The [`WindowState`] word applied last.
+    /// The [`WindowState`] word applied last, or reported by the window itself.
     state_applied: u64,
+    /// The minimise-on-focus-loss hint set last; `None` before the first.
+    minimise_applied: Option<bool>,
+    /// Whether the window is a borderless one wider than its display (Windows,
+    /// [`windowing::BORDERLESS_WIDTH_HACK`]): its reported sizes leave the extra out.
+    borderless_hack: bool,
+    /// The display the window was last seen on and reported; 0 before the first look.
+    display_id: SDL_DisplayID,
+    /// SDL's clock when a state was last applied: window events stamped earlier come
+    /// from the mode change, not from the player, as osu-framework's
+    /// `updatingWindowStateAndSize` (ADR-0073).
+    applied_at_ns: u64,
     /// Pixels per point, for other threads.
     scale: WindowScale,
     /// Whether the video driver is Wayland (fullscreen sizes are in pixels there).
@@ -192,11 +212,17 @@ impl InputWindow {
         Self::create(title, width, height, SDL_WINDOW_OPENGL)
     }
 
-    /// Like [`InputWindow::new_opengl`], but in `state`: the window is created hidden and
-    /// shown once in its mode, so a fullscreen start does not flash a window first.
-    pub fn new_opengl_in(title: &str, state: WindowState) -> Result<Self, WindowError> {
+    /// Like [`InputWindow::new_opengl`], but in `state`, windowed at `position`
+    /// ([`WindowSettings::set_position`]): the window is created hidden and shown once in
+    /// its mode, so a fullscreen start does not flash a window first.
+    pub fn new_opengl_in(
+        title: &str,
+        state: WindowState,
+        position: [f32; 2],
+    ) -> Result<Self, WindowError> {
         let [w, h] = state.windowed_size.map(i32::from);
         let mut window = Self::create(title, w, h, SDL_WINDOW_OPENGL | SDL_WINDOW_HIDDEN)?;
+        window.window_settings.set_position(position);
         window.window_settings.set(state);
         // Applied even when it matches the window as created, so a windowed start is
         // centred on its display too.
@@ -308,6 +334,10 @@ impl InputWindow {
             dialog_event,
             wake_event,
             state_applied: window_settings.word(),
+            minimise_applied: None,
+            borderless_hack: false,
+            display_id: SDL_DisplayID(0),
+            applied_at_ns: 0,
             window_settings,
             scale,
             wayland,
@@ -384,18 +414,172 @@ impl InputWindow {
         self.scale.clone()
     }
 
-    /// Applies the wished [`WindowState`] if it changed since the last time.
+    /// Applies the wished [`WindowState`] if it changed since the last time, and the
+    /// minimise-on-focus-loss hint for the mode.
     fn apply_window_state(&mut self) {
         let word = self.window_settings.word();
-        if word == self.state_applied {
+        if word != self.state_applied {
+            self.state_applied = word;
+            // Read after the word: the update thread writes the position first (ADR-0073).
+            let position = self.window_settings.position();
+            // SAFETY: `window` is valid and this is the thread that initialised SDL.
+            self.borderless_hack = unsafe {
+                windowing::apply(
+                    self.window,
+                    WindowState::unpack(word),
+                    position,
+                    self.wayland,
+                )
+            };
+            // SAFETY: SDL is initialised.
+            self.applied_at_ns = unsafe { SDL_GetTicksNS() };
+            // The mode change may end in a size SDL reports through events, or not at all
+            // when it is unchanged: read the scale now too.
+            self.store_scale();
+            self.store_title_bar();
+        }
+        self.apply_minimise_hint();
+    }
+
+    /// Sets SDL's minimise-on-focus-loss hint: on only in [`WindowMode::Fullscreen`] with
+    /// the setting on. SDL3 would minimise a borderless window with the hint on too, which
+    /// osu-framework's own test does not expect (ADR-0073).
+    // Ported from osu-framework 2026.921.1: osu.Framework/Platform/SDL3/SDL3Window.Windowing.cs (minimiseOnFocusLoss)
+    fn apply_minimise_hint(&mut self) {
+        let minimise = minimise_hint(
+            WindowState::unpack(self.state_applied).mode,
+            self.window_settings.minimise_on_focus_loss(),
+        );
+        if self.minimise_applied == Some(minimise) {
             return;
         }
-        self.state_applied = word;
-        // SAFETY: `window` is valid and this is the thread that initialised SDL.
-        unsafe { windowing::apply(self.window, WindowState::unpack(word), self.wayland) };
-        // The mode change may end in a size SDL reports through events, or not at all
-        // when it is unchanged: read the scale now too.
-        self.store_scale();
+        self.minimise_applied = Some(minimise);
+        let value = if minimise { c"1" } else { c"0" };
+        // SAFETY: valid C strings; hints may be set at any time. SDL reads this one on
+        // each focus loss.
+        unsafe { SDL_SetHint(SDL_HINT_VIDEO_MINIMIZE_ON_FOCUS_LOSS, value.as_ptr()) };
+    }
+
+    /// Publishes the height of the window's top border, if SDL can tell it.
+    fn store_title_bar(&self) {
+        let mut top = 0;
+        // SAFETY: `window` is valid; the out pointers are valid or null, as SDL allows.
+        let known = unsafe {
+            SDL_GetWindowBordersSize(
+                self.window,
+                &mut top,
+                ptr::null_mut(),
+                ptr::null_mut(),
+                ptr::null_mut(),
+            )
+        };
+        if known {
+            self.window_settings.store_title_bar(top);
+        }
+    }
+
+    /// Whether the window is a plain windowed one the player may move and resize: the
+    /// applied mode is windowed and it is neither minimised nor maximised, as
+    /// osu-framework's `WindowState.Normal`.
+    fn is_normal_windowed(&self) -> bool {
+        if WindowState::unpack(self.state_applied).mode != WindowMode::Windowed {
+            return false;
+        }
+        // SAFETY: `window` is valid.
+        let flags = unsafe { SDL_GetWindowFlags(self.window) };
+        let other = SDL_WINDOW_MINIMIZED.0 | SDL_WINDOW_MAXIMIZED.0 | SDL_WINDOW_FULLSCREEN.0;
+        flags.0 & other == 0
+    }
+
+    /// Writes `state` into the handle as the window's own change (ADR-0073). Returns
+    /// false when a wish from another thread waits to be applied, which then wins.
+    fn report(&mut self, state: WindowState) -> bool {
+        if state.pack() == self.state_applied {
+            return true;
+        }
+        match self.window_settings.report(self.state_applied, state) {
+            Some(word) => {
+                self.state_applied = word;
+                true
+            }
+            None => false,
+        }
+    }
+
+    /// The player resized a windowed window to `size` points: keeps it as the windowed
+    /// size, as osu-framework's `storeWindowSizeToConfig`.
+    // Ported from osu-framework 2026.921.1: osu.Framework/Platform/SDL3/SDL3Window.Windowing.cs (storeWindowSizeToConfig)
+    fn window_resized(&mut self, size: [i32; 2]) {
+        if !self.is_normal_windowed() {
+            return;
+        }
+        let side = |v: i32, min: u16| v.clamp(i32::from(min), i32::from(MAX_SIDE)) as u16;
+        let state = WindowState {
+            windowed_size: [
+                side(size[0], MIN_WINDOWED_SIZE[0]),
+                side(size[1], MIN_WINDOWED_SIZE[1]),
+            ],
+            ..WindowState::unpack(self.state_applied)
+        };
+        self.report(state);
+    }
+
+    /// The window moved: follows its display, and keeps a windowed window's place as
+    /// fractions of the display's free space.
+    // Ported from osu-framework 2026.921.1: osu.Framework/Platform/SDL3/SDL3Window.Windowing.cs (SDL_EVENT_WINDOW_MOVED)
+    fn window_moved(&mut self) {
+        self.follow_display();
+        if self.display_id.0 == 0 || !self.is_normal_windowed() {
+            return;
+        }
+        let Some(bounds) = windowing::display_bounds(self.display_id) else {
+            return;
+        };
+        // Asked again rather than taken from the event, as osu-framework: SDL's value
+        // is not always up to date.
+        let (mut x, mut y) = (0, 0);
+        // SAFETY: `window` is valid; `x` and `y` are valid out pointers.
+        if !unsafe { SDL_GetWindowPosition(self.window, &mut x, &mut y) } {
+            return;
+        }
+        let size = WindowState::unpack(self.state_applied)
+            .windowed_size
+            .map(i32::from);
+        let position = position_fraction(bounds, size, [x, y]);
+        self.window_settings.set_position(position);
+    }
+
+    /// Keeps the display the window is on as the `display` setting, in any mode, as
+    /// osu-framework's `CurrentDisplayBindable` writes `LastDisplayDevice`. Lists the
+    /// displays only when the window's display changed.
+    fn follow_display(&mut self) {
+        // SAFETY: `window` is valid.
+        let id = unsafe { SDL_GetDisplayForWindow(self.window) };
+        if id.0 == 0 || id == self.display_id {
+            return;
+        }
+        let Some(index) = windowing::display_index(id) else {
+            self.display_id = id;
+            return;
+        };
+        let state = WindowState {
+            display: index,
+            ..WindowState::unpack(self.state_applied)
+        };
+        // Tried again on the next move while a wish waits.
+        if self.report(state) {
+            self.display_id = id;
+        }
+    }
+
+    /// Pixels at the right edge the window leaves out of its reported sizes: the extra
+    /// column of a borderless window on Windows, in pixels at `scale`.
+    fn hack_pixels(&self) -> i32 {
+        if self.borderless_hack {
+            (windowing::BORDERLESS_WIDTH_HACK as f32 * self.scale.pixels_per_point()).ceil() as i32
+        } else {
+            0
+        }
     }
 
     /// Publishes pixels per point from the window's current sizes.
@@ -522,9 +706,27 @@ impl InputWindow {
             SDL_EVENT_WINDOW_RESIZED => {
                 // SAFETY: the event type says this is a window event.
                 let window = unsafe { event.window };
+                let players = window.timestamp >= self.applied_at_ns;
+                let hack = if self.borderless_hack {
+                    windowing::BORDERLESS_WIDTH_HACK
+                } else {
+                    0
+                };
                 self.relative
-                    .set_size(window.data1 as f32, window.data2 as f32);
+                    .set_size((window.data1 - hack) as f32, window.data2 as f32);
                 self.store_scale();
+                self.store_title_bar();
+                if players {
+                    self.window_resized([window.data1, window.data2]);
+                }
+                Change::default()
+            }
+            SDL_EVENT_WINDOW_MOVED | SDL_EVENT_WINDOW_DISPLAY_CHANGED => {
+                // SAFETY: the event type says this is a window event.
+                let window = unsafe { event.window };
+                if window.timestamp >= self.applied_at_ns {
+                    self.window_moved();
+                }
                 Change::default()
             }
             _ => return false,
@@ -547,7 +749,8 @@ impl InputWindow {
 
     /// Blocks on OS events until the window is closed or a [`QuitHandle`] asks. Keyboard and mouse events are
     /// stamped with `mapper` and pushed into `sink`; when the ring is full they are
-    /// dropped and counted, never waited on. No allocations per event. `mapper` is
+    /// dropped and counted, never waited on. No allocations per input event; window
+    /// moves may allocate in SDL (display lookups), as they do in osu-framework. `mapper` is
     /// recalibrated first, since SDL re-bases its clock on every initialisation.
     pub fn run<E, S>(
         &mut self,
@@ -596,8 +799,9 @@ impl InputWindow {
                 SDL_EVENT_WINDOW_PIXEL_SIZE_CHANGED => {
                     // SAFETY: the event type says this is a window event.
                     let window = unsafe { event.window };
-                    self.size.store(window.data1, window.data2);
                     self.store_scale();
+                    self.size
+                        .store(window.data1 - self.hack_pixels(), window.data2);
                 }
                 // Our own fullscreen mode switches send CURRENT_MODE_CHANGED; the list of
                 // modes does not change with it.
