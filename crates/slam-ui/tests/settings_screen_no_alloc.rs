@@ -66,6 +66,8 @@ fn labels() -> SettingsLabels {
         options: options.iter().map(|o| (*o).to_owned()).collect(),
         button: String::new(),
         shows_value: false,
+        trim_zeros: false,
+        hint: String::new(),
     };
     SettingsLabels {
         title: "Settings".into(),
@@ -360,6 +362,110 @@ fn a_swapped_in_dropdown_view_draws_without_allocating() {
     assert_no_alloc(|| {
         for _ in 0..10 {
             frame(&mut view, &screen, &mut glyphs);
+        }
+    });
+}
+
+/// A trimmed slider with a hint, a disabled row and a toggle with a two-line hint draw
+/// without allocating, whatever the flags.
+#[test]
+fn hints_and_disabled_rows_draw_without_allocating() {
+    let registry = Arc::new(FontRegistry::with_builtin());
+    let limits = Limits {
+        max_texture_size: 4096,
+        max_uniform_block_size: 16384,
+        max_uniform_buffer_slots: 12,
+        max_texture_slots: 16,
+    };
+    let mut glyphs = glyph_atlas(Arc::clone(&registry), &GlyphAtlasConfig::new(limits)).unwrap();
+    let theme = Theme::default();
+    let specs = [
+        RowSpec {
+            section: 0,
+            kind: RowKind::Toggle { value: true },
+            restart_required: false,
+        },
+        RowSpec {
+            section: 0,
+            kind: RowKind::Slider {
+                min: 0.1,
+                max: 10.0,
+                step: 0.01,
+                value: 1.0,
+            },
+            restart_required: false,
+        },
+    ];
+    let labels = SettingsLabels {
+        sections: vec!["Input".into()],
+        rows: vec![
+            RowLabels {
+                label: "High precision".into(),
+                hint: "First line\nSecond line".into(),
+                ..RowLabels::default()
+            },
+            RowLabels {
+                label: "Sensitivity".into(),
+                unit: "x".into(),
+                trim_zeros: true,
+                hint: "Enable it first".into(),
+                ..RowLabels::default()
+            },
+        ],
+        ..SettingsLabels::default()
+    };
+    let mut screen = SettingsScreen::new(&specs, 1);
+    let mut view = SettingsView::new(registry, theme, &specs, &labels);
+    let white = AtlasRegion {
+        texture: TextureId(0),
+        origin: Origin::new(0, 0),
+        size: Extent::new(1, 1),
+        uv: UvRect {
+            u0: 0.0,
+            v0: 0.0,
+            u1: 1.0,
+            v1: 1.0,
+        },
+    };
+    let (mut shapes, mut text) = (
+        SpriteBatch::with_capacity(256),
+        SpriteBatch::with_capacity(1024),
+    );
+    let pose = Pose {
+        opacity: 1.0,
+        offset: 0.0,
+    };
+    let layout = SettingsLayout::new(1280.0, 720.0, &theme);
+    let mut frame = |screen: &SettingsScreen, glyphs: &mut _| {
+        shapes.clear();
+        text.clear();
+        view.push(
+            &mut shapes,
+            &mut text,
+            glyphs,
+            1280.0,
+            720.0,
+            &screen.snapshot(),
+            pose,
+            white,
+        );
+    };
+    for _ in 0..3 {
+        for (disabled, hint) in [(false, false), (true, true), (false, true), (true, false)] {
+            screen.set_disabled(1, disabled);
+            screen.set_hint(0, hint);
+            screen.set_hint(1, hint);
+            frame(&screen, &mut glyphs);
+            screen.input(SettingsInput::Right, &layout);
+        }
+    }
+    assert_no_alloc(|| {
+        for i in 0..40 {
+            screen.set_disabled(1, i % 2 == 0);
+            screen.set_hint(0, i % 3 == 0);
+            screen.set_hint(1, i % 2 == 0);
+            screen.input(SettingsInput::Right, &layout);
+            frame(&screen, &mut glyphs);
         }
     });
 }

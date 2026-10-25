@@ -11,7 +11,7 @@ use toml::{Table, Value};
 
 use super::keys;
 use super::model::{
-    BindingEntry, DrawRate, FpsScreens, KeySlot, Settings, Timing, corner_from_name,
+    BindingEntry, DrawRate, FpsScreens, InputSettings, KeySlot, Settings, Timing, corner_from_name,
 };
 
 /// The schema version this build writes.
@@ -371,6 +371,29 @@ fn from_table(mut table: Table) -> Loaded {
     cx.unknown(&gameplay, "gameplay");
 
     let mut input = cx.section(&mut table, "input");
+    cx.field(
+        &mut input,
+        "input",
+        "high_precision_mouse",
+        &mut settings.input.high_precision_mouse,
+        |_| Ok(()),
+    );
+    cx.float(
+        &mut input,
+        "input",
+        "sensitivity",
+        &mut settings.input.sensitivity,
+        f64::NEG_INFINITY..=f64::INFINITY,
+    );
+    let sensitivity = settings.input.sensitivity;
+    if !InputSettings::SENSITIVITY_RANGE.contains(&sensitivity) {
+        cx.warn(format!(
+            "input.sensitivity: {sensitivity} is outside [{}, {}], clamped",
+            InputSettings::SENSITIVITY_RANGE.start(),
+            InputSettings::SENSITIVITY_RANGE.end()
+        ));
+    }
+    settings.input.sensitivity = InputSettings::clean_sensitivity(sensitivity);
     if let Some(value) = input.remove("bindings") {
         match value {
             Value::Array(items) => {
