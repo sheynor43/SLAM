@@ -5,7 +5,7 @@ use std::sync::atomic::{AtomicU32, Ordering};
 use slam_audio::StreamConfig;
 use slam_engine::EngineConfig;
 use slam_engine::limiter::LimiterMode;
-use slam_input::MouseButton;
+use slam_input::{MouseButton, WindowMode};
 use slam_osu::replay::Actions;
 use slam_play::input::{Binding, Bindings, Input, MAX_BINDINGS};
 use slam_play::{BackgroundSettings, FpsCorner};
@@ -13,7 +13,7 @@ use slam_play::{BackgroundSettings, FpsCorner};
 use super::dirs::{Os, resolve};
 use super::file::{self, LoadStatus};
 use super::keys;
-use super::model::{DrawRate, FpsScreens, Frame, InputSettings, KeySlot, Settings};
+use super::model::{DrawRate, FpsScreens, Frame, InputSettings, KeySlot, Settings, Window};
 
 fn temp_dir(tag: &str) -> PathBuf {
     static N: AtomicU32 = AtomicU32::new(0);
@@ -63,7 +63,7 @@ fn round_trip_non_default() {
     s.frame.show_fps = true;
     s.frame.fps_corner = FpsCorner::TopLeft;
     s.frame.fps_screens = FpsScreens::Gameplay;
-    s.hotkeys.toggle_fps = Some(keys::input_from_name("F11").unwrap());
+    s.hotkeys.toggle_fps = Some(keys::input_from_name("F12").unwrap());
     s.gameplay.dim = 0.3;
     s.gameplay.beatmap_skins = false;
     s.gameplay.beatmap_colours = false;
@@ -692,12 +692,12 @@ fn the_fps_counter_defaults_follow_lazer() {
 fn fps_counter_values_are_read_by_name() {
     let loaded = file::from_toml_str(
         "[frame]\nfps_corner = \"top_right\"\nfps_screens = \"menus\"\n\
-         [hotkeys]\ntoggle_fps = \"f11\"\n",
+         [hotkeys]\ntoggle_fps = \"f12\"\n",
     );
     assert_eq!(loaded.status, LoadStatus::Ok, "{:?}", loaded.warnings);
     assert_eq!(loaded.settings.frame.fps_corner, FpsCorner::TopRight);
     assert_eq!(loaded.settings.frame.fps_screens, FpsScreens::Menus);
-    assert_eq!(loaded.settings.hotkeys.toggle_fps, Some(key("F11")));
+    assert_eq!(loaded.settings.hotkeys.toggle_fps, Some(key("F12")));
 
     let loaded = file::from_toml_str(
         "[frame]\nfps_corner = \"middle\"\nfps_screens = 3\n[hotkeys]\ntoggle_fps = \"Nope\"\n",
@@ -723,15 +723,15 @@ fn hotkeys_and_gameplay_keys_conflict_both_ways() {
         s.key_conflict(fps, Input::Mouse(MouseButton::Right)),
         Some(KeySlot::Play(Actions::RIGHT, 1))
     );
-    assert_eq!(s.key_conflict(fps, key("F11")), None);
-    assert!(s.bind_key(fps, key("F11")));
-    assert_eq!(s.key(fps), Some(key("F11")));
+    assert_eq!(s.key_conflict(fps, key("F12")), None);
+    assert!(s.bind_key(fps, key("F12")));
+    assert_eq!(s.key(fps), Some(key("F12")));
     assert_eq!(
-        s.key_conflict(KeySlot::Play(Actions::SMOKE, 1), key("F11")),
+        s.key_conflict(KeySlot::Play(Actions::SMOKE, 1), key("F12")),
         Some(fps)
     );
     // Taking the hotkey's input for gameplay unbinds the hotkey, and the other way round.
-    assert!(s.bind_key(KeySlot::Play(Actions::SMOKE, 1), key("F11")));
+    assert!(s.bind_key(KeySlot::Play(Actions::SMOKE, 1), key("F12")));
     assert_eq!(s.key(fps), None);
     assert!(s.bind_key(fps, key("Z")));
     assert_eq!(s.key(fps), Some(key("Z")));
@@ -749,7 +749,7 @@ fn hotkeys_and_gameplay_keys_conflict_both_ways() {
 
     s.clear_key(fps);
     assert_eq!(s.key(fps), None);
-    s.bind_key(fps, key("F11"));
+    s.bind_key(fps, key("F12"));
     s.reset_keys();
     assert_eq!(s.key(fps), None);
     assert_eq!(s.bindings(), Bindings::default());
@@ -775,9 +775,15 @@ fn a_hotkey_cannot_take_menu_or_gameplay_screen_keys() {
             "{button:?}"
         );
     }
-    assert!(Settings::key_allowed(fps, key("F11")));
+    assert!(Settings::key_allowed(fps, key("F12")));
     assert!(Settings::key_allowed(fps, key("Q")));
-    // Gameplay slots take anything, as before.
+    // F11 cycles the window mode (ADR-0070): no slot takes it.
+    assert!(!Settings::key_allowed(fps, key("F11")));
+    assert!(!Settings::key_allowed(
+        KeySlot::Play(Actions::LEFT, 0),
+        key("F11")
+    ));
+    // Gameplay slots take anything else, as before.
     assert!(Settings::key_allowed(
         KeySlot::Play(Actions::LEFT, 0),
         Input::Mouse(MouseButton::Left)
@@ -846,4 +852,99 @@ fn mouse_settings_round_trip_next_to_the_bindings() {
     let loaded = file::from_toml_str(&text);
     assert_eq!(loaded.status, LoadStatus::Ok, "{:?}", loaded.warnings);
     assert_eq!(loaded.settings, s);
+}
+
+#[test]
+fn window_defaults_are_lazer_first_start() {
+    let window = Settings::default().window;
+    let mode = if cfg!(target_os = "macos") {
+        WindowMode::Borderless
+    } else {
+        WindowMode::Fullscreen
+    };
+    assert_eq!(window.mode, mode);
+    assert_eq!(window.fullscreen_size, None);
+    assert_eq!(window.windowed_size, [1366, 768]);
+    assert_eq!(window.display, 0);
+}
+
+#[test]
+fn window_section_is_read_and_written() {
+    let loaded = file::from_toml_str(
+        "[window]\nmode = \"borderless\"\nfullscreen_size = \"1920x1080\"\n\
+         windowed_size = \"1280x720\"\ndisplay = 1\n",
+    );
+    assert_eq!(loaded.status, LoadStatus::Ok, "{:?}", loaded.warnings);
+    let window = loaded.settings.window;
+    assert_eq!(
+        window,
+        Window {
+            mode: WindowMode::Borderless,
+            fullscreen_size: Some([1920, 1080]),
+            windowed_size: [1280, 720],
+            display: 1,
+        }
+    );
+    let text = file::to_toml_string(&loaded.settings).unwrap();
+    assert!(text.contains("[window]\nmode = \"borderless\"\nfullscreen_size = \"1920x1080\"\nwindowed_size = \"1280x720\"\ndisplay = 1\n"), "{text}");
+    assert_eq!(file::from_toml_str(&text).settings.window, window);
+
+    let native = file::to_toml_string(&Settings::default()).unwrap();
+    assert!(native.contains("fullscreen_size = \"native\""), "{native}");
+    let back = file::from_toml_str(&native);
+    assert_eq!(back.settings.window.fullscreen_size, None);
+}
+
+#[test]
+fn invalid_window_values_fall_back_with_a_warning() {
+    for (line, key) in [
+        ("mode = \"maximised\"", "window.mode"),
+        ("fullscreen_size = \"huge\"", "window.fullscreen_size"),
+        ("fullscreen_size = \"300x200\"", "window.fullscreen_size"),
+        ("fullscreen_size = \"20000x1080\"", "window.fullscreen_size"),
+        ("windowed_size = \"639x480\"", "window.windowed_size"),
+        ("windowed_size = \"1280\"", "window.windowed_size"),
+        ("display = 64", "window.display"),
+        ("display = -1", "window.display"),
+        ("size = 3", "window.size"),
+    ] {
+        let loaded = file::from_toml_str(&format!("[window]\n{line}\n"));
+        assert_eq!(loaded.status, LoadStatus::Recovered, "{line}");
+        assert_eq!(loaded.settings.window, Window::default(), "{line}");
+        assert!(
+            loaded.warnings.iter().any(|w| w.starts_with(key)),
+            "{line}: {:?}",
+            loaded.warnings
+        );
+    }
+    // The smallest sizes lazer allows are fine.
+    let smallest = file::from_toml_str(
+        "[window]\nfullscreen_size = \"320x240\"\nwindowed_size = \"640x480\"\n",
+    );
+    assert_eq!(smallest.status, LoadStatus::Ok, "{:?}", smallest.warnings);
+}
+
+#[test]
+fn a_gameplay_binding_on_f11_is_skipped() {
+    let loaded = file::from_toml_str(
+        "[input]\nbindings = [{ input = \"F11\", action = \"left\" }, { input = \"X\", action = \"left\" }]\n",
+    );
+    assert_eq!(loaded.status, LoadStatus::Recovered);
+    assert!(
+        loaded
+            .warnings
+            .iter()
+            .any(|w| w.starts_with("input.bindings[0]")),
+        "{:?}",
+        loaded.warnings
+    );
+    assert!(
+        loaded
+            .settings
+            .input
+            .bindings
+            .as_slice()
+            .iter()
+            .all(|b| b.input != key("F11"))
+    );
 }

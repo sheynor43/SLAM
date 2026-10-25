@@ -1,9 +1,10 @@
 use std::ffi::{CStr, CString};
+use std::ptr;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex, PoisonError};
 
 use sdl3_sys::events::{
-    SDL_EVENT_MOUSE_MOTION, SDL_EVENT_QUIT, SDL_EVENT_WINDOW_ENTER_FULLSCREEN,
+    SDL_EVENT_KEY_DOWN, SDL_EVENT_MOUSE_MOTION, SDL_EVENT_QUIT, SDL_EVENT_WINDOW_ENTER_FULLSCREEN,
     SDL_EVENT_WINDOW_FOCUS_GAINED, SDL_EVENT_WINDOW_FOCUS_LOST, SDL_EVENT_WINDOW_LEAVE_FULLSCREEN,
     SDL_EVENT_WINDOW_MOUSE_ENTER, SDL_EVENT_WINDOW_MOUSE_LEAVE,
     SDL_EVENT_WINDOW_PIXEL_SIZE_CHANGED, SDL_EVENT_WINDOW_RESIZED, SDL_Event, SDL_EventType,
@@ -11,21 +12,26 @@ use sdl3_sys::events::{
 };
 use sdl3_sys::hints::{SDL_HINT_INVALID_PARAM_CHECKS, SDL_HINT_MOUSE_AUTO_CAPTURE, SDL_SetHint};
 use sdl3_sys::init::{SDL_INIT_VIDEO, SDL_Init, SDL_Quit};
-use sdl3_sys::keyboard::{SDL_StartTextInput, SDL_StopTextInput};
+use sdl3_sys::keyboard::{SDL_GetKeyboardState, SDL_StartTextInput, SDL_StopTextInput};
 use sdl3_sys::mouse::{
-    SDL_HideCursor, SDL_SetWindowRelativeMouseMode, SDL_ShowCursor, SDL_WarpMouseInWindow,
+    SDL_GetMouseState, SDL_HideCursor, SDL_SetWindowRelativeMouseMode, SDL_ShowCursor,
+    SDL_WarpMouseInWindow,
 };
 use sdl3_sys::video::{
     SDL_CreateWindow, SDL_DestroyWindow, SDL_GetCurrentVideoDriver, SDL_GetWindowFlags,
-    SDL_GetWindowSize, SDL_GetWindowSizeInPixels, SDL_SetWindowFullscreen, SDL_WINDOW_FULLSCREEN,
-    SDL_WINDOW_HIGH_PIXEL_DENSITY, SDL_WINDOW_INPUT_FOCUS, SDL_WINDOW_MOUSE_FOCUS,
-    SDL_WINDOW_OPENGL, SDL_WINDOW_RESIZABLE, SDL_Window, SDL_WindowFlags,
+    SDL_GetWindowSize, SDL_GetWindowSizeInPixels, SDL_SetWindowFullscreen, SDL_ShowWindow,
+    SDL_WINDOW_FULLSCREEN, SDL_WINDOW_HIDDEN, SDL_WINDOW_HIGH_PIXEL_DENSITY,
+    SDL_WINDOW_INPUT_FOCUS, SDL_WINDOW_MOUSE_FOCUS, SDL_WINDOW_OPENGL, SDL_WINDOW_RESIZABLE,
+    SDL_Window, SDL_WindowFlags,
 };
 
 use crate::dialog::{self, FolderDialog};
 use crate::gl::{self, GlContext, PixelSize};
+use crate::mode::{WindowMode, WindowScale, WindowSettings, WindowState, cycles_mode, only_held};
 use crate::relative::{Change, MouseSettings, RelativeMouse};
-use crate::{EventSink, InputCounters, InputEvent, TickMapper, convert, convert_text};
+use crate::{
+    EventSink, InputCounters, InputEvent, InputKind, TickMapper, convert, convert_text, windowing,
+};
 
 /// SDL supports a single initialisation per process at a time.
 static SDL_ACTIVE: AtomicBool = AtomicBool::new(false);
@@ -81,6 +87,17 @@ pub struct InputWindow {
     relative: RelativeMouse,
     /// The SDL event type of [`FolderDialog`] requests; 0 when none could be registered.
     dialog_event: u32,
+    /// The SDL event type that wakes the window for a new [`WindowState`]; 0 when none
+    /// could be registered.
+    wake_event: u32,
+    /// Mode, display and sizes, set by any thread (ADR-0070).
+    window_settings: WindowSettings,
+    /// The [`WindowState`] word applied last.
+    state_applied: u64,
+    /// Pixels per point, for other threads.
+    scale: WindowScale,
+    /// Whether the video driver is Wayland (fullscreen sizes are in pixels there).
+    wayland: bool,
 }
 
 /// Shows or hides the OS cursor over the window, from any thread, without locks. The
@@ -169,6 +186,23 @@ impl InputWindow {
         Self::create(title, width, height, SDL_WINDOW_OPENGL)
     }
 
+    /// Like [`InputWindow::new_opengl`], but in `state`: the window is created hidden and
+    /// shown once in its mode, so a fullscreen start does not flash a window first.
+    pub fn new_opengl_in(title: &str, state: WindowState) -> Result<Self, WindowError> {
+        let [w, h] = state.windowed_size.map(i32::from);
+        let mut window = Self::create(title, w, h, SDL_WINDOW_OPENGL | SDL_WINDOW_HIDDEN)?;
+        window.window_settings.set(state);
+        // Applied even when it matches the window as created, so a windowed start is
+        // centred on its display too.
+        window.state_applied = !window.window_settings.word();
+        window.apply_window_state();
+        // SAFETY: `window` is valid and this is the thread that initialised SDL.
+        if !unsafe { SDL_ShowWindow(window.window) } {
+            return Err(WindowError::CreateWindow(sdl_error()));
+        }
+        Ok(window)
+    }
+
     fn create(
         title: &str,
         width: i32,
@@ -215,7 +249,30 @@ impl InputWindow {
             size.store(w, h);
         }
         // SAFETY: SDL is initialised. Returns 0 when no event types are left.
-        let dialog_event = unsafe { SDL_RegisterEvents(1) };
+        let first_event = unsafe { SDL_RegisterEvents(2) };
+        let (dialog_event, wake_event) = match first_event {
+            0 => (0, 0),
+            first => (first, first + 1),
+        };
+        let scale = WindowScale::default();
+        let (mut pw, mut ww) = (0, 0);
+        // SAFETY: `window` is valid; the out pointers are valid. On failure the scale
+        // stays 1 until the first resize.
+        unsafe {
+            SDL_GetWindowSizeInPixels(window, &mut pw, ptr::null_mut());
+            SDL_GetWindowSize(window, &mut ww, ptr::null_mut());
+        }
+        scale.store(pw, ww);
+        let wayland = video_driver() == "wayland";
+        let alive = Arc::new(Mutex::new(true));
+        let clamp = |v: i32| v.clamp(0, i32::from(u16::MAX)) as u16;
+        // What SDL_CreateWindow did; `new_opengl_in` replaces it before showing.
+        let created = WindowState {
+            mode: WindowMode::Windowed,
+            windowed_size: [clamp(width), clamp(height)],
+            ..WindowState::default()
+        };
+        let window_settings = WindowSettings::new(created, Some(Arc::clone(&alive)), wake_event);
         // SAFETY: `window` is valid.
         let window_flags = unsafe { SDL_GetWindowFlags(window) };
         let (mut w, mut h) = (width, height);
@@ -234,7 +291,7 @@ impl InputWindow {
             opengl,
             size,
             counters: Arc::default(),
-            alive: Arc::new(Mutex::new(true)),
+            alive,
             cursor_hidden: Arc::default(),
             cursor_applied: false,
             text_wanted: Arc::default(),
@@ -243,6 +300,11 @@ impl InputWindow {
             relative_applied: false,
             relative,
             dialog_event,
+            wake_event,
+            state_applied: window_settings.word(),
+            window_settings,
+            scale,
+            wayland,
         })
     }
 
@@ -276,15 +338,51 @@ impl InputWindow {
 
     /// Name of the SDL video driver in use (`wayland`, `x11`, `windows`, ...).
     pub fn video_driver(&self) -> String {
-        // SAFETY: SDL video is initialised while the window exists.
-        let ptr = unsafe { SDL_GetCurrentVideoDriver() };
-        if ptr.is_null() {
-            return String::new();
+        video_driver()
+    }
+
+    /// A handle that sets the window mode, display and sizes (ADR-0070).
+    pub fn window_settings(&self) -> WindowSettings {
+        self.window_settings.clone()
+    }
+
+    /// The window's size in points, as SDL knows it now; `(0, 0)` on failure.
+    pub fn size_in_points(&self) -> (i32, i32) {
+        let (mut w, mut h) = (0, 0);
+        // SAFETY: `window` is valid; `w` and `h` are valid out pointers.
+        unsafe { SDL_GetWindowSize(self.window, &mut w, &mut h) };
+        (w, h)
+    }
+
+    /// A handle that reads the window's pixels per point.
+    pub fn window_scale(&self) -> WindowScale {
+        self.scale.clone()
+    }
+
+    /// Applies the wished [`WindowState`] if it changed since the last time.
+    fn apply_window_state(&mut self) {
+        let word = self.window_settings.word();
+        if word == self.state_applied {
+            return;
         }
-        // SAFETY: SDL returns a static NUL-terminated string.
-        unsafe { CStr::from_ptr(ptr) }
-            .to_string_lossy()
-            .into_owned()
+        self.state_applied = word;
+        // SAFETY: `window` is valid and this is the thread that initialised SDL.
+        unsafe { windowing::apply(self.window, WindowState::unpack(word), self.wayland) };
+        // The mode change may end in a size SDL reports through events, or not at all
+        // when it is unchanged: read the scale now too.
+        self.store_scale();
+    }
+
+    /// Publishes pixels per point from the window's current sizes.
+    fn store_scale(&self) {
+        let (mut pixels, mut points) = (0, 0);
+        // SAFETY: `window` is valid; the out pointers are valid or null. On failure the
+        // zero sizes are ignored.
+        unsafe {
+            SDL_GetWindowSizeInPixels(self.window, &mut pixels, ptr::null_mut());
+            SDL_GetWindowSize(self.window, &mut points, ptr::null_mut());
+        }
+        self.scale.store(pixels, points);
     }
 
     /// Counters updated by [`InputWindow::run`]; share them with the thread that shows
@@ -401,6 +499,7 @@ impl InputWindow {
                 let window = unsafe { event.window };
                 self.relative
                     .set_size(window.data1 as f32, window.data2 as f32);
+                self.store_scale();
                 Change::default()
             }
             _ => return false,
@@ -440,6 +539,7 @@ impl InputWindow {
             self.apply_cursor();
             self.apply_text_input();
             self.apply_mouse();
+            self.apply_window_state();
             // SAFETY: SDL is initialised on this thread; `event` is a valid out pointer.
             if !unsafe { SDL_WaitEvent(&mut event) } {
                 return Err(WindowError::WaitEvent(sdl_error()));
@@ -453,12 +553,35 @@ impl InputWindow {
                 continue;
             }
             // SAFETY: `type` is the common prefix of every SDL_Event variant.
+            if self.wake_event != 0 && unsafe { event.r#type } == self.wake_event {
+                // A WindowSettings wake-up: the new state is applied at the loop's top.
+                continue;
+            }
+            // SAFETY: `type` is the common prefix of every SDL_Event variant.
             match SDL_EventType(unsafe { event.r#type }) {
                 SDL_EVENT_QUIT => return Ok(()),
                 SDL_EVENT_WINDOW_PIXEL_SIZE_CHANGED => {
                     // SAFETY: the event type says this is a window event.
                     let window = unsafe { event.window };
                     self.size.store(window.data1, window.data2);
+                    self.store_scale();
+                }
+                SDL_EVENT_KEY_DOWN if is_mode_key(&event) => {
+                    // SAFETY: the event type says this is a keyboard event.
+                    let key = unsafe { event.key };
+                    // Swallowed, repeats too, as osu-framework handles the binding before
+                    // the game sees it: Alt+Enter must not also press Enter.
+                    if !key.repeat {
+                        let state = self.window_settings.cycle_mode();
+                        self.apply_window_state();
+                        let queued = sink.push(InputEvent {
+                            time_ns: mapper.map(key.timestamp),
+                            kind: InputKind::WindowMode(state.mode),
+                        });
+                        if queued {
+                            self.counters.record_queued();
+                        }
+                    }
                 }
                 SDL_EVENT_MOUSE_MOTION => {
                     // SAFETY: the event type says this is a motion event.
@@ -555,6 +678,43 @@ impl Drop for InputWindow {
         }
         SDL_ACTIVE.store(false, Ordering::Release);
     }
+}
+
+/// Whether a key-down event is Alt+Enter or F11 with nothing else held (ADR-0070).
+fn is_mode_key(event: &SDL_Event) -> bool {
+    // SAFETY: called for key-down events only, so `key` is the variant SDL filled.
+    let key = unsafe { event.key };
+    let Ok(scancode) = u16::try_from(key.scancode.0) else {
+        return false;
+    };
+    if !cycles_mode(scancode, key.r#mod.0) {
+        return false;
+    }
+    let mut count = 0;
+    // SAFETY: SDL video is initialised on this thread (the event came from it). The
+    // array is SDL's, valid for the program's life and `count` long.
+    let pressed = unsafe {
+        let state = SDL_GetKeyboardState(&mut count);
+        if state.is_null() {
+            return true;
+        }
+        std::slice::from_raw_parts(state, usize::try_from(count).unwrap_or(0))
+    };
+    // SAFETY: null positions are allowed; SDL is initialised on this thread.
+    let buttons = unsafe { SDL_GetMouseState(ptr::null_mut(), ptr::null_mut()) };
+    buttons.0 == 0 && only_held(scancode, pressed)
+}
+
+fn video_driver() -> String {
+    // SAFETY: SDL video is initialised while a window exists.
+    let ptr = unsafe { SDL_GetCurrentVideoDriver() };
+    if ptr.is_null() {
+        return String::new();
+    }
+    // SAFETY: SDL returns a static NUL-terminated string.
+    unsafe { CStr::from_ptr(ptr) }
+        .to_string_lossy()
+        .into_owned()
 }
 
 pub(crate) fn sdl_error() -> String {

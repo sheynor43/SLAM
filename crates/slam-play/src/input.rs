@@ -367,7 +367,10 @@ impl LiveInput {
                 self.parent_path.push(self.layout.to_playfield(window));
                 return None;
             }
-            InputKind::MouseWheel { .. } | InputKind::KeyRepeat { .. } | InputKind::Text(_) => {
+            InputKind::MouseWheel { .. }
+            | InputKind::KeyRepeat { .. }
+            | InputKind::Text(_)
+            | InputKind::WindowMode(_) => {
                 return None;
             }
             InputKind::Key { scancode, down } => (Input::Key(scancode), down),
@@ -572,8 +575,11 @@ impl LiveInput {
                 self.path.push(self.position);
                 return true;
             }
-            // Gameplay does not use the wheel, key repeats or text.
-            InputKind::MouseWheel { .. } | InputKind::KeyRepeat { .. } | InputKind::Text(_) => {
+            // Gameplay does not use the wheel, key repeats, text or window modes.
+            InputKind::MouseWheel { .. }
+            | InputKind::KeyRepeat { .. }
+            | InputKind::Text(_)
+            | InputKind::WindowMode(_) => {
                 return true;
             }
             InputKind::Key { scancode, down } => (Input::Key(scancode), down),

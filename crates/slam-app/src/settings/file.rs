@@ -11,7 +11,8 @@ use toml::{Table, Value};
 
 use super::keys;
 use super::model::{
-    BindingEntry, DrawRate, FpsScreens, InputSettings, KeySlot, Settings, Timing, corner_from_name,
+    BindingEntry, DrawRate, FpsScreens, InputSettings, KeySlot, Settings, Timing, Window,
+    corner_from_name, parse_size, window_mode_from_name,
 };
 
 /// The schema version this build writes.
@@ -370,6 +371,8 @@ fn from_table(mut table: Table) -> Loaded {
     settings.gameplay.hit_error_scale = (settings.gameplay.hit_error_scale * 100.0).round() / 100.0;
     cx.unknown(&gameplay, "gameplay");
 
+    read_window(&mut cx, &mut table, &mut settings.window);
+
     let mut input = cx.section(&mut table, "input");
     cx.field(
         &mut input,
@@ -408,7 +411,18 @@ fn from_table(mut table: Table) -> Loaded {
                                 action: raw.action,
                             };
                             if let Some(binding) = entry.to_binding() {
-                                entries.push(binding);
+                                if Settings::key_allowed(
+                                    KeySlot::Play(binding.action, 0),
+                                    binding.input,
+                                ) {
+                                    entries.push(binding);
+                                } else {
+                                    skipped += 1;
+                                    cx.warn(format!(
+                                        "{name}: {} is reserved for the window, entry skipped",
+                                        entry.input
+                                    ));
+                                }
                             } else {
                                 skipped += 1;
                                 cx.warn(format!(
@@ -485,6 +499,68 @@ fn from_table(mut table: Table) -> Loaded {
         warnings: cx.warnings,
         status,
     }
+}
+
+/// The `[window]` section (ADR-0070): each invalid value falls back to its default.
+fn read_window(cx: &mut Ctx, table: &mut Table, window: &mut Window) {
+    let mut section = cx.section(table, "window");
+    let mut mode: Option<String> = None;
+    cx.opt(&mut section, "window", "mode", &mut mode);
+    if let Some(name) = mode {
+        match window_mode_from_name(&name) {
+            Some(mode) => window.mode = mode,
+            None => cx.warn(format!(
+                "window.mode: unknown mode \"{name}\", using the default"
+            )),
+        }
+    }
+    let mut size: Option<String> = None;
+    cx.opt(&mut section, "window", "fullscreen_size", &mut size);
+    if let Some(text) = size {
+        match parse_size(&text) {
+            _ if text == "native" => window.fullscreen_size = None,
+            Some(size) if Window::size_fits(size, Window::MIN_FULLSCREEN_SIZE) => {
+                window.fullscreen_size = Some(size);
+            }
+            _ => cx.warn(format!(
+                "window.fullscreen_size: \"{text}\" is not \"native\" or a size from {} to {}, using the default",
+                size_text(Window::MIN_FULLSCREEN_SIZE),
+                size_text([Window::MAX_SIDE; 2])
+            )),
+        }
+    }
+    let mut size: Option<String> = None;
+    cx.opt(&mut section, "window", "windowed_size", &mut size);
+    if let Some(text) = size {
+        match parse_size(&text) {
+            Some(size) if Window::size_fits(size, Window::MIN_WINDOWED_SIZE) => {
+                window.windowed_size = size;
+            }
+            _ => cx.warn(format!(
+                "window.windowed_size: \"{text}\" is not a size from {} to {}, using the default",
+                size_text(Window::MIN_WINDOWED_SIZE),
+                size_text([Window::MAX_SIDE; 2])
+            )),
+        }
+    }
+    cx.field(
+        &mut section,
+        "window",
+        "display",
+        &mut window.display,
+        |&d| {
+            if d <= Window::MAX_DISPLAY {
+                Ok(())
+            } else {
+                Err(format!("{d} is above {}", Window::MAX_DISPLAY))
+            }
+        },
+    );
+    cx.unknown(&section, "window");
+}
+
+fn size_text([w, h]: [u16; 2]) -> String {
+    format!("{w}x{h}")
 }
 
 #[derive(serde::Deserialize)]

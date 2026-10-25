@@ -18,9 +18,11 @@ mod counters;
 mod dialog;
 mod event;
 mod gl;
+mod mode;
 mod relative;
 mod ring;
 mod window;
+mod windowing;
 
 pub use clock::{
     MAX_BRACKET_NS, MAX_REJECTIONS, RECALIBRATE_INTERVAL_NS, RETRY_SPACING_NS, TickMapper,
@@ -31,6 +33,10 @@ pub use counters::InputCounters;
 pub use dialog::{FolderCallback, FolderDialog, FolderPick};
 pub use event::{InputEvent, InputKind, MouseButton, TextChunk};
 pub use gl::GlContext;
+pub use mode::{
+    DEFAULT_WINDOWED_SIZE, MAX_DISPLAY, MAX_SIDE, MIN_WINDOWED_SIZE, WindowMode, WindowScale,
+    WindowSettings, WindowState,
+};
 pub use relative::{MAX_SENSITIVITY, MIN_SENSITIVITY, MouseSettings};
 pub use ring::{BUTTON_RESERVE, EventSink, EventSource, Notify, event_ring};
 pub use window::{CursorVisibility, InputWindow, QuitHandle, TextInput, WindowError, dispatch};

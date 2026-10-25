@@ -15,7 +15,10 @@ use slam_engine::clock::now_ns;
 use slam_engine::gl::SdlGlSurface;
 use slam_engine::limiter::{LimiterMode, MAX_HZ, MIN_HZ, is_valid_hz};
 use slam_engine::{Draw, Engine, EngineConfig, FrameInfo, TickInfo, Update};
-use slam_input::{CursorVisibility, InputEvent, InputWindow, TickMapper, event_ring, sdl_ticks_ns};
+use slam_input::{
+    CursorVisibility, DEFAULT_WINDOWED_SIZE, InputEvent, InputWindow, TickMapper, WindowScale,
+    event_ring, sdl_ticks_ns,
+};
 use slam_osu::judgement::HitResult;
 use slam_osu::{Mod, ModSet};
 use slam_play::{
@@ -38,7 +41,6 @@ pub const USAGE: &str = "usage: slam-app play MAP.osu [--skin DIR] [--backend NA
                          [--device ID] [--buffer FRAMES] [--fps HZ|unlimited] \
                          [--update-hz HZ] [--mods HDHR] [--dim PERCENT] [--no-beatmap-skins] [--no-beatmap-colours] [--no-beatmap-hitsounds] [--show-fps] [--no-mouse-buttons] [--no-stats]";
 
-const WINDOW: (i32, i32) = (1280, 720);
 /// How long the track may take to open.
 const LOAD_TIMEOUT: Duration = Duration::from_secs(10);
 /// How long the draw thread waits for the HUD's glyphs before the first frame.
@@ -231,8 +233,10 @@ struct Gameplay {
     surface: Arc<AtomicU64>,
     /// The size the input layout was made for.
     layout_size: u64,
-    /// Input arrives in window points, the surface is in pixels.
-    points_per_pixel: f32,
+    /// The window's pixels per point: input arrives in points, the surface is in pixels.
+    scale: WindowScale,
+    /// The scale the input layout was made for.
+    pixels_per_point: f32,
     /// Set once the player quits; the window closes then.
     exited: Arc<AtomicBool>,
     /// Hides the OS cursor while gameplay draws its own.
@@ -251,12 +255,16 @@ impl Update for Gameplay {
         // event queue only counts the events it drops.
         let size = self.surface.load(Ordering::Relaxed);
         // A minimised window may report 0×0: keep the last layout.
-        if size != self.layout_size && size >> 32 != 0 && size & 0xffff_ffff != 0 {
+        let ppp = self.scale.pixels_per_point();
+        if (size != self.layout_size || ppp != self.pixels_per_point)
+            && size >> 32 != 0
+            && size & 0xffff_ffff != 0
+        {
             self.layout_size = size;
+            self.pixels_per_point = ppp;
             let (w, h) = ((size >> 32) as f32, (size & 0xffff_ffff) as f32);
-            let ppp = self.points_per_pixel;
             self.session
-                .set_layout(PlayfieldLayout::new(w * ppp, h * ppp));
+                .set_layout(PlayfieldLayout::new(w / ppp, h / ppp));
         }
         let (output, music) = (self.output.read(), self.music.read());
         self.session.tick(
@@ -434,15 +442,14 @@ pub fn run(options: &Options) -> Result<(), String> {
     )
     .map_err(|e| e.to_string())?;
 
+    // A developer tool: always windowed, without the settings' [window] (ADR-0070).
+    let [window_w, window_h] = DEFAULT_WINDOWED_SIZE.map(i32::from);
     let mut window =
-        InputWindow::new_opengl("SLAM", WINDOW.0, WINDOW.1).map_err(|e| e.to_string())?;
+        InputWindow::new_opengl("SLAM", window_w, window_h).map_err(|e| e.to_string())?;
     let surface = SdlGlSurface(window.create_gl_context().map_err(|e| e.to_string())?);
     let (pixels_w, pixels_h) = surface.0.size_in_pixels();
-    let points_per_pixel = if pixels_w > 0 {
-        WINDOW.0 as f32 / pixels_w as f32
-    } else {
-        1.0
-    };
+    let scale = window.window_scale();
+    let pixels_per_point = scale.pixels_per_point();
     let initial_size = pack_size(pixels_w, pixels_h);
     let surface_size = Arc::new(AtomicU64::new(initial_size));
     let (surface, limits) = device_limits(surface)?;
@@ -469,8 +476,8 @@ pub fn run(options: &Options) -> Result<(), String> {
     let mut input = LiveInput::new(
         Bindings::default(),
         PlayfieldLayout::new(
-            pixels_w as f32 * points_per_pixel,
-            pixels_h as f32 * points_per_pixel,
+            pixels_w as f32 / pixels_per_point,
+            pixels_h as f32 / pixels_per_point,
         ),
     );
     input.set_mouse_buttons_disabled(!options.mouse_buttons);
@@ -481,7 +488,8 @@ pub fn run(options: &Options) -> Result<(), String> {
         output: Arc::clone(stream.position()),
         surface: Arc::clone(&surface_size),
         layout_size: initial_size,
-        points_per_pixel,
+        scale,
+        pixels_per_point,
         exited: Arc::clone(&exited),
         os_cursor: {
             // Hidden from the first frame: the play starts without an event to apply it.

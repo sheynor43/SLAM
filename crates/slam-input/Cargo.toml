@@ -9,6 +9,7 @@ publish.workspace = true
 [dependencies]
 rtrb.workspace = true
 thiserror.workspace = true
+tracing.workspace = true
 sdl3-sys.workspace = true
 
 # Linux and Windows (MSVC): build SDL3 from the vendored sources and link statically, so

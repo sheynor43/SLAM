@@ -1717,6 +1717,7 @@ dependencies = [
  "sdl3-sys",
  "slam-testkit",
  "thiserror",
+ "tracing",
 ]
 
 [[package]]
