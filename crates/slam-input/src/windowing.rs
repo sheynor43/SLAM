@@ -9,22 +9,31 @@ use sdl3_sys::video::{
     SDL_DisplayID, SDL_DisplayMode, SDL_GetClosestFullscreenDisplayMode, SDL_GetDesktopDisplayMode,
     SDL_GetDisplayBounds, SDL_GetDisplayForWindow, SDL_GetDisplays, SDL_GetFullscreenDisplayModes,
     SDL_GetPrimaryDisplay, SDL_GetWindowFullscreenMode, SDL_RestoreWindow, SDL_SetWindowBordered,
-    SDL_SetWindowFullscreen, SDL_SetWindowFullscreenMode, SDL_SetWindowPosition,
-    SDL_SetWindowResizable, SDL_SetWindowSize, SDL_Window,
+    SDL_SetWindowFullscreen, SDL_SetWindowFullscreenMode, SDL_SetWindowMinimumSize,
+    SDL_SetWindowPosition, SDL_SetWindowResizable, SDL_SetWindowSize, SDL_Window,
 };
 
-use crate::mode::{WindowMode, WindowState, wayland_native_mode, window_position};
+use crate::mode::{
+    MIN_WINDOWED_SIZE, WindowMode, WindowState, wayland_native_mode, window_position,
+};
 use crate::window::sdl_error;
 
-/// Puts `window` into `state`. Failed SDL calls are logged and skipped, as
+/// Puts `window` into `state`, a windowed window at `position` (fractions of the
+/// display's free space, ADR-0073). Failed SDL calls are logged and skipped, as
 /// osu-framework's `LogErrorIfFailed`. Allocates (display lists): main thread, on mode
-/// changes only.
+/// changes only. Returns whether the window is a borderless one 1 px wider than its
+/// display ([`BORDERLESS_WIDTH_HACK`], Windows only).
 ///
 /// # Safety
 /// `window` is valid, on the thread that initialised SDL.
 // Ported from osu-framework 2026.921.1: osu.Framework/Platform/SDL3/SDL3DesktopWindow.cs (UpdateWindowStateAndSize)
 // Ported from osu-framework 2026.921.1: osu.Framework/Platform/SDL3/SDL3Window.Windowing.cs (UpdateWindowStateAndSize)
-pub(crate) unsafe fn apply(window: *mut SDL_Window, state: WindowState, wayland: bool) {
+pub(crate) unsafe fn apply(
+    window: *mut SDL_Window,
+    state: WindowState,
+    position: [f32; 2],
+    wayland: bool,
+) -> bool {
     let display = display_at(state.display);
     let windowed = state.windowed_size.map(i32::from);
     // SAFETY: guaranteed by the caller for every call below.
@@ -47,8 +56,14 @@ pub(crate) unsafe fn apply(window: *mut SDL_Window, state: WindowState, wayland:
                     SDL_SetWindowResizable(window, true),
                     "SDL_SetWindowResizable",
                 );
-                // Saved positions arrive with #245; until then the window is centred.
-                move_to(window, display, windowed, [0.5, 0.5]);
+                // The player cannot drag the window below the smallest windowed size
+                // the settings take, as osu-framework's `WindowedSize.MinValue`.
+                let [min_w, min_h] = MIN_WINDOWED_SIZE.map(i32::from);
+                check(
+                    SDL_SetWindowMinimumSize(window, min_w, min_h),
+                    "SDL_SetWindowMinimumSize",
+                );
+                move_to(window, display, windowed, position);
             }
             WindowMode::Fullscreen => {
                 let Some(mode) = best_fullscreen_mode(window, display, state, wayland) else {
@@ -59,7 +74,7 @@ pub(crate) unsafe fn apply(window: *mut SDL_Window, state: WindowState, wayland:
                         SDL_SetWindowSize(window, windowed[0], windowed[1]),
                         "SDL_SetWindowSize",
                     );
-                    return;
+                    return false;
                 };
                 ensure_on_display(window, display, windowed);
                 check(
@@ -71,8 +86,10 @@ pub(crate) unsafe fn apply(window: *mut SDL_Window, state: WindowState, wayland:
                     "SDL_SetWindowFullscreen",
                 );
             }
+            WindowMode::Borderless if cfg!(windows) => {
+                return set_borderless_windows(window, display);
+            }
             WindowMode::Borderless => {
-                // The Windows variant (a borderless window 1 px wider) comes with #245.
                 ensure_on_display(window, display, windowed);
                 check(
                     SDL_SetWindowFullscreenMode(window, ptr::null()),
@@ -85,6 +102,64 @@ pub(crate) unsafe fn apply(window: *mut SDL_Window, state: WindowState, wayland:
             }
         }
     }
+    false
+}
+
+/// Extra width of a borderless window on Windows. Some drivers switch a window that
+/// exactly covers its display to exclusive fullscreen on their own; one more column
+/// keeps it a plain window. The window reports its size without it, so nothing is
+/// drawn into the extra column.
+// Ported from osu-framework 2026.921.1: osu.Framework/Platform/Windows/SDL3WindowsWindow.cs (windows_borderless_width_hack)
+pub(crate) const BORDERLESS_WIDTH_HACK: i32 = 1;
+
+/// A borderless window covering `display` plus [`BORDERLESS_WIDTH_HACK`], without
+/// SDL's fullscreen; false, leaving a plain window, when the display has no bounds. osu-framework does this for OpenGL and Vulkan, our only renderer
+/// for now; Direct3D 11 (#29) will skip it, as there.
+///
+/// # Safety
+/// As [`apply`].
+// Ported from osu-framework 2026.921.1: osu.Framework/Platform/Windows/SDL3WindowsWindow.cs (SetBorderless)
+unsafe fn set_borderless_windows(window: *mut SDL_Window, display: SDL_DisplayID) -> bool {
+    let Some([x, y, w, h]) = display_bounds(display) else {
+        return false;
+    };
+    // SAFETY: guaranteed by the caller for every call below.
+    unsafe {
+        check(
+            SDL_SetWindowBordered(window, false),
+            "SDL_SetWindowBordered",
+        );
+        check(
+            SDL_SetWindowSize(window, w + BORDERLESS_WIDTH_HACK, h),
+            "SDL_SetWindowSize",
+        );
+        check(SDL_SetWindowPosition(window, x, y), "SDL_SetWindowPosition");
+    }
+    true
+}
+
+/// The index of `display` in SDL's display list, if it is listed within
+/// [`crate::MAX_DISPLAY`]. Allocates in SDL: call it when the window's display changes,
+/// not on every event.
+pub(crate) fn display_index(display: SDL_DisplayID) -> Option<u8> {
+    let mut count = 0;
+    // SAFETY: SDL video is initialised (the caller holds a window); `count` is a valid
+    // out pointer. The array is freed below.
+    let list = unsafe { SDL_GetDisplays(&mut count) };
+    if list.is_null() {
+        return None;
+    }
+    let count = usize::try_from(count).unwrap_or(0);
+    // SAFETY: SDL returned an array of `count` display IDs.
+    let ids = unsafe { std::slice::from_raw_parts(list, count) };
+    let index = ids
+        .iter()
+        .position(|&id| id == display)
+        .and_then(|i| u8::try_from(i).ok())
+        .filter(|&i| i <= crate::MAX_DISPLAY);
+    // SAFETY: SDL allocated the array and leaves it to us; `ids` is not used after this.
+    unsafe { SDL_free(list.cast()) };
+    index
 }
 
 fn check(done: bool, call: &str) {
@@ -113,7 +188,7 @@ fn display_at(index: u8) -> SDL_DisplayID {
     id.unwrap_or_else(|| unsafe { SDL_GetPrimaryDisplay() })
 }
 
-fn display_bounds(display: SDL_DisplayID) -> Option<[i32; 4]> {
+pub(crate) fn display_bounds(display: SDL_DisplayID) -> Option<[i32; 4]> {
     let mut rect = SDL_Rect::default();
     // SAFETY: SDL video is initialised; `rect` is a valid out pointer.
     if unsafe { SDL_GetDisplayBounds(display, &mut rect) } {

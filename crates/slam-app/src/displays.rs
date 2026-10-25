@@ -31,6 +31,10 @@ pub struct SizeLists {
     pub windowed: Vec<[u16; 2]>,
     /// Whether `windowed` has the window's size although no mode has it.
     pub custom_windowed: bool,
+    /// The display's bounds and usable bounds (x, y, width, height in points), to fit a
+    /// windowed size into (ADR-0073).
+    pub bounds: [i32; 4],
+    pub usable: [i32; 4],
 }
 
 impl SizeLists {
@@ -121,7 +125,44 @@ pub fn size_lists(display: &Display, windowed_size: [u16; 2]) -> SizeLists {
             .collect(),
         windowed,
         custom_windowed,
+        bounds: display.bounds,
+        usable: display.usable,
     }
+}
+
+/// A windowed `size` the player picked, fitted into the display's usable bounds below a
+/// title bar `top` points high, and the windowed position that centres it there without
+/// hiding the title bar (ADR-0073). Bottom, left and right borders are ignored, as lazer:
+/// they are invisible padding.
+// Ported from osu!lazer 2026.1005.0-lazer: osu.Game/Overlays/Settings/Sections/Graphics/LayoutSettings.cs (windowedResolution.BindValueChanged)
+pub fn fit_windowed(
+    size: [u16; 2],
+    bounds: [i32; 4],
+    usable: [i32; 4],
+    top: f32,
+) -> ([u16; 2], [f32; 2]) {
+    let [bx, by, bw, bh] = bounds;
+    let [ux, uy, uw, uh] = usable;
+    let w = i32::from(size[0]).min(uw);
+    let h = (f32::from(size[1]).min(uh as f32 - top)) as i32;
+    let adjusted_y = (uy as f32 + (uh - h) as f32 / 2.0).max(uy as f32 + top);
+    let y = if bh - h != 0 {
+        (adjusted_y - by as f32) / (bh - h) as f32
+    } else {
+        0.0
+    };
+    let x = if bw - w != 0 {
+        ((ux - bx) as f32 + (uw - w) as f32 / 2.0) / (bw - w) as f32
+    } else {
+        0.0
+    };
+    // The setting's own limits, as lazer's bindables clamp what is stored.
+    let side = |v: i32, min: u16| v.clamp(i32::from(min), i32::from(slam_input::MAX_SIDE)) as u16;
+    let [min_w, min_h] = slam_input::MIN_WINDOWED_SIZE;
+    (
+        [side(w, min_w), side(h, min_h)],
+        slam_input::clamp_position([x, y]),
+    )
 }
 
 /// The lists of every display in `displays`, numbered `generation`.

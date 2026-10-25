@@ -37,8 +37,8 @@ pub use displays::{Display, Displays, DisplaysCallback};
 pub use event::{InputEvent, InputKind, MouseButton, TextChunk};
 pub use gl::GlContext;
 pub use mode::{
-    DEFAULT_WINDOWED_SIZE, MAX_DISPLAY, MAX_SIDE, MIN_WINDOWED_SIZE, WindowMode, WindowScale,
-    WindowSettings, WindowState,
+    DEFAULT_POSITION, DEFAULT_WINDOWED_SIZE, MAX_DISPLAY, MAX_SIDE, MIN_WINDOWED_SIZE,
+    POSITION_RANGE, WindowMode, WindowScale, WindowSettings, WindowState, clamp_position,
 };
 pub use relative::{MAX_SENSITIVITY, MIN_SENSITIVITY, MouseSettings};
 pub use ring::{BUTTON_RESERVE, EventSink, EventSource, Notify, event_ring};

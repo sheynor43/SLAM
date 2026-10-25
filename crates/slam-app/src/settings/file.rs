@@ -556,7 +556,43 @@ fn read_window(cx: &mut Ctx, table: &mut Table, window: &mut Window) {
             }
         },
     );
+    read_position(cx, &mut section, &mut window.windowed_position);
+    cx.field(
+        &mut section,
+        "window",
+        "minimise_on_focus_loss",
+        &mut window.minimise_on_focus_loss,
+        |_| Ok(()),
+    );
     cx.unknown(&section, "window");
+}
+
+/// `windowed_position = [x, y]`, numbers in [`Window::POSITION_RANGE`] (ADR-0073).
+fn read_position(cx: &mut Ctx, section: &mut Table, slot: &mut [f32; 2]) {
+    let Some(value) = section.remove("windowed_position") else {
+        return;
+    };
+    let number = |v: &Value| match v {
+        Value::Float(f) => Some(*f as f32),
+        Value::Integer(i) => Some(*i as f32),
+        _ => None,
+    };
+    let position = match &value {
+        Value::Array(items) if items.len() == 2 => number(&items[0]).zip(number(&items[1])),
+        _ => None,
+    };
+    match position {
+        Some((x, y))
+            if Window::POSITION_RANGE.contains(&x) && Window::POSITION_RANGE.contains(&y) =>
+        {
+            *slot = [x, y];
+        }
+        _ => cx.warn(format!(
+            "window.windowed_position: {value} is not two numbers from {} to {}, using the default",
+            Window::POSITION_RANGE.start(),
+            Window::POSITION_RANGE.end()
+        )),
+    }
 }
 
 fn size_text([w, h]: [u16; 2]) -> String {

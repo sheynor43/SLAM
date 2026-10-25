@@ -1,6 +1,6 @@
 //! Window modes, the wished window state and the window's scale (ADR-0070).
 
-use std::sync::atomic::{AtomicU32, AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicI32, AtomicU32, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, PoisonError};
 
 use sdl3_sys::events::{SDL_Event, SDL_PushEvent, SDL_UserEvent};
@@ -20,6 +20,10 @@ const SIDE_BITS: u32 = 14;
 const DISPLAY_BITS: u32 = 6;
 /// Largest display index a [`WindowState`] can hold.
 pub const MAX_DISPLAY: u8 = (1 << DISPLAY_BITS) - 1;
+/// Windowed position at first start: centred, as `FrameworkSetting.WindowedPositionX/Y`.
+pub const DEFAULT_POSITION: [f32; 2] = [0.5, 0.5];
+/// Range of each windowed position fraction, as osu-framework's bindables.
+pub const POSITION_RANGE: std::ops::RangeInclusive<f32> = -0.5..=1.5;
 
 /// How the window covers the screen, as osu-framework's `WindowMode`.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash)]
@@ -143,6 +147,13 @@ pub struct WindowSettings {
 struct Shared {
     /// [`WindowState::pack`].
     state: AtomicU64,
+    /// [`pack_position`]: the windowed position, written before `state` by the update
+    /// thread and read after it by the window (ADR-0073).
+    position: AtomicU64,
+    /// Whether to minimise the window on focus loss in [`WindowMode::Fullscreen`].
+    minimise_on_focus_loss: AtomicBool,
+    /// Height of the window's top border in points, as the window last read it.
+    title_bar: AtomicI32,
     /// Whether SDL is up, as [`crate::QuitHandle`]; `None` for a handle of no window.
     alive: Option<Arc<Mutex<bool>>>,
     /// The registered SDL event type that wakes the window; 0 when SDL had none left.
@@ -164,6 +175,9 @@ impl WindowSettings {
         Self {
             shared: Arc::new(Shared {
                 state: AtomicU64::new(state.pack()),
+                position: AtomicU64::new(pack_position(DEFAULT_POSITION)),
+                minimise_on_focus_loss: AtomicBool::new(true),
+                title_bar: AtomicI32::new(0),
                 alive,
                 wake_event,
             }),
@@ -213,6 +227,59 @@ impl WindowSettings {
 
     pub(crate) fn word(&self) -> u64 {
         self.shared.state.load(Ordering::Acquire)
+    }
+
+    /// Sets the windowed position: fractions of the display's free space, clamped to
+    /// [`POSITION_RANGE`] (NaN reads as centred). Wakes nothing: the window places itself
+    /// on its next state change, so set it before the [`WindowState`] it goes with.
+    pub fn set_position(&self, position: [f32; 2]) {
+        self.shared
+            .position
+            .store(pack_position(position), Ordering::Release);
+    }
+
+    /// The windowed position, as stored (clamped); the window updates it when the player
+    /// moves it (ADR-0073).
+    pub fn position(&self) -> [f32; 2] {
+        unpack_position(self.shared.position.load(Ordering::Acquire))
+    }
+
+    /// Asks the window to minimise on focus loss in [`WindowMode::Fullscreen`] or not,
+    /// as osu-framework's `MinimiseOnFocusLossInFullscreen`. Applied before the window
+    /// waits for its next event; wakes nothing, as it only matters on the next focus loss.
+    pub fn set_minimise_on_focus_loss(&self, minimise: bool) {
+        self.shared
+            .minimise_on_focus_loss
+            .store(minimise, Ordering::Relaxed);
+    }
+
+    /// The last wish of [`WindowSettings::set_minimise_on_focus_loss`].
+    pub fn minimise_on_focus_loss(&self) -> bool {
+        self.shared.minimise_on_focus_loss.load(Ordering::Relaxed)
+    }
+
+    /// Height of the window's top border (its title bar) in points, as osu-framework's
+    /// `BorderSize.Top`: read by the window after each state change and resize, 0 until
+    /// then or where SDL cannot tell (Wayland).
+    pub fn title_bar(&self) -> i32 {
+        self.shared.title_bar.load(Ordering::Relaxed)
+    }
+
+    pub(crate) fn store_title_bar(&self, top: i32) {
+        self.shared.title_bar.store(top.max(0), Ordering::Relaxed);
+    }
+
+    /// The window reports a change it made itself (resized, moved to another display):
+    /// replaces the word only if it still is `applied`, the state the window applied
+    /// last, so a wish from another thread is never overwritten. Wakes nothing. Returns
+    /// the stored word on success.
+    pub(crate) fn report(&self, applied: u64, state: WindowState) -> Option<u64> {
+        let word = state.pack();
+        self.shared
+            .state
+            .compare_exchange(applied, word, Ordering::AcqRel, Ordering::Acquire)
+            .ok()
+            .map(|_| word)
     }
 
     /// Moves the wish to the next mode (Alt+Enter, F11) and returns the new state. A
@@ -302,6 +369,41 @@ impl WindowScale {
     }
 }
 
+/// SDL's minimise-on-focus-loss hint for `mode`: on only in fullscreen with the
+/// setting on. SDL3 minimises any fullscreen window with the hint on, borderless ones
+/// too, which osu-framework's `TestMinimiseOnFocusLoss` does not expect (ADR-0073).
+pub(crate) fn minimise_hint(mode: WindowMode, setting: bool) -> bool {
+    setting && mode == WindowMode::Fullscreen
+}
+
+/// The position fractions in one word, `x` in the low half, each clamped to
+/// [`POSITION_RANGE`]; NaN becomes the default.
+pub(crate) fn pack_position(position: [f32; 2]) -> u64 {
+    let [x, y] = clamp_position(position);
+    u64::from(x.to_bits()) | u64::from(y.to_bits()) << 32
+}
+
+pub(crate) fn unpack_position(word: u64) -> [f32; 2] {
+    [
+        f32::from_bits(word as u32),
+        f32::from_bits((word >> 32) as u32),
+    ]
+}
+
+/// `position` within [`POSITION_RANGE`]; a NaN fraction becomes the default, as the
+/// settings file has no other way to say "unset".
+pub fn clamp_position(position: [f32; 2]) -> [f32; 2] {
+    let (min, max) = (*POSITION_RANGE.start(), *POSITION_RANGE.end());
+    [0, 1].map(|i| {
+        let at = position[i];
+        if at.is_nan() {
+            DEFAULT_POSITION[i]
+        } else {
+            at.clamp(min, max)
+        }
+    })
+}
+
 /// Whether a key press may cycle the window mode, by the modifiers SDL put on the event:
 /// Alt+Enter with Alt alone, or F11 with no modifier. Lock modifiers (Num, Caps, Scroll,
 /// AltGr's Mode) do not count. The full check adds [`only_held`].
@@ -374,6 +476,25 @@ pub(crate) fn window_position(bounds: [i32; 4], size: [i32; 2], position: [f32; 
         x + place(w - size[0], position[0]),
         y + place(h - size[1], position[1]),
     ]
+}
+
+/// The position fractions of a window of `size` at `at` on a display at `bounds`
+/// (`[x, y, w, h]`), the inverse of [`window_position`]: 0 on an axis where the window
+/// is no smaller than the display. Clamped as the setting is.
+// Ported from osu-framework 2026.921.1: osu.Framework/Platform/SDL3/SDL3Window.Windowing.cs (storeWindowPositionToConfig)
+pub(crate) fn position_fraction(bounds: [i32; 4], size: [i32; 2], at: [i32; 2]) -> [f32; 2] {
+    let [x, y, w, h] = bounds;
+    let fraction = |offset: i32, display: i32, window: i32| {
+        if display > window {
+            offset as f32 / (display - window) as f32
+        } else {
+            0.0
+        }
+    };
+    clamp_position([
+        fraction(at[0] - x, w, size[0]),
+        fraction(at[1] - y, h, size[1]),
+    ])
 }
 
 #[cfg(test)]
@@ -574,5 +695,83 @@ mod tests {
         );
         // Round half to even, as .NET's Math.Round.
         assert_eq!(window_position([0, 0, 101, 0], [0, 0], [0.5, 0.0]), [50, 0]);
+    }
+
+    #[test]
+    fn position_fraction_inverts_the_placement() {
+        let bounds = [1920, 0, 2560, 1440];
+        let size = [1366, 768];
+        assert_eq!(
+            position_fraction(bounds, size, [1920 + 597, 336]),
+            [0.5, 0.5]
+        );
+        // A saved place puts the window back on the same pixel.
+        for at in [[1920, 0], [1920 + 1194, 672], [1920 + 299, 501]] {
+            let position = position_fraction(bounds, size, at);
+            assert_eq!(window_position(bounds, size, position), at);
+        }
+        // A window no smaller than the display sits at 0 on that axis.
+        assert_eq!(
+            position_fraction(bounds, [2560, 768], [1900, 336]),
+            [0.0, 0.5]
+        );
+        // Dragged far off the display: clamped as the setting is.
+        assert_eq!(position_fraction(bounds, size, [-9000, 9000]), [-0.5, 1.5]);
+    }
+
+    #[test]
+    fn position_is_clamped_and_nan_is_centred() {
+        assert_eq!(clamp_position([-2.0, 7.0]), [-0.5, 1.5]);
+        assert_eq!(clamp_position([f32::NAN, 0.3]), [0.5, 0.3]);
+        let handle = WindowSettings::default();
+        assert_eq!(handle.position(), DEFAULT_POSITION);
+        handle.set_position([0.1, 2.0]);
+        assert_eq!(handle.position(), [0.1, 1.5]);
+        assert_eq!(unpack_position(pack_position([-0.25, 1.25])), [-0.25, 1.25]);
+    }
+
+    #[test]
+    fn a_report_of_the_window_never_overwrites_a_newer_wish() {
+        let handle = WindowSettings::default();
+        let applied = handle.word();
+        let resized = WindowState {
+            windowed_size: [800, 600],
+            ..handle.get()
+        };
+        assert_eq!(handle.report(applied, resized), Some(resized.pack()));
+        assert_eq!(handle.get(), resized);
+        // The update thread wished something else meanwhile: the report is dropped.
+        let wished = WindowState {
+            mode: WindowMode::Windowed,
+            ..resized
+        };
+        handle.set(wished);
+        let moved = WindowState {
+            display: 1,
+            ..resized
+        };
+        assert_eq!(handle.report(resized.pack(), moved), None);
+        assert_eq!(handle.get(), wished);
+    }
+
+    #[test]
+    fn only_fullscreen_minimises_on_focus_loss() {
+        for mode in WindowMode::ALL {
+            assert!(!minimise_hint(mode, false));
+            assert_eq!(minimise_hint(mode, true), mode == WindowMode::Fullscreen);
+        }
+    }
+
+    #[test]
+    fn minimise_on_focus_loss_starts_on_and_title_bar_at_zero() {
+        let handle = WindowSettings::default();
+        assert!(handle.minimise_on_focus_loss());
+        handle.set_minimise_on_focus_loss(false);
+        assert!(!handle.minimise_on_focus_loss());
+        assert_eq!(handle.title_bar(), 0);
+        handle.store_title_bar(-3);
+        assert_eq!(handle.title_bar(), 0);
+        handle.store_title_bar(30);
+        assert_eq!(handle.title_bar(), 30);
     }
 }

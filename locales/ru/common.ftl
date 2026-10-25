@@ -152,6 +152,7 @@ settings-layout-screen-mode = Режим экрана
 settings-layout-display = Монитор
 settings-layout-resolution = Разрешение
 settings-layout-not-fullscreen-note = Без полноэкранного режима задержка ввода больше!
+settings-layout-minimise-on-focus-loss = Сворачивать SLAM при переключении на другое приложение
 settings-frame-update-rate = Частота обновления
 settings-frame-draw-rate = Частота кадров в игре
 settings-frame-menu-draw-rate = Частота кадров в меню

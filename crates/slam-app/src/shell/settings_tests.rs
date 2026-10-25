@@ -191,6 +191,8 @@ fn shell_with(link: crate::settings::saver::SaveLink) -> Shell {
         mouse: slam_input::MouseSettings::default(),
         window: slam_input::WindowSettings::default(),
         window_sent: Settings::default().window.state(),
+        position_sent: Settings::default().window.windowed_position,
+        window_save_at: None,
     }
 }
 
@@ -225,6 +227,88 @@ fn a_window_mode_switch_is_saved_and_not_sent_back() {
     shell.apply_settings(LATER);
     assert_eq!(shell.window.get().mode, WindowMode::Windowed);
     assert_eq!(shell.window.get().windowed_size, [800, 600]);
+}
+
+#[test]
+fn a_size_and_place_the_player_gave_the_window_are_saved_once_it_settles() {
+    use slam_input::WindowMode;
+    let (link, mut taken) = crate::settings::saver::detached(4);
+    let mut shell = shell_with(link);
+    shell.apply_settings(0);
+    // What the window does when the player drags and resizes it.
+    let resized = WindowState {
+        windowed_size: [900, 700],
+        display: 1,
+        ..shell.window.get()
+    };
+    shell.window.set_position([0.25, 0.75]);
+    shell.window.set(resized);
+    shell.apply_settings(LATER);
+    let window = shell.state.settings().window;
+    assert_eq!(window.windowed_size, [900, 700]);
+    assert_eq!(window.display, 1);
+    assert_eq!(window.windowed_position, [0.25, 0.75]);
+    // Not sent back, and not saved while the window may still be moving.
+    assert_eq!(shell.window.get(), resized);
+    assert!(taken.pop().is_err());
+    shell.window.set_position([0.3, 0.75]);
+    shell.apply_settings(LATER + WINDOW_SAVE_DELAY_NS / 2);
+    shell.apply_settings(LATER + WINDOW_SAVE_DELAY_NS);
+    assert!(taken.pop().is_err(), "the last move restarts the wait");
+    shell.apply_settings(LATER + WINDOW_SAVE_DELAY_NS * 3 / 2);
+    let saved = taken.pop().expect("saved once settled").window;
+    assert_eq!(saved.windowed_position, [0.3, 0.75]);
+    assert_eq!(saved.windowed_size, [900, 700]);
+    shell.apply_settings(LATER * 2);
+    assert!(taken.pop().is_err(), "saved once");
+    // A mode switch is still saved at once.
+    let mut switched = shell.window.get();
+    switched.mode = WindowMode::Windowed.next();
+    shell.window.set(switched);
+    shell.apply_settings(LATER * 2);
+    assert_eq!(taken.pop().unwrap().window.mode, switched.mode);
+}
+
+#[test]
+fn a_move_of_the_window_keeps_an_edit_made_in_the_same_tick() {
+    use slam_input::WindowMode;
+    let (link, mut taken) = crate::settings::saver::detached(4);
+    let mut shell = shell_with(link);
+    let mut snap = ShellSnapshot::default();
+    opened(&mut shell.state, &mut snap);
+    shell.apply_settings(0);
+    // The player picks windowed mode while the window reports a move.
+    shell.state.editing.as_mut().expect("open").window.mode = WindowMode::Windowed;
+    shell.window.set_position([0.1, 0.9]);
+    shell.apply_settings(LATER);
+    assert_eq!(edited(&shell.state).window.mode, WindowMode::Windowed);
+    assert_eq!(edited(&shell.state).window.windowed_position, [0.1, 0.9]);
+    assert_eq!(shell.window.get().mode, WindowMode::Windowed);
+    assert_eq!(shell.window.position(), [0.1, 0.9]);
+    // Dragged further while the edit is not committed: saved once settled, not each tick.
+    while taken.pop().is_ok() {}
+    shell.window.set_position([0.2, 0.9]);
+    shell.apply_settings(LATER + 1);
+    assert!(taken.pop().is_err());
+    assert!(shell.window_save_at.is_some());
+}
+
+#[test]
+fn window_place_and_minimise_edits_reach_the_window() {
+    let (link, _taken) = crate::settings::saver::detached(1);
+    let mut shell = shell_with(link);
+    let mut snap = ShellSnapshot::default();
+    opened(&mut shell.state, &mut snap);
+    let editing = shell.state.editing.as_mut().expect("the screen is open");
+    editing.window.windowed_size = [1024, 768];
+    editing.window.windowed_position = [0.2, 0.4];
+    editing.window.minimise_on_focus_loss = false;
+    shell.apply_settings(LATER);
+    assert_eq!(shell.window.get().windowed_size, [1024, 768]);
+    assert_eq!(shell.window.position(), [0.2, 0.4]);
+    assert!(!shell.window.minimise_on_focus_loss());
+    // Sent, so not taken back as the window's own change.
+    assert_eq!(shell.window_save_at, None);
 }
 
 #[test]
@@ -872,9 +956,12 @@ fn a_window_mode_switch_reaches_an_open_settings_screen() {
     opened(&mut s, &mut snap);
     // The edited copy differs from the settings in force (as a mode row will allow).
     s.editing.as_mut().unwrap().window.mode = WindowMode::Borderless;
-    let applied = s.settings().window.mode;
-    s.window_mode_switched(applied);
-    assert_eq!(edited(&s).window.mode, applied);
+    let applied = s.settings().window;
+    let mut before = applied.state();
+    before.mode = WindowMode::Borderless;
+    let after = (applied.state(), applied.windowed_position);
+    assert!(!s.window_reported((before, applied.windowed_position), after));
+    assert_eq!(edited(&s).window.mode, applied.mode);
     // Same mode in force: nothing to save.
     assert!(s.take_save_request().is_none());
 }

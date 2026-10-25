@@ -249,3 +249,32 @@ fn a_screen_without_the_rows_keeps_the_views() {
     assert_eq!(views.display, "g1 displays");
     assert_eq!(views.fullscreen, ["g1 full 0"]);
 }
+
+#[test]
+fn a_windowed_size_fits_below_the_title_bar_as_in_lazer() {
+    // A 40 px taskbar at the bottom and a 30 px title bar.
+    let bounds = [0, 0, 1920, 1080];
+    let usable = [0, 0, 1920, 1040];
+    // Centred in the usable area.
+    let (size, position) = fit_windowed([1280, 720], bounds, usable, 30.0);
+    assert_eq!(size, [1280, 720]);
+    assert_eq!(position, [0.5, 160.0 / 360.0]);
+    // Too tall: cut to the usable height minus the title bar, which stays visible.
+    let (size, position) = fit_windowed([1920, 1080], bounds, usable, 30.0);
+    assert_eq!(size, [1920, 1010]);
+    assert_eq!(position, [0.0, 30.0 / 70.0]);
+    // A second display left of the first, with its panel on the left.
+    let bounds = [-1280, 0, 1280, 1024];
+    let usable = [-1230, 0, 1230, 1024];
+    let (size, position) = fit_windowed([1024, 768], bounds, usable, 0.0);
+    assert_eq!(size, [1024, 768]);
+    assert_eq!(position, [(50.0 + 103.0) / 256.0, 0.5]);
+}
+
+#[test]
+fn a_fitted_windowed_size_keeps_the_settings_limits() {
+    // A tiny usable area still gives the smallest windowed size, as lazer's bindable.
+    let (size, position) = fit_windowed([800, 600], [0, 0, 800, 600], [0, 0, 600, 400], 30.0);
+    assert_eq!(size, [640, 480]);
+    assert!(position.iter().all(|p| (-0.5..=1.5).contains(p)));
+}

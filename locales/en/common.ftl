@@ -148,6 +148,7 @@ settings-layout-screen-mode = Screen mode
 settings-layout-display = Display
 settings-layout-resolution = Resolution
 settings-layout-not-fullscreen-note = Running without fullscreen mode will increase your input latency!
+settings-layout-minimise-on-focus-loss = Minimise SLAM when switching to another app
 settings-frame-update-rate = Update rate
 settings-frame-draw-rate = Gameplay frame rate
 settings-frame-menu-draw-rate = Menu frame rate

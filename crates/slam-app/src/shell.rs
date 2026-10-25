@@ -20,7 +20,7 @@ use slam_engine::{
 };
 use slam_input::{
     CursorVisibility, InputEvent, InputKind, InputWindow, MouseButton, MouseSettings, TextInput,
-    TickMapper, WindowMode, WindowScale, WindowSettings, WindowState, event_ring, sdl_ticks_ns,
+    TickMapper, WindowScale, WindowSettings, WindowState, event_ring, sdl_ticks_ns,
 };
 use slam_osu::Difficulty;
 use slam_osu::mods::{
@@ -100,6 +100,9 @@ const MAX_SHAPES: usize = 256 + 1 + 2 * MAX_LAYERS;
 const MAX_GLYPH_SPRITES: usize = 8192 + MAX_FPS_GLYPHS;
 /// How long the draw thread waits for the glyphs before the first frame.
 const GLYPH_WARM_TIMEOUT: Duration = Duration::from_secs(1);
+/// How long the window must stay still before a size, display or position it reported
+/// is saved (ADR-0073).
+const WINDOW_SAVE_DELAY_NS: u64 = 500_000_000;
 
 // USB HID usage ids, as `SDL_Scancode`.
 const KEY_ENTER: u16 = 40;
@@ -448,12 +451,8 @@ impl ShellState {
 
     /// The window settings in force: the settings screen's edits count at once, as lazer
     /// applies its layout settings (ADR-0072).
-    pub fn live_window(&self) -> slam_input::WindowState {
-        self.editing
-            .as_ref()
-            .unwrap_or(&self.settings)
-            .window
-            .state()
+    pub fn live_window(&self) -> &crate::settings::model::Window {
+        &self.editing.as_ref().unwrap_or(&self.settings).window
     }
 
     /// The options of the settings screen's rows.
@@ -726,19 +725,56 @@ impl ShellState {
         }
     }
 
-    /// The window switched itself to `mode` (Alt+Enter, F11): keeps it in the settings
-    /// and saves them, as lazer's `CycleMode` changes its `WindowMode` setting. Allocates
-    /// for the save: a rare action of the player, as [`ShellState::toggle_fps`].
-    /// An open settings screen's copy follows on its own, or closing the screen would
-    /// switch back.
-    pub fn window_mode_switched(&mut self, mode: WindowMode) {
+    /// The window changed itself from `before` to `after` (ADR-0071, ADR-0073), each a
+    /// state and a windowed position: keeps the fields it changed in the settings, and
+    /// only those, so an edit of another field in the same tick stands. A new mode
+    /// (Alt+Enter, F11) is saved at once, as lazer's `CycleMode` changes its `WindowMode`
+    /// setting; returns whether anything else changed, which the caller saves once the
+    /// window settles. Allocates for a save only: a rare action of the player, as
+    /// [`ShellState::toggle_fps`]. An open settings screen's copy follows on its own, or
+    /// closing the screen would undo the change.
+    pub fn window_reported(
+        &mut self,
+        before: (WindowState, [f32; 2]),
+        after: (WindowState, [f32; 2]),
+    ) -> bool {
+        let ((was, was_at), (state, position)) = (before, after);
+        let take = |window: &mut crate::settings::model::Window| {
+            if state.mode != was.mode {
+                window.mode = state.mode;
+            }
+            if state.display != was.display {
+                window.display = state.display;
+            }
+            if state.windowed_size != was.windowed_size {
+                window.windowed_size = state.windowed_size;
+            }
+            if position != was_at {
+                window.windowed_position = position;
+            }
+        };
         if let Some(editing) = &mut self.editing {
-            editing.window.mode = mode;
+            take(&mut editing.window);
         }
-        if self.settings.window.mode == mode {
-            return;
+        let before = self.settings.window;
+        take(&mut self.settings.window);
+        // A mode the window switched to by itself, new to the settings in force. Compared
+        // with `was` too: while the settings screen's edit is applied, the settings in
+        // force may hold another mode that no report should save again.
+        if state.mode != was.mode && before.mode != state.mode {
+            self.save_request = Some(Box::new(self.settings.clone()));
+            return false;
         }
-        self.settings.window.mode = mode;
+        before != self.settings.window
+    }
+
+    /// Keeps the window's title bar height for the windowed resolution row (ADR-0073).
+    pub fn set_title_bar(&mut self, top: i32) {
+        self.rows.set_title_bar(top);
+    }
+
+    /// Queues the settings in force for the file. Allocates.
+    pub fn save_settings(&mut self) {
         self.save_request = Some(Box::new(self.settings.clone()));
     }
 
@@ -1825,6 +1861,11 @@ struct Shell {
     window: WindowSettings,
     /// The window state last handed to `window`, or switched to by the window itself.
     window_sent: WindowState,
+    /// The windowed position last handed to `window` or reported by it (ADR-0073).
+    position_sent: [f32; 2],
+    /// When to save a size, display or position the window reported, once it stops
+    /// changing; `None` when nothing waits.
+    window_save_at: Option<u64>,
 }
 
 impl Shell {
@@ -1848,26 +1889,49 @@ impl Shell {
         }
     }
 
-    /// Keeps the window and the settings in step (ADR-0070). The window's wish word is
-    /// the truth: a mode the window switched to by itself (Alt+Enter, F11) is taken into
-    /// the settings even if its [`InputKind::WindowMode`] report was lost to a full ring,
-    /// and a settings change racing a switch loses to it rather than overwriting it.
-    /// One atomic load per tick; a lock and an allocation only on changes.
-    fn sync_window(&mut self) {
+    /// Keeps the window and the settings in step (ADR-0070, ADR-0073). The window's
+    /// handle is the truth: a mode the window switched to by itself (Alt+Enter, F11) is
+    /// taken into the settings even if its [`InputKind::WindowMode`] report was lost to a
+    /// full ring, and a settings change racing a switch loses to it rather than
+    /// overwriting it. Sizes, displays and positions the player gave the window are taken
+    /// too and saved [`WINDOW_SAVE_DELAY_NS`] after the last change, as dragging reports
+    /// one every frame. A few atomic loads per tick; a lock and an allocation only on
+    /// changes.
+    fn sync_window(&mut self, now_ns: u64) {
         let actual = self.window.get();
-        if actual != self.window_sent {
-            self.window_sent = actual;
-            self.state.window_mode_switched(actual.mode);
+        let position = self.window.position();
+        if actual != self.window_sent || position != self.position_sent {
+            self.window_reported((actual, position), now_ns);
         }
-        let wanted = self.state.live_window();
+        self.state.set_title_bar(self.window.title_bar());
+        let live = *self.state.live_window();
+        self.window
+            .set_minimise_on_focus_loss(live.minimise_on_focus_loss);
+        // The position goes first: the window reads it after the word (ADR-0073).
+        if live.windowed_position != self.position_sent {
+            self.window.set_position(live.windowed_position);
+            // Not read back: a move of the window meanwhile is reported next tick.
+            self.position_sent = slam_input::clamp_position(live.windowed_position);
+        }
+        let wanted = live.state();
         if wanted != self.window_sent {
             match self.window.compare_and_set(self.window_sent, wanted) {
                 Ok(stored) => self.window_sent = stored,
-                Err(found) => {
-                    self.window_sent = found;
-                    self.state.window_mode_switched(found.mode);
-                }
+                Err(found) => self.window_reported((found, self.position_sent), now_ns),
             }
+        }
+        if self.window_save_at.is_some_and(|at| now_ns >= at) {
+            self.window_save_at = None;
+            self.state.save_settings();
+        }
+    }
+
+    /// Takes what the window changed by itself since the state and position last sent.
+    fn window_reported(&mut self, after: (WindowState, [f32; 2]), now_ns: u64) {
+        let before = (self.window_sent, self.position_sent);
+        (self.window_sent, self.position_sent) = after;
+        if self.state.window_reported(before, after) {
+            self.window_save_at = Some(now_ns.saturating_add(WINDOW_SAVE_DELAY_NS));
         }
     }
 
@@ -1884,7 +1948,7 @@ impl Shell {
         if let Some(host) = &mut self.host {
             host.apply_settings(settings);
         }
-        self.sync_window();
+        self.sync_window(now_ns);
         let gameplay = self.state.gameplay_visible(now_ns);
         if let Some(mode) = self
             .rate_switch
@@ -2404,8 +2468,12 @@ fn with_songs(mut settings: Settings, songs: Option<PathBuf>) -> Settings {
 /// song select lists the beatmap sets of that folder.
 pub fn run(settings: Settings) -> Result<(), String> {
     let theme = Theme::default();
-    let mut window =
-        InputWindow::new_opengl_in("SLAM", settings.window.state()).map_err(|e| e.to_string())?;
+    let mut window = InputWindow::new_opengl_in(
+        "SLAM",
+        settings.window.state(),
+        settings.window.windowed_position,
+    )
+    .map_err(|e| e.to_string())?;
     let surface = SdlGlSurface(window.create_gl_context().map_err(|e| e.to_string())?);
     let (pixels_w, pixels_h) = surface.0.size_in_pixels();
     let scale = window.window_scale();
@@ -2663,8 +2731,14 @@ pub fn run(settings: Settings) -> Result<(), String> {
             mouse.set_sensitivity(settings.input.sensitivity);
             mouse
         },
-        window: window.window_settings(),
+        window: {
+            let handle = window.window_settings();
+            handle.set_minimise_on_focus_loss(settings.window.minimise_on_focus_loss);
+            handle
+        },
         window_sent: settings.window.state(),
+        position_sent: settings.window.windowed_position,
+        window_save_at: None,
         draw_rate: draw_rate.clone(),
         rate_switch: DrawRateSwitch::new(menu_rate),
         update_rate: AppliedUpdateRate::new(update_rate.clone(), settings.frame.update_hz),
@@ -2761,6 +2835,10 @@ pub fn run(settings: Settings) -> Result<(), String> {
         }
     }
     drop(stream);
+    // A place the window was given just before closing waits no longer.
+    if shell.window_save_at.take().is_some() {
+        shell.state.save_settings();
+    }
     // Closing the window saves, as leaving the settings screen does.
     shell.state.commit_editing();
     if let Some(mut link) = shell.saver.take() {

@@ -162,6 +162,8 @@ pub enum Row {
     Display,
     FullscreenSize,
     WindowedSize,
+    /// Shown in fullscreen only, as lazer (ADR-0073).
+    MinimiseOnFocusLoss,
     UpdateHz,
     DrawHz,
     MenuDrawHz,
@@ -178,7 +180,7 @@ pub enum Row {
 }
 
 impl Row {
-    pub const ALL: [Row; 36] = [
+    pub const ALL: [Row; 37] = [
         Row::MasterVolume,
         Row::MusicVolume,
         Row::HitsoundVolume,
@@ -202,6 +204,7 @@ impl Row {
         Row::Display,
         Row::FullscreenSize,
         Row::WindowedSize,
+        Row::MinimiseOnFocusLoss,
         Row::UpdateHz,
         Row::DrawHz,
         Row::MenuDrawHz,
@@ -260,7 +263,8 @@ impl Row {
             | Row::NotFullscreenNote
             | Row::Display
             | Row::FullscreenSize
-            | Row::WindowedSize => 3,
+            | Row::WindowedSize
+            | Row::MinimiseOnFocusLoss => 3,
             Row::UpdateHz
             | Row::DrawHz
             | Row::MenuDrawHz
@@ -301,6 +305,7 @@ impl Row {
             Row::NotFullscreenNote => "settings-layout-not-fullscreen-note",
             Row::Display => "settings-layout-display",
             Row::FullscreenSize | Row::WindowedSize => "settings-layout-resolution",
+            Row::MinimiseOnFocusLoss => "settings-layout-minimise-on-focus-loss",
             Row::UpdateHz => "settings-frame-update-rate",
             Row::DrawHz => "settings-frame-draw-rate",
             Row::MenuDrawHz => "settings-frame-menu-draw-rate",
@@ -339,6 +344,9 @@ pub struct Rows {
     skins: Vec<String>,
     /// The displays and their resolutions; empty until the first list arrives (ADR-0072).
     displays: Box<DisplayLists>,
+    /// Height of the window's title bar in points, as the window last reported it
+    /// (ADR-0073).
+    title_bar: i32,
 }
 
 /// The Fluent key of a corner option.
@@ -416,6 +424,7 @@ impl Rows {
                 .map(|(name, _)| name)
                 .collect(),
             displays: Box::default(),
+            title_bar: 0,
         }
     }
 
@@ -430,6 +439,11 @@ impl Rows {
     }
 
     /// The display shown for `settings` and its resolutions; `None` before the first list.
+    /// Keeps the window's title bar height for fitting windowed sizes (ADR-0073).
+    pub fn set_title_bar(&mut self, top: i32) {
+        self.title_bar = top;
+    }
+
     fn shown_display(&self, settings: &Settings) -> Option<(usize, &crate::displays::SizeLists)> {
         let shown = self.displays.shown(settings.window.display)?;
         Some((shown, &self.displays.displays[shown]))
@@ -547,6 +561,9 @@ impl Rows {
             Row::HighPrecisionMouse => RowKind::Toggle {
                 value: s.input.high_precision_mouse,
             },
+            Row::MinimiseOnFocusLoss => RowKind::Toggle {
+                value: s.window.minimise_on_focus_loss,
+            },
             Row::Sensitivity => RowKind::Slider {
                 min: *InputSettings::SENSITIVITY_RANGE.start(),
                 max: *InputSettings::SENSITIVITY_RANGE.end(),
@@ -641,6 +658,9 @@ impl Rows {
             (Row::Sensitivity, RowValue::Slider(v)) => {
                 settings.input.sensitivity = InputSettings::clean_sensitivity(v);
             }
+            (Row::MinimiseOnFocusLoss, RowValue::Toggle(v)) => {
+                settings.window.minimise_on_focus_loss = v;
+            }
             (Row::ShowFps, RowValue::Toggle(v)) => settings.frame.show_fps = v,
             (Row::BeatmapSkins, RowValue::Toggle(v)) => settings.gameplay.beatmap_skins = v,
             (Row::BeatmapColours, RowValue::Toggle(v)) => settings.gameplay.beatmap_colours = v,
@@ -702,11 +722,18 @@ impl Rows {
                 }
             }
             (Row::WindowedSize, RowValue::Choice(i)) => {
-                if let Some(size) = self
-                    .shown_display(settings)
-                    .and_then(|(_, sizes)| sizes.windowed.get(i))
+                if let Some((_, sizes)) = self.shown_display(settings)
+                    && let Some(&size) = sizes.windowed.get(i)
+                    && size != settings.window.windowed_size
                 {
-                    settings.window.windowed_size = *size;
+                    let (size, position) = crate::displays::fit_windowed(
+                        size,
+                        sizes.bounds,
+                        sizes.usable,
+                        self.title_bar as f32,
+                    );
+                    settings.window.windowed_size = size;
+                    settings.window.windowed_position = position;
                 }
             }
             (Row::FpsScreens, RowValue::Choice(i)) => {
@@ -730,6 +757,7 @@ impl Rows {
             match row {
                 // Ported from osu!lazer 2026.1005.0-lazer: osu.Game/Overlays/Settings/Sections/Graphics/LayoutSettings.cs (updateDisplaySettingsVisibility, updateScreenModeWarning)
                 Row::NotFullscreenNote => screen.set_hidden(i, mode == WindowMode::Fullscreen),
+                Row::MinimiseOnFocusLoss => screen.set_hidden(i, mode != WindowMode::Fullscreen),
                 Row::Display | Row::FullscreenSize | Row::WindowedSize => {
                     let (options, selected) = self.display_choice(*row, settings);
                     if let Some(RowWidget::Dropdown(dropdown)) = screen.widget(i)
@@ -898,6 +926,8 @@ mod tests {
                 .collect(),
             windowed: windowed.to_vec(),
             custom_windowed: false,
+            bounds: [0, 0, 1920, 1080],
+            usable: [0, 0, 1920, 1080],
         }
     }
 
@@ -947,6 +977,48 @@ mod tests {
         }
         rows.apply(&mut s, index(Row::ScreenMode), RowValue::Choice(3));
         assert_eq!(s.window.mode, WindowMode::Fullscreen);
+    }
+
+    #[test]
+    fn the_minimise_row_shows_in_fullscreen_only_and_sets_the_setting() {
+        let (rows, mut s) = rows();
+        for mode in WindowMode::ALL {
+            s.window.mode = mode;
+            let screen = opened(&rows, &s);
+            assert_eq!(
+                screen.is_hidden(index(Row::MinimiseOnFocusLoss)),
+                mode != WindowMode::Fullscreen,
+                "{mode:?}"
+            );
+        }
+        assert!(s.window.minimise_on_focus_loss);
+        rows.apply(
+            &mut s,
+            index(Row::MinimiseOnFocusLoss),
+            RowValue::Toggle(false),
+        );
+        assert!(!s.window.minimise_on_focus_loss);
+    }
+
+    #[test]
+    fn a_picked_windowed_size_is_fitted_and_centred() {
+        let (mut rows, mut s) = with_displays();
+        rows.set_title_bar(30);
+        s.window.display = 0;
+        s.window.mode = WindowMode::Windowed;
+        // 1920×1080 on a 1920×1080 display: cut below the title bar, at its bottom.
+        rows.apply(&mut s, index(Row::WindowedSize), RowValue::Choice(0));
+        assert_eq!(s.window.windowed_size, [1920, 1050]);
+        assert_eq!(s.window.windowed_position, [0.0, 1.0]);
+        // 1366×768 fits: centred.
+        rows.apply(&mut s, index(Row::WindowedSize), RowValue::Choice(1));
+        assert_eq!(s.window.windowed_size, [1366, 768]);
+        assert_eq!(s.window.windowed_position, [0.5, 0.5]);
+        // The size in force picked again keeps a place the player gave the window, as
+        // lazer's handler only runs on a new size.
+        s.window.windowed_position = [0.1, 0.2];
+        rows.apply(&mut s, index(Row::WindowedSize), RowValue::Choice(1));
+        assert_eq!(s.window.windowed_position, [0.1, 0.2]);
     }
 
     #[test]
