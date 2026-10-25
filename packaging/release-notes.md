@@ -2,6 +2,13 @@
 
 ## English
 
+### What's new in 0.0.2
+- **Screen modes:** windowed, borderless and fullscreen, with display and resolution choice (**Settings → Layout**). F11 or Alt+Enter cycles the mode. Fullscreen gives the lowest input latency.
+- The windowed size and position are remembered between launches.
+- **Minimise on focus loss:** in fullscreen, SLAM minimises when you switch to another app (can be turned off in **Layout**).
+- **High precision mouse** (raw relative input) and **cursor sensitivity**, as in lazer. High precision is on by default on Windows only.
+- Unstable rate, average hit error and median after each play are written to the log (run with `RUST_LOG=info`, see below).
+
 ### Download
 - **Windows 10+ x64:** `SLAM-…-windows-x64.zip`
 - **Linux x64:** `SLAM-…-x86_64.AppImage`
@@ -22,6 +29,7 @@
 - **No sound on Linux.** SLAM plays through PipeWire: check that it is running (`systemctl --user status pipewire`).
 - **Crackling sound.** Raise `buffer_frames` in the `[audio]` section of `slam.toml` in the settings folder (see below), e.g. to the next power of two.
 - **Black screen or an OpenGL error.** Update the graphics driver; on laptops, run SLAM on the discrete GPU.
+- **Black or broken screen after changing the screen mode or display.** In the `[window]` section of `slam.toml` (see below) set `mode = "windowed"` and `display = 0`, or delete the `[window]` section.
 - **Start from clean settings.** Delete (or move away) the settings folder:
   - Windows: `%APPDATA%\SLAM`
   - Linux: `~/.config/slam` (settings) and `~/.local/share/slam` (replays, cache)
@@ -39,6 +47,13 @@ Open an [issue](https://github.com/sheynor43/SLAM/issues/new) with:
 ---
 
 ## Русский
+
+### Что нового в 0.0.2
+- **Режимы экрана:** в окне, без рамки и полноэкранный, с выбором монитора и разрешения (**Настройки → Экран**). F11 или Alt+Enter переключают режим. Минимальная задержка ввода — в полноэкранном режиме.
+- Размер и положение окна запоминаются между запусками.
+- **Сворачивание при потере фокуса:** в полноэкранном режиме SLAM сворачивается при переключении на другое приложение (отключается в разделе **Экран**).
+- **Высокоточная мышь** (сырой относительный ввод) и **чувствительность курсора**, как в лазере. Высокоточная мышь по умолчанию включена только на Windows.
+- Нестабильность (UR), средняя ошибка попадания и медиана после каждой игры пишутся в лог (запуск с `RUST_LOG=info`, см. ниже).
 
 ### Скачать
 - **Windows 10+ x64:** `SLAM-…-windows-x64.zip`
@@ -60,6 +75,7 @@ Open an [issue](https://github.com/sheynor43/SLAM/issues/new) with:
 - **Нет звука на Linux.** SLAM играет через PipeWire: проверьте, что он запущен (`systemctl --user status pipewire`).
 - **Треск в звуке.** Увеличьте `buffer_frames` в разделе `[audio]` файла `slam.toml` в папке настроек (см. ниже), например до следующей степени двойки.
 - **Чёрный экран или ошибка OpenGL.** Обновите драйвер видеокарты; на ноутбуке запускайте SLAM на дискретной видеокарте.
+- **Чёрный или сломанный экран после смены режима экрана или монитора.** В разделе `[window]` файла `slam.toml` (см. ниже) задайте `mode = "windowed"` и `display = 0` или удалите раздел `[window]`.
 - **Начать с чистых настроек.** Удалите (или перенесите) папку настроек:
   - Windows: `%APPDATA%\SLAM`
   - Linux: `~/.config/slam` (настройки) и `~/.local/share/slam` (реплеи, кэш)
