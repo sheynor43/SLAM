@@ -163,6 +163,7 @@ const ELLIPSIS: char = '\u{2026}';
 enum RowView {
     Key,
     Button(Line),
+    Note,
     Toggle(ToggleView),
     Slider(SliderView),
     Dropdown(DropdownView),
@@ -232,6 +233,7 @@ impl SettingsView {
                 match spec.kind {
                     RowKind::Key { .. } => RowView::Key,
                     RowKind::Button => RowView::Button(Line::new(&row.button)),
+                    RowKind::Note => RowView::Note,
                     RowKind::Toggle { .. } => RowView::Toggle(ToggleView::new(theme)),
                     RowKind::Slider { step, .. } => {
                         let view = SliderView::new(
@@ -337,9 +339,9 @@ impl SettingsView {
             return;
         };
         let size = self.theme.widget_text_size * self.layout.scale;
-        let slot = self.meta.get(value.row).map_or(0, |m| m.1);
-        let avail =
-            self.layout.widget(slot).width - 2.0 * self.theme.widget_pad * self.layout.scale;
+        // Only the width is used, which is the same for every slot, so the row's position
+        // (which hiding rows changes) does not matter.
+        let avail = self.layout.widget(0).width - 2.0 * self.theme.widget_pad * self.layout.scale;
         // Start from the end when the text is longer than the buffer.
         let mut start = value.seen.len().saturating_sub(VALUE_CAPACITY);
         while !value.seen.is_char_boundary(start) {
@@ -406,7 +408,7 @@ impl SettingsView {
             .views
             .iter()
             .map(|view| match view {
-                RowView::Toggle(_) | RowView::Key => 0,
+                RowView::Toggle(_) | RowView::Key | RowView::Note => 0,
                 RowView::Button(line) => line
                     .layout
                     .glyphs()
@@ -496,16 +498,34 @@ impl SettingsView {
         // An open list covers the rows below it, whose texts would show through (all
         // texts are drawn over all rectangles): those rows are left out.
         let open_slot = (0..snapshot.len).find_map(|i| match &snapshot.widgets[i] {
-            RowWidget::Dropdown(d) if d.is_open() && self.meta[i].0 == snapshot.section => {
-                Some(self.meta[i].1)
+            RowWidget::Dropdown(d)
+                if d.is_open() && self.meta[i].0 == snapshot.section && !snapshot.hidden[i] =>
+            {
+                Some(usize::from(snapshot.slots[i]))
             }
             _ => None,
         });
         // The open list is drawn last, over the other widgets' rectangles.
         let mut open_row = None;
         for i in 0..snapshot.len.min(self.meta.len()) {
-            let (section, slot, restart) = self.meta[i];
-            if section != snapshot.section || open_slot.is_some_and(|open| slot > open) {
+            let (section, _, restart) = self.meta[i];
+            let slot = usize::from(snapshot.slots[i]);
+            if section != snapshot.section
+                || snapshot.hidden[i]
+                || open_slot.is_some_and(|open| slot > open)
+            {
+                continue;
+            }
+            if matches!(self.views[i], RowView::Note) {
+                // The whole row, left-aligned; there is no theme token for a warning.
+                push_left(
+                    text,
+                    &self.labels[i],
+                    &layout.row(slot),
+                    pad,
+                    faded(theme.disabled_text, opacity),
+                    glyphs,
+                );
                 continue;
             }
             if i == snapshot.focus {
@@ -618,7 +638,7 @@ impl SettingsView {
             && let (RowView::Dropdown(view), RowWidget::Dropdown(dropdown)) =
                 (&mut self.views[i], &snapshot.widgets[i])
         {
-            let bounds = layout.dropdown_at(self.meta[i].1, dropdown.count());
+            let bounds = layout.dropdown_at(usize::from(snapshot.slots[i]), dropdown.count());
             view.push(shapes, text, glyphs, dropdown, &bounds, opacity, white);
         }
     }

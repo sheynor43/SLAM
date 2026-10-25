@@ -3,21 +3,28 @@
 
 use slam_audio::Backend;
 use slam_engine::RATE_PRESETS;
+use slam_input::{Displays, WindowMode};
 use slam_osu::replay::Actions;
 use slam_play::FpsCorner;
+use slam_text::FontRegistry;
 use slam_ui::i18n::{FluentArgs, Localizer};
 use slam_ui::settings_screen::{
-    RowKind, RowLabels, RowSpec, RowValue, SettingsLabels, SettingsScreen,
+    RowKind, RowLabels, RowSpec, RowValue, RowWidget, SettingsLabels, SettingsScreen,
 };
+use slam_ui::theme::Theme;
+use slam_ui::widgets::DropdownView;
+use std::sync::Arc;
 
 use super::keybinds;
+use crate::displays::{DisplayLists, DisplayViews};
 use crate::settings::{DrawRate, FpsScreens, InputSettings, KeySlot, Settings, Timing, skins};
 
 /// Sections, in order; the keys of their names are in [`SECTION_KEYS`].
-const SECTION_KEYS: [&str; 6] = [
+const SECTION_KEYS: [&str; 7] = [
     "settings-section-audio",
     "settings-section-offset",
     "settings-section-keys",
+    "settings-section-layout",
     "settings-section-frame",
     "settings-section-gameplay",
     "settings-section-library",
@@ -28,6 +35,78 @@ pub fn skin_row() -> usize {
         .iter()
         .position(|row| *row == Row::Skin)
         .expect("Row::ALL lists every row")
+}
+
+/// The indices of the display, fullscreen size and windowed size rows (ADR-0072).
+pub fn display_rows() -> [usize; 3] {
+    [Row::Display, Row::FullscreenSize, Row::WindowedSize].map(|row| {
+        Row::ALL
+            .iter()
+            .position(|r| *r == row)
+            .expect("Row::ALL lists every row")
+    })
+}
+
+/// The draw thread's dropdowns of the display and resolution rows for `lists` (ADR-0072).
+/// Allocates: the `slam-displays` thread.
+pub fn display_views(
+    registry: &Arc<FontRegistry>,
+    theme: Theme,
+    localizer: &Localizer,
+    displays: &Displays,
+    lists: &DisplayLists,
+) -> DisplayViews {
+    let size = |[w, h]: [u16; 2]| {
+        let mut args = FluentArgs::new();
+        args.set("width", w.to_string());
+        args.set("height", h.to_string());
+        localizer
+            .format("settings-option-size", Some(&args))
+            .into_owned()
+    };
+    let view = |options: &[String]| DropdownView::new(Arc::clone(registry), theme, options);
+    let names: Vec<String> = displays
+        .list
+        .iter()
+        .enumerate()
+        .map(|(i, display)| {
+            let mut args = FluentArgs::new();
+            args.set("index", i.to_string());
+            args.set("name", display.name.clone());
+            args.set("width", display.bounds[2].to_string());
+            args.set("height", display.bounds[3].to_string());
+            localizer
+                .format("settings-option-display", Some(&args))
+                .into_owned()
+        })
+        .collect();
+    let default = localizer
+        .format("settings-option-default", None)
+        .into_owned();
+    DisplayViews {
+        generation: lists.generation,
+        display: view(&names),
+        fullscreen: lists
+            .displays
+            .iter()
+            .map(|sizes| {
+                let options: Vec<String> = sizes
+                    .fullscreen
+                    .iter()
+                    .map(|s| s.map_or_else(|| default.clone(), size))
+                    .collect();
+                view(&options)
+            })
+            .collect(),
+        windowed: lists
+            .displays
+            .iter()
+            .map(|sizes| {
+                let options: Vec<String> = sizes.windowed.iter().map(|s| size(*s)).collect();
+                view(&options)
+            })
+            .collect(),
+    }
 }
 
 /// The skin row's option labels for `skins`: the default skin, then the folders.
@@ -77,6 +156,12 @@ pub enum Row {
     SmokeKey2,
     ToggleFpsKey,
     ResetKeys,
+    ScreenMode,
+    /// lazer's warning that windowed modes add latency (ADR-0072).
+    NotFullscreenNote,
+    Display,
+    FullscreenSize,
+    WindowedSize,
     UpdateHz,
     DrawHz,
     MenuDrawHz,
@@ -93,7 +178,7 @@ pub enum Row {
 }
 
 impl Row {
-    pub const ALL: [Row; 31] = [
+    pub const ALL: [Row; 36] = [
         Row::MasterVolume,
         Row::MusicVolume,
         Row::HitsoundVolume,
@@ -112,6 +197,11 @@ impl Row {
         Row::SmokeKey2,
         Row::ToggleFpsKey,
         Row::ResetKeys,
+        Row::ScreenMode,
+        Row::NotFullscreenNote,
+        Row::Display,
+        Row::FullscreenSize,
+        Row::WindowedSize,
         Row::UpdateHz,
         Row::DrawHz,
         Row::MenuDrawHz,
@@ -166,19 +256,24 @@ impl Row {
             | Row::SmokeKey2
             | Row::ToggleFpsKey
             | Row::ResetKeys => 2,
+            Row::ScreenMode
+            | Row::NotFullscreenNote
+            | Row::Display
+            | Row::FullscreenSize
+            | Row::WindowedSize => 3,
             Row::UpdateHz
             | Row::DrawHz
             | Row::MenuDrawHz
             | Row::ShowFps
             | Row::FpsCorner
-            | Row::FpsScreens => 3,
+            | Row::FpsScreens => 4,
             Row::Dim
             | Row::BeatmapSkins
             | Row::BeatmapColours
             | Row::BeatmapHitsounds
             | Row::HitErrorScale
-            | Row::Skin => 4,
-            Row::SongsFolder => 5,
+            | Row::Skin => 5,
+            Row::SongsFolder => 6,
         }
     }
 
@@ -202,6 +297,10 @@ impl Row {
             Row::SmokeKey2 => "settings-keys-smoke-2",
             Row::ToggleFpsKey => "settings-keys-toggle-fps",
             Row::ResetKeys => "settings-keys-reset",
+            Row::ScreenMode => "settings-layout-screen-mode",
+            Row::NotFullscreenNote => "settings-layout-not-fullscreen-note",
+            Row::Display => "settings-layout-display",
+            Row::FullscreenSize | Row::WindowedSize => "settings-layout-resolution",
             Row::UpdateHz => "settings-frame-update-rate",
             Row::DrawHz => "settings-frame-draw-rate",
             Row::MenuDrawHz => "settings-frame-menu-draw-rate",
@@ -238,6 +337,8 @@ pub struct Rows {
     /// The folder names in `Skins`; option `i + 1` of the skin row is `skins[i]`, option 0
     /// the default skin.
     skins: Vec<String>,
+    /// The displays and their resolutions; empty until the first list arrives (ADR-0072).
+    displays: Box<DisplayLists>,
 }
 
 /// The Fluent key of a corner option.
@@ -256,6 +357,15 @@ fn screens_key(screens: FpsScreens) -> &'static str {
         FpsScreens::Everywhere => "settings-option-fps-everywhere",
         FpsScreens::Gameplay => "settings-option-fps-gameplay",
         FpsScreens::Menus => "settings-option-fps-menus",
+    }
+}
+
+/// The Fluent key of a window mode option.
+fn mode_key(mode: WindowMode) -> &'static str {
+    match mode {
+        WindowMode::Windowed => "settings-option-windowed",
+        WindowMode::Borderless => "settings-option-borderless",
+        WindowMode::Fullscreen => "settings-option-fullscreen",
     }
 }
 
@@ -305,6 +415,53 @@ impl Rows {
                 .into_iter()
                 .map(|(name, _)| name)
                 .collect(),
+            displays: Box::default(),
+        }
+    }
+
+    /// The number of the display lists shown (ADR-0072).
+    pub fn display_generation(&self) -> u64 {
+        self.displays.generation
+    }
+
+    /// Exchanges the display lists with `displays`, for a new display list (ADR-0072).
+    pub fn swap_displays(&mut self, displays: &mut Box<DisplayLists>) {
+        std::mem::swap(&mut self.displays, displays);
+    }
+
+    /// The display shown for `settings` and its resolutions; `None` before the first list.
+    fn shown_display(&self, settings: &Settings) -> Option<(usize, &crate::displays::SizeLists)> {
+        let shown = self.displays.shown(settings.window.display)?;
+        Some((shown, &self.displays.displays[shown]))
+    }
+
+    /// The option count and choice of the display and resolution rows for `settings`.
+    fn display_choice(&self, row: Row, settings: &Settings) -> (usize, usize) {
+        let window = &settings.window;
+        let Some((shown, sizes)) = self.shown_display(settings) else {
+            return (0, 0);
+        };
+        match row {
+            Row::Display => (self.displays.displays.len(), shown),
+            // A size no mode has shows as the default one, and stays saved until the player
+            // picks another.
+            Row::FullscreenSize => (
+                sizes.fullscreen.len(),
+                sizes
+                    .fullscreen
+                    .iter()
+                    .position(|s| *s == window.fullscreen_size)
+                    .unwrap_or(0),
+            ),
+            Row::WindowedSize => (
+                sizes.windowed.len(),
+                sizes
+                    .windowed
+                    .iter()
+                    .position(|s| *s == window.windowed_size)
+                    .unwrap_or(0),
+            ),
+            _ => (0, 0),
         }
     }
 
@@ -356,6 +513,7 @@ impl Rows {
         }
         match row {
             Row::ResetKeys | Row::SongsFolder => RowKind::Button,
+            Row::NotFullscreenNote => RowKind::Note,
             Row::MasterVolume => percent(s.audio.master_volume),
             Row::MusicVolume => percent(s.audio.music_volume),
             Row::HitsoundVolume => percent(s.audio.hitsound_volume),
@@ -431,6 +589,14 @@ impl Rows {
             },
             Row::Skin => {
                 let (options, selected) = self.skin_choice(s);
+                choice(options, Some(selected))
+            }
+            Row::ScreenMode => choice(
+                WindowMode::ALL.len(),
+                WindowMode::ALL.iter().position(|m| *m == s.window.mode),
+            ),
+            Row::Display | Row::FullscreenSize | Row::WindowedSize => {
+                let (options, selected) = self.display_choice(row, s);
                 choice(options, Some(selected))
             }
             // Handled above.
@@ -517,6 +683,32 @@ impl Rows {
                     settings.frame.fps_corner = *corner;
                 }
             }
+            (Row::ScreenMode, RowValue::Choice(i)) => {
+                if let Some(mode) = WindowMode::ALL.get(i) {
+                    settings.window.mode = *mode;
+                }
+            }
+            (Row::Display, RowValue::Choice(i)) => {
+                if i < self.displays.displays.len() {
+                    settings.window.display = u8::try_from(i).unwrap_or(u8::MAX);
+                }
+            }
+            (Row::FullscreenSize, RowValue::Choice(i)) => {
+                if let Some(size) = self
+                    .shown_display(settings)
+                    .and_then(|(_, sizes)| sizes.fullscreen.get(i))
+                {
+                    settings.window.fullscreen_size = *size;
+                }
+            }
+            (Row::WindowedSize, RowValue::Choice(i)) => {
+                if let Some(size) = self
+                    .shown_display(settings)
+                    .and_then(|(_, sizes)| sizes.windowed.get(i))
+                {
+                    settings.window.windowed_size = *size;
+                }
+            }
             (Row::FpsScreens, RowValue::Choice(i)) => {
                 if let Some(screens) = FpsScreens::ALL.get(i) {
                     settings.frame.fps_screens = *screens;
@@ -526,13 +718,38 @@ impl Rows {
         }
     }
 
-    /// Shows the rows' disabled and hint states for `settings` on `screen`: the sensitivity
-    /// slider is unchangeable without high precision and says why, and the high precision
-    /// toggle warns where the platform has issues with it. Does not allocate.
-    pub fn refresh(screen: &mut SettingsScreen, settings: &Settings) {
+    /// Shows the rows' disabled, hint and hidden states for `settings` on `screen`: the
+    /// sensitivity slider is unchangeable without high precision and says why, the high
+    /// precision toggle warns where the platform has issues with it, and the display and
+    /// resolution rows show as in lazer (ADR-0072), with the options of the display shown.
+    /// Does not allocate.
+    pub fn refresh(&self, screen: &mut SettingsScreen, settings: &Settings) {
         let high_precision = settings.input.high_precision_mouse;
+        let mode = settings.window.mode;
         for (i, row) in Row::ALL.iter().enumerate() {
             match row {
+                // Ported from osu!lazer 2026.1005.0-lazer: osu.Game/Overlays/Settings/Sections/Graphics/LayoutSettings.cs (updateDisplaySettingsVisibility, updateScreenModeWarning)
+                Row::NotFullscreenNote => screen.set_hidden(i, mode == WindowMode::Fullscreen),
+                Row::Display | Row::FullscreenSize | Row::WindowedSize => {
+                    let (options, selected) = self.display_choice(*row, settings);
+                    if let Some(RowWidget::Dropdown(dropdown)) = screen.widget(i)
+                        && (dropdown.count() != options || dropdown.selected() != selected)
+                    {
+                        screen.set_dropdown(i, options, selected);
+                    }
+                    // The window's own size, listed although no mode has it, does not count,
+                    // as lazer does not list it.
+                    let options = match (row, self.shown_display(settings)) {
+                        (Row::WindowedSize, Some((_, sizes))) => sizes.windowed_modes(),
+                        _ => options,
+                    };
+                    let shown = match row {
+                        Row::FullscreenSize => mode == WindowMode::Fullscreen,
+                        Row::WindowedSize => mode == WindowMode::Windowed,
+                        _ => true,
+                    };
+                    screen.set_hidden(i, !shown || options <= 1);
+                }
                 Row::HighPrecisionMouse => screen.set_hint(i, PLATFORM_WARNING && high_precision),
                 Row::Sensitivity => {
                     screen.set_disabled(i, !high_precision);
@@ -587,6 +804,10 @@ impl Rows {
                         .map(|screens| text(screens_key(*screens)))
                         .collect(),
                     Row::Skin => skin_options(localizer, &self.skins),
+                    Row::ScreenMode => WindowMode::ALL
+                        .iter()
+                        .map(|mode| text(mode_key(*mode)))
+                        .collect(),
                     _ => Vec::new(),
                 };
                 let unit = match row {
@@ -668,6 +889,184 @@ mod tests {
 
     fn index(row: Row) -> usize {
         Row::ALL.iter().position(|r| *r == row).unwrap()
+    }
+
+    fn sizes(fullscreen: &[[u16; 2]], windowed: &[[u16; 2]]) -> crate::displays::SizeLists {
+        crate::displays::SizeLists {
+            fullscreen: std::iter::once(None)
+                .chain(fullscreen.iter().copied().map(Some))
+                .collect(),
+            windowed: windowed.to_vec(),
+            custom_windowed: false,
+        }
+    }
+
+    /// Rows over two displays, the second the primary one.
+    fn with_displays() -> (Rows, Settings) {
+        let (mut rows, settings) = rows();
+        let mut lists = Box::new(DisplayLists {
+            displays: vec![
+                sizes(&[[1920, 1080], [1280, 720]], &[[1920, 1080], [1366, 768]]),
+                sizes(&[[2560, 1440]], &[[1366, 768]]),
+            ],
+            primary: 1,
+            generation: 1,
+        });
+        rows.swap_displays(&mut lists);
+        assert!(lists.displays.is_empty(), "the old, empty lists come back");
+        (rows, settings)
+    }
+
+    fn opened(rows: &Rows, settings: &Settings) -> SettingsScreen {
+        let mut screen = SettingsScreen::new(&rows.specs(settings), SECTIONS);
+        rows.refresh(&mut screen, settings);
+        screen
+    }
+
+    fn dropdown(screen: &SettingsScreen, row: Row) -> (usize, usize) {
+        match screen.widget(index(row)) {
+            Some(RowWidget::Dropdown(d)) => (d.count(), d.selected()),
+            other => panic!("{row:?} is {other:?}"),
+        }
+    }
+
+    #[test]
+    fn the_screen_mode_row_sets_the_mode_and_warns_outside_fullscreen() {
+        let (rows, mut s) = rows();
+        assert_eq!(Row::ScreenMode.section(), 3);
+        for (i, mode) in WindowMode::ALL.iter().enumerate() {
+            rows.apply(&mut s, index(Row::ScreenMode), RowValue::Choice(i));
+            assert_eq!(s.window.mode, *mode);
+            let screen = opened(&rows, &s);
+            assert_eq!(dropdown(&screen, Row::ScreenMode), (3, i));
+            assert_eq!(
+                screen.is_hidden(index(Row::NotFullscreenNote)),
+                *mode == WindowMode::Fullscreen
+            );
+            assert!(!screen.is_hidden(index(Row::ScreenMode)));
+        }
+        rows.apply(&mut s, index(Row::ScreenMode), RowValue::Choice(3));
+        assert_eq!(s.window.mode, WindowMode::Fullscreen);
+    }
+
+    #[test]
+    fn display_and_resolution_rows_hide_until_the_first_list() {
+        let (rows, s) = rows();
+        let screen = opened(&rows, &s);
+        for row in [Row::Display, Row::FullscreenSize, Row::WindowedSize] {
+            assert!(screen.is_hidden(index(row)), "{row:?}");
+        }
+    }
+
+    #[test]
+    fn resolution_rows_show_in_their_mode_as_in_lazer() {
+        let (rows, mut s) = with_displays();
+        s.window.display = 0;
+        s.window.mode = WindowMode::Fullscreen;
+        let shown = |s: &Settings| {
+            let screen = opened(&rows, s);
+            [Row::Display, Row::FullscreenSize, Row::WindowedSize]
+                .map(|row| !screen.is_hidden(index(row)))
+        };
+        assert_eq!(shown(&s), [true, true, false]);
+        s.window.mode = WindowMode::Windowed;
+        assert_eq!(shown(&s), [true, false, true]);
+        s.window.mode = WindowMode::Borderless;
+        assert_eq!(shown(&s), [true, false, false]);
+        // The second display lists one windowed size: nothing to choose.
+        s.window.display = 1;
+        s.window.mode = WindowMode::Windowed;
+        assert_eq!(shown(&s), [true, false, false]);
+        s.window.mode = WindowMode::Fullscreen;
+        assert_eq!(shown(&s), [true, true, false]);
+    }
+
+    #[test]
+    fn one_display_hides_the_display_row() {
+        let (mut rows, s) = rows();
+        let mut lists = Box::new(DisplayLists {
+            displays: vec![sizes(&[[1920, 1080]], &[[1366, 768]])],
+            primary: 0,
+            generation: 1,
+        });
+        rows.swap_displays(&mut lists);
+        let screen = opened(&rows, &s);
+        assert!(screen.is_hidden(index(Row::Display)));
+        assert!(!screen.is_hidden(index(Row::FullscreenSize)));
+    }
+
+    #[test]
+    fn the_windows_own_size_does_not_count_to_show_the_windowed_row() {
+        let (mut rows, mut s) = rows();
+        let mut custom = sizes(&[[1920, 1080]], &[[1920, 1080], [1366, 768]]);
+        custom.custom_windowed = true;
+        let mut lists = Box::new(DisplayLists {
+            displays: vec![custom],
+            primary: 0,
+            generation: 1,
+        });
+        rows.swap_displays(&mut lists);
+        s.window.mode = WindowMode::Windowed;
+        let screen = opened(&rows, &s);
+        assert!(screen.is_hidden(index(Row::WindowedSize)));
+        assert_eq!(rows.display_generation(), 1);
+    }
+
+    #[test]
+    fn display_and_size_choices_follow_the_display_shown() {
+        let (rows, mut s) = with_displays();
+        // A display that is gone shows as the primary one and stays saved.
+        s.window.display = 7;
+        let screen = opened(&rows, &s);
+        assert_eq!(dropdown(&screen, Row::Display), (2, 1));
+        assert_eq!(dropdown(&screen, Row::FullscreenSize), (2, 0));
+        rows.apply(&mut s, index(Row::FullscreenSize), RowValue::Choice(1));
+        assert_eq!(s.window.fullscreen_size, Some([2560, 1440]));
+        assert_eq!(s.window.display, 7);
+
+        rows.apply(&mut s, index(Row::Display), RowValue::Choice(0));
+        assert_eq!(s.window.display, 0);
+        // 2560x1440 is not a mode of display 0: shown as the default, kept.
+        assert_eq!(dropdown(&opened(&rows, &s), Row::FullscreenSize), (3, 0));
+        assert_eq!(s.window.fullscreen_size, Some([2560, 1440]));
+        rows.apply(&mut s, index(Row::FullscreenSize), RowValue::Choice(2));
+        assert_eq!(s.window.fullscreen_size, Some([1280, 720]));
+        rows.apply(&mut s, index(Row::FullscreenSize), RowValue::Choice(0));
+        assert_eq!(s.window.fullscreen_size, None);
+        rows.apply(&mut s, index(Row::WindowedSize), RowValue::Choice(1));
+        assert_eq!(s.window.windowed_size, [1366, 768]);
+        assert_eq!(dropdown(&opened(&rows, &s), Row::WindowedSize), (2, 1));
+        // Out of range: nothing changes.
+        rows.apply(&mut s, index(Row::Display), RowValue::Choice(2));
+        rows.apply(&mut s, index(Row::WindowedSize), RowValue::Choice(9));
+        assert_eq!((s.window.display, s.window.windowed_size), (0, [1366, 768]));
+    }
+
+    #[test]
+    fn refresh_updates_the_resolution_options_for_another_display() {
+        let (rows, mut s) = with_displays();
+        s.window.display = 0;
+        let mut screen = opened(&rows, &s);
+        assert_eq!(dropdown(&screen, Row::FullscreenSize), (3, 0));
+        s.window.display = 1;
+        rows.refresh(&mut screen, &s);
+        assert_eq!(dropdown(&screen, Row::FullscreenSize), (2, 0));
+    }
+
+    #[test]
+    fn screen_mode_options_are_labelled() {
+        let (rows, _) = rows();
+        let localizer = Localizer::builtin().unwrap();
+        let labels = rows.labels(&localizer);
+        let mode = &labels.rows[index(Row::ScreenMode)];
+        assert_eq!(mode.options, ["Windowed", "Borderless", "Fullscreen"]);
+        assert!(
+            labels.rows[index(Row::NotFullscreenNote)]
+                .label
+                .contains("latency")
+        );
+        assert_eq!(labels.rows[index(Row::FullscreenSize)].label, "Resolution");
+        assert_eq!(labels.sections[3], "Layout");
     }
 
     #[test]
@@ -821,7 +1220,7 @@ mod tests {
     fn the_skin_row_offers_the_default_and_the_folders() {
         let (rows, mut s) = with_skins(&["Alpha", "beta"], None);
         assert_eq!(skin_selected(&rows, &s), (3, 0));
-        assert_eq!(Row::Skin.section(), 4);
+        assert_eq!(Row::Skin.section(), 5);
         assert!(!Row::Skin.restart_required());
         rows.apply(&mut s, index(Row::Skin), RowValue::Choice(2));
         assert_eq!(s.skin.name.as_deref(), Some("beta"));

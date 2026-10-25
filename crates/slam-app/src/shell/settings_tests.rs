@@ -79,8 +79,8 @@ fn the_frame_section_changes_the_draw_rates() {
     let mut s = state();
     let mut snap = ShellSnapshot::default();
     opened(&mut s, &mut snap);
-    // Audio, offset, keys, frame rates.
-    let tabs = [key(KEY_TAB); 3];
+    // Audio, offset, keys, layout, frame rates.
+    let tabs = [key(KEY_TAB); 4];
     s.tick(LATER, &tabs, &mut snap);
     // Update rate, gameplay rate: the next option after 1000 Hz is 2000 Hz.
     s.tick(LATER, &[key(KEY_DOWN), key(KEY_RIGHT)], &mut snap);
@@ -294,8 +294,8 @@ fn a_committed_update_rate_reaches_the_engine() {
     shell.update_rate = AppliedUpdateRate::new(control.clone(), 1000.0);
     let mut snap = ShellSnapshot::default();
     opened(&mut shell.state, &mut snap);
-    // Audio, offset, keys, frame rates; the update rate is the first row.
-    let tabs = [key(KEY_TAB); 3];
+    // Audio, offset, keys, layout, frame rates; the update rate is the first row.
+    let tabs = [key(KEY_TAB); 4];
     shell.state.tick(LATER, &tabs, &mut snap);
     shell.state.tick(LATER, &[key(KEY_RIGHT)], &mut snap);
     // Not before the screen closes.
@@ -877,4 +877,61 @@ fn a_window_mode_switch_reaches_an_open_settings_screen() {
     assert_eq!(edited(&s).window.mode, applied);
     // Same mode in force: nothing to save.
     assert!(s.take_save_request().is_none());
+}
+
+#[test]
+fn display_lists_reach_an_open_settings_screen_and_go_back() {
+    let (sender, link, _views, _thread) =
+        crate::displays::spawn(Box::new(|_, _| None)).expect("thread starts");
+    let mut s = state().with_displays(link);
+    let mut snap = ShellSnapshot::default();
+    opened(&mut s, &mut snap);
+    let display_row = super::rows::display_rows()[0];
+    assert!(settings_screen(&s).is_hidden(display_row));
+    let display = slam_input::Display {
+        name: "Test".to_owned(),
+        bounds: [0, 0, 1920, 1080],
+        usable: [0, 0, 1920, 1080],
+        modes: vec![[1920, 1080], [1280, 720]],
+    };
+    sender
+        .send(slam_input::Displays {
+            list: vec![display.clone(), display],
+            primary: 0,
+            windowed_size: [1366, 768],
+        })
+        .expect("thread listens");
+    for _ in 0..200 {
+        s.tick(LATER, &[], &mut snap);
+        if !settings_screen(&s).is_hidden(display_row) {
+            break;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(5));
+    }
+    assert!(!settings_screen(&s).is_hidden(display_row));
+    let Some(RowWidget::Dropdown(display)) = settings_screen(&s).widget(display_row) else {
+        panic!("the display row is a dropdown");
+    };
+    assert_eq!((display.count(), display.selected()), (2, 0));
+}
+
+#[test]
+fn window_edits_reach_the_window_before_the_screen_closes() {
+    use slam_input::WindowMode;
+    let (link, _taken) = crate::settings::saver::detached(1);
+    let mut shell = shell_with(link);
+    let mut snap = ShellSnapshot::default();
+    opened(&mut shell.state, &mut snap);
+    let editing = shell.state.editing.as_mut().expect("the screen is open");
+    editing.window.mode = WindowMode::Windowed;
+    editing.window.windowed_size = [1024, 768];
+    shell.apply_settings(LATER);
+    assert_eq!(shell.window.get().mode, WindowMode::Windowed);
+    assert_eq!(shell.window.get().windowed_size, [1024, 768]);
+    // An Alt+Enter meanwhile lands in the edits too, and is not undone.
+    let switched = switch_window(&shell);
+    shell.apply_settings(LATER);
+    assert_eq!(edited(&shell.state).window.mode, switched.mode);
+    shell.apply_settings(LATER);
+    assert_eq!(shell.window.get(), switched);
 }

@@ -34,6 +34,9 @@ pub enum WindowMode {
 }
 
 impl WindowMode {
+    /// Every mode, in osu-framework's order (the settings screen's).
+    pub const ALL: [Self; 3] = [Self::Windowed, Self::Borderless, Self::Fullscreen];
+
     /// The mode osu.Game starts in: borderless on macOS, where exclusive fullscreen takes
     /// control away from the OS, fullscreen elsewhere.
     pub const DEFAULT: Self = if cfg!(target_os = "macos") {

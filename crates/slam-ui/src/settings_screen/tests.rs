@@ -759,3 +759,263 @@ fn disabled_and_hint_flags_reach_the_snapshot_and_ignore_unknown_rows() {
     s.set_hint(2, false);
     assert!(!s.snapshot().hinted[2]);
 }
+
+#[test]
+fn a_hidden_row_is_not_hit_and_the_rows_below_move_up() {
+    let mut s = screen();
+    let l = layout();
+    let old_toggle = centre(l.row(s.slot(1)));
+    s.set_hidden(0, true);
+    assert!(s.is_hidden(0) && !s.is_hidden(1));
+    assert_eq!(s.slot(1), 0);
+    assert_eq!(s.slot(2), 1);
+    // The toggle now sits where the slider was; the old place holds the dropdown row.
+    let first = centre(l.row(0));
+    assert!(matches!(
+        input(
+            &mut s,
+            SettingsInput::PointerPress {
+                x: first.0,
+                y: first.1
+            }
+        ),
+        Some(SettingsAction::Changed {
+            row: 1,
+            value: RowValue::Toggle(true)
+        })
+    ));
+    assert_eq!(s.focus(), 1);
+    input(
+        &mut s,
+        SettingsInput::PointerPress {
+            x: old_toggle.0,
+            y: old_toggle.1,
+        },
+    );
+    assert_eq!(s.focus(), 2);
+    // Nothing is left at the slot below the last visible row.
+    let past = centre(l.row(2));
+    input(
+        &mut s,
+        SettingsInput::PointerPress {
+            x: past.0,
+            y: past.1,
+        },
+    );
+    assert_eq!(s.focus(), 2);
+    let snapshot = s.snapshot();
+    assert!(snapshot.hidden[0] && !snapshot.hidden[1]);
+    assert_eq!(snapshot.slots[1], 0);
+}
+
+#[test]
+fn navigation_skips_hidden_rows() {
+    let mut s = screen();
+    s.set_hidden(1, true);
+    input(&mut s, SettingsInput::Down);
+    assert_eq!(s.focus(), 2);
+    input(&mut s, SettingsInput::Up);
+    assert_eq!(s.focus(), 0);
+    // Out of range rows are ignored.
+    s.set_hidden(99, true);
+    assert!(!s.is_hidden(99));
+}
+
+#[test]
+fn the_focus_leaves_a_row_that_becomes_hidden() {
+    let mut s = screen();
+    input(&mut s, SettingsInput::Down);
+    s.set_hidden(1, true);
+    assert_eq!(s.focus(), 2);
+    s.set_hidden(2, true);
+    assert_eq!(s.focus(), 0);
+}
+
+#[test]
+fn hiding_an_open_dropdown_closes_it_without_an_action() {
+    let mut s = screen();
+    input(&mut s, SettingsInput::Down);
+    input(&mut s, SettingsInput::Down);
+    input(&mut s, SettingsInput::Activate);
+    assert!(matches!(s.widget(2), Some(RowWidget::Dropdown(d)) if d.is_open()));
+    input(&mut s, SettingsInput::Down);
+    s.set_hidden(2, true);
+    assert!(
+        matches!(s.widget(2), Some(RowWidget::Dropdown(d)) if !d.is_open() && d.selected() == 1)
+    );
+    assert_eq!(s.focus(), 1);
+    // Back now closes the screen, not a dropdown.
+    assert_eq!(
+        input(&mut s, SettingsInput::Back),
+        Some(SettingsAction::Close)
+    );
+}
+
+#[test]
+fn hiding_a_listening_key_row_stops_listening() {
+    let mut s = keys_screen();
+    listening(&mut s, 1);
+    assert!(s.is_listening());
+    s.set_hidden(1, true);
+    assert!(!s.is_listening());
+}
+
+#[test]
+fn showing_a_row_again_restores_its_state() {
+    let mut s = screen();
+    input(&mut s, SettingsInput::Right);
+    s.set_disabled(0, true);
+    s.set_hint(0, true);
+    s.set_hidden(0, true);
+    assert_eq!(input(&mut s, SettingsInput::Right), None);
+    s.set_hidden(0, false);
+    assert!(s.is_disabled(0) && s.is_hinted(0) && !s.is_hidden(0));
+    assert_eq!(s.slot(0), 0);
+    assert_eq!(s.slot(1), 1);
+    assert!(matches!(s.widget(0), Some(RowWidget::Slider(w)) if w.value() > 50.0));
+}
+
+#[test]
+fn hidden_rows_shrink_the_section() {
+    let mut s = screen();
+    s.set_hidden(0, true);
+    s.set_hidden(1, true);
+    // One visible row in section 0 is left, at slot 0; section 1 is untouched.
+    assert_eq!(s.slot(2), 0);
+    assert_eq!(s.slot(3), 0);
+    let visible = s.snapshot().hidden[..3].iter().filter(|h| !**h).count();
+    assert_eq!(visible, 1);
+}
+
+fn note(section: usize) -> RowSpec {
+    RowSpec {
+        section,
+        kind: RowKind::Note,
+        restart_required: false,
+    }
+}
+
+/// Section 0: toggle, note, toggle. Section 1: note only. Section 2: toggle.
+fn notes_screen() -> SettingsScreen {
+    SettingsScreen::new(
+        &[
+            toggle(0, false),
+            note(0),
+            toggle(0, false),
+            note(1),
+            toggle(2, false),
+        ],
+        3,
+    )
+}
+
+#[test]
+fn a_note_row_is_skipped_by_navigation_and_never_focused() {
+    let mut s = notes_screen();
+    input(&mut s, SettingsInput::Down);
+    assert_eq!(s.focus(), 2);
+    input(&mut s, SettingsInput::Up);
+    assert_eq!(s.focus(), 0);
+    // A section of notes only leaves the focus where it was; nothing is emitted.
+    input(&mut s, SettingsInput::NextSection);
+    assert_eq!(s.section(), 1);
+    assert_eq!(s.focus(), 0);
+}
+
+#[test]
+fn a_note_row_is_not_hit_and_gives_no_action() {
+    let mut s = notes_screen();
+    let l = layout();
+    // Slot 1 of section 0 is the note.
+    let (x, y) = centre(l.row(1));
+    assert_eq!(input(&mut s, SettingsInput::PointerPress { x, y }), None);
+    assert_eq!(s.focus(), 0);
+    input(&mut s, SettingsInput::PointerMove { x, y });
+    assert_eq!(s.focus(), 0);
+    assert!(matches!(s.widget(1), Some(RowWidget::Note)));
+    let mut s = notes_screen();
+    s.focus = 1;
+    for i in [
+        SettingsInput::Activate,
+        SettingsInput::Left,
+        SettingsInput::Right,
+    ] {
+        assert_eq!(input(&mut s, i), None);
+    }
+}
+
+#[test]
+fn hiding_the_focused_row_never_moves_the_focus_to_a_note() {
+    let mut s = notes_screen();
+    input(&mut s, SettingsInput::Down);
+    assert_eq!(s.focus(), 2);
+    // Nothing visible below in the section; the note above is passed over.
+    s.set_hidden(2, true);
+    assert_eq!(s.focus(), 0);
+}
+
+#[test]
+fn a_note_row_can_be_hidden_and_shown() {
+    let mut s = notes_screen();
+    s.set_hidden(1, true);
+    assert!(s.is_hidden(1));
+    assert_eq!(s.slot(2), 1);
+    s.set_hidden(1, false);
+    assert!(!s.is_hidden(1));
+    assert_eq!(s.slot(2), 2);
+}
+
+#[test]
+fn hiding_a_slider_while_dragging_ends_the_drag() {
+    let mut s = screen();
+    let l = layout();
+    let widget = SliderLayout::new(l.widget(0), &theme(), l.scale);
+    let y = widget.hit.y + 2.0;
+    let at = |fraction: f32| widget.track.x + widget.track.width * fraction;
+    input(&mut s, SettingsInput::PointerPress { x: at(0.25), y });
+    let Some(RowWidget::Slider(sl)) = s.widget(0) else {
+        panic!()
+    };
+    assert!(sl.is_dragging());
+    s.set_hidden(0, true);
+    let Some(RowWidget::Slider(sl)) = s.widget(0) else {
+        panic!()
+    };
+    assert!(!sl.is_dragging());
+    assert_eq!(
+        input(&mut s, SettingsInput::PointerMove { x: at(0.75), y }),
+        None
+    );
+    assert_eq!(input(&mut s, SettingsInput::PointerRelease), None);
+    s.set_hidden(0, false);
+    let Some(RowWidget::Slider(sl)) = s.widget(0) else {
+        panic!()
+    };
+    assert_eq!(sl.value(), 25.0);
+}
+
+#[test]
+fn input_to_a_focus_left_in_another_section_is_ignored() {
+    let mut s = screen();
+    // Hide the only row of section 1; the focus stays on a row of section 0.
+    s.set_hidden(3, true);
+    input(&mut s, SettingsInput::NextSection);
+    assert_eq!(s.section(), 1);
+    assert_eq!(s.focus(), 0);
+    for i in [
+        SettingsInput::Activate,
+        SettingsInput::Left,
+        SettingsInput::Right,
+    ] {
+        assert_eq!(input(&mut s, i), None);
+    }
+    let Some(RowWidget::Slider(sl)) = s.widget(0) else {
+        panic!()
+    };
+    assert_eq!(sl.value(), 50.0);
+    // Back still closes.
+    assert_eq!(
+        input(&mut s, SettingsInput::Back),
+        Some(SettingsAction::Close)
+    );
+}

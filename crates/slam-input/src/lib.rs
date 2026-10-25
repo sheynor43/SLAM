@@ -10,12 +10,14 @@
 //! [`InputCounters`] count the main thread's wake-ups and queued events. A
 //! [`FolderDialog`] shows the OS folder picker from any thread. [`TextInput`] turns typed
 //! text ([`InputKind::Text`]) on and off from any thread. [`MouseSettings`] turns relative
-//! ("high precision") mouse mode on and sets its sensitivity (ADR-0069).
+//! ("high precision") mouse mode on and sets its sensitivity (ADR-0069). A
+//! [`DisplaysCallback`] gets the display list for the settings screen (ADR-0072).
 
 mod clock;
 mod convert;
 mod counters;
 mod dialog;
+mod displays;
 mod event;
 mod gl;
 mod mode;
@@ -31,6 +33,7 @@ pub use clock::{
 pub use convert::{convert, convert_text};
 pub use counters::InputCounters;
 pub use dialog::{FolderCallback, FolderDialog, FolderPick};
+pub use displays::{Display, Displays, DisplaysCallback};
 pub use event::{InputEvent, InputKind, MouseButton, TextChunk};
 pub use gl::GlContext;
 pub use mode::{
