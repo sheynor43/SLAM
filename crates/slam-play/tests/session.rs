@@ -1802,6 +1802,97 @@ fn hits_reach_the_meter_and_a_quick_retry_starts_it_over() {
 }
 
 #[test]
+fn hit_error_statistics_count_the_attempt_and_reach_the_results() {
+    let map = beatmap();
+    let mut d = Driver::new(&map, mods(vec![slam_osu::mods::Mod::NoFail]));
+    let circle = &map.hit_objects[0];
+    let at = d.mouse(circle.stacked_position());
+    d.tick(&[at]);
+    d.run_to(circle.start_time - 10.0);
+    d.tap(Z);
+    let summary = d.session.hit_error_summary();
+    assert_eq!(summary.hits, 1);
+    let offset = d.snapshot.hit_errors.since(0).next().unwrap().offset;
+    assert_eq!(summary.average, Some(offset));
+    assert_eq!(summary.median, Some(offset));
+    assert_eq!(summary.unstable_rate, Some(0.0));
+
+    d.hold(None, GRAVE, 200);
+    assert_eq!(d.snapshot.restarts, 1);
+    assert_eq!(
+        d.session.hit_error_summary(),
+        slam_osu::hit_events::HitErrorSummary::default()
+    );
+
+    // The retry hits the circle again and misses the rest.
+    let at = d.mouse(circle.stacked_position());
+    d.tick(&[at]);
+    d.run_to(circle.start_time + 20.0);
+    d.tap(Z);
+    d.run_until(12_000, |s| s.state == PlayState::Passed);
+    let results = d.session.results().unwrap();
+    assert_eq!(results.hit_errors.hits, 1);
+    assert_eq!(results.hit_errors, d.session.hit_error_summary());
+}
+
+#[test]
+fn hit_error_statistics_take_the_gameplay_rate() {
+    let map = beatmap();
+    let double_time = slam_osu::mods::Mod::from_acronym("DT");
+    let set = mods(vec![slam_osu::mods::Mod::NoFail, double_time]);
+    let rate = set.true_gameplay_rate();
+    assert_eq!(rate, 1.5);
+    let mut d = Driver::new(&map, set);
+    // Early on the circle, late on the slider's head.
+    let circle = &map.hit_objects[0];
+    let at = d.mouse(circle.stacked_position());
+    d.tick(&[at]);
+    d.run_to(circle.start_time - 10.0);
+    d.tap(Z);
+    let slider = &map.hit_objects[1];
+    let at = d.mouse(slider.stacked_position());
+    d.tick(&[at]);
+    d.run_to(slider.start_time + 20.0);
+    d.tap(Z);
+    let offsets: Vec<f64> = d.snapshot.hit_errors.since(0).map(|e| e.offset).collect();
+    assert_eq!(offsets.len(), 2, "{offsets:?}");
+    let summary = d.session.hit_error_summary();
+    assert_eq!(summary.hits, 2);
+    // The average is in gameplay time, the unstable rate in real time.
+    assert_eq!(summary.average, Some((offsets[0] + offsets[1]) / 2.0));
+    let ur = summary.unstable_rate.unwrap();
+    let expected = 10.0 * (offsets[1] - offsets[0]).abs() / 2.0 / rate;
+    assert!((ur - expected).abs() < 1e-9, "{ur} {expected}");
+}
+
+#[test]
+fn hits_after_failing_make_no_hit_errors() {
+    let map = beatmap();
+    let sudden_death = slam_osu::mods::Mod::SuddenDeath {
+        restart: false,
+        fail_on_slider_tail: false,
+    };
+    let mut d = Driver::new(&map, mods(vec![sudden_death]));
+    // Missing the first circle fails the play; the slider's head is hit while failing.
+    let slider = &map.hit_objects[1];
+    let at = d.mouse(slider.stacked_position());
+    d.tick(&[at]);
+    d.run_until(5_000, |s| s.state == PlayState::Failing);
+    // The failing play slows down but goes on.
+    let head = slider.start_time;
+    d.run_until(3_000, |s| s.time >= head);
+    d.tap(Z);
+    let judged = d
+        .session
+        .log()
+        .events()
+        .iter()
+        .any(|j| j.object.index == 1 && j.object.nested.is_some() && j.result.is_hit());
+    assert!(judged, "{:?}", d.session.log().events());
+    assert_eq!(d.session.hit_error_summary().hits, 0);
+}
+
+#[test]
 fn quick_exit_after_passing_shows_the_results() {
     let map = beatmap();
     let mut d = passed(&map);

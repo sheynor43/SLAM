@@ -10,6 +10,7 @@ pub mod difficulty;
 mod dotnet;
 pub mod events;
 pub mod health;
+pub mod hit_events;
 pub mod hit_windows;
 pub mod judgement;
 pub mod lead_in;

@@ -9,7 +9,7 @@ use std::time::Duration;
 
 use slam_audio::{MusicEvent, PlayError};
 use slam_osu::mods::ModSet;
-use slam_play::HudLabels;
+use slam_play::{HudLabels, PlaySession};
 use slam_render::Limits;
 use slam_text::FontRegistry;
 
@@ -56,8 +56,10 @@ pub struct LoadResult {
 /// Something the update thread is done with; messages are logged here.
 pub enum Trash {
     Prepared(Box<Prepared>),
-    /// Any other value: a finished play's session and beatmap.
+    /// Any other value: a finished play's beatmap.
     Other(Box<dyn Send>),
+    /// A finished play that saves no replay.
+    Session(Box<PlaySession>),
     /// A finished play: its replay is saved if it passed.
     Replay(Box<ReplayJob>),
     /// A failed preparation's message, logged when it failed.
@@ -70,9 +72,14 @@ pub enum Trash {
 
 fn log(trash: Trash, replays: Option<&Path>) {
     match trash {
+        Trash::Session(session) => log_hit_errors(&session),
         Trash::Replay(job) => match replays {
-            Some(dir) => crate::replays::save(&job, dir),
-            None if job.session.results().is_some() => {
+            Some(dir) => {
+                log_hit_errors(&job.session);
+                crate::replays::save(&job, dir);
+            }
+            None if job.session.passed() => {
+                log_hit_errors(&job.session);
                 tracing::warn!("replay not saved: no data folder");
             }
             None => {}
@@ -81,6 +88,11 @@ fn log(trash: Trash, replays: Option<&Path>) {
         Trash::TrackCommand(error) => tracing::warn!("track: {error}"),
         _ => {}
     }
+}
+
+/// The results screen does not show these yet (ADR-0074).
+fn log_hit_errors(session: &PlaySession) {
+    tracing::info!("hit errors: {}", session.hit_error_summary());
 }
 
 /// What the loader needs to prepare a play.

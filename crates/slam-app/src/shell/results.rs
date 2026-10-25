@@ -113,6 +113,7 @@ mod tests {
             rank: ScoreRank::SH,
             statistics: played,
             maximum_statistics: perfect,
+            hit_errors: Default::default(),
         };
         let data = results_data(7, "t".into(), ResultsMods::new(["HD"]), &results);
         assert_eq!((data.id, data.score, data.rank), (7, 123_456, Rank::SH));

@@ -1477,7 +1477,7 @@ impl Retiring {
                 name: source.name,
                 ended: source.ended,
             })),
-            None => Trash::Other(self.session),
+            None => Trash::Session(self.session),
         }
     }
 }

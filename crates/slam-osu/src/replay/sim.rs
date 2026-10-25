@@ -5,6 +5,7 @@
 
 use crate::beatmap::Beatmap;
 use crate::health::HealthProcessor;
+use crate::hit_events::HitEvents;
 use crate::judgement::{Judgement, JudgementLog};
 use crate::lead_in::gameplay_start_time;
 use crate::mods::ModSet;
@@ -110,6 +111,7 @@ pub struct Simulator<R> {
     log: JudgementLog,
     health: Option<Health>,
     score: Option<ScoreProcessor>,
+    hit_events: Option<HitEvents>,
     /// Judgements of the log already given to the health and score processors.
     applied: usize,
     /// Judgements of the log made before the player failed (all while not failed).
@@ -131,6 +133,7 @@ impl<R: Rules> Simulator<R> {
             rules,
             health: None,
             score: None,
+            hit_events: None,
             applied: 0,
             counted: 0,
             events: [ActionEvent {
@@ -165,6 +168,14 @@ impl<R: Rules> Simulator<R> {
     pub fn with_scoring(mut self, processor: ScoreProcessor) -> Simulator<R> {
         debug_assert_eq!(self.steps, 0, "score tracked from the first step");
         self.score = Some(processor);
+        self
+    }
+
+    /// Collects the hit errors of the judgements the play counts with `events` from the first
+    /// step on (lazer's `ScoreProcessor.HitEvents`: none after the player failed).
+    pub fn with_hit_events(mut self, events: HitEvents) -> Simulator<R> {
+        debug_assert_eq!(self.steps, 0, "hit events tracked from the first step");
+        self.hit_events = Some(events);
         self
     }
 
@@ -228,6 +239,9 @@ impl<R: Rules> Simulator<R> {
             }
             if !failed_before {
                 self.counted += 1;
+                if let Some(events) = &mut self.hit_events {
+                    events.apply(judgement);
+                }
             }
         }
         self.applied = self.log.events().len();
@@ -283,6 +297,11 @@ impl<R: Rules> Simulator<R> {
     /// The score, if tracked (see [`Simulator::with_scoring`]).
     pub fn score(&self) -> Option<&ScoreProcessor> {
         self.score.as_ref()
+    }
+
+    /// The hit errors, if tracked (see [`Simulator::with_hit_events`]).
+    pub fn hit_events(&self) -> Option<&HitEvents> {
+        self.hit_events.as_ref()
     }
 
     /// The rules.

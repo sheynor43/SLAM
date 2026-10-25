@@ -4,6 +4,7 @@ mod common;
 
 use common::{PressRules, beatmap, noisy_frames, replay};
 use slam_formats::osu::decode_str;
+use slam_osu::hit_events::{HitEventTargets, HitEvents};
 use slam_osu::replay::{NoRules, ReplayInput, Simulator};
 use slam_osu::rules::{HitPolicy, OsuRules};
 use slam_osu::{Beatmap, HealthProcessor, Mod, ModSet, ScoreProcessor};
@@ -59,10 +60,20 @@ fn slider_steps_do_not_allocate() {
             OsuRules::new(&map, &ModSet::default()),
             OsuRules::new(&map, &classic),
         ] {
-            let mut sim = Simulator::new(&map, input.clone(), rules);
+            // One hit event at most per circle and slider head: no allocation.
+            let mut sim = Simulator::new(&map, input.clone(), rules)
+                .with_hit_events(HitEvents::new(&map, 1.0));
             assert_no_alloc(|| sim.run());
             assert!(sim.is_finished());
             assert!(!sim.log().events().is_empty());
+            let targets = HitEventTargets::new(&map);
+            let hits = sim
+                .log()
+                .events()
+                .iter()
+                .filter(|j| targets.hit_offset(j).is_some())
+                .count();
+            assert_eq!(sim.hit_events().unwrap().offsets().len(), hits);
         }
     }
 }
