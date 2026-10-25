@@ -49,8 +49,8 @@ use slam_ui::results::{
 };
 use slam_ui::screen::{MAX_LAYERS, Nav, Navigated, Pose, ScreenStack};
 use slam_ui::settings_screen::{
-    KeyValue, SettingsAction, SettingsInput, SettingsLayout, SettingsScreen, SettingsSnapshot,
-    SettingsView,
+    KeyValue, RowWidget, SettingsAction, SettingsInput, SettingsLayout, SettingsScreen,
+    SettingsSnapshot, SettingsView,
 };
 use slam_ui::song_select::{
     BeatmapDetails, DetailLabels, DetailStats, ModColumns, ModSelect, SettingValue, SongFilter,
@@ -62,6 +62,7 @@ use slam_ui::widgets::DropdownView;
 
 use crate::backgrounds::{BackgroundFade, BackgroundPicker, BackgroundTarget, MAX_BACKGROUNDS};
 use crate::details::DetailsPicker;
+use crate::displays::{ListsLink, ShownViews};
 use crate::loader::{LoaderConfig, LoaderLink, PlayOptions, SceneTrash, Trash};
 use crate::play::fps::{FpsDisplay, FpsOverlay, FpsSource, MAX_FPS_GLYPHS};
 use crate::play::scene::{CHANNELS, PlayScene, PlaySettings, Prepared, SAMPLE_RATE};
@@ -227,6 +228,8 @@ pub struct ShellSnapshot {
     pub fps: FpsDisplay,
     /// The song select's background (ADR-0066).
     pub background: BackgroundTarget,
+    /// The display lists the settings screen shows (ADR-0072).
+    pub display_generation: u64,
 }
 
 /// The update logic without the window: input to navigation to snapshot.
@@ -241,6 +244,8 @@ pub struct ShellState {
     song_select: SongSelect,
     /// The library's end, without a songs folder `None`.
     songs: Option<SongsLink>,
+    /// New display lists for the settings screen (ADR-0072); `None` in tests.
+    displays: Option<ListsLink>,
     /// The `.osu` files of the song select's list, by set and difficulty.
     files: Arc<SongFiles>,
     /// The lists before the first publication, kept so that replacing them frees nothing
@@ -319,6 +324,7 @@ impl ShellState {
             settings_layout: SettingsLayout::new(width, height, &theme),
             song_select,
             songs: None,
+            displays: None,
             files: Arc::clone(&empty.1),
             songs_folder: Arc::clone(&empty.2),
             _empty: empty,
@@ -416,6 +422,12 @@ impl ShellState {
         self
     }
 
+    /// A shell whose settings screen lists the displays the window reports (ADR-0072).
+    pub fn with_displays(mut self, displays: ListsLink) -> ShellState {
+        self.displays = Some(displays);
+        self
+    }
+
     /// A shell for a window started with `settings`.
     pub fn with_settings(mut self, settings: Settings) -> ShellState {
         self.rows = Rows::new(&settings);
@@ -432,6 +444,16 @@ impl ShellState {
     /// the ones in force.
     pub fn live_input(&self) -> &InputSettings {
         &self.editing.as_ref().unwrap_or(&self.settings).input
+    }
+
+    /// The window settings in force: the settings screen's edits count at once, as lazer
+    /// applies its layout settings (ADR-0072).
+    pub fn live_window(&self) -> slam_input::WindowState {
+        self.editing
+            .as_ref()
+            .unwrap_or(&self.settings)
+            .window
+            .state()
     }
 
     /// The options of the settings screen's rows.
@@ -908,6 +930,25 @@ impl ShellState {
         }))
     }
 
+    /// Takes the newest display lists, if any, and shows them on an open settings screen.
+    /// The old lists go back to the `slam-displays` thread. Only the top screen is
+    /// refreshed: a settings screen drawn under another layer would keep its old option
+    /// counts while the draw thread takes the new dropdowns. Nothing opens over it today.
+    fn receive_displays(&mut self) {
+        let Some(link) = &mut self.displays else {
+            return;
+        };
+        let Some(mut lists) = link.take() else {
+            return;
+        };
+        self.rows.swap_displays(&mut lists);
+        link.give_back(lists);
+        if let AppScreen::Settings(screen) = self.stack.top_mut() {
+            self.rows
+                .refresh(screen, self.editing.as_ref().unwrap_or(&self.settings));
+        }
+    }
+
     /// Takes the newest list the library thread published, if any.
     fn receive_songs(&mut self) {
         let Some(published) = self.songs.as_mut().and_then(SongsLink::latest) else {
@@ -1085,7 +1126,7 @@ impl ShellState {
                         Some(SettingsAction::Changed { row, value }) => {
                             if let Some(editing) = &mut self.editing {
                                 self.rows.apply(editing, row, value);
-                                Rows::refresh(screen, editing);
+                                self.rows.refresh(screen, editing);
                             }
                             None
                         }
@@ -1139,11 +1180,13 @@ impl ShellState {
     ) -> Navigated {
         self.stack.tick(now_ns);
         self.receive_songs();
+        self.receive_displays();
         let navigated = self.handle(events, now_ns);
         self.song_select.tick(now_ns, &self.song_layout);
         if self.setting_rows_for != Some(self.rows_key()) {
             self.rebuild_setting_rows();
         }
+        snapshot.display_generation = self.rows.display_generation();
         snapshot.fps = FpsDisplay::of(&self.editing.as_ref().unwrap_or(&self.settings).frame);
         let details = self.beatmap_details(now_ns);
         self.song_select.set_details(details);
@@ -1211,7 +1254,7 @@ fn open_settings(
 ) -> AppScreen {
     *editing = Some(settings.clone());
     let mut screen = SettingsScreen::new(&rows.specs(settings), SECTIONS);
-    Rows::refresh(&mut screen, settings);
+    rows.refresh(&mut screen, settings);
     screen.set_value_text(Arc::clone(songs_folder));
     AppScreen::Settings(Box::new(screen))
 }
@@ -1816,7 +1859,7 @@ impl Shell {
             self.window_sent = actual;
             self.state.window_mode_switched(actual.mode);
         }
-        let wanted = self.state.settings().window.state();
+        let wanted = self.state.live_window();
         if wanted != self.window_sent {
             match self.window.compare_and_set(self.window_sent, wanted) {
                 Ok(stored) => self.window_sent = stored,
@@ -1920,6 +1963,8 @@ struct View {
     settings: SettingsView,
     /// Skin dropdowns for a new songs folder (ADR-0064).
     skin_views: Option<SkinViews>,
+    /// Display and resolution dropdowns (ADR-0072).
+    display_views: Option<ShownViews>,
     shapes: SpriteBatch,
     text: SpriteBatch,
     /// Scenes of plays the update thread starts, and the one shown.
@@ -2028,6 +2073,9 @@ impl Draw<ShellSnapshot> for View {
             self.settings.swap_dropdown(rows::skin_row(), &mut view);
             views.give_back(view);
         }
+        if let Some(views) = &mut self.display_views {
+            views.receive();
+        }
         self.glyphs.process(&mut r.device, &mut r.textures);
         // On every screen: releases queued during a play would otherwise fill the queue.
         if let Some((uploads, fade)) = &mut self.backgrounds {
@@ -2097,16 +2145,28 @@ impl Draw<ShellSnapshot> for View {
                     layer.pose,
                     r.white,
                 ),
-                ScreenView::Settings(settings) => self.settings.push(
-                    &mut self.shapes,
-                    &mut self.text,
-                    &mut self.glyphs,
-                    width,
-                    height,
-                    settings,
-                    layer.pose,
-                    r.white,
-                ),
+                ScreenView::Settings(settings) => {
+                    if let Some(views) = &mut self.display_views
+                        && let Some(RowWidget::Dropdown(display)) =
+                            settings.widgets.get(views.display_row())
+                    {
+                        views.show(
+                            &mut self.settings,
+                            snapshot.display_generation,
+                            display.selected(),
+                        );
+                    }
+                    self.settings.push(
+                        &mut self.shapes,
+                        &mut self.text,
+                        &mut self.glyphs,
+                        width,
+                        height,
+                        settings,
+                        layer.pose,
+                        r.white,
+                    );
+                }
                 // Drawn whole, without the transition's slide.
                 ScreenView::Play(_) => {}
             }
@@ -2505,6 +2565,34 @@ pub fn run(settings: Settings) -> Result<(), String> {
         state = state.with_songs(link);
         (Some(skin_views), thread, fade)
     };
+    // Joined when `run` returns, after the engine. Without the thread the settings screen
+    // hides the display and resolution rows.
+    let (display_views, _displays) = {
+        let (registry, localizer) = (Arc::clone(&registry), Arc::clone(&localizer));
+        let make_views: crate::displays::MakeViews = Box::new(move |displays, lists| {
+            Some(rows::display_views(
+                &registry, theme, &localizer, displays, lists,
+            ))
+        });
+        match crate::displays::spawn(make_views) {
+            Ok((sender, lists, views, thread)) => {
+                state = state.with_displays(lists);
+                window.set_displays_callback(Box::new(move |displays| {
+                    // The thread outlives the window's events; a send fails only after it
+                    // stopped, when nobody needs the list.
+                    let _ = sender.send(displays);
+                }));
+                (
+                    Some(ShownViews::new(views, rows::display_rows())),
+                    Some(thread),
+                )
+            }
+            Err(e) => {
+                tracing::warn!("displays: cannot start the thread: {e}");
+                (None, None)
+            }
+        }
+    };
     // The play: a loader thread, scenes for the draw thread, the audio output.
     let hud_labels = crate::play::scene::hud_labels(&localizer);
     let (loader, scene_trash, _loader) = crate::loader::spawn(LoaderConfig {
@@ -2592,6 +2680,7 @@ pub fn run(settings: Settings) -> Result<(), String> {
         results,
         settings: settings_view,
         skin_views,
+        display_views,
         shapes: SpriteBatch::with_capacity(MAX_SHAPES),
         text: SpriteBatch::with_capacity(MAX_GLYPH_SPRITES),
         scenes: Some(scene_rx),

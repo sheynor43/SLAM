@@ -4,11 +4,12 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex, PoisonError};
 
 use sdl3_sys::events::{
+    SDL_EVENT_DISPLAY_CURRENT_MODE_CHANGED, SDL_EVENT_DISPLAY_FIRST, SDL_EVENT_DISPLAY_LAST,
     SDL_EVENT_KEY_DOWN, SDL_EVENT_MOUSE_MOTION, SDL_EVENT_QUIT, SDL_EVENT_WINDOW_ENTER_FULLSCREEN,
     SDL_EVENT_WINDOW_FOCUS_GAINED, SDL_EVENT_WINDOW_FOCUS_LOST, SDL_EVENT_WINDOW_LEAVE_FULLSCREEN,
     SDL_EVENT_WINDOW_MOUSE_ENTER, SDL_EVENT_WINDOW_MOUSE_LEAVE,
     SDL_EVENT_WINDOW_PIXEL_SIZE_CHANGED, SDL_EVENT_WINDOW_RESIZED, SDL_Event, SDL_EventType,
-    SDL_PushEvent, SDL_QuitEvent, SDL_RegisterEvents, SDL_WaitEvent,
+    SDL_HasEvents, SDL_PushEvent, SDL_QuitEvent, SDL_RegisterEvents, SDL_WaitEvent,
 };
 use sdl3_sys::hints::{SDL_HINT_INVALID_PARAM_CHECKS, SDL_HINT_MOUSE_AUTO_CAPTURE, SDL_SetHint};
 use sdl3_sys::init::{SDL_INIT_VIDEO, SDL_Init, SDL_Quit};
@@ -26,6 +27,7 @@ use sdl3_sys::video::{
 };
 
 use crate::dialog::{self, FolderDialog};
+use crate::displays::{self, DisplaysCallback};
 use crate::gl::{self, GlContext, PixelSize};
 use crate::mode::{WindowMode, WindowScale, WindowSettings, WindowState, cycles_mode, only_held};
 use crate::relative::{Change, MouseSettings, RelativeMouse};
@@ -98,6 +100,10 @@ pub struct InputWindow {
     scale: WindowScale,
     /// Whether the video driver is Wayland (fullscreen sizes are in pixels there).
     wayland: bool,
+    /// Gets the display list on display events (ADR-0072).
+    displays: Option<DisplaysCallback>,
+    /// A display event came since the list was last collected.
+    displays_changed: bool,
 }
 
 /// Shows or hides the OS cursor over the window, from any thread, without locks. The
@@ -305,6 +311,8 @@ impl InputWindow {
             window_settings,
             scale,
             wayland,
+            displays: None,
+            displays_changed: false,
         })
     }
 
@@ -344,6 +352,23 @@ impl InputWindow {
     /// A handle that sets the window mode, display and sizes (ADR-0070).
     pub fn window_settings(&self) -> WindowSettings {
         self.window_settings.clone()
+    }
+
+    /// Hands the display list to `callback` now and again on every display event that may
+    /// change it (ADR-0072). Replaces an earlier callback.
+    pub fn set_displays_callback(&mut self, callback: DisplaysCallback) {
+        self.displays = Some(callback);
+        self.publish_displays();
+    }
+
+    /// Collects the display list for the callback, if any. Allocates: display events only.
+    fn publish_displays(&mut self) {
+        let Some(callback) = &mut self.displays else {
+            return;
+        };
+        let windowed_size = WindowState::unpack(self.state_applied).windowed_size;
+        // SAFETY: SDL is initialised on this thread while the window lives.
+        callback(unsafe { displays::collect(windowed_size) });
     }
 
     /// The window's size in points, as SDL knows it now; `(0, 0)` on failure.
@@ -540,6 +565,14 @@ impl InputWindow {
             self.apply_text_input();
             self.apply_mouse();
             self.apply_window_state();
+            // One list for a burst: a display plugged in sends several events at once.
+            // SAFETY: SDL is initialised on this thread.
+            if self.displays_changed
+                && !unsafe { SDL_HasEvents(SDL_EVENT_DISPLAY_FIRST.0, SDL_EVENT_DISPLAY_LAST.0) }
+            {
+                self.displays_changed = false;
+                self.publish_displays();
+            }
             // SAFETY: SDL is initialised on this thread; `event` is a valid out pointer.
             if !unsafe { SDL_WaitEvent(&mut event) } {
                 return Err(WindowError::WaitEvent(sdl_error()));
@@ -565,6 +598,14 @@ impl InputWindow {
                     let window = unsafe { event.window };
                     self.size.store(window.data1, window.data2);
                     self.store_scale();
+                }
+                // Our own fullscreen mode switches send CURRENT_MODE_CHANGED; the list of
+                // modes does not change with it.
+                kind if (SDL_EVENT_DISPLAY_FIRST.0..=SDL_EVENT_DISPLAY_LAST.0)
+                    .contains(&kind.0)
+                    && kind != SDL_EVENT_DISPLAY_CURRENT_MODE_CHANGED =>
+                {
+                    self.displays_changed = true;
                 }
                 SDL_EVENT_KEY_DOWN if is_mode_key(&event) => {
                     // SAFETY: the event type says this is a keyboard event.

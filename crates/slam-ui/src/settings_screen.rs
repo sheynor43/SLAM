@@ -21,9 +21,9 @@ pub mod view;
 pub use view::{KeyLabels, RowLabels, SettingsLabels, SettingsView};
 
 /// Most rows; more are ignored.
-pub const MAX_ROWS: usize = 32;
+pub const MAX_ROWS: usize = 40;
 /// Most sections; rows of later ones go into the last.
-pub const MAX_SECTIONS: usize = 6;
+pub const MAX_SECTIONS: usize = 7;
 
 /// A mouse button, as the screen names it; the application converts to and from its own.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -75,6 +75,9 @@ pub enum RowKind {
     },
     /// A button that asks the application to do something.
     Button,
+    /// A line of text (the row's [`RowLabels::label`]) across the whole row: never focused,
+    /// never pointed at, never gives an action.
+    Note,
     Toggle {
         value: bool,
     },
@@ -105,6 +108,7 @@ pub struct RowSpec {
 pub enum RowWidget {
     Key(KeyRow),
     Button,
+    Note,
     Toggle(Toggle),
     Slider(Slider),
     Dropdown(Dropdown),
@@ -230,6 +234,11 @@ pub struct SettingsLayout {
     theme: Theme,
     /// Pixels per reference unit.
     pub scale: f32,
+}
+
+/// A layout for inputs that do not look at it.
+fn layout_none() -> SliderLayout {
+    SliderLayout::new(Rect::default(), &Theme::default(), 1.0)
 }
 
 impl SettingsLayout {
@@ -389,6 +398,11 @@ pub struct SettingsSnapshot {
     pub disabled: [bool; MAX_ROWS],
     /// Per row: its hint text ([`RowLabels::hint`]) is shown.
     pub hinted: [bool; MAX_ROWS],
+    /// Per row: it is not shown and takes no room; the draw side skips it.
+    pub hidden: [bool; MAX_ROWS],
+    /// Per row: its position among the visible rows of its section, as the screen lays out
+    /// and hit-tests it. Meaningless for a hidden row.
+    pub slots: [u8; MAX_ROWS],
 }
 
 /// The screen's state on the update thread.
@@ -404,6 +418,7 @@ pub struct SettingsScreen {
     value_text: Arc<str>,
     disabled: [bool; MAX_ROWS],
     hinted: [bool; MAX_ROWS],
+    hidden: [bool; MAX_ROWS],
 }
 
 impl SettingsScreen {
@@ -425,6 +440,7 @@ impl SettingsScreen {
                     value,
                 }),
                 RowKind::Button => RowWidget::Button,
+                RowKind::Note => RowWidget::Note,
                 RowKind::Toggle { value } => RowWidget::Toggle(Toggle::new(value)),
                 RowKind::Slider {
                     min,
@@ -448,6 +464,7 @@ impl SettingsScreen {
             value_text: Arc::from(""),
             disabled: [false; MAX_ROWS],
             hinted: [false; MAX_ROWS],
+            hidden: [false; MAX_ROWS],
         };
         screen.focus = screen.first_row(0).unwrap_or(0);
         screen
@@ -481,6 +498,8 @@ impl SettingsScreen {
             value_text: Arc::clone(&self.value_text),
             disabled: self.disabled,
             hinted: self.hinted,
+            hidden: self.hidden,
+            slots: self.meta.map(|(_, slot)| slot),
         }
     }
 
@@ -507,6 +526,72 @@ impl SettingsScreen {
     /// Whether the hint of row `row` is shown.
     pub fn is_hinted(&self, row: usize) -> bool {
         self.hinted.get(row).copied().unwrap_or(false) && row < self.len
+    }
+
+    /// Hides row `row` or shows it again. A hidden row is not drawn, takes no room (the rows
+    /// below move up), cannot be pointed at and is skipped by the focus; its value, disabled
+    /// and hint state are kept. If it holds the focus, the focus moves to the next visible
+    /// row of its section, else the previous; an open dropdown closes and a listening key row
+    /// stops, without an action; a slider being dragged is released (as by
+    /// [`SettingsInput::PointerRelease`]: dragging ends, no `Changed`). Unknown rows are left
+    /// alone. Does not allocate.
+    pub fn set_hidden(&mut self, row: usize, hidden: bool) {
+        if row >= self.len || self.hidden[row] == hidden {
+            return;
+        }
+        self.hidden[row] = hidden;
+        self.recompute_slots();
+        if !hidden {
+            return;
+        }
+        match &mut self.widgets[row] {
+            RowWidget::Dropdown(d) => {
+                // Closing never changes the selection; the layout is not looked at.
+                d.input(
+                    DropdownInput::Back,
+                    &DropdownLayout::new(Rect::default(), 0, 1.0),
+                );
+            }
+            RowWidget::Key(k) => {
+                k.bind.input::<KeyValue>(
+                    KeyBindInput::Back,
+                    &KeyBindLayout::new(Rect::default(), 1.0),
+                );
+            }
+            RowWidget::Slider(s) => {
+                // Release emits nothing, so neither does hiding.
+                s.input(SliderInput::PointerRelease, &layout_none());
+            }
+            _ => {}
+        }
+        if self.focus == row {
+            let section = self.section_of(row);
+            // Notes take no focus either.
+            let next = self
+                .rows_of(section)
+                .find(|r| *r > row)
+                .or_else(|| self.rows_of(section).filter(|r| *r < row).last());
+            if let Some(next) = next {
+                self.focus = next;
+            }
+        }
+    }
+
+    /// Whether row `row` is hidden.
+    pub fn is_hidden(&self, row: usize) -> bool {
+        self.hidden.get(row).copied().unwrap_or(false) && row < self.len
+    }
+
+    /// Numbers the visible rows of each section from 0.
+    fn recompute_slots(&mut self) {
+        let mut counts = [0_u8; MAX_SECTIONS];
+        for row in 0..self.len {
+            let section = usize::from(self.meta[row].0);
+            self.meta[row].1 = counts[section];
+            if !self.hidden[row] {
+                counts[section] = counts[section].saturating_add(1);
+            }
+        }
     }
 
     /// Sets the text of the button row that shows a value (an empty text shows the row's
@@ -581,8 +666,13 @@ impl SettingsScreen {
         usize::from(self.meta[row].0)
     }
 
+    /// The rows of `section` that can take the focus: visible and not notes.
     fn rows_of(&self, section: usize) -> impl Iterator<Item = usize> + '_ {
-        (0..self.len).filter(move |row| self.section_of(*row) == section)
+        (0..self.len).filter(move |row| {
+            self.section_of(*row) == section
+                && !self.hidden[*row]
+                && !matches!(self.widgets[*row], RowWidget::Note)
+        })
     }
 
     fn first_row(&self, section: usize) -> Option<usize> {
@@ -638,8 +728,26 @@ impl SettingsScreen {
         self.switch_section(section);
     }
 
-    /// Gives `input` to row `row`'s widget, in the form that widget understands.
+    /// Gives `input` to row `row`'s widget, if the row may take input: visible, in the
+    /// current section and not a note. A focus left on another section's row (the current
+    /// section has nothing to focus) gets nothing.
     fn route(
+        &mut self,
+        row: usize,
+        input: SettingsInput,
+        layout: &SettingsLayout,
+    ) -> Option<SettingsAction> {
+        if self.hidden[row]
+            || self.section_of(row) != self.section
+            || matches!(self.widgets[row], RowWidget::Note)
+        {
+            return None;
+        }
+        self.route_widget(row, input, layout)
+    }
+
+    /// Gives `input` to row `row`'s widget, in the form that widget understands.
+    fn route_widget(
         &mut self,
         row: usize,
         input: SettingsInput,
@@ -662,6 +770,7 @@ impl SettingsScreen {
                 );
                 return None;
             }
+            RowWidget::Note => return None,
             RowWidget::Button => {
                 return matches!(
                     input,
@@ -791,7 +900,8 @@ impl SettingsScreen {
                 let mut action = None;
                 for row in 0..self.len {
                     if matches!(self.widgets[row], RowWidget::Slider(_)) {
-                        action = self.route(row, input, layout).or(action);
+                        // Not `route`: a drag must end wherever the slider is.
+                        action = self.route_widget(row, input, layout).or(action);
                     }
                 }
                 action
