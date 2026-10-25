@@ -14,9 +14,10 @@
 //! the left and the average arrow is above the bar.
 
 use slam_osu::Beatmap;
-use slam_osu::hit_windows::{HitWindows, MISS_WINDOW};
+use slam_osu::hit_events::HitEventTargets;
+use slam_osu::hit_windows::HitWindows;
 use slam_osu::judgement::{HitResult, Judgement};
-use slam_osu::objects::{NestedKind, OsuHitObjectKind};
+use slam_osu::objects::OsuHitObjectKind;
 
 use slam_render::atlas::{AtlasRegion, UvRect};
 use slam_render::hal::Extent;
@@ -54,63 +55,29 @@ impl Default for HitError {
 /// The judgements the meter shows, newest last.
 pub type HitErrorRing = EventRing<HitError, HIT_ERROR_RING_CAPACITY>;
 
-/// The judgement of an object that has hit windows: lazer gives them to hit circles and
-/// slider heads only (the others' are `HitWindows.Empty`).
-#[derive(Debug, Clone, Copy, PartialEq)]
-enum Windowed {
-    None,
-    /// A hit circle at this time.
-    Circle(f64),
-    /// A slider whose head is this nested object at this time.
-    Head(u32, f64),
-}
-
 /// Which judgements of a play the meter shows. Built at load.
 #[derive(Debug, Clone)]
 pub struct HitErrorTargets {
-    objects: Vec<Windowed>,
+    targets: HitEventTargets,
 }
 
 impl HitErrorTargets {
     pub fn new(beatmap: &Beatmap) -> Self {
-        let objects = beatmap
-            .hit_objects
-            .iter()
-            .map(|o| match &o.kind {
-                OsuHitObjectKind::Circle => Windowed::Circle(o.start_time),
-                OsuHitObjectKind::Slider(slider) => slider
-                    .nested
-                    .iter()
-                    .position(|n| n.kind == NestedKind::Head)
-                    .map_or(Windowed::None, |i| {
-                        Windowed::Head(i as u32, slider.nested[i].start_time)
-                    }),
-                OsuHitObjectKind::Spinner(_) => Windowed::None,
-            })
-            .collect();
-        HitErrorTargets { objects }
+        HitErrorTargets {
+            targets: HitEventTargets::new(beatmap),
+        }
     }
 
     /// What the meter shows of `judgement`, if anything.
     // Ported from osu!lazer 2026.1005.0-lazer: osu.Game/Screens/Play/HUD/HitErrorMeters/BarHitErrorMeter.cs (OnNewJudgement)
-    // Ported from osu!lazer 2026.1005.0-lazer: osu.Game/Rulesets/Judgements/JudgementResult.cs (TimeOffset)
     pub fn error(&self, judgement: &Judgement) -> Option<HitError> {
         // `IsScorable` holds for every result of an object with hit windows.
         if !judgement.result.is_hit() || judgement.result.is_bonus() {
             return None;
         }
-        let time = match (
-            self.objects.get(judgement.object.index as usize)?,
-            judgement.object.nested,
-        ) {
-            (Windowed::Circle(time), None) => *time,
-            (Windowed::Head(head, time), Some(n)) if n == *head => *time,
-            _ => return None,
-        };
-        // Circles end where they start; their `MaximumJudgementOffset` is the miss window.
         Some(HitError {
             time: judgement.time,
-            offset: (judgement.time - time).min(MISS_WINDOW),
+            offset: self.targets.offset(judgement)?,
             result: judgement.result,
         })
     }

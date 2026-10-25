@@ -631,6 +631,7 @@ pub fn run(options: &Options) -> Result<(), String> {
         statistics.count(HitResult::Miss),
         statistics.max_combo
     );
+    println!("{}", session.hit_error_summary());
     drop(window);
     ran.map_err(|e| e.to_string())
 }

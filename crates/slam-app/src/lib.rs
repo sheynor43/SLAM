@@ -9,6 +9,7 @@ pub mod displays;
 pub mod i18n;
 pub mod loader;
 pub mod play;
+pub mod replay_stats;
 pub mod replays;
 pub mod settings;
 pub mod shell;

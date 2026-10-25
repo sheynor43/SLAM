@@ -70,7 +70,7 @@ pub fn build(job: &ReplayJob) -> Option<(String, Vec<u8>)> {
 /// Saves `job`'s replay into `dir`, logging the outcome.
 pub fn save(job: &ReplayJob, dir: &Path) {
     let Some((name, bytes)) = build(job) else {
-        if job.session.results().is_some() {
+        if job.session.passed() {
             tracing::warn!("replay not saved: the recording overflowed");
         }
         return;

@@ -5,6 +5,7 @@ mod common;
 use common::{PressRules, beatmap, noisy_frames, replay};
 use slam_formats::osr::GeneratedFrame;
 use slam_formats::osu::Vec2;
+use slam_osu::hit_events::HitEvents;
 use slam_osu::judgement::{HitResult, JudgementLog};
 use slam_osu::lead_in::gameplay_start_time;
 use slam_osu::replay::{
@@ -255,6 +256,46 @@ fn rules_judgements_build_statistics() {
     assert_eq!(stats.count(HitResult::Miss), 1);
     assert_eq!(stats.max_combo, 2);
     assert_eq!(stats.combo, 0);
+}
+
+#[test]
+fn hit_events_count_hits_of_circles() {
+    let map = beatmap();
+    let input = ReplayInput::new([
+        InputFrame {
+            time: 0.0,
+            position: Vec2::new(0.0, 0.0),
+            actions: Actions::NONE,
+        },
+        // 10 ms late on the first object, 10 ms early on the second, nothing for the third.
+        InputFrame {
+            time: 3010.0,
+            position: Vec2::new(100.0, 100.0),
+            actions: Actions::LEFT,
+        },
+        InputFrame {
+            time: 3290.0,
+            position: Vec2::new(200.0, 150.0),
+            actions: Actions::RIGHT,
+        },
+        InputFrame {
+            time: 3800.0,
+            position: Vec2::new(0.0, 0.0),
+            actions: Actions::NONE,
+        },
+    ]);
+    let mut sim = Simulator::new(&map, input, PressRules::new(&map))
+        .with_hit_events(HitEvents::new(&map, 1.5));
+    sim.run();
+    let events = sim.hit_events().unwrap();
+    // The miss of the third object does not count.
+    assert_eq!(events.offsets(), &[10.0, -10.0]);
+    // The unstable rate is in real time: offsets over the rate. The average is not.
+    let ur = events.unstable_rate().unwrap();
+    assert!((ur - 100.0 / 1.5).abs() < 1e-9, "{ur}");
+    assert_eq!(events.average(), Some(0.0));
+    assert_eq!(events.median(), Some(0.0));
+    assert_eq!(events.summary().hits, 2);
 }
 
 #[test]

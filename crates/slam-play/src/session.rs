@@ -10,6 +10,7 @@
 use slam_audio::{ClockError, GameClock, MusicSnapshot, PositionSnapshot, TrackControl};
 use slam_input::InputEvent;
 use slam_osu::breaks::BreakTracker;
+use slam_osu::hit_events::{HitErrorSummary, HitEvents};
 use slam_osu::judgement::{JudgementLog, Statistics};
 use slam_osu::lead_in::{IntroSkip, earliest_start_time, gameplay_start_time};
 use slam_osu::replay::{Actions, InputFrame, ReplayRecorder, Rules};
@@ -168,6 +169,8 @@ pub struct PlayResults {
     pub statistics: Statistics,
     /// The counts and combo of a perfect play, to show only the results the beatmap has.
     pub maximum_statistics: Statistics,
+    /// Unstable rate and average and median hit error (ADR-0074).
+    pub hit_errors: HitErrorSummary,
 }
 
 /// What the draw side needs of one update tick. Fixed size, copied into a buffer slot with
@@ -325,6 +328,8 @@ pub struct PlaySession {
     hit_error_targets: HitErrorTargets,
     /// The judgements the meter showed, for the draw side; kept across restarts.
     hit_errors: HitErrorRing,
+    /// The hit errors the play counts, for the results (ADR-0074).
+    hit_events: HitEvents,
     health: HealthProcessor,
     score: ScoreProcessor,
     /// The mods' state for the health processor (lives of Easy).
@@ -471,6 +476,7 @@ impl PlaySession {
             popups_seen: 0,
             hit_error_targets: HitErrorTargets::new(beatmap),
             hit_errors: HitErrorRing::default(),
+            hit_events: HitEvents::new(beatmap, mods.true_gameplay_rate()),
             health,
             score,
             mods: mods.clone(),
@@ -535,6 +541,11 @@ impl PlaySession {
         self.restarts
     }
 
+    /// Whether the play passed: its results wait to show, show, or were left.
+    pub fn passed(&self) -> bool {
+        self.passed
+    }
+
     /// The final score once the play passed: while the results wait to show, show, and
     /// after quitting them.
     pub fn results(&self) -> Option<PlayResults> {
@@ -545,7 +556,14 @@ impl PlaySession {
             rank: self.score.rank(&self.initial.mods),
             statistics: *self.score.statistics(),
             maximum_statistics: *self.score.maximum_statistics(),
+            hit_errors: self.hit_events.summary(),
         })
+    }
+
+    /// The hit error statistics of the attempt so far, passed or not. Allocates for the
+    /// median.
+    pub fn hit_error_summary(&self) -> HitErrorSummary {
+        self.hit_events.summary()
     }
 
     /// The play's input as replay frames, once it passed: the frames recorded until then.
@@ -861,6 +879,11 @@ impl PlaySession {
             let failed_before = self.health.has_failed();
             self.health.apply(judgement, &mut self.mods);
             self.score.apply(judgement, failed_before);
+            // Ported from osu!lazer 2026.1005.0-lazer: osu.Game/Rulesets/Scoring/ScoreProcessor.cs (ApplyResultInternal)
+            // Judgements after the fail make no hit events.
+            if !failed_before {
+                self.hit_events.apply(judgement);
+            }
             // Ported from osu!lazer 2026.1005.0-lazer: osu.Game/Rulesets/Scoring/HealthProcessor.cs (ApplyResultInternal)
             // The judgement that fails still counts; later ones are `FailedAtJudgement`.
             if self.failed_at.is_none() && self.health.has_failed() {
@@ -1089,6 +1112,7 @@ impl PlaySession {
         self.popups_seen = 0;
         self.popups.restart();
         self.hit_errors.restart();
+        self.hit_events.restart();
         self.failed_at = None;
         self.last_pause_time = None;
         self.last_time = self.start_time;
