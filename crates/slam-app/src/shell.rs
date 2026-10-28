@@ -2474,7 +2474,9 @@ pub fn run(settings: Settings) -> Result<(), String> {
         settings.window.windowed_position,
     )
     .map_err(|e| e.to_string())?;
-    let surface = SdlGlSurface(window.create_gl_context().map_err(|e| e.to_string())?);
+    let context = window.create_gl_context().map_err(|e| e.to_string())?;
+    crate::gpu::log_priority(context.priority());
+    let surface = SdlGlSurface(context);
     let (pixels_w, pixels_h) = surface.0.size_in_pixels();
     let scale = window.window_scale();
     let pixels_per_point = scale.pixels_per_point();

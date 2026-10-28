@@ -34,7 +34,7 @@ use sdl3_sys::video::{
 
 use crate::dialog::{self, FolderDialog};
 use crate::displays::{self, DisplaysCallback};
-use crate::gl::{self, GlContext, PixelSize};
+use crate::gl::{self, GlContext, PixelSize, PriorityRequest};
 use crate::mode::{
     MAX_SIDE, MIN_WINDOWED_SIZE, WindowMode, WindowScale, WindowSettings, WindowState, cycles_mode,
     minimise_hint, only_held, position_fraction,
@@ -251,6 +251,13 @@ impl InputWindow {
         // every initialisation.
         // SAFETY: valid C strings; hints may be set before SDL_Init.
         unsafe { SDL_SetHint(SDL_HINT_INVALID_PARAM_CHECKS, c"1".as_ptr()) };
+        // X11 defaults to GLX, which has no context priority (ADR-0075).
+        #[cfg(target_os = "linux")]
+        // SAFETY: valid C strings; X11 reads the hint inside SDL_Init, so set it first.
+        // The environment variable still overrides it.
+        unsafe {
+            SDL_SetHint(sdl3_sys::hints::SDL_HINT_VIDEO_FORCE_EGL, c"1".as_ptr())
+        };
         // SAFETY: SDL is not initialised (guarded by `SDL_ACTIVE`).
         if !unsafe { SDL_Init(SDL_INIT_VIDEO) } {
             let err = WindowError::Init(sdl_error());
@@ -349,7 +356,16 @@ impl InputWindow {
     /// Creates the window's OpenGL 3.3 core context (with the debug flag in debug
     /// builds) and sets swap interval 0. The context is left current on no thread:
     /// the draw thread takes it over (ADR-0018). One context per window.
+    /// Asks for high GPU priority (ADR-0075); see [`GlContext::priority`].
     pub fn create_gl_context(&mut self) -> Result<GlContext, WindowError> {
+        self.create_gl_context_with(PriorityRequest::High)
+    }
+
+    /// [`Self::create_gl_context`] with the given GPU priority request.
+    pub fn create_gl_context_with(
+        &mut self,
+        request: PriorityRequest,
+    ) -> Result<GlContext, WindowError> {
         if !self.opengl {
             return Err(WindowError::NotOpenGl);
         }
@@ -358,7 +374,7 @@ impl InputWindow {
         }
         // SAFETY: `window` is valid, was created with SDL_WINDOW_OPENGL, and this is
         // the thread that initialised SDL.
-        unsafe { GlContext::create(self.window, Arc::clone(&self.size)) }
+        unsafe { GlContext::create(self.window, Arc::clone(&self.size), request) }
             .map_err(WindowError::GlContext)
     }
 

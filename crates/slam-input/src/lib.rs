@@ -35,7 +35,7 @@ pub use counters::InputCounters;
 pub use dialog::{FolderCallback, FolderDialog, FolderPick};
 pub use displays::{Display, Displays, DisplaysCallback};
 pub use event::{InputEvent, InputKind, MouseButton, TextChunk};
-pub use gl::GlContext;
+pub use gl::{ContextPriority, GlContext, PriorityOutcome, PriorityRequest};
 pub use mode::{
     DEFAULT_POSITION, DEFAULT_WINDOWED_SIZE, MAX_DISPLAY, MAX_SIDE, MIN_WINDOWED_SIZE,
     POSITION_RANGE, WindowMode, WindowScale, WindowSettings, WindowState, clamp_position,
