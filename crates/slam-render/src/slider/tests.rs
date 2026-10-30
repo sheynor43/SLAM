@@ -393,3 +393,20 @@ mod renderer {
         }
     }
 }
+
+/// Lazer can trim a slider path to a NaN end point with finite lengths (osu!lazer
+/// `SliderPath`, normalising a zero-length segment): the bounds skip it and clipping
+/// does not panic.
+#[test]
+fn nan_end_point_keeps_finite_bounds() {
+    let m = SliderMesh::new(&[[0.0, 0.0], [f32::NAN, f32::NAN]], &[0.0, 1.0]);
+    assert_eq!(
+        m.bounds(),
+        Some(Bounds {
+            min: [0.0, 0.0],
+            max: [0.0, 0.0]
+        })
+    );
+    assert_eq!(m.length(), 1.0);
+    assert_eq!(m.clipped(0.0, 1.0).count(), 1);
+}

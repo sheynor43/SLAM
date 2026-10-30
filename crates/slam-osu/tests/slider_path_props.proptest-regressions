@@ -5,3 +5,4 @@
 # It is recommended to check this file in to source control so that
 # everyone who runs the test benefits from these saved cases.
 cc f29e8cda325e00fcc7d291812ceecb148ca14eb49b68e183742b8c561339e1ee # shrinks to points = [PathControlPoint { position: Vec2 { x: 0.0, y: 386.0 }, path_type: Some(Linear) }, PathControlPoint { position: Vec2 { x: 0.0, y: 386.0 }, path_type: Some(Catmull) }, PathControlPoint { position: Vec2 { x: 34.0, y: 673.0 }, path_type: None }], expected = None, optimise_catmull = true
+cc 54da267eba6bf2d621665d420a7b5976fb105af7e27374b71f4b8a0898abf1f8 # shrinks to points = [PathControlPoint { position: Vec2 { x: 0.0, y: 0.0 }, path_type: Some(Linear) }, PathControlPoint { position: Vec2 { x: 0.0, y: 0.0 }, path_type: Some(Catmull) }, PathControlPoint { position: Vec2 { x: -323.0, y: -506.84814 }, path_type: None }, PathControlPoint { position: Vec2 { x: -323.0, y: -506.84814 }, path_type: None }], expected = Some(1.0), optimise_catmull = true
