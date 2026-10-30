@@ -215,3 +215,44 @@ fn path_to_progress_with_reversed_range() {
     // Lazer's loops yield the start and end points only.
     assert_eq!(out, vec![v(75.0, 0.0), v(25.0, 0.0)]);
 }
+
+/// A zero-length first segment followed by an optimised Catmull segment: the length removed by
+/// the optimisation is counted before the first segment, so trimming to a shorter distance stops
+/// on the zero-length segment. Lazer normalises the zero vector there and gets NaN; kept for
+/// parity (#124).
+#[test]
+fn trimming_onto_a_zero_length_first_segment_gives_nan_like_lazer() {
+    let control_points = vec![
+        PathControlPoint {
+            position: v(0.0, 0.0),
+            path_type: Some(PathType::Linear),
+        },
+        PathControlPoint {
+            position: v(0.0, 0.0),
+            path_type: Some(PathType::Catmull),
+        },
+        PathControlPoint {
+            position: v(-323.0, -506.84814),
+            path_type: None,
+        },
+        PathControlPoint {
+            position: v(-323.0, -506.84814),
+            path_type: None,
+        },
+    ];
+
+    let untrimmed = SliderPath::new(control_points.clone(), None, true);
+    assert_eq!(
+        untrimmed.calculated_path()[0],
+        untrimmed.calculated_path()[1]
+    );
+    assert!(untrimmed.cumulative_length()[1] > 1.0);
+
+    let path = SliderPath::new(control_points, Some(1.0), true);
+    let vertices = path.calculated_path();
+    assert_eq!(vertices.len(), 2);
+    assert_eq!(vertices[0], v(0.0, 0.0));
+    assert!(vertices[1].x.is_nan() && vertices[1].y.is_nan());
+    assert_eq!(path.cumulative_length(), &[0.0, 1.0]);
+    assert_eq!(path.distance(), 1.0);
+}

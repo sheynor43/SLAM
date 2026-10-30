@@ -54,6 +54,26 @@ fn is_finite(v: Vec2) -> bool {
     v.x.is_finite() && v.y.is_finite()
 }
 
+/// Whether lazer trims the path onto a zero-length first segment and normalises a zero vector,
+/// which makes the last vertex NaN (#124). The length removed by the Catmull optimisation is
+/// counted before the first segment, so its end can lie past a short expected distance.
+fn trims_onto_zero_length_first_segment(
+    points: &[PathControlPoint],
+    expected: Option<f64>,
+    optimise_catmull: bool,
+) -> bool {
+    // A non-positive expected distance ends the path at its start instead.
+    let Some(expected) = expected.filter(|&e| e > 0.0) else {
+        return false;
+    };
+    let untrimmed = SliderPath::new(points.to_vec(), None, optimise_catmull);
+    let vertices = untrimmed.calculated_path();
+    vertices.len() >= 2
+        && vertices[0] == vertices[1]
+        && untrimmed.cumulative_length()[1] >= expected
+        && untrimmed.calculated_distance() != expected
+}
+
 fn close(a: Vec2, b: Vec2) -> bool {
     let tolerance = 1e-3 * (1.0 + a.length().max(b.length()));
     a.distance(b) <= tolerance
@@ -68,9 +88,18 @@ proptest! {
         expected in prop::option::of(1.0f64..5000.0),
         optimise_catmull in any::<bool>(),
     ) {
+        let lazer_nan = trims_onto_zero_length_first_segment(&points, expected, optimise_catmull);
         let path = SliderPath::new(points, expected, optimise_catmull);
 
-        prop_assert!(path.calculated_path().iter().all(|&p| is_finite(p)));
+        let vertices = path.calculated_path();
+        if lazer_nan {
+            // Lazer's result: the start and a NaN end.
+            prop_assert_eq!(vertices.len(), 2);
+            prop_assert!(is_finite(vertices[0]));
+            prop_assert!(vertices[1].x.is_nan() && vertices[1].y.is_nan());
+        } else {
+            prop_assert!(vertices.iter().all(|&p| is_finite(p)));
+        }
         prop_assert!(path.cumulative_length().iter().all(|l| l.is_finite()));
         // Lengths after the first start from the length removed by the Catmull optimisation,
         // which rounding can make slightly negative (as in lazer), so the first pair may
@@ -79,8 +108,11 @@ proptest! {
         let monotonic_from = usize::from(optimise_catmull).min(lengths.len());
         prop_assert!(lengths[monotonic_from..].windows(2).all(|w| w[0] <= w[1]));
 
-        for i in 0..=20 {
-            prop_assert!(is_finite(path.position_at(f64::from(i) / 20.0)));
+        prop_assert!(is_finite(path.position_at(0.0)));
+        if !lazer_nan {
+            for i in 1..=20 {
+                prop_assert!(is_finite(path.position_at(f64::from(i) / 20.0)));
+            }
         }
     }
 
