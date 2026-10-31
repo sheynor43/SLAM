@@ -333,6 +333,7 @@ impl Draw<PlaySnapshot> for View {
             info.wait.woke_ns,
             snapshot,
             fps.and_then(fps::FpsOverlay::view),
+            false,
         );
         // A failed present loses one frame; the next one tries again.
         let _ = device.present();

@@ -705,7 +705,14 @@ fn ticks_and_frames_do_not_allocate() {
             );
             batch.clear();
             text.clear();
-            background.push(&mut batch, 640.0, 480.0, &snapshot, now, Some(white));
+            background.push(
+                &mut batch,
+                [640.0, 480.0],
+                &snapshot,
+                now,
+                Some(white),
+                false,
+            );
             view.push(
                 &mut batch,
                 &mut bodies,

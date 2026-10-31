@@ -368,7 +368,7 @@ fn the_fade_waits_for_the_upload_then_fades_in_and_confirms() {
     let mut requests = requests();
     let h = handles(&mut requests, 1);
     let shown = Arc::new(AtomicU32::new(0));
-    let mut fade = BackgroundFade::new(Arc::clone(&shown));
+    let mut fade = BackgroundFade::new(Arc::clone(&shown), None);
     let target = BackgroundTarget {
         generation: 1,
         handle: Some(h[0]),
@@ -393,7 +393,7 @@ fn the_old_background_fades_out_over_the_new_one() {
     let mut requests = requests();
     let h = handles(&mut requests, 2);
     let shown = Arc::new(AtomicU32::new(0));
-    let mut fade = BackgroundFade::new(Arc::clone(&shown));
+    let mut fade = BackgroundFade::new(Arc::clone(&shown), None);
     let first = BackgroundTarget {
         generation: 1,
         handle: Some(h[0]),
@@ -418,7 +418,7 @@ fn without_an_image_the_old_background_fades_to_the_theme() {
     let mut requests = requests();
     let h = handles(&mut requests, 2);
     let shown = Arc::new(AtomicU32::new(0));
-    let mut fade = BackgroundFade::new(Arc::clone(&shown));
+    let mut fade = BackgroundFade::new(Arc::clone(&shown), None);
     let first = BackgroundTarget {
         generation: 1,
         handle: Some(h[0]),
@@ -453,6 +453,50 @@ fn without_an_image_the_old_background_fades_to_the_theme() {
     fade.advance(none, 1750 * MS, |_| ready());
     assert_eq!(shown.load(Ordering::Relaxed), 3);
     assert_eq!(fade.layers(1750 * MS), [None, None]);
+}
+
+#[test]
+fn without_an_image_the_default_fades_in_under_the_old_background() {
+    let mut requests = requests();
+    let h = handles(&mut requests, 3);
+    let default = h[2];
+    let shown = Arc::new(AtomicU32::new(0));
+    let mut fade = BackgroundFade::new(Arc::clone(&shown), Some(default));
+    // Before any target: the default, whole.
+    assert_eq!(fade.layers(0), [Some((default, 1.0)), None]);
+    let first = BackgroundTarget {
+        generation: 1,
+        handle: Some(h[0]),
+    };
+    fade.advance(first, 0, |_| ready());
+    fade.advance(first, 500 * MS, |_| ready());
+    // The new image failed to decode: the default comes in as an image would.
+    let failed = BackgroundTarget {
+        generation: 2,
+        handle: Some(h[1]),
+    };
+    let state = |handle| {
+        if handle == h[1] {
+            TextureState::Failed(slam_render::upload::LoadError::Decode)
+        } else {
+            ready()
+        }
+    };
+    fade.advance(failed, 600 * MS, state);
+    let [under, over] = fade.layers(725 * MS);
+    assert_eq!(under.unwrap().0, default);
+    assert_eq!(over, Some((h[0], 0.5)));
+    fade.advance(failed, 1100 * MS, state);
+    assert_eq!(shown.load(Ordering::Relaxed), 2);
+    assert_eq!(fade.layers(1100 * MS), [Some((default, 1.0)), None]);
+    // Another beatmap without an image: the default stays, without a fade over itself.
+    let none = BackgroundTarget {
+        generation: 3,
+        handle: None,
+    };
+    fade.advance(none, 1200 * MS, |_| ready());
+    assert_eq!(shown.load(Ordering::Relaxed), 3);
+    assert_eq!(fade.layers(1200 * MS), [Some((default, 1.0)), None]);
 }
 
 #[test]
