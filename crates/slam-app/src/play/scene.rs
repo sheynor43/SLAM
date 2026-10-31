@@ -33,7 +33,7 @@ use slam_render::sprite::{
 };
 use slam_render::textures::Textures;
 use slam_render::upload::{
-    TextureHandle, TextureKind, TextureLoaderConfig, TextureRequests, TextureState, TextureUploads,
+    TextureHandle, TextureKind, TextureLoaderConfig, TextureRequests, TextureUploads,
     texture_loader,
 };
 use slam_render::{Color, Device, Extent, Limits, shaders};
@@ -296,6 +296,15 @@ pub fn prepare(
             .inspect_err(|e| tracing::warn!("background {name}: {e}"))
             .ok()
     });
+    // In place of a missing or broken one, as lazer's `BeatmapBackground` falls back to
+    // `Backgrounds/bg1` (ADR-0076).
+    let default_background = requests
+        .load_pixels(
+            slam_play::background::default_image(),
+            TextureKind::Standalone,
+        )
+        .inspect_err(|e| tracing::warn!("default background: {}", e.reason))
+        .ok();
     let glyphs = glyph_atlas(Arc::clone(&registry), &GlyphAtlasConfig::new(limits))
         .map_err(|e| e.to_string())?;
     let menu = MenuView::new(Arc::clone(&registry), &labels.menu);
@@ -308,6 +317,7 @@ pub fn prepare(
         view,
         hud,
         background,
+        default_background,
         background_view: BackgroundView::new(BackgroundSettings {
             dim_level: settings.dim,
             ..BackgroundSettings::default()
@@ -356,6 +366,8 @@ pub struct PlayScene {
     hud: HudView,
     /// The beatmap's background, if it has one.
     background: Option<TextureHandle>,
+    /// SLAM's own background, drawn when the beatmap's is missing or failed (ADR-0076).
+    default_background: Option<TextureHandle>,
     background_view: BackgroundView,
     /// The background, the playfield and the HUD's shapes.
     batch: SpriteBatch,
@@ -438,6 +450,7 @@ impl PlayScene {
         now_ns: u64,
         snapshot: &PlaySnapshot,
         fps: Option<&FpsView>,
+        over_layer: bool,
     ) {
         let Some(r) = self.gpu.as_mut() else {
             return;
@@ -459,16 +472,20 @@ impl PlayScene {
         self.cursor.clear();
         self.menu_shapes.clear();
         self.menu_text.clear();
-        let background = self
-            .background
-            .and_then(|handle| match self.uploads.get(handle) {
-                TextureState::Ready(region) => Some(region),
-                _ => None,
-            });
+        let background = slam_play::background::shown_region(
+            self.background.map(|h| self.uploads.get(h)),
+            self.default_background.map(|h| self.uploads.get(h)),
+        );
         let time = snapshot.time_at(now_ns);
         let fail = FailFrame::new(snapshot.fail, time, now_ns, width, height);
-        self.background_view
-            .push(&mut self.batch, width, height, snapshot, now_ns, background);
+        self.background_view.push(
+            &mut self.batch,
+            [width, height],
+            snapshot,
+            now_ns,
+            background,
+            over_layer,
+        );
         // The game layer: everything up to the menus (lazer's `FailAnimationContainer`
         // content), with a black box behind it once the play fails.
         let layer_first = self.batch.len();

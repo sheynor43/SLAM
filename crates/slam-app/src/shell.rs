@@ -37,7 +37,7 @@ use slam_render::gl::{GlDebug, GlDevice, GlTexture};
 use slam_render::sprite::{DEFAULT_SLOTS, Projection, SpriteBatch, SpriteRenderer};
 use slam_render::textures::Textures;
 use slam_render::upload::{TextureLoaderConfig, TextureState, TextureUploads, texture_loader};
-use slam_render::{Device, Extent, TextureFormat, shaders};
+use slam_render::{Color, Device, Extent, TextureFormat, shaders};
 use slam_text::{FontRegistry, GlyphAtlasConfig, GlyphCache, glyph_atlas};
 use slam_ui::i18n::Localizer;
 use slam_ui::menu::{
@@ -2108,7 +2108,19 @@ impl Draw<ShellSnapshot> for View {
 
     fn frame(&mut self, info: &FrameInfo, snapshot: &ShellSnapshot) {
         let r = self.resources.as_mut().expect("started");
-        let size = r.device.begin_frame(self.theme.background);
+        let mut layer_views = snapshot.layers.iter().flatten().map(|layer| &layer.view);
+        let gameplay = layer_views
+            .clone()
+            .next_back()
+            .is_some_and(|view| matches!(view, ScreenView::Play(_)));
+        // Black with a play on any layer, as lazer's renderer clears: a fully dimmed
+        // background is not drawn (`BackgroundView::push`) and shows as this.
+        let clear = if layer_views.any(|view| matches!(view, ScreenView::Play(_))) {
+            Color::BLACK
+        } else {
+            self.theme.background
+        };
+        let size = r.device.begin_frame(clear);
         if let Some(scenes) = &mut self.scenes
             && let Ok((id, mut scene)) = scenes.pop()
         {
@@ -2147,12 +2159,6 @@ impl Draw<ShellSnapshot> for View {
             fade.advance(snapshot.background, info.wait.woke_ns, |h| uploads.get(h));
         }
         let (width, height) = (size.width as f32, size.height as f32);
-        let gameplay = snapshot
-            .layers
-            .iter()
-            .flatten()
-            .last()
-            .is_some_and(|layer| matches!(layer.view, ScreenView::Play(_)));
         self.fps
             .frame(info.wait.woke_ns, width, height, snapshot.fps, gameplay);
         self.shapes.clear();
@@ -2255,14 +2261,24 @@ impl Draw<ShellSnapshot> for View {
             .text_renderer
             .upload(&mut r.device, &self.text, &projection, texture);
         let mut from = (0, 0);
-        for &(shapes_end, text_end, play) in &ends[..layers] {
+        for (i, &(shapes_end, text_end, play)) in ends[..layers].iter().enumerate() {
             if play {
                 // Only the scene of the play on the layer: another one's snapshot would
                 // mislead its views.
                 if let Some((id, scene)) = &mut self.scene
                     && scene_on_layers(snapshot, *id)
                 {
-                    scene.draw(&mut r.device, size, info.wait.woke_ns, &snapshot.play, None);
+                    // Over the screen it enters from (a 200 ms transition), the background
+                    // must hide that screen even when fully dimmed.
+                    let over_layer = i > 0;
+                    scene.draw(
+                        &mut r.device,
+                        size,
+                        info.wait.woke_ns,
+                        &snapshot.play,
+                        None,
+                        over_layer,
+                    );
                 }
                 continue;
             }

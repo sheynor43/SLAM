@@ -39,16 +39,16 @@ const OLDER: usize = 4;
 /// Commands and answers waiting between the update and the library thread.
 const RING: usize = 8;
 
-/// Handles of the menu's texture loader alive at once: the target, the older ones and a
-/// few answers in flight.
-pub const MAX_BACKGROUNDS: u32 = 8;
+/// Handles of the menu's texture loader alive at once: the default background, the
+/// target, the older ones and a few answers in flight.
+pub const MAX_BACKGROUNDS: u32 = 9;
 
 /// The background the draw thread is asked to show.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct BackgroundTarget {
     /// Grows with each new target; the draw thread confirms it when shown.
     pub generation: u32,
-    /// `None`: the theme's background.
+    /// `None`: no beatmap background, so the default one (ADR-0076).
     pub handle: Option<TextureHandle>,
 }
 
@@ -73,8 +73,15 @@ pub struct BackgroundReply {
 }
 
 /// Connects the three ends; `requests` is the menu's texture loader, whose uploads the
-/// draw thread processes.
-pub fn link(requests: TextureRequests) -> (BackgroundPicker, BackgroundLoader, BackgroundFade) {
+/// draw thread processes. Queues SLAM's default background on it first (ADR-0076).
+pub fn link(mut requests: TextureRequests) -> (BackgroundPicker, BackgroundLoader, BackgroundFade) {
+    let default = requests
+        .load_pixels(
+            slam_play::background::default_image(),
+            TextureKind::Standalone,
+        )
+        .inspect_err(|e| tracing::warn!("default background: {}", e.reason))
+        .ok();
     let (commands, commands_rx) = rtrb::RingBuffer::new(RING);
     let (replies_tx, replies) = rtrb::RingBuffer::new(RING);
     let shown = Arc::new(AtomicU32::new(0));
@@ -87,7 +94,7 @@ pub fn link(requests: TextureRequests) -> (BackgroundPicker, BackgroundLoader, B
             unsent: None,
             releases: Vec::with_capacity(MAX_BACKGROUNDS as usize),
         },
-        BackgroundFade::new(shown),
+        BackgroundFade::new(shown, default),
     )
 }
 
@@ -211,7 +218,7 @@ impl BackgroundPicker {
 
     /// Asks for the settled selection's background unless it was asked for already.
     fn ask(&mut self, has_background: bool) {
-        // Never asked counts as asked for none: the first target is the theme's.
+        // Never asked counts as asked for none: the first target is the default background.
         let asked_at = self.asked.as_ref().and_then(Selected::background);
         let seen_at = self.seen.as_ref().and_then(Selected::background);
         if asked_at == seen_at {
@@ -353,9 +360,15 @@ fn out_quint(time: f64) -> f64 {
 /// The draw thread's end: fades between backgrounds.
 pub struct BackgroundFade {
     shown_generation: Arc<AtomicU32>,
+    /// SLAM's own background, in place of a target without an image; `None` when the
+    /// loader refused it (the theme shows instead). Never released: it lives as long as
+    /// the loader.
+    default: Option<TextureHandle>,
     /// The background shown whole, under a fade.
     shown: Option<TextureHandle>,
     target: BackgroundTarget,
+    /// What the target shows: its image, or the default without one.
+    incoming: Option<TextureHandle>,
     /// When the target was ready (or found to have no image) and its fade began.
     fade_from_ns: Option<u64>,
 }
@@ -364,11 +377,15 @@ pub struct BackgroundFade {
 type Layer = (TextureHandle, f32);
 
 impl BackgroundFade {
-    fn new(shown_generation: Arc<AtomicU32>) -> Self {
+    fn new(shown_generation: Arc<AtomicU32>, default: Option<TextureHandle>) -> Self {
         Self {
             shown_generation,
-            shown: None,
+            default,
+            // Whole from the start, without a fade: it is ready long before the song
+            // select first shows, while the main menu does not draw it.
+            shown: default,
             target: BackgroundTarget::default(),
+            incoming: None,
             fade_from_ns: None,
         }
     }
@@ -388,12 +405,20 @@ impl BackgroundFade {
         if self.shown_generation.load(Ordering::Relaxed) == self.target.generation {
             return;
         }
-        // Failed: fade out to the theme as without an image.
+        // Failed: the default, as without an image (lazer's `BeatmapBackground`).
         let image = match self.target.handle.map(&state) {
             Some(TextureState::Pending) => return,
             Some(TextureState::Ready(_)) => self.target.handle,
-            Some(TextureState::Failed(_)) | None => None,
+            Some(TextureState::Failed(_)) | None => self.default,
         };
+        self.incoming = image;
+        if self.fade_from_ns.is_none() && image == self.shown {
+            // Already shown whole (the default between two beatmaps without one): a fade
+            // over itself would let the theme through.
+            self.shown_generation
+                .store(self.target.generation, Ordering::Release);
+            return;
+        }
         let from = *self.fade_from_ns.get_or_insert(now_ns);
         let length = if image.is_some() {
             FADE_IN_NS
@@ -418,13 +443,13 @@ impl BackgroundFade {
         let out = (1.0 - elapsed / FADE_OUT_NS as f64).max(0.0) as f32;
         let fade_in = out_quint((elapsed / FADE_IN_NS as f64).min(1.0)) as f32;
         [
-            self.target.handle.map(|h| (h, fade_in)),
+            self.incoming.map(|h| (h, fade_in)),
             self.shown.map(|h| (h, out)),
         ]
     }
 
     /// Pushes the background covering a `width` x `height` window at `now_ns`, faded by
-    /// `opacity` (the layer's). Nothing for handles not ready: the theme shows.
+    /// `opacity` (the layer's). Nothing for handles not ready, nor without a default: the theme shows.
     pub fn push(
         &self,
         batch: &mut SpriteBatch,
