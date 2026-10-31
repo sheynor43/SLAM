@@ -1370,6 +1370,7 @@ pub fn push_approaches(
     let Some(approach) = &textures.approach else {
         return;
     };
+    let hole = textures.approach_hole;
     let (mut c, mut s) = (0, 0);
     while c < circles.len() || s < sliders.len() {
         let take_circle =
@@ -1380,7 +1381,7 @@ pub fn push_approaches(
             if let Some(circle) = hit_circles.visuals.get(live.index) {
                 let first = batch.len();
                 let pose = circle_pose(circle, live.judgement, time, style);
-                push_approach(batch, layout, circle, &pose, 1.0, approach);
+                push_approach(batch, layout, circle, &pose, 1.0, approach, hole);
                 drop(batch, first, live.index, circle);
             }
         } else {
@@ -1390,7 +1391,8 @@ pub fn push_approaches(
                 let first = batch.len();
                 let pose = circle_pose(&slider.head, live.head, time, style);
                 let parent = slider_alpha(slider, live, time);
-                push_approach(batch, layout, &slider.head, &pose, parent, approach);
+                let head = &slider.head;
+                push_approach(batch, layout, head, &pose, parent, approach, hole);
                 drop(batch, first, live.index, &slider.head);
             }
         }

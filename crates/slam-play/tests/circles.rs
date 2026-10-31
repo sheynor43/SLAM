@@ -18,7 +18,7 @@ use slam_play::circles::{
 };
 use slam_render::Color;
 use slam_render::atlas::UvRect;
-use slam_render::sprite::SpriteBatch;
+use slam_render::sprite::{RING_QUADS, SpriteBatch};
 use slam_render::textures::TextureId;
 use slam_skin::{Skin, SkinChain};
 use slam_testkit::assert_no_alloc;
@@ -173,6 +173,7 @@ fn textures() -> CircleTextures {
         circle: Some(sprite(CIRCLE, 128.0)),
         overlay: Some(sprite(OVERLAY, 128.0)),
         approach: Some(sprite(APPROACH, 126.0)),
+        approach_hole: [0.0; 2],
         digits: [Some(sprite(DIGITS, 40.0)); 10],
     }
 }
@@ -266,6 +267,48 @@ fn circles_are_placed_and_sized_on_the_playfield() {
 }
 
 #[test]
+fn an_approach_circle_with_a_clear_middle_is_drawn_as_a_ring() {
+    let map = Beatmap::decode(MAP.replace("COLOURS", "").as_bytes()).unwrap();
+    let layout = common::layout();
+    let c = circles(&map, true);
+    let live = [live(0, None)];
+    let mut whole = SpriteBatch::new();
+    c.push(&mut whole, &layout, &live, 900.0, &textures());
+    let mut ring = SpriteBatch::new();
+    let holed = CircleTextures {
+        approach_hole: [0.45, 0.45],
+        ..textures()
+    };
+    c.push(&mut ring, &layout, &live, 900.0, &holed);
+    // The pieces are unchanged; the approach circle takes RING_QUADS quads with the same
+    // outer corners.
+    assert_eq!(ring.len(), whole.len() - 1 + RING_QUADS);
+    let n = whole.len() - 1;
+    assert_eq!(ring.vertices()[..n * 4], whole.vertices()[..n * 4]);
+    assert_eq!(order(&ring), order(&whole));
+    for corner in &whole.vertices()[n * 4..] {
+        assert!(ring.vertices()[n * 4..].contains(corner));
+    }
+}
+
+#[test]
+fn the_hole_follows_the_crop_and_the_texture_scale() {
+    let sprite = SkinSprite {
+        texture: APPROACH,
+        uv: UvRect::FULL,
+        size: Vec2::new(126.0, 128.0),
+    };
+    // An @2x image of 252 × 256 pixels, clear for 112 of them around the centre.
+    let [hx, hy] = sprite.hole(112.0, 2.0);
+    assert!((hx - 112.0 / 252.0).abs() < 1e-6 && (hy - 112.0 / 256.0).abs() < 1e-6);
+    let empty = SkinSprite {
+        size: Vec2::ZERO,
+        ..sprite
+    };
+    assert_eq!(empty.hole(10.0, 1.0), [0.0, 0.0]);
+}
+
+#[test]
 fn a_frame_does_not_allocate() {
     let map = Beatmap::decode(MAP.replace("COLOURS", "").as_bytes()).unwrap();
     let layout = common::layout();
@@ -281,8 +324,12 @@ fn a_frame_does_not_allocate() {
         OsuRules::new(&map, &ModSet::default()),
     );
     let mut snapshot = Box::new(LiveCircles::new());
-    let mut batch = SpriteBatch::with_capacity(1024);
-    let textures = textures();
+    let mut batch = SpriteBatch::with_capacity(4096);
+    // Approach circles as rings.
+    let textures = CircleTextures {
+        approach_hole: [0.45, 0.45],
+        ..textures()
+    };
     let mut drawn = 0;
     while sim.step() {
         let time = sim.time();

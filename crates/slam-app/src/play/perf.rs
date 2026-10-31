@@ -30,14 +30,54 @@ pub struct SharedFrameTimes {
     p50_ns: AtomicU64,
     p99_ns: AtomicU64,
     max_ns: AtomicU64,
+    /// [`DrawFigures`] of the busiest frame of the window, packed by [`DrawFigures::pack`].
+    draw: AtomicU64,
+    /// Live circles of that frame and circles left out of its snapshot.
+    circles: AtomicU64,
     /// Summaries published so far; 0 until the first one.
     published: AtomicU64,
+}
+
+/// What one frame drew: the playfield batch and the live objects behind it.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct DrawFigures {
+    pub sprites: u32,
+    pub batches: u32,
+    pub draw_calls: u32,
+    pub slider_bodies: u32,
+    pub live_circles: u32,
+    pub dropped_circles: u32,
+}
+
+impl DrawFigures {
+    /// Sprites, batches, draw calls and slider bodies, 16 bits each (saturating).
+    fn pack(&self) -> u64 {
+        let c = |v: u32| u64::from(v.min(u32::from(u16::MAX)));
+        c(self.sprites)
+            | c(self.batches) << 16
+            | c(self.draw_calls) << 32
+            | c(self.slider_bodies) << 48
+    }
+
+    fn unpack(draw: u64, circles: u64) -> Self {
+        let f = |v: u64, shift: u32| ((v >> shift) & 0xffff) as u32;
+        DrawFigures {
+            sprites: f(draw, 0),
+            batches: f(draw, 16),
+            draw_calls: f(draw, 32),
+            slider_bodies: f(draw, 48),
+            live_circles: (circles & 0xffff_ffff) as u32,
+            dropped_circles: (circles >> 32) as u32,
+        }
+    }
 }
 
 /// The draw thread's frame-time tracking: no allocation after construction, no locks.
 pub struct FramePerf {
     times: FrameTimes,
     next_summary_ns: u64,
+    /// The frame with the most sprites since the last summary.
+    busiest: DrawFigures,
     shared: Arc<SharedFrameTimes>,
 }
 
@@ -46,7 +86,15 @@ impl FramePerf {
         Self {
             times: FrameTimes::new(FrameTimes::DEFAULT_CAPACITY),
             next_summary_ns: 0,
+            busiest: DrawFigures::default(),
             shared,
+        }
+    }
+
+    /// Records what a frame drew; the summary reports the frame with the most sprites.
+    pub fn record_draw(&mut self, figures: DrawFigures) {
+        if figures.sprites >= self.busiest.sprites {
+            self.busiest = figures;
         }
     }
 
@@ -64,6 +112,11 @@ impl FramePerf {
             s.p50_ns.store(u64::from(summary.p50_ns), Ordering::Relaxed);
             s.p99_ns.store(u64::from(summary.p99_ns), Ordering::Relaxed);
             s.max_ns.store(u64::from(summary.max_ns), Ordering::Relaxed);
+            let b = &self.busiest;
+            s.draw.store(b.pack(), Ordering::Relaxed);
+            let circles = u64::from(b.live_circles) | u64::from(b.dropped_circles) << 32;
+            s.circles.store(circles, Ordering::Relaxed);
+            self.busiest = DrawFigures::default();
             s.published.fetch_add(1, Ordering::Release);
             // The next summary covers only the next second's frames.
             self.times.clear();
@@ -100,6 +153,8 @@ struct PerfSample {
 struct PerfGauges {
     /// p50, p99 and max frame time in nanoseconds; `None` before the first summary.
     frame_ns: Option<(u64, u64, u64)>,
+    /// The busiest frame of the summary window.
+    draw: DrawFigures,
     buffer_ms: f64,
     /// Output latency of the last audio buffer, nanoseconds.
     latency_ns: Option<u64>,
@@ -133,11 +188,19 @@ fn format_report(
     let latency = gauges
         .latency_ns
         .map_or_else(|| "-".to_owned(), |ns| format!("{:.1}", ms(ns)));
+    let d = &gauges.draw;
     format!(
-        "fps {:.0} | frame ms {frame} | update {:.0} Hz | input {:.0} ev/s {:.0} polls/s | \
+        "fps {:.0} | frame ms {frame} | draw {} sprites {} batches {} calls {} bodies, \
+         hit circles {} live {} dropped | update {:.0} Hz | input {:.0} ev/s {:.0} polls/s | \
          audio {:.0} cb/s, buf {:.1} ms, latency {latency} ms, missed {}, underruns {}, \
          voices {}",
         rate(now.frames, before.frames),
+        d.sprites,
+        d.batches,
+        d.draw_calls,
+        d.slider_bodies,
+        d.live_circles,
+        d.dropped_circles,
         rate(now.ticks, before.ticks),
         rate(now.queued, before.queued),
         rate(now.polls, before.polls),
@@ -178,6 +241,10 @@ pub fn report(sources: &ReportSources, closed: &AtomicBool) {
                     shared.max_ns.load(Ordering::Relaxed),
                 )
             }),
+            draw: DrawFigures::unpack(
+                shared.draw.load(Ordering::Relaxed),
+                shared.circles.load(Ordering::Relaxed),
+            ),
             buffer_ms,
             latency_ns: sources.position.read().map(|p| p.latency_ns),
             missed: sources.stream.missed_buffers.load(Ordering::Relaxed),
@@ -213,6 +280,14 @@ mod tests {
         };
         let gauges = PerfGauges {
             frame_ns: Some((1_000_000, 1_210_000, 2_400_000)),
+            draw: DrawFigures {
+                sprites: 900,
+                batches: 12,
+                draw_calls: 13,
+                slider_bodies: 1,
+                live_circles: 150,
+                dropped_circles: 0,
+            },
             buffer_ms: 2.7,
             latency_ns: Some(8_100_000),
             missed: 0,
@@ -223,7 +298,8 @@ mod tests {
         let line = format_report(&before, &now, 500_000_000, &gauges);
         assert_eq!(
             line,
-            "fps 1000 | frame ms p50 1.00 p99 1.21 max 2.40 | update 2000 Hz | \
+            "fps 1000 | frame ms p50 1.00 p99 1.21 max 2.40 | draw 900 sprites 12 batches \
+             13 calls 1 bodies, hit circles 150 live 0 dropped | update 2000 Hz | \
              input 150 ev/s 300 polls/s | audio 374 cb/s, buf 2.7 ms, latency 8.1 ms, \
              missed 0, underruns 1, voices 3"
         );
@@ -233,7 +309,7 @@ mod tests {
     fn report_without_data_or_time_is_safe() {
         let zero = PerfSample::default();
         let line = format_report(&zero, &zero, 0, &PerfGauges::default());
-        assert!(line.starts_with("fps 0 | frame ms p50 - p99 - max - | update 0 Hz"));
+        assert!(line.starts_with("fps 0 | frame ms p50 - p99 - max - | draw 0 sprites"));
         assert!(line.contains("latency - ms"));
         // A counter that went backwards does not wrap.
         let now = PerfSample { frames: 5, ..zero };
@@ -257,5 +333,41 @@ mod tests {
         assert_eq!(shared.published.load(Ordering::Relaxed), 2);
         assert_eq!(shared.p50_ns.load(Ordering::Relaxed), 1_000_000);
         assert_eq!(shared.max_ns.load(Ordering::Relaxed), 5_000_000);
+    }
+
+    #[test]
+    fn the_busiest_frame_of_the_window_is_published() {
+        let shared = Arc::new(SharedFrameTimes::default());
+        let mut perf = FramePerf::new(Arc::clone(&shared));
+        let frame = |draw_calls: u32, live_circles| DrawFigures {
+            sprites: draw_calls * 100,
+            batches: draw_calls,
+            draw_calls,
+            slider_bodies: 2,
+            live_circles,
+            dropped_circles: 3,
+        };
+        perf.record(1_000_000_000);
+        perf.record_draw(frame(40, 100));
+        perf.record_draw(frame(900, 250));
+        perf.record_draw(frame(60, 120));
+        perf.record(2_000_000_000);
+        let read = || {
+            DrawFigures::unpack(
+                shared.draw.load(Ordering::Relaxed),
+                shared.circles.load(Ordering::Relaxed),
+            )
+        };
+        // Sprites saturate at 16 bits.
+        let expected = DrawFigures {
+            sprites: u32::from(u16::MAX),
+            ..frame(900, 250)
+        };
+        assert_eq!(read(), expected);
+        // The next window starts over.
+        perf.record_draw(frame(10, 5));
+        perf.record(2_500_000_000);
+        perf.record(3_000_000_000);
+        assert_eq!(read().draw_calls, 10);
     }
 }

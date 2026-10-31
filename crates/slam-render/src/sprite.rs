@@ -153,39 +153,139 @@ impl SpriteBatch {
 
     /// Records `sprite` on top of those recorded before.
     pub fn push(&mut self, sprite: &Sprite) {
+        self.extend_batch(sprite, 1);
+        let at = Placement::new(sprite);
+        self.vertices.extend_from_slice(&[
+            at.vertex(0.0, 0.0),
+            at.vertex(1.0, 0.0),
+            at.vertex(1.0, 1.0),
+            at.vertex(0.0, 1.0),
+        ]);
+    }
+
+    /// Records `sprite` like [`push`](Self::push) but leaves out an octagon inscribed in
+    /// the ellipse around its centre with semi-axes `hole` (fractions of the size, up to
+    /// 0.5): [`RING_QUADS`] quads instead of one. Where the texture is fully transparent
+    /// inside that ellipse (an approach circle), it draws what the single quad would with
+    /// less fill: the texture coordinates are an affine function of the position, so
+    /// every pixel left in samples the same point, up to the rounding of interpolating
+    /// over other triangles (a last-bit difference at most). A hole under
+    /// [`MIN_RING_HOLE`] on either axis is not worth the vertices: one quad.
+    pub fn push_ring(&mut self, sprite: &Sprite, hole: [f32; 2]) {
+        if !(hole[0] >= MIN_RING_HOLE && hole[1] >= MIN_RING_HOLE) {
+            self.push(sprite);
+            return;
+        }
+        let [hx, hy] = hole.map(|h| h.min(0.5));
+        self.extend_batch(sprite, RING_QUADS as u32);
+        let at = Placement::new(sprite);
+        // Rays every 45°: the inner ends on the ellipse, the outer ones alternately at
+        // the middles of the sides and at the corners, so each outer segment runs along
+        // one side and the quads tile the sprite outside the octagon exactly. Shared
+        // corners are computed once, so neighbouring quads meet without gaps.
+        let d = std::f32::consts::FRAC_1_SQRT_2;
+        let dirs = [
+            (1.0, 0.0),
+            (d, d),
+            (0.0, 1.0),
+            (-d, d),
+            (-1.0, 0.0),
+            (-d, -d),
+            (0.0, -1.0),
+            (d, -d),
+        ];
+        let inner = dirs.map(|(x, y)| at.vertex(0.5 + hx * x, 0.5 + hy * y));
+        let outer = [
+            (1.0, 0.5),
+            (1.0, 1.0),
+            (0.5, 1.0),
+            (0.0, 1.0),
+            (0.0, 0.5),
+            (0.0, 0.0),
+            (0.5, 0.0),
+            (1.0, 0.0),
+        ]
+        .map(|(x, y)| at.vertex(x, y));
+        for k in 0..RING_QUADS {
+            let next = (k + 1) % RING_QUADS;
+            // The same winding as `push`'s corners.
+            self.vertices
+                .extend_from_slice(&[inner[k], outer[k], outer[next], inner[next]]);
+        }
+    }
+
+    /// Accounts for `quads` quads of `sprite`'s texture and blend.
+    fn extend_batch(&mut self, sprite: &Sprite, quads: u32) {
         // A u32 quad index overflows only past 2^32 sprites (128 GiB of vertices).
         let quad = self.len() as u32;
         match self.batches.last_mut() {
             Some(last) if last.texture == sprite.texture && last.blend == sprite.blend => {
-                last.quads += 1;
+                last.quads += quads;
             }
             _ => self.batches.push(Batch {
                 texture: sprite.texture,
                 blend: sprite.blend,
                 first_quad: quad,
-                quads: 1,
+                quads,
             }),
         }
-        let [w, h] = sprite.size;
-        let [ox, oy] = sprite.origin;
-        let [px, py] = sprite.position;
+    }
+}
+
+/// Quads of [`SpriteBatch::push_ring`].
+pub const RING_QUADS: usize = 8;
+/// The smallest hole, as a fraction of the size on each axis, that
+/// [`SpriteBatch::push_ring`] leaves out: below it the octagon saves less fill than the
+/// extra vertices cost.
+pub const MIN_RING_HOLE: f32 = 0.2;
+
+/// Where a sprite's unit square goes: position, rotation, colour and texture rectangle.
+struct Placement {
+    size: [f32; 2],
+    origin: [f32; 2],
+    position: [f32; 2],
+    sin: f32,
+    cos: f32,
+    colour: [f32; 4],
+    uv: UvRect,
+}
+
+impl Placement {
+    fn new(sprite: &Sprite) -> Self {
         let (sin, cos) = sprite.rotation.sin_cos();
         let Color { r, g, b, a } = sprite.colour;
-        let UvRect { u0, v0, u1, v1 } = sprite.uv;
-        let corner = |x: f32, y: f32, u: f32, v: f32| {
-            let (x, y) = (x - ox, y - oy);
-            SpriteVertex {
-                position: [px + x * cos - y * sin, py + x * sin + y * cos],
-                colour: [r, g, b, a],
-                uv: [u, v],
-            }
+        Self {
+            size: sprite.size,
+            origin: sprite.origin,
+            position: sprite.position,
+            sin,
+            cos,
+            colour: [r, g, b, a],
+            uv: sprite.uv,
+        }
+    }
+
+    /// The vertex at `(fx, fy)` of the unit square (0, 0 the top left, 1, 1 the bottom
+    /// right). The corners take the texture rectangle's edges exactly.
+    fn vertex(&self, fx: f32, fy: f32) -> SpriteVertex {
+        let lerp = |a: f32, b: f32, t: f32| match t {
+            0.0 => a,
+            1.0 => b,
+            _ => a + (b - a) * t,
         };
-        self.vertices.extend_from_slice(&[
-            corner(0.0, 0.0, u0, v0),
-            corner(w, 0.0, u1, v0),
-            corner(w, h, u1, v1),
-            corner(0.0, h, u0, v1),
-        ]);
+        let [w, h] = self.size;
+        let [ox, oy] = self.origin;
+        let [px, py] = self.position;
+        let UvRect { u0, v0, u1, v1 } = self.uv;
+        let (x, y) = (lerp(0.0, w, fx) - ox, lerp(0.0, h, fy) - oy);
+        SpriteVertex {
+            position: [
+                px + x * self.cos - y * self.sin,
+                py + x * self.sin + y * self.cos,
+            ],
+            colour: self.colour,
+            uv: [lerp(u0, u1, fx), lerp(v0, v1, fy)],
+        }
     }
 }
 
@@ -751,6 +851,149 @@ mod tests {
                 "{actual:?} != {expected:?}"
             );
         }
+    }
+
+    /// A rotated, tinted sprite on part of an atlas page.
+    fn ring_sprite() -> Sprite {
+        Sprite {
+            origin: [60.0, 50.0],
+            rotation: 0.4,
+            colour: RED,
+            ..Sprite::new(
+                TextureId(2),
+                UvRect {
+                    u0: 0.25,
+                    v0: 0.5,
+                    u1: 0.75,
+                    v1: 0.625,
+                },
+                [300.0, 200.0],
+                [120.0, 100.0],
+            )
+        }
+    }
+
+    /// Signed area of the quad, from its corners in order.
+    fn quad_area(q: &[SpriteVertex]) -> f32 {
+        (0..4)
+            .map(|i| {
+                let (a, b) = (q[i].position, q[(i + 1) % 4].position);
+                a[0] * b[1] - b[0] * a[1]
+            })
+            .sum::<f32>()
+            / 2.0
+    }
+
+    #[test]
+    fn a_ring_samples_the_texture_like_the_whole_quad() {
+        let s = ring_sprite();
+        let mut whole = SpriteBatch::with_capacity(1);
+        whole.push(&s);
+        let mut ring = SpriteBatch::with_capacity(RING_QUADS);
+        ring.push_ring(&s, [0.4, 0.45]);
+        assert_eq!(ring.len(), RING_QUADS);
+        assert_eq!(
+            ring.batches(),
+            [Batch {
+                texture: TextureId(2),
+                blend: Blend::Alpha,
+                first_quad: 0,
+                quads: RING_QUADS as u32,
+            }]
+        );
+        // The whole quad's texture coordinates as an affine function of the position.
+        let c = whole.vertices();
+        let (o, ex, ey) = (c[0], c[1], c[3]);
+        let sub = |a: [f32; 2], b: [f32; 2]| [a[0] - b[0], a[1] - b[1]];
+        let (dx, dy) = (sub(ex.position, o.position), sub(ey.position, o.position));
+        let det = dx[0] * dy[1] - dx[1] * dy[0];
+        let uv_at = |p: [f32; 2]| {
+            let r = sub(p, o.position);
+            let a = (r[0] * dy[1] - r[1] * dy[0]) / det;
+            let b = (dx[0] * r[1] - dx[1] * r[0]) / det;
+            [
+                o.uv[0] + (ex.uv[0] - o.uv[0]) * a,
+                o.uv[1] + (ey.uv[1] - o.uv[1]) * b,
+            ]
+        };
+        for v in ring.vertices() {
+            let uv = uv_at(v.position);
+            assert!((uv[0] - v.uv[0]).abs() < 1e-5 && (uv[1] - v.uv[1]).abs() < 1e-5);
+            assert_eq!(v.colour, c[0].colour);
+        }
+        // The quads keep `push`'s winding and cover the sprite less the octagon
+        // inscribed in the ellipse of semi-axes 48 × 45 pixels.
+        let whole_area = quad_area(c);
+        let quads: Vec<f32> = ring.vertices().chunks(4).map(quad_area).collect();
+        assert!(quads.iter().all(|a| a.signum() == whole_area.signum()));
+        let octagon = 2.0 * std::f32::consts::SQRT_2 * 48.0 * 45.0;
+        let covered: f32 = quads.iter().sum();
+        assert!((covered - (whole_area.abs() - octagon) * whole_area.signum()).abs() < 0.5);
+        // The outer corners are the whole quad's, bit for bit.
+        for corner in c {
+            assert!(ring.vertices().iter().any(|v| v == corner));
+        }
+    }
+
+    #[test]
+    fn rings_of_uneven_holes_are_made_of_convex_quads() {
+        let s = ring_sprite();
+        let mut whole = SpriteBatch::with_capacity(1);
+        whole.push(&s);
+        let whole_area = quad_area(whole.vertices());
+        let [w, h] = s.size;
+        for [hx, hy] in [[0.5, 0.2], [0.2, 0.5], [0.45, 0.25], [0.7, 0.3]] {
+            let mut ring = SpriteBatch::with_capacity(RING_QUADS);
+            ring.push_ring(&s, [hx, hy]);
+            for q in ring.vertices().chunks(4) {
+                // No turn goes against the whole quad's: convex, and split into two
+                // triangles along either diagonal without folding.
+                for i in 0..4 {
+                    let (a, b, c) = (
+                        q[i].position,
+                        q[(i + 1) % 4].position,
+                        q[(i + 2) % 4].position,
+                    );
+                    let turn = (b[0] - a[0]) * (c[1] - b[1]) - (b[1] - a[1]) * (c[0] - b[0]);
+                    // A hole of half the size meets the side: that triangle is empty.
+                    assert!(turn * whole_area >= 0.0, "{hx}, {hy}: {q:?}");
+                }
+            }
+            let octagon = 2.0 * std::f32::consts::SQRT_2 * hx.min(0.5) * w * hy.min(0.5) * h;
+            let covered: f32 = ring.vertices().chunks(4).map(quad_area).sum();
+            let expected = (whole_area.abs() - octagon) * whole_area.signum();
+            assert!((covered - expected).abs() < 0.5, "{hx}, {hy}");
+        }
+    }
+
+    #[test]
+    fn a_small_hole_draws_one_quad() {
+        let s = ring_sprite();
+        let mut whole = SpriteBatch::with_capacity(1);
+        whole.push(&s);
+        for hole in [[0.0, 0.0], [0.1, 0.4], [0.4, 0.1], [f32::NAN, 0.4]] {
+            let mut ring = SpriteBatch::with_capacity(1);
+            ring.push_ring(&s, hole);
+            assert_eq!(ring.vertices(), whole.vertices(), "{hole:?}");
+        }
+    }
+
+    #[test]
+    fn rings_extend_the_batch_of_the_same_texture() {
+        let mut batch = SpriteBatch::with_capacity(RING_QUADS + 2);
+        let s = ring_sprite();
+        batch.push(&s);
+        batch.push_ring(&s, [0.45, 0.45]);
+        batch.push(&sprite(7, Blend::Alpha));
+        let quads: Vec<_> = batch
+            .batches()
+            .iter()
+            .map(|b| (b.first_quad, b.quads))
+            .collect();
+        assert_eq!(
+            quads,
+            [(0, RING_QUADS as u32 + 1), (RING_QUADS as u32 + 1, 1)]
+        );
     }
 
     #[test]

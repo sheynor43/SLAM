@@ -1663,7 +1663,10 @@ impl PlayTextures {
                     frame.circles.overlay = Some(SkinSprite::circle(region, r.scale))
                 }
                 Element::Approach => {
-                    frame.circles.approach = Some(SkinSprite::circle(region, r.scale))
+                    let sprite = SkinSprite::circle(region, r.scale);
+                    let clear = uploads.clear_radius(r.handle);
+                    frame.circles.approach_hole = sprite.hole(clear, r.scale);
+                    frame.circles.approach = Some(sprite);
                 }
                 Element::HeadCircle => {
                     frame.sliders.head.circle = Some(SkinSprite::circle(region, r.scale))
