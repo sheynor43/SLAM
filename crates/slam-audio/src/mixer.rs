@@ -393,6 +393,11 @@ struct Voice {
     group: VoiceGroup,
     /// Frames of silence left before the voice sounds (ADR-0077).
     wait: u32,
+    /// Start delay of its group when it was played; a stop waits as long (ADR-0078).
+    delay: u32,
+    /// Frames from the first frame of the next buffer until a delayed stop silences
+    /// the voice.
+    stop_in: Option<u32>,
     gain: Ramp,
     /// Gains of the first two channels from the balance.
     left: f32,
@@ -695,6 +700,8 @@ impl Mixer {
                         looping,
                         group,
                         wait: delay.frames,
+                        delay: delay.frames,
+                        stop_in: None,
                         gain: Ramp::steady(gain),
                         left: 1.0,
                         right: 1.0,
@@ -721,15 +728,20 @@ impl Mixer {
                     }
                     self.plays += 1;
                 }
-                Command::Stop(id) => {
-                    if let Some(i) = self.voices.iter().position(|v| v.id == id) {
+                Command::Stop(id) => match self.voices.iter().position(|v| v.id == id) {
+                    // A delayed voice stops as late as it started (ADR-0078).
+                    Some(i) if self.voices[i].delay > 0 => {
+                        let voice = &mut self.voices[i];
+                        let at = voice.delay;
+                        voice.stop_in = Some(voice.stop_in.map_or(at, |s| s.min(at)));
+                    }
+                    Some(i) => {
                         // `remove` keeps the oldest-first order.
                         let voice = self.voices.remove(i);
                         release(&mut self.released, &self.stats, voice.sample);
-                    } else {
-                        self.stale();
                     }
-                }
+                    None => self.stale(),
+                },
                 Command::Gain {
                     voice,
                     target,
@@ -793,19 +805,29 @@ impl AudioCallback for Mixer {
         for i in 0..self.voices.len() {
             let voice = &mut self.voices[i];
             let bus = &buses[voice.group.index()];
-            let sounding = if voice.wait > 0 && voice.wait >= frames {
+            // A delayed stop inside this buffer cuts the voice there.
+            let until = voice.stop_in.map_or(frames, |stop| stop.min(frames));
+            let out = &mut out[..until as usize * channels];
+            let mut sounding = if voice.wait > 0 && voice.wait >= until {
                 // Still silent; its gain ramp runs on in real time, as when paused.
-                voice.wait -= frames;
-                voice.gain.advance(frames);
+                voice.wait -= until;
+                voice.gain.advance(until);
                 true
             } else if voice.wait > 0 {
                 let wait = std::mem::take(&mut voice.wait);
                 voice.gain.advance(wait);
                 let start = wait as usize * channels;
-                voice.mix(&mut out[start..], channels, frames - wait, &bus.after(wait))
+                voice.mix(&mut out[start..], channels, until - wait, &bus.after(wait))
             } else {
-                voice.mix(out, channels, frames, bus)
+                voice.mix(out, channels, until, bus)
             };
+            if let Some(stop) = &mut voice.stop_in {
+                if *stop <= frames {
+                    sounding = false;
+                } else {
+                    *stop -= frames;
+                }
+            }
             if sounding {
                 self.voices.swap(kept, i);
                 kept += 1;
@@ -893,7 +915,8 @@ impl MixerHandle {
         Ok(id)
     }
 
-    /// Stops `voice` at the start of the next audio buffer.
+    /// Stops `voice` at the start of the next audio buffer, or as many frames later as
+    /// its start was delayed (ADR-0078).
     pub fn stop_voice(&mut self, voice: VoiceId) -> Result<(), PlayError> {
         self.push_for(voice, Command::Stop)
     }
@@ -1394,15 +1417,151 @@ mod tests {
     }
 
     #[test]
-    fn a_voice_stopped_while_waiting_never_sounds() {
+    fn a_voice_stopped_in_the_buffer_it_was_played_never_sounds() {
         let (mut m, mut h) = mono_mixer(4, 8);
         h.set_group_delay(VoiceGroup::Hitsounds, ms(4)).unwrap();
         let voice = play_hit(&mut h, &sample(&[0.5; 4], 1));
-        assert_eq!(run(&mut m, 2), [0.0, 0.0]);
         h.stop_voice(voice).unwrap();
+        assert_eq!(run(&mut m, 2), [0.0, 0.0]);
+        assert_eq!(m.voices.len(), 1);
         assert_eq!(run(&mut m, 4), [0.0; 4]);
         assert_eq!(m.voices.len(), 0);
         assert_eq!(m.stats.stale_voice_commands.load(Ordering::Relaxed), 0);
+    }
+
+    /// [`LOOP`] in the hitsound group.
+    const HIT_LOOP: VoiceParams = VoiceParams {
+        group: VoiceGroup::Hitsounds,
+        ..LOOP
+    };
+
+    #[test]
+    fn a_delayed_loop_stops_as_late_as_it_started() {
+        let (mut m, mut h) = mono_mixer(4, 8);
+        h.set_group_delay(VoiceGroup::Hitsounds, ms(3)).unwrap();
+        let s = sample(&[0.1, 0.2, 0.3], 1);
+        let voice = h.play_voice(&s, HIT_LOOP).unwrap();
+        assert_eq!(run(&mut m, 4), [0.0, 0.0, 0.0, 0.1]);
+        h.stop_voice(voice).unwrap();
+        // Four frames between play and stop sound in full, three frames late.
+        assert_eq!(run(&mut m, 4), [0.2, 0.3, 0.1, 0.0]);
+        assert_eq!(m.voices.len(), 0);
+        h.collect();
+        assert_eq!(Arc::strong_count(&s), 1);
+        assert_eq!(m.stats.stale_voice_commands.load(Ordering::Relaxed), 0);
+    }
+
+    #[test]
+    fn a_voice_stopped_while_waiting_sounds_for_the_time_before_the_stop() {
+        let (mut m, mut h) = mono_mixer(4, 8);
+        h.set_group_delay(VoiceGroup::Hitsounds, ms(4)).unwrap();
+        let voice = play_hit(&mut h, &sample(&[0.5; 8], 1));
+        assert_eq!(run(&mut m, 2), [0.0, 0.0]);
+        h.stop_voice(voice).unwrap();
+        assert_eq!(run(&mut m, 6), [0.0, 0.0, 0.5, 0.5, 0.0, 0.0]);
+        assert_eq!(m.voices.len(), 0);
+    }
+
+    #[test]
+    fn a_delayed_stop_can_span_buffers() {
+        let (mut m, mut h) = mono_mixer(4, 8);
+        h.set_group_delay(VoiceGroup::Hitsounds, ms(5)).unwrap();
+        let voice = h.play_voice(&sample(&[0.5], 1), HIT_LOOP).unwrap();
+        assert_eq!(run(&mut m, 6), [0.0, 0.0, 0.0, 0.0, 0.0, 0.5]);
+        h.stop_voice(voice).unwrap();
+        assert_eq!(run(&mut m, 2), [0.5, 0.5]);
+        assert_eq!(run(&mut m, 2), [0.5, 0.5]);
+        assert_eq!(m.voices.len(), 1);
+        // Stopping again cannot postpone the stop.
+        h.stop_voice(voice).unwrap();
+        assert_eq!(run(&mut m, 4), [0.5, 0.0, 0.0, 0.0]);
+        assert_eq!(m.voices.len(), 0);
+        assert_eq!(m.stats.stale_voice_commands.load(Ordering::Relaxed), 0);
+    }
+
+    #[test]
+    fn empty_and_mismatched_buffers_do_not_bring_a_stop_forward() {
+        let (mut m, mut h) = mono_mixer(4, 8);
+        h.set_group_delay(VoiceGroup::Hitsounds, ms(2)).unwrap();
+        let voice = h.play_voice(&sample(&[0.5], 1), HIT_LOOP).unwrap();
+        assert_eq!(run(&mut m, 2), [0.0, 0.0]);
+        h.stop_voice(voice).unwrap();
+        m.process(&mut [], &info(1));
+        m.process(&mut [0.0; 4], &info(2));
+        assert_eq!(run(&mut m, 3), [0.5, 0.5, 0.0]);
+        assert_eq!(m.voices.len(), 0);
+    }
+
+    #[test]
+    fn a_delayed_stop_cuts_a_stereo_voice_at_another_rate_on_a_whole_frame() {
+        let (mut m, mut h) = mixer(&MixerConfig {
+            sample_rate: RATE,
+            channels: 2,
+            ..Default::default()
+        })
+        .unwrap();
+        h.set_group_delay(VoiceGroup::Hitsounds, ms(1)).unwrap();
+        let voice = h
+            .play_voice(
+                &sample(&[0.5, 0.25, 0.5, 0.25], 2),
+                VoiceParams {
+                    rate: 0.5,
+                    ..HIT_LOOP
+                },
+            )
+            .unwrap();
+        let mut out = [9.0; 8];
+        m.process(&mut out, &info(2));
+        assert_eq!(out, [0.0, 0.0, 0.5, 0.25, 0.5, 0.25, 0.5, 0.25]);
+        h.stop_voice(voice).unwrap();
+        let mut out = [9.0; 6];
+        m.process(&mut out, &info(2));
+        assert_eq!(out, [0.5, 0.25, 0.0, 0.0, 0.0, 0.0]);
+        assert_eq!(m.voices.len(), 0);
+    }
+
+    #[test]
+    fn a_stop_keeps_the_delay_the_voice_started_with() {
+        let (mut m, mut h) = mono_mixer(4, 8);
+        h.set_group_delay(VoiceGroup::Hitsounds, ms(2)).unwrap();
+        let delayed = h.play_voice(&sample(&[0.5], 1), HIT_LOOP).unwrap();
+        h.set_group_delay(VoiceGroup::Hitsounds, 0.0).unwrap();
+        let undelayed = h.play_voice(&sample(&[0.25], 1), HIT_LOOP).unwrap();
+        assert_eq!(run(&mut m, 4), [0.25, 0.25, 0.75, 0.75]);
+        h.set_group_delay(VoiceGroup::Hitsounds, ms(3)).unwrap();
+        h.stop_voice(delayed).unwrap();
+        h.stop_voice(undelayed).unwrap();
+        assert_eq!(run(&mut m, 4), [0.5, 0.5, 0.0, 0.0]);
+        assert_eq!(m.voices.len(), 0);
+    }
+
+    #[test]
+    fn a_voice_awaiting_its_stop_takes_commands_and_can_be_stolen() {
+        let (mut m, mut h) = mono_mixer(2, 8);
+        h.set_group_delay(VoiceGroup::Hitsounds, ms(4)).unwrap();
+        let voice = h.play_voice(&sample(&[0.5], 1), HIT_LOOP).unwrap();
+        assert_eq!(run(&mut m, 4), [0.0; 4]);
+        h.stop_voice(voice).unwrap();
+        h.set_voice_gain(voice, 0.5, 0.0).unwrap();
+        assert_eq!(run(&mut m, 2), [0.25, 0.25]);
+        assert_eq!(m.stats.stale_voice_commands.load(Ordering::Relaxed), 0);
+        // Two newer voices fill the pool of two and steal it before its stop.
+        play_hit(&mut h, &sample(&[0.1; 8], 1));
+        play_hit(&mut h, &sample(&[0.1; 8], 1));
+        run(&mut m, 2);
+        assert_eq!(m.voices.iter().filter(|v| v.id == voice.0).count(), 0);
+        assert_eq!(m.stats.stolen_voices.load(Ordering::Relaxed), 1);
+    }
+
+    #[test]
+    fn stop_all_does_not_wait_for_the_delay() {
+        let (mut m, mut h) = mono_mixer(4, 8);
+        h.set_group_delay(VoiceGroup::Hitsounds, ms(2)).unwrap();
+        h.play_voice(&sample(&[0.5], 1), HIT_LOOP).unwrap();
+        assert_eq!(run(&mut m, 4), [0.0, 0.0, 0.5, 0.5]);
+        h.stop_all().unwrap();
+        assert_eq!(run(&mut m, 4), [0.0; 4]);
+        assert_eq!(m.voices.len(), 0);
     }
 
     #[test]

@@ -118,9 +118,8 @@ pub struct Audio {
 }
 
 /// Extra delay of a stable hitsound over a SLAM one, click to sound, milliseconds
-/// (ADR-0077).
-// Provisional until measured on one machine and output; see #264.
-pub const STABLE_HITSOUND_DELAY_MS: f64 = 40.0;
+/// (ADR-0077). Estimated from published measurements, not measured (ADR-0079).
+pub const STABLE_HITSOUND_DELAY_MS: f64 = 20.0;
 
 /// When gameplay hitsounds start after the judgement (ADR-0077).
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize)]
