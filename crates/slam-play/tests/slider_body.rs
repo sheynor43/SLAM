@@ -139,6 +139,21 @@ fn beatmap_slider_colours_need_the_beatmap_skin_layer() {
 }
 
 #[test]
+fn a_black_track_override_is_black_not_the_combo_colour() {
+    // Only a missing key falls back to the combo colour; 0,0,0 is a colour like any other.
+    // The beatmap's " : " separators are as in Haywyre - Never Count On Me [Betrayal].
+    let user = "[Colours]\nSliderTrackOverride: 0,0,0\nSliderBorder: 100,100,100\n";
+    let beatmap = "[Colours]\nSliderTrackOverride : 0,5,15\nSliderBorder : 186,196,222\n";
+    let c = colours_with(beatmap, Some(user), false);
+    assert_colour(c.accent, [0.0, 0.0, 0.0, 0.7]);
+    let grey = 100.0 / 255.0;
+    assert_colour(c.border, [grey, grey, grey, 1.0]);
+    let c = colours_with(beatmap, Some(user), true);
+    assert_colour(c.accent, [0.0, 5.0 / 255.0, 15.0 / 255.0, 0.7]);
+    assert_colour(c.border, [186.0 / 255.0, 196.0 / 255.0, 222.0 / 255.0, 1.0]);
+}
+
+#[test]
 fn classic_colour_runs_shadow_border_then_track() {
     let c = LegacyBodyColours {
         accent: [1.0, 192.0 / 255.0, 0.0, 0.7],
