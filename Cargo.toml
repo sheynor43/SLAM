@@ -28,7 +28,7 @@ lzma-rust2 = { version = "0.21.0", default-features = false, features = ["std", 
 pipewire = { version = "0.10.1", features = ["v1_0_0"] }
 # Property tests of slider geometry.
 proptest = { version = "1.11.0", default-features = false, features = ["std"] }
-naga = { version = "30.0.1", default-features = false, features = ["wgsl-in", "glsl-out"] }
+naga = { version = "30.0.1", default-features = false, features = ["wgsl-in", "glsl-out", "hlsl-out"] }
 rtrb = "0.4.0"
 # Skin and background images (ADR-0034).
 png = "0.18.1"
@@ -66,7 +66,7 @@ skrifa = "0.48.0"
 unicode-linebreak = "0.1.5"
 tracing-subscriber = { version = "0.3.23", default-features = false, features = ["fmt", "ansi", "env-filter", "std"] }
 # COM interfaces for the WASAPI backend (windows-sys has no COM wrappers).
-windows = { version = "0.62.2", features = ["Win32_Devices_FunctionDiscovery", "Win32_Foundation", "Win32_Media_Audio", "Win32_Media_KernelStreaming", "Win32_Media_Multimedia", "Win32_Security", "Win32_System_Com", "Win32_System_Com_StructuredStorage", "Win32_System_Performance", "Win32_System_Threading", "Win32_System_Variant", "Win32_UI_Shell_PropertiesSystem"] }
+windows = { version = "0.62.2", features = ["Win32_Devices_FunctionDiscovery", "Win32_Foundation", "Win32_Graphics_Direct3D", "Win32_Graphics_Direct3D_Fxc", "Win32_Media_Audio", "Win32_Media_KernelStreaming", "Win32_Media_Multimedia", "Win32_Security", "Win32_System_Com", "Win32_System_Com_StructuredStorage", "Win32_System_Performance", "Win32_System_Threading", "Win32_System_Variant", "Win32_UI_Shell_PropertiesSystem"] }
 # Icon and version resource of slam.exe (ADR-0068); compiled only for MSVC targets.
 embed-resource = "3.0.12"
 windows-sys = { version = "0.61.2", features = ["Win32_Foundation", "Win32_Security", "Win32_System_Console", "Win32_System_Performance", "Win32_System_Threading"] }

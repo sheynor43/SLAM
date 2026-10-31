@@ -423,6 +423,7 @@ pub struct Shader<'a> {
     /// The WGSL file stem, for error messages.
     pub name: &'a str,
     pub glsl: GlslShader<'a>,
+    pub hlsl: HlslShader<'a>,
 }
 
 /// GLSL 3.30 core sources of a [`Shader`].
@@ -434,6 +435,16 @@ pub struct GlslShader<'a> {
     pub vertex_target: &'a str,
     pub fragment: &'a str,
     pub bindings: &'a [Binding<'a>],
+}
+
+/// HLSL (Shader Model 5.0) source of a [`Shader`] with both entry points (ADR-0080).
+/// Slot `n` is register `b<n>` (uniform buffer), `t<n>` (texture) and `s<n>` (its
+/// sampler); vertex attribute location `n` is semantic `LOC`, index `n`.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct HlslShader<'a> {
+    pub source: &'a str,
+    pub vertex_entry: &'a str,
+    pub fragment_entry: &'a str,
 }
 
 /// Shader and fixed-function state for drawing triangle lists.
@@ -1057,6 +1068,11 @@ mod tests {
                 vertex_target: SRC,
                 fragment: SRC,
                 bindings,
+            },
+            hlsl: HlslShader {
+                source: "",
+                vertex_entry: "vs_main",
+                fragment_entry: "fs_main",
             },
         }
     }

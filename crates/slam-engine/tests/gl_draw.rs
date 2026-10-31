@@ -184,6 +184,7 @@ fn draws_through_buffers_pipelines_and_targets() {
             let shader = Shader {
                 name: "broken",
                 glsl: broken,
+                hlsl: shaders::TEST_COLOR.hlsl,
             };
             let result = d.create_pipeline(&PipelineDesc {
                 shader: &shader,

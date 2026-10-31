@@ -18,7 +18,7 @@ pub mod shaders {
 
 pub use hal::{
     Binding, BindingKind, Blend, BufferDesc, BufferKind, BufferUpdate, Color, DescError, Device,
-    DeviceError, DrawError, Extent, GlslShader, IndexFormat, Limits, Origin, PipelineDesc,
-    RenderTargetDesc, Shader, TextureDesc, TextureFormat, TextureUsage, VertexAttribute,
-    VertexFormat, VertexLayout,
+    DeviceError, DrawError, Extent, GlslShader, HlslShader, IndexFormat, Limits, Origin,
+    PipelineDesc, RenderTargetDesc, Shader, TextureDesc, TextureFormat, TextureUsage,
+    VertexAttribute, VertexFormat, VertexLayout,
 };
