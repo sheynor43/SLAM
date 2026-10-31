@@ -5,12 +5,15 @@
 //! Binding rules: `@group(0)` holds uniform buffers, `@group(1)` 2D textures and
 //! `@group(2)` samplers; `@binding` is the HAL slot. A texture in slot `n` is sampled
 //! only with the sampler in slot `n` (filtering is a property of the HAL texture).
+//!
+//! HLSL (ADR-0080) puts slot `n` in register `b<n>`, `t<n>` or `s<n>` and vertex
+//! attribute `@location(n)` at semantic `LOC<n>`.
 
 use std::fmt::Write as _;
 use std::path::{Path, PathBuf};
 use std::{env, fs};
 
-use naga::back::glsl;
+use naga::back::{glsl, hlsl};
 use naga::valid::{Capabilities, ModuleInfo, ValidationFlags, Validator};
 use naga::{AddressSpace, Binding as IoBinding, BuiltIn, ImageClass, ImageDimension, Module};
 use naga::{ShaderStage, TypeInner};
@@ -50,11 +53,20 @@ pub struct Glsl {
     pub bindings: Vec<Binding>,
 }
 
+/// HLSL (Shader Model 5.0) output: one source with both entry points.
+#[derive(Clone, Debug)]
+pub struct Hlsl {
+    pub source: String,
+    pub vertex_entry: String,
+    pub fragment_entry: String,
+}
+
 #[derive(Clone, Debug)]
 pub struct Shader {
     /// The file stem.
     pub name: String,
     pub glsl: Glsl,
+    pub hlsl: Hlsl,
 }
 
 /// A shader that failed to translate. The message names the file.
@@ -95,6 +107,7 @@ pub fn translate(path: &Path, source: &str) -> Result<Shader, ShaderError> {
         collect_bindings(&module, reflection, &mut bindings).map_err(error)?;
     }
     bindings.sort_by(|a, b| (a.kind, a.slot, &a.name).cmp(&(b.kind, b.slot, &b.name)));
+    let hlsl = write_hlsl(&module, &info).map_err(error)?;
 
     Ok(Shader {
         name: name.to_owned(),
@@ -104,6 +117,7 @@ pub fn translate(path: &Path, source: &str) -> Result<Shader, ShaderError> {
             fragment: fragment.0,
             bindings,
         },
+        hlsl,
     })
 }
 
@@ -162,7 +176,13 @@ pub fn generate(shaders: &[Shader], hal: &str) -> String {
                 b.name, b.kind, b.slot
             );
         }
-        let _ = writeln!(out, "        ],\n    }},\n}};\n");
+        let _ = writeln!(out, "        ],\n    }},");
+        let hlsl = &shader.hlsl;
+        let _ = writeln!(out, "    hlsl: {hal}::HlslShader {{");
+        let _ = writeln!(out, "        source: {:?},", hlsl.source);
+        let _ = writeln!(out, "        vertex_entry: {:?},", hlsl.vertex_entry);
+        let _ = writeln!(out, "        fragment_entry: {:?},", hlsl.fragment_entry);
+        let _ = writeln!(out, "    }},\n}};\n");
     }
     let _ = write!(out, "pub const ALL: &[&{hal}::Shader<'static>] = &[");
     for shader in shaders {
@@ -388,6 +408,98 @@ fn write_glsl(
     Ok((source, reflection))
 }
 
+fn write_hlsl(module: &Module, info: &ModuleInfo) -> Result<Hlsl, String> {
+    let mut binding_map = hlsl::BindingMap::default();
+    let mut samplers = 0;
+    for (_, var) in module.global_variables.iter() {
+        let Some(binding) = &var.binding else {
+            continue;
+        };
+        samplers += usize::from(binding.group == SAMPLER_GROUP);
+        let target = hlsl::BindTarget {
+            space: 0,
+            register: binding.binding,
+            binding_array_size: None,
+            dynamic_storage_buffer_offsets_index: None,
+            restrict_indexing: false,
+        };
+        binding_map.insert(*binding, target);
+    }
+    let options = hlsl::Options {
+        shader_model: hlsl::ShaderModel::V5_0,
+        binding_map,
+        ..Default::default()
+    };
+    let pipeline = hlsl::PipelineOptions::default();
+    let mut source = String::new();
+    let reflection = hlsl::Writer::new(&mut source, &options, &pipeline)
+        .write(module, info, None)
+        .map_err(|e| format!("HLSL output: {e}"))?;
+    let mut vertex_entry = None;
+    let mut fragment_entry = None;
+    for (ep, name) in module.entry_points.iter().zip(reflection.entry_point_names) {
+        let name = name.map_err(|e| format!("HLSL output of `{}`: {e}", ep.name))?;
+        match ep.stage {
+            ShaderStage::Vertex => vertex_entry = Some(name),
+            _ => fragment_entry = Some(name),
+        }
+    }
+    Ok(Hlsl {
+        source: patch_hlsl_samplers(&source, samplers)?,
+        vertex_entry: vertex_entry.expect("checked by check_entry_points"),
+        fragment_entry: fragment_entry.expect("checked by check_entry_points"),
+    })
+}
+
+const SAMPLER_HEAP: &str = "nagaSamplerHeap";
+const SAMPLER_INDEX_ARRAY: &str = "SamplerIndexArray";
+
+/// `naga` writes every sampler through a D3D12-style heap: a 2048-entry sampler array,
+/// a comparison sampler array, a per-group index buffer and
+/// `static const SamplerState s = nagaSamplerHeap[nagaGroup2SamplerIndexArray[n]];`.
+/// D3D11 has 16 sampler slots and no register spaces, so the heap declarations are
+/// dropped and each sampler is declared directly in register `s<n>` (ADR-0080).
+/// Fails if the output does not have that shape for each of `samplers`.
+fn patch_hlsl_samplers(source: &str, samplers: usize) -> Result<String, String> {
+    let mut out = String::with_capacity(source.len());
+    let mut patched = 0;
+    for line in source.lines() {
+        let heap = line.starts_with("SamplerState nagaSamplerHeap[")
+            || line.starts_with("SamplerComparisonState nagaComparisonSamplerHeap[")
+            || (line.starts_with("StructuredBuffer<uint> nagaGroup")
+                && line.contains(SAMPLER_INDEX_ARRAY));
+        if heap {
+            continue;
+        }
+        if let Some(sampler) = line
+            .strip_prefix("static const SamplerState ")
+            .and_then(|rest| rest.split_once(" = nagaSamplerHeap[nagaGroup"))
+            .and_then(|(name, rest)| {
+                let register = rest.split_once("SamplerIndexArray[")?.1;
+                let register = register.strip_suffix("]];")?;
+                register.parse::<u32>().ok().map(|r| (name, r))
+            })
+        {
+            let (name, register) = sampler;
+            let _ = writeln!(out, "SamplerState {name} : register(s{register});");
+            patched += 1;
+            continue;
+        }
+        out.push_str(line);
+        out.push('\n');
+    }
+    if patched != samplers || out.contains(SAMPLER_HEAP) || out.contains(SAMPLER_INDEX_ARRAY) {
+        return Err(format!(
+            "HLSL output: unexpected sampler declarations from naga ({patched} of {samplers} samplers rewritten); update the sampler patch (ADR-0080)"
+        ));
+    }
+    // Shader Model 5.0 has no register spaces.
+    if out.contains(", space") {
+        return Err("HLSL output: a register space is left; Shader Model 5.0 has none".into());
+    }
+    Ok(out)
+}
+
 fn collect_bindings(
     module: &Module,
     reflection: &glsl::ReflectionInfo,
@@ -492,6 +604,82 @@ struct VsOut { @builtin(position) pos: vec4<f32>, @location(0) uv: vec2<f32> }
                 ""
             )
         );
+    }
+
+    #[test]
+    fn translates_to_hlsl_sm5_with_registers_at_slots() {
+        let hlsl = translate_str(SPRITE).unwrap().hlsl;
+        let source = &hlsl.source;
+        assert_eq!(
+            (&*hlsl.vertex_entry, &*hlsl.fragment_entry),
+            ("vs_main", "fs_main")
+        );
+        assert!(
+            source.contains("cbuffer globals : register(b1)"),
+            "{source}"
+        );
+        assert!(
+            source.contains("Texture2D<float4> tex : register(t2);"),
+            "{source}"
+        );
+        assert!(
+            source.contains("SamplerState samp : register(s2);"),
+            "{source}"
+        );
+        assert!(source.contains("float2 uv : LOC1;"), "{source}");
+        assert!(source.contains("tex.Sample(samp, uv)"), "{source}");
+        for heap in [
+            "nagaSamplerHeap",
+            "SamplerIndexArray",
+            "space",
+            "static const Sampler",
+        ] {
+            assert!(!source.contains(heap), "{heap} left in {source}");
+        }
+    }
+
+    #[test]
+    fn hlsl_declares_every_sampler_even_unused() {
+        let source = SPRITE.replace(
+            "@group(2) @binding(2) var samp: sampler;",
+            "@group(2) @binding(2) var samp: sampler;\n@group(1) @binding(0) var other: texture_2d<f32>;\n@group(2) @binding(0) var unused: sampler;",
+        );
+        let hlsl = translate_str(&source).unwrap().hlsl.source;
+        assert!(hlsl.contains("SamplerState samp : register(s2);"), "{hlsl}");
+        assert!(
+            hlsl.contains("SamplerState unused : register(s0);"),
+            "{hlsl}"
+        );
+        assert!(
+            hlsl.contains("Texture2D<float4> other : register(t0);"),
+            "{hlsl}"
+        );
+    }
+
+    #[test]
+    fn hlsl_sampler_patch_rejects_unknown_output() {
+        let heap = "SamplerState nagaSamplerHeap[2048]: register(s0, space0);\n\
+            StructuredBuffer<uint> nagaGroup2SamplerIndexArray : register(t2, space255);\n\
+            static const SamplerState samp = nagaSamplerHeap[nagaGroup2SamplerIndexArray[3]];\n";
+        assert_eq!(
+            patch_hlsl_samplers(heap, 1).unwrap(),
+            "SamplerState samp : register(s3);\n"
+        );
+        // The sampler count must match, and nothing of the heap may be left.
+        for (source, samplers) in [
+            (heap, 2),
+            ("Texture2D<float4> t : register(t0);\n", 1),
+            (
+                "static const SamplerState s = nagaSamplerHeap[nagaGroup2SamplerIndexArray[x]];\n",
+                1,
+            ),
+            ("SamplerState s = nagaSamplerHeap[0];\n", 0),
+        ] {
+            let msg = patch_hlsl_samplers(source, samplers).unwrap_err();
+            assert!(msg.contains("update the sampler patch (ADR-0080)"), "{msg}");
+        }
+        let msg = patch_hlsl_samplers("cbuffer g : register(b0, space1) {}\n", 0).unwrap_err();
+        assert!(msg.contains("register space"), "{msg}");
     }
 
     #[test]
@@ -625,6 +813,9 @@ struct VsOut { @builtin(position) pos: vec4<f32>, @location(0) uv: vec2<f32> }
         ));
         assert!(code.contains("name: \"sprite-batch\","));
         assert!(code.contains("kind: slam_render::BindingKind::Texture, slot: 2 }"));
+        assert!(code.contains("    hlsl: slam_render::HlslShader {"));
+        assert!(code.contains("vertex_entry: \"vs_main\","));
+        assert!(code.contains("fragment_entry: \"fs_main\","));
         assert!(
             code.contains("pub const ALL: &[&slam_render::Shader<'static>] = &[&SPRITE_BATCH, ];")
         );
