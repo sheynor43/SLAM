@@ -6,6 +6,7 @@ settings-audio-master-volume = Master
 settings-audio-music-volume = Music
 settings-audio-hitsound-volume = Hitsounds
 settings-audio-effects-volume = Effects
+settings-audio-hitsound-delay = Hitsound delay
 settings-keybind-listening = Press a key...
 song-select-beatmap-count =
     { $count ->
@@ -134,6 +135,8 @@ settings-option-bottom-right = Bottom right
 settings-option-fps-everywhere = Everywhere
 settings-option-fps-gameplay = In gameplay only
 settings-option-fps-menus = In menus only
+settings-option-hitsound-delay-none = No delay
+settings-option-hitsound-delay-stable = Like stable
 settings-audio-backend = Audio backend
 settings-audio-buffer = Buffer size
 settings-offset-global = Global offset

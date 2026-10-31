@@ -27,6 +27,9 @@ pub const MAX_VOICE_RATE: f64 = 8.0;
 /// slider does not click on sounding voices (ADR-0046).
 pub const BUS_RAMP_MS: f64 = 5.0;
 
+/// Longest start delay of a voice group ([`MixerHandle::set_group_delay`]).
+pub const MAX_GROUP_DELAY_MS: f64 = 1000.0;
+
 /// One frame in the 32.32 fixed-point voice cursor (ADR-0039).
 const FRAME: u64 = 1 << 32;
 const FRACTION: u64 = FRAME - 1;
@@ -186,9 +189,11 @@ pub struct VoiceStart {
     /// Number of the `play` command, counting from 0 every command the handle queued;
     /// see [`MixerHandle::queued_plays`].
     pub play: u64,
-    /// Stream frame the voice started at: the first frame of its buffer.
+    /// Stream frame the voice starts to sound at: the first frame of its buffer plus
+    /// the start delay of its group (ADR-0077).
     pub frame: u64,
-    /// [`CallbackInfo::timestamp_ns`] of that buffer; 0 when the backend had no timing.
+    /// [`CallbackInfo::timestamp_ns`] of that buffer moved on by the group delay; 0 when
+    /// the backend had no timing.
     pub timestamp_ns: u64,
     /// [`CallbackInfo::latency_ns`] of that buffer.
     pub latency_ns: u64,
@@ -235,6 +240,18 @@ enum Command {
         target: f32,
         frames: u32,
     },
+    GroupDelay {
+        group: VoiceGroup,
+        delay: Delay,
+    },
+}
+
+/// How long new voices of a group wait before they sound (ADR-0077).
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+struct Delay {
+    frames: u32,
+    /// `frames` in nanoseconds at the mixer's rate, for the start reports.
+    ns: u64,
 }
 
 /// A gain moving linearly to a target over whole frames (ADR-0039, ADR-0046).
@@ -346,6 +363,14 @@ struct Bus {
 }
 
 impl Bus {
+    /// The bus `frames` frames into the buffer, for a voice that starts there.
+    fn after(&self, frames: u32) -> Self {
+        let (mut master, mut group) = (self.master, self.group);
+        master.advance(frames);
+        group.advance(frames);
+        Self::new(master, group)
+    }
+
     fn new(master: Ramp, group: Ramp) -> Self {
         Self {
             master,
@@ -366,6 +391,8 @@ struct Voice {
     step: u64,
     looping: bool,
     group: VoiceGroup,
+    /// Frames of silence left before the voice sounds (ADR-0077).
+    wait: u32,
     gain: Ramp,
     /// Gains of the first two channels from the balance.
     left: f32,
@@ -544,6 +571,7 @@ pub fn mixer(config: &MixerConfig) -> Result<(Mixer, MixerHandle), AudioError> {
         max_per_sample: config.max_per_sample,
         master: Ramp::steady(1.0),
         groups: [Ramp::steady(1.0); VoiceGroup::ALL.len()],
+        delays: [Delay::default(); VoiceGroup::ALL.len()],
         sample_rate: config.sample_rate,
         channels: config.channels,
         music: None,
@@ -576,6 +604,8 @@ pub struct Mixer {
     master: Ramp,
     /// Gains of the [`VoiceGroup`]s, by [`VoiceGroup::index`].
     groups: [Ramp; VoiceGroup::ALL.len()],
+    /// Start delays of the [`VoiceGroup`]s, by [`VoiceGroup::index`].
+    delays: [Delay; VoiceGroup::ALL.len()],
     sample_rate: u32,
     channels: u16,
     /// The track, mixed under the voices (ADR-0033).
@@ -656,6 +686,7 @@ impl Mixer {
                         release(&mut self.released, &self.stats, stolen.sample);
                         self.stats.stolen_voices.fetch_add(1, Ordering::Relaxed);
                     }
+                    let delay = self.delays[group.index()];
                     let mut voice = Voice {
                         sample,
                         id: self.plays,
@@ -663,6 +694,7 @@ impl Mixer {
                         step,
                         looping,
                         group,
+                        wait: delay.frames,
                         gain: Ramp::steady(gain),
                         left: 1.0,
                         right: 1.0,
@@ -673,8 +705,12 @@ impl Mixer {
                     if let Some(starts) = &mut self.starts {
                         let report = VoiceStart {
                             play: self.plays,
-                            frame: info.frame,
-                            timestamp_ns: info.timestamp_ns,
+                            frame: info.frame.saturating_add(u64::from(delay.frames)),
+                            timestamp_ns: if info.timestamp_ns == 0 {
+                                0
+                            } else {
+                                info.timestamp_ns.saturating_add(delay.ns)
+                            },
                             latency_ns: info.latency_ns,
                         };
                         if starts.push(report).is_err() {
@@ -724,6 +760,7 @@ impl Mixer {
                     target,
                     frames,
                 } => self.groups[group.index()].set(target, frames),
+                Command::GroupDelay { group, delay } => self.delays[group.index()] = delay,
             }
         }
     }
@@ -731,7 +768,8 @@ impl Mixer {
 
 impl AudioCallback for Mixer {
     fn process(&mut self, out: &mut [f32], info: &CallbackInfo) {
-        // Commands queued before this buffer start at its first frame.
+        // Commands queued before this buffer start at its first frame, or that many
+        // frames later for a delayed group.
         self.apply_commands(info);
         out.fill(0.0);
         // Before the format check: the music applies its commands and counts its own
@@ -753,8 +791,22 @@ impl AudioCallback for Mixer {
         let mut kept = 0;
         let buses = self.groups.map(|group| Bus::new(self.master, group));
         for i in 0..self.voices.len() {
-            let bus = &buses[self.voices[i].group.index()];
-            if self.voices[i].mix(out, channels, frames, bus) {
+            let voice = &mut self.voices[i];
+            let bus = &buses[voice.group.index()];
+            let sounding = if voice.wait > 0 && voice.wait >= frames {
+                // Still silent; its gain ramp runs on in real time, as when paused.
+                voice.wait -= frames;
+                voice.gain.advance(frames);
+                true
+            } else if voice.wait > 0 {
+                let wait = std::mem::take(&mut voice.wait);
+                voice.gain.advance(wait);
+                let start = wait as usize * channels;
+                voice.mix(&mut out[start..], channels, frames - wait, &bus.after(wait))
+            } else {
+                voice.mix(out, channels, frames, bus)
+            };
+            if sounding {
                 self.voices.swap(kept, i);
                 kept += 1;
             }
@@ -917,6 +969,25 @@ impl MixerHandle {
             group,
             target: clamp_gain(gain),
             frames,
+        })
+    }
+
+    /// Delays every voice of `group` started from the next audio buffer by `delay_ms`
+    /// milliseconds of output (ADR-0077); voices already started keep their delay.
+    /// Rounded to whole frames; 0 for a non-positive delay or NaN, at most
+    /// [`MAX_GROUP_DELAY_MS`].
+    pub fn set_group_delay(&mut self, group: VoiceGroup, delay_ms: f64) -> Result<(), PlayError> {
+        // `min` would turn NaN into the longest delay.
+        let delay_ms = if delay_ms.is_nan() {
+            0.0
+        } else {
+            delay_ms.min(MAX_GROUP_DELAY_MS)
+        };
+        let frames = self.ramp_frames(delay_ms);
+        let ns = u64::from(frames) * 1_000_000_000 / u64::from(self.sample_rate);
+        self.push(Command::GroupDelay {
+            group,
+            delay: Delay { frames, ns },
         })
     }
 
@@ -1270,6 +1341,203 @@ mod tests {
         let mut reports = Vec::new();
         h.drain_started(|r| reports.push(r));
         reports
+    }
+
+    /// Plays `s` in the hitsound group at full gain.
+    fn play_hit(h: &mut MixerHandle, s: &Arc<Sample>) -> VoiceId {
+        h.play_voice(
+            s,
+            VoiceParams {
+                group: VoiceGroup::Hitsounds,
+                ..VoiceParams::default()
+            },
+        )
+        .unwrap()
+    }
+
+    #[test]
+    fn a_delayed_voice_starts_mid_buffer() {
+        let (mut m, mut h) = mono_mixer(4, 8);
+        h.set_group_delay(VoiceGroup::Hitsounds, ms(3)).unwrap();
+        play_hit(&mut h, &sample(&[0.5, 0.25], 1));
+        assert_eq!(run(&mut m, 4), [0.0, 0.0, 0.0, 0.5]);
+        assert_eq!(run(&mut m, 2), [0.25, 0.0]);
+    }
+
+    #[test]
+    fn a_delay_can_span_buffers() {
+        let (mut m, mut h) = mono_mixer(4, 8);
+        h.set_group_delay(VoiceGroup::Hitsounds, ms(5)).unwrap();
+        play_hit(&mut h, &sample(&[0.5, 0.25], 1));
+        assert_eq!(run(&mut m, 2), [0.0, 0.0]);
+        assert_eq!(run(&mut m, 2), [0.0, 0.0]);
+        assert_eq!(run(&mut m, 2), [0.0, 0.5]);
+        assert_eq!(run(&mut m, 2), [0.25, 0.0]);
+        assert_eq!(m.voices.len(), 0);
+    }
+
+    #[test]
+    fn a_delay_applies_to_its_group_and_later_plays_only() {
+        let (mut m, mut h) = mono_mixer(4, 8);
+        let s = sample(&[0.5], 1);
+        // Queued before the delay: it starts at once.
+        play_hit(&mut h, &s);
+        h.set_group_delay(VoiceGroup::Hitsounds, ms(2)).unwrap();
+        play_hit(&mut h, &s);
+        // Another group is not delayed.
+        h.play(&s, 0.5).unwrap();
+        assert_eq!(run(&mut m, 4), [0.75, 0.0, 0.5, 0.0]);
+        // Back to no delay.
+        h.set_group_delay(VoiceGroup::Hitsounds, 0.0).unwrap();
+        play_hit(&mut h, &s);
+        assert_eq!(run(&mut m, 2), [0.5, 0.0]);
+    }
+
+    #[test]
+    fn a_voice_stopped_while_waiting_never_sounds() {
+        let (mut m, mut h) = mono_mixer(4, 8);
+        h.set_group_delay(VoiceGroup::Hitsounds, ms(4)).unwrap();
+        let voice = play_hit(&mut h, &sample(&[0.5; 4], 1));
+        assert_eq!(run(&mut m, 2), [0.0, 0.0]);
+        h.stop_voice(voice).unwrap();
+        assert_eq!(run(&mut m, 4), [0.0; 4]);
+        assert_eq!(m.voices.len(), 0);
+        assert_eq!(m.stats.stale_voice_commands.load(Ordering::Relaxed), 0);
+    }
+
+    #[test]
+    fn a_voice_starting_mid_buffer_takes_the_bus_gain_there() {
+        let (mut m, mut h) = mono_mixer(4, 8);
+        let ramp = BUS_FRAMES as u32;
+        h.set_group_delay(VoiceGroup::Hitsounds, ms(ramp / 2))
+            .unwrap();
+        h.set_master_gain(0.0).unwrap();
+        play_hit(&mut h, &sample(&[1.0; 4], 1));
+        let out = run(&mut m, BUS_FRAMES);
+        let start = BUS_FRAMES / 2;
+        assert!(out[..start].iter().all(|&v| v == 0.0));
+        // The master ramp falls from 1 to 0 over the buffer: halfway it is at 0.5.
+        assert!((out[start] - 0.5).abs() < 1e-6, "{}", out[start]);
+        assert!(out[start + 1] < out[start]);
+    }
+
+    #[test]
+    fn a_delayed_stereo_voice_starts_on_a_whole_frame_with_its_balance() {
+        let (mut m, mut h) = mixer(&MixerConfig {
+            sample_rate: RATE,
+            channels: 2,
+            ..Default::default()
+        })
+        .unwrap();
+        h.set_group_delay(VoiceGroup::Hitsounds, ms(1)).unwrap();
+        h.play_voice(
+            &sample(&[0.5, 0.25, 0.125, 0.0625], 2),
+            VoiceParams {
+                balance: 0.5,
+                group: VoiceGroup::Hitsounds,
+                ..VoiceParams::default()
+            },
+        )
+        .unwrap();
+        let mut out = [9.0; 6];
+        m.process(&mut out, &info(2));
+        assert_eq!(out, [0.0, 0.0, 0.25, 0.25, 0.0625, 0.0625]);
+    }
+
+    #[test]
+    fn a_voice_gain_ramp_runs_while_the_voice_waits() {
+        let (mut m, mut h) = mono_mixer(4, 8);
+        h.set_group_delay(VoiceGroup::Hitsounds, ms(4)).unwrap();
+        let voice = play_hit(&mut h, &sample(&[1.0; 8], 1));
+        h.set_voice_gain(voice, 0.0, ms(8)).unwrap();
+        // Waits over a buffer boundary, then starts halfway down the ramp.
+        assert_eq!(run(&mut m, 3), [0.0; 3]);
+        assert_eq!(run(&mut m, 3), [0.0, 0.5, 0.375]);
+    }
+
+    #[test]
+    fn a_delayed_voice_at_another_rate_starts_mid_buffer() {
+        let (mut m, mut h) = mono_mixer(4, 8);
+        h.set_group_delay(VoiceGroup::Hitsounds, ms(2)).unwrap();
+        h.play_voice(
+            &sample(&[0.0, 1.0], 1),
+            VoiceParams {
+                rate: 0.5,
+                group: VoiceGroup::Hitsounds,
+                ..VoiceParams::default()
+            },
+        )
+        .unwrap();
+        assert_eq!(run(&mut m, 5), [0.0, 0.0, 0.0, 0.5, 1.0]);
+        assert_eq!(run(&mut m, 2), [0.5, 0.0]);
+    }
+
+    #[test]
+    fn a_waiting_voice_takes_a_place_in_the_pool() {
+        let (mut m, mut h) = mono_mixer(1, 8);
+        h.set_group_delay(VoiceGroup::Hitsounds, ms(4)).unwrap();
+        play_hit(&mut h, &sample(&[0.5; 8], 1));
+        assert_eq!(run(&mut m, 2), [0.0; 2]);
+        // The pool is full: the undelayed effect steals the waiting voice.
+        h.play(&sample(&[0.25], 1), 1.0).unwrap();
+        assert_eq!(run(&mut m, 4), [0.25, 0.0, 0.0, 0.0]);
+        assert_eq!(m.stats.stolen_voices.load(Ordering::Relaxed), 1);
+    }
+
+    #[test]
+    fn empty_and_mismatched_buffers_do_not_shorten_the_wait() {
+        let (mut m, mut h) = mono_mixer(4, 8);
+        h.set_group_delay(VoiceGroup::Hitsounds, ms(2)).unwrap();
+        play_hit(&mut h, &sample(&[0.5], 1));
+        m.process(&mut [], &info(1));
+        m.process(&mut [0.0; 4], &info(2));
+        assert_eq!(run(&mut m, 3), [0.0, 0.0, 0.5]);
+    }
+
+    #[test]
+    fn delays_round_to_frames_and_are_clamped() {
+        let (mut m, mut h) = reporting_mixer(8, 8);
+        let s = sample(&[0.5], 1);
+        let mut frame_after = |h: &mut MixerHandle, delay_ms: f64| {
+            h.set_group_delay(VoiceGroup::Hitsounds, delay_ms).unwrap();
+            play_hit(h, &s);
+            m.process(&mut [0.0; 1], &info(1));
+            h.stop_all().unwrap();
+            m.process(&mut [0.0; 1], &info(1));
+            started(h)[0].frame
+        };
+        assert_eq!(frame_after(&mut h, ms(3) + 0.001), 3);
+        assert_eq!(frame_after(&mut h, -1.0), 0);
+        assert_eq!(frame_after(&mut h, f64::NAN), 0);
+        assert_eq!(frame_after(&mut h, f64::INFINITY), RATE as u64);
+        assert_eq!(frame_after(&mut h, 1e9), RATE as u64);
+    }
+
+    #[test]
+    fn a_delayed_start_is_reported_at_its_first_frame() {
+        let (mut m, mut h) = reporting_mixer(8, 8);
+        let s = sample(&[0.5; 4], 1);
+        // 48 frames: exactly 1 ms.
+        h.set_group_delay(VoiceGroup::Hitsounds, 1.0).unwrap();
+        play_hit(&mut h, &s);
+        let timing = CallbackInfo {
+            frame: 480,
+            timestamp_ns: 1_000_000,
+            latency_ns: 250_000,
+            ..info(1)
+        };
+        m.process(&mut [0.0; 2], &timing);
+        // No backend timing stays no timing.
+        play_hit(&mut h, &s);
+        m.process(&mut [0.0; 2], &info(1));
+        let reports = started(&mut h);
+        assert_eq!(
+            reports
+                .iter()
+                .map(|r| (r.frame, r.timestamp_ns, r.output_ns()))
+                .collect::<Vec<_>>(),
+            [(528, 2_000_000, Some(2_250_000)), (48, 0, None)]
+        );
     }
 
     #[test]

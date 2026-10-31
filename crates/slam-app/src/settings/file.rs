@@ -11,8 +11,8 @@ use toml::{Table, Value};
 
 use super::keys;
 use super::model::{
-    BindingEntry, DrawRate, FpsScreens, InputSettings, KeySlot, Settings, Timing, Window,
-    corner_from_name, parse_size, window_mode_from_name,
+    BindingEntry, DrawRate, FpsScreens, HitsoundDelay, InputSettings, KeySlot, Settings, Timing,
+    Window, corner_from_name, parse_size, window_mode_from_name,
 };
 
 /// The schema version this build writes.
@@ -264,6 +264,16 @@ fn from_table(mut table: Table) -> Loaded {
         &mut settings.audio.effects_volume,
         0.0..=1.0,
     );
+    let mut delay: Option<String> = None;
+    cx.opt(&mut audio, "audio", "hitsound_delay", &mut delay);
+    if let Some(name) = delay {
+        match HitsoundDelay::from_name(&name) {
+            Some(delay) => settings.audio.hitsound_delay = delay,
+            None => cx.warn(format!(
+                "audio.hitsound_delay: unknown value \"{name}\", using the default"
+            )),
+        }
+    }
     cx.unknown(&audio, "audio");
 
     let mut timing = cx.section(&mut table, "timing");

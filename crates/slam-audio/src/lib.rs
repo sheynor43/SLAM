@@ -22,8 +22,8 @@ pub use hal::{
     StreamCounters, WasapiMode, devices, open_output,
 };
 pub use mixer::{
-    BUS_RAMP_MS, MAX_VOICE_RATE, Mixer, MixerConfig, MixerHandle, MixerStats, PlayError,
-    SAMPLE_CONCURRENCY, VoiceGroup, VoiceId, VoiceParams, VoiceStart, mixer,
+    BUS_RAMP_MS, MAX_GROUP_DELAY_MS, MAX_VOICE_RATE, Mixer, MixerConfig, MixerHandle, MixerStats,
+    PlayError, SAMPLE_CONCURRENCY, VoiceGroup, VoiceId, VoiceParams, VoiceStart, mixer,
 };
 pub use music::{
     MAX_MUSIC_FREQUENCY, MAX_MUSIC_RATE, MIN_MUSIC_RATE, MUSIC_FADE_MS, MusicAnchor, MusicConfig,

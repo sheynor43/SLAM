@@ -39,7 +39,7 @@ impl<T: Copy + PartialEq> Applied<T> {
     }
 }
 
-/// The audio gains the settings call for, linear.
+/// The audio gains the settings call for, linear, and the hitsound delay.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct Volumes {
     /// The mixer's master gain; it leaves the music alone.
@@ -48,6 +48,8 @@ pub struct Volumes {
     pub music: f32,
     pub hitsounds: f32,
     pub effects: f32,
+    /// Start delay of the hitsound group, milliseconds (ADR-0077).
+    pub hitsound_delay_ms: f64,
 }
 
 impl Volumes {
@@ -61,6 +63,7 @@ impl Volumes {
             music: master * gain(settings.music_volume),
             hitsounds: gain(settings.hitsound_volume),
             effects: gain(settings.effects_volume),
+            hitsound_delay_ms: settings.hitsound_delay.ms(),
         }
     }
 }
@@ -72,6 +75,7 @@ pub struct AppliedVolumes {
     music: Applied<f32>,
     hitsounds: Applied<f32>,
     effects: Applied<f32>,
+    hitsound_delay_ms: Applied<f64>,
 }
 
 impl AppliedVolumes {
@@ -82,6 +86,7 @@ impl AppliedVolumes {
             music: Applied::new(volumes.music),
             hitsounds: Applied::new(volumes.hitsounds),
             effects: Applied::new(volumes.effects),
+            hitsound_delay_ms: Applied::new(volumes.hitsound_delay_ms),
         }
     }
 
@@ -95,6 +100,10 @@ impl AppliedVolumes {
         });
         self.effects.sync(wanted.effects, |g| {
             mixer.set_group_gain(VoiceGroup::Effects, g)
+        });
+        // Only gameplay sounds wait; the effects and the music do not (ADR-0077).
+        self.hitsound_delay_ms.sync(wanted.hitsound_delay_ms, |ms| {
+            mixer.set_group_delay(VoiceGroup::Hitsounds, ms)
         });
     }
 }
@@ -145,6 +154,7 @@ pub fn play_options(settings: &Settings) -> PlayOptions {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::settings::{HitsoundDelay, STABLE_HITSOUND_DELAY_MS};
 
     #[test]
     fn an_unchanged_value_is_not_sent() {
@@ -214,8 +224,52 @@ mod tests {
                 music: 0.25,
                 hitsounds: 0.75,
                 effects: 0.25,
+                hitsound_delay_ms: 0.0,
             }
         );
+    }
+
+    #[test]
+    fn the_stable_hitsound_delay_reaches_the_hitsound_group_only() {
+        use slam_audio::{
+            AudioCallback, CallbackInfo, MixerConfig, MusicConfig, Sample, VoiceParams,
+        };
+        use std::sync::Arc;
+
+        let config = MixerConfig {
+            start_reports: 8,
+            ..MixerConfig::default()
+        };
+        let (mut mixer, mut handle) = slam_audio::mixer(&config).unwrap();
+        let (_music, mut player) = slam_audio::music(&MusicConfig::default()).unwrap();
+        let audio = Audio::default();
+        let mut applied = AppliedVolumes::new(Volumes::of(&audio));
+        let stable = Audio {
+            hitsound_delay: HitsoundDelay::Stable,
+            ..audio
+        };
+        applied.sync(Volumes::of(&stable), &mut handle, &mut player);
+
+        let sample = Arc::new(Sample::from_interleaved(vec![0.5; 2], 48_000, 2).unwrap());
+        for group in [VoiceGroup::Hitsounds, VoiceGroup::Effects] {
+            let params = VoiceParams {
+                group,
+                ..VoiceParams::default()
+            };
+            handle.play_voice(&sample, params).unwrap();
+        }
+        let info = CallbackInfo {
+            frame: 0,
+            timestamp_ns: 0,
+            latency_ns: 0,
+            sample_rate: 48_000,
+            channels: 2,
+        };
+        mixer.process(&mut [0.0; 2], &info);
+        let mut frames = Vec::new();
+        handle.drain_started(|start| frames.push(start.frame));
+        let delay = (STABLE_HITSOUND_DELAY_MS * 48.0).round() as u64;
+        assert_eq!(frames, [delay, 0]);
     }
 
     #[test]

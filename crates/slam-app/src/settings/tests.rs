@@ -13,7 +13,9 @@ use slam_play::{BackgroundSettings, FpsCorner};
 use super::dirs::{Os, resolve};
 use super::file::{self, LoadStatus};
 use super::keys;
-use super::model::{DrawRate, FpsScreens, Frame, InputSettings, KeySlot, Settings, Window};
+use super::model::{
+    DrawRate, FpsScreens, Frame, HitsoundDelay, InputSettings, KeySlot, Settings, Window,
+};
 
 fn temp_dir(tag: &str) -> PathBuf {
     static N: AtomicU32 = AtomicU32::new(0);
@@ -56,6 +58,7 @@ fn round_trip_non_default() {
     s.audio.music_volume = 0.25;
     s.audio.hitsound_volume = 0.75;
     s.audio.effects_volume = 0.125;
+    s.audio.hitsound_delay = HitsoundDelay::Stable;
     s.timing.global_offset_ms = -12.5;
     s.frame.update_hz = 2000.0;
     s.frame.draw = DrawRate::Hz(240.0);
@@ -706,6 +709,22 @@ fn fps_counter_values_are_read_by_name() {
     assert_eq!(loaded.warnings.len(), 3, "{:?}", loaded.warnings);
     assert_eq!(loaded.settings.frame, Frame::default());
     assert_eq!(loaded.settings.hotkeys.toggle_fps, None);
+}
+
+#[test]
+fn the_hitsound_delay_is_read_by_name() {
+    assert_eq!(
+        Settings::default().audio.hitsound_delay,
+        HitsoundDelay::None
+    );
+    let loaded = file::from_toml_str("[audio]\nhitsound_delay = \"stable\"\n");
+    assert_eq!(loaded.status, LoadStatus::Ok, "{:?}", loaded.warnings);
+    assert_eq!(loaded.settings.audio.hitsound_delay, HitsoundDelay::Stable);
+
+    let loaded = file::from_toml_str("[audio]\nhitsound_delay = \"bass\"\n");
+    assert_eq!(loaded.status, LoadStatus::Recovered);
+    assert_eq!(loaded.warnings.len(), 1, "{:?}", loaded.warnings);
+    assert_eq!(loaded.settings.audio.hitsound_delay, HitsoundDelay::None);
 }
 
 #[test]

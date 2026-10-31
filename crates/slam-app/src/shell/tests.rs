@@ -826,6 +826,7 @@ fn changed_settings_reach_the_audio_and_the_next_play() {
     let mut settings = Settings::default();
     settings.audio.master_volume = 0.5;
     settings.audio.hitsound_volume = 0.25;
+    settings.audio.hitsound_delay = crate::settings::HitsoundDelay::Stable;
     settings.timing.global_offset_ms = -12.0;
     settings.gameplay.mouse_buttons = !settings.gameplay.mouse_buttons;
     settings.input.clear(Actions::SMOKE, 0);

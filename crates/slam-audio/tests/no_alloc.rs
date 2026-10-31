@@ -80,6 +80,12 @@ fn mixer_commands_and_process_do_not_allocate() {
                 handle.stop_all().unwrap();
                 handle.set_master_gain(0.8).unwrap();
             }
+            // Every other round the voices wait 48 frames: through the 1-frame buffer
+            // and into the middle of the next one (ADR-0077).
+            let delay_ms = if round % 2 == 0 { 0.0 } else { 1.0 };
+            handle
+                .set_group_delay(VoiceGroup::default(), delay_ms)
+                .unwrap();
             for frames in [1usize, 64, 128, 1024] {
                 mixer.process(&mut out[..2 * frames], &info);
                 info.frame += frames as u64;

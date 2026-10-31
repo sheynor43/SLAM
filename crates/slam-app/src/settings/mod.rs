@@ -14,8 +14,9 @@ pub mod stable;
 pub use dirs::{Dirs, Os};
 pub use file::{CURRENT_VERSION, LoadStatus, Loaded, load, load_or_create, save};
 pub use model::{
-    Audio, BINDING_SLOTS, BindingEntry, DrawRate, FpsScreens, Frame, Gameplay, Hotkeys,
-    InputSettings, KeySlot, Paths, Settings, SkinSettings, Timing, corner_from_name, corner_name,
+    Audio, BINDING_SLOTS, BindingEntry, DrawRate, FpsScreens, Frame, Gameplay, HitsoundDelay,
+    Hotkeys, InputSettings, KeySlot, Paths, STABLE_HITSOUND_DELAY_MS, Settings, SkinSettings,
+    Timing, corner_from_name, corner_name,
 };
 
 /// File name of the settings file inside the config directory.
