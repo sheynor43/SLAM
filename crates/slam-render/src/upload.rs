@@ -161,6 +161,8 @@ struct Upload {
     region: (Origin, Extent),
     texture_size: Extent,
     pixels: Vec<u8>,
+    /// [`clear_radius`] of the image.
+    clear_radius: f32,
 }
 
 enum Job {
@@ -449,6 +451,7 @@ impl Loader {
         };
         self.stats.decoded.fetch_add(1, Ordering::Relaxed);
         let size = image.size;
+        let clear_radius = clear_radius(&image);
         let b = Atlas::DEFAULT_BORDER;
         let padded = Extent::new(size.width + 2 * b, size.height + 2 * b);
         let fits_page =
@@ -462,6 +465,7 @@ impl Loader {
                 region: (Origin::default(), size),
                 texture_size: size,
                 pixels: image.pixels,
+                clear_radius,
             }));
             return;
         }
@@ -501,6 +505,7 @@ impl Loader {
             region: (Origin::new(corner.x + b, corner.y + b), size),
             texture_size: self.page_size,
             pixels,
+            clear_radius,
         }));
     }
 
@@ -542,6 +547,8 @@ struct Slot {
     state: TextureState,
     /// A texture of its own, destroyed on release.
     owned: Option<TextureId>,
+    /// [`clear_radius`] of the loaded image; 0 until it is ready.
+    clear_radius: f32,
 }
 
 impl Default for Slot {
@@ -550,6 +557,7 @@ impl Default for Slot {
             generation: 0,
             state: TextureState::Pending,
             owned: None,
+            clear_radius: 0.0,
         }
     }
 }
@@ -598,6 +606,62 @@ pub struct UploadStats {
     pub device_errors: u32,
 }
 
+/// The radius in pixels of the disc around the centre of `image` where every linearly
+/// filtered sample is fully transparent, so geometry may leave it out without changing a
+/// pixel: the distance from the centre to the nearest texel centre with alpha above 0,
+/// less the √2 a bilinear sample reaches. 0 when nothing is clear; for an image without
+/// opaque texels, half its shorter side. Runs on the loader thread, once per image:
+/// rows and texels are visited from the centre outwards and the search stops at the
+/// nearest opaque texel found, so an image opaque in the middle (a background) costs a
+/// handful of texels.
+fn clear_radius(image: &Image) -> f32 {
+    let Extent { width, height } = image.size;
+    if width == 0 || height == 0 {
+        return 0.0;
+    }
+    let (cx, cy) = (width as f32 / 2.0, height as f32 / 2.0);
+    // Indices of `0..n` by distance of their centres from `n / 2`, nearest first.
+    let outwards = |n: u32| {
+        let below = (n / 2..n).map(|i| i as usize);
+        let above = (0..n / 2).rev().map(|i| i as usize);
+        let mut below = below.peekable();
+        let mut above = above.peekable();
+        let centre = n as f32 / 2.0;
+        std::iter::from_fn(move || {
+            let gap = |i: &usize| (*i as f32 + 0.5 - centre).abs();
+            match (below.peek().map(gap), above.peek().map(gap)) {
+                (Some(b), Some(a)) if a < b => above.next(),
+                (Some(_), _) => below.next(),
+                (None, _) => above.next(),
+            }
+        })
+    };
+    let mut nearest_sq = f32::INFINITY;
+    for y in outwards(height) {
+        let dy = y as f32 + 0.5 - cy;
+        if dy * dy >= nearest_sq {
+            break;
+        }
+        let row = &image.pixels[y * (width * BPP) as usize..][..(width * BPP) as usize];
+        for x in outwards(width) {
+            let dx = x as f32 + 0.5 - cx;
+            let d = dx * dx + dy * dy;
+            if d >= nearest_sq {
+                break;
+            }
+            if row[x * BPP as usize + 3] != 0 {
+                nearest_sq = d;
+                break;
+            }
+        }
+    }
+    let half_side = cx.min(cy);
+    if nearest_sq.is_infinite() {
+        return half_side;
+    }
+    (nearest_sq.sqrt() - std::f32::consts::SQRT_2).clamp(0.0, half_side)
+}
+
 /// Uploads loaded images on the draw thread and answers which are ready.
 pub struct TextureUploads {
     jobs: rtrb::Consumer<Job>,
@@ -628,6 +692,21 @@ impl TextureUploads {
         match self.slots.get(handle.index as usize) {
             Some(slot) if slot.generation == handle.generation => slot.state,
             _ => TextureState::Pending,
+        }
+    }
+
+    /// The radius in image pixels of the disc around the centre of a ready image where
+    /// every linearly filtered sample is fully transparent (see [`clear_radius`]); 0 for
+    /// a handle that is not ready.
+    pub fn clear_radius(&self, handle: TextureHandle) -> f32 {
+        match self.slots.get(handle.index as usize) {
+            Some(slot)
+                if slot.generation == handle.generation
+                    && matches!(slot.state, TextureState::Ready(_)) =>
+            {
+                slot.clear_radius
+            }
+            _ => 0.0,
         }
     }
 
@@ -729,6 +808,7 @@ impl TextureUploads {
                 debug_assert!(slot.owned.is_none(), "{:?} was not released", upload.handle);
                 *slot = Slot {
                     generation: upload.handle.generation,
+                    clear_radius: upload.clear_radius,
                     ..Slot::default()
                 };
                 let texture = match upload.page {
@@ -774,7 +854,7 @@ impl TextureUploads {
                 self.slots[handle.index as usize] = Slot {
                     generation: handle.generation,
                     state: TextureState::Failed(error),
-                    owned: None,
+                    ..Slot::default()
                 };
                 stats.finished += 1;
             }
@@ -1070,6 +1150,109 @@ mod tests {
                 (Origin::new(0, 0), Extent::new(6, 6)),
             ]
         );
+    }
+
+    /// A `side`-pixel square image, opaque where `opaque(x, y)` of the texel centre
+    /// relative to the image centre.
+    fn shape(side: u32, opaque: impl Fn(f32, f32) -> bool) -> Image {
+        let c = side as f32 / 2.0;
+        let mut pixels = Vec::new();
+        for y in 0..side {
+            for x in 0..side {
+                let a = if opaque(x as f32 + 0.5 - c, y as f32 + 0.5 - c) {
+                    255
+                } else {
+                    0
+                };
+                pixels.extend_from_slice(&[255, 255, 255, a]);
+            }
+        }
+        Image {
+            size: Extent::new(side, side),
+            pixels,
+        }
+    }
+
+    #[test]
+    fn the_clear_radius_stops_short_of_the_nearest_opaque_texel() {
+        // A ring from radius 40 out: the nearest opaque texel centre is at least 40 away.
+        let ring = shape(100, |x, y| x.hypot(y) >= 40.0);
+        let r = clear_radius(&ring);
+        assert!(
+            (38.0..40.0 - std::f32::consts::SQRT_2 + 0.75).contains(&r),
+            "{r}"
+        );
+        // A bilinear sample inside the radius touches only clear texels.
+        let alpha = |x: i32, y: i32| ring.pixels[(y * 100 + x) as usize * 4 + 3];
+        for i in 0..64 {
+            let angle = i as f32 * std::f32::consts::TAU / 64.0;
+            let (px, py) = (50.0 + r * angle.cos(), 50.0 + r * angle.sin());
+            let (x0, y0) = ((px - 0.5).floor() as i32, (py - 0.5).floor() as i32);
+            for (x, y) in [(x0, y0), (x0 + 1, y0), (x0, y0 + 1), (x0 + 1, y0 + 1)] {
+                assert_eq!(alpha(x, y), 0, "sample at {px}, {py}");
+            }
+        }
+        // Opaque at the centre: nothing is clear.
+        assert_eq!(clear_radius(&shape(16, |_, _| true)), 0.0);
+        // Nothing opaque: half the side.
+        assert_eq!(clear_radius(&shape(16, |_, _| false)), 8.0);
+    }
+
+    /// The nearest texel centre with alpha above 0, by looking at every texel.
+    fn nearest_opaque(image: &Image) -> f32 {
+        let Extent { width, height } = image.size;
+        let (cx, cy) = (width as f32 / 2.0, height as f32 / 2.0);
+        let mut nearest = f32::INFINITY;
+        for y in 0..height {
+            for x in 0..width {
+                if image.pixels[((y * width + x) * 4 + 3) as usize] != 0 {
+                    let (dx, dy) = (x as f32 + 0.5 - cx, y as f32 + 0.5 - cy);
+                    nearest = nearest.min(dx.hypot(dy));
+                }
+            }
+        }
+        nearest
+    }
+
+    #[test]
+    fn the_clear_radius_of_odd_and_oblong_images_matches_a_full_scan() {
+        // Off-centre blobs on images of odd and uneven sides.
+        for (width, height, bx, by) in [
+            (31, 17, 9.0, -3.0),
+            (40, 25, -12.5, 6.0),
+            (7, 64, 0.0, 20.0),
+        ] {
+            let (cx, cy) = (width as f32 / 2.0, height as f32 / 2.0);
+            let mut pixels = Vec::new();
+            for y in 0..height {
+                for x in 0..width {
+                    let (dx, dy) = (x as f32 + 0.5 - cx, y as f32 + 0.5 - cy);
+                    let opaque = (dx - bx).hypot(dy - by) < 2.0;
+                    pixels.extend_from_slice(&[0, 0, 0, if opaque { 9 } else { 0 }]);
+                }
+            }
+            let image = Image {
+                size: Extent::new(width, height),
+                pixels,
+            };
+            let expected =
+                (nearest_opaque(&image) - std::f32::consts::SQRT_2).clamp(0.0, cx.min(cy));
+            assert_eq!(clear_radius(&image), expected, "{width} × {height}");
+        }
+    }
+
+    #[test]
+    fn a_ready_texture_reports_its_clear_radius() {
+        let mut rig = Rig::new(config(1 << 20));
+        let h = rig
+            .requests
+            .load_pixels(shape(32, |x, y| x.hypot(y) >= 10.0), TextureKind::Atlas)
+            .unwrap();
+        assert_eq!(rig.uploads.clear_radius(h), 0.0);
+        rig.settle();
+        rig.ready(h);
+        let r = rig.uploads.clear_radius(h);
+        assert!((8.0..9.0).contains(&r), "{r}");
     }
 
     #[test]

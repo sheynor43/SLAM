@@ -520,6 +520,7 @@ fn circle_textures() -> CircleTextures {
         circle: sprite(CIRCLE),
         overlay: sprite(OVERLAY),
         approach: sprite(APPROACH),
+        approach_hole: [0.0; 2],
         // No numbers.
         digits: [None; 10],
     }

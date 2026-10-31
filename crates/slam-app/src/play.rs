@@ -34,12 +34,12 @@ use crate::bench::number;
 pub mod fps;
 mod perf;
 pub mod scene;
-use perf::{FramePerf, ReportSources, SharedFrameTimes};
+use perf::{DrawFigures, FramePerf, ReportSources, SharedFrameTimes};
 use scene::{CHANNELS, PlayScene, PlaySettings, Prepared, SAMPLE_RATE};
 
 pub const USAGE: &str = "usage: slam-app play MAP.osu [--skin DIR] [--backend NAME] \
                          [--device ID] [--buffer FRAMES] [--fps HZ|unlimited] \
-                         [--update-hz HZ] [--mods HDHR] [--dim PERCENT] [--no-beatmap-skins] [--no-beatmap-colours] [--no-beatmap-hitsounds] [--show-fps] [--no-mouse-buttons] [--no-stats]";
+                         [--update-hz HZ] [--mods HDHR] [--dim PERCENT] [--volume PERCENT] [--no-beatmap-skins] [--no-beatmap-colours] [--no-beatmap-hitsounds] [--show-fps] [--no-mouse-buttons] [--no-stats]";
 
 /// How long the track may take to open.
 const LOAD_TIMEOUT: Duration = Duration::from_secs(10);
@@ -79,6 +79,9 @@ pub struct Options {
     /// How dark the background is in gameplay, 0 ..= 1 (lazer's `DimLevel`); `--dim` takes
     /// it in whole percent.
     pub dim: f64,
+    /// Gain of the music and of all other sounds, 0 ..= 1; `--volume` takes it in whole
+    /// percent. Full by default.
+    pub volume: f32,
     /// Size multiplier of the hit error meter.
     pub hit_error_scale: f64,
 }
@@ -116,6 +119,7 @@ impl Options {
             mouse_buttons: true,
             mods: ModSet::default(),
             dim: BackgroundSettings::default().dim_level,
+            volume: 1.0,
             hit_error_scale: 1.0,
         };
         let mut args = args.into_iter();
@@ -154,6 +158,13 @@ impl Options {
                         return Err("--dim must be a whole percent in [0, 100]".into());
                     }
                     options.dim = percent / 100.0;
+                }
+                "--volume" => {
+                    let percent: f32 = number(&arg, &value()?)?;
+                    if !(0.0..=100.0).contains(&percent) || percent.fract() != 0.0 {
+                        return Err("--volume must be a whole percent in [0, 100]".into());
+                    }
+                    options.volume = percent / 100.0;
                 }
                 "--buffer" => {
                     let frames: f64 = number(&arg, &value()?)?;
@@ -335,6 +346,17 @@ impl Draw<PlaySnapshot> for View {
             fps.and_then(fps::FpsOverlay::view),
             false,
         );
+        if let Some(perf) = &mut self.perf {
+            let stats = self.scene.stats();
+            perf.record_draw(DrawFigures {
+                sprites: stats.sprites.sprites,
+                batches: stats.sprites.batches,
+                draw_calls: stats.sprites.draw_calls,
+                slider_bodies: stats.slider_bodies,
+                live_circles: snapshot.circles.as_slice().len() as u32,
+                dropped_circles: snapshot.circles.dropped() as u32,
+            });
+        }
         // A failed present loses one frame; the next one tries again.
         let _ = device.present();
     }
@@ -415,7 +437,7 @@ pub fn run(options: &Options) -> Result<(), String> {
             .first()
             .ok_or("no audio backend in this build")?,
     };
-    let (mut mixer, mixer_handle) = slam_audio::mixer(&MixerConfig {
+    let (mut mixer, mut mixer_handle) = slam_audio::mixer(&MixerConfig {
         sample_rate: SAMPLE_RATE,
         channels: CHANNELS,
         ..MixerConfig::default()
@@ -430,6 +452,12 @@ pub fn run(options: &Options) -> Result<(), String> {
     let mixer_stats = Arc::clone(mixer_handle.stats());
     let music_stats = Arc::clone(player.stats());
     mixer.set_music(music).map_err(|e| e.to_string())?;
+    mixer_handle
+        .set_master_gain(options.volume)
+        .map_err(|e| e.to_string())?;
+    player
+        .set_volume(options.volume)
+        .map_err(|e| e.to_string())?;
     let stream = slam_audio::open_output(
         backend,
         StreamConfig {
@@ -754,6 +782,11 @@ mod tests {
             assert!(parse(&["map.osu", "--dim", bad]).is_err(), "{bad}");
         }
         assert!(parse(&["map.osu", "--dim"]).is_err());
+        assert_eq!(parse(&["map.osu"]).unwrap().volume, 1.0);
+        assert_eq!(parse(&["map.osu", "--volume", "20"]).unwrap().volume, 0.2);
+        for bad in ["-1", "101", "20.5", "NaN", "loud"] {
+            assert!(parse(&["map.osu", "--volume", bad]).is_err(), "{bad}");
+        }
         assert!(parse(&["map.osu", "--backend", "asio"]).is_err());
     }
 

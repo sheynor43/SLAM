@@ -708,6 +708,21 @@ impl SkinSprite {
     pub fn digit(region: AtlasRegion, texture_scale: f32) -> Self {
         Self::new(region, texture_scale, MAX_DIGIT_SIZE)
     }
+
+    /// The ellipse of radius `clear_radius` image pixels around the centre, as fractions
+    /// of the sprite's size, for [`SpriteBatch::push_ring`]: `texture_scale` as in
+    /// [`Self::new`]. The crop keeps the centre, so the ellipse stays centred.
+    pub fn hole(&self, clear_radius: f32, texture_scale: f32) -> [f32; 2] {
+        let fraction = |side: f32| {
+            let pixels = side * texture_scale;
+            if pixels > 0.0 {
+                clear_radius / pixels
+            } else {
+                0.0
+            }
+        };
+        [fraction(self.size.x), fraction(self.size.y)]
+    }
 }
 
 /// The skin textures of hit circles for one frame; missing ones are not drawn.
@@ -716,6 +731,12 @@ pub struct CircleTextures {
     pub circle: Option<SkinSprite>,
     pub overlay: Option<SkinSprite>,
     pub approach: Option<SkinSprite>,
+    /// The clear middle of `approach`: semi-axes of the ellipse where its texture is fully
+    /// transparent, as fractions of the sprite's size. The approach circle is drawn as a
+    /// ring around it ([`SpriteBatch::push_ring`]), the same picture with far less fill:
+    /// with EZ a hundred approach circles of up to four times a circle's size are on
+    /// screen at once.
+    pub approach_hole: [f32; 2],
     /// `{HitCirclePrefix}-0` to `-9`; without `-0` no numbers are drawn (`HasFont`).
     pub digits: [Option<SkinSprite>; 10],
 }
@@ -853,7 +874,8 @@ fn push_circles(
     for c in live {
         if let Some(circle) = circles.visuals.get(c.index) {
             let pose = circle_pose(circle, c.judgement, time, &circles.style);
-            push_approach(batch, layout, circle, &pose, 1.0, approach);
+            let hole = textures.approach_hole;
+            push_approach(batch, layout, circle, &pose, 1.0, approach, hole);
         }
     }
 }
@@ -961,6 +983,7 @@ pub(crate) fn push_approach(
     pose: &CirclePose,
     parent_alpha: f32,
     approach: &SkinSprite,
+    hole: [f32; 2],
 ) {
     let alpha = parent_alpha * pose.object_alpha * pose.approach_alpha;
     if alpha <= 0.0 {
@@ -971,12 +994,8 @@ pub(crate) fn push_approach(
     let scale = circle.scale * layout.scale() * pose.approach_scale;
     let size = Vec2::new(approach.size.x * scale, approach.size.y * scale);
     let colour = tint(circle.colour, 1.0, alpha);
-    batch.push(&centred(
-        approach,
-        layout.to_window(circle.position),
-        size,
-        colour,
-    ));
+    let sprite = centred(approach, layout.to_window(circle.position), size, colour);
+    batch.push_ring(&sprite, hole);
 }
 
 #[cfg(test)]

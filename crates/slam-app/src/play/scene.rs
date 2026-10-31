@@ -29,7 +29,7 @@ use slam_play::{
 use slam_render::gl::{GlDevice, GlTexture};
 use slam_render::slider::{SliderBuffer, SliderDraw, SliderMesh, SliderRenderer};
 use slam_render::sprite::{
-    Affine, DEFAULT_SLOTS, Projection, Sprite, SpriteBatch, SpriteRenderer, tint_srgb,
+    Affine, DEFAULT_SLOTS, Projection, Sprite, SpriteBatch, SpriteRenderer, SpriteStats, tint_srgb,
 };
 use slam_render::textures::Textures;
 use slam_render::upload::{
@@ -47,10 +47,11 @@ use super::fps::{FpsOverlay, MAX_FPS_GLYPHS};
 /// The mixer's format; the shell's output and the `play` command's use it.
 pub(crate) const SAMPLE_RATE: u32 = 48_000;
 pub(crate) const CHANNELS: u16 = 2;
-/// Sprites of one frame: every live circle's pieces, numbers and approach circle, slider
-/// ticks (up to `MAX_LIVE_NESTED`) and repeats, and judgement popups: up to `MAX_POPUPS`, of
-/// 150 particles and three sprites each.
-const MAX_SPRITES: usize = 32768;
+/// Sprites of one frame: every live circle's pieces, numbers and approach circle (a ring
+/// of `RING_QUADS` quads), slider ticks (up to `MAX_LIVE_NESTED`) and repeats, and judgement
+/// popups: up to `MAX_POPUPS`, of 150 particles and three sprites each. The worst case is
+/// about 28k with the rings; past the capacity the batch would allocate in the frame.
+const MAX_SPRITES: usize = 40960;
 /// Room in the texture loader's queue for every texture of a play at once: a skin with
 /// nearly every element requests about 260, and a full queue fails the preparation if the
 /// loader thread has not drained some yet.
@@ -332,6 +333,7 @@ pub fn prepare(
         menu_shapes: SpriteBatch::with_capacity(MAX_MENU_SPRITES),
         menu_text: SpriteBatch::with_capacity(MAX_GLYPH_SPRITES + MAX_FPS_GLYPHS),
         gpu: None,
+        stats: PlayfieldStats::default(),
     };
     Ok(Prepared {
         audio: loaded.audio,
@@ -386,6 +388,15 @@ pub struct PlayScene {
     menu_shapes: SpriteBatch,
     menu_text: SpriteBatch,
     gpu: Option<SceneGpu>,
+    /// The playfield batch's figures of the last frame, for the console report.
+    stats: PlayfieldStats,
+}
+
+/// What the last frame drew of the playfield batch (background, objects, HUD shapes).
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct PlayfieldStats {
+    pub sprites: SpriteStats,
+    pub slider_bodies: u32,
 }
 
 impl PlayScene {
@@ -548,17 +559,20 @@ impl PlayScene {
         // A failed draw loses one frame; the next one tries again.
         let texture = |id| gpu_textures.get(id);
         let _ = r.sliders.begin_frame(device, size);
+        self.stats = PlayfieldStats::default();
         // The playfield's sprites in parts, with the slider bodies between them.
         if let Ok(uploaded) = r.renderer.upload(device, &self.batch, &projection, texture) {
             let mut from = 0;
             for body in self.bodies.as_slice() {
-                let _ = r.renderer.draw_range(
+                if let Ok(stats) = r.renderer.draw_range(
                     device,
                     &uploaded,
                     &self.batch,
                     from..body.before_sprite,
                     texture,
-                );
+                ) {
+                    self.stats.sprites += stats;
+                }
                 from = body.before_sprite;
                 let Some(Some(buffer)) = r.slider_buffers.get(body.index as usize) else {
                     continue;
@@ -568,6 +582,7 @@ impl PlayScene {
                     .transformed(&layer.then_after(&body.transform))
                     .scaled(layout.scale(), [origin.x, origin.y]);
                 let tint = tint_srgb(body.tint, layer_tint);
+                self.stats.slider_bodies += 1;
                 let _ = r.sliders.draw(
                     device,
                     buffer,
@@ -581,9 +596,12 @@ impl PlayScene {
                     None,
                 );
             }
-            let _ = r
-                .renderer
-                .draw_range(device, &uploaded, &self.batch, from..u32::MAX, texture);
+            if let Ok(stats) =
+                r.renderer
+                    .draw_range(device, &uploaded, &self.batch, from..u32::MAX, texture)
+            {
+                self.stats.sprites += stats;
+            }
         }
         let _ = r
             .text_renderer
@@ -597,6 +615,11 @@ impl PlayScene {
                 .text_renderer
                 .draw(device, &self.menu_text, &projection, texture);
         }
+    }
+
+    /// What the last [`PlayScene::draw`] drew of the playfield batch.
+    pub fn stats(&self) -> PlayfieldStats {
+        self.stats
     }
 
     /// Destroys the play's GPU resources. Navigation: frees.
