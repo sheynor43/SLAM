@@ -187,6 +187,18 @@ fn classic_colour_runs_shadow_border_then_track() {
 }
 
 #[test]
+fn traceable_keeps_the_shadow_and_a_combo_border_over_a_transparent_track() {
+    let combo = [1.0, 192.0 / 255.0, 0.0, 1.0];
+    let c = LegacyBodyColours::traceable(combo);
+    assert_colour(c.border, combo);
+    assert_colour(c.colour_at(0.078125), [0.0, 0.0, 0.0, 0.25]);
+    assert_colour(c.colour_at(0.1), combo);
+    for position in [0.1875 + 1e-6, 0.5, 1.0] {
+        assert_eq!(c.colour_at(position)[3], 0.0, "at {position}");
+    }
+}
+
+#[test]
 fn classic_gradient_has_the_texture_width_of_the_radius() {
     let (map, _) = beatmap("");
     let radius = slam_osu::objects::OBJECT_RADIUS * map.hit_objects[0].defaults.scale;

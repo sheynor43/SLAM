@@ -253,11 +253,12 @@ impl SliderVisuals {
     ) -> Self {
         // Ported from osu!lazer 2026.1005.0-lazer: osu.Game/Rulesets/Mods/ModWithVisibilityAdjustment.cs (ApplyToDrawableHitObject, isObjectEqualToOrNestedIn)
         let first = beatmap.hit_objects.iter().position(|o| !o.is_spinner());
-        let increase_first = mods.hidden.is_some() && settings.increase_first_object_visibility;
+        let increase_first = mods.adjusts_visibility() && settings.increase_first_object_visibility;
         let beatmap_colours =
             beatmap_skin.filter(|s| settings.beatmap_colours && !s.ini().combo_colours.is_empty());
         let mut gradients: Vec<SliderGradient> = Vec::new();
-        let mut gradient_colours: Vec<[f32; 4]> = Vec::new();
+        // The accent colour of each gradient, and whether it is Traceable's.
+        let mut gradient_colours: Vec<([f32; 4], bool)> = Vec::new();
         let mut nested: Vec<NestedVisual> = Vec::new();
         let mut curve: Vec<Vec2> = Vec::new();
         let mut paths: Vec<SliderPath> = Vec::new();
@@ -280,12 +281,19 @@ impl SliderVisuals {
                 let colour = combo_colour(&o.combo, beatmap_colours, skins);
                 let radius = OBJECT_RADIUS * o.defaults.scale;
                 let accent = [colour.r, colour.g, colour.b, colour.a];
-                let gradient = match gradient_colours.iter().position(|c| *c == accent) {
+                let increased_visibility = increase_first && first == Some(i);
+                let traceable = mods.traceable && !increased_visibility;
+                let key = (accent, traceable);
+                let gradient = match gradient_colours.iter().position(|c| *c == key) {
                     Some(g) => g,
                     None => {
-                        let colours = LegacyBodyColours::new(accent, skins);
+                        let colours = if traceable {
+                            LegacyBodyColours::traceable(accent)
+                        } else {
+                            LegacyBodyColours::new(accent, skins)
+                        };
                         gradients.push(colours.gradient(radius));
-                        gradient_colours.push(accent);
+                        gradient_colours.push(key);
                         gradients.len() - 1
                     }
                 };
@@ -323,7 +331,7 @@ impl SliderVisuals {
                         time_fade_in: head.defaults.time_fade_in,
                         colour,
                         number: u32::try_from(o.combo.index_in_current_combo + 1).unwrap_or(0),
-                        increased_visibility: increase_first && first == Some(i),
+                        increased_visibility,
                     },
                     tail: TailVisual {
                         start_time: tail.start_time,
@@ -455,6 +463,7 @@ pub struct SliderPose {
 // Ported from osu!lazer 2026.1005.0-lazer: osu.Game/Rulesets/Objects/Drawables/DrawableHitObject.cs (UpdateState, HitStateUpdateTime)
 // Ported from osu!lazer 2026.1005.0-lazer: osu.Game.Rulesets.Osu/Skinning/Legacy/LegacyMainCirclePiece.cs (updateStateTransforms)
 // Ported from osu!lazer 2026.1005.0-lazer: osu.Game.Rulesets.Osu/Mods/OsuModHidden.cs (applyHiddenState, getFadeOutParameters)
+// Ported from osu!lazer 2026.1005.0-lazer: osu.Game.Rulesets.Osu/Mods/OsuModTraceable.cs (applyTraceableState, applyCirclePieceState)
 pub fn slider_pose(
     slider: &SliderVisual,
     live: &LiveSlider,
@@ -533,6 +542,10 @@ fn tail_pose(
         let head = &slider.head;
         let fade_start = head.start_time - head.time_preempt + head.time_fade_in;
         object.fade_out(fade_start, head.time_preempt * HIDDEN_FADE_OUT_MULTIPLIER);
+    }
+    // Traceable hides the whole tail from the start of its preempt, except the first object's.
+    if style.mods.traceable && !slider.head.increased_visibility {
+        object.fade_out(appear, 0.0);
     }
 
     // The first end circle waits for snaking in to finish.
@@ -695,6 +708,7 @@ pub struct RepeatPose {
 // Ported from osu!lazer 2026.1005.0-lazer: osu.Game.Rulesets.Osu/Skinning/Legacy/LegacyReverseArrow.cs (Update)
 // Ported from osu!lazer 2026.1005.0-lazer: osu.Game.Rulesets.Osu/Skinning/Legacy/LegacyMainCirclePiece.cs (updateStateTransforms)
 // Ported from osu!lazer 2026.1005.0-lazer: osu.Game.Rulesets.Osu/Mods/OsuModHidden.cs (applyHiddenState, getFadeOutParameters)
+// Ported from osu!lazer 2026.1005.0-lazer: osu.Game.Rulesets.Osu/Mods/OsuModTraceable.cs (applyTraceableState, applyCirclePieceState)
 #[allow(clippy::too_many_arguments)]
 pub fn repeat_pose(
     slider: &SliderVisual,
@@ -758,6 +772,10 @@ pub fn repeat_pose(
         let head = &slider.head;
         let fade_start = head.start_time - head.time_preempt + head.time_fade_in;
         piece.fade_out(fade_start, head.time_preempt * HIDDEN_FADE_OUT_MULTIPLIER);
+    }
+    if style.mods.traceable && !slider.head.increased_visibility {
+        // Traceable hides only the circle; the arrow stays.
+        piece.fade_out(appear, 0.0);
     }
     let mut arrow = Track::new(Kind::Alpha);
     arrow.fade_out(appear, 0.0);

@@ -1116,13 +1116,10 @@ fn a_play_takes_the_selected_mods() {
 }
 
 #[test]
-fn the_panel_shows_every_difficulty_increase_mod_but_traceable() {
-    let expected: Vec<&str> = mods_for(ModType::DifficultyIncrease)
-        .iter()
-        .copied()
-        .filter(|&acronym| acronym != "TC")
-        .collect();
-    assert_eq!(mod_columns()[1], expected);
+fn the_panel_shows_every_difficulty_increase_mod() {
+    let columns = mod_columns();
+    assert_eq!(columns[1], mods_for(ModType::DifficultyIncrease));
+    assert!(columns[1].contains(&"TC"));
 }
 
 fn customise(snap: &ShellSnapshot) -> slam_ui::song_select::CustomisationSnapshot {

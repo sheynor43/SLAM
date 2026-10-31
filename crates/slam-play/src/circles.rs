@@ -126,6 +126,8 @@ pub struct CircleMods {
     /// Hidden, with whether only the approach circles are hidden
     /// (`OnlyFadeApproachCircles`).
     pub hidden: Option<bool>,
+    /// Traceable: circle pieces are hidden, approach circles stay.
+    pub traceable: bool,
     /// Classic's `FadeHitCircleEarly`, off when Hidden fades the circles.
     pub fade_early: bool,
 }
@@ -139,6 +141,7 @@ impl CircleMods {
             } => Some(*only_fade_approach_circles),
             _ => None,
         });
+        let traceable = mods.mods().iter().any(|m| matches!(m, Mod::Traceable));
         let classic_early = mods
             .mods()
             .iter()
@@ -147,8 +150,15 @@ impl CircleMods {
         let hidden_fading = hidden == Some(false);
         CircleMods {
             hidden,
+            traceable,
             fade_early: classic_early && !hidden_fading,
         }
+    }
+
+    /// Whether a visibility mod (Hidden or Traceable) is on, which the first object can be
+    /// spared from (`IncreaseFirstObjectVisibility`).
+    pub fn adjusts_visibility(&self) -> bool {
+        self.hidden.is_some() || self.traceable
     }
 }
 
@@ -158,7 +168,7 @@ pub struct CircleSettings {
     /// Lazer's `BeatmapColours`: combo colours come from the beatmap when it has them.
     pub beatmap_colours: bool,
     /// Lazer's `IncreaseFirstObjectVisibility`: under Hidden, the first object keeps its
-    /// approach circle and only its circle fades.
+    /// approach circle and only its circle fades; Traceable leaves it alone.
     pub increase_first_object_visibility: bool,
 }
 
@@ -186,7 +196,8 @@ pub struct CircleVisual {
     pub colour: Color,
     /// The combo number shown (`IndexInCurrentCombo + 1`).
     pub number: u32,
-    /// Whether Hidden spares this circle as the first object (increased visibility).
+    /// Whether Hidden or Traceable spares this circle as the first object (increased
+    /// visibility).
     pub increased_visibility: bool,
 }
 
@@ -234,8 +245,9 @@ impl CircleVisuals {
     ) -> Self {
         // Ported from osu!lazer 2026.1005.0-lazer: osu.Game/Rulesets/Mods/ModWithVisibilityAdjustment.cs (ApplyToBeatmap)
         // Ported from osu!lazer 2026.1005.0-lazer: osu.Game.Rulesets.Osu/Mods/OsuModHidden.cs (IsFirstAdjustableObject)
+        // Ported from osu!lazer 2026.1005.0-lazer: osu.Game.Rulesets.Osu/Mods/OsuModTraceable.cs (IsFirstAdjustableObject)
         let first = beatmap.hit_objects.iter().position(|o| !o.is_spinner());
-        let increase_first = mods.hidden.is_some() && settings.increase_first_object_visibility;
+        let increase_first = mods.adjusts_visibility() && settings.increase_first_object_visibility;
         let beatmap_colours =
             beatmap_skin.filter(|s| settings.beatmap_colours && !s.ini().combo_colours.is_empty());
         let circles = beatmap
@@ -552,6 +564,7 @@ pub struct CirclePose {
 // Ported from osu!lazer 2026.1005.0-lazer: osu.Game.Rulesets.Osu/Skinning/Legacy/LegacyMainCirclePiece.cs (updateStateTransforms)
 // Ported from osu!lazer 2026.1005.0-lazer: osu.Game.Rulesets.Osu/Mods/OsuModHidden.cs (applyHiddenState, getFadeOutParameters)
 // Ported from osu!lazer 2026.1005.0-lazer: osu.Game.Rulesets.Osu/Mods/OsuModClassic.cs (applyEarlyFading)
+// Ported from osu!lazer 2026.1005.0-lazer: osu.Game.Rulesets.Osu/Mods/OsuModTraceable.cs (applyCirclePieceState)
 pub fn circle_pose(
     circle: &CircleVisual,
     judgement: Option<CircleJudgement>,
@@ -618,6 +631,12 @@ pub fn circle_pose(
                 object.fade_out(fade_start, fade_duration);
             }
         }
+    }
+
+    // Custom state: Traceable hides the circle piece from the start of the preempt; the first
+    // object keeps it.
+    if style.mods.traceable && !circle.increased_visibility {
+        piece.fade_out(appear, 0.0);
     }
 
     // Custom state: Classic's early fade, into the miss.
@@ -1004,7 +1023,11 @@ mod tests {
 
     fn style(hidden: Option<bool>, fade_early: bool) -> CircleStyle {
         CircleStyle {
-            mods: CircleMods { hidden, fade_early },
+            mods: CircleMods {
+                hidden,
+                traceable: false,
+                fade_early,
+            },
             ok_window: OK,
             meh_window: MEH,
             number_short_fade: true,
@@ -1191,9 +1214,49 @@ mod tests {
             CircleMods::new(&mods),
             CircleMods {
                 hidden: Some(true),
+                traceable: false,
                 fade_early: true
             }
         );
+    }
+
+    fn traceable_style() -> CircleStyle {
+        CircleStyle {
+            mods: CircleMods::new(&ModSet::new(vec![Mod::Traceable]).unwrap()),
+            ..style(None, false)
+        }
+    }
+
+    #[test]
+    fn traceable_hides_the_circle_piece_but_not_the_approach_circle() {
+        let s = traceable_style();
+        assert!(s.mods.traceable && s.mods.adjusts_visibility());
+        let at = |t| circle_pose(&circle(400.0), None, t, &s);
+        for t in [APPEAR, APPEAR + 200.0, APPEAR + 400.0, START] {
+            assert_eq!(at(t).piece_alpha, 0.0, "at {t}");
+        }
+        assert_close(at(APPEAR + 300.0).approach_alpha, 0.45);
+        assert_eq!(at(APPEAR + 300.0).object_alpha, 1.0);
+        // Nor does the hit animation show.
+        let hit = START + 10.0;
+        let p = circle_pose(
+            &circle(400.0),
+            judged(hit, HitResult::Great),
+            hit + 50.0,
+            &s,
+        );
+        assert_eq!(p.piece_alpha, 0.0);
+    }
+
+    #[test]
+    fn traceable_spares_the_first_object() {
+        let first = CircleVisual {
+            increased_visibility: true,
+            ..circle(400.0)
+        };
+        let p = circle_pose(&first, None, APPEAR + 400.0, &traceable_style());
+        assert_eq!((p.object_alpha, p.piece_alpha), (1.0, 1.0));
+        assert_close(p.approach_alpha, 0.6);
     }
 
     #[test]

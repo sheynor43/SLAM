@@ -75,10 +75,18 @@ fn chain() -> (common::skin::SampleDir, SkinChain) {
 }
 
 fn objects(map: &Beatmap, mods: &ModSet, snaking: Snaking) -> (HitCircles, HitSliders) {
+    objects_with(map, mods, snaking, CircleSettings::default())
+}
+
+fn objects_with(
+    map: &Beatmap,
+    mods: &ModSet,
+    snaking: Snaking,
+    settings: CircleSettings,
+) -> (HitCircles, HitSliders) {
     let (_dir, chain) = chain();
     let circle_mods = CircleMods::new(mods);
     let windows = slam_osu::hit_windows::HitWindows::new(map.difficulty.overall_difficulty);
-    let settings = CircleSettings::default();
     (
         HitCircles {
             visuals: CircleVisuals::new(map, circle_mods, settings, None, &chain),
@@ -343,6 +351,148 @@ fn hidden_spares_only_the_head_of_a_first_slider() {
     // The body and the tail fade all the same.
     assert!(at(START).body_alpha < 1.0);
     assert_eq!(at(APPEAR + 240.0 + 180.0).tail.object_alpha, 0.0);
+}
+
+fn traceable() -> ModSet {
+    ModSet::new(vec![Mod::Traceable]).unwrap()
+}
+
+#[test]
+fn traceable_hides_the_head_and_the_tail_but_not_the_approach_circle_or_the_body() {
+    let idle = live(None, None, None);
+    let at = |time| pose_with(&traceable(), Snaking::LAZER, &idle, time);
+    let none = |time| pose(&idle, time);
+    for time in [APPEAR + 200.0, APPEAR + 500.0, START + 200.0] {
+        let p = at(time);
+        assert_eq!(p.head.piece_alpha, 0.0, "at {time}");
+        assert_eq!(p.tail.object_alpha, 0.0, "at {time}");
+        assert_eq!(p.body_alpha, none(time).body_alpha, "at {time}");
+    }
+    assert!(close(at(APPEAR + 300.0).head.approach_alpha, 0.45));
+    // The hit animations stay hidden.
+    let hit = live(
+        judged(START, HitResult::Great),
+        judged(END, HitResult::SliderTailHit),
+        judged(END, HitResult::Great),
+    );
+    let p = pose_with(&traceable(), Snaking::LAZER, &hit, END + 50.0);
+    assert_eq!((p.head.piece_alpha, p.tail.object_alpha), (0.0, 0.0));
+}
+
+#[test]
+fn traceable_draws_a_body_of_its_border_only() {
+    let map = beatmap(&traceable());
+    let (_, sliders) = objects(&map, &traceable(), Snaking::LAZER);
+    let slider = sliders.visuals.get(1).unwrap();
+    let gradient = sliders.visuals.gradient(slider.gradient);
+    let combo = slider.head.colour;
+    // The centre is transparent; the border is the combo colour.
+    assert_eq!(gradient.sample(1.0)[3], 0.0);
+    let border = gradient.sample(0.14);
+    let expected = [combo.r, combo.g, combo.b, combo.a];
+    for c in 0..4 {
+        assert!((border[c] - expected[c]).abs() < 1.0 / 255.0, "{border:?}");
+    }
+    // Without the mod the track shows.
+    let (_, plain) = objects(&map, &ModSet::default(), Snaking::LAZER);
+    let slider = plain.visuals.get(1).unwrap();
+    assert!(plain.visuals.gradient(slider.gradient).sample(1.0)[3] > 0.5);
+}
+
+/// Two sliders of one combo, so of one colour, going there and back.
+const TWO_SLIDERS_MAP: &str = "osu file format v14
+
+[Difficulty]
+HPDrainRate:5
+CircleSize:4
+OverallDifficulty:5
+ApproachRate:9
+SliderMultiplier:1
+SliderTickRate:1
+
+[TimingPoints]
+0,500,4,2,0,100,1,0
+
+[HitObjects]
+200,200,1000,6,0,L|300:200,2,100
+200,300,3000,2,0,L|300:300,2,100
+";
+
+#[test]
+fn traceable_spares_only_the_first_object_of_a_combo_colour() {
+    let map = Beatmap::decode(TWO_SLIDERS_MAP.as_bytes()).unwrap();
+    let (circles, sliders) = objects(&map, &traceable(), Snaking::default());
+    let (first, second) = (
+        sliders.visuals.get(0).unwrap(),
+        sliders.visuals.get(1).unwrap(),
+    );
+    assert_eq!(first.head.colour, second.head.colour);
+    assert_ne!(first.gradient, second.gradient);
+    let track = |s: &SliderVisual| sliders.visuals.gradient(s.gradient).sample(1.0)[3];
+    assert!(track(first) > 0.5);
+    assert_eq!(track(second), 0.0);
+    // Without snaking the repeat's circle would fade in at once: hidden all the same.
+    let repeat = repeats(sliders.visuals.nested(second))[0];
+    let style = &circles.style;
+    let at = 3000.0 - 600.0;
+    let p = repeat_pose(
+        second,
+        &repeat,
+        None,
+        at,
+        style,
+        Snaking::default(),
+        ROCKING,
+    );
+    assert_eq!(p.piece_alpha, 0.0);
+    // A first circle is spared as well.
+    let map = beatmap(&traceable());
+    let (circles, _) = objects(&map, &traceable(), Snaking::LAZER);
+    assert!(circles.visuals.get(0).unwrap().increased_visibility);
+    assert!(!circles.visuals.get(2).unwrap().increased_visibility);
+}
+
+#[test]
+fn traceable_spares_a_first_slider_and_its_nested_objects() {
+    let mods = traceable();
+    let map = Beatmap::decode(REPEAT_MAP.as_bytes()).unwrap();
+    let idle = LiveSlider {
+        index: 0,
+        ..live(None, None, None)
+    };
+    let pose_with_settings = |increase_first| {
+        let settings = CircleSettings {
+            increase_first_object_visibility: increase_first,
+            ..CircleSettings::default()
+        };
+        let (circles, sliders) = objects_with(&map, &mods, Snaking::LAZER, settings);
+        let slider = *sliders.visuals.get(0).unwrap();
+        let repeat = repeats(sliders.visuals.nested(&slider))[0];
+        let time = START + 200.0;
+        let style = circles.style;
+        let pose = slider_pose(&slider, &idle, time, &style, Snaking::LAZER);
+        let repeat = repeat_pose(
+            &slider,
+            &repeat,
+            None,
+            time,
+            &style,
+            Snaking::LAZER,
+            ROCKING,
+        );
+        let track = sliders.visuals.gradient(slider.gradient).sample(1.0)[3];
+        (pose, repeat, track)
+    };
+    let (pose, repeat, track) = pose_with_settings(true);
+    assert_eq!(pose.head.piece_alpha, 1.0);
+    assert_eq!(pose.tail.object_alpha, 1.0);
+    assert_eq!(repeat.piece_alpha, 1.0);
+    assert!(track > 0.5);
+    let (pose, repeat, track) = pose_with_settings(false);
+    assert_eq!(pose.head.piece_alpha, 0.0);
+    assert_eq!(pose.tail.object_alpha, 0.0);
+    assert_eq!((repeat.piece_alpha, repeat.arrow_alpha), (0.0, 1.0));
+    assert_eq!(track, 0.0);
 }
 
 // ---- Sprites ----
@@ -1004,8 +1154,17 @@ fn arrows_from_the_default_skin_turn_black_on_bright_colours() {
 /// The textures drawn for the slider of [`NESTED_MAP`] at `time` with nested judgements
 /// `nested` (all unjudged if `None`), and the number of sprites.
 fn nested_order(time: f64, nested: Option<Vec<Option<CircleJudgement>>>) -> (Vec<u32>, usize) {
-    let map = nested_map(&ModSet::default());
-    let (circles, sliders) = objects(&map, &ModSet::default(), Snaking::LAZER);
+    nested_order_with(&ModSet::default(), CircleSettings::default(), time, nested)
+}
+
+fn nested_order_with(
+    mods: &ModSet,
+    settings: CircleSettings,
+    time: f64,
+    nested: Option<Vec<Option<CircleJudgement>>>,
+) -> (Vec<u32>, usize) {
+    let map = nested_map(mods);
+    let (circles, sliders) = objects_with(&map, mods, Snaking::LAZER, settings);
     let slider = LiveSlider {
         index: 0,
         ..live(None, None, None)
@@ -1061,6 +1220,23 @@ fn ticks_and_repeats_draw_between_the_tail_and_the_head_with_arrows_under_its_ov
     assert_eq!(
         nested_order(1450.0, Some(Vec::new())),
         (vec![HEAD.0, HEAD_OVERLAY.0], 2)
+    );
+}
+
+#[test]
+fn traceable_leaves_ticks_and_arrows_of_the_slider_pieces() {
+    let normal = CircleSettings {
+        increase_first_object_visibility: false,
+        ..CircleSettings::default()
+    };
+    assert_eq!(
+        nested_order_with(&traceable(), normal, 1450.0, None),
+        (vec![TICK.0, ARROW.0], 3)
+    );
+    // The first object, with increased visibility, is drawn whole.
+    assert_eq!(
+        nested_order_with(&traceable(), CircleSettings::default(), 1450.0, None),
+        nested_order(1450.0, None)
     );
 }
 
