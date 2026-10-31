@@ -17,7 +17,9 @@ use std::sync::Arc;
 
 use super::keybinds;
 use crate::displays::{DisplayLists, DisplayViews};
-use crate::settings::{DrawRate, FpsScreens, InputSettings, KeySlot, Settings, Timing, skins};
+use crate::settings::{
+    DrawRate, FpsScreens, HitsoundDelay, InputSettings, KeySlot, Settings, Timing, skins,
+};
 
 /// Sections, in order; the keys of their names are in [`SECTION_KEYS`].
 const SECTION_KEYS: [&str; 7] = [
@@ -142,6 +144,7 @@ pub enum Row {
     MusicVolume,
     HitsoundVolume,
     EffectsVolume,
+    HitsoundDelay,
     Backend,
     BufferFrames,
     GlobalOffset,
@@ -180,11 +183,12 @@ pub enum Row {
 }
 
 impl Row {
-    pub const ALL: [Row; 37] = [
+    pub const ALL: [Row; 38] = [
         Row::MasterVolume,
         Row::MusicVolume,
         Row::HitsoundVolume,
         Row::EffectsVolume,
+        Row::HitsoundDelay,
         Row::Backend,
         Row::BufferFrames,
         Row::GlobalOffset,
@@ -245,6 +249,7 @@ impl Row {
             | Row::MusicVolume
             | Row::HitsoundVolume
             | Row::EffectsVolume
+            | Row::HitsoundDelay
             | Row::Backend
             | Row::BufferFrames => 0,
             Row::GlobalOffset => 1,
@@ -287,6 +292,7 @@ impl Row {
             Row::MusicVolume => "settings-audio-music-volume",
             Row::HitsoundVolume => "settings-audio-hitsound-volume",
             Row::EffectsVolume => "settings-audio-effects-volume",
+            Row::HitsoundDelay => "settings-audio-hitsound-delay",
             Row::Backend => "settings-audio-backend",
             Row::BufferFrames => "settings-audio-buffer",
             Row::GlobalOffset => "settings-offset-global",
@@ -356,6 +362,14 @@ fn corner_key(corner: FpsCorner) -> &'static str {
         FpsCorner::TopRight => "settings-option-top-right",
         FpsCorner::BottomLeft => "settings-option-bottom-left",
         FpsCorner::BottomRight => "settings-option-bottom-right",
+    }
+}
+
+/// The Fluent key of a hitsound delay option.
+fn delay_key(delay: HitsoundDelay) -> &'static str {
+    match delay {
+        HitsoundDelay::None => "settings-option-hitsound-delay-none",
+        HitsoundDelay::Stable => "settings-option-hitsound-delay-stable",
     }
 }
 
@@ -539,6 +553,12 @@ impl Rows {
                 step: 0.01,
                 value: round_to(s.gameplay.hit_error_scale, 2),
             },
+            Row::HitsoundDelay => choice(
+                HitsoundDelay::ALL.len(),
+                HitsoundDelay::ALL
+                    .iter()
+                    .position(|d| *d == s.audio.hitsound_delay),
+            ),
             Row::Backend => choice(
                 self.backends.len(),
                 self.backends.iter().position(|b| *b == s.audio.backend),
@@ -673,6 +693,11 @@ impl Rows {
                     }
                 }
             },
+            (Row::HitsoundDelay, RowValue::Choice(i)) => {
+                if let Some(delay) = HitsoundDelay::ALL.get(i) {
+                    settings.audio.hitsound_delay = *delay;
+                }
+            }
             (Row::Backend, RowValue::Choice(i)) => {
                 if let Some(backend) = self.backends.get(i) {
                     settings.audio.backend = backend.clone();
@@ -826,6 +851,10 @@ impl Rows {
                     Row::FpsCorner => FpsCorner::ALL
                         .iter()
                         .map(|corner| text(corner_key(*corner)))
+                        .collect(),
+                    Row::HitsoundDelay => HitsoundDelay::ALL
+                        .iter()
+                        .map(|delay| text(delay_key(*delay)))
                         .collect(),
                     Row::FpsScreens => FpsScreens::ALL
                         .iter()

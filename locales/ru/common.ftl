@@ -6,6 +6,7 @@ settings-audio-master-volume = Общая
 settings-audio-music-volume = Музыка
 settings-audio-hitsound-volume = Хитсаунды
 settings-audio-effects-volume = Эффекты
+settings-audio-hitsound-delay = Задержка хитсаундов
 settings-keybind-listening = Нажмите клавишу...
 song-select-beatmap-count =
     { $count ->
@@ -138,6 +139,8 @@ settings-option-bottom-right = Справа снизу
 settings-option-fps-everywhere = Везде
 settings-option-fps-gameplay = Только в игре
 settings-option-fps-menus = Только в меню
+settings-option-hitsound-delay-none = Без задержки
+settings-option-hitsound-delay-stable = Как в stable
 settings-audio-backend = Звуковой бэкенд
 settings-audio-buffer = Размер буфера
 settings-offset-global = Общее смещение

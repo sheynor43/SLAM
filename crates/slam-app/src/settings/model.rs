@@ -113,6 +113,49 @@ pub struct Audio {
     pub hitsound_volume: f64,
     /// Volume of the other sound effects, 0.0..=1.0, on top of the master volume.
     pub effects_volume: f64,
+    /// Start delay of the gameplay hitsounds (ADR-0077).
+    pub hitsound_delay: HitsoundDelay,
+}
+
+/// Extra delay of a stable hitsound over a SLAM one, click to sound, milliseconds
+/// (ADR-0077).
+// Provisional until measured on one machine and output; see #264.
+pub const STABLE_HITSOUND_DELAY_MS: f64 = 40.0;
+
+/// When gameplay hitsounds start after the judgement (ADR-0077).
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum HitsoundDelay {
+    /// From the next audio buffer.
+    #[default]
+    None,
+    /// [`STABLE_HITSOUND_DELAY_MS`] later, as stable players are used to.
+    Stable,
+}
+
+impl HitsoundDelay {
+    pub const ALL: [HitsoundDelay; 2] = [HitsoundDelay::None, HitsoundDelay::Stable];
+
+    /// The name in the settings file.
+    pub fn name(self) -> &'static str {
+        match self {
+            HitsoundDelay::None => "none",
+            HitsoundDelay::Stable => "stable",
+        }
+    }
+
+    /// The value called `name`.
+    pub fn from_name(name: &str) -> Option<HitsoundDelay> {
+        HitsoundDelay::ALL.into_iter().find(|d| d.name() == name)
+    }
+
+    /// The delay for the mixer's hitsound group.
+    pub fn ms(self) -> f64 {
+        match self {
+            HitsoundDelay::None => 0.0,
+            HitsoundDelay::Stable => STABLE_HITSOUND_DELAY_MS,
+        }
+    }
 }
 
 impl Default for Audio {
@@ -125,6 +168,7 @@ impl Default for Audio {
             music_volume: 1.0,
             hitsound_volume: 1.0,
             effects_volume: 1.0,
+            hitsound_delay: HitsoundDelay::default(),
         }
     }
 }

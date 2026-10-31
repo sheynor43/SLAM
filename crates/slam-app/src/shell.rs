@@ -2392,6 +2392,9 @@ fn open_audio(
     mixer_handle
         .set_group_gain(VoiceGroup::Effects, volumes.effects)
         .map_err(|e| e.to_string())?;
+    mixer_handle
+        .set_group_delay(VoiceGroup::Hitsounds, volumes.hitsound_delay_ms)
+        .map_err(|e| e.to_string())?;
     let stream = slam_audio::open_output(
         backend,
         StreamConfig {
