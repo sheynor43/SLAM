@@ -44,6 +44,17 @@ impl LegacyBodyColours {
         }
     }
 
+    /// The colours Traceable gives a body of `combo` colour: a transparent track and a border
+    /// of the combo colour, whatever the skin.
+    // Ported from osu!lazer 2026.1005.0-lazer: osu.Game.Rulesets.Osu/Mods/OsuModTraceable.cs (applySliderState)
+    pub fn traceable(combo: Colour4) -> Self {
+        let [r, g, b, _] = combo;
+        Self {
+            accent: [r, g, b, 0.0],
+            border: combo,
+        }
+    }
+
     /// The body's colour at `position` across the path: 0 at the edge, 1 at the
     /// centre (osu!stable's `MmSliderRendererGL`: shadow, border, then the track).
     // Ported from osu!lazer 2026.1005.0-lazer: osu.Game.Rulesets.Osu/Skinning/Legacy/LegacySliderBody.cs (LegacyDrawableSliderPath.ColourAt)

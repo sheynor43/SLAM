@@ -173,13 +173,10 @@ fn mod_hotkey(scancode: u16) -> Option<SongSelectInput> {
 pub fn mod_columns() -> ModColumns {
     [
         mods_for(ModType::DifficultyReduction),
-        DIFFICULTY_INCREASE,
+        mods_for(ModType::DifficultyIncrease),
         mods_for(ModType::Conversion),
     ]
 }
-
-/// `mods_for(DifficultyIncrease)` without Traceable: the play draws it as no mod yet (#207).
-const DIFFICULTY_INCREASE: &[&str] = &["HR", "SD", "PF", "DT", "NC", "HD"];
 
 /// The mods the player can have selected at the most (every tile of the panel).
 const SELECTED_MODS_CAPACITY: usize = 16;
