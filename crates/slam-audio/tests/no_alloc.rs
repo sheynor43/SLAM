@@ -128,6 +128,11 @@ fn voice_controls_do_not_allocate() {
     let mut voices = [VoiceId::NONE; 12];
     assert_no_alloc(|| {
         for round in 0..50 {
+            // Every other round delays hitsound starts and stops (ADR-0077, ADR-0078).
+            let delay_ms = if round % 2 == 0 { 3.0 } else { 0.0 };
+            handle
+                .set_group_delay(VoiceGroup::Hitsounds, delay_ms)
+                .unwrap();
             // More voices than the pool: earlier ids go stale by stealing or ending.
             for (i, voice) in voices.iter_mut().enumerate() {
                 let sample = match i % 3 {
