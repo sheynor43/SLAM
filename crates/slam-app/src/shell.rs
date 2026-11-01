@@ -1440,8 +1440,8 @@ struct Game {
     mods: ResultsMods,
     /// The beatmap file played: its offset is kept when the play ends.
     map: Option<PathBuf>,
-    /// What the play's replay names its beatmap by.
-    beatmap: ReplayBeatmap,
+    /// What the replays of the play's passed attempts name its beatmap by.
+    beatmap: Arc<ReplayBeatmap>,
 }
 
 /// A quit play whose voices the mixer silences. The session keeps its samples until the
@@ -1451,30 +1451,12 @@ struct Retiring {
     session: Box<PlaySession>,
     /// Since when the mixer has had no voice.
     idle_since: Option<u64>,
-    /// A passed play's replay to save.
-    replay: Option<ReplaySource>,
-}
-
-/// What a passed play's replay is made of besides the session.
-struct ReplaySource {
-    beatmap: ReplayBeatmap,
-    /// The beatmap file's name, for the replay's.
-    name: String,
-    ended: SystemTime,
 }
 
 impl Retiring {
-    /// What the loader takes to free the session, saving its replay first.
+    /// What the loader takes to free the session.
     fn into_trash(self) -> Trash {
-        match self.replay {
-            Some(source) => Trash::Replay(Box::new(ReplayJob {
-                session: self.session,
-                beatmap: source.beatmap,
-                name: source.name,
-                ended: source.ended,
-            })),
-            None => Trash::Session(self.session),
-        }
+        Trash::Session(self.session)
     }
 }
 
@@ -1547,6 +1529,15 @@ impl PlayHost {
             &mut audio.mixer,
             snapshot,
         );
+        // A passed attempt's replay is saved as it passes, as lazer imports the score on
+        // completion: quitting before the results or retrying keeps it.
+        if let Some(attempt) = game.session.take_passed_attempt() {
+            self.loader.free(Trash::Replay(ReplayJob {
+                attempt,
+                beatmap: Arc::clone(&game.beatmap),
+                ended: SystemTime::now(),
+            }));
+        }
         self.os_cursor.set_hidden(snapshot.state.hides_os_cursor());
         if play_over(snapshot.state) {
             game.ending = Ending::Sounds;
@@ -1736,16 +1727,6 @@ impl PlayHost {
             // Under the results the track keeps the mods until they go, as lazer's
             // `Player.OnExiting` resets it (ADR-0055).
             self.track_reset = results.is_none();
-            // A passed play's replay is saved by the loader when it frees the session.
-            let replay = game.session.replay_frames().map(|_| ReplaySource {
-                beatmap: std::mem::take(&mut game.beatmap),
-                name: game.map.as_ref().map_or_else(String::new, |map| {
-                    map.file_stem()
-                        .map(|s| s.to_string_lossy().into_owned())
-                        .unwrap_or_default()
-                }),
-                ended: SystemTime::now(),
-            });
             if let Some(map) = game.map.take() {
                 self.beatmap_offsets
                     .insert(map, game.session.beatmap_offset());
@@ -1755,7 +1736,6 @@ impl PlayHost {
             if let Some(old) = self.retiring.replace(Retiring {
                 session: game.session,
                 idle_since: None,
-                replay,
             }) {
                 self.loader.free(old.into_trash());
             }
@@ -1796,10 +1776,15 @@ impl PlayHost {
             beatmap_hash,
             ..
         } = prepared;
-        let replay_beatmap = ReplayBeatmap {
+        let replay_beatmap = Arc::new(ReplayBeatmap {
             hash: beatmap_hash,
             format_version: beatmap.format_version,
-        };
+            name: map.as_ref().map_or_else(String::new, |map| {
+                map.file_stem()
+                    .map(|s| s.to_string_lossy().into_owned())
+                    .unwrap_or_default()
+            }),
+        });
         let shown_mods = results::mods(&mods);
         let mut input = LiveInput::new(
             self.input.bindings,

@@ -3,12 +3,13 @@
 
 use std::fmt::Write as _;
 use std::path::Path;
+use std::sync::Arc;
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use md5::{Digest, Md5};
 use slam_formats::osr;
 use slam_osu::replay::{PlayScore, ReplayInfo, replay_of_play};
-use slam_play::PlaySession;
+use slam_play::PassedAttempt;
 
 /// The player's name in replays: there are no accounts yet (lazer's guest user).
 pub const PLAYER_NAME: &str = "Guest";
@@ -20,23 +21,24 @@ pub struct ReplayBeatmap {
     pub hash: String,
     /// The beatmap's format version.
     pub format_version: i32,
-}
-
-/// A finished play whose replay is saved if it passed.
-pub struct ReplayJob {
-    pub session: Box<PlaySession>,
-    pub beatmap: ReplayBeatmap,
     /// The beatmap file's name without its extension, for the replay's.
     pub name: String,
-    /// When the play ended.
+}
+
+/// An attempt that passed, with what its replay needs besides; made as it passes.
+pub struct ReplayJob {
+    pub attempt: Box<PassedAttempt>,
+    /// Shared by the play's attempts.
+    pub beatmap: Arc<ReplayBeatmap>,
+    /// When the attempt passed.
     pub ended: SystemTime,
 }
 
-/// The `.osr` file of `job`'s play: its name and contents. `None` if the play did not pass
-/// or its recording is incomplete.
+/// The `.osr` file of `job`'s attempt: its name and contents. `None` if its recording is
+/// incomplete.
 pub fn build(job: &ReplayJob) -> Option<(String, Vec<u8>)> {
-    let results = job.session.results()?;
-    let frames = job.session.replay_frames()?;
+    let attempt = &job.attempt;
+    let frames = attempt.frames()?;
     let unix_millis = job
         .ended
         .duration_since(UNIX_EPOCH)
@@ -44,12 +46,12 @@ pub fn build(job: &ReplayJob) -> Option<(String, Vec<u8>)> {
     let replay = replay_of_play(
         frames,
         &PlayScore {
-            mods: job.session.mods(),
-            statistics: &results.statistics,
-            maximum_statistics: &results.maximum_statistics,
-            total_score: results.score,
-            total_score_without_mods: results.score_without_mods,
-            rank: results.rank,
+            mods: attempt.mods(),
+            statistics: attempt.statistics(),
+            maximum_statistics: attempt.maximum_statistics(),
+            total_score: attempt.score(),
+            total_score_without_mods: attempt.score_without_mods(),
+            rank: attempt.rank(),
         },
         &ReplayInfo {
             beatmap_hash: job.beatmap.hash.clone(),
@@ -59,10 +61,10 @@ pub fn build(job: &ReplayJob) -> Option<(String, Vec<u8>)> {
             client_version: concat!("slam-", env!("CARGO_PKG_VERSION")).to_owned(),
         },
     );
-    let name = if job.name.is_empty() {
+    let name = if job.beatmap.name.is_empty() {
         "replay"
     } else {
-        &job.name
+        &job.beatmap.name
     };
     Some((format!("{name} ({unix_millis}).osr"), osr::encode(&replay)))
 }
@@ -70,9 +72,7 @@ pub fn build(job: &ReplayJob) -> Option<(String, Vec<u8>)> {
 /// Saves `job`'s replay into `dir`, logging the outcome.
 pub fn save(job: &ReplayJob, dir: &Path) {
     let Some((name, bytes)) = build(job) else {
-        if job.session.passed() {
-            tracing::warn!("replay not saved: the recording overflowed");
-        }
+        tracing::warn!("replay not saved: the recording overflowed");
         return;
     };
     let path = dir.join(name);

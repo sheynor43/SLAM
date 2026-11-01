@@ -3227,23 +3227,29 @@ fn a_passed_play_replays_to_the_same_score() {
         session.start_time(),
         T0,
     );
-    let (session, _, _) = run_events(&events, session, track, MS, end, |_| {});
+    let (mut session, _, _) = run_events(&events, session, track, MS, end, |_| {});
     let results = session.results().expect("the play passed");
-    let frames = session.replay_frames().expect("the play recorded");
+    let attempt = session.take_passed_attempt().expect("the play passed");
+    let frames = attempt.frames().expect("the play recorded");
     assert!(results.statistics.count(HitResult::Great) > 0);
     assert!(!frames.is_empty());
     assert!(frames.windows(2).all(|w| w[0].time <= w[1].time));
+    assert_eq!(attempt.score(), results.score);
+    assert_eq!(attempt.score_without_mods(), results.score_without_mods);
+    assert_eq!(attempt.rank(), results.rank);
+    assert_eq!(*attempt.statistics(), results.statistics);
+    assert_eq!(*attempt.maximum_statistics(), results.maximum_statistics);
 
-    let mods = session.mods().clone();
+    let mods = attempt.mods().clone();
     let replay = replay_of_play(
         frames,
         &PlayScore {
             mods: &mods,
-            statistics: &results.statistics,
-            maximum_statistics: &results.maximum_statistics,
-            total_score: results.score,
-            total_score_without_mods: results.score_without_mods,
-            rank: results.rank,
+            statistics: attempt.statistics(),
+            maximum_statistics: attempt.maximum_statistics(),
+            total_score: attempt.score(),
+            total_score_without_mods: attempt.score_without_mods(),
+            rank: attempt.rank(),
         },
         &ReplayInfo {
             beatmap_hash: String::new(),
@@ -3272,17 +3278,84 @@ fn a_passed_play_replays_to_the_same_score() {
 }
 
 #[test]
+fn the_passed_attempt_is_taken_once() {
+    let map = beatmap();
+    let mut d = passed(&map);
+    assert!(d.session.take_passed_attempt().is_some());
+    assert!(d.session.take_passed_attempt().is_none());
+    d.run_until(2_000, |s| s.state == PlayState::Results);
+    assert!(d.session.take_passed_attempt().is_none());
+}
+
+#[test]
+fn passing_and_taking_the_attempt_do_not_allocate() {
+    let map = beatmap();
+    let mut d = Driver::new(&map, mods(vec![slam_osu::mods::Mod::NoFail]));
+    let attempt = assert_no_alloc(|| {
+        d.run_until(12_000, |s| s.state == PlayState::Passed);
+        d.session.take_passed_attempt()
+    });
+    assert!(attempt.is_some());
+
+    // Attempts nobody takes: passing again keeps the older one as its spare, freeing nothing.
+    d.hold(None, GRAVE, 200);
+    d.run_until(12_000, |s| s.state == PlayState::Passed);
+    d.hold(None, GRAVE, 200);
+    assert_eq!(d.state(), PlayState::Playing);
+    assert_no_alloc(|| d.run_until(12_000, |s| s.state == PlayState::Passed));
+    let attempt = d.session.take_passed_attempt().unwrap();
+    assert!(!attempt.frames().unwrap().is_empty());
+}
+
+#[test]
+fn quitting_after_passing_keeps_the_attempt() {
+    let map = beatmap();
+    let mut d = passed(&map);
+    d.tap(ESCAPE);
+    assert!(d.session.take_passed_attempt().is_some());
+}
+
+#[test]
+fn a_play_that_did_not_pass_has_no_attempt() {
+    let map = beatmap();
+    let mut d = Driver::new(&map, ModSet::default());
+    d.run_until(12_000, |s| s.state == PlayState::Failed);
+    assert!(d.session.take_passed_attempt().is_none());
+    d.hold(None, GRAVE, 200);
+    assert_eq!(d.state(), PlayState::Playing);
+    assert!(d.session.take_passed_attempt().is_none());
+}
+
+#[test]
+fn a_quick_retry_before_the_results_keeps_the_passed_attempt() {
+    let map = beatmap();
+    let mut d = passed(&map);
+    let results = d.session.results().unwrap();
+    d.hold(None, GRAVE, 200);
+    assert_eq!(d.state(), PlayState::Playing);
+    let attempt = d
+        .session
+        .take_passed_attempt()
+        .expect("kept through the restart");
+    assert!(!attempt.frames().unwrap().is_empty());
+    assert_eq!(*attempt.statistics(), results.statistics);
+    assert!(d.session.take_passed_attempt().is_none());
+}
+
+#[test]
 fn a_restart_records_anew() {
     let map = beatmap();
     let mut d = passed(&map);
-    let first = d.session.replay_frames().unwrap().to_vec();
+    let first = d.session.take_passed_attempt().unwrap();
+    let first = first.frames().unwrap();
     assert!(!first.is_empty());
     d.hold(None, GRAVE, 200);
     assert_eq!(d.state(), PlayState::Playing);
-    assert!(d.session.replay_frames().is_none());
+    assert!(d.session.take_passed_attempt().is_none());
     // The same play without input records the same frames, from the start again.
     d.run_until(12_000, |s| s.state == PlayState::Passed);
-    let second = d.session.replay_frames().unwrap();
+    let second = d.session.take_passed_attempt().unwrap();
+    let second = second.frames().unwrap();
     assert!(
         (second[0].time - first[0].time).abs() < 2.0,
         "{}",
