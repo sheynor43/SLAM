@@ -46,6 +46,9 @@ fn labels() -> ResultsLabels {
         max_combo: "Max combo".into(),
         mods: "Mods".into(),
         no_mods: "None".into(),
+        average_hit_error: "Average hit error".into(),
+        unstable_rate: "Unstable rate".into(),
+        not_available: "(not available)".into(),
         stats: StatKind::ALL.map(|kind| format!("stat {}", kind.index())),
         retry: "Retry".into(),
         back: "Back".into(),
@@ -67,6 +70,9 @@ fn data(id: u64) -> ResultsData {
         combo: 99,
         max_combo: 120,
         mods: ResultsMods::new(["HD", "DT"]),
+        average_hit_error: Some(-1.5),
+        average_hit_error_text: Some("1.50 ms early".into()),
+        unstable_rate: Some(90.25),
     }
 }
 

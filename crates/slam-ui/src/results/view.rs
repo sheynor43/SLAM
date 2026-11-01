@@ -12,7 +12,7 @@ use slam_text::{FontRegistry, Glyph, GlyphCache, GlyphKey, push_layout};
 
 use super::{
     ResultsButton, ResultsData, ResultsLayout, ResultsSnapshot, StatKind, write_accuracy,
-    write_grouped, write_stat,
+    write_fixed2, write_grouped, write_stat,
 };
 use crate::menu::Rect;
 use crate::menu::view::{Frame, Line, Typesetter};
@@ -24,7 +24,9 @@ const ELLIPSIS: char = '\u{2026}';
 /// Bytes reserved up front in every text buffer.
 const TEXT_CAPACITY: usize = 256;
 /// Rows of the left column.
-const INFO_ROWS: usize = 4;
+const INFO_ROWS: usize = 6;
+/// The mods' row, where "none" is drawn when there are no mods.
+const MODS_ROW: usize = 3;
 
 /// The screen's localised texts, already formatted.
 #[derive(Clone)]
@@ -35,6 +37,10 @@ pub struct ResultsLabels {
     pub mods: String,
     /// Shown instead of the mods when there are none.
     pub no_mods: String,
+    pub average_hit_error: String,
+    pub unstable_rate: String,
+    /// Shown instead of a hit error statistic the play has no value for.
+    pub not_available: String,
     /// Names of the judgement rows, in [`StatKind::ALL`] order.
     pub stats: [String; StatKind::COUNT],
     pub retry: String,
@@ -70,6 +76,7 @@ pub struct ResultsView {
     info_labels: [Line; INFO_ROWS],
     info_values: [Line; INFO_ROWS],
     no_mods: Line,
+    not_available: Line,
     stat_labels: [Line; StatKind::COUNT],
     stat_values: [Line; StatKind::COUNT],
     buttons: [Line; 2],
@@ -103,9 +110,12 @@ impl ResultsView {
                 labelled(&labels.accuracy),
                 labelled(&labels.max_combo),
                 labelled(&labels.mods),
+                labelled(&labels.average_hit_error),
+                labelled(&labels.unstable_rate),
             ],
             info_values: std::array::from_fn(|_| line()),
             no_mods: labelled(&labels.no_mods),
+            not_available: labelled(&labels.not_available),
             stat_labels: labels.stats.each_ref().map(|text| labelled(text)),
             stat_values: std::array::from_fn(|_| line()),
             buttons: [labelled(&labels.retry), labelled(&labels.back)],
@@ -135,6 +145,7 @@ impl ResultsView {
             self.type_setter.lay_out(line, size);
         }
         self.type_setter.lay_out(&mut self.no_mods, size);
+        self.type_setter.lay_out(&mut self.not_available, size);
         for button in &mut self.buttons {
             self.type_setter
                 .lay_out(button, self.theme.button_text_size * scale);
@@ -167,8 +178,15 @@ impl ResultsView {
         self.type_setter
             .lay_out(&mut self.rank, self.theme.results_rank_size * scale);
 
-        let [score, accuracy, combo, mods] = &mut self.info_values;
-        for line in [&mut *score, &mut *accuracy, &mut *combo, &mut *mods] {
+        let [score, accuracy, combo, mods, average, rate] = &mut self.info_values;
+        for line in [
+            &mut *score,
+            &mut *accuracy,
+            &mut *combo,
+            &mut *mods,
+            &mut *average,
+            &mut *rate,
+        ] {
             line.text.clear();
         }
         let _ = write_grouped(&mut score.text, data.score);
@@ -180,7 +198,14 @@ impl ResultsView {
             }
             mods.text.push_str(acronym.as_str());
         }
-        for line in [score, accuracy, combo, mods] {
+        // Without a value the row shows the "not available" text instead, see `push`.
+        if let Some(text) = &data.average_hit_error_text {
+            average.text.push_str(text);
+        }
+        if let Some(rate_value) = data.unstable_rate {
+            let _ = write_fixed2(&mut rate.text, rate_value);
+        }
+        for line in [score, accuracy, combo, mods, average, rate] {
             self.type_setter.lay_out(line, size);
         }
         for ((kind, stat), line) in StatKind::ALL
@@ -203,7 +228,13 @@ impl ResultsView {
             .chain(&self.stat_labels)
             .chain(&self.stat_values)
             .chain(&self.buttons)
-            .chain([&self.title, &self.rank, &self.no_mods, &self.hint])
+            .chain([
+                &self.title,
+                &self.rank,
+                &self.no_mods,
+                &self.not_available,
+                &self.hint,
+            ])
             .flat_map(|line| line.layout.glyphs())
             .filter(|g| matches!(glyphs.glyph(GlyphKey::of(g)), Glyph::Pending))
             .count()
@@ -304,13 +335,28 @@ impl ResultsView {
         }
         // Mods with none: the "none" text over the empty value.
         if data.mods.is_empty() {
-            let area = &layout.info[INFO_ROWS - 1];
+            let area = &layout.info[MODS_ROW];
             place(
                 &self.no_mods,
                 area.x + area.width - pad - self.no_mods.layout.width(),
                 area.y + area.height / 2.0,
                 theme.disabled_text,
             );
+        }
+        // The hit error rows without a value: the "not available" text over the empty one.
+        for (row, present) in [
+            (4, data.average_hit_error_text.is_some()),
+            (5, data.unstable_rate.is_some()),
+        ] {
+            if !present {
+                let area = &layout.info[row];
+                place(
+                    &self.not_available,
+                    area.x + area.width - pad - self.not_available.layout.width(),
+                    area.y + area.height / 2.0,
+                    theme.disabled_text,
+                );
+            }
         }
 
         for (i, button) in ResultsButton::ALL.into_iter().enumerate() {

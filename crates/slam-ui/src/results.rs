@@ -190,6 +190,15 @@ pub struct ResultsData {
     pub combo: u32,
     pub max_combo: u32,
     pub mods: ResultsMods,
+    /// The mean hit offset in ms, raw (not divided by the clock rate); negative is early.
+    /// `None` when the play had no judged hit offsets.
+    pub average_hit_error: Option<f64>,
+    /// The average's row text ("1.23 ms early"), already localised and formatted: `Some`
+    /// exactly when `average_hit_error` is.
+    pub average_hit_error_text: Option<String>,
+    /// The unstable rate as lazer computes it (ten times the standard deviation of the hit
+    /// offsets in ms, already scaled by the clock rate); `None` without hit offsets.
+    pub unstable_rate: Option<f64>,
 }
 
 impl ResultsData {
@@ -238,6 +247,70 @@ pub fn write_grouped(out: &mut impl fmt::Write, value: i64) -> fmt::Result {
         out.write_char(*digit as char)?;
     }
     Ok(())
+}
+
+/// Whether a hit error reads "early": decided on the raw sign, so that -0.001 (which
+/// shows as 0.00) is still early and 0 is late, as lazer does.
+// Ported from osu!lazer 2026.1005.0-lazer: osu.Game/Screens/Ranking/Statistics/AverageHitError.cs
+pub fn is_early(offset: f64) -> bool {
+    offset < 0.0
+}
+
+/// A fixed buffer for the digits of a formatted float.
+struct Digits {
+    bytes: [u8; 40],
+    len: usize,
+}
+
+impl fmt::Write for Digits {
+    fn write_str(&mut self, s: &str) -> fmt::Result {
+        let end = self.len + s.len();
+        self.bytes
+            .get_mut(self.len..end)
+            .ok_or(fmt::Error)?
+            .copy_from_slice(s.as_bytes());
+        self.len = end;
+        Ok(())
+    }
+}
+
+/// Writes `value` with two decimals and commas between thousands, as .NET's `N2` does in
+/// the invariant culture ("1,234.57"). Rounds the exact decimal value of the float, so
+/// 1.005 (a hair under) gives "1.00", and exact ties go away from zero (0.125 is "0.13");
+/// a negative that rounds to zero keeps its sign ("-0.00"). Non-finite values: "NaN", "∞", "-∞". Magnitudes from 1e15 up are written
+/// without commas.
+// Ported from osu!lazer 2026.1005.0-lazer: osu.Game/Screens/Ranking/Statistics/UnstableRate.cs
+pub fn write_fixed2(out: &mut impl fmt::Write, value: f64) -> fmt::Result {
+    if value.is_nan() {
+        return out.write_str("NaN");
+    }
+    if value.is_infinite() {
+        return out.write_str(if value < 0.0 { "-∞" } else { "∞" });
+    }
+    if value.is_sign_negative() && value != 0.0 {
+        out.write_char('-')?;
+    }
+    let magnitude = value.abs();
+    if magnitude >= 1e15 {
+        return write!(out, "{magnitude:.2}");
+    }
+    // Rust breaks an exact tie (x.125, x.375, ...) to even, .NET away from zero: nudge those
+    // up. A tie needs an eighth that is odd, which a float below 1e15 holds exactly.
+    let eighths = magnitude * 8.0;
+    let magnitude = if eighths.fract() == 0.0 && eighths % 2.0 == 1.0 {
+        magnitude + 0.001
+    } else {
+        magnitude
+    };
+    let mut digits = Digits {
+        bytes: [0; 40],
+        len: 0,
+    };
+    fmt::Write::write_fmt(&mut digits, format_args!("{magnitude:.2}"))?;
+    let text = std::str::from_utf8(&digits.bytes[..digits.len]).map_err(|_| fmt::Error)?;
+    let (whole, fraction) = text.split_once('.').ok_or(fmt::Error)?;
+    write_grouped(out, whole.parse().map_err(|_| fmt::Error)?)?;
+    write!(out, ".{fraction}")
 }
 
 /// Writes a row's value: `value`, or `value/maximum` for the optional kinds.
@@ -293,8 +366,9 @@ impl From<ResultsButton> for ResultsAction {
 pub struct ResultsLayout {
     pub title: Rect,
     pub rank: Rect,
-    /// The rows of the left column: score, accuracy, max combo, mods.
-    pub info: [Rect; 4],
+    /// The rows of the left column: score, accuracy, max combo, mods, average hit error,
+    /// unstable rate.
+    pub info: [Rect; 6],
     /// The rows of the right column, one per kind in [`StatKind::ALL`] order; the screen
     /// packs the shown ones from the top, see [`ResultsLayout::stat_row`].
     stats_top: f32,
@@ -330,7 +404,7 @@ impl ResultsLayout {
             height: theme.results_rank_size * scale,
         };
         let info_top = rank.y + rank.height + margin / 2.0;
-        let mut info = [Rect::default(); 4];
+        let mut info = [Rect::default(); 6];
         for (i, row) in info.iter_mut().enumerate() {
             *row = Rect {
                 x: left,
