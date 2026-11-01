@@ -1322,3 +1322,91 @@ fn backspace_repeats_only_erase_and_the_open_panel_takes_no_text() {
     s.tick(at(5), &[key(KEY_BACKSPACE)], &mut snap);
     assert!(acronyms(&s).is_empty());
 }
+
+#[test]
+fn a_passed_play_saves_its_replay_before_the_results() {
+    let mut fixture = host("replay", true);
+    // The slider early on: the play passes soon after the track starts.
+    let path = fixture.dir.join("map.osu");
+    let map = std::fs::read_to_string(&path).unwrap();
+    let map = map.replacen("168,256,30579,", "168,256,500,", 1);
+    assert!(map.contains("168,256,500,"));
+    std::fs::write(&path, map).unwrap();
+    let (mut s, mut snap) = listing(&fixture);
+    // No Fail: the play passes without input.
+    s.tick(
+        at(1),
+        &[key(KEY_F1), key(KEY_W), key(KEY_ESCAPE)],
+        &mut snap,
+    );
+    s.tick(at(2), &[key(KEY_ENTER)], &mut snap);
+    let mut now = advance_until(&mut fixture, &mut s, at(2), |_, s| s.playing());
+    // The output plays in steps of 16 ms, as its callback would report them.
+    const STEP_FRAMES: u64 = SAMPLE_RATE as u64 * 16 / 1000;
+    let mut out = vec![0.0f32; usize::from(CHANNELS) * STEP_FRAMES as usize];
+    let mut frame = 0;
+    let mut play = PlaySnapshot::default();
+    let deadline = std::time::Instant::now() + Duration::from_secs(20);
+    while !fixture.host.game.as_ref().unwrap().session.passed() {
+        assert!(
+            std::time::Instant::now() < deadline,
+            "the play did not pass"
+        );
+        let info = slam_audio::CallbackInfo {
+            frame,
+            timestamp_ns: now,
+            latency_ns: 0,
+            sample_rate: SAMPLE_RATE,
+            channels: CHANNELS,
+        };
+        slam_audio::AudioCallback::process(&mut fixture._mixer, &mut out, &info);
+        fixture
+            .host
+            .audio
+            .output
+            .publish(slam_audio::PositionSnapshot {
+                frame,
+                timestamp_ns: now,
+                latency_ns: 0,
+                sample_rate: SAMPLE_RATE,
+            });
+        frame += STEP_FRAMES;
+        now += 16_000_000;
+        fixture.host.tick_game(now, &[], &mut play);
+        fixture.host.advance(now, &mut s);
+        // The decoder keeps ahead of the callback.
+        std::thread::sleep(Duration::from_millis(1));
+    }
+    assert_eq!(*s.stack().top(), AppScreen::Play(1));
+    // The loader saves it while the results wait to show.
+    let replays = fixture.dir.join("replays");
+    let deadline = std::time::Instant::now() + Duration::from_secs(20);
+    let file = loop {
+        let file = std::fs::read_dir(&replays)
+            .ok()
+            .and_then(|mut entries| entries.next())
+            .map(|entry| entry.unwrap().path());
+        if let Some(file) = file {
+            break file;
+        }
+        assert!(std::time::Instant::now() < deadline, "no replay saved");
+        std::thread::sleep(Duration::from_millis(1));
+    };
+    let name = file.file_name().unwrap().to_string_lossy().into_owned();
+    assert!(
+        name.starts_with("map (") && name.ends_with(").osr"),
+        "{name}"
+    );
+    let replay = slam_formats::osr::decode(&std::fs::read(&file).unwrap())
+        .unwrap()
+        .replay;
+    assert_eq!(
+        replay.player_name.as_deref(),
+        Some(crate::replays::PLAYER_NAME)
+    );
+    let map = std::fs::read(fixture.dir.join("map.osu")).unwrap();
+    assert_eq!(
+        replay.beatmap_hash.as_deref(),
+        Some(crate::replays::md5_hex(&map).as_str())
+    );
+}

@@ -119,6 +119,17 @@ impl ReplayRecorder {
         self.overflowed
     }
 
+    /// An empty recorder with the same interval and room as this one, to record into while
+    /// this one's frames are kept. Call it off the hot paths.
+    pub fn spare(&self) -> ReplayRecorder {
+        ReplayRecorder {
+            frames: Vec::with_capacity(self.frames.capacity()),
+            interval: self.interval,
+            held: Actions::NONE,
+            overflowed: false,
+        }
+    }
+
     /// Forgets the frames recorded (a restart), keeping the buffer.
     pub fn clear(&mut self) {
         self.frames.clear();
@@ -164,6 +175,21 @@ mod tests {
         // 1000 / 60 = 16.67 ms: a frame at 0, then the first step at least that far after
         // the previous frame.
         assert_eq!(times(&r), [0.0, 17.0, 34.0, 51.0, 68.0, 85.0]);
+    }
+
+    #[test]
+    fn a_spare_records_as_the_original_from_empty() {
+        let mut r = ReplayRecorder::new(1000.0, 1.5, 3);
+        let press = [event(1.0, 1.0, Actions::LEFT, true)];
+        r.record_step(&step(1.0, 1.0, Actions::LEFT, &press), false);
+        let mut spare = r.spare();
+        assert!(spare.frames().is_empty());
+        assert!(spare.frames.capacity() >= r.frames.capacity());
+        for ms in 0..=60 {
+            spare.record_step(&step(ms as f64, ms as f32, Actions::NONE, &[]), false);
+        }
+        assert_eq!(times(&spare), [0.0, 25.0, 50.0]);
+        assert_eq!(r.frames().len(), 1);
     }
 
     #[test]

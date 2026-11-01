@@ -155,6 +155,68 @@ impl HudValues {
     }
 }
 
+/// What a passed attempt's replay is made of, taken out of the session as it passes (lazer
+/// imports the score on completion): its input frames and final score.
+#[derive(Debug)]
+pub struct PassedAttempt {
+    recorder: ReplayRecorder,
+    mods: ModSet,
+    score: i64,
+    score_without_mods: i64,
+    rank: ScoreRank,
+    statistics: Statistics,
+    maximum_statistics: Statistics,
+}
+
+impl PassedAttempt {
+    /// An attempt slot recording into `recorder`, filled when an attempt passes.
+    fn spare(recorder: ReplayRecorder, mods: ModSet) -> PassedAttempt {
+        PassedAttempt {
+            recorder,
+            mods,
+            score: 0,
+            score_without_mods: 0,
+            rank: ScoreRank::F,
+            statistics: Statistics::default(),
+            maximum_statistics: Statistics::default(),
+        }
+    }
+
+    /// The attempt's input as replay frames; `None` if the recording overflowed its buffer.
+    pub fn frames(&self) -> Option<&[InputFrame]> {
+        (!self.recorder.overflowed()).then(|| self.recorder.frames())
+    }
+
+    /// The mods played with (their settings; state such as Easy's lives used is not kept).
+    pub fn mods(&self) -> &ModSet {
+        &self.mods
+    }
+
+    /// Total score with the mods' multiplier.
+    pub fn score(&self) -> i64 {
+        self.score
+    }
+
+    /// Total score without the mods' multiplier.
+    pub fn score_without_mods(&self) -> i64 {
+        self.score_without_mods
+    }
+
+    pub fn rank(&self) -> ScoreRank {
+        self.rank
+    }
+
+    /// Counts per result and the highest combo.
+    pub fn statistics(&self) -> &Statistics {
+        &self.statistics
+    }
+
+    /// The counts and combo of a perfect play.
+    pub fn maximum_statistics(&self) -> &Statistics {
+        &self.maximum_statistics
+    }
+}
+
 /// The final score of a passed play, for the results.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct PlayResults {
@@ -373,6 +435,11 @@ pub struct PlaySession {
     fail: Option<FailView>,
     /// The play's input as replay frames, until it passes.
     recorder: ReplayRecorder,
+    /// The slot a passing attempt's frames and score move to, made ahead with its own
+    /// recorder to swap in; `None` once taken, until the next restart makes another.
+    spare_attempt: Option<Box<PassedAttempt>>,
+    /// The attempt that passed, until [`PlaySession::take_passed_attempt`].
+    passed_attempt: Option<Box<PassedAttempt>>,
 }
 
 /// How fast a play runs: lazer's track adjustments from the rate mods.
@@ -499,6 +566,11 @@ impl PlaySession {
             speed,
             speed_set: false,
             fail: None,
+            spare_attempt: Some(Box::new(PassedAttempt::spare(
+                recorder.spare(),
+                mods.clone(),
+            ))),
+            passed_attempt: None,
             recorder,
         }
     }
@@ -566,10 +638,10 @@ impl PlaySession {
         self.hit_events.summary()
     }
 
-    /// The play's input as replay frames, once it passed: the frames recorded until then.
-    /// `None` before passing, or if the recording overflowed its buffer.
-    pub fn replay_frames(&self) -> Option<&[InputFrame]> {
-        (self.passed && !self.recorder.overflowed()).then(|| self.recorder.frames())
+    /// The attempt that passed, once: its replay is saved right away, so that quitting
+    /// before the results or retrying loses nothing. Without allocating.
+    pub fn take_passed_attempt(&mut self) -> Option<Box<PassedAttempt>> {
+        self.passed_attempt.take()
     }
 
     /// Whether the player quit.
@@ -931,6 +1003,26 @@ impl PlaySession {
                 results_at_ns: now_ns.saturating_add(RESULTS_DISPLAY_DELAY_NS),
             };
             self.passed = true;
+            self.keep_passed_attempt();
+        }
+    }
+
+    /// Moves the attempt that just passed into its slot; the session keeps the slot's empty
+    /// buffer for the next attempt. Without allocating: the slot was made ahead.
+    fn keep_passed_attempt(&mut self) {
+        let Some(mut attempt) = self.spare_attempt.take() else {
+            return;
+        };
+        std::mem::swap(&mut attempt.recorder, &mut self.recorder);
+        attempt.score = self.score.total_score();
+        attempt.score_without_mods = self.score.total_score_without_mods();
+        attempt.rank = self.score.rank(&self.initial.mods);
+        attempt.statistics = *self.score.statistics();
+        attempt.maximum_statistics = *self.score.maximum_statistics();
+        // An attempt nobody took becomes the next spare, without freeing it here.
+        if let Some(mut old) = self.passed_attempt.replace(attempt) {
+            old.recorder.clear();
+            self.spare_attempt = Some(old);
         }
     }
 
@@ -1103,6 +1195,12 @@ impl PlaySession {
         self.track_effects = TrackEffects::Neutral;
         self.fail = None;
         self.recorder.clear();
+        if self.spare_attempt.is_none() {
+            self.spare_attempt = Some(Box::new(PassedAttempt::spare(
+                self.recorder.spare(),
+                self.initial.mods.clone(),
+            )));
+        }
         self.input.reset();
         self.phase = Phase::Playing;
         self.pending_seek = Some(self.start_time);

@@ -58,10 +58,10 @@ pub enum Trash {
     Prepared(Box<Prepared>),
     /// Any other value: a finished play's beatmap.
     Other(Box<dyn Send>),
-    /// A finished play that saves no replay.
+    /// A finished play.
     Session(Box<PlaySession>),
-    /// A finished play: its replay is saved if it passed.
-    Replay(Box<ReplayJob>),
+    /// An attempt that passed: its replay is saved.
+    Replay(ReplayJob),
     /// A failed preparation's message, logged when it failed.
     Message(String),
     /// A track that failed to open.
@@ -74,15 +74,8 @@ fn log(trash: Trash, replays: Option<&Path>) {
     match trash {
         Trash::Session(session) => log_hit_errors(&session),
         Trash::Replay(job) => match replays {
-            Some(dir) => {
-                log_hit_errors(&job.session);
-                crate::replays::save(&job, dir);
-            }
-            None if job.session.passed() => {
-                log_hit_errors(&job.session);
-                tracing::warn!("replay not saved: no data folder");
-            }
-            None => {}
+            Some(dir) => crate::replays::save(&job, dir),
+            None => tracing::warn!("replay not saved: no data folder"),
         },
         Trash::Music(MusicEvent::Failed { error, .. }) => tracing::warn!("track: {error}"),
         Trash::TrackCommand(error) => tracing::warn!("track: {error}"),
