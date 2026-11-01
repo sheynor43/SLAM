@@ -79,9 +79,21 @@ jobs:
       - uses: Swatinem/rust-cache@v2
       - name: Clippy
         run: cargo clippy --workspace --all-targets -- -D warnings
+      # The D3D11 tests run on WARP with the debug layer, which is the optional
+      # "Graphics Tools" capability; the tests fail without it instead of passing
+      # unchecked.
+      - name: Install D3D11 debug layer
+        shell: pwsh
+        run: |
+          # Windows 10 and later ship the layer as d3d11_3SDKLayers.dll.
+          if (-not (Test-Path "$env:WINDIR\System32\d3d11_3SDKLayers.dll")) {
+            Add-WindowsCapability -Online -Name Tools.Graphics.DirectX~~~~0.0.1.0
+          }
       # Runners have no audio endpoint: the WASAPI device tests skip themselves.
       - name: Test
         run: cargo test --workspace
+        env:
+          SLAM_REQUIRE_D3D11_DEBUG: 1
 
   deny:
     name: cargo deny
