@@ -321,6 +321,9 @@ pub(crate) enum Easing {
     OutQuint,
     InQuint,
     OutElasticHalf,
+    InSine,
+    OutSine,
+    InOutSine,
 }
 
 impl Easing {
@@ -342,6 +345,9 @@ impl Easing {
                 2f64.powf(-10.0 * t) * ((0.5 * t - ELASTIC_CONST2) * ELASTIC_CONST).sin() + 1.0
                     - offset * t
             }
+            Easing::InSine => 1.0 - (t * std::f64::consts::PI * 0.5).cos(),
+            Easing::OutSine => (t * std::f64::consts::PI * 0.5).sin(),
+            Easing::InOutSine => 0.5 - 0.5 * (std::f64::consts::PI * t).cos(),
         }
     }
 }

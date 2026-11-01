@@ -51,6 +51,22 @@ pub enum ClickAction {
     Hit,
 }
 
+/// The most shakes one update of [`OsuRules`] records; more are dropped (counted in
+/// [`OsuRules::dropped_shakes`]). One per press, so only a step with this many blocked presses
+/// reaches it.
+pub const MAX_SHAKES_PER_UPDATE: usize = 16;
+
+/// A press that shook an object instead of judging it ([`ClickAction::Shake`]): lazer's
+/// `DrawableOsuHitObject.Shake`. A slider shakes through its head, which shakes the whole
+/// slider.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct Shake {
+    /// Object index in the beatmap: a hit circle or a slider.
+    pub index: u32,
+    /// The time of the press.
+    pub time: f64,
+}
+
 /// Which presses may judge an object while other objects are still pending (note lock).
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub enum HitPolicy {
@@ -301,6 +317,11 @@ pub struct OsuRules {
     remaining: usize,
     /// Objects stepped over before they came alive, never to be judged.
     skipped: usize,
+    /// The shakes of the last update, the first `shake_count` of them.
+    shakes: [Shake; MAX_SHAKES_PER_UPDATE],
+    shake_count: usize,
+    /// Shakes dropped over the play for exceeding [`MAX_SHAKES_PER_UPDATE`].
+    dropped_shakes: usize,
 }
 
 impl OsuRules {
@@ -381,6 +402,12 @@ impl OsuRules {
             position: None,
             head: 0,
             skipped: 0,
+            shakes: [Shake {
+                index: 0,
+                time: 0.0,
+            }; MAX_SHAKES_PER_UPDATE],
+            shake_count: 0,
+            dropped_shakes: 0,
         }
     }
 
@@ -399,6 +426,31 @@ impl OsuRules {
     /// done, without a judgement, so that the simulation ends.
     pub fn skipped_objects(&self) -> usize {
         self.skipped
+    }
+
+    /// The objects shaken by presses in the last update, in press order.
+    pub fn shakes(&self) -> &[Shake] {
+        &self.shakes[..self.shake_count]
+    }
+
+    /// Shakes dropped over the play because an update had more than
+    /// [`MAX_SHAKES_PER_UPDATE`].
+    pub fn dropped_shakes(&self) -> usize {
+        self.dropped_shakes
+    }
+
+    /// Records a shake of object `i` by a press at `time`.
+    // Ported from osu!lazer 2026.1005.0-lazer: osu.Game.Rulesets.Osu/Objects/Drawables/DrawableHitCircle.cs (CheckForResult)
+    fn shake(&mut self, i: usize, time: f64) {
+        if self.shake_count == MAX_SHAKES_PER_UPDATE {
+            self.dropped_shakes += 1;
+            return;
+        }
+        self.shakes[self.shake_count] = Shake {
+            index: i as u32,
+            time,
+        };
+        self.shake_count += 1;
     }
 
     /// The hit windows of circles and slider heads.
@@ -603,6 +655,9 @@ impl OsuRules {
             .hit_windows
             .result_for(time - self.objects[i].start_time);
         let action = self.check_hittable(i, false, time, result, alive_time);
+        if action == ClickAction::Shake {
+            self.shake(i, time);
+        }
         if result == HitResult::None || action != ClickAction::Hit {
             return;
         }
@@ -632,6 +687,11 @@ impl OsuRules {
                     .result_for(time - self.objects[i].start_time),
             );
             let action = self.check_hittable(i, true, time, result, alive_time);
+            // `DrawableSliderHead.Shake` shakes the head and the slider.
+            // Ported from osu!lazer 2026.1005.0-lazer: osu.Game.Rulesets.Osu/Objects/Drawables/DrawableSliderHead.cs (Shake)
+            if action == ClickAction::Shake {
+                self.shake(i, time);
+            }
             if result != HitResult::None && action == ClickAction::Hit {
                 self.judge_head(i, s, time, result, alive_time, log);
                 self.sliders[s].post_process_head_judgement(i, time, held, log);
@@ -956,6 +1016,7 @@ impl Rules for OsuRules {
     }
 
     fn update(&mut self, step: &StepInput<'_>, log: &mut JudgementLog) {
+        self.shake_count = 0;
         let mut held = self.held;
         for event in step.events {
             // Lazer's key binding container updates the held actions before propagating.
@@ -1097,6 +1158,23 @@ mod tests {
             rules.check_hittable(0, false, 1000.0, HitResult::None, 500.0),
             ClickAction::Shake
         );
+    }
+
+    #[test]
+    fn shakes_beyond_the_capacity_of_an_update_are_dropped() {
+        let mut rules = OsuRules::with_policy(&stacked_circles(), HitPolicy::StartTimeOrdered);
+        for k in 0..MAX_SHAKES_PER_UPDATE + 2 {
+            rules.shake(k % 3, k as f64);
+        }
+        assert_eq!(rules.shakes().len(), MAX_SHAKES_PER_UPDATE);
+        assert_eq!(
+            rules.shakes()[1],
+            Shake {
+                index: 1,
+                time: 1.0
+            }
+        );
+        assert_eq!(rules.dropped_shakes(), 2);
     }
 
     #[test]

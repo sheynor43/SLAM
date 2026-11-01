@@ -439,6 +439,97 @@ fn objects_stepped_over_are_skipped_and_the_play_ends() {
     assert_eq!(sim.rules().skipped_objects(), 1);
 }
 
+// ---- Shakes ----
+
+/// Every shake of a play as `(object index, press time)`, in order.
+fn shakes(map: &Beatmap, policy: HitPolicy, frames: &[InputFrame]) -> Vec<(u32, f64)> {
+    let mut all = vec![frame(0.0, 256.0, -500.0, NONE)];
+    all.extend_from_slice(frames);
+    let mut sim = Simulator::new(
+        map,
+        ReplayInput::new(all),
+        OsuRules::with_policy(map, policy),
+    );
+    let mut shakes = Vec::new();
+    while sim.step() {
+        shakes.extend(sim.rules().shakes().iter().map(|s| (s.index, s.time)));
+    }
+    assert_eq!(sim.rules().dropped_shakes(), 0);
+    shakes
+}
+
+#[test]
+fn ordered_note_lock_shakes_the_blocked_circle() {
+    let s = shakes(&two_circles(), ORDERED, &[frame(1400.0, 80.0, 80.0, LEFT)]);
+    assert_eq!(s, [(1, 1400.0)]);
+}
+
+#[test]
+fn far_too_early_press_shakes_the_circle() {
+    // 401 ms early: outside every window, so the press has no result and shakes.
+    let map = circles(&[(1500.0, 256, 192)]);
+    for policy in [ORDERED, LEGACY] {
+        let s = shakes(&map, policy, &[frame(1099.0, 256.0, 192.0, LEFT)]);
+        assert_eq!(s, [(0, 1099.0)], "{policy:?}");
+    }
+}
+
+#[test]
+fn legacy_note_lock_shakes_the_blocked_circle() {
+    let s = shakes(&two_circles(), LEGACY, &[frame(1400.0, 80.0, 80.0, LEFT)]);
+    assert_eq!(s, [(1, 1400.0)]);
+}
+
+#[test]
+fn legacy_presses_ignored_under_a_stack_do_not_shake() {
+    let objects: Vec<_> = (0..20)
+        .map(|i| (1000.0 + 100.0 * i as f64, 80, 80))
+        .collect();
+    let s = shakes(
+        &circles(&objects),
+        LEGACY,
+        &[frame(550.0, 55.0, 55.0, LEFT)],
+    );
+    assert_eq!(s, []);
+}
+
+#[test]
+fn hits_and_presses_on_judged_circles_do_not_shake() {
+    // The first press hits circle 0; the second is over it after its judgement.
+    let map = circles(&[(1500.0, 256, 192)]);
+    let s = shakes(
+        &map,
+        ORDERED,
+        &[
+            frame(1500.0, 256.0, 192.0, LEFT),
+            frame(1510.0, 256.0, 192.0, NONE),
+            frame(1520.0, 256.0, 192.0, LEFT),
+        ],
+    );
+    assert_eq!(s, []);
+}
+
+#[test]
+fn shakes_are_those_of_the_last_update() {
+    let map = two_circles();
+    let mut all = vec![
+        frame(0.0, 256.0, -500.0, NONE),
+        frame(1400.0, 80.0, 80.0, LEFT),
+    ];
+    all.push(frame(1450.0, 80.0, 80.0, NONE));
+    let mut sim = Simulator::new(
+        &map,
+        ReplayInput::new(all),
+        OsuRules::with_policy(&map, ORDERED),
+    );
+    while sim.time() < 1400.0 {
+        assert!(sim.step());
+    }
+    assert_eq!(sim.rules().shakes().len(), 1);
+    assert!(sim.step());
+    assert_eq!(sim.rules().shakes(), []);
+}
+
 // ---- Drawable state ----
 
 /// One live circle after a step: `(time, index, judgement time and result)`.

@@ -15,16 +15,17 @@ use slam_play::circles::{
     HitCircles, LiveCircles, PieceTextures, SkinSprite,
 };
 use slam_play::fail::FailFrame;
+use slam_play::shake::ObjectShakes;
 use slam_play::slider_body::Snaking;
 use slam_play::sliders::{
-    AnimationSprites, ArrowStyle, BallPose, BallStyle, HitSliders, LiveSliders, MAX_LIVE_NESTED,
-    NestedPiece, NestedVisual, ObjectTextures, SliderBodies, SliderPose, SliderTextures,
-    SliderVisual, SliderVisuals, animation_frame, ball_pose, push_approaches, push_objects,
-    repeat_pose, slider_pose, tick_pose,
+    AnimationSprites, ArrowStyle, BallPose, BallStyle, BodyDraw, HitSliders, LiveSliders,
+    MAX_LIVE_NESTED, NestedPiece, NestedVisual, ObjectTextures, SliderBodies, SliderPose,
+    SliderTextures, SliderVisual, SliderVisuals, animation_frame, ball_pose, push_approaches,
+    push_objects, repeat_pose, slider_pose, tick_pose,
 };
 use slam_render::Limits;
 use slam_render::atlas::UvRect;
-use slam_render::sprite::SpriteBatch;
+use slam_render::sprite::{Affine, SpriteBatch};
 use slam_render::textures::TextureId;
 use slam_render::upload::{TextureLoaderConfig, texture_loader};
 use slam_render::{Blend, Color};
@@ -586,6 +587,7 @@ fn objects_draw_in_lazer_order_with_bodies_between_sprites() {
         &live_circles,
         &live_sliders,
         1500.0 - 60.0,
+        &ObjectShakes::default(),
         ObjectTextures {
             circles: &circle_textures,
             sliders: &slider_textures,
@@ -600,6 +602,7 @@ fn objects_draw_in_lazer_order_with_bodies_between_sprites() {
         &live_circles,
         live_sliders.as_slice(),
         1500.0 - 60.0,
+        &ObjectShakes::default(),
         &circle_textures,
         None,
     );
@@ -634,6 +637,128 @@ fn objects_draw_in_lazer_order_with_bodies_between_sprites() {
     assert!((centre_x - layout.to_window(Vec2::new(300.0, 200.0)).x).abs() < 1e-3);
 }
 
+/// The window x of every sprite's first vertex, and the bodies, after drawing the circles 0
+/// and 2 and the slider 1 of [`beatmap`] with `shakes` at 1440 ms, with circle 2 judged as
+/// `circle` and the slider's head as `head`.
+fn shaken_scene(
+    shakes: &ObjectShakes,
+    circle: Option<CircleJudgement>,
+    head: Option<CircleJudgement>,
+) -> (Vec<f32>, Vec<BodyDraw>) {
+    let map = beatmap(&ModSet::default());
+    let (circles, sliders) = objects(&map, &ModSet::default(), Snaking::LAZER);
+    let layout = common::layout();
+    let mut batch = SpriteBatch::new();
+    let mut bodies = SliderBodies::new();
+    let live_circles =
+        [(0, None), (2, circle)].map(|(index, judgement)| LiveCircle { index, judgement });
+    let (circle_textures, slider_textures) = (circle_textures(), slider_textures());
+    let live_sliders = snapshot(&map, live(head, None, None));
+    let time = 1440.0;
+    push_objects(
+        &circles,
+        &sliders,
+        &mut batch,
+        &mut bodies,
+        &layout,
+        &live_circles,
+        &live_sliders,
+        time,
+        shakes,
+        ObjectTextures {
+            circles: &circle_textures,
+            sliders: &slider_textures,
+        },
+        None,
+    );
+    push_approaches(
+        &circles,
+        &sliders,
+        &mut batch,
+        &layout,
+        &live_circles,
+        live_sliders.as_slice(),
+        time,
+        shakes,
+        &circle_textures,
+        None,
+    );
+    let xs = batch
+        .vertices()
+        .chunks(4)
+        .map(|q| q[0].position[0])
+        .collect();
+    (xs, bodies.as_slice().to_vec())
+}
+
+/// Circle 2 and the slider shaking since 1425 ms: at 1440 both are at the first swing's +8.
+fn circle_and_slider_shaking() -> ObjectShakes {
+    let mut shakes = ObjectShakes::default();
+    shakes.start(2, 1425.0);
+    shakes.start(1, 1425.0);
+    shakes
+}
+
+/// Asserts how far each sprite and the body moved in window pixels between `still` and
+/// `shaken`.
+fn assert_moved(
+    still: (Vec<f32>, Vec<BodyDraw>),
+    shaken: (Vec<f32>, Vec<BodyDraw>),
+    sprites: &[f32],
+    body: f32,
+) {
+    let moved: Vec<f32> = still.0.iter().zip(&shaken.0).map(|(a, b)| b - a).collect();
+    assert_eq!(moved.len(), sprites.len(), "{moved:?}");
+    for (i, (moved, expected)) in moved.iter().zip(sprites).enumerate() {
+        assert!(
+            (moved - expected).abs() < 1e-3,
+            "sprite {i}: {moved} != {expected}"
+        );
+    }
+    assert_eq!(still.1[0].transform, Affine::IDENTITY);
+    let t = shaken.1[0].transform;
+    assert!(
+        (t.tx - body).abs() < 1e-3 && t.ty == 0.0 && t.a == 1.0,
+        "{t:?}"
+    );
+}
+
+/// 8 osu!pixels in window pixels, and that scaled by the circles' scale.
+fn shake_shifts() -> (f32, f32) {
+    let full = 8.0 * common::layout().scale();
+    let map = beatmap(&ModSet::default());
+    (full, full * map.hit_objects[0].defaults.scale)
+}
+
+#[test]
+fn shaken_objects_move_with_their_approach_circles() {
+    let still = shaken_scene(&ObjectShakes::default(), None, None);
+    let shaken = shaken_scene(&circle_and_slider_shaking(), None, None);
+    let (full, scaled) = shake_shifts();
+    // Sprites: circle 2, the slider's tail and head, circle 0, then the approach circle of
+    // circle 2 (the head's has faded). Circles shake inside their scale container, the
+    // slider's body and tail by the full offset.
+    let sprites = [scaled, scaled, full, full, scaled, scaled, 0.0, 0.0, scaled];
+    assert_moved(still, shaken, &sprites, full);
+}
+
+#[test]
+fn a_judgement_stops_the_shake_of_the_judged_drawable() {
+    // Circle 2 and the slider's head judged at the frame's time: they stand still, the
+    // slider's body and tail shake on until the slider is judged.
+    let judged = Some(CircleJudgement {
+        time: 1440.0,
+        result: HitResult::Great,
+    });
+    let still = shaken_scene(&ObjectShakes::default(), judged, judged);
+    let shaken = shaken_scene(&circle_and_slider_shaking(), judged, judged);
+    let (full, _) = shake_shifts();
+    let mut sprites = vec![0.0; still.0.len()];
+    sprites[2] = full;
+    sprites[3] = full;
+    assert_moved(still, shaken, &sprites, full);
+}
+
 #[test]
 fn a_faded_slider_records_no_body() {
     let map = beatmap(&ModSet::default());
@@ -650,6 +775,7 @@ fn a_faded_slider_records_no_body() {
         &[],
         &snapshot(&map, live(None, None, None)),
         END + 240.0,
+        &ObjectShakes::default(),
         ObjectTextures {
             circles: &circle_textures,
             sliders: &slider_textures,
@@ -696,6 +822,9 @@ fn frame_does_not_allocate(map: &Beatmap) {
     let (circle_textures, slider_textures) = (circle_textures(), ball_textures());
     let mut drawn = 0;
     let mut fell = 0;
+    // Objects shake all the time; sliders only once failing, where their bodies move anyway.
+    let mut shakes = ObjectShakes::default();
+    let mut shaken = 0;
     // From halfway on the play is failing: the objects fall.
     let fail = slam_play::fail::FailView {
         time: map.hit_objects[map.hit_objects.len() / 2].start_time,
@@ -710,6 +839,14 @@ fn frame_does_not_allocate(map: &Beatmap) {
             let fail = FailFrame::new(failing.then_some(fail), time, 0, width, height);
             live_circles.capture(sim.rules());
             live_sliders.capture(sim.rules());
+            let live_indices = live_circles.as_slice().iter().map(|c| c.index);
+            let slider_indices = live_sliders.as_slice().iter().map(|s| s.index);
+            for index in live_indices.chain(slider_indices.filter(|_| failing)) {
+                if shakes.offset(index, time) == 0.0 {
+                    shakes.start(index, time);
+                    shaken += 1;
+                }
+            }
             batch.clear();
             bodies.clear();
             push_objects(
@@ -721,6 +858,7 @@ fn frame_does_not_allocate(map: &Beatmap) {
                 live_circles.as_slice(),
                 &live_sliders,
                 time,
+                &shakes,
                 ObjectTextures {
                     circles: &circle_textures,
                     sliders: &slider_textures,
@@ -735,6 +873,7 @@ fn frame_does_not_allocate(map: &Beatmap) {
                 live_circles.as_slice(),
                 live_sliders.as_slice(),
                 time,
+                &shakes,
                 &circle_textures,
                 fail.as_ref(),
             );
@@ -750,6 +889,7 @@ fn frame_does_not_allocate(map: &Beatmap) {
         }
     }
     assert!(drawn > 0);
+    assert!(shaken > 0);
     assert!(fell > 0, "slider bodies fall with their sliders");
 }
 
@@ -1187,6 +1327,7 @@ fn nested_order_with(
         &[],
         &live,
         time,
+        &ObjectShakes::default(),
         ObjectTextures {
             circles: &circle_textures,
             sliders: &slider_textures,
@@ -1222,6 +1363,142 @@ fn ticks_and_repeats_draw_between_the_tail_and_the_head_with_arrows_under_its_ov
         nested_order(1450.0, Some(Vec::new())),
         (vec![HEAD.0, HEAD_OVERLAY.0], 2)
     );
+}
+
+/// The texture and window x of every sprite's first vertex, and the bodies, after drawing the
+/// slider `live` alone at `time` with `shakes`.
+fn shaken_slider(
+    map: &Beatmap,
+    live: LiveSlider,
+    time: f64,
+    shakes: &ObjectShakes,
+    textures: &SliderTextures,
+) -> (Vec<(u32, f32)>, Vec<BodyDraw>) {
+    let (circles, sliders) = objects(map, &ModSet::default(), Snaking::LAZER);
+    let live = snapshot(map, live);
+    let mut batch = SpriteBatch::new();
+    let mut bodies = SliderBodies::new();
+    let circle_textures = circle_textures();
+    push_objects(
+        &circles,
+        &sliders,
+        &mut batch,
+        &mut bodies,
+        &common::layout(),
+        &[],
+        &live,
+        time,
+        shakes,
+        ObjectTextures {
+            circles: &circle_textures,
+            sliders: textures,
+        },
+        None,
+    );
+    let vertices = batch.vertices();
+    let sprites = batch
+        .batches()
+        .iter()
+        .flat_map(|b| {
+            (b.first_quad..b.first_quad + b.quads)
+                .map(move |q| (b.texture.0, vertices[q as usize * 4].position[0]))
+        })
+        .collect();
+    (sprites, bodies.as_slice().to_vec())
+}
+
+/// How far each sprite of `shaken` moved from `still`, by texture, and the body's shift.
+fn slider_moved(
+    still: (Vec<(u32, f32)>, Vec<BodyDraw>),
+    shaken: (Vec<(u32, f32)>, Vec<BodyDraw>),
+) -> (Vec<(u32, f32)>, f32) {
+    assert_eq!(still.0.len(), shaken.0.len());
+    let moved = still
+        .0
+        .iter()
+        .zip(&shaken.0)
+        .map(|(&(t, a), &(u, b))| {
+            assert_eq!(t, u);
+            (t, b - a)
+        })
+        .collect();
+    let body = shaken.1.first().map_or(0.0, |b| b.transform.tx);
+    (moved, body)
+}
+
+fn assert_shifts(moved: &[(u32, f32)], expected: impl Fn(u32) -> f32) {
+    for &(texture, shift) in moved {
+        assert!(
+            (shift - expected(texture)).abs() < 1e-3,
+            "texture {texture}: {shift} in {moved:?}"
+        );
+    }
+}
+
+#[test]
+fn a_shaking_slider_moves_ticks_repeats_and_arrows_fully_and_its_head_scaled() {
+    let map = nested_map(&ModSet::default());
+    let slider = LiveSlider {
+        index: 0,
+        ..live(None, None, None)
+    };
+    let mut shakes = ObjectShakes::default();
+    shakes.start(0, 1435.0);
+    let textures = slider_textures();
+    let still = shaken_slider(&map, slider, 1450.0, &ObjectShakes::default(), &textures);
+    let shaken = shaken_slider(&map, slider, 1450.0, &shakes, &textures);
+    let (moved, body) = slider_moved(still, shaken);
+    let full = 8.0 * common::layout().scale();
+    let scaled = full * map.hit_objects[0].defaults.scale;
+    assert_eq!(moved.len(), 9);
+    assert_shifts(&moved, |t| match TextureId(t) {
+        HEAD | HEAD_OVERLAY => scaled,
+        _ => full,
+    });
+    assert!((body - full).abs() < 1e-3);
+}
+
+#[test]
+fn the_ball_and_follow_circle_stand_still_and_a_judged_slider_stops() {
+    let map = beatmap(&ModSet::default());
+    let textures = ball_textures();
+    let mut shakes = ObjectShakes::default();
+    shakes.start(1, 1185.0);
+    let head = Some(CircleJudgement {
+        time: 1000.0,
+        result: HitResult::Great,
+    });
+    let slider = live(head, None, None);
+    let still = shaken_slider(&map, slider, 1200.0, &ObjectShakes::default(), &textures);
+    let shaken = shaken_slider(&map, slider, 1200.0, &shakes, &textures);
+    let (moved, body) = slider_moved(still, shaken);
+    let full = 8.0 * common::layout().scale();
+    assert!(
+        moved.iter().any(|&(t, _)| TextureId(t) == BALL_ND),
+        "{moved:?}"
+    );
+    assert!(
+        moved.iter().any(|&(t, _)| TextureId(t) == TAIL),
+        "{moved:?}"
+    );
+    // The head is judged: only the slider's own container shakes.
+    assert_shifts(&moved, |t| match TextureId(t) {
+        TAIL | TAIL_OVERLAY => full,
+        _ => 0.0,
+    });
+    assert!((body - full).abs() < 1e-3);
+
+    // Judged at the frame's time (a short slider ending within the shake): nothing moves.
+    let judged = Some(CircleJudgement {
+        time: 1200.0,
+        result: HitResult::Great,
+    });
+    let slider = live(head, judged, judged);
+    let still = shaken_slider(&map, slider, 1200.0, &ObjectShakes::default(), &textures);
+    let shaken = shaken_slider(&map, slider, 1200.0, &shakes, &textures);
+    let (moved, body) = slider_moved(still, shaken);
+    assert_shifts(&moved, |_| 0.0);
+    assert_eq!(body, 0.0);
 }
 
 #[test]
@@ -1696,6 +1973,7 @@ fn the_follow_circle_and_ball_draw_above_the_head() {
         &[],
         &snapshot(&map, slider),
         2610.0,
+        &ObjectShakes::default(),
         ObjectTextures {
             circles: &circle_textures,
             sliders: &slider_textures,

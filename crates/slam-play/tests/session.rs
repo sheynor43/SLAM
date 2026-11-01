@@ -1809,6 +1809,27 @@ fn hits_reach_the_meter_and_a_quick_retry_starts_it_over() {
 }
 
 #[test]
+fn a_press_far_too_early_shakes_the_circle_until_a_quick_retry() {
+    let map = beatmap();
+    let mut d = Driver::new(&map, mods(vec![slam_osu::mods::Mod::NoFail]));
+    let circle = &map.hit_objects[0];
+    let at = d.mouse(circle.stacked_position());
+    d.tick(&[at]);
+    // Outside the 400 ms miss window, but alive (the preempt is at least 450 ms).
+    d.run_to(circle.start_time - 420.0);
+    assert_eq!(d.snapshot.shakes.offset(0, d.snapshot.time + 10.0), 0.0);
+    d.tap(Z);
+    let time = d.snapshot.time;
+    assert!(d.snapshot.shakes.offset(0, time + 10.0) > 0.0);
+    assert_eq!(d.snapshot.shakes.offset(1, time + 10.0), 0.0);
+    assert_eq!(d.snapshot.hit_errors.since(0).count(), 0);
+
+    d.hold(None, GRAVE, 200);
+    assert_eq!(d.snapshot.restarts, 1);
+    assert_eq!(d.snapshot.shakes.offset(0, time + 10.0), 0.0);
+}
+
+#[test]
 fn hit_error_statistics_count_the_attempt_and_reach_the_results() {
     let map = beatmap();
     let mut d = Driver::new(&map, mods(vec![slam_osu::mods::Mod::NoFail]));

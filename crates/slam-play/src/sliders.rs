@@ -7,7 +7,10 @@
 //! the sprites of circles and sliders in drawing order and records, for each body, the sprite it
 //! goes before ([`SliderBodies`]); the caller draws the batch in parts with the bodies between.
 //!
-//! Not done: the body's `ShakeContainer` and the kiai flash of the head and tail pieces. Reverse
+//! A slider shaken by a blocked press on its head ([`crate::shake`]) moves all but its ball and
+//! follow circle.
+//!
+//! Not done: the kiai flash of the head and tail pieces. Reverse
 //! arrows keep the direction of the full path: they do not follow a body snaking out, and
 //! their rotation is not smoothed over frames. Without frame history, the ball faces right where
 //! lazer keeps its previous rotation (a path too short to tell the direction), and the follow
@@ -28,6 +31,7 @@ use crate::circles::{
 };
 use crate::fail::FailFrame;
 use crate::playfield::PlayfieldLayout;
+use crate::shake::ObjectShakes;
 use crate::slider_body::{
     LegacyBodyColours, Snaking, SnakingTiming, body_mesh, range_distances, snaking_range,
 };
@@ -1262,7 +1266,8 @@ pub struct ObjectTextures<'a> {
 /// drawing order, and records the slider bodies between them in `bodies`. Objects starting
 /// earlier are on top; within a slider, the body, the tail, the ticks, the repeats, the head's
 /// circle, the reverse arrows, the head's overlay and number, then the follow circle and the
-/// ball. The approach circles go above them with [`push_approaches`].
+/// ball. The approach circles go above them with [`push_approaches`]. Objects in `shakes` are
+/// moved by their shake.
 #[allow(clippy::too_many_arguments)]
 pub fn push_objects(
     hit_circles: &HitCircles,
@@ -1273,6 +1278,7 @@ pub fn push_objects(
     circles: &[LiveCircle],
     live_sliders: &LiveSliders,
     time: f64,
+    shakes: &ObjectShakes,
     textures: ObjectTextures<'_>,
     fail: Option<&FailFrame>,
 ) {
@@ -1295,6 +1301,10 @@ pub fn push_objects(
                 let all = PieceLayers::All;
                 let circles = textures.circles;
                 hit_circles.push_piece(batch, layout, circle, &pose, 1.0, piece, circles, all);
+                let shake = circle_shake(shakes, live.index, circle, live.judgement, time);
+                if let Some(shift) = shake_shift(shake, layout) {
+                    batch.transform_from(first, &shift, [1.0; 4]);
+                }
                 if let Some(fail) = fail {
                     let map = fail.drop(live.index, appear(circle), circle.position, layout);
                     batch.transform_from(first, &map, [1.0, 1.0, 1.0, fail.objects_alpha]);
@@ -1321,6 +1331,7 @@ pub fn push_objects(
                     &pose,
                     nested,
                     time,
+                    SliderShake::new(shakes, live, slider, time, layout),
                     textures,
                 );
                 if let Some(fail) = fail {
@@ -1337,6 +1348,54 @@ pub fn push_objects(
     }
 }
 
+/// Where a shake `offset` in osu!pixels moves an object, in window pixels; `None` while it
+/// stands still. The shake is inside the object, so it applies before the fail animation.
+fn shake_shift(offset: f32, layout: &PlayfieldLayout) -> Option<Affine> {
+    (offset != 0.0).then(|| Affine::about([0.0, 0.0], 1.0, 0.0, [offset * layout.scale(), 0.0]))
+}
+
+/// The shake offset at `time` of the circle (or slider head) `circle` of object `index`, judged
+/// as `judgement`: its shake container is inside its scale container.
+// Ported from osu!lazer 2026.1005.0-lazer: osu.Game.Rulesets.Osu/Objects/Drawables/DrawableHitCircle.cs (load)
+fn circle_shake(
+    shakes: &ObjectShakes,
+    index: u32,
+    circle: &CircleVisual,
+    judgement: Option<CircleJudgement>,
+    time: f64,
+) -> f32 {
+    shakes.offset_until(index, time, judgement.map(|j| j.time)) * circle.scale
+}
+
+/// Where a slider's shake moves its parts at a frame, in window pixels.
+#[derive(Debug, Clone, Copy)]
+struct SliderShake {
+    /// The body, tail, ticks and repeats: the slider's own, unscaled shake container, until
+    /// the slider is judged.
+    body: Option<Affine>,
+    /// The head's circle, overlay, number and approach circle: the head's shake container,
+    /// until the head is judged.
+    head: Option<Affine>,
+}
+
+impl SliderShake {
+    fn new(
+        shakes: &ObjectShakes,
+        live: &LiveSlider,
+        slider: &SliderVisual,
+        time: f64,
+        layout: &PlayfieldLayout,
+    ) -> Self {
+        let judged = live.judgement.map(|j| j.time);
+        let body = shakes.offset_until(live.index, time, judged);
+        let head = circle_shake(shakes, live.index, &slider.head, live.head, time);
+        SliderShake {
+            body: shake_shift(body, layout),
+            head: shake_shift(head, layout),
+        }
+    }
+}
+
 /// When an object becomes alive (lazer's `LifetimeStart` of an osu! object): its fade-in
 /// starts a preempt before it.
 fn appear(circle: &CircleVisual) -> f64 {
@@ -1345,7 +1404,7 @@ fn appear(circle: &CircleVisual) -> f64 {
 
 /// Writes the approach circles of the live `circles` and `sliders`' heads at game `time`, in
 /// start time order: lazer's playfield proxies them into a layer above all objects and
-/// judgements.
+/// judgements. Each shakes with its circle or slider head.
 #[allow(clippy::too_many_arguments)]
 pub fn push_approaches(
     hit_circles: &HitCircles,
@@ -1355,18 +1414,24 @@ pub fn push_approaches(
     circles: &[LiveCircle],
     sliders: &[LiveSlider],
     time: f64,
+    shakes: &ObjectShakes,
     textures: &CircleTextures,
     fail: Option<&FailFrame>,
 ) {
     let style = &hit_circles.style;
     let visuals = &hit_sliders.visuals;
     // Lazer's proxies draw the approach circles where their objects are.
-    let drop = |batch: &mut SpriteBatch, first: usize, index: u32, circle: &CircleVisual| {
-        if let Some(fail) = fail {
-            let map = fail.drop(index, appear(circle), circle.position, layout);
-            batch.transform_from(first, &map, [1.0, 1.0, 1.0, fail.objects_alpha]);
-        }
-    };
+    let drop =
+        |batch: &mut SpriteBatch, first: usize, index: u32, circle: &CircleVisual, judgement| {
+            let shake = circle_shake(shakes, index, circle, judgement, time);
+            if let Some(shift) = shake_shift(shake, layout) {
+                batch.transform_from(first, &shift, [1.0; 4]);
+            }
+            if let Some(fail) = fail {
+                let map = fail.drop(index, appear(circle), circle.position, layout);
+                batch.transform_from(first, &map, [1.0, 1.0, 1.0, fail.objects_alpha]);
+            }
+        };
     let Some(approach) = &textures.approach else {
         return;
     };
@@ -1382,7 +1447,7 @@ pub fn push_approaches(
                 let first = batch.len();
                 let pose = circle_pose(circle, live.judgement, time, style);
                 push_approach(batch, layout, circle, &pose, 1.0, approach, hole);
-                drop(batch, first, live.index, circle);
+                drop(batch, first, live.index, circle, live.judgement);
             }
         } else {
             let live = &sliders[s];
@@ -1393,7 +1458,7 @@ pub fn push_approaches(
                 let parent = slider_alpha(slider, live, time);
                 let head = &slider.head;
                 push_approach(batch, layout, head, &pose, parent, approach, hole);
-                drop(batch, first, live.index, &slider.head);
+                drop(batch, first, live.index, &slider.head, live.head);
             }
         }
     }
@@ -1470,11 +1535,13 @@ fn push_slider(
     pose: &SliderPose,
     nested: Nested<'_>,
     time: f64,
+    shake: SliderShake,
     textures: ObjectTextures<'_>,
 ) {
     if pose.object_alpha <= 0.0 {
         return;
     }
+    let (first, first_body) = (batch.len(), bodies.len());
     let body_alpha = pose.object_alpha * pose.body_alpha;
     if body_alpha > 0.0 {
         let b = pose.body_brightness;
@@ -1551,7 +1618,23 @@ fn push_slider(
             layers,
         );
     };
+    // The head shakes itself and the slider's shake container, each its own way; the ball is
+    // in neither.
+    // Ported from osu!lazer 2026.1005.0-lazer: osu.Game.Rulesets.Osu/Objects/Drawables/DrawableSlider.cs (load, Shake)
+    // Ported from osu!lazer 2026.1005.0-lazer: osu.Game.Rulesets.Osu/Objects/Drawables/DrawableSliderHead.cs (Shake)
+    let shift = |batch: &mut SpriteBatch, first: usize, shift: Option<Affine>| {
+        if let Some(shift) = shift {
+            batch.transform_from(first, &shift, [1.0; 4]);
+        }
+    };
+    shift(batch, first, shake.body);
+    if let Some(body) = shake.body {
+        bodies.transform_from(first_body, &body, 1.0);
+    }
+    let head_circle = batch.len();
     head(batch, PieceLayers::Circle);
+    shift(batch, head_circle, shake.head);
+    let arrows = batch.len();
     if let Some(t) = &textures.sliders.arrow {
         let accent = hit_sliders.arrows.colour(slider.head.colour);
         for (repeat, judgement) in nested.pieces(true) {
@@ -1568,7 +1651,10 @@ fn push_slider(
             batch.push(&sprite);
         }
     }
+    shift(batch, arrows, shake.body);
+    let head_overlay = batch.len();
     head(batch, PieceLayers::Overlay);
+    shift(batch, head_overlay, shake.head);
 
     let ball = ball_pose(
         slider,

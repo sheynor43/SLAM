@@ -203,6 +203,31 @@ fn second_last(j: &[Judged]) -> Judged {
     tail
 }
 
+// Shakes
+
+#[test]
+fn far_too_early_press_on_a_head_shakes_the_slider() {
+    // 500 ms early at OD 5 (miss window 400 ms): no result, so the head and the slider shake.
+    let map = input_slider();
+    let frames = [
+        frame(0.0, 0.0, 0.0, NONE),
+        frame(1000.0, 0.0, 0.0, LEFT),
+        frame(1010.0, 0.0, 0.0, NONE),
+    ];
+    for options in [lazer(HitPolicy::StartTimeOrdered), classic()] {
+        let mut sim = Simulator::new(
+            &map,
+            ReplayInput::new(frames.to_vec()),
+            OsuRules::with_options(&map, options),
+        );
+        let mut shakes = Vec::new();
+        while sim.step() {
+            shakes.extend(sim.rules().shakes().iter().map(|s| (s.index, s.time)));
+        }
+        assert_eq!(shakes, [(0, 1000.0)], "{options:?}");
+    }
+}
+
 // TestSceneSliderInput
 
 const TIME_BEFORE_SLIDER: f64 = 250.0;
