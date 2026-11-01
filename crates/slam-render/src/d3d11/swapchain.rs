@@ -42,7 +42,7 @@ pub trait NativeWindow {
 }
 
 /// A flip-model swapchain on a window (ADR-0082): no vsync, tearing where supported,
-/// at most [`MAX_FRAME_LATENCY`] frame queued. Created on the draw thread with
+/// at most [`MAX_FRAME_LATENCY`] frame queued. Created on the thread that uses it with
 /// `D3d11Device::new(.., |d| SwapchainSurface::new(d, window))`.
 ///
 /// The buffers follow [`NativeWindow::size_in_pixels`]: [`D3d11Surface::next_frame`]
@@ -62,6 +62,10 @@ pub struct SwapchainSurface<W: NativeWindow> {
     error: Option<(&'static str, windows::core::Error)>,
     window: W,
 }
+
+// SAFETY: the waitable object is a kernel handle, usable from any thread; the
+// swapchain interfaces are `Send`, and `&mut self` keeps their use to one thread.
+unsafe impl<W: NativeWindow + Send> Send for SwapchainSurface<W> {}
 
 impl<W: NativeWindow> SwapchainSurface<W> {
     pub fn new(device: &ID3D11Device, window: W) -> Result<Self, DeviceError> {

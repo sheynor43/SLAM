@@ -2,26 +2,25 @@
 //! that input arrives. The measurement does not depend on it.
 
 use slam_engine::clock::now_ns;
-use slam_engine::gl::SdlGlSurface;
 use slam_engine::{Draw, FrameInfo};
 use slam_input::QuitHandle;
-use slam_render::gl::{GlDebug, GlDevice};
 use slam_render::{Color, Device};
 
+use crate::backend::Backend;
 use crate::bench::QuitOnDrop;
 
 const FLASH_NS: u64 = 60_000_000;
 
-pub struct Flash {
-    surface: Option<SdlGlSurface>,
-    device: Option<GlDevice<SdlGlSurface>>,
+pub struct Flash<B: Backend> {
+    surface: Option<B>,
+    device: Option<B::Device>,
     seen: u64,
     flash_until_ns: u64,
     _quit: QuitOnDrop,
 }
 
-impl Flash {
-    pub fn new(surface: SdlGlSurface, quit: QuitHandle) -> Self {
+impl<B: Backend> Flash<B> {
+    pub fn new(surface: B, quit: QuitHandle) -> Self {
         Self {
             surface: Some(surface),
             device: None,
@@ -32,10 +31,11 @@ impl Flash {
     }
 }
 
-impl Draw<u64> for Flash {
+impl<B: Backend> Draw<u64> for Flash<B> {
     fn start(&mut self) {
         let surface = self.surface.take().expect("surface is set before start");
-        self.device = Some(GlDevice::new(surface, GlDebug::for_build()).expect("GL device"));
+        // The window thread made a device on this surface already.
+        self.device = Some(surface.create_device().expect("render device"));
     }
 
     fn frame(&mut self, _: &FrameInfo, presses: &u64) {
@@ -57,6 +57,6 @@ impl Draw<u64> for Flash {
 
     fn stop(&mut self) {
         let device = self.device.take().expect("started");
-        self.surface = Some(device.into_surface().expect("release GL context"));
+        self.surface = B::release(device).expect("release the render device");
     }
 }

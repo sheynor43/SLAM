@@ -12,14 +12,15 @@ use std::sync::Arc;
 use std::sync::atomic::Ordering;
 use std::time::Duration;
 
-use slam_audio::{Backend, MixerConfig, Sample, StreamConfig};
+use slam_audio::{Backend, MixerConfig, MixerHandle, OutputStream, Sample, StreamConfig};
 use slam_engine::clock::now_ns;
 use slam_engine::{Engine, EngineConfig};
-use slam_input::{InputWindow, TickMapper, event_ring, sdl_ticks_ns};
+use slam_input::{InputWindow, PriorityRequest, TickMapper, event_ring, sdl_ticks_ns};
 
 pub use clicker::{Click, ClickReport, Clicker, Clicks};
 pub use flash::Flash;
 
+use crate::backend::{self as render, Opened, Renderer, WindowKind, WithBackend};
 use crate::bench::{MAX_SECONDS, number};
 
 pub const USAGE: &str = "usage: slam-app click [--seconds S] [--backend NAME] [--device ID] \
@@ -186,10 +187,53 @@ pub fn run(options: &Options) -> Result<(), String> {
         stream.config().buffer_frames
     );
 
-    let mut window =
-        InputWindow::new_opengl("SLAM click test", 640, 360).map_err(|e| e.to_string())?;
-    let surface =
-        slam_engine::gl::SdlGlSurface(window.create_gl_context().map_err(|e| e.to_string())?);
+    let window = |kind| {
+        let (title, width, height) = ("SLAM click test", 640, 360);
+        match kind {
+            WindowKind::OpenGl => InputWindow::new_opengl(title, width, height),
+            WindowKind::Native => InputWindow::new(title, width, height),
+        }
+        .map_err(|e| e.to_string())
+    };
+    let test = ClickTest {
+        options,
+        sample,
+        handle,
+        stream,
+    };
+    render::run(Renderer::Auto, PriorityRequest::High, window, test)?
+}
+
+/// The click test after the audio stream is open, for the chosen render backend.
+struct ClickTest<'a> {
+    options: &'a Options,
+    sample: Arc<Sample>,
+    handle: MixerHandle,
+    stream: OutputStream,
+}
+
+impl WithBackend for ClickTest<'_> {
+    type Output = Result<(), String>;
+
+    fn run<B: render::Backend>(self, window: InputWindow, opened: Opened<B>) -> Self::Output {
+        let Self {
+            options,
+            sample,
+            handle,
+            stream,
+        } = self;
+        measure(options, sample, handle, stream, window, opened.surface)
+    }
+}
+
+fn measure<B: render::Backend>(
+    options: &Options,
+    sample: Arc<Sample>,
+    handle: MixerHandle,
+    stream: OutputStream,
+    mut window: InputWindow,
+    surface: B,
+) -> Result<(), String> {
     let (mut sink, source) = event_ring(1024);
     let engine = Engine::spawn(
         EngineConfig::default(),
@@ -219,7 +263,7 @@ pub fn run(options: &Options) -> Result<(), String> {
         draw,
         ..
     } = engine.shutdown();
-    // The GL context goes before the window.
+    // The surface goes before the window.
     drop(draw);
     // Let the last queued voices start before the stream closes.
     std::thread::sleep(Duration::from_millis(100));

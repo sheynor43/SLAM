@@ -12,30 +12,29 @@ use slam_audio::{
     MusicPosition, StreamConfig, TrackSource,
 };
 use slam_engine::clock::now_ns;
-use slam_engine::gl::SdlGlSurface;
 use slam_engine::limiter::{LimiterMode, MAX_HZ, MIN_HZ, is_valid_hz};
 use slam_engine::{Draw, Engine, EngineConfig, FrameInfo, TickInfo, Update};
 use slam_input::{
-    CursorVisibility, DEFAULT_WINDOWED_SIZE, InputEvent, InputWindow, TickMapper, WindowScale,
-    event_ring, sdl_ticks_ns,
+    CursorVisibility, DEFAULT_WINDOWED_SIZE, InputEvent, InputWindow, PriorityRequest, TickMapper,
+    WindowScale, event_ring, sdl_ticks_ns,
 };
 use slam_osu::judgement::HitResult;
 use slam_osu::{Mod, ModSet};
 use slam_play::{
     BackgroundSettings, Bindings, LiveInput, Offsets, PlaySession, PlaySnapshot, PlayfieldLayout,
 };
-use slam_render::gl::{GlDebug, GlDevice};
 use slam_render::{Color, Device};
 use slam_text::FontRegistry;
 use slam_ui::i18n::Localizer;
 
+use crate::backend::{self as render, Opened, Renderer, WindowKind, WithBackend};
 use crate::bench::number;
 
 pub mod fps;
 mod perf;
 pub mod scene;
 use perf::{DrawFigures, FramePerf, ReportSources, SharedFrameTimes};
-use scene::{CHANNELS, PlayScene, PlaySettings, Prepared, SAMPLE_RATE};
+use scene::{CHANNELS, PlayScene, PlaySettings, Prepared, SAMPLE_RATE, SceneGpu};
 
 pub const USAGE: &str = "usage: slam-app play MAP.osu [--skin DIR] [--backend NAME] \
                          [--device ID] [--buffer FRAMES] [--fps HZ|unlimited] \
@@ -295,9 +294,9 @@ impl Update for Gameplay {
 }
 
 /// The draw thread's side. The device exists between `start` and `stop`, on the draw thread.
-struct View {
-    surface: Option<SdlGlSurface>,
-    device: Option<GlDevice<SdlGlSurface>>,
+struct View<B: render::Backend> {
+    surface: Option<B>,
+    device: Option<(B::Device, SceneGpu<B::Device>)>,
     scene: PlayScene,
     /// The FPS counter with `--show-fps` (ADR-0053).
     fps: Option<fps::FpsOverlay>,
@@ -308,24 +307,24 @@ struct View {
     _quit: crate::bench::QuitOnDrop,
 }
 
-impl Draw<PlaySnapshot> for View {
+impl<B: render::Backend> Draw<PlaySnapshot> for View<B> {
     fn start(&mut self) {
-        // The window thread made the context and released it (ADR-0018).
+        // The window thread made the surface and a device on it (ADR-0018, ADR-0080).
         let surface = self.surface.take().expect("surface is set before start");
-        // The same context made a device in `device_limits` already; failing now is a
-        // driver fault this developer command does not recover from.
-        let mut device = GlDevice::new(surface, GlDebug::for_build()).expect("GL device");
+        // Failing now is a driver fault this developer command does not recover from.
+        let mut device = surface.create_device().expect("render device");
         // The update thread does not wait for the glyphs (the lead-in runs on).
-        self.scene
+        let gpu = self
+            .scene
             .start(&mut device, GLYPH_WARM_TIMEOUT, self.fps.as_ref());
-        self.device = Some(device);
+        self.device = Some((device, gpu));
     }
 
     fn frame(&mut self, info: &FrameInfo, snapshot: &PlaySnapshot) {
         if let Some(perf) = &mut self.perf {
             perf.record(info.wait.woke_ns);
         }
-        let device = self.device.as_mut().expect("started");
+        let (device, gpu) = self.device.as_mut().expect("started");
         let size = device.begin_frame(Color::rgb(0.0, 0.0, 0.0));
         self.surface_size
             .store(pack_size(size.width, size.height), Ordering::Relaxed);
@@ -339,6 +338,7 @@ impl Draw<PlaySnapshot> for View {
             &*overlay
         });
         self.scene.draw(
+            gpu,
             device,
             size,
             info.wait.woke_ns,
@@ -362,9 +362,9 @@ impl Draw<PlaySnapshot> for View {
     }
 
     fn stop(&mut self) {
-        let mut device = self.device.take().expect("started");
-        self.scene.stop(&mut device);
-        self.surface = Some(device.into_surface().expect("release GL context"));
+        let (mut device, gpu) = self.device.take().expect("started");
+        gpu.destroy(&mut device);
+        self.surface = B::release(device).expect("release the render device");
     }
 }
 
@@ -418,19 +418,42 @@ pub(crate) fn load_track(player: &mut MusicPlayer, path: &Path) -> Result<(), St
     Err(format!("{}: not opened in time", path.display()))
 }
 
-/// The device limits the texture loader needs; the context is released again for the
-/// draw thread.
-pub(crate) fn device_limits(
-    surface: SdlGlSurface,
-) -> Result<(SdlGlSurface, slam_render::Limits), String> {
-    let device = GlDevice::new(surface, GlDebug::for_build()).map_err(|e| e.to_string())?;
-    let limits = device.limits();
-    let surface = device.into_surface().map_err(|e| e.to_string())?;
-    Ok((surface, limits))
-}
-
 /// Plays the beatmap in a window until it is closed and prints the judgements.
 pub fn run(options: &Options) -> Result<(), String> {
+    // A developer tool: always windowed, without the settings' [window] (ADR-0070).
+    let window = |kind| {
+        let [width, height] = DEFAULT_WINDOWED_SIZE.map(i32::from);
+        match kind {
+            WindowKind::OpenGl => InputWindow::new_opengl("SLAM", width, height),
+            WindowKind::Native => InputWindow::new("SLAM", width, height),
+        }
+        .map_err(|e| e.to_string())
+    };
+    render::run(Renderer::Auto, PriorityRequest::High, window, Play(options))?
+}
+
+struct Play<'a>(&'a Options);
+
+impl WithBackend for Play<'_> {
+    type Output = Result<(), String>;
+
+    fn run<B: render::Backend>(self, window: InputWindow, opened: Opened<B>) -> Self::Output {
+        play(self.0, window, opened)
+    }
+}
+
+fn play<B: render::Backend>(
+    options: &Options,
+    mut window: InputWindow,
+    opened: Opened<B>,
+) -> Result<(), String> {
+    let Opened {
+        surface,
+        limits,
+        size_in_pixels: (pixels_w, pixels_h),
+        priority,
+    } = opened;
+    crate::gpu::log_priority(&priority);
     let backend = match options.backend {
         Some(backend) => backend,
         None => *Backend::available()
@@ -471,19 +494,10 @@ pub fn run(options: &Options) -> Result<(), String> {
     )
     .map_err(|e| e.to_string())?;
 
-    // A developer tool: always windowed, without the settings' [window] (ADR-0070).
-    let [window_w, window_h] = DEFAULT_WINDOWED_SIZE.map(i32::from);
-    let mut window =
-        InputWindow::new_opengl("SLAM", window_w, window_h).map_err(|e| e.to_string())?;
-    let context = window.create_gl_context().map_err(|e| e.to_string())?;
-    crate::gpu::log_priority(context.priority());
-    let surface = SdlGlSurface(context);
-    let (pixels_w, pixels_h) = surface.0.size_in_pixels();
     let scale = window.window_scale();
     let pixels_per_point = scale.pixels_per_point();
     let initial_size = pack_size(pixels_w, pixels_h);
     let surface_size = Arc::new(AtomicU64::new(initial_size));
-    let (surface, limits) = device_limits(surface)?;
     let registry = Arc::new(FontRegistry::with_builtin());
     // English until the language setting exists (#98).
     let localizer = Localizer::builtin().map_err(|e| e.to_string())?;
@@ -633,7 +647,7 @@ pub fn run(options: &Options) -> Result<(), String> {
         draw,
         ..
     } = engine.shutdown();
-    // The GL context goes before the window.
+    // The surface goes before the window.
     drop(draw);
     let deadline = Instant::now() + Duration::from_secs(1);
     while !gameplay.session.stop_sounds(&mut gameplay.mixer) && Instant::now() < deadline {
