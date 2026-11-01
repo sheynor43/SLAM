@@ -1,10 +1,8 @@
 //! The benchmark scene: rotating squares from one atlas page, nothing else.
 
-use slam_engine::gl::SdlGlSurface;
 use slam_engine::{Draw, FrameInfo};
 use slam_input::QuitHandle;
 use slam_render::atlas::{Atlas, AtlasRegion};
-use slam_render::gl::{GlDebug, GlDevice, GlTexture};
 use slam_render::sprite::{DEFAULT_SLOTS, Projection, Sprite, SpriteBatch, SpriteRenderer};
 use slam_render::textures::Textures;
 use slam_render::{Color, Device, Extent, TextureFormat};
@@ -13,6 +11,7 @@ use slam_engine::clock::now_ns;
 
 use super::record::{FrameWork, Recorder};
 use super::thread::ThreadSched;
+use crate::backend::Backend;
 
 const SPRITE_SIZE: f32 = 24.0;
 
@@ -42,26 +41,26 @@ impl Drop for QuitOnDrop {
     }
 }
 
-struct Resources {
-    device: GlDevice<SdlGlSurface>,
-    textures: Textures<GlTexture>,
-    renderer: SpriteRenderer<GlDevice<SdlGlSurface>>,
+struct Resources<D: Device> {
+    device: D,
+    textures: Textures<D::Texture>,
+    renderer: SpriteRenderer<D>,
     square: AtlasRegion,
 }
 
-/// Owns the GL surface; the device and its resources exist between `start` and
-/// `stop`, on the draw thread.
-pub struct Scene {
-    surface: Option<SdlGlSurface>,
+/// Owns the surface; the device and its resources exist between `start` and `stop`,
+/// on the draw thread.
+pub struct Scene<B: Backend> {
+    surface: Option<B>,
     sprites: usize,
     /// Engine time of `t = 0` for the animation.
     epoch_ns: u64,
     batch: SpriteBatch,
-    resources: Option<Resources>,
+    resources: Option<Resources<B::Device>>,
     pub recorder: Recorder,
     /// Filled by `start`.
     pub driver: String,
-    /// Wait for the GPU (`glFinish`) before `present`; the wait counts as draw time.
+    /// Wait for the GPU before `present`; the wait counts as draw time.
     finish: bool,
     sched: ThreadSched,
     /// Outcome of applying `sched` to the draw thread, set by `start`.
@@ -69,9 +68,9 @@ pub struct Scene {
     _quit: QuitOnDrop,
 }
 
-impl Scene {
+impl<B: Backend> Scene<B> {
     pub fn new(
-        surface: SdlGlSurface,
+        surface: B,
         sprites: usize,
         epoch_ns: u64,
         recorder: Recorder,
@@ -95,11 +94,13 @@ impl Scene {
     }
 }
 
-impl Draw<()> for Scene {
+impl<B: Backend> Draw<()> for Scene<B> {
     fn start(&mut self) {
         let surface = self.surface.take().expect("surface is set before start");
-        let mut device = GlDevice::new(surface, GlDebug::for_build()).expect("GL device");
-        self.driver = device.driver_info();
+        // The window thread made a device on this surface already; failing now is a
+        // driver fault the benchmark does not recover from.
+        let mut device = surface.create_device().expect("render device");
+        self.driver = B::driver_info(&device);
         let mut textures = Textures::new();
         let mut atlas = Atlas::new(Extent::new(64, 64), TextureFormat::Rgba8);
         let square = atlas
@@ -141,7 +142,7 @@ impl Draw<()> for Scene {
             )
             .ok();
         if self.finish {
-            r.device.finish();
+            B::finish(&mut r.device);
         }
         let drawn_ns = now_ns();
         let presented = r.device.present().is_ok();
@@ -164,6 +165,6 @@ impl Draw<()> for Scene {
         for texture in textures.drain() {
             device.destroy_texture(texture);
         }
-        self.surface = Some(device.into_surface().expect("release GL context"));
+        self.surface = B::release(device).expect("release the render device");
     }
 }

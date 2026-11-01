@@ -13,7 +13,6 @@ use slam_audio::{
     MusicPosition, StreamConfig, TrackSource, VoiceGroup,
 };
 use slam_engine::clock::now_ns;
-use slam_engine::gl::SdlGlSurface;
 use slam_engine::{
     Draw, DrawRateControl, Engine, EngineConfig, EngineShared, FrameInfo, TickInfo, Update,
     UpdateRateControl,
@@ -33,7 +32,6 @@ use slam_play::{
     Bindings, LiveInput, Offsets, PlaySession, PlaySnapshot, PlayState, PlayfieldLayout,
 };
 use slam_render::atlas::{Atlas, AtlasRegion};
-use slam_render::gl::{GlDebug, GlDevice, GlTexture};
 use slam_render::sprite::{DEFAULT_SLOTS, Projection, SpriteBatch, SpriteRenderer};
 use slam_render::textures::Textures;
 use slam_render::upload::{TextureLoaderConfig, TextureState, TextureUploads, texture_loader};
@@ -60,13 +58,14 @@ use slam_ui::song_select::{
 use slam_ui::theme::Theme;
 use slam_ui::widgets::DropdownView;
 
+use crate::backend::{self as render, Opened, Renderer, WindowKind, WithBackend};
 use crate::backgrounds::{BackgroundFade, BackgroundPicker, BackgroundTarget, MAX_BACKGROUNDS};
 use crate::details::DetailsPicker;
 use crate::displays::{ListsLink, ShownViews};
 use crate::loader::{LoaderConfig, LoaderLink, PlayOptions, SceneTrash, Trash};
 use crate::play::fps::{FpsDisplay, FpsOverlay, FpsSource, MAX_FPS_GLYPHS};
-use crate::play::scene::{CHANNELS, PlayScene, PlaySettings, Prepared, SAMPLE_RATE};
-use crate::play::{device_limits, pack_size};
+use crate::play::pack_size;
+use crate::play::scene::{CHANNELS, PlayScene, PlaySettings, Prepared, SAMPLE_RATE, SceneGpu};
 use crate::replays::{ReplayBeatmap, ReplayJob};
 use crate::settings::saver::SaveLink;
 use crate::settings::{Dirs, InputSettings, Settings};
@@ -2003,19 +2002,19 @@ impl Update for Shell {
     }
 }
 
-struct Resources {
-    device: GlDevice<SdlGlSurface>,
-    textures: Textures<GlTexture>,
-    renderer: SpriteRenderer<GlDevice<SdlGlSurface>>,
+struct Resources<D: Device> {
+    device: D,
+    textures: Textures<D::Texture>,
+    renderer: SpriteRenderer<D>,
     /// Draws MSDF glyphs.
-    text_renderer: SpriteRenderer<GlDevice<SdlGlSurface>>,
+    text_renderer: SpriteRenderer<D>,
     white: AtlasRegion,
 }
 
 /// The draw thread's side. The device and its resources exist between `start` and `stop`.
-struct View {
-    surface: Option<SdlGlSurface>,
-    resources: Option<Resources>,
+struct View<B: render::Backend> {
+    surface: Option<B>,
+    resources: Option<Resources<B::Device>>,
     theme: Theme,
     glyphs: GlyphCache,
     menu: MenuView,
@@ -2028,9 +2027,9 @@ struct View {
     display_views: Option<ShownViews>,
     shapes: SpriteBatch,
     text: SpriteBatch,
-    /// Scenes of plays the update thread starts, and the one shown.
+    /// Scenes of plays the update thread starts, and the one shown with its GPU resources.
     scenes: Option<rtrb::Consumer<(u64, PlayScene)>>,
-    scene: Option<(u64, PlayScene)>,
+    scene: Option<(u64, PlayScene, SceneGpu<B::Device>)>,
     /// `scene` was on a layer: a snapshot without it now means it went (the scene arrives
     /// before the snapshot that shows it).
     scene_shown: bool,
@@ -2055,26 +2054,25 @@ fn scene_on_layers(snapshot: &ShellSnapshot, id: u64) -> bool {
 }
 
 /// Destroys `scene`'s GPU resources and hands it to the loader. Navigation.
-fn retire(
-    scene: &mut Option<(u64, PlayScene)>,
+fn retire<D: Device>(
+    scene: &mut Option<(u64, PlayScene, SceneGpu<D>)>,
     trash: &mut Option<SceneTrash>,
-    device: &mut GlDevice<SdlGlSurface>,
+    device: &mut D,
 ) {
-    if let Some((_, mut old)) = scene.take() {
-        old.stop(device);
+    if let Some((_, old, gpu)) = scene.take() {
+        gpu.destroy(device);
         if let Some(trash) = trash {
             trash.free(old);
         }
     }
 }
 
-impl Draw<ShellSnapshot> for View {
+impl<B: render::Backend> Draw<ShellSnapshot> for View<B> {
     fn start(&mut self) {
-        // The window thread made the context and released it (ADR-0018).
+        // The window thread made the surface and a device on it (ADR-0018, ADR-0080);
+        // failing now is a driver fault the shell does not recover from.
         let surface = self.surface.take().expect("surface is set before start");
-        // The same context made a device in `device_limits` already; failing now is a
-        // driver fault this developer shell does not recover from.
-        let mut device = GlDevice::new(surface, GlDebug::for_build()).expect("GL device");
+        let mut device = surface.create_device().expect("render device");
         let renderer = SpriteRenderer::new(&mut device, DEFAULT_SLOTS).expect("renderer");
         let text_renderer = SpriteRenderer::with_shader(&mut device, DEFAULT_SLOTS, &shaders::MSDF)
             .expect("text renderer");
@@ -2123,11 +2121,11 @@ impl Draw<ShellSnapshot> for View {
         {
             retire(&mut self.scene, &mut self.scene_trash, &mut r.device);
             // The glyphs come in over the first frames; the lead-in runs meanwhile.
-            scene.start(&mut r.device, Duration::ZERO, None);
-            self.scene = Some((id, scene));
+            let gpu = scene.start(&mut r.device, Duration::ZERO, None);
+            self.scene = Some((id, scene, gpu));
             self.scene_shown = false;
         }
-        if let Some((id, _)) = &self.scene {
+        if let Some((id, _, _)) = &self.scene {
             match (scene_on_layers(snapshot, *id), self.scene_shown) {
                 (true, _) => self.scene_shown = true,
                 (false, true) => {
@@ -2262,13 +2260,14 @@ impl Draw<ShellSnapshot> for View {
             if play {
                 // Only the scene of the play on the layer: another one's snapshot would
                 // mislead its views.
-                if let Some((id, scene)) = &mut self.scene
+                if let Some((id, scene, gpu)) = &mut self.scene
                     && scene_on_layers(snapshot, *id)
                 {
                     // Over the screen it enters from (a 200 ms transition), the background
                     // must hide that screen even when fully dimmed.
                     let over_layer = i > 0;
                     scene.draw(
+                        gpu,
                         &mut r.device,
                         size,
                         info.wait.woke_ns,
@@ -2334,11 +2333,11 @@ impl Draw<ShellSnapshot> for View {
         for texture in textures.drain() {
             device.destroy_texture(texture);
         }
-        self.surface = Some(device.into_surface().expect("release GL context"));
+        self.surface = B::release(device).expect("release the render device");
     }
 }
 
-impl View {
+impl<B: render::Backend> View<B> {
     fn request_glyphs(&mut self) -> usize {
         self.menu.request_glyphs(&mut self.glyphs)
             + self.song_select.request_glyphs(&mut self.glyphs)
@@ -2483,22 +2482,49 @@ fn with_songs(mut settings: Settings, songs: Option<PathBuf>) -> Settings {
 /// Opens the window with the main menu and runs until it is closed. With a songs folder, the
 /// song select lists the beatmap sets of that folder.
 pub fn run(settings: Settings) -> Result<(), String> {
+    let (state, position) = (settings.window.state(), settings.window.windowed_position);
+    let window = |kind| {
+        match kind {
+            WindowKind::OpenGl => InputWindow::new_opengl_in("SLAM", state, position),
+            WindowKind::Native => InputWindow::new_native_in("SLAM", state, position),
+        }
+        .map_err(|e| e.to_string())
+    };
+    render::run(
+        Renderer::Auto,
+        slam_input::PriorityRequest::High,
+        window,
+        App(settings),
+    )?
+}
+
+struct App(Settings);
+
+impl WithBackend for App {
+    type Output = Result<(), String>;
+
+    fn run<B: render::Backend>(self, window: InputWindow, opened: Opened<B>) -> Self::Output {
+        run_with(self.0, window, opened)
+    }
+}
+
+fn run_with<B: render::Backend>(
+    settings: Settings,
+    mut window: InputWindow,
+    opened: Opened<B>,
+) -> Result<(), String> {
+    let Opened {
+        surface,
+        limits,
+        size_in_pixels: (pixels_w, pixels_h),
+        priority,
+    } = opened;
+    crate::gpu::log_priority(&priority);
     let theme = Theme::default();
-    let mut window = InputWindow::new_opengl_in(
-        "SLAM",
-        settings.window.state(),
-        settings.window.windowed_position,
-    )
-    .map_err(|e| e.to_string())?;
-    let context = window.create_gl_context().map_err(|e| e.to_string())?;
-    crate::gpu::log_priority(context.priority());
-    let surface = SdlGlSurface(context);
-    let (pixels_w, pixels_h) = surface.0.size_in_pixels();
     let scale = window.window_scale();
     let pixels_per_point = scale.pixels_per_point();
     let initial_size = pack_size(pixels_w, pixels_h);
     let surface_size = Arc::new(AtomicU64::new(initial_size));
-    let (surface, limits) = device_limits(surface)?;
     let registry = Arc::new(FontRegistry::with_builtin());
     let glyphs = glyph_atlas(Arc::clone(&registry), &GlyphAtlasConfig::new(limits))
         .map_err(|e| e.to_string())?;
@@ -2841,7 +2867,7 @@ pub fn run(settings: Settings) -> Result<(), String> {
         draw,
         ..
     } = engine.shutdown();
-    // The GL context goes before the window.
+    // The surface goes before the window.
     drop(draw);
     // A play still on: its sounds stop before the output closes.
     if let Some(host) = &mut shell.host

@@ -283,7 +283,6 @@ mod tests {
         assert_eq!(result.id, 7);
         let prepared = result.result.unwrap();
         assert!(!prepared.beatmap.hit_objects.is_empty());
-        assert!(!prepared.scene.started());
         assert_eq!(prepared.scene.dim(), 0.7);
         link.free(Trash::Prepared(prepared));
 

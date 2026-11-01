@@ -646,9 +646,8 @@ fn a_play_starts_with_its_scene_and_ends_back_in_the_list() {
     let now = advance_until(&mut fixture, &mut s, TRANSITION_NS + 1, |_, s| s.playing());
     assert_eq!(*s.stack().top(), AppScreen::Play(1));
     assert!(!s.is_loading());
-    let (id, scene) = fixture.scenes.pop().unwrap();
+    let (id, _scene) = fixture.scenes.pop().unwrap();
     assert_eq!(id, 1);
-    assert!(!scene.started());
     assert!(fixture.host.game.is_some());
 
     // The player quits: sounds stop and the screen goes at once.

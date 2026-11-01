@@ -208,7 +208,8 @@ struct State {
 }
 
 /// Direct3D 11 device at feature level 11.0 (Shader Model 5.0). Created, used and
-/// released on the draw thread.
+/// released on one thread: the draw thread, or the window thread for `slam-app`'s
+/// check that the backend works (ADR-0080).
 ///
 /// The rasterizer state (no culling, depth clip on), the primitive topology (triangle
 /// list) and one linear clamp-to-edge sampler in every sampler register of both stages
@@ -217,10 +218,18 @@ pub struct D3d11Device<S: D3d11Surface> {
     device: ID3D11Device,
     context: ID3D11DeviceContext,
     info_queue: Option<ID3D11InfoQueue>,
+    /// An event query for [`D3d11Device::finish`].
+    finish_query: ID3D11Query,
     surface: S,
     limits: Limits,
     state: State,
 }
+
+// SAFETY: the COM interfaces are `Send`; the raw pointers in `State` only identify bound
+// objects for comparison and are never dereferenced. `Send` lets a scene that owns a
+// device slot go to the draw thread; the device itself is made, used and dropped on one
+// thread (it is single-threaded), and `&mut self` rules out use from two at once.
+unsafe impl<S: D3d11Surface + Send> Send for D3d11Device<S> {}
 
 impl<S: D3d11Surface> Drop for D3d11Device<S> {
     fn drop(&mut self) {
@@ -253,7 +262,7 @@ impl<S: D3d11Surface> D3d11Device<S> {
             D3d11Adapter::Hardware => D3D_DRIVER_TYPE_HARDWARE,
             D3d11Adapter::Warp => D3D_DRIVER_TYPE_WARP,
         };
-        // Only the draw thread uses the device.
+        // One thread makes, uses and drops the device.
         let single = D3D11_CREATE_DEVICE_SINGLETHREADED;
         let (device, context) = match debug {
             D3d11Debug::On => match create_device(driver, single | D3D11_CREATE_DEVICE_DEBUG) {
@@ -287,6 +296,7 @@ impl<S: D3d11Surface> D3d11Device<S> {
         };
         let mut rasterizer_state = None;
         let mut sampler_state = None;
+        let mut finish_query = None;
         // SAFETY: the descriptions are valid and the out-pointers point to live
         // `Option`s; the states are set on the device's own immediate context.
         unsafe {
@@ -296,6 +306,13 @@ impl<S: D3d11Surface> D3d11Device<S> {
             device
                 .CreateSamplerState(&sampler, Some(&mut sampler_state))
                 .map_err(backend("sampler state"))?;
+            let query = D3D11_QUERY_DESC {
+                Query: D3D11_QUERY_EVENT,
+                MiscFlags: 0,
+            };
+            device
+                .CreateQuery(&query, Some(&mut finish_query))
+                .map_err(backend("event query"))?;
             let samplers: [Option<ID3D11SamplerState>; TEXTURE_SLOTS] =
                 std::array::from_fn(|_| sampler_state.clone());
             context.RSSetState(rasterizer_state.as_ref());
@@ -313,6 +330,7 @@ impl<S: D3d11Surface> D3d11Device<S> {
             device,
             context,
             info_queue: (debug == D3d11Debug::On).then_some(info_queue).flatten(),
+            finish_query: finish_query.ok_or_else(|| DeviceError::Backend("event query".into()))?,
             surface,
             limits,
             state: State {
@@ -361,6 +379,30 @@ impl<S: D3d11Surface> D3d11Device<S> {
     /// Whether the debug layer is active (asked for and installed).
     pub fn has_debug_layer(&self) -> bool {
         self.info_queue.is_some()
+    }
+
+    /// Waits until the GPU has run every command sent so far, like `glFinish`. Spins:
+    /// for measurements (`bench --finish`).
+    pub fn finish(&mut self) {
+        let mut done = windows::core::BOOL(0);
+        // SAFETY: the query belongs to this device and its own immediate context;
+        // `done` is a live BOOL, the data size of an event query.
+        unsafe {
+            self.context.End(&self.finish_query);
+            while !done.as_bool() {
+                let data = (&raw mut done).cast::<c_void>();
+                let size = size_of::<windows::core::BOOL>() as u32;
+                if self
+                    .context
+                    .GetData(&self.finish_query, Some(data), size, 0)
+                    .is_err()
+                {
+                    // A removed device answers nothing; `present` reports it.
+                    return;
+                }
+                std::hint::spin_loop();
+            }
+        }
     }
 
     /// Raw device for tests and backend-internal code.

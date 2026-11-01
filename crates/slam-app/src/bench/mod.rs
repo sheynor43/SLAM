@@ -11,7 +11,6 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use slam_engine::clock::now_ns;
-use slam_engine::gl::SdlGlSurface;
 use slam_engine::limiter::LimiterMode;
 use slam_engine::{Engine, EngineConfig, EngineCounters, TickInfo, Update};
 use slam_input::{InputEvent, InputWindow, PriorityRequest, TickMapper, event_ring, sdl_ticks_ns};
@@ -21,12 +20,15 @@ pub(crate) use scene::QuitOnDrop;
 pub use scene::{Scene, fill};
 pub use thread::ThreadSched;
 
+use crate::backend::{self, Backend, Opened, Renderer, WindowKind, WithBackend};
+
 /// Longest measurement or warm-up accepted: buffers for the whole window are
 /// allocated up front (24 bytes per frame at [`MAX_RECORDED_FPS`]).
 pub const MAX_SECONDS: f64 = 300.0;
 
 pub const USAGE: &str = "usage: slam-app bench [--seconds S] [--warmup S] [--sprites N] \
                          [--hz HZ (0 = unlimited)] [--spin-us US] [--fullscreen] [--finish] \
+                         [--renderer auto|opengl|d3d11] \
                          [--no-gpu-priority] [--cpu N] [--fifo PRIO] [--nice N] [--stall-us US] [--dump FILE.csv]";
 
 /// Benchmark settings.
@@ -43,8 +45,11 @@ pub struct Options {
     pub spin_us: Option<u64>,
     /// Borderless desktop fullscreen instead of a 1280×720 window.
     pub fullscreen: bool,
-    /// `glFinish` before `present`, to tell GPU waits from the swap itself.
+    /// Wait for the GPU (`glFinish`) before `present`, to tell GPU waits from the swap
+    /// itself.
     pub finish: bool,
+    /// The render backend, to compare them on one machine (#271).
+    pub renderer: Renderer,
     /// Default GPU priority instead of high, for comparisons (ADR-0075).
     pub no_gpu_priority: bool,
     /// Scheduling of the draw thread.
@@ -65,6 +70,7 @@ impl Default for Options {
             spin_us: None,
             fullscreen: false,
             finish: false,
+            renderer: Renderer::Auto,
             no_gpu_priority: false,
             sched: ThreadSched::default(),
             stall_us: 500,
@@ -91,6 +97,12 @@ impl Options {
                 "--spin-us" => options.spin_us = Some(number(&flag, &value()?)?),
                 "--fullscreen" => options.fullscreen = true,
                 "--finish" => options.finish = true,
+                "--renderer" => {
+                    let name = value()?;
+                    options.renderer = Renderer::parse(&name).ok_or_else(|| {
+                        format!("--renderer: {name} is not one of {}", Renderer::NAMES)
+                    })?;
+                }
                 "--no-gpu-priority" => options.no_gpu_priority = true,
                 "--cpu" => options.sched.cpu = Some(number(&flag, &value()?)?),
                 "--fifo" => {
@@ -141,21 +153,44 @@ impl Update for Idle {
 
 /// Runs the benchmark in a window and prints the report.
 pub fn run(options: &Options) -> Result<(), String> {
-    let mut window =
-        InputWindow::new_opengl("SLAM benchmark", 1280, 720).map_err(|e| e.to_string())?;
-    if options.fullscreen {
-        window.set_fullscreen(true).map_err(|e| e.to_string())?;
-    }
     let request = if options.no_gpu_priority {
         PriorityRequest::Default
     } else {
         PriorityRequest::High
     };
-    let context = window
-        .create_gl_context_with(request)
+    let window = |kind| {
+        let (title, width, height) = ("SLAM benchmark", 1280, 720);
+        let mut window = match kind {
+            WindowKind::OpenGl => InputWindow::new_opengl(title, width, height),
+            WindowKind::Native => InputWindow::new(title, width, height),
+        }
         .map_err(|e| e.to_string())?;
-    let priority = context.priority().clone();
-    let surface = SdlGlSurface(context);
+        if options.fullscreen {
+            window.set_fullscreen(true).map_err(|e| e.to_string())?;
+        }
+        Ok(window)
+    };
+    backend::run(options.renderer, request, window, Bench(options))?
+}
+
+struct Bench<'a>(&'a Options);
+
+impl WithBackend for Bench<'_> {
+    type Output = Result<(), String>;
+
+    fn run<B: Backend>(self, window: InputWindow, opened: Opened<B>) -> Self::Output {
+        measure(self.0, window, opened)
+    }
+}
+
+fn measure<B: Backend>(
+    options: &Options,
+    mut window: InputWindow,
+    opened: Opened<B>,
+) -> Result<(), String> {
+    let Opened {
+        surface, priority, ..
+    } = opened;
 
     let epoch_ns = now_ns();
     let to_ns = |s: f64| (s * 1e9) as u64;
@@ -203,7 +238,7 @@ pub fn run(options: &Options) -> Result<(), String> {
     let mut mapper = TickMapper::new(now_ns, sdl_ticks_ns);
     let ran = window.run(&mut sink, &mut mapper);
 
-    // Stop drawing and destroy the GL context before the window.
+    // Stop drawing and release the surface before the window.
     let mut stopped = engine.shutdown();
     let scene = &mut stopped.draw;
     let dumped = options.dump.as_ref().map(|path| {
@@ -217,9 +252,14 @@ pub fn run(options: &Options) -> Result<(), String> {
         .hz
         .map_or_else(|| "unlimited".to_owned(), |hz| format!("{hz} Hz"));
     if cfg!(debug_assertions) {
-        println!("warning: debug build with GL debug output, numbers are not representative");
+        println!("warning: debug build with GPU debug output, numbers are not representative");
     }
-    println!("driver: {}, video: {}", scene.driver, window.video_driver());
+    println!(
+        "renderer: {}, driver: {}, video: {}",
+        B::NAME,
+        scene.driver,
+        window.video_driver()
+    );
     println!("gpu priority: {priority:?}");
     let fullscreen = if options.fullscreen {
         "fullscreen"
@@ -227,7 +267,7 @@ pub fn run(options: &Options) -> Result<(), String> {
         "windowed"
     };
     let finish = if options.finish {
-        ", glFinish before present"
+        ", GPU finish before present"
     } else {
         ""
     };
@@ -291,6 +331,8 @@ mod tests {
         let o = parse(&[
             "--fullscreen",
             "--finish",
+            "--renderer",
+            "opengl",
             "--no-gpu-priority",
             "--cpu",
             "3",
@@ -305,6 +347,7 @@ mod tests {
         ])
         .unwrap();
         assert!(o.fullscreen && o.finish && o.no_gpu_priority);
+        assert_eq!(o.renderer, Renderer::OpenGl);
         assert_eq!(
             o.sched,
             ThreadSched {
@@ -335,5 +378,6 @@ mod tests {
         assert!(parse(&["--cpu", "-1"]).is_err());
         assert!(parse(&["--stall-us", "5000000"]).is_err());
         assert!(parse(&["--dump"]).is_err());
+        assert!(parse(&["--renderer", "vulkan"]).is_err());
     }
 }

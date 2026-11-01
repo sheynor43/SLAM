@@ -6,7 +6,6 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
-use slam_engine::gl::SdlGlSurface;
 use slam_osu::{Beatmap, ModSet};
 use slam_play::circles::{
     CircleMods, CircleSettings, CircleSkinConfig, CircleStyle, CircleVisuals, HitCircles,
@@ -26,7 +25,6 @@ use slam_play::{
     HudView, MenuLabels, MenuView, PlaySnapshot, PlayTextures, PlayView, PlayfieldLayout,
     SampleCache, SampleSkins, SoundSettings,
 };
-use slam_render::gl::{GlDevice, GlTexture};
 use slam_render::slider::{SliderBuffer, SliderDraw, SliderMesh, SliderRenderer};
 use slam_render::sprite::{
     Affine, DEFAULT_SLOTS, Projection, Sprite, SpriteBatch, SpriteRenderer, SpriteStats, tint_srgb,
@@ -63,8 +61,6 @@ const MAX_TEXTURES: usize = 64;
 const MAX_GLYPH_SPRITES: usize = 256;
 /// The menu's background and buttons, and the FPS counter's box.
 const MAX_MENU_SPRITES: usize = 2 + slam_play::menu_overlay::MAX_BUTTONS;
-
-type Gl = GlDevice<SdlGlSurface>;
 
 /// What a play takes from the player's settings.
 #[derive(Clone, Debug, PartialEq)]
@@ -332,7 +328,6 @@ pub fn prepare(
         menu,
         menu_shapes: SpriteBatch::with_capacity(MAX_MENU_SPRITES),
         menu_text: SpriteBatch::with_capacity(MAX_GLYPH_SPRITES + MAX_FPS_GLYPHS),
-        gpu: None,
         stats: PlayfieldStats::default(),
     };
     Ok(Prepared {
@@ -346,15 +341,18 @@ pub fn prepare(
     })
 }
 
-/// The GPU resources of a play, between [`PlayScene::start`] and [`PlayScene::stop`].
-struct SceneGpu {
-    textures: Textures<GlTexture>,
-    renderer: SpriteRenderer<Gl>,
+/// The GPU resources of a play, made by [`PlayScene::start`] and destroyed by
+/// [`SceneGpu::destroy`]. The draw thread keeps them beside the scene, so the scene
+/// (made by the loader and passed through the update thread) does not name the render
+/// backend.
+pub struct SceneGpu<D: Device> {
+    textures: Textures<D::Texture>,
+    renderer: SpriteRenderer<D>,
     /// Draws MSDF glyphs.
-    text_renderer: SpriteRenderer<Gl>,
-    sliders: SliderRenderer<Gl>,
+    text_renderer: SpriteRenderer<D>,
+    sliders: SliderRenderer<D>,
     /// Slider body meshes on the GPU, by object index.
-    slider_buffers: Vec<Option<SliderBuffer<Gl>>>,
+    slider_buffers: Vec<Option<SliderBuffer<D>>>,
 }
 
 /// The draw side of a play: its textures, glyphs, views and sprite batches.
@@ -387,7 +385,6 @@ pub struct PlayScene {
     menu: MenuView,
     menu_shapes: SpriteBatch,
     menu_text: SpriteBatch,
-    gpu: Option<SceneGpu>,
     /// The playfield batch's figures of the last frame, for the console report.
     stats: PlayfieldStats,
 }
@@ -406,16 +403,16 @@ impl PlayScene {
         self.background_view.settings().dim_level
     }
 
-    /// Whether [`PlayScene::start`] made the GPU resources.
-    pub fn started(&self) -> bool {
-        self.gpu.is_some()
-    }
-
     /// Makes the play's GPU resources on the draw thread and waits up to `glyph_wait` for
     /// the HUD's glyphs and those of `fps`, the counter the play draws (a glyph takes
     /// several frames to appear; late ones show when ready). Navigation: allocates and
     /// uploads.
-    pub fn start(&mut self, device: &mut Gl, glyph_wait: Duration, fps: Option<&FpsOverlay>) {
+    pub fn start<D: Device>(
+        &mut self,
+        device: &mut D,
+        glyph_wait: Duration,
+        fps: Option<&FpsOverlay>,
+    ) -> SceneGpu<D> {
         // The device made these with the same context before; failing now is a driver
         // fault the application does not recover from.
         // Three draws a frame (playfield and HUD, cursor, menu), each with its spare slots;
@@ -443,29 +440,28 @@ impl PlayScene {
             self.glyphs.process(device, &mut textures);
             std::thread::sleep(Duration::from_millis(1));
         }
-        self.gpu = Some(SceneGpu {
+        SceneGpu {
             textures,
             renderer,
             text_renderer,
             sliders,
             slider_buffers,
-        });
+        }
     }
 
-    /// Draws the play into the frame `device` began at `size`, with the FPS counter `fps`
-    /// on top (ADR-0060). Does nothing before [`PlayScene::start`].
-    pub fn draw(
+    /// Draws the play with `r`, the resources its [`PlayScene::start`] made, into the
+    /// frame `device` began at `size`, with the FPS counter `fps` on top (ADR-0060).
+    #[allow(clippy::too_many_arguments)]
+    pub fn draw<D: Device>(
         &mut self,
-        device: &mut Gl,
+        r: &mut SceneGpu<D>,
+        device: &mut D,
         size: Extent,
         now_ns: u64,
         snapshot: &PlaySnapshot,
         fps: Option<&FpsView>,
         over_layer: bool,
     ) {
-        let Some(r) = self.gpu.as_mut() else {
-            return;
-        };
         self.uploads.process(device, &mut r.textures);
         self.glyphs.process(device, &mut r.textures);
         let textures = self.textures.resolve(&self.uploads);
@@ -621,19 +617,18 @@ impl PlayScene {
     pub fn stats(&self) -> PlayfieldStats {
         self.stats
     }
+}
 
+impl<D: Device> SceneGpu<D> {
     /// Destroys the play's GPU resources. Navigation: frees.
-    pub fn stop(&mut self, device: &mut Gl) {
-        let Some(SceneGpu {
+    pub fn destroy(self, device: &mut D) {
+        let Self {
             mut textures,
             renderer,
             text_renderer,
             mut sliders,
             slider_buffers,
-        }) = self.gpu.take()
-        else {
-            return;
-        };
+        } = self;
         for buffer in slider_buffers.into_iter().flatten() {
             sliders.release(device, buffer);
         }
