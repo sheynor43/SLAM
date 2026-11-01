@@ -40,6 +40,12 @@ fn run_delivers_events_and_stops_on_quit() {
         window.create_gl_context(),
         Err(WindowError::NotOpenGl)
     ));
+    // The offscreen driver has no HWND.
+    #[cfg(windows)]
+    assert!(matches!(
+        window.native_handle(),
+        Err(WindowError::NativeHandle(_))
+    ));
 
     let mut mapper = TickMapper::new(
         || 1_000_000 + slam_input::sdl_ticks_ns(),

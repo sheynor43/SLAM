@@ -29,7 +29,7 @@ impl PixelSize {
         self.0.store(packed, Ordering::Relaxed);
     }
 
-    fn load(&self) -> (u32, u32) {
+    pub(crate) fn load(&self) -> (u32, u32) {
         let packed = self.0.load(Ordering::Relaxed);
         ((packed >> 32) as u32, packed as u32)
     }

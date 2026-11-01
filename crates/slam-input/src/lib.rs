@@ -21,6 +21,8 @@ mod displays;
 mod event;
 mod gl;
 mod mode;
+#[cfg(windows)]
+mod native;
 mod relative;
 mod ring;
 mod window;
@@ -40,6 +42,8 @@ pub use mode::{
     DEFAULT_POSITION, DEFAULT_WINDOWED_SIZE, MAX_DISPLAY, MAX_SIDE, MIN_WINDOWED_SIZE,
     POSITION_RANGE, WindowMode, WindowScale, WindowSettings, WindowState, clamp_position,
 };
+#[cfg(windows)]
+pub use native::NativeHandle;
 pub use relative::{MAX_SENSITIVITY, MIN_SENSITIVITY, MouseSettings};
 pub use ring::{BUTTON_RESERVE, EventSink, EventSource, Notify, event_ring};
 pub use window::{CursorVisibility, InputWindow, QuitHandle, TextInput, WindowError, dispatch};

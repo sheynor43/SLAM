@@ -6,6 +6,8 @@
 //! snapshot, never waiting for update.
 
 pub mod clock;
+#[cfg(windows)]
+pub mod d3d11;
 mod draw;
 mod engine;
 pub mod gl;

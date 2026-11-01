@@ -39,6 +39,8 @@ use crate::mode::{
     MAX_SIDE, MIN_WINDOWED_SIZE, WindowMode, WindowScale, WindowSettings, WindowState, cycles_mode,
     minimise_hint, only_held, position_fraction,
 };
+#[cfg(windows)]
+use crate::native::NativeHandle;
 use crate::relative::{Change, MouseSettings, RelativeMouse};
 use crate::{
     EventSink, InputCounters, InputEvent, InputKind, TickMapper, convert, convert_text, windowing,
@@ -61,8 +63,12 @@ pub enum WindowError {
     WaitEvent(String),
     #[error("the window was not created with OpenGL support")]
     NotOpenGl,
-    #[error("a GlContext for this window already exists")]
-    GlContextExists,
+    #[error("the window was created with OpenGL support")]
+    OpenGlWindow,
+    #[error("a GlContext or NativeHandle for this window already exists")]
+    SurfaceExists,
+    #[error("native window handle unavailable: {0}")]
+    NativeHandle(String),
     #[error("OpenGL context creation failed: {0}")]
     GlContext(String),
     #[error("SDL_SetWindowFullscreen failed: {0}")]
@@ -77,7 +83,8 @@ pub struct InputWindow {
     window: *mut SDL_Window,
     opengl: bool,
     /// Drawable size for the draw thread, updated by [`InputWindow::run`]. Shared with
-    /// the [`GlContext`], if any: a strong count above one means the context is alive.
+    /// the [`GlContext`] or native handle, if any: a strong count above one means it is
+    /// alive.
     size: Arc<PixelSize>,
     counters: Arc<InputCounters>,
     /// Whether [`QuitHandle`]s may push events; cleared when the window is dropped,
@@ -220,8 +227,28 @@ impl InputWindow {
         state: WindowState,
         position: [f32; 2],
     ) -> Result<Self, WindowError> {
+        Self::create_in(title, state, position, SDL_WINDOW_OPENGL)
+    }
+
+    /// Like [`InputWindow::new_opengl_in`], but for a renderer that makes its own
+    /// swapchain on the native window (D3D11, ADR-0082); see
+    /// [`InputWindow::native_handle`].
+    pub fn new_native_in(
+        title: &str,
+        state: WindowState,
+        position: [f32; 2],
+    ) -> Result<Self, WindowError> {
+        Self::create_in(title, state, position, SDL_WindowFlags(0))
+    }
+
+    fn create_in(
+        title: &str,
+        state: WindowState,
+        position: [f32; 2],
+        extra: SDL_WindowFlags,
+    ) -> Result<Self, WindowError> {
         let [w, h] = state.windowed_size.map(i32::from);
-        let mut window = Self::create(title, w, h, SDL_WINDOW_OPENGL | SDL_WINDOW_HIDDEN)?;
+        let mut window = Self::create(title, w, h, extra | SDL_WINDOW_HIDDEN)?;
         window.window_settings.set_position(position);
         window.window_settings.set(state);
         // Applied even when it matches the window as created, so a windowed start is
@@ -370,12 +397,27 @@ impl InputWindow {
             return Err(WindowError::NotOpenGl);
         }
         if Arc::get_mut(&mut self.size).is_none() {
-            return Err(WindowError::GlContextExists);
+            return Err(WindowError::SurfaceExists);
         }
         // SAFETY: `window` is valid, was created with SDL_WINDOW_OPENGL, and this is
         // the thread that initialised SDL.
         unsafe { GlContext::create(self.window, Arc::clone(&self.size), request) }
             .map_err(WindowError::GlContext)
+    }
+
+    /// The native handle of a window created without OpenGL, for the draw thread's
+    /// swapchain (ADR-0082). One per window, and not together with a [`GlContext`].
+    #[cfg(windows)]
+    pub fn native_handle(&mut self) -> Result<NativeHandle, WindowError> {
+        if self.opengl {
+            return Err(WindowError::OpenGlWindow);
+        }
+        if Arc::get_mut(&mut self.size).is_none() {
+            return Err(WindowError::SurfaceExists);
+        }
+        // SAFETY: `window` is valid and this is the thread that initialised SDL.
+        unsafe { NativeHandle::create(self.window, Arc::clone(&self.size)) }
+            .map_err(WindowError::NativeHandle)
     }
 
     /// Switches between windowed and borderless desktop fullscreen. The change is
@@ -919,8 +961,9 @@ impl Drop for InputWindow {
         // its SDL calls happen before the teardown below.
         *self.alive.lock().unwrap_or_else(PoisonError::into_inner) = false;
         if Arc::get_mut(&mut self.size).is_none() {
-            // A GlContext still points at the window, possibly current on the draw
-            // thread: leak the window and SDL rather than destroy them under it.
+            // A GlContext (possibly current on the draw thread) or a native handle (a
+            // swapchain) still points at the window: leak the window and SDL rather
+            // than destroy them under it.
             return;
         }
         // Leave the OS cursor where the game's was, as osu-framework's `Window.Exited`.
