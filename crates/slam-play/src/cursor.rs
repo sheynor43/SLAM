@@ -578,6 +578,8 @@ pub struct CursorView {
     part_scale: Option<f32>,
     /// Game time of the previous frame.
     previous_time: Option<f64>,
+    /// The player turned the trail off (lazer's `ShowCursorTrail`).
+    trail_hidden: bool,
 }
 
 /// What a frame of the cursor draws from.
@@ -596,6 +598,20 @@ pub struct CursorFrame<'a> {
 }
 
 impl CursorView {
+    /// A cursor with its trail drawn or not (lazer's `ShowCursorTrail`, on by default).
+    // Ported from osu!lazer 2026.1005.0-lazer: osu.Game.Rulesets.Osu/UI/Cursor/OsuCursorContainer.cs (load)
+    pub fn new(trail: bool) -> Self {
+        CursorView {
+            trail_hidden: !trail,
+            ..CursorView::default()
+        }
+    }
+
+    /// Whether the trail is drawn.
+    pub fn trail_shown(&self) -> bool {
+        !self.trail_hidden
+    }
+
     /// Writes the trail and the cursor of one frame. Hidden until the cursor first moves.
     /// `frame.restarts` tells cursors apart: a new value starts a new trail.
     /// Allocation-free once `batch` has room.
@@ -629,7 +645,9 @@ impl CursorView {
 
         let moves = frame.path.moves_since(self.seen);
         self.seen = frame.path.written();
-        if let Some(trail) = &textures.trail {
+        // A hidden trail takes nothing: the setting applies from the next play.
+        let trail_texture = textures.trail.as_ref().filter(|_| !self.trail_hidden);
+        if let Some(trail) = trail_texture {
             let display_width = trail.size.x / STABLE_MAGIC_SCALE_FACTOR;
             let previous = self.part_scale.unwrap_or(part_scale);
             for (position, jump) in moves {
@@ -648,7 +666,7 @@ impl CursorView {
         if frame.path.written() == 0 || !frame.visible {
             return;
         }
-        if let Some(trail) = &textures.trail {
+        if let Some(trail) = trail_texture {
             self.trail.push(batch, layout, trail, config, part_rotation);
         }
         let at = layout.to_window(frame.position);

@@ -309,6 +309,31 @@ fn the_trail_goes_under_the_cursor_and_starts_over_with_the_play() {
 }
 
 #[test]
+fn a_cursor_without_its_trail_draws_only_the_cursor() {
+    let mut path = CursorPath::default();
+    let mut view = CursorView::new(false);
+    let config = CursorSkinConfig {
+        disjoint: false,
+        ..CursorSkinConfig::default()
+    };
+    let textures = textures(config);
+    let mut batch = SpriteBatch::new();
+    for (i, x) in [100.5, 200.5].into_iter().enumerate() {
+        path.push(Vec2::new(x, 100.0));
+        batch.clear();
+        view.push(
+            &mut batch,
+            &layout(),
+            &frame(&path, Vec2::new(x, 100.0), ExpandTimes::default(), i as f64),
+            &textures,
+        );
+    }
+    // `cursor` and `cursormiddle`, no trail parts.
+    assert_eq!(batch.len(), 2);
+    assert!(batch.batches().iter().all(|b| b.texture != TRAIL));
+}
+
+#[test]
 fn a_disjoint_trail_hangs_its_parts_from_the_corner_without_centre() {
     let mut path = CursorPath::default();
     let mut view = CursorView::default();

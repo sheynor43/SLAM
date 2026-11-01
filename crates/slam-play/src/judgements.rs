@@ -211,6 +211,9 @@ pub struct PopupPose {
 /// Popups expire this long after their judgement: the hit lighting ends at 1400 ms, the
 /// bodies at 1100 ms (the particles fade with them; their own fade would end at 1500 ms).
 pub const POPUP_LIFETIME: f64 = 1400.0;
+/// Without hit lighting, popups expire with their bodies (lazer extends `LifetimeEnd` only
+/// for the lighting).
+pub const UNLIT_POPUP_LIFETIME: f64 = FADE_OUT_DELAY + FADE_OUT;
 
 /// `LegacyJudgementPieceOld`'s and `New`'s `fade_in_length`, `fade_out_delay`, `fade_out_length`.
 const FADE_IN: f64 = 120.0;
@@ -560,13 +563,15 @@ pub struct JudgementView {
 
 impl JudgementView {
     /// The popups of `beatmap` (with its mods applied), lit in the objects' combo colours from
-    /// `beatmap_skin` and `skins`, as [`crate::circles`] colours circles.
+    /// `beatmap_skin` and `skins`, as [`crate::circles`] colours circles. `hit_lighting` is
+    /// lazer's `HitLighting` setting.
     // Ported from osu!lazer 2026.1005.0-lazer: osu.Game/Skinning/LegacyJudgementPieceOld.cs (PlayAnimation)
     pub fn new(
         beatmap: &Beatmap,
         settings: CircleSettings,
         beatmap_skin: Option<&Skin>,
         skins: &SkinChain,
+        hit_lighting: bool,
     ) -> Self {
         let beatmap_colours =
             beatmap_skin.filter(|s| settings.beatmap_colours && !s.ini().combo_colours.is_empty());
@@ -580,7 +585,7 @@ impl JudgementView {
         JudgementView {
             style: JudgementStyle {
                 miss_falls: version.is_some_and(|v| v > SkinVersion::V1),
-                hit_lighting: true,
+                hit_lighting,
             },
             colours,
             popups: [ShownJudgement::EMPTY; MAX_POPUPS],
@@ -611,7 +616,13 @@ impl JudgementView {
             self.len += 1;
         }
         self.seen = ring.written();
-        self.retain(|p| time < p.time + POPUP_LIFETIME);
+        // Ported from osu!lazer 2026.1005.0-lazer: osu.Game.Rulesets.Osu/Objects/Drawables/DrawableOsuJudgement.cs (ApplyHitAnimations)
+        let lifetime = if self.style.hit_lighting {
+            POPUP_LIFETIME
+        } else {
+            UNLIT_POPUP_LIFETIME
+        };
+        self.retain(|p| time < p.time + lifetime);
     }
 
     fn retain(&mut self, keep: impl Fn(&ShownJudgement) -> bool) {

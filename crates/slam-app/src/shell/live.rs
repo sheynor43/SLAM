@@ -142,6 +142,10 @@ pub fn play_options(settings: &Settings) -> PlayOptions {
         beatmap_skins: settings.gameplay.beatmap_skins,
         beatmap_colours: settings.gameplay.beatmap_colours,
         beatmap_hitsounds: settings.gameplay.beatmap_hitsounds,
+        snaking_in: settings.gameplay.snaking_in,
+        snaking_out: settings.gameplay.snaking_out,
+        hit_lighting: settings.gameplay.hit_lighting,
+        cursor_trail: settings.gameplay.cursor_trail,
         hit_error_scale: settings.gameplay.hit_error_scale,
         skin: skins::skin_path(
             settings.paths.songs.as_deref(),
@@ -310,6 +314,10 @@ mod tests {
         settings.gameplay.beatmap_colours = false;
         settings.gameplay.beatmap_hitsounds = false;
         settings.gameplay.hit_error_scale = 1.5;
+        settings.gameplay.snaking_in = true;
+        settings.gameplay.snaking_out = true;
+        settings.gameplay.hit_lighting = false;
+        settings.gameplay.cursor_trail = false;
         assert_eq!(
             play_options(&settings),
             PlayOptions {
@@ -317,6 +325,10 @@ mod tests {
                 beatmap_skins: false,
                 beatmap_colours: false,
                 beatmap_hitsounds: false,
+                snaking_in: true,
+                snaking_out: true,
+                hit_lighting: false,
+                cursor_trail: false,
                 hit_error_scale: 1.5,
                 skin: None,
                 mods: ModSet::default(),

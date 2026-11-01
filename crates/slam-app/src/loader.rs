@@ -39,12 +39,30 @@ pub struct PlayOptions {
     pub beatmap_skins: bool,
     pub beatmap_colours: bool,
     pub beatmap_hitsounds: bool,
+    /// Sliders snake in as they appear (ADR-0085).
+    pub snaking_in: bool,
+    /// Sliders snake out behind the ball (ADR-0085).
+    pub snaking_out: bool,
+    /// Hit lighting on hits.
+    pub hit_lighting: bool,
+    /// The cursor leaves a trail.
+    pub cursor_trail: bool,
     /// Size multiplier of the hit error meter (ADR-0050).
     pub hit_error_scale: f64,
     /// The chosen skin's folder (ADR-0051); `None` plays on the default skin.
     pub skin: Option<PathBuf>,
     /// The mods the player selected; the settings' fixed field is replaced by this.
     pub mods: ModSet,
+}
+
+impl PlayOptions {
+    /// The slider snaking choice.
+    pub fn snaking(&self) -> slam_play::slider_body::Snaking {
+        slam_play::slider_body::Snaking {
+            snaking_in: self.snaking_in,
+            snaking_out: self.snaking_out,
+        }
+    }
 }
 
 /// A prepared play, or why it could not be.
@@ -183,6 +201,9 @@ pub fn spawn(mut config: LoaderConfig) -> std::io::Result<(LoaderLink, SceneTras
                     config.settings.beatmap_colours = options.beatmap_colours;
                     config.settings.beatmap_hitsounds = options.beatmap_hitsounds;
                     config.settings.hit_error_scale = options.hit_error_scale;
+                    config.settings.snaking = options.snaking();
+                    config.settings.hit_lighting = options.hit_lighting;
+                    config.settings.cursor_trail = options.cursor_trail;
                     config.settings.skin = options.skin;
                     config.settings.mods = options.mods;
                     let result = prepare(
@@ -225,6 +246,7 @@ mod tests {
     use std::path::Path;
     use std::time::Instant;
 
+    use slam_play::slider_body::Snaking;
     use slam_ui::i18n::Localizer;
 
     use super::*;
@@ -235,6 +257,10 @@ mod tests {
             beatmap_skins: true,
             beatmap_colours: true,
             beatmap_hitsounds: true,
+            snaking_in: false,
+            snaking_out: false,
+            hit_lighting: true,
+            cursor_trail: true,
             hit_error_scale: 1.0,
             skin: None,
             mods: ModSet::default(),
@@ -315,6 +341,37 @@ mod tests {
             assert_eq!(result.id, id);
             let prepared = result.result.unwrap();
             assert_eq!(prepared.scene.dim(), dim);
+            link.free(Trash::Prepared(prepared));
+        }
+        drop(thread);
+    }
+
+    #[test]
+    fn a_play_takes_the_view_settings_of_its_request() {
+        let (mut link, _scenes, thread) = spawn(config()).unwrap();
+        let map =
+            Path::new(env!("CARGO_MANIFEST_DIR")).join("../slam-osu/tests/data/slider-samples.osu");
+        for (id, on) in [(1, true), (2, false)] {
+            let options = PlayOptions {
+                snaking_in: on,
+                snaking_out: !on,
+                hit_lighting: on,
+                cursor_trail: on,
+                ..options()
+            };
+            assert!(link.request(id, map.clone(), options));
+            let prepared = wait(&mut link).result.unwrap();
+            let view = prepared.scene.view();
+            assert_eq!(
+                view.sliders.snaking,
+                Snaking {
+                    snaking_in: on,
+                    snaking_out: !on
+                }
+            );
+            assert_eq!(view.judgements.style.hit_lighting, on);
+            assert_eq!(view.cursor.trail_shown(), on);
+            assert_eq!(view.resume.trail_shown(), on);
             link.free(Trash::Prepared(prepared));
         }
         drop(thread);

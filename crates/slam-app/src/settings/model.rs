@@ -404,6 +404,16 @@ pub struct Gameplay {
     /// Play the beatmap's own hitsound samples (lazer's `BeatmapHitsounds`).
     pub beatmap_hitsounds: bool,
     pub mouse_buttons: bool,
+    /// Sliders grow towards their end as they appear (lazer's `OsuRulesetSetting.SnakingInSliders`,
+    /// on by default there; off in SLAM, ADR-0085).
+    pub snaking_in: bool,
+    /// Sliders shrink behind the ball (lazer's `OsuRulesetSetting.SnakingOutSliders`, on by
+    /// default there; off in SLAM, ADR-0085).
+    pub snaking_out: bool,
+    /// Hit lighting on hit circles and slider ends (lazer's `OsuSetting.HitLighting`).
+    pub hit_lighting: bool,
+    /// The cursor leaves a trail (lazer's `OsuRulesetSetting.ShowCursorTrail`).
+    pub cursor_trail: bool,
     /// Size multiplier of the hit error meter, 0.5 ..= 2.0 in steps of 0.1. Temporary,
     /// until the HUD layout editor takes it over (ADR-0050).
     pub hit_error_scale: f64,
@@ -417,6 +427,10 @@ impl Default for Gameplay {
             beatmap_colours: true,
             beatmap_hitsounds: true,
             mouse_buttons: true,
+            snaking_in: false,
+            snaking_out: false,
+            hit_lighting: true,
+            cursor_trail: true,
             hit_error_scale: 1.0,
         }
     }

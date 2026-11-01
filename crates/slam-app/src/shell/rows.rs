@@ -177,13 +177,20 @@ pub enum Row {
     BeatmapSkins,
     BeatmapColours,
     BeatmapHitsounds,
+    SnakingIn,
+    SnakingOut,
+    HitLighting,
+    CursorTrail,
     HitErrorScale,
     Skin,
     SongsFolder,
 }
 
+// The screen ignores rows past its capacity.
+const _: () = assert!(Row::ALL.len() <= slam_ui::settings_screen::MAX_ROWS);
+
 impl Row {
-    pub const ALL: [Row; 38] = [
+    pub const ALL: [Row; 42] = [
         Row::MasterVolume,
         Row::MusicVolume,
         Row::HitsoundVolume,
@@ -219,6 +226,10 @@ impl Row {
         Row::BeatmapSkins,
         Row::BeatmapColours,
         Row::BeatmapHitsounds,
+        Row::SnakingIn,
+        Row::SnakingOut,
+        Row::HitLighting,
+        Row::CursorTrail,
         Row::HitErrorScale,
         Row::Skin,
         Row::SongsFolder,
@@ -280,6 +291,10 @@ impl Row {
             | Row::BeatmapSkins
             | Row::BeatmapColours
             | Row::BeatmapHitsounds
+            | Row::SnakingIn
+            | Row::SnakingOut
+            | Row::HitLighting
+            | Row::CursorTrail
             | Row::HitErrorScale
             | Row::Skin => 5,
             Row::SongsFolder => 6,
@@ -322,6 +337,10 @@ impl Row {
             Row::BeatmapSkins => "settings-gameplay-beatmap-skins",
             Row::BeatmapColours => "settings-gameplay-beatmap-colours",
             Row::BeatmapHitsounds => "settings-gameplay-beatmap-hitsounds",
+            Row::SnakingIn => "settings-gameplay-snaking-in",
+            Row::SnakingOut => "settings-gameplay-snaking-out",
+            Row::HitLighting => "settings-gameplay-hit-lighting",
+            Row::CursorTrail => "settings-gameplay-cursor-trail",
             Row::HitErrorScale => "settings-gameplay-hit-error-scale",
             Row::Skin => "settings-gameplay-skin",
             Row::SongsFolder => "settings-library-songs-folder",
@@ -624,6 +643,18 @@ impl Rows {
             Row::BeatmapHitsounds => RowKind::Toggle {
                 value: s.gameplay.beatmap_hitsounds,
             },
+            Row::SnakingIn => RowKind::Toggle {
+                value: s.gameplay.snaking_in,
+            },
+            Row::SnakingOut => RowKind::Toggle {
+                value: s.gameplay.snaking_out,
+            },
+            Row::HitLighting => RowKind::Toggle {
+                value: s.gameplay.hit_lighting,
+            },
+            Row::CursorTrail => RowKind::Toggle {
+                value: s.gameplay.cursor_trail,
+            },
             Row::Skin => {
                 let (options, selected) = self.skin_choice(s);
                 choice(options, Some(selected))
@@ -685,6 +716,10 @@ impl Rows {
             (Row::BeatmapSkins, RowValue::Toggle(v)) => settings.gameplay.beatmap_skins = v,
             (Row::BeatmapColours, RowValue::Toggle(v)) => settings.gameplay.beatmap_colours = v,
             (Row::BeatmapHitsounds, RowValue::Toggle(v)) => settings.gameplay.beatmap_hitsounds = v,
+            (Row::SnakingIn, RowValue::Toggle(v)) => settings.gameplay.snaking_in = v,
+            (Row::SnakingOut, RowValue::Toggle(v)) => settings.gameplay.snaking_out = v,
+            (Row::HitLighting, RowValue::Toggle(v)) => settings.gameplay.hit_lighting = v,
+            (Row::CursorTrail, RowValue::Toggle(v)) => settings.gameplay.cursor_trail = v,
             (Row::Skin, RowValue::Choice(i)) => match i {
                 0 => settings.skin.name = None,
                 _ => {
@@ -1191,6 +1226,14 @@ mod tests {
             specs[index(Row::MouseButtons)].kind,
             RowKind::Toggle { value: false }
         );
+        for (row, value) in [
+            (Row::SnakingIn, false),
+            (Row::SnakingOut, false),
+            (Row::HitLighting, true),
+            (Row::CursorTrail, true),
+        ] {
+            assert_eq!(specs[index(row)].kind, RowKind::Toggle { value }, "{row:?}");
+        }
         assert!(specs.iter().all(|s| s.section < SECTIONS));
     }
 
@@ -1210,6 +1253,10 @@ mod tests {
         rows.apply(&mut s, index(Row::GlobalOffset), RowValue::Slider(-3.0));
         rows.apply(&mut s, index(Row::BeatmapSkins), RowValue::Toggle(false));
         rows.apply(&mut s, index(Row::BeatmapColours), RowValue::Toggle(false));
+        rows.apply(&mut s, index(Row::SnakingIn), RowValue::Toggle(true));
+        rows.apply(&mut s, index(Row::SnakingOut), RowValue::Toggle(true));
+        rows.apply(&mut s, index(Row::HitLighting), RowValue::Toggle(false));
+        rows.apply(&mut s, index(Row::CursorTrail), RowValue::Toggle(false));
         rows.apply(
             &mut s,
             index(Row::BeatmapHitsounds),
@@ -1229,6 +1276,10 @@ mod tests {
         assert_eq!(s.timing.global_offset_ms, -3.0);
         assert!(!s.gameplay.beatmap_skins);
         assert!(!s.gameplay.beatmap_colours);
+        assert!(s.gameplay.snaking_in);
+        assert!(s.gameplay.snaking_out);
+        assert!(!s.gameplay.hit_lighting);
+        assert!(!s.gameplay.cursor_trail);
         assert!(!s.gameplay.beatmap_hitsounds);
         rows.apply(&mut s, index(Row::ShowFps), RowValue::Toggle(true));
         assert!(s.frame.show_fps);
