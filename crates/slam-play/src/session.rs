@@ -53,6 +53,7 @@ use crate::menu_overlay::{
 use crate::offset::{self, OffsetPanel};
 use crate::playfield::PlayfieldLayout;
 use crate::resume::ResumeView;
+use crate::shake::ObjectShakes;
 use crate::sliders::{
     AnimationSprites, BallStyle, HitSliders, LiveSliders, MAX_ANIMATION_FRAMES,
     MAX_FOLLOW_CIRCLE_AREA_SIZE, ObjectTextures, SliderBodies, SliderTextures, push_approaches,
@@ -285,6 +286,8 @@ pub struct PlaySnapshot {
     pub circles: LiveCircles,
     pub sliders: LiveSliders,
     pub spinners: LiveSpinners,
+    /// The circles and sliders shaking after blocked presses.
+    pub shakes: ObjectShakes,
 }
 
 impl Default for PlaySnapshot {
@@ -316,6 +319,7 @@ impl Default for PlaySnapshot {
             circles: LiveCircles::new(),
             sliders: LiveSliders::new(),
             spinners: LiveSpinners::new(),
+            shakes: ObjectShakes::default(),
         }
     }
 }
@@ -384,6 +388,8 @@ pub struct PlaySession {
     popup_targets: PopupTargets,
     /// The judgements that showed popups, for the draw side; kept across restarts.
     popups: JudgementRing,
+    /// The objects shaking after blocked presses.
+    shakes: ObjectShakes,
     /// Judgements of the log looked at for popups.
     popups_seen: usize,
     /// Which judgements the hit error meter shows.
@@ -540,6 +546,7 @@ impl PlaySession {
             log,
             popup_targets: PopupTargets::new(beatmap, mods),
             popups: JudgementRing::default(),
+            shakes: ObjectShakes::default(),
             popups_seen: 0,
             hit_error_targets: HitErrorTargets::new(beatmap),
             hit_errors: HitErrorRing::default(),
@@ -926,6 +933,9 @@ impl PlaySession {
         self.health.update(step_time);
         let judged_before = self.log.events().len();
         self.rules.update(&step, &mut self.log);
+        for shake in self.rules.shakes() {
+            self.shakes.start(shake.index, shake.time);
+        }
         // Ported from osu!lazer 2026.1005.0-lazer: osu.Game/Rulesets/UI/DrawableRuleset.cs (SetRecordTarget)
         // Recording stops once the play completes (lazer's `SetRecordTarget(null)`); every
         // judgement records an important frame.
@@ -1209,6 +1219,7 @@ impl PlaySession {
         self.applied = 0;
         self.popups_seen = 0;
         self.popups.restart();
+        self.shakes.clear();
         self.hit_errors.restart();
         self.hit_events.restart();
         self.failed_at = None;
@@ -1293,6 +1304,7 @@ impl PlaySession {
         snapshot.circles.clear();
         snapshot.sliders.clear();
         snapshot.spinners.clear();
+        snapshot.shakes = self.shakes;
     }
 
     /// Fills the fields every gameplay tick writes alike.
@@ -1315,6 +1327,7 @@ impl PlaySession {
         snapshot.circles.capture(&self.rules);
         snapshot.sliders.capture(&self.rules);
         snapshot.spinners.capture(&self.rules, &self.spm);
+        snapshot.shakes = self.shakes;
     }
 }
 
@@ -1976,6 +1989,7 @@ impl PlayView {
                 snapshot.circles.as_slice(),
                 &snapshot.sliders,
                 time,
+                &snapshot.shakes,
                 ObjectTextures {
                     circles: &textures.circles,
                     sliders: &textures.sliders,
@@ -1991,6 +2005,7 @@ impl PlayView {
                 snapshot.circles.as_slice(),
                 snapshot.sliders.as_slice(),
                 time,
+                &snapshot.shakes,
                 &textures.circles,
                 fail,
             );

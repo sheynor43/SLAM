@@ -86,6 +86,7 @@
 | [0080](0080-hlsl-and-backend-selection.md) | HLSL из `naga` с правкой сэмплеров (куча D3D12 → регистры `s<n>`), DXBC через `D3DCompile` при запуске, бэкенд рендера выбирается один раз при старте (сцены обобщены по `Device`) | Принято |
 | [0081](0081-stable-spinner-rules-deferred.md) | Правила спиннера stable отложены до проверяемого источника; при реализации — настройка в `RulesOptions`, реплей всегда по правилам лазера | Принято |
 | [0082](0082-d3d11-flip-model-surface.md) | Поверхность D3D11: flip-model swapchain в `slam-render` (tearing, waitable, задержка 1 кадр), HWND и размер из `slam-input` | Принято |
+| [0083](0083-object-shake-on-blocked-press.md) | Тряска объекта при заблокированном нажатии: правила отдают тряски за update, состояние `ObjectShakes` в сессии `slam-play`, копия в снапшоте | Принято |
 
 ## Шаблон
 

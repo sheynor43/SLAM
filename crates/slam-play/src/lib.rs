@@ -21,6 +21,7 @@ pub mod playfield;
 pub mod resume;
 pub mod ring;
 pub mod session;
+pub mod shake;
 pub mod slider_body;
 pub mod sliders;
 pub mod spinners;
