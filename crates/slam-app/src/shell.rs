@@ -1530,8 +1530,9 @@ impl PlayHost {
             snapshot,
         );
         // A passed attempt's replay is saved as it passes, as lazer imports the score on
-        // completion: quitting before the results or retrying keeps it.
-        if let Some(attempt) = game.session.take_passed_attempt() {
+        // completion: quitting before the results or retrying keeps it. A failed one comes
+        // when the fail menu's button saves it (ADR-0084).
+        if let Some(attempt) = game.session.take_finished_attempt() {
             self.loader.free(Trash::Replay(ReplayJob {
                 attempt,
                 beatmap: Arc::clone(&game.beatmap),

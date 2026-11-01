@@ -60,7 +60,7 @@ pub enum Trash {
     Other(Box<dyn Send>),
     /// A finished play.
     Session(Box<PlaySession>),
-    /// An attempt that passed: its replay is saved.
+    /// An attempt that passed, or failed and was kept: its replay is saved.
     Replay(ReplayJob),
     /// A failed preparation's message, logged when it failed.
     Message(String),
@@ -97,7 +97,7 @@ pub struct LoaderConfig {
     pub registry: Arc<FontRegistry>,
     /// The HUD's texts.
     pub hud_labels: HudLabels,
-    /// Where replays of passed plays are saved; `None` saves none.
+    /// Where replays of finished plays are saved; `None` saves none.
     pub replays: Option<PathBuf>,
 }
 

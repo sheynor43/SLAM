@@ -778,7 +778,7 @@ fn hotkeys_and_gameplay_keys_conflict_both_ways() {
 fn a_hotkey_cannot_take_menu_or_gameplay_screen_keys() {
     let fps = KeySlot::ToggleFps;
     for name in [
-        "Space", "Escape", "Enter", "Up", "Left", "Tab", "=", "-", "`", "F10",
+        "Space", "Escape", "Enter", "Up", "Left", "Tab", "=", "-", "`", "F1", "F10",
     ] {
         assert!(!Settings::key_allowed(fps, key(name)), "{name}");
     }

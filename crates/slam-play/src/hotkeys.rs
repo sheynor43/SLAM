@@ -14,6 +14,7 @@ const SCANCODE_MINUS: u16 = 45;
 /// `=`, lazer's `Plus` key.
 const SCANCODE_EQUALS: u16 = 46;
 const SCANCODE_GRAVE: u16 = 53;
+const SCANCODE_F1: u16 = 58;
 const SCANCODE_F10: u16 = 67;
 const SCANCODE_DOWN: u16 = 81;
 const SCANCODE_UP: u16 = 82;
@@ -68,6 +69,7 @@ pub fn is_gameplay_hotkey(input: crate::input::Input) -> bool {
                 | SCANCODE_MINUS
                 | SCANCODE_EQUALS
                 | SCANCODE_GRAVE
+                | SCANCODE_F1
                 | SCANCODE_F10
                 | SCANCODE_DOWN
                 | SCANCODE_UP
@@ -89,6 +91,8 @@ pub enum MenuKey {
     SelectNext,
     /// Space, Enter or the keypad's Enter.
     Select,
+    /// F1: the fail menu's save button (lazer's `GlobalAction.SaveReplay`).
+    SaveReplay,
 }
 
 /// A hold-to-confirm action (lazer's `HoldToConfirmContainer`).
@@ -223,6 +227,7 @@ impl Hotkeys {
                 SCANCODE_UP => Some(MenuKey::SelectPrevious),
                 SCANCODE_DOWN => Some(MenuKey::SelectNext),
                 SCANCODE_SPACE | SCANCODE_RETURN | SCANCODE_KP_ENTER => Some(MenuKey::Select),
+                SCANCODE_F1 => Some(MenuKey::SaveReplay),
                 _ => None,
             },
             _ => None,
@@ -335,6 +340,7 @@ mod tests {
             (SCANCODE_SPACE, MenuKey::Select),
             (SCANCODE_RETURN, MenuKey::Select),
             (SCANCODE_KP_ENTER, MenuKey::Select),
+            (SCANCODE_F1, MenuKey::SaveReplay),
         ] {
             let event = key(0, scancode, true);
             h.on_event(&event);
@@ -391,6 +397,7 @@ mod tests {
         for scancode in [
             SCANCODE_ESCAPE,
             SCANCODE_SPACE,
+            SCANCODE_F1,
             SCANCODE_F10,
             SCANCODE_EQUALS,
             SCANCODE_MINUS,

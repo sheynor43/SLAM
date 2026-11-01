@@ -37,7 +37,7 @@ pub use input::{Binding, Bindings, ClockTime, GameTime, Input, LiveInput};
 pub use menu_overlay::{MenuLabels, MenuView};
 pub use playfield::PlayfieldLayout;
 pub use session::{
-    FrameTextures, HudValues, PassedAttempt, PlayResults, PlaySession, PlaySnapshot, PlayState,
+    FinishedAttempt, FrameTextures, HudValues, PlayResults, PlaySession, PlaySnapshot, PlayState,
     PlayTextures, PlayView,
 };
 pub use time::{Offsets, game_time, track_time_for};

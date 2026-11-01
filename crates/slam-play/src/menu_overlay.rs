@@ -6,8 +6,9 @@
 //! as a fixed-size [`MenuSnapshot`]; [`MenuView`] draws it over the play.
 //!
 //! The buttons are plain rectangles: no shear, glow, flash on click or text scale of lazer's
-//! `DialogButton`, only its width on selection. No pause loop sound and no button to save
-//! the failed score yet.
+//! `DialogButton`, only its width on selection. The fail menu's footer holds the button that
+//! saves the failed attempt's replay (ADR-0084), labelled rather than an icon. No pause loop
+//! sound yet.
 
 use std::sync::Arc;
 
@@ -37,9 +38,19 @@ const BUTTON_SPACING: f32 = 2.0;
 const BUTTON_PADDING: f32 = 50.0;
 // Ported from osu!lazer 2026.1005.0-lazer: osu.Game/Screens/Play/FailOverlay.cs (load)
 // Ported from osu!lazer 2026.1005.0-lazer: osu.Game/Graphics/UserInterface/TwoLayerButton.cs (SIZE_EXTENDED)
-/// Height of the fail menu's footer, which holds the button to save the score there (not
-/// drawn yet, but it takes its place).
+/// Height of the fail menu's footer, which holds the button to save the replay.
 const FAIL_FOOTER_HEIGHT: f32 = 50.0;
+// Ported from osu!lazer 2026.1005.0-lazer: osu.Game/Screens/Play/FailOverlay.cs (load)
+const FOOTER_COLOUR: Color = hex(0x33, 0x33, 0x33);
+/// The save button's size: lazer's `Width = 300` and the height `SaveFailedScoreButton` gives it.
+const SAVE_BUTTON_SIZE: [f32; 2] = [300.0, 30.0];
+const SAVE_TEXT_SIZE: f32 = 16.0;
+// Ported from osu!lazer 2026.1005.0-lazer: osu.Game/Graphics/UserInterface/OsuAnimatedButton.cs (hoverColour, DimColour)
+/// The white over a hovered button.
+const SAVE_HOVER_ALPHA: f32 = 0.1;
+// Ported from osu!lazer 2026.1005.0-lazer: osu.Game/Graphics/OsuColour.cs (Gray4, Gray9)
+const GRAY4: Color = hex(0x44, 0x44, 0x44);
+const GRAY9: Color = hex(0x99, 0x99, 0x99);
 const TITLE_SIZE: f32 = 48.0;
 const TITLE_WEIGHT: u16 = 600;
 const INFO_SIZE: f32 = 18.0;
@@ -89,6 +100,21 @@ pub enum MenuButton {
     Continue,
     Retry,
     Quit,
+    /// The fail menu's footer button: not one of [`MenuKind::buttons`].
+    SaveReplay,
+}
+
+// Ported from osu!lazer 2026.1005.0-lazer: osu.Game/Screens/Play/SaveFailedScoreButton.cs (load)
+/// What the fail menu's save button does (ADR-0084).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum ReplaySave {
+    /// It saves the replay.
+    #[default]
+    Available,
+    /// The replay went to be saved; the button is disabled.
+    Saved,
+    /// There is no replay to save (the recording overflowed); the button is disabled.
+    Unavailable,
 }
 
 impl MenuKind {
@@ -114,12 +140,24 @@ impl MenuKind {
     }
 }
 
+impl ReplaySave {
+    /// Its place in [`MenuLabels`]' order: saves, saved, unavailable.
+    fn index(self) -> usize {
+        match self {
+            ReplaySave::Available => 0,
+            ReplaySave::Saved => 1,
+            ReplaySave::Unavailable => 2,
+        }
+    }
+}
+
 impl MenuButton {
     pub fn colour(self) -> Color {
         match self {
             MenuButton::Continue => GREEN,
             MenuButton::Retry => YELLOW_DARK,
             MenuButton::Quit => QUIT_RED,
+            MenuButton::SaveReplay => GRAY4,
         }
     }
 }
@@ -229,6 +267,8 @@ pub struct MenuLayout {
     button_width: f32,
     /// Top of the first button.
     buttons_top: f32,
+    /// Top of the footer: the window's bottom when there is none.
+    pub footer_top: f32,
 }
 
 impl MenuLayout {
@@ -254,6 +294,7 @@ impl MenuLayout {
             button_x: padding,
             button_width: (width - 2.0 * padding).max(0.0),
             buttons_top: row,
+            footer_top: height - footer,
         }
     }
 
@@ -271,13 +312,32 @@ impl MenuLayout {
         )
     }
 
-    // Ported from osu-framework 2026.921.1: osu.Framework/Graphics/Primitives/RectangleF.cs (Contains)
+    // Ported from osu!lazer 2026.1005.0-lazer: osu.Game/Screens/Play/FailOverlay.cs (load)
+    /// Top left and size of the fail menu's save button, centred in the footer.
+    pub fn save_button(&self, width: f32) -> ([f32; 2], [f32; 2]) {
+        let [w, h] = SAVE_BUTTON_SIZE.map(|v| v * self.scale);
+        let footer = FAIL_FOOTER_HEIGHT * self.scale;
+        (
+            [(width - w) / 2.0, self.footer_top + (footer - h) / 2.0],
+            [w, h],
+        )
+    }
+
     /// The button of `buttons` under `at`, if any.
     pub fn button_at(&self, at: Vec2, buttons: usize) -> Option<usize> {
-        (0..buttons).find(|&index| {
-            let ([left, top], [width, height]) = self.button(index);
-            left <= at.x && at.x < left + width && top <= at.y && at.y < top + height
-        })
+        (0..buttons).find(|&index| contains(self.button(index), at))
+    }
+}
+
+// Ported from osu-framework 2026.921.1: osu.Framework/Graphics/Primitives/RectangleF.cs (Contains)
+fn contains(([left, top], [width, height]): ([f32; 2], [f32; 2]), at: Vec2) -> bool {
+    left <= at.x && at.x < left + width && top <= at.y && at.y < top + height
+}
+
+impl MenuLayout {
+    /// Whether `at` is over the save button of the fail menu on a window `width` units wide.
+    pub fn over_save_button(&self, at: Vec2, width: f32) -> bool {
+        contains(self.save_button(width), at)
     }
 }
 
@@ -292,6 +352,10 @@ pub struct MenuSnapshot {
     /// The coloured part of each button as a part of its width.
     pub widths: [Tween; MAX_BUTTONS],
     pub info: MenuInfo,
+    /// The fail menu's save button.
+    pub replay_save: ReplaySave,
+    /// The mouse is over the save button.
+    pub save_hovered: bool,
 }
 
 impl Default for MenuSnapshot {
@@ -306,6 +370,8 @@ impl Default for MenuSnapshot {
                 progress: 0,
                 accuracy: 1.0,
             },
+            replay_save: ReplaySave::Available,
+            save_hovered: false,
         }
     }
 }
@@ -322,6 +388,8 @@ pub struct GameplayMenu {
     pressed: Option<usize>,
     /// The mouse in window units, once it moved.
     pointer: Option<Vec2>,
+    /// The left mouse button went down on the save button.
+    save_pressed: bool,
 }
 
 impl GameplayMenu {
@@ -356,10 +424,21 @@ impl GameplayMenu {
             .retarget(1.0, now_ns, TRANSITION_NS, Easing::In);
         self.deselect(now_ns);
         self.pressed = None;
+        self.save_pressed = false;
+        self.state.replay_save = ReplaySave::Available;
         let layout = MenuLayout::new(size[0], size[1], kind);
         self.hovered = self
             .pointer
             .and_then(|at| layout.button_at(at, kind.buttons().len()));
+        self.state.save_hovered = kind == MenuKind::Fail
+            && self
+                .pointer
+                .is_some_and(|at| layout.over_save_button(at, size[0]));
+    }
+
+    /// Sets what the save button does: the session knows whether there is a replay.
+    pub fn set_replay_save(&mut self, save: ReplaySave) {
+        self.state.replay_save = save;
     }
 
     // Ported from osu!lazer 2026.1005.0-lazer: osu.Game/Screens/Play/GameplayMenuOverlay.cs (PopOut)
@@ -374,6 +453,8 @@ impl GameplayMenu {
             .retarget(0.0, now_ns, TRANSITION_NS, Easing::In);
         self.deselect(now_ns);
         self.pressed = None;
+        self.save_pressed = false;
+        self.state.save_hovered = false;
     }
 
     /// Hides the menu at once: the play starts over, as lazer's new player has no menu.
@@ -420,10 +501,17 @@ impl GameplayMenu {
                     None
                 }
                 MenuKey::Select => self.selected.map(|index| buttons[index]),
+                // Ported from osu!lazer 2026.1005.0-lazer: osu.Game/Screens/Play/SaveFailedScoreButton.cs (OnPressed)
+                // Only the fail menu has the button.
+                MenuKey::SaveReplay if self.state.kind == MenuKind::Fail => {
+                    self.save_enabled().then_some(MenuButton::SaveReplay)
+                }
+                MenuKey::SaveReplay => return (None, false),
             };
             return (clicked, true);
         }
         let layout = MenuLayout::new(size[0], size[1], self.state.kind);
+        let fail = self.state.kind == MenuKind::Fail;
         match event.kind {
             InputKind::MouseMove { .. } => {
                 let hovered = self
@@ -441,6 +529,10 @@ impl GameplayMenu {
                 if let Some(index) = hovered {
                     self.set_selected(Some(index), time);
                 }
+                self.state.save_hovered = fail
+                    && self
+                        .pointer
+                        .is_some_and(|at| layout.over_save_button(at, size[0]));
                 (None, false)
             }
             // Ported from osu-framework 2026.921.1: osu.Framework/Input/MouseButtonEventManager.cs (HandleButtonUp)
@@ -451,17 +543,28 @@ impl GameplayMenu {
             } => {
                 if down {
                     self.pressed = self.hovered;
-                    return (None, self.hovered.is_some());
+                    self.save_pressed = self.state.save_hovered;
+                    return (None, self.hovered.is_some() || self.save_pressed);
                 }
                 let clicked = self
                     .pressed
                     .take()
                     .filter(|&index| self.hovered == Some(index))
                     .map(|index| buttons[index]);
+                // A disabled button takes the click without acting.
+                let saved = std::mem::take(&mut self.save_pressed) && self.state.save_hovered;
+                if saved {
+                    let save = self.save_enabled().then_some(MenuButton::SaveReplay);
+                    return (save, true);
+                }
                 (clicked, clicked.is_some())
             }
             _ => (None, false),
         }
+    }
+
+    fn save_enabled(&self) -> bool {
+        self.state.replay_save == ReplaySave::Available
     }
 
     // Ported from osu!lazer 2026.1005.0-lazer: osu.Game/Graphics/Containers/SelectionCycleFillFlowContainer.cs (SelectNext, SelectPrevious)
@@ -511,6 +614,10 @@ pub struct MenuLabels {
     pub continue_button: String,
     pub retry_button: String,
     pub quit_button: String,
+    /// The save button: saves, saved, unavailable.
+    pub save_replay: String,
+    pub replay_saved: String,
+    pub replay_unavailable: String,
     /// The retry count, with [`crate::hud::OFFSET_PLACEHOLDER`] for the number.
     pub retry_count: String,
     /// The song progress, with the placeholder for the percentage.
@@ -570,6 +677,8 @@ pub struct MenuView {
     titles: [(String, Layout); 2],
     /// Continue, retry, quit.
     buttons: [(String, Layout); MAX_BUTTONS],
+    /// The save button in each [`ReplaySave`].
+    save: [(String, Layout); 3],
     /// Retry count, song progress, accuracy.
     info: [InfoLine; 3],
 }
@@ -604,6 +713,11 @@ impl MenuView {
                 text(&labels.retry_button),
                 text(&labels.quit_button),
             ],
+            save: [
+                text(&labels.save_replay),
+                text(&labels.replay_saved),
+                text(&labels.replay_unavailable),
+            ],
             info: [
                 InfoLine::new(&labels.retry_count),
                 InfoLine::new(&labels.song_progress),
@@ -633,6 +747,11 @@ impl MenuView {
             self.context
                 .layout_into(&self.registry, text, &button, layout);
         }
+        let save = TextStyle::new(self.ui, BOLD, SAVE_TEXT_SIZE * scale);
+        for (text, layout) in &mut self.save {
+            self.context
+                .layout_into(&self.registry, text, &save, layout);
+        }
         let info = TextStyle::new(self.ui, INFO_WEIGHT, INFO_SIZE * scale);
         for line in &mut self.info {
             self.context.layout_into(
@@ -655,6 +774,7 @@ impl MenuView {
         self.titles
             .iter()
             .chain(&self.buttons)
+            .chain(&self.save)
             .map(|(_, layout)| layout)
             .chain(
                 self.info
@@ -735,6 +855,33 @@ impl MenuView {
                 },
             );
         }
+        if menu.kind == MenuKind::Fail {
+            rect(
+                [0.0, layout.footer_top],
+                [width, height - layout.footer_top],
+                Color {
+                    a: alpha,
+                    ..FOOTER_COLOUR
+                },
+            );
+            // Ported from osu!lazer 2026.1005.0-lazer: osu.Game/Graphics/UserInterface/DownloadButton.cs (updateState)
+            let (position, size) = layout.save_button(width);
+            let colour = match menu.replay_save {
+                ReplaySave::Saved => GREEN,
+                ReplaySave::Available | ReplaySave::Unavailable => GRAY4,
+            };
+            rect(position, size, Color { a: alpha, ..colour });
+            if menu.save_hovered && menu.replay_save == ReplaySave::Available {
+                rect(
+                    position,
+                    size,
+                    Color {
+                        a: SAVE_HOVER_ALPHA * alpha,
+                        ..Color::WHITE
+                    },
+                );
+            }
+        }
     }
 
     /// Writes the menu's text at engine time `now_ns` into a batch drawn with the MSDF
@@ -787,6 +934,23 @@ impl MenuView {
                 white,
             );
         }
+        if menu.kind == MenuKind::Fail {
+            let label = &self.save[menu.replay_save.index()].1;
+            let ([x, y], [w, h]) = layout.save_button(width);
+            // Ported from osu!lazer 2026.1005.0-lazer: osu.Game/Graphics/UserInterface/OsuAnimatedButton.cs (DimColour)
+            let colour = match menu.replay_save {
+                ReplaySave::Unavailable => GRAY9,
+                ReplaySave::Available | ReplaySave::Saved => Color::WHITE,
+            };
+            text(
+                label,
+                [
+                    x + (w - label.width()) / 2.0,
+                    y + (h - label.height()) / 2.0,
+                ],
+                Color { a: alpha, ..colour },
+            );
+        }
         let total: f32 = self.info.iter().map(InfoLine::height).sum();
         let mut y = layout.info_y - total / 2.0;
         for line in &self.info {
@@ -814,6 +978,9 @@ pub(crate) mod tests {
             continue_button: "Continue".into(),
             retry_button: "Retry".into(),
             quit_button: "Quit".into(),
+            save_replay: "Save replay".into(),
+            replay_saved: "Replay saved".into(),
+            replay_unavailable: "Replay unavailable".into(),
             retry_count: format!("Retry count: {placeholder}"),
             song_progress: format!("Song progress: {placeholder}"),
             accuracy: format!("Accuracy: {placeholder}"),
@@ -1021,6 +1188,45 @@ pub(crate) mod tests {
             None,
             "the gap"
         );
+    }
+
+    #[test]
+    fn the_save_button_is_centred_in_the_footer() {
+        let fail = MenuLayout::new(2048.0, 1536.0, MenuKind::Fail);
+        assert_eq!(fail.footer_top, 1536.0 - 100.0);
+        let ([x, y], [w, h]) = fail.save_button(2048.0);
+        assert_eq!(
+            [x, y, w, h],
+            [(2048.0 - 600.0) / 2.0, 1436.0 + 20.0, 600.0, 60.0]
+        );
+        assert!(fail.over_save_button(Vec2::new(x, y), 2048.0));
+        assert!(!fail.over_save_button(Vec2::new(x - 1.0, y), 2048.0));
+        assert_eq!(
+            MenuLayout::new(1024.0, 768.0, MenuKind::Pause).footer_top,
+            768.0
+        );
+    }
+
+    #[test]
+    fn f1_saves_only_in_the_fail_menu_while_it_can() {
+        let mut menu = GameplayMenu::default();
+        menu.show(MenuKind::Pause, info(), 0, SIZE);
+        assert_eq!(key(&mut menu, MenuKey::SaveReplay, 1), (None, false));
+        menu.show(MenuKind::Fail, info(), 2, SIZE);
+        assert_eq!(
+            key(&mut menu, MenuKey::SaveReplay, 3),
+            (Some(MenuButton::SaveReplay), true)
+        );
+        for save in [ReplaySave::Saved, ReplaySave::Unavailable] {
+            menu.set_replay_save(save);
+            assert_eq!(key(&mut menu, MenuKey::SaveReplay, 4), (None, true));
+        }
+        // Showing again starts available; the session says otherwise.
+        menu.show(MenuKind::Fail, info(), 5, SIZE);
+        assert_eq!(menu.snapshot().replay_save, ReplaySave::Available);
+        // Not one of the buttons the arrows cycle through.
+        key(&mut menu, MenuKey::SelectPrevious, 6);
+        assert_eq!(menu.selected(), Some(1));
     }
 
     // Ported from osu!lazer 2026.1005.0-lazer: osu.Game/Screens/Play/GameplayMenuOverlay.cs (getSongProgress)

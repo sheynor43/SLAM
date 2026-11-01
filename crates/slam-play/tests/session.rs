@@ -27,7 +27,7 @@ use slam_play::cursor::{
 };
 use slam_play::hud::OFFSET_PLACEHOLDER;
 use slam_play::menu_overlay::{
-    GameplayMenu, MenuInfo, MenuKind, MenuLayout, MenuView, song_progress,
+    GameplayMenu, MenuInfo, MenuKind, MenuLayout, MenuView, ReplaySave, song_progress,
 };
 use slam_play::offset::OffsetPanel;
 use slam_play::slider_body::Snaking;
@@ -771,6 +771,9 @@ fn labels() -> HudLabels {
             continue_button: "Продолжить".to_owned(),
             retry_button: "Заново".to_owned(),
             quit_button: "Выйти".to_owned(),
+            save_replay: "Сохранить реплей".to_owned(),
+            replay_saved: "Реплей сохранён".to_owned(),
+            replay_unavailable: "Реплей недоступен".to_owned(),
             retry_count: format!("Перезапусков: {OFFSET_PLACEHOLDER}"),
             song_progress: format!("Прогресс песни: {OFFSET_PLACEHOLDER}"),
             accuracy: format!("Точность: {OFFSET_PLACEHOLDER}"),
@@ -1277,6 +1280,7 @@ const ENTER: u16 = 40;
 const SPACE: u16 = 44;
 const DOWN: u16 = 81;
 const UP: u16 = 82;
+const F1: u16 = 58;
 
 /// A play ticked every millisecond by hand, with the events of each tick given.
 struct Driver {
@@ -3250,7 +3254,7 @@ fn a_passed_play_replays_to_the_same_score() {
     );
     let (mut session, _, _) = run_events(&events, session, track, MS, end, |_| {});
     let results = session.results().expect("the play passed");
-    let attempt = session.take_passed_attempt().expect("the play passed");
+    let attempt = session.take_finished_attempt().expect("the play passed");
     let frames = attempt.frames().expect("the play recorded");
     assert!(results.statistics.count(HitResult::Great) > 0);
     assert!(!frames.is_empty());
@@ -3299,13 +3303,220 @@ fn a_passed_play_replays_to_the_same_score() {
 }
 
 #[test]
+fn the_fail_menu_saves_the_failed_replay_once() {
+    let map = beatmap();
+    let mut d = Driver::new(&map, ModSet::default());
+    d.run_until(10_000, |s| s.state == PlayState::Failed);
+    assert!(
+        d.session.take_finished_attempt().is_none(),
+        "a fail is saved only by the button"
+    );
+    assert_eq!(d.snapshot.menu.replay_save, ReplaySave::Available);
+    d.tap(F1);
+    assert_eq!(d.snapshot.menu.replay_save, ReplaySave::Saved);
+    assert_eq!(d.state(), PlayState::Failed);
+    assert!(d.snapshot.menu.visible, "the menu stays");
+    let attempt = d.session.take_finished_attempt().expect("saved");
+    assert_eq!(attempt.rank(), slam_osu::scoring::ScoreRank::F);
+    assert!(!attempt.frames().expect("the play recorded").is_empty());
+    d.tap(F1);
+    assert!(d.session.take_finished_attempt().is_none(), "saved once");
+
+    // A retry starts over: its fail can be saved again.
+    d.tap(DOWN);
+    d.tap(ENTER);
+    assert_eq!(d.state(), PlayState::Playing);
+    assert!(d.session.take_finished_attempt().is_none());
+    d.run_until(10_000, |s| s.state == PlayState::Failed);
+    assert_eq!(d.snapshot.menu.replay_save, ReplaySave::Available);
+    d.tap(F1);
+    assert!(d.session.take_finished_attempt().is_some());
+}
+
+#[test]
+fn the_save_button_is_clicked_in_the_fail_menus_footer() {
+    let map = beatmap();
+    let mut d = Driver::new(&map, ModSet::default());
+    d.run_until(10_000, |s| s.state == PlayState::Failed);
+    let [width, height] = layout().window_size();
+    let ([x, y], [w, h]) = MenuLayout::new(width, height, MenuKind::Fail).save_button(width);
+    let over = press(
+        d.now,
+        InputKind::MouseMove {
+            x: x + w / 2.0,
+            y: y + h / 2.0,
+        },
+    );
+    d.tick(&[over]);
+    assert!(d.snapshot.menu.save_hovered);
+    let left = |d: &Driver, down| {
+        press(
+            d.now,
+            InputKind::MouseButton {
+                button: MouseButton::Left,
+                down,
+            },
+        )
+    };
+    let (down, up) = (left(&d, true), left(&d, false));
+    d.tick(&[down, up]);
+    assert_eq!(d.snapshot.menu.replay_save, ReplaySave::Saved);
+    assert_eq!(d.state(), PlayState::Failed);
+    assert!(d.session.take_finished_attempt().is_some());
+    // The disabled button takes a click without saving or retrying.
+    let (down, up) = (left(&d, true), left(&d, false));
+    d.tick(&[down, up]);
+    assert_eq!(d.state(), PlayState::Failed);
+    assert!(d.session.take_finished_attempt().is_none());
+}
+
+#[test]
+fn the_failed_replay_records_through_the_fail_animation() {
+    let map = beatmap();
+    let mut d = Driver::new(&map, ModSet::default());
+    d.run_until(10_000, |s| s.state == PlayState::Failing);
+    let failed_at = d.snapshot.time;
+    d.run_until(3_000, |s| s.state == PlayState::Failed);
+    d.tap(F1);
+    let attempt = d.session.take_finished_attempt().expect("saved");
+    let last = attempt.frames().unwrap().last().unwrap().time;
+    assert!(last > failed_at, "{last} after the fail at {failed_at}");
+    assert!(last <= d.snapshot.time);
+}
+
+#[test]
+fn a_fail_cut_short_by_back_can_be_saved() {
+    let map = beatmap();
+    let mut d = Driver::new(&map, ModSet::default());
+    d.run_until(10_000, |s| s.state == PlayState::Failing);
+    d.tap(ESCAPE);
+    assert_eq!(d.state(), PlayState::Failed);
+    d.tap(F1);
+    assert_eq!(d.snapshot.menu.replay_save, ReplaySave::Saved);
+    assert!(d.session.take_finished_attempt().is_some());
+}
+
+#[test]
+fn a_press_on_the_save_button_released_elsewhere_saves_nothing() {
+    let map = beatmap();
+    let mut d = Driver::new(&map, ModSet::default());
+    d.run_until(10_000, |s| s.state == PlayState::Failed);
+    let [width, height] = layout().window_size();
+    let ([x, y], [w, h]) = MenuLayout::new(width, height, MenuKind::Fail).save_button(width);
+    let at = |d: &Driver, x: f32| press(d.now, InputKind::MouseMove { x, y: y + h / 2.0 });
+    let left = |d: &Driver, down| {
+        press(
+            d.now,
+            InputKind::MouseButton {
+                button: MouseButton::Left,
+                down,
+            },
+        )
+    };
+    let events = [
+        at(&d, x + w / 2.0),
+        left(&d, true),
+        at(&d, x - 10.0),
+        left(&d, false),
+    ];
+    d.tick(&events);
+    assert_eq!(d.snapshot.menu.replay_save, ReplaySave::Available);
+    assert!(!d.snapshot.menu.save_hovered);
+    assert!(d.session.take_finished_attempt().is_none());
+}
+
+#[test]
+fn quitting_or_pausing_saves_no_failed_replay() {
+    let map = beatmap();
+    let mut d = Driver::new(&map, mods(vec![slam_osu::mods::Mod::NoFail]));
+    d.run_to(500.0);
+    d.tap(ESCAPE);
+    d.tap(F1);
+    assert_eq!(
+        d.state(),
+        PlayState::Paused,
+        "the pause menu has no save button"
+    );
+    assert!(d.snapshot.menu.visible);
+    assert!(d.session.take_finished_attempt().is_none());
+
+    let mut d = Driver::new(&map, ModSet::default());
+    d.run_until(10_000, |s| s.state == PlayState::Failed);
+    d.tap(ESCAPE);
+    assert_eq!(d.state(), PlayState::Exited);
+    d.tap(F1);
+    assert!(d.session.take_finished_attempt().is_none());
+}
+
+#[test]
+fn saving_the_failed_replay_does_not_allocate() {
+    let map = beatmap();
+    let mut d = Driver::new(&map, ModSet::default());
+    d.run_until(10_000, |s| s.state == PlayState::Failed);
+    let attempt = assert_no_alloc(|| {
+        d.tap(F1);
+        d.session.take_finished_attempt()
+    });
+    assert!(attempt.is_some());
+}
+
+#[test]
+fn a_failed_play_replays_to_the_same_fail() {
+    use slam_osu::replay::{PlayScore, ReplayInfo, ReplayInput, Simulator, replay_of_play};
+
+    let map = beatmap();
+    let mut d = Driver::new(&map, ModSet::default());
+    d.run_until(10_000, |s| s.state == PlayState::Failed);
+    d.tap(F1);
+    let attempt = d.session.take_finished_attempt().expect("saved");
+    let frames = attempt.frames().expect("the play recorded");
+    let mods = attempt.mods().clone();
+    let replay = replay_of_play(
+        frames,
+        &PlayScore {
+            mods: &mods,
+            statistics: attempt.statistics(),
+            maximum_statistics: attempt.maximum_statistics(),
+            total_score: attempt.score(),
+            total_score_without_mods: attempt.score_without_mods(),
+            rank: attempt.rank(),
+        },
+        &ReplayInfo {
+            beatmap_hash: String::new(),
+            beatmap_format_version: map.format_version,
+            player_name: String::new(),
+            date_ticks: 0,
+            client_version: String::new(),
+        },
+    );
+    let input = ReplayInput::from_replay(&replay, map.format_version);
+    let mut sim = Simulator::new(&map, input, OsuRules::new(&map, &mods))
+        .with_health(
+            slam_osu::HealthProcessor::for_play(&map, &mods),
+            mods.clone(),
+        )
+        .with_scoring(ScoreProcessor::for_play(&map, &mods));
+    sim.run();
+
+    // The simulation stops at the fail; the play judged on through the fail animation.
+    let judged = |log: &[slam_osu::judgement::Judgement]| -> Vec<(u32, HitResult)> {
+        log.iter().map(|j| (j.object.index, j.result)).collect()
+    };
+    let played = judged(d.session.log().events());
+    let replayed = judged(sim.log().events());
+    assert!(sim.health().unwrap().has_failed());
+    assert!(!replayed.is_empty());
+    assert_eq!(played[..replayed.len()], replayed[..]);
+}
+
+#[test]
 fn the_passed_attempt_is_taken_once() {
     let map = beatmap();
     let mut d = passed(&map);
-    assert!(d.session.take_passed_attempt().is_some());
-    assert!(d.session.take_passed_attempt().is_none());
+    assert!(d.session.take_finished_attempt().is_some());
+    assert!(d.session.take_finished_attempt().is_none());
     d.run_until(2_000, |s| s.state == PlayState::Results);
-    assert!(d.session.take_passed_attempt().is_none());
+    assert!(d.session.take_finished_attempt().is_none());
 }
 
 #[test]
@@ -3314,7 +3525,7 @@ fn passing_and_taking_the_attempt_do_not_allocate() {
     let mut d = Driver::new(&map, mods(vec![slam_osu::mods::Mod::NoFail]));
     let attempt = assert_no_alloc(|| {
         d.run_until(12_000, |s| s.state == PlayState::Passed);
-        d.session.take_passed_attempt()
+        d.session.take_finished_attempt()
     });
     assert!(attempt.is_some());
 
@@ -3324,7 +3535,7 @@ fn passing_and_taking_the_attempt_do_not_allocate() {
     d.hold(None, GRAVE, 200);
     assert_eq!(d.state(), PlayState::Playing);
     assert_no_alloc(|| d.run_until(12_000, |s| s.state == PlayState::Passed));
-    let attempt = d.session.take_passed_attempt().unwrap();
+    let attempt = d.session.take_finished_attempt().unwrap();
     assert!(!attempt.frames().unwrap().is_empty());
 }
 
@@ -3333,7 +3544,7 @@ fn quitting_after_passing_keeps_the_attempt() {
     let map = beatmap();
     let mut d = passed(&map);
     d.tap(ESCAPE);
-    assert!(d.session.take_passed_attempt().is_some());
+    assert!(d.session.take_finished_attempt().is_some());
 }
 
 #[test]
@@ -3341,10 +3552,10 @@ fn a_play_that_did_not_pass_has_no_attempt() {
     let map = beatmap();
     let mut d = Driver::new(&map, ModSet::default());
     d.run_until(12_000, |s| s.state == PlayState::Failed);
-    assert!(d.session.take_passed_attempt().is_none());
+    assert!(d.session.take_finished_attempt().is_none());
     d.hold(None, GRAVE, 200);
     assert_eq!(d.state(), PlayState::Playing);
-    assert!(d.session.take_passed_attempt().is_none());
+    assert!(d.session.take_finished_attempt().is_none());
 }
 
 #[test]
@@ -3356,26 +3567,26 @@ fn a_quick_retry_before_the_results_keeps_the_passed_attempt() {
     assert_eq!(d.state(), PlayState::Playing);
     let attempt = d
         .session
-        .take_passed_attempt()
+        .take_finished_attempt()
         .expect("kept through the restart");
     assert!(!attempt.frames().unwrap().is_empty());
     assert_eq!(*attempt.statistics(), results.statistics);
-    assert!(d.session.take_passed_attempt().is_none());
+    assert!(d.session.take_finished_attempt().is_none());
 }
 
 #[test]
 fn a_restart_records_anew() {
     let map = beatmap();
     let mut d = passed(&map);
-    let first = d.session.take_passed_attempt().unwrap();
+    let first = d.session.take_finished_attempt().unwrap();
     let first = first.frames().unwrap();
     assert!(!first.is_empty());
     d.hold(None, GRAVE, 200);
     assert_eq!(d.state(), PlayState::Playing);
-    assert!(d.session.take_passed_attempt().is_none());
+    assert!(d.session.take_finished_attempt().is_none());
     // The same play without input records the same frames, from the start again.
     d.run_until(12_000, |s| s.state == PlayState::Passed);
-    let second = d.session.take_passed_attempt().unwrap();
+    let second = d.session.take_finished_attempt().unwrap();
     let second = second.frames().unwrap();
     assert!(
         (second[0].time - first[0].time).abs() < 2.0,

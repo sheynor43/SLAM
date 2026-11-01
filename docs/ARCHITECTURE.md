@@ -318,7 +318,7 @@ graph TD
 
 ## 11. HUD
 
-Подробности — [ADR-0015]. Стили шкалы ошибок и её временный размер — [ADR-0050](adr/0050-hit-error-meter-styles.md); на время спиннера шкала гаснет, как в stable — [ADR-0059](adr/0059-hit-error-meter-hides-during-spinners.md). Меню паузы и окно провала — не компоненты HUD, а служебный слой экрана игры с состоянием в `PlaySession` — [ADR-0052](adr/0052-gameplay-menu-overlay.md).
+Подробности — [ADR-0015]. Стили шкалы ошибок и её временный размер — [ADR-0050](adr/0050-hit-error-meter-styles.md); на время спиннера шкала гаснет, как в stable — [ADR-0059](adr/0059-hit-error-meter-hides-during-spinners.md). Меню паузы и окно провала — не компоненты HUD, а служебный слой экрана игры с состоянием в `PlaySession` — [ADR-0052](adr/0052-gameplay-menu-overlay.md); реплей проваленной попытки сохраняется кнопкой в окне провала — [ADR-0084](adr/0084-save-failed-replay.md).
 
 ### Компоненты (по одному на каждый вид, стиль — настройка)
 
