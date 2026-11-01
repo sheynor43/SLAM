@@ -2,8 +2,8 @@
 //! an offscreen surface, read-back of the surface and of render targets, pixel probes.
 #![allow(dead_code)]
 
-use slam_render::d3d11::OffscreenSurface;
 use slam_render::d3d11::{D3d11Adapter, D3d11Debug, D3d11Device, D3d11RenderTarget};
+use slam_render::d3d11::{D3d11Surface, OffscreenSurface};
 use slam_render::{Device, Extent};
 
 pub type TestDevice = D3d11Device<OffscreenSurface>;
@@ -15,6 +15,13 @@ pub fn device(width: u32, height: u32) -> TestDevice {
         OffscreenSurface::new(d, Extent::new(width, height))
     })
     .expect("D3D11 device on WARP");
+    require_debug_layer(&device);
+    device
+}
+
+/// Fails if `SLAM_REQUIRE_D3D11_DEBUG` is set but the device has no debug layer.
+#[track_caller]
+pub fn require_debug_layer<S: D3d11Surface>(device: &D3d11Device<S>) {
     if std::env::var_os("SLAM_REQUIRE_D3D11_DEBUG").is_some_and(|v| !v.is_empty()) {
         assert!(
             device.has_debug_layer(),
@@ -22,7 +29,6 @@ pub fn device(width: u32, height: u32) -> TestDevice {
              feature (SLAM_REQUIRE_D3D11_DEBUG is set)"
         );
     }
-    device
 }
 
 /// RGBA8 pixels of the surface, rows top first (ADR-0019).
@@ -55,7 +61,7 @@ pub fn assert_near(actual: [u8; 4], expected: [u8; 4]) {
 /// Fails if the debug layer reported a warning or error since the last call.
 /// `present` drains (and only logs) these messages, so call this before it.
 #[track_caller]
-pub fn assert_no_debug_messages(d: &mut TestDevice) {
+pub fn assert_no_debug_messages<S: D3d11Surface>(d: &mut D3d11Device<S>) {
     let messages = d.take_debug_messages();
     assert!(
         messages.is_empty(),

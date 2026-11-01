@@ -36,6 +36,10 @@ use crate::hal::{
     TextureFormat, TextureUsage, VERTEX_ALIGNMENT, VertexFormat,
 };
 
+mod swapchain;
+
+pub use swapchain::{NativeWindow, SwapchainSurface};
+
 /// Texture slots: one sampler register per texture slot, and D3D11 has 16.
 const TEXTURE_SLOTS: usize = D3D11_COMMONSHADER_SAMPLER_SLOT_COUNT as usize;
 
@@ -216,6 +220,26 @@ pub struct D3d11Device<S: D3d11Surface> {
     surface: S,
     limits: Limits,
     state: State,
+}
+
+impl<S: D3d11Surface> Drop for D3d11Device<S> {
+    fn drop(&mut self) {
+        // Release every view and binding and flush deferred destruction. The device
+        // and context fields then drop before the surface, so a swapchain's buffers go
+        // with the swapchain's own reference to the device, inside the surface's drop
+        // and before the window it holds.
+        self.state.surface = None;
+        self.state.target_texture = None;
+        self.state.textures = Default::default();
+        self.state.vertex = None;
+        self.state.vertex_raw = None;
+        self.state.index = None;
+        // SAFETY: the device's own immediate context.
+        unsafe {
+            self.context.ClearState();
+            self.context.Flush();
+        }
+    }
 }
 
 impl<S: D3d11Surface> D3d11Device<S> {
