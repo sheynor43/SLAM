@@ -57,6 +57,47 @@ fn numbers_group_by_thousands() {
 }
 
 #[test]
+fn fixed_two_decimals_round_group_and_keep_the_sign() {
+    let cases: &[(f64, &str)] = &[
+        (0.0, "0.00"),
+        (-0.0, "0.00"),
+        (1.0, "1.00"),
+        (1.234, "1.23"),
+        (1.236, "1.24"),
+        (0.125, "0.13"),
+        (0.375, "0.38"),
+        (2.625, "2.63"),
+        (0.5, "0.50"),
+        // A hair under 1.005 in f64: the exact value rounds down, as .NET's does.
+        (1.005, "1.00"),
+        (999.999, "1,000.00"),
+        (1_000.0, "1,000.00"),
+        (1_234.567, "1,234.57"),
+        (12_345_678.9, "12,345,678.90"),
+        (-1.234, "-1.23"),
+        (-1_234.5, "-1,234.50"),
+        (-0.001, "-0.00"),
+        (1e15, "1000000000000000.00"),
+        (f64::NAN, "NaN"),
+        (f64::INFINITY, "∞"),
+        (f64::NEG_INFINITY, "-∞"),
+    ];
+    for &(value, expected) in cases {
+        assert_eq!(text(|s| write_fixed2(s, value)), expected, "{value}");
+    }
+}
+
+#[test]
+fn hit_errors_are_early_by_their_raw_sign() {
+    assert!(is_early(-1.234));
+    assert!(is_early(-0.001));
+    assert!(!is_early(0.0));
+    assert!(!is_early(-0.0));
+    assert!(!is_early(0.001));
+    assert!(!is_early(25.0));
+}
+
+#[test]
 fn ranks_show_lazers_letters() {
     let cases = [
         (Rank::F, "F", false),
@@ -93,6 +134,9 @@ fn data(stats: [ResultsStat; StatKind::COUNT]) -> ResultsData {
         combo: 100,
         max_combo: 120,
         mods: ResultsMods::default(),
+        average_hit_error: None,
+        average_hit_error_text: None,
+        unstable_rate: None,
     }
 }
 
@@ -234,7 +278,30 @@ fn layout_keeps_everything_inside_the_window() {
         assert!(layout.rank.x + layout.rank.width <= layout.stat_row(0).x);
         let last = layout.stat_row(StatKind::COUNT - 1);
         assert!(last.y + last.height <= layout.buttons[0].y, "{w}x{h}");
-        let info = layout.info[3];
+        let info = layout.info[5];
         assert!(info.y + info.height <= layout.buttons[0].y, "{w}x{h}");
+    }
+}
+
+#[test]
+fn the_last_info_row_stays_clear_of_the_hint_and_the_buttons() {
+    let sizes = [(16.0, 9.0), (4.0, 3.0)];
+    for (aw, ah) in sizes {
+        for height in [480.0_f32, 600.0, 720.0, 900.0, 1080.0, 1440.0] {
+            let width = (height * aw / ah).round();
+            let layout = ResultsLayout::new(width, height, &Theme::default());
+            let last = layout.info[5];
+            let bottom = last.y + last.height;
+            assert!(
+                bottom <= layout.hint.y,
+                "{width}x{height}: {last:?} {:?}",
+                layout.hint
+            );
+            assert!(bottom <= layout.buttons[0].y, "{width}x{height}");
+            // The rows are stacked in order without overlapping.
+            for pair in layout.info.windows(2) {
+                assert!(pair[0].y + pair[0].height <= pair[1].y, "{width}x{height}");
+            }
+        }
     }
 }

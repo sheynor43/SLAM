@@ -90,7 +90,8 @@ fn log(trash: Trash, replays: Option<&Path>) {
     }
 }
 
-/// The results screen does not show these yet (ADR-0074).
+/// The results screen shows the average and the unstable rate; the median is only here
+/// (ADR-0074).
 fn log_hit_errors(session: &PlaySession) {
     tracing::info!("hit errors: {}", session.hit_error_summary());
 }

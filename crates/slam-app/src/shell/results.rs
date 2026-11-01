@@ -4,7 +4,10 @@ use slam_osu::judgement::HitResult;
 use slam_osu::mods::{GameplayMod as _, ModSet};
 use slam_osu::scoring::ScoreRank;
 use slam_play::PlayResults;
-use slam_ui::results::{Rank, ResultsData, ResultsMods, ResultsStat, StatKind};
+use slam_ui::i18n::{FluentArgs, Localizer};
+use slam_ui::results::{
+    Rank, ResultsData, ResultsMods, ResultsStat, StatKind, is_early, write_fixed2,
+};
 
 /// The judgement a row counts.
 pub fn hit_result(kind: StatKind) -> HitResult {
@@ -45,8 +48,30 @@ pub fn mods(mods: &ModSet) -> ResultsMods {
     ResultsMods::new(mods.ordered().map(|m| m.acronym()))
 }
 
+/// The average hit error as lazer words it: "1.23 ms early" or "1.23 ms late", by the raw
+/// sign of `offset`.
+// Ported from osu!lazer 2026.1005.0-lazer: osu.Game/Screens/Ranking/Statistics/AverageHitError.cs
+pub fn average_hit_error_text(localizer: &Localizer, offset: f64) -> String {
+    let mut ms = String::new();
+    let _ = write_fixed2(&mut ms, offset.abs());
+    let mut args = FluentArgs::new();
+    args.set("ms", ms);
+    let key = if is_early(offset) {
+        "results-hit-error-early"
+    } else {
+        "results-hit-error-late"
+    };
+    localizer.format(key, Some(&args)).into_owned()
+}
+
 /// The results of play `id`.
-pub fn results_data(id: u64, title: String, mods: ResultsMods, r: &PlayResults) -> ResultsData {
+pub fn results_data(
+    id: u64,
+    title: String,
+    mods: ResultsMods,
+    r: &PlayResults,
+    localizer: &Localizer,
+) -> ResultsData {
     ResultsData {
         id,
         title,
@@ -63,6 +88,12 @@ pub fn results_data(id: u64, title: String, mods: ResultsMods, r: &PlayResults) 
         combo: r.statistics.max_combo,
         max_combo: r.maximum_statistics.max_combo,
         mods,
+        average_hit_error: r.hit_errors.average,
+        average_hit_error_text: r
+            .hit_errors
+            .average
+            .map(|offset| average_hit_error_text(localizer, offset)),
+        unstable_rate: r.hit_errors.unstable_rate,
     }
 }
 
@@ -115,7 +146,13 @@ mod tests {
             maximum_statistics: perfect,
             hit_errors: Default::default(),
         };
-        let data = results_data(7, "t".into(), ResultsMods::new(["HD"]), &results);
+        let data = results_data(
+            7,
+            "t".into(),
+            ResultsMods::new(["HD"]),
+            &results,
+            &localizer(),
+        );
         assert_eq!((data.id, data.score, data.rank), (7, 123_456, Rank::SH));
         assert_eq!(
             (data.combo, data.max_combo),
@@ -163,6 +200,64 @@ mod tests {
         assert!(!rows.contains(&StatKind::SliderEnd));
         assert!(rows.contains(&StatKind::SliderTail));
         assert_eq!(data.mods.iter().count(), 1);
+        // No hit offsets: nothing to show.
+        assert_eq!(data.average_hit_error, None);
+        assert_eq!(data.average_hit_error_text, None);
+        assert_eq!(data.unstable_rate, None);
+    }
+
+    fn localizer() -> Localizer {
+        Localizer::builtin().unwrap()
+    }
+
+    #[test]
+    fn hit_errors_reach_the_results_with_their_text() {
+        let results = PlayResults {
+            score: 0,
+            score_without_mods: 0,
+            accuracy: 1.0,
+            rank: ScoreRank::X,
+            statistics: Statistics::default(),
+            maximum_statistics: Statistics::default(),
+            hit_errors: slam_osu::hit_events::HitErrorSummary {
+                unstable_rate: Some(123.456),
+                average: Some(-1.234),
+                median: Some(-9.0),
+                hits: 10,
+            },
+        };
+        let data = results_data(
+            1,
+            "t".into(),
+            ResultsMods::default(),
+            &results,
+            &localizer(),
+        );
+        assert_eq!(data.average_hit_error, Some(-1.234));
+        assert_eq!(data.unstable_rate, Some(123.456));
+        assert_eq!(
+            data.average_hit_error_text.as_deref(),
+            Some("1.23 ms early")
+        );
+    }
+
+    #[test]
+    fn the_average_reads_early_or_late_by_its_sign() {
+        let mut localizer = localizer();
+        let cases = [
+            (-1.234, "1.23 ms early"),
+            (1.234, "1.23 ms late"),
+            (0.0, "0.00 ms late"),
+            (-0.001, "0.00 ms early"),
+            (-1234.567, "1,234.57 ms early"),
+            (25.0, "25.00 ms late"),
+        ];
+        for (offset, expected) in cases {
+            assert_eq!(average_hit_error_text(&localizer, offset), expected);
+        }
+        localizer.set_language("ru").unwrap();
+        assert_eq!(average_hit_error_text(&localizer, -1.5), "1.50 мс раньше");
+        assert_eq!(average_hit_error_text(&localizer, 2.0), "2.00 мс позже");
     }
 
     #[test]

@@ -384,6 +384,9 @@ fn results_data(id: u64) -> ResultsData {
         combo: 10,
         max_combo: 12,
         mods: ResultsMods::default(),
+        average_hit_error: None,
+        average_hit_error_text: None,
+        unstable_rate: None,
     }
 }
 
@@ -587,6 +590,7 @@ fn host(name: &str, with_track: bool) -> HostFixture {
         points: [1280.0, 720.0],
         input: PlayInput::new(&Settings::default()),
         beatmap_offsets: HashMap::new(),
+        localizer: Arc::new(Localizer::builtin().unwrap()),
     };
     HostFixture {
         host,

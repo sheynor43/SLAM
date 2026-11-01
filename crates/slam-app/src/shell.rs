@@ -1500,6 +1500,8 @@ struct PlayHost {
     /// Beatmap offsets the hotkeys set, by beatmap file, until the app quits (stored
     /// with the library in #175).
     beatmap_offsets: HashMap<PathBuf, f64>,
+    /// Formats the texts of a play's results, which hold numbers.
+    localizer: Arc<Localizer>,
 }
 
 /// What a play takes from the settings on the update thread.
@@ -1716,7 +1718,13 @@ impl PlayHost {
             self.os_cursor.set_hidden(false);
             // The results come from the session before it retires.
             let results = game.session.results().map(|r| {
-                results::results_data(game.id, std::mem::take(&mut game.title), game.mods, &r)
+                results::results_data(
+                    game.id,
+                    std::mem::take(&mut game.title),
+                    game.mods,
+                    &r,
+                    &self.localizer,
+                )
             });
             // The track plays on under the results, as in lazer; a failed command leaves it
             // playing under the song select.
@@ -2581,6 +2589,9 @@ fn run_with<B: render::Backend>(
         max_combo: text("results-max-combo-title"),
         mods: text("results-mods-title"),
         no_mods: text("results-no-mods"),
+        average_hit_error: text("results-average-hit-error-title"),
+        unstable_rate: text("results-unstable-rate-title"),
+        not_available: text("results-not-available"),
         stats: StatKind::ALL.map(|kind| text(results_label_key(kind))),
         retry: text("results-retry-button"),
         back: text("results-back-button"),
@@ -2752,6 +2763,7 @@ fn run_with<B: render::Backend>(
         ],
         input: PlayInput::new(&settings),
         beatmap_offsets: HashMap::new(),
+        localizer: Arc::clone(&localizer),
     });
 
     let exited = Arc::new(AtomicBool::new(false));

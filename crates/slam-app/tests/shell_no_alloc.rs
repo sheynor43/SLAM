@@ -226,6 +226,9 @@ fn results_data(id: u64) -> slam_ui::results::ResultsData {
         combo: 10,
         max_combo: 12,
         mods: ResultsMods::default(),
+        average_hit_error: Some(-1.5),
+        average_hit_error_text: Some("1.50 ms early".to_owned()),
+        unstable_rate: Some(90.25),
     }
 }
 
