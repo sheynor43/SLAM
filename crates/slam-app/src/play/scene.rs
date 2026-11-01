@@ -59,8 +59,9 @@ const TEXTURE_REQUEST_CAPACITY: usize = 1024;
 const MAX_TEXTURES: usize = 64;
 /// Glyph sprites of one frame: the HUD's numbers and the skip button.
 const MAX_GLYPH_SPRITES: usize = 256;
-/// The menu's background and buttons, and the FPS counter's box.
-const MAX_MENU_SPRITES: usize = 2 + slam_play::menu_overlay::MAX_BUTTONS;
+/// The menu's background and buttons, the fail menu's footer, save button and its hover,
+/// and the FPS counter's box.
+const MAX_MENU_SPRITES: usize = 5 + slam_play::menu_overlay::MAX_BUTTONS;
 
 /// What a play takes from the player's settings.
 #[derive(Clone, Debug, PartialEq)]
@@ -189,6 +190,9 @@ pub fn hud_labels(localizer: &Localizer) -> HudLabels {
             continue_button: text("play-menu-continue"),
             retry_button: text("play-menu-retry"),
             quit_button: text("play-menu-quit"),
+            save_replay: text("play-menu-save-replay"),
+            replay_saved: text("play-menu-replay-saved"),
+            replay_unavailable: text("play-menu-replay-unavailable"),
             retry_count: text("play-menu-retry-count"),
             song_progress: text("play-menu-song-progress"),
             accuracy: text("play-menu-accuracy"),

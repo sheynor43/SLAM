@@ -48,7 +48,7 @@ use crate::judgements::{
 };
 use crate::legacy_hit_error::triangle_image;
 use crate::menu_overlay::{
-    GameplayMenu, MenuButton, MenuInfo, MenuKind, MenuSnapshot, song_progress,
+    GameplayMenu, MenuButton, MenuInfo, MenuKind, MenuSnapshot, ReplaySave, song_progress,
 };
 use crate::offset::{self, OffsetPanel};
 use crate::playfield::PlayfieldLayout;
@@ -156,10 +156,11 @@ impl HudValues {
     }
 }
 
-/// What a passed attempt's replay is made of, taken out of the session as it passes (lazer
-/// imports the score on completion): its input frames and final score.
+/// What a finished attempt's replay is made of: its input frames and final score. A passed
+/// attempt is taken out of the session as it passes (lazer imports the score on
+/// completion), a failed one when the fail menu's button saves it (ADR-0084).
 #[derive(Debug)]
-pub struct PassedAttempt {
+pub struct FinishedAttempt {
     recorder: ReplayRecorder,
     mods: ModSet,
     score: i64,
@@ -169,10 +170,11 @@ pub struct PassedAttempt {
     maximum_statistics: Statistics,
 }
 
-impl PassedAttempt {
-    /// An attempt slot recording into `recorder`, filled when an attempt passes.
-    fn spare(recorder: ReplayRecorder, mods: ModSet) -> PassedAttempt {
-        PassedAttempt {
+impl FinishedAttempt {
+    /// An attempt slot recording into `recorder`, filled when an attempt passes or its fail
+    /// is saved.
+    fn spare(recorder: ReplayRecorder, mods: ModSet) -> FinishedAttempt {
+        FinishedAttempt {
             recorder,
             mods,
             score: 0,
@@ -439,13 +441,16 @@ pub struct PlaySession {
     speed_set: bool,
     /// When the play failed.
     fail: Option<FailView>,
-    /// The play's input as replay frames, until it passes.
+    /// The play's input as replay frames, until it passes or its fail is saved.
     recorder: ReplayRecorder,
-    /// The slot a passing attempt's frames and score move to, made ahead with its own
+    /// The slot a finished attempt's frames and score move to, made ahead with its own
     /// recorder to swap in; `None` once taken, until the next restart makes another.
-    spare_attempt: Option<Box<PassedAttempt>>,
-    /// The attempt that passed, until [`PlaySession::take_passed_attempt`].
-    passed_attempt: Option<Box<PassedAttempt>>,
+    spare_attempt: Option<Box<FinishedAttempt>>,
+    /// The attempt that passed or whose fail was saved, until
+    /// [`PlaySession::take_finished_attempt`].
+    finished_attempt: Option<Box<FinishedAttempt>>,
+    /// The fail menu's button saved this attempt's replay.
+    failed_replay_saved: bool,
 }
 
 /// How fast a play runs: lazer's track adjustments from the rate mods.
@@ -573,11 +578,12 @@ impl PlaySession {
             speed,
             speed_set: false,
             fail: None,
-            spare_attempt: Some(Box::new(PassedAttempt::spare(
+            spare_attempt: Some(Box::new(FinishedAttempt::spare(
                 recorder.spare(),
                 mods.clone(),
             ))),
-            passed_attempt: None,
+            finished_attempt: None,
+            failed_replay_saved: false,
             recorder,
         }
     }
@@ -645,10 +651,11 @@ impl PlaySession {
         self.hit_events.summary()
     }
 
-    /// The attempt that passed, once: its replay is saved right away, so that quitting
-    /// before the results or retrying loses nothing. Without allocating.
-    pub fn take_passed_attempt(&mut self) -> Option<Box<PassedAttempt>> {
-        self.passed_attempt.take()
+    /// The attempt that passed, or whose fail the fail menu saved, once: its replay is saved
+    /// right away, so that quitting before the results or retrying loses nothing. Without
+    /// allocating.
+    pub fn take_finished_attempt(&mut self) -> Option<Box<FinishedAttempt>> {
+        self.finished_attempt.take()
     }
 
     /// Whether the player quit.
@@ -1013,15 +1020,16 @@ impl PlaySession {
                 results_at_ns: now_ns.saturating_add(RESULTS_DISPLAY_DELAY_NS),
             };
             self.passed = true;
-            self.keep_passed_attempt();
+            self.keep_attempt();
         }
     }
 
-    /// Moves the attempt that just passed into its slot; the session keeps the slot's empty
-    /// buffer for the next attempt. Without allocating: the slot was made ahead.
-    fn keep_passed_attempt(&mut self) {
+    /// Moves the attempt that just passed, or failed, into its slot; the session keeps the
+    /// slot's empty buffer for the next attempt. Without allocating: the slot was made ahead.
+    /// Whether there was a slot.
+    fn keep_attempt(&mut self) -> bool {
         let Some(mut attempt) = self.spare_attempt.take() else {
-            return;
+            return false;
         };
         std::mem::swap(&mut attempt.recorder, &mut self.recorder);
         attempt.score = self.score.total_score();
@@ -1030,9 +1038,36 @@ impl PlaySession {
         attempt.statistics = *self.score.statistics();
         attempt.maximum_statistics = *self.score.maximum_statistics();
         // An attempt nobody took becomes the next spare, without freeing it here.
-        if let Some(mut old) = self.passed_attempt.replace(attempt) {
+        if let Some(mut old) = self.finished_attempt.replace(attempt) {
             old.recorder.clear();
             self.spare_attempt = Some(old);
+        }
+        true
+    }
+
+    /// What the fail menu's save button can do now (ADR-0084).
+    fn replay_save(&self) -> ReplaySave {
+        if self.failed_replay_saved {
+            ReplaySave::Saved
+        } else if self.spare_attempt.is_none() || self.recorder.overflowed() {
+            ReplaySave::Unavailable
+        } else {
+            ReplaySave::Available
+        }
+    }
+
+    // Ported from osu!lazer 2026.1005.0-lazer: osu.Game/Screens/Play/SaveFailedScoreButton.cs (load)
+    // Ported from osu!lazer 2026.1005.0-lazer: osu.Game/Screens/Play/Player.cs (prepareAndImportScoreAsync)
+    /// The fail menu's save button: the failed attempt (rank F) moves to its slot, once.
+    /// Recording ran through the fail animation and stopped with it (lazer's clock stops in
+    /// `onFailComplete`).
+    fn save_failed_replay(&mut self) {
+        if self.phase != Phase::Failed || self.replay_save() != ReplaySave::Available {
+            return;
+        }
+        if self.keep_attempt() {
+            self.failed_replay_saved = true;
+            self.menu.set_replay_save(ReplaySave::Saved);
         }
     }
 
@@ -1069,6 +1104,11 @@ impl PlaySession {
             return;
         }
         match button {
+            // The save button is in the fail menu's footer: the menu stays.
+            MenuButton::SaveReplay => {
+                self.save_failed_replay();
+                return;
+            }
             MenuButton::Continue => self.resume(),
             MenuButton::Retry => self.menu_restart = true,
             // The menu shows: `PerformExitWithConfirmation` exits at once.
@@ -1169,6 +1209,8 @@ impl PlaySession {
         self.sounds.stop_all(sink);
         self.input.suspend();
         self.show_menu(MenuKind::Fail, now_ns);
+        let save = self.replay_save();
+        self.menu.set_replay_save(save);
     }
 
     fn exit(&mut self, sink: &mut impl VoiceSink) {
@@ -1206,7 +1248,7 @@ impl PlaySession {
         self.fail = None;
         self.recorder.clear();
         if self.spare_attempt.is_none() {
-            self.spare_attempt = Some(Box::new(PassedAttempt::spare(
+            self.spare_attempt = Some(Box::new(FinishedAttempt::spare(
                 self.recorder.spare(),
                 self.initial.mods.clone(),
             )));
@@ -1227,6 +1269,7 @@ impl PlaySession {
         self.last_time = self.start_time;
         self.restart_on_fail = false;
         self.passed = false;
+        self.failed_replay_saved = false;
         self.restarts += 1;
         // A new player shows no panel and no menu.
         self.offset_panel.reset();

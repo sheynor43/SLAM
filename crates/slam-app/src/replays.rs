@@ -1,5 +1,6 @@
 //! Saves passed plays as `.osr` replays into `replays/` of the data folder (ARCHITECTURE
-//! §17), as lazer imports every passed play with its replay. Runs on the loader thread.
+//! §17), as lazer imports every passed play with its replay, and failed ones the fail menu
+//! saves (ADR-0084). Runs on the loader thread.
 
 use std::fmt::Write as _;
 use std::path::Path;
@@ -9,7 +10,7 @@ use std::time::{SystemTime, UNIX_EPOCH};
 use md5::{Digest, Md5};
 use slam_formats::osr;
 use slam_osu::replay::{PlayScore, ReplayInfo, replay_of_play};
-use slam_play::PassedAttempt;
+use slam_play::FinishedAttempt;
 
 /// The player's name in replays: there are no accounts yet (lazer's guest user).
 pub const PLAYER_NAME: &str = "Guest";
@@ -25,12 +26,13 @@ pub struct ReplayBeatmap {
     pub name: String,
 }
 
-/// An attempt that passed, with what its replay needs besides; made as it passes.
+/// An attempt that passed or whose fail was saved, with what its replay needs besides; made
+/// as it is taken.
 pub struct ReplayJob {
-    pub attempt: Box<PassedAttempt>,
+    pub attempt: Box<FinishedAttempt>,
     /// Shared by the play's attempts.
     pub beatmap: Arc<ReplayBeatmap>,
-    /// When the attempt passed.
+    /// When the attempt was taken.
     pub ended: SystemTime,
 }
 
