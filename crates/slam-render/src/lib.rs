@@ -1,6 +1,8 @@
 //! Rendering HAL and backends, sprite batcher, slider meshes, render targets.
 
 pub mod atlas;
+#[cfg(windows)]
+pub mod d3d11;
 #[cfg(test)]
 mod fake_device;
 pub mod gl;

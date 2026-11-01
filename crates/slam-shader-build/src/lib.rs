@@ -96,6 +96,7 @@ pub fn translate(path: &Path, source: &str) -> Result<Shader, ShaderError> {
         .validate(&module)
         .map_err(|e| error(e.emit_to_string_with_path(source, &label)))?;
     check_entry_points(&module).map_err(error)?;
+    check_stage_interface(&module).map_err(error)?;
     check_globals(&module).map_err(error)?;
 
     let surface = write_glsl(&module, &info, ShaderStage::Vertex, false).map_err(error)?;
@@ -313,6 +314,77 @@ fn check_entry_points(module: &Module) -> Result<(), String> {
             return Err(
                 "`dpdy` changes sign between the surface and render targets in OpenGL; use `fwidth` or derive from a `@location` instead".into(),
             );
+        }
+    }
+    Ok(())
+}
+
+/// A user-defined varying: `@location`, type, interpolation and sampling.
+type Varying<'a> = (
+    u32,
+    &'a TypeInner,
+    Option<naga::Interpolation>,
+    Option<naga::Sampling>,
+);
+
+/// Collects the `@location` bindings of an entry point argument or result, sorted by
+/// location. `naga` lays out HLSL interface structs in the same order.
+fn varyings<'a>(
+    module: &'a Module,
+    ty: naga::Handle<naga::Type>,
+    binding: Option<&IoBinding>,
+    out: &mut Vec<Varying<'a>>,
+) {
+    let mut push = |ty: naga::Handle<naga::Type>, binding: Option<&IoBinding>| {
+        if let Some(&IoBinding::Location {
+            location,
+            interpolation,
+            sampling,
+            ..
+        }) = binding
+        {
+            out.push((location, &module.types[ty].inner, interpolation, sampling));
+        }
+    };
+    match &module.types[ty].inner {
+        TypeInner::Struct { members, .. } if binding.is_none() => {
+            for member in members {
+                push(member.ty, member.binding.as_ref());
+            }
+        }
+        _ => push(ty, binding),
+    }
+    out.sort_by_key(|v| v.0);
+}
+
+/// D3D11 links the vertex stage to the fragment stage by signature order, not by
+/// location (ADR-0080): the fragment inputs, sorted by location, must be the first
+/// vertex outputs with the same types, interpolation and sampling.
+fn check_stage_interface(module: &Module) -> Result<(), String> {
+    let entry = |stage| {
+        module
+            .entry_points
+            .iter()
+            .find(|ep| ep.stage == stage)
+            .expect("checked by check_entry_points")
+    };
+    let mut outputs = Vec::new();
+    if let Some(result) = &entry(ShaderStage::Vertex).function.result {
+        varyings(module, result.ty, result.binding.as_ref(), &mut outputs);
+    }
+    let mut inputs = Vec::new();
+    for arg in &entry(ShaderStage::Fragment).function.arguments {
+        varyings(module, arg.ty, arg.binding.as_ref(), &mut inputs);
+    }
+    let describe = |v: &Varying| format!("@location({}) {:?} {:?} {:?}", v.0, v.1, v.2, v.3);
+    for (i, input) in inputs.iter().enumerate() {
+        let output = outputs.get(i).copied();
+        if output != Some(*input) {
+            let found = output.map_or("nothing".to_owned(), |o| describe(&o));
+            return Err(format!(
+                "`{FRAGMENT_ENTRY}` input {i} is {}, but `{VERTEX_ENTRY}` output {i} is {found}; D3D11 matches stages by order, so the fragment inputs must be the first vertex outputs (by @location) with the same types and interpolation",
+                describe(input)
+            ));
         }
     }
     Ok(())
@@ -713,6 +785,46 @@ struct VsOut { @builtin(position) pos: vec4<f32>, @location(0) uv: vec2<f32> }
             "textureSample(tex, samp, v.uv)",
         );
         assert!(message(&source).contains("reads `@builtin(position)`"));
+    }
+
+    #[test]
+    fn fragment_inputs_are_a_prefix_of_vertex_outputs() {
+        let shader = |vs_out: &str, fs_in: &str| {
+            format!(
+                "struct VsOut {{ @builtin(position) pos: vec4<f32>, {vs_out} }}
+@vertex fn vs_main() -> VsOut {{ var o: VsOut; return o; }}
+@fragment fn fs_main({fs_in}) -> @location(0) vec4<f32> {{ return vec4(1.0); }}"
+            )
+        };
+        let three = "@location(0) a: vec2<f32>, @location(1) b: vec4<f32>, @location(2) c: f32";
+        for fs_in in [
+            "",
+            "@location(0) a: vec2<f32>",
+            "@location(0) @interpolate(perspective, center) a: vec2<f32>",
+            "@location(1) b: vec4<f32>, @location(0) a: vec2<f32>",
+            "@location(0) a: vec2<f32>, @location(1) b: vec4<f32>, @location(2) c: f32",
+        ] {
+            translate_str(&shader(three, fs_in)).unwrap();
+        }
+        // Skipping location 1 shifts location 2 into its register.
+        let msg = message(&shader(
+            three,
+            "@location(0) a: vec2<f32>, @location(2) c: f32",
+        ));
+        assert!(msg.contains("input 1 is @location(2)"), "{msg}");
+        assert!(msg.contains("output 1 is @location(1)"), "{msg}");
+        let msg = message(&shader(three, "@location(0) a: vec3<f32>"));
+        assert!(msg.contains("D3D11 matches stages by order"), "{msg}");
+        let msg = message(&shader(
+            three,
+            "@location(0) @interpolate(linear) a: vec2<f32>",
+        ));
+        assert!(msg.contains("Linear"), "{msg}");
+        let msg = message(&shader(
+            "@location(0) a: vec2<f32>",
+            "@location(0) a: vec2<f32>, @location(1) b: vec4<f32>",
+        ));
+        assert!(msg.contains("output 1 is nothing"), "{msg}");
     }
 
     #[test]

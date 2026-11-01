@@ -1,0 +1,337 @@
+//! Slider bodies through the Direct3D 11 backend (ADR-0041): the distance prepass with
+//! Max blending, the gradient composite and snaking, checked by reading pixels back.
+//! Runs on the WARP software adapter, so it needs neither a display nor a GPU.
+#![cfg(windows)]
+
+use slam_render::atlas::UvRect;
+use slam_render::d3d11::D3d11RenderTarget;
+use slam_render::slider::{
+    SliderBuffer, SliderDraw, SliderError, SliderGradient, SliderMesh, SliderRenderer,
+};
+use slam_render::sprite::{Projection, Sprite, SpriteBatch, SpriteRenderer};
+use slam_render::textures::TextureId;
+use slam_render::{
+    Color, Device, Extent, RenderTargetDesc, TextureDesc, TextureFormat, TextureUsage,
+};
+use slam_testkit::count_allocs;
+
+#[path = "common/d3d11.rs"]
+mod common;
+
+use common::{TestDevice, assert_no_debug_messages, surface_pixel, target_pixel};
+
+slam_testkit::install_counting_allocator!();
+
+const SIZE: u32 = 64;
+const RADIUS: f32 = 8.0;
+
+/// Reads one pixel of a render target, rows from the top (ADR-0019). The GL test read
+/// targets with the same numbers, so no translation is needed.
+fn pixel(device: &mut Gl, target: &D3d11RenderTarget, x: i32, y: i32) -> [u8; 4] {
+    target_pixel(device, target, x as u32, y as u32)
+}
+
+#[track_caller]
+fn assert_rgb(actual: [u8; 4], expected: [u8; 3]) {
+    let close = actual
+        .iter()
+        .zip(expected)
+        .all(|(&a, e)| a.abs_diff(e) <= 2);
+    assert!(close, "pixel {actual:?}, expected about {expected:?}");
+}
+
+/// Straight segments through `points` (pixels of the target).
+fn mesh(points: &[[f32; 2]]) -> SliderMesh {
+    let mut cumulative = vec![0.0f64];
+    for w in points.windows(2) {
+        let d = ((w[1][0] - w[0][0]).powi(2) + (w[1][1] - w[0][1]).powi(2)).sqrt();
+        cumulative.push(cumulative[cumulative.len() - 1] + f64::from(d));
+    }
+    SliderMesh::new(points, &cumulative)
+}
+
+type Gl = TestDevice;
+
+/// One frame: clears `target` to black and draws the bodies into it.
+fn frame(
+    d: &mut Gl,
+    sliders: &mut SliderRenderer<Gl>,
+    target: &D3d11RenderTarget,
+    draws: &[(&SliderBuffer<Gl>, SliderDraw<'_>)],
+) {
+    sliders
+        .begin_frame(d, Extent::new(SIZE, SIZE))
+        .expect("begin frame");
+    d.begin_pass(Some(target), Some(Color::BLACK));
+    for (buffer, draw) in draws {
+        sliders.draw(d, buffer, draw, Some(target)).expect("draw");
+    }
+}
+
+fn body<'a>(
+    projection: &'a Projection,
+    gradient: &'a SliderGradient,
+    range: (f32, f32),
+    tint: [f32; 4],
+) -> SliderDraw<'a> {
+    SliderDraw {
+        projection,
+        radius: RADIUS,
+        range,
+        tint,
+        gradient,
+    }
+}
+
+/// Straight-alpha byte channel of `c` blended over black.
+fn over_black(c: f32, alpha: f32) -> u8 {
+    (c * alpha * 255.0).round() as u8
+}
+
+#[test]
+fn draws_slider_bodies() {
+    let mut d = common::device(SIZE, SIZE);
+    let size = Extent::new(SIZE, SIZE);
+    let target = d
+        .create_render_target(&RenderTargetDesc {
+            size,
+            format: TextureFormat::Rgba8,
+        })
+        .expect("target");
+    let mut sliders = SliderRenderer::new(&mut d, 4).expect("slider renderer");
+    let projection = Projection::pixels(size);
+
+    let red = SliderGradient::new(RADIUS, |_| [1.0, 0.0, 0.0, 1.0]);
+    let half_red = SliderGradient::new(RADIUS, |_| [1.0, 0.0, 0.0, 0.5]);
+    // Red rises from the edge to the centre.
+    let ramp = SliderGradient::new(RADIUS, |p| [p, 0.0, 0.0, 1.0]);
+
+    let straight = sliders
+        .upload(&mut d, &mesh(&[[10.0, 32.0], [54.0, 32.0]]))
+        .expect("upload")
+        .expect("not empty");
+    // Out and back over itself, then down across the first leg.
+    let folded = sliders
+        .upload(
+            &mut d,
+            &mesh(&[[10.0, 20.0], [54.0, 20.0], [30.0, 20.0], [30.0, 50.0]]),
+        )
+        .expect("upload")
+        .expect("not empty");
+    assert!(
+        sliders
+            .upload(&mut d, &SliderMesh::default())
+            .expect("upload")
+            .is_none()
+    );
+
+    let p = &projection;
+
+    // A whole straight body: round caps, nothing past the radius.
+    frame(
+        &mut d,
+        &mut sliders,
+        &target,
+        &[(&straight, body(p, &red, (0.0, 44.0), [1.0; 4]))],
+    );
+    assert_rgb(pixel(&mut d, &target, 30, 32), [255, 0, 0]);
+    assert_rgb(pixel(&mut d, &target, 30, 32 + 6), [255, 0, 0]);
+    assert_rgb(pixel(&mut d, &target, 30, 32 + 10), [0, 0, 0]);
+    // The caps are round: inside along the axis, outside at the corner.
+    assert_rgb(pixel(&mut d, &target, 4, 32), [255, 0, 0]);
+    assert_rgb(pixel(&mut d, &target, 3, 25), [0, 0, 0]);
+
+    // The gradient follows the prepass value 1 − distance / radius, sampled as
+    // `SliderGradient::sample` (pixel centres are half a pixel off the axis).
+    frame(
+        &mut d,
+        &mut sliders,
+        &target,
+        &[(&straight, body(p, &ramp, (0.0, 44.0), [1.0; 4]))],
+    );
+    for dy in 0..8 {
+        let distance = dy as f32 + 0.5;
+        let [r, _, _, a] = ramp.sample(1.0 - distance / RADIUS);
+        assert_rgb(
+            pixel(&mut d, &target, 30, 32 + dy),
+            [over_black(r, a), 0, 0],
+        );
+    }
+
+    // Overlapping parts blend once: half-transparent red over black stays half
+    // red where the path folds back and where it crosses itself.
+    frame(
+        &mut d,
+        &mut sliders,
+        &target,
+        &[(&folded, body(p, &half_red, (0.0, 98.0), [1.0; 4]))],
+    );
+    let half = over_black(1.0, 128.0 / 255.0);
+    assert_rgb(pixel(&mut d, &target, 40, 20), [half, 0, 0]);
+    assert_rgb(pixel(&mut d, &target, 30, 20), [half, 0, 0]);
+    assert_rgb(pixel(&mut d, &target, 30, 40), [half, 0, 0]);
+    // The tint multiplies the result.
+    frame(
+        &mut d,
+        &mut sliders,
+        &target,
+        &[(&folded, body(p, &red, (0.0, 98.0), [0.0, 1.0, 1.0, 0.5]))],
+    );
+    assert_rgb(pixel(&mut d, &target, 40, 20), [0, 0, 0]);
+
+    // Two sliders: each is its own body, so they do blend over each other.
+    frame(
+        &mut d,
+        &mut sliders,
+        &target,
+        &[
+            (&straight, body(p, &half_red, (0.0, 44.0), [1.0; 4])),
+            (&straight, body(p, &half_red, (0.0, 44.0), [1.0; 4])),
+        ],
+    );
+    let twice = over_black(1.0, 1.0 - (1.0 - 128.0 / 255.0) * (1.0 - 128.0 / 255.0));
+    assert_rgb(pixel(&mut d, &target, 30, 32), [twice, 0, 0]);
+
+    // Snaking in: only the first 20 pixels of path length.
+    frame(
+        &mut d,
+        &mut sliders,
+        &target,
+        &[(&straight, body(p, &red, (0.0, 20.0), [1.0; 4]))],
+    );
+    assert_rgb(pixel(&mut d, &target, 25, 32), [255, 0, 0]);
+    assert_rgb(
+        pixel(&mut d, &target, 30 + RADIUS as i32 + 2, 32),
+        [0, 0, 0],
+    );
+    // Snaking out: the last 10.
+    frame(
+        &mut d,
+        &mut sliders,
+        &target,
+        &[(&straight, body(p, &red, (34.0, 44.0), [1.0; 4]))],
+    );
+    assert_rgb(pixel(&mut d, &target, 50, 32), [255, 0, 0]);
+    assert_rgb(
+        pixel(&mut d, &target, 44 - RADIUS as i32 - 2, 32),
+        [0, 0, 0],
+    );
+    // An empty range is a circle at that point of the path.
+    frame(
+        &mut d,
+        &mut sliders,
+        &target,
+        &[(&straight, body(p, &red, (0.0, 0.0), [1.0; 4]))],
+    );
+    assert_rgb(pixel(&mut d, &target, 10, 32), [255, 0, 0]);
+    assert_rgb(
+        pixel(&mut d, &target, 10 + RADIUS as i32 + 2, 32),
+        [0, 0, 0],
+    );
+
+    // At most `per_frame` draws a frame.
+    sliders.begin_frame(&mut d, size).expect("begin frame");
+    let draw = body(p, &red, (0.0, 44.0), [1.0; 4]);
+    for _ in 0..4 {
+        sliders
+            .draw(&mut d, &straight, &draw, Some(&target))
+            .expect("draw");
+    }
+    assert!(matches!(
+        sliders.draw(&mut d, &straight, &draw, Some(&target)),
+        Err(SliderError::OutOfDraws { draws: 4 })
+    ));
+
+    // Steady frames allocate nothing.
+    let ((), allocs) = count_allocs(|| {
+        for _ in 0..50 {
+            sliders.begin_frame(&mut d, size).expect("begin frame");
+            d.begin_pass(Some(&target), Some(Color::BLACK));
+            for _ in 0..4 {
+                sliders
+                    .draw(&mut d, &folded, &draw, Some(&target))
+                    .expect("draw");
+            }
+        }
+    });
+    assert_eq!(allocs.total(), 0, "steady slider frames: {allocs}");
+
+    // Into the surface (the other variant): a body in the upper quarter of a 64x64
+    // scene drawn onto a 64x64 surface.
+    let upper = sliders
+        .upload(&mut d, &mesh(&[[8.0, 16.0], [56.0, 16.0]]))
+        .expect("upload")
+        .expect("not empty");
+    let window = d.begin_frame(Color::BLACK);
+    assert_eq!(window, size);
+    sliders.begin_frame(&mut d, window).expect("begin frame");
+    let scene = Projection::pixels(Extent::new(SIZE, SIZE));
+    sliders
+        .draw(
+            &mut d,
+            &upper,
+            &body(&scene, &red, (0.0, 48.0), [1.0; 4]),
+            None,
+        )
+        .expect("draw");
+    // GL read these with rows from the bottom (`height - 1 - y`); here from the
+    // top, so the scene's y is the row.
+    assert_rgb(surface_pixel(&mut d, SIZE, 32, 16), [255, 0, 0]);
+    assert_rgb(surface_pixel(&mut d, SIZE, 32, 48), [0, 0, 0]);
+    assert_no_debug_messages(&mut d);
+    d.present().expect("present");
+    sliders.release(&mut d, upper);
+
+    // A body between two parts of one uploaded sprite batch, as `play` draws a frame:
+    // the first square under the body, the second over it.
+    let white = d
+        .create_texture(
+            &TextureDesc {
+                size: Extent::new(1, 1),
+                format: TextureFormat::Rgba8,
+                usage: TextureUsage::SAMPLED,
+            },
+            Some(&[255; 4]),
+        )
+        .expect("texture");
+    let mut renderer = SpriteRenderer::new(&mut d, 1).expect("sprite renderer");
+    let square = |x: f32, colour: Color| {
+        let mut s = Sprite::new(TextureId(1), UvRect::FULL, [x, 28.0], [8.0, 8.0]);
+        s.colour = colour;
+        s
+    };
+    let mut batch = SpriteBatch::new();
+    batch.push(&square(20.0, Color::rgb(0.0, 1.0, 0.0)));
+    batch.push(&square(40.0, Color::rgb(0.0, 0.0, 1.0)));
+    sliders.begin_frame(&mut d, size).expect("begin frame");
+    renderer.begin_frame();
+    d.begin_pass(Some(&target), Some(Color::BLACK));
+    let resolve = |id: TextureId| (id == TextureId(1)).then_some(&white);
+    let uploaded = renderer
+        .upload(&mut d, &batch, &projection, resolve)
+        .expect("upload");
+    renderer
+        .draw_range(&mut d, &uploaded, &batch, 0..1, resolve)
+        .expect("under");
+    sliders
+        .draw(
+            &mut d,
+            &straight,
+            &body(&projection, &red, (0.0, 44.0), [1.0; 4]),
+            Some(&target),
+        )
+        .expect("body");
+    renderer
+        .draw_range(&mut d, &uploaded, &batch, 1..2, resolve)
+        .expect("over");
+    assert_rgb(pixel(&mut d, &target, 24, 32), [255, 0, 0]);
+    assert_rgb(pixel(&mut d, &target, 44, 32), [0, 0, 255]);
+    renderer.destroy(&mut d);
+    d.destroy_texture(white);
+
+    sliders.release(&mut d, straight);
+    sliders.release(&mut d, folded);
+    sliders.destroy(&mut d);
+    d.destroy_render_target(target);
+    assert_no_debug_messages(&mut d);
+}
