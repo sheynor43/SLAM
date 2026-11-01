@@ -1,6 +1,6 @@
 //! The resume overlay (lazer's `OsuResumeOverlay`), draw side: the click-to-resume target
-//! where gameplay paused and a cursor of its own with its trail, following the window's
-//! cursor while gameplay's stands still and is hidden.
+//! where gameplay paused and a cursor of its own (with its trail when the trail setting is
+//! on), following the window's cursor while gameplay's stands still and is hidden.
 //!
 //! The target is not lazer's: lazer draws the skin's cursor tinted orange, here it is an
 //! orange disc pulsing towards red, so that it does not look like a second cursor. Its
@@ -61,6 +61,21 @@ pub struct ResumeView {
     /// The resume shown ([`PlaySnapshot::resumes`]) and the engine time it was first drawn.
     shown: Option<(u32, u64)>,
     hover: HoverFade,
+}
+
+impl ResumeView {
+    /// The overlay with its cursor's trail drawn or not, as the gameplay cursor's.
+    pub fn new(cursor_trail: bool) -> Self {
+        ResumeView {
+            cursor: CursorView::new(cursor_trail),
+            ..ResumeView::default()
+        }
+    }
+
+    /// Whether the overlay's cursor draws its trail.
+    pub fn trail_shown(&self) -> bool {
+        self.cursor.trail_shown()
+    }
 }
 
 /// The target's fade to white and back.

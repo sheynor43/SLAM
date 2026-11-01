@@ -371,6 +371,34 @@ fn from_table(mut table: Table) -> Loaded {
         &mut settings.gameplay.mouse_buttons,
         |_| Ok(()),
     );
+    cx.field(
+        &mut gameplay,
+        "gameplay",
+        "snaking_in",
+        &mut settings.gameplay.snaking_in,
+        |_| Ok(()),
+    );
+    cx.field(
+        &mut gameplay,
+        "gameplay",
+        "snaking_out",
+        &mut settings.gameplay.snaking_out,
+        |_| Ok(()),
+    );
+    cx.field(
+        &mut gameplay,
+        "gameplay",
+        "hit_lighting",
+        &mut settings.gameplay.hit_lighting,
+        |_| Ok(()),
+    );
+    cx.field(
+        &mut gameplay,
+        "gameplay",
+        "cursor_trail",
+        &mut settings.gameplay.cursor_trail,
+        |_| Ok(()),
+    );
     cx.float(
         &mut gameplay,
         "gameplay",

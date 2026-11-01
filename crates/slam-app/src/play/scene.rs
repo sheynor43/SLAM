@@ -79,6 +79,12 @@ pub struct PlaySettings {
     pub dim: f64,
     /// Size multiplier of the hit error meter (ADR-0050).
     pub hit_error_scale: f64,
+    /// Snaking of slider bodies (ADR-0085), off by default unlike lazer.
+    pub snaking: Snaking,
+    /// Lazer's `HitLighting`.
+    pub hit_lighting: bool,
+    /// Lazer's `ShowCursorTrail`.
+    pub cursor_trail: bool,
 }
 
 impl Default for PlaySettings {
@@ -91,6 +97,9 @@ impl Default for PlaySettings {
             mods: ModSet::default(),
             dim: BackgroundSettings::default().dim_level,
             hit_error_scale: 1.0,
+            snaking: Snaking::default(),
+            hit_lighting: true,
+            cursor_trail: true,
         }
     }
 }
@@ -256,7 +265,7 @@ pub fn prepare(
                 Some(&loaded.beatmap_skin),
                 &loaded.skins,
             ),
-            snaking: Snaking::default(),
+            snaking: settings.snaking,
             arrows: ArrowStyle::new(&loaded.skins),
             ball: BallStyle::new(&loaded.skins),
         },
@@ -270,6 +279,7 @@ pub fn prepare(
             circle_settings,
             Some(&loaded.beatmap_skin),
             &loaded.skins,
+            settings.hit_lighting,
         ),
         hit_error: slam_play::hit_error::HitErrorMeter::new(
             slam_play::hit_error::HitErrorStyle::default(),
@@ -277,8 +287,8 @@ pub fn prepare(
             settings.hit_error_scale as f32,
         ),
         hit_error_hiding: slam_play::hit_error::SpinnerHiding::new(beatmap),
-        cursor: CursorView::default(),
-        resume: slam_play::resume::ResumeView::default(),
+        cursor: CursorView::new(settings.cursor_trail),
+        resume: slam_play::resume::ResumeView::new(settings.cursor_trail),
     };
 
     let (mut requests, uploads): (TextureRequests, TextureUploads) =
@@ -405,6 +415,12 @@ impl PlayScene {
     #[cfg(test)]
     pub(crate) fn dim(&self) -> f64 {
         self.background_view.settings().dim_level
+    }
+
+    /// The views the scene was prepared with.
+    #[cfg(test)]
+    pub(crate) fn view(&self) -> &PlayView {
+        &self.view
     }
 
     /// Makes the play's GPU resources on the draw thread and waits up to `glyph_wait` for

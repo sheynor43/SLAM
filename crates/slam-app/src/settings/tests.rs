@@ -72,6 +72,10 @@ fn round_trip_non_default() {
     s.gameplay.beatmap_colours = false;
     s.gameplay.beatmap_hitsounds = false;
     s.gameplay.mouse_buttons = false;
+    s.gameplay.snaking_in = true;
+    s.gameplay.snaking_out = true;
+    s.gameplay.hit_lighting = false;
+    s.gameplay.cursor_trail = false;
     s.gameplay.hit_error_scale = 1.5;
     s.input.bindings = Bindings::new(&[
         Binding {
@@ -182,6 +186,21 @@ fn beatmap_skins_defaults_to_true_and_reads_false() {
     let off = file::from_toml_str("[gameplay]\nbeatmap_skins = false\n");
     assert_eq!(off.status, LoadStatus::Ok, "{:?}", off.warnings);
     assert!(!off.settings.gameplay.beatmap_skins);
+}
+
+#[test]
+fn view_settings_default_to_no_snaking_with_lighting_and_trail() {
+    let s = Settings::default();
+    assert!(!s.gameplay.snaking_in);
+    assert!(!s.gameplay.snaking_out);
+    assert!(s.gameplay.hit_lighting);
+    assert!(s.gameplay.cursor_trail);
+    let missing = file::from_toml_str("[gameplay]\ndim = 0.2\n");
+    assert_eq!(missing.status, LoadStatus::Ok, "{:?}", missing.warnings);
+    assert!(!missing.settings.gameplay.snaking_in);
+    assert!(!missing.settings.gameplay.snaking_out);
+    assert!(missing.settings.gameplay.hit_lighting);
+    assert!(missing.settings.gameplay.cursor_trail);
 }
 
 #[test]

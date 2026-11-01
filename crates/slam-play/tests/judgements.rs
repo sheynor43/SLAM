@@ -340,10 +340,14 @@ fn popups_show_where_lazer_shows_them() {
 // ---- Alive popups ----
 
 fn view() -> JudgementView {
+    view_lit(true)
+}
+
+fn view_lit(hit_lighting: bool) -> JudgementView {
     let map = common::beatmap();
     let dir = common::skin::SampleDir::new(&[]);
     let chain = SkinChain::new(None, Skin::load(&dir.0).unwrap());
-    JudgementView::new(&map, CircleSettings::default(), None, &chain)
+    JudgementView::new(&map, CircleSettings::default(), None, &chain, hit_lighting)
 }
 
 fn on(index: u32, time: f64, result: HitResult) -> ShownJudgement {
@@ -384,6 +388,17 @@ fn popups_expire_and_restarts_clear_them() {
     assert!(view.popups().is_empty());
     // The ring's old entries are not taken again.
     view.update(&ring, 1, 1000.0);
+    assert!(view.popups().is_empty());
+}
+
+#[test]
+fn without_hit_lighting_popups_expire_with_their_bodies() {
+    let mut view = view_lit(false);
+    let mut ring = JudgementRing::default();
+    ring.push(on(0, 1000.0, HitResult::Great));
+    view.update(&ring, 0, 2099.0);
+    assert_eq!(view.popups().len(), 1);
+    view.update(&ring, 0, 2100.0);
     assert!(view.popups().is_empty());
 }
 
@@ -524,6 +539,18 @@ fn old_bodies_draw_above_objects_with_the_lighting_below() {
     assert_eq!(above[0].blend, Blend::Alpha);
     assert_eq!(above[0].centre, [164.0, 156.0]);
     assert_close!(above[0].width, 32.0);
+}
+
+#[test]
+fn without_hit_lighting_only_the_body_draws() {
+    let mut view = view_lit(false);
+    let mut ring = JudgementRing::default();
+    ring.push(on(0, 1000.0, HitResult::Great));
+    view.update(&ring, 0, 1300.0);
+    let (below, above) = draw(&view, PieceKind::Old, 1300.0);
+    assert!(below.is_empty());
+    assert_eq!(above.len(), 1);
+    assert_eq!(above[0].texture, BODY);
 }
 
 #[test]

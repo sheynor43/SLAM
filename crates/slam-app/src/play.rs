@@ -96,6 +96,7 @@ impl Options {
             mods: self.mods.clone(),
             dim: self.dim,
             hit_error_scale: self.hit_error_scale,
+            ..PlaySettings::default()
         }
     }
 

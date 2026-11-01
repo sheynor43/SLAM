@@ -2714,6 +2714,9 @@ fn run_with<B: render::Backend>(
                 beatmap_hitsounds: options.beatmap_hitsounds,
                 dim: options.dim,
                 hit_error_scale: options.hit_error_scale,
+                snaking: options.snaking(),
+                hit_lighting: options.hit_lighting,
+                cursor_trail: options.cursor_trail,
                 skin: options.skin,
                 ..PlaySettings::default()
             }

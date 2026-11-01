@@ -871,6 +871,7 @@ fn view(map: &Beatmap) -> PlayView {
             CircleSettings::default(),
             None,
             &chain,
+            true,
         ),
         hit_error: slam_play::hit_error::HitErrorMeter::new(
             slam_play::hit_error::HitErrorStyle::Bar,
