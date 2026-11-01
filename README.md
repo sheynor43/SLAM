@@ -1,77 +1,82 @@
 # SLAM — Stable Lazer Always Mythical
 
-Самостоятельный клиент для режима osu!standard с открытым исходным кодом: низкая задержка, совместимость с картами, скинами и реплеями stable и lazer, расширяемость через плагины на Luau.
+**English** | [Русский](README.ru.md)
 
-> SLAM — независимый проект и не связан с ppy Pty Ltd. «osu!» — товарный знак ppy.
+A standalone open-source client for osu!standard: low latency, compatibility with stable and lazer beatmaps, skins and replays, and extensibility through Luau plugins.
 
-## Альфа-версия для тестеров
+> SLAM is an independent project and is not affiliated with ppy Pty Ltd. "osu!" is a trademark of ppy.
 
-Сборки лежат в [Releases](https://github.com/sheynor43/SLAM/releases) с пометкой pre-release. Это ранняя альфа: многого нет, возможны вылеты. Решения типичных проблем — в описании релиза.
+## Alpha for testers
 
-**Системные требования**
-- Windows 10+ x64 или Linux x64 (X11 или Wayland, glibc не старше Ubuntu 24.04).
-- Видеокарта с OpenGL 3.3.
-- Linux: PipeWire (звук), для выбора папки — xdg-desktop-portal или zenity.
+Builds are published under [Releases](https://github.com/sheynor43/SLAM/releases) as pre-releases. This is an early alpha: a lot is missing and crashes are possible. Fixes for common problems are in the release notes.
 
-**Запуск**
-- Windows: распакуйте `SLAM-…-windows-x64.zip` в любую папку и запустите `slam.exe`.
-- Linux: `chmod +x SLAM-…-x86_64.AppImage` и запустите файл.
-- Если папка с картами не нашлась сама, укажите её в настройках: `Songs` из osu!stable или любая папка с распакованными `.osz`.
+**System requirements**
+- Windows 10+ x64 or Linux x64 (X11 or Wayland, glibc as new as Ubuntu 24.04 or newer).
+- A graphics card with OpenGL 3.3.
+- Linux: PipeWire for sound; xdg-desktop-portal or zenity for the folder picker.
 
-**Где лежат настройки**
-- Windows: `%APPDATA%\SLAM`; Linux: `~/.config/slam` (настройки) и `~/.local/share/slam` (реплеи, кэш).
-- Портативный режим: положите пустой файл `portable` рядом с `slam.exe` — настройки и данные будут храниться рядом с ним.
+**Running**
+- Windows: extract `SLAM-…-windows-x64.zip` anywhere and run `slam.exe`.
+- Linux: `chmod +x SLAM-…-x86_64.AppImage`, then run the file.
+- If your beatmap folder was not found automatically, choose it in the settings: osu!stable's `Songs` or any folder with extracted `.osz` files.
 
-**Как сообщить об ошибке**
-Создайте [issue](https://github.com/sheynor43/SLAM/issues/new) и укажите:
-- версию SLAM и ОС;
-- что делали, что ожидали и что произошло;
-- карту, если ошибка связана с ней (ссылку на osu.ppy.sh или файл);
-- лог: запустите из терминала с переменной `RUST_LOG=info` (Linux: `RUST_LOG=info ./SLAM-…AppImage`, Windows cmd: `set RUST_LOG=info` и затем `slam.exe`) и приложите вывод.
+**Where the settings live**
+- Windows: `%APPDATA%\SLAM`; Linux: `~/.config/slam` (settings) and `~/.local/share/slam` (replays, cache).
+- Portable mode: put an empty file named `portable` next to `slam.exe`, and settings and data are kept next to it.
 
-## Документация
-- [Архитектура](docs/ARCHITECTURE.md)
-- [Дорожная карта](docs/ROADMAP.md)
-- [Решения (ADR)](docs/adr/README.md)
-- [Эталонная версия osu!lazer](docs/LAZER_REFERENCE.md)
-- [Текущие задачи](https://github.com/sheynor43/SLAM/milestones)
+**Reporting a bug**
+Open an [issue](https://github.com/sheynor43/SLAM/issues/new) with:
+- the SLAM version and your OS;
+- what you did, what you expected and what happened;
+- the beatmap, if the bug is related to one (an osu.ppy.sh link or the file);
+- the log: run SLAM from a terminal with `RUST_LOG=info` (Linux: `RUST_LOG=info ./SLAM-…AppImage`; Windows cmd: `set RUST_LOG=info`, then `slam.exe`) and attach the output.
 
-## Лицензия
-Код распространяется по лицензии MIT или Apache-2.0 на выбор.
+Issues are welcome in English or Russian.
 
-Дефолтный скин в `assets/default-skin/` взят из [osu-resources](https://github.com/ppy/osu-resources) и распространяется по лицензии CC-BY-NC 4.0, а не MIT/Apache-2.0, — его нельзя использовать в коммерческих целях. Коммерческим форкам нужно заменить скин. Атрибуция — в [`assets/default-skin/README.md`](assets/default-skin/README.md).
+## Documentation
+The design documents are written in Russian.
+- [Architecture](docs/ARCHITECTURE.md)
+- [Roadmap](docs/ROADMAP.md)
+- [Architecture decision records (ADR)](docs/adr/README.md)
+- [Reference osu!lazer version](docs/LAZER_REFERENCE.md)
+- [Current work](https://github.com/sheynor43/SLAM/milestones)
 
-Часть логики геймплея портирована из [osu!lazer](https://github.com/ppy/osu) (MIT), см. `THIRD_PARTY_NOTICES`.
+## License
+The code is licensed under MIT or Apache-2.0, at your option.
 
-## Разработка
+The default skin in `assets/default-skin/` comes from [osu-resources](https://github.com/ppy/osu-resources) and is licensed under CC-BY-NC 4.0, not MIT/Apache-2.0, so it may not be used commercially. Commercial forks need to replace it. Attribution is in [`assets/default-skin/README.md`](assets/default-skin/README.md).
 
-### Окружение (Arch Linux)
+Parts of the gameplay logic are ported from [osu!lazer](https://github.com/ppy/osu) (MIT), see `THIRD_PARTY_NOTICES`.
+
+## Development
+
+### Environment (Arch Linux)
 
 ```sh
-./scripts/setup-arch.sh          # установить пакеты (нужен sudo): rustup, just, cargo-deny, gh, ...
-./scripts/setup-arch.sh --check  # только проверить, ничего не устанавливая
+./scripts/setup-arch.sh          # install packages (needs sudo): rustup, just, cargo-deny, gh, ...
+./scripts/setup-arch.sh --check  # only check, install nothing
 ln -sf ../../scripts/pre-commit .git/hooks/pre-commit
 ```
 
-Версия Rust закреплена в `rust-toolchain.toml`, rustup поставит её сам.
+The Rust version is pinned in `rust-toolchain.toml`; rustup installs it automatically.
 
-### Команды
+### Commands
 
-Через [`just`](https://github.com/casey/just) (полный список — `just --list`):
+Run through [`just`](https://github.com/casey/just) (full list: `just --list`):
 
-| Команда | Что делает |
+| Command | What it does |
 |---|---|
-| `just check` | fmt + clippy + тесты, как в CI. Запускать перед каждым коммитом |
-| `just test [args]` | тесты с коротким выводом (полный лог — `target/test-output.log`) |
-| `just fmt` | отформатировать код |
-| `just clippy` | линтер с `-D warnings` |
-| `just deny` | проверка лицензий и уязвимостей зависимостей |
-| `just bench` | бенчмарки |
-| `just clean` | удалить сборочные артефакты из `target/`, кроме базы бенчмарков |
-| `just run` | запустить клиент (release) |
-| `just corpus` | прогнать корпус реплеев (`SLAM_CORPUS`, по умолчанию `../slam-corpus`) |
+| `just check` | fmt + clippy + tests, as in CI. Run before every commit |
+| `just test [args]` | tests with short output (full log in `target/test-output.log`) |
+| `just fmt` | format the code |
+| `just clippy` | lints with `-D warnings` |
+| `just deny` | license and vulnerability checks of dependencies |
+| `just bench` | benchmarks |
+| `just clean` | remove build artifacts from `target/`, except the benchmark baseline |
+| `just run` | run the client (release) |
+| `just corpus` | run the replay corpus (`SLAM_CORPUS`, default `../slam-corpus`) |
 
-### Справочные данные вне репозитория
+### Reference data outside the repository
 
-- Исходники osu!lazer для сверки правил геймплея — `../slam-refs/` (версия и команды клонирования — в [`docs/LAZER_REFERENCE.md`](docs/LAZER_REFERENCE.md)).
-- Корпусы реплеев для проверки паритета — `../slam-corpus/` (или путь из `SLAM_CORPUS`).
+- osu!lazer sources for checking gameplay rules: `../slam-refs/` (version and clone commands in [`docs/LAZER_REFERENCE.md`](docs/LAZER_REFERENCE.md)).
+- Replay corpora for parity checks: `../slam-corpus/` (or the path in `SLAM_CORPUS`).
