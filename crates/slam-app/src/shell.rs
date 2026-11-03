@@ -59,7 +59,9 @@ use slam_ui::theme::Theme;
 use slam_ui::widgets::DropdownView;
 
 use crate::backend::{self as render, Opened, Renderer, WindowKind, WithBackend};
-use crate::backgrounds::{BackgroundFade, BackgroundPicker, BackgroundTarget, MAX_BACKGROUNDS};
+use crate::backgrounds::{
+    BackgroundFade, BackgroundPicker, BackgroundTarget, MAX_BACKGROUNDS, SELECTION_DEBOUNCE_NS,
+};
 use crate::details::DetailsPicker;
 use crate::displays::{ListsLink, ShownViews};
 use crate::loader::{LoaderConfig, LoaderLink, PlayOptions, SceneTrash, Trash};
@@ -77,7 +79,9 @@ mod live;
 use live::{AppliedUpdateRate, AppliedVolumes, Volumes};
 use output::{DeviceList, DeviceViews, OutputLink, Request};
 mod keybinds;
+mod menu_music;
 mod mod_settings;
+use menu_music::{MenuMusic, Picked, Want};
 mod output;
 mod results;
 mod rows;
@@ -879,6 +883,16 @@ impl ShellState {
         self.files.get(set)?.get(difficulty).map(|f| &f.path)
     }
 
+    /// The song select's selected difficulty, if any.
+    pub fn selected(&self) -> Option<(usize, usize)> {
+        self.song_select.selected()
+    }
+
+    /// The library's files, by set and difficulty.
+    pub fn files(&self) -> &SongFiles {
+        &self.files
+    }
+
     /// Lays the screens out for a window of `width` × `height` pixels.
     pub fn set_size(&mut self, width: f32, height: f32) {
         self.layout = MenuLayout::new(width, height, &self.theme);
@@ -1426,9 +1440,12 @@ fn menu_input(input: SongSelectInput) -> Option<MenuInput> {
     })
 }
 
-/// The window's audio: one output for the whole run (ADR-0045).
+/// The window's audio: one output at a time (ADR-0045, ADR-0089).
 struct Audio {
+    /// The play's track, playing on under the results.
     player: MusicPlayer,
+    /// The menus' two decks (ADR-0090).
+    previews: [MusicPlayer; 2],
     mixer: MixerHandle,
     output: Arc<AudioPosition>,
     music: Arc<MusicPosition>,
@@ -1511,6 +1528,12 @@ struct PlayHost {
     retired: Option<Box<Audio>>,
     /// The track `audio.player` last loaded, to play on in a new output.
     track: Option<PathBuf>,
+    /// The music of the menus and the song select (ADR-0090).
+    menu_music: MenuMusic,
+    /// The song select's selection and since when, to wait for it to settle.
+    selection: (Option<(usize, usize)>, u64),
+    /// Picks the menu's random tracks (xorshift).
+    rng: u64,
     loader: LoaderLink,
     /// Scenes for the draw thread, one per play, named by the play's id.
     scenes: rtrb::Producer<(u64, PlayScene)>,
@@ -1609,6 +1632,7 @@ impl PlayHost {
             Volumes::of(&settings.audio),
             &mut audio.mixer,
             &mut audio.player,
+            &mut audio.previews,
         );
         // One output at a time, and none under a play: its clock follows the output.
         if !self.switching
@@ -1637,6 +1661,7 @@ impl PlayHost {
     fn advance(&mut self, now_ns: u64, state: &mut ShellState) {
         self.end_game(now_ns, state);
         self.switch_output();
+        self.menu_music(now_ns, state);
         if let Some(link) = &mut self.output {
             if let Some(settings) = state.take_device_list_request() {
                 // A full ring drops it: the screen keeps the list it has.
@@ -1884,9 +1909,65 @@ impl PlayHost {
             }
         }
         std::mem::swap(&mut self.audio, &mut new);
+        // The new decks start from nothing: the menu music starts over.
+        self.menu_music = MenuMusic::default();
         if let Err(Request::Retire(old)) = link.request(Request::Retire(new)) {
             self.retired = Some(old);
         }
+    }
+
+    /// Plays the menus' music the screens call for (ADR-0090). Allocates only when another
+    /// track starts; frees failed tracks' messages on the loader thread.
+    fn menu_music(&mut self, now_ns: u64, state: &ShellState) {
+        // Without an output nothing takes the decks' commands: they would only fill up.
+        if self.no_output {
+            return;
+        }
+        for deck in 0..2 {
+            while let Some(event) = self.audio.previews[deck].poll_event() {
+                match event {
+                    MusicEvent::Loaded { generation, length } => {
+                        self.menu_music
+                            .loaded(deck, generation, length, &mut self.audio.previews);
+                    }
+                    MusicEvent::Failed { generation, .. } => {
+                        self.menu_music
+                            .failed(now_ns, deck, generation, &mut self.audio.previews);
+                        self.loader.free(Trash::Music(event));
+                    }
+                }
+            }
+        }
+        let selected = state.selected();
+        if selected != self.selection.0 {
+            self.selection = (selected, now_ns);
+        }
+        let settled = now_ns.saturating_sub(self.selection.1) >= SELECTION_DEBOUNCE_NS;
+        let gameplay =
+            self.game.is_some() || !matches!(self.pending, Pending::Idle) || state.is_loading();
+        let want = if !state.settings().audio.menu_music || gameplay {
+            Want::Silence
+        } else {
+            match state.stack().top() {
+                AppScreen::Play(_) | AppScreen::Results(_) => Want::Silence,
+                AppScreen::SongSelect => selected
+                    .filter(|_| settled)
+                    .and_then(|(set, difficulty)| state.files().get(set)?.get(difficulty))
+                    .and_then(|file| {
+                        Some(Want::Preview {
+                            path: file.audio.as_deref()?,
+                            preview_ms: file.preview_ms,
+                        })
+                    })
+                    .unwrap_or(Want::Keep),
+                AppScreen::Menu(_) | AppScreen::Settings(_) => Want::Menu,
+            }
+        };
+        let rng = &mut self.rng;
+        self.menu_music
+            .tick(now_ns, want, &mut self.audio.previews, || {
+                random_track(rng, state.files())
+            });
     }
 
     /// Frees a prepared play nobody waits for.
@@ -2505,6 +2586,25 @@ fn output_devices(settings: &crate::settings::Audio) -> Vec<slam_audio::DeviceIn
     })
 }
 
+/// A random difficulty with an audio file in `files`, for the main menu (ADR-0090): a few
+/// tries, `None` for a library without one.
+fn random_track(rng: &mut u64, files: &SongFiles) -> Option<Picked> {
+    for _ in 0..8 {
+        // xorshift64; never 0 once seeded non-zero.
+        *rng ^= *rng << 13;
+        *rng ^= *rng >> 7;
+        *rng ^= *rng << 17;
+        let set = files.get((*rng % files.len().max(1) as u64) as usize)?;
+        if let Some(file) = set.iter().find(|f| f.audio.is_some()) {
+            return Some(Picked {
+                path: file.audio.clone()?,
+                preview_ms: file.preview_ms,
+            });
+        }
+    }
+    None
+}
+
 /// Opens outputs and lists devices on the output thread (ADR-0089).
 struct AppOpener {
     registry: Arc<FontRegistry>,
@@ -2561,6 +2661,23 @@ fn open_audio(
     })
     .map_err(|e| e.to_string())?;
     mixer.set_music(music).map_err(|e| e.to_string())?;
+    let mut previews = Vec::with_capacity(2);
+    for _ in 0..2 {
+        let (music, mut preview) = slam_audio::music(&MusicConfig {
+            sample_rate: SAMPLE_RATE,
+            channels: CHANNELS,
+            ..MusicConfig::default()
+        })
+        .map_err(|e| e.to_string())?;
+        mixer.add_music(music).map_err(|e| e.to_string())?;
+        preview
+            .set_volume(Volumes::of(settings).menu_music)
+            .map_err(|e| e.to_string())?;
+        previews.push(preview);
+    }
+    let previews: [MusicPlayer; 2] = previews
+        .try_into()
+        .map_err(|_| "two menu decks".to_owned())?;
     let volumes = Volumes::of(settings);
     mixer_handle
         .set_master_gain(volumes.master)
@@ -2593,6 +2710,7 @@ fn open_audio(
         output: Arc::clone(stream.position()),
         music: Arc::clone(player.position()),
         player,
+        previews,
         mixer: mixer_handle,
         volumes: AppliedVolumes::new(volumes),
     };
@@ -2963,6 +3081,10 @@ fn run_with<B: render::Backend>(
         no_output: false,
         retired: None,
         track: None,
+        menu_music: MenuMusic::default(),
+        selection: (None, 0),
+        // Any non-zero seed; the clock makes each run's first track differ.
+        rng: now_ns() | 1,
         loader,
         scenes: scene_tx,
         os_cursor: window.cursor_visibility(),

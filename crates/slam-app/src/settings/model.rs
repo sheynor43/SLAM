@@ -121,6 +121,10 @@ pub struct Audio {
     pub hitsound_volume: f64,
     /// Volume of the other sound effects, 0.0..=1.0, on top of the master volume.
     pub effects_volume: f64,
+    /// Whether music plays on the main menu and the song select (ADR-0090).
+    pub menu_music: bool,
+    /// Volume of that music, 0.0..=1.0, on top of the master and music volumes.
+    pub menu_music_volume: f64,
     /// Start delay of the gameplay hitsounds (ADR-0077).
     pub hitsound_delay: HitsoundDelay,
     /// How far hitsounds pan with the object's horizontal position, 0.0..=1.0 in steps of
@@ -178,6 +182,8 @@ impl Default for Audio {
             music_volume: 1.0,
             hitsound_volume: 1.0,
             effects_volume: 1.0,
+            menu_music: true,
+            menu_music_volume: 1.0,
             hitsound_delay: HitsoundDelay::default(),
             positional_hitsounds_level: slam_play::gameplay_sounds::DEFAULT_POSITIONAL_LEVEL,
         }

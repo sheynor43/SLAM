@@ -41,6 +41,8 @@ fn file(dir: &str, background: Option<&str>) -> SongFile {
         drain_rate: 5.0,
         overall_difficulty: 8.0,
         background: background.map(str::to_owned),
+        audio: None,
+        preview_ms: -1,
     }
 }
 

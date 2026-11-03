@@ -42,6 +42,8 @@ fn defaults_match_hardcoded_values() {
     assert_eq!(s.audio.master_volume, 1.0);
     assert_eq!(s.audio.hitsound_volume, 1.0);
     assert_eq!(s.audio.effects_volume, 1.0);
+    assert!(s.audio.menu_music);
+    assert_eq!(s.audio.menu_music_volume, 1.0);
 }
 
 #[test]
@@ -58,6 +60,8 @@ fn round_trip_non_default() {
     s.audio.music_volume = 0.25;
     s.audio.hitsound_volume = 0.75;
     s.audio.effects_volume = 0.125;
+    s.audio.menu_music = false;
+    s.audio.menu_music_volume = 0.375;
     s.audio.hitsound_delay = HitsoundDelay::Stable;
     s.audio.positional_hitsounds_level = 0.65;
     s.timing.global_offset_ms = -12.5;

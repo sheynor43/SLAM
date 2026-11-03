@@ -30,6 +30,9 @@ pub const BUS_RAMP_MS: f64 = 5.0;
 /// Longest start delay of a voice group ([`MixerHandle::set_group_delay`]).
 pub const MAX_GROUP_DELAY_MS: f64 = 1000.0;
 
+/// Tracks a mixer mixes at most: the play's and two for the menus (ADR-0090).
+pub const MAX_MUSIC_SOURCES: usize = 3;
+
 /// One frame in the 32.32 fixed-point voice cursor (ADR-0039).
 const FRAME: u64 = 1 << 32;
 const FRACTION: u64 = FRAME - 1;
@@ -579,7 +582,7 @@ pub fn mixer(config: &MixerConfig) -> Result<(Mixer, MixerHandle), AudioError> {
         delays: [Delay::default(); VoiceGroup::ALL.len()],
         sample_rate: config.sample_rate,
         channels: config.channels,
-        music: None,
+        music: [None, None, None],
         stats: Arc::clone(&stats),
     };
     let handle = MixerHandle {
@@ -613,8 +616,8 @@ pub struct Mixer {
     delays: [Delay; VoiceGroup::ALL.len()],
     sample_rate: u32,
     channels: u16,
-    /// The track, mixed under the voices (ADR-0033).
-    music: Option<MusicSource>,
+    /// The tracks, mixed under the voices in order (ADR-0033, ADR-0090).
+    music: [Option<MusicSource>; MAX_MUSIC_SOURCES],
     stats: Arc<MixerStats>,
 }
 
@@ -623,12 +626,31 @@ impl Mixer {
     /// stream; a source attached before replaces it (dropped here, not on the audio
     /// thread). The music must have the mixer's rate and channels.
     pub fn set_music(&mut self, music: MusicSource) -> Result<(), AudioError> {
+        self.check_music(&music)?;
+        self.music[0] = Some(music);
+        Ok(())
+    }
+
+    /// Mixes another track with the voices from now on, after those attached before (up to
+    /// [`MAX_MUSIC_SOURCES`] in all; ADR-0090). Call before handing the mixer to the
+    /// stream.
+    pub fn add_music(&mut self, music: MusicSource) -> Result<(), AudioError> {
+        self.check_music(&music)?;
+        let slot = self
+            .music
+            .iter_mut()
+            .find(|slot| slot.is_none())
+            .ok_or(AudioError::InvalidConfig("too many music sources"))?;
+        *slot = Some(music);
+        Ok(())
+    }
+
+    fn check_music(&self, music: &MusicSource) -> Result<(), AudioError> {
         if music.format() != (self.sample_rate, self.channels) {
             return Err(AudioError::InvalidConfig(
                 "music format differs from the mixer",
             ));
         }
-        self.music = Some(music);
         Ok(())
     }
 
@@ -786,7 +808,7 @@ impl AudioCallback for Mixer {
         out.fill(0.0);
         // Before the format check: the music applies its commands and counts its own
         // mismatches.
-        if let Some(music) = &mut self.music {
+        for music in self.music.iter_mut().flatten() {
             music.mix_into(out, info);
         }
         // The bus ramps run in real time, also through a format mismatch.
@@ -1855,6 +1877,32 @@ mod tests {
         assert_eq!(out, [0.0; 4]);
         assert_eq!(m.stats.format_mismatches.load(Ordering::Relaxed), 1);
         assert_eq!(player.stats().format_mismatches.load(Ordering::Relaxed), 1);
+    }
+
+    #[test]
+    fn up_to_three_tracks_are_mixed() {
+        use crate::music::{MusicConfig, music};
+        let (mut m, _h) = mono_mixer(4, 4);
+        let config = MusicConfig {
+            sample_rate: RATE,
+            channels: 1,
+            ..Default::default()
+        };
+        let mut players = Vec::new();
+        for i in 0..MAX_MUSIC_SOURCES {
+            let (source, player) = music(&config).unwrap();
+            if i == 0 {
+                m.set_music(source).unwrap();
+            } else {
+                m.add_music(source).unwrap();
+            }
+            players.push(player);
+        }
+        let (extra, _player) = music(&config).unwrap();
+        assert!(m.add_music(extra).is_err());
+        run(&mut m, 3);
+        // Each publishes its position: each is mixed.
+        assert!(players.iter().all(|p| p.position().read().is_some()));
     }
 
     fn played(h: &mut MixerHandle, data: &[f32], params: VoiceParams) -> VoiceId {
