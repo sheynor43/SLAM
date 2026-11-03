@@ -522,6 +522,32 @@ impl Drop for HostFixture {
     }
 }
 
+/// An output's update-side handles and its mixer, without a device: tests run the
+/// callback themselves.
+fn detached_audio() -> (Audio, slam_audio::Mixer) {
+    let (mut mixer, mixer_handle) = slam_audio::mixer(&MixerConfig {
+        sample_rate: SAMPLE_RATE,
+        channels: CHANNELS,
+        ..MixerConfig::default()
+    })
+    .unwrap();
+    let (music, player) = slam_audio::music(&MusicConfig {
+        sample_rate: SAMPLE_RATE,
+        channels: CHANNELS,
+        ..MusicConfig::default()
+    })
+    .unwrap();
+    mixer.set_music(music).unwrap();
+    let audio = Audio {
+        output: Arc::new(AudioPosition::new()),
+        music: Arc::clone(player.position()),
+        player,
+        mixer: mixer_handle,
+        volumes: AppliedVolumes::new(Volumes::of(&Settings::default().audio)),
+    };
+    (audio, mixer)
+}
+
 /// A set whose map plays `count.wav` of the default skin when `with_track`.
 fn host(name: &str, with_track: bool) -> HostFixture {
     let dir = std::env::temp_dir().join(format!("slam-shell-{name}-{}", std::process::id()));
@@ -557,28 +583,16 @@ fn host(name: &str, with_track: bool) -> HostFixture {
         replays: Some(dir.join("replays")),
     })
     .unwrap();
-    let (mut mixer, mixer_handle) = slam_audio::mixer(&MixerConfig {
-        sample_rate: SAMPLE_RATE,
-        channels: CHANNELS,
-        ..MixerConfig::default()
-    })
-    .unwrap();
-    let (music, player) = slam_audio::music(&MusicConfig {
-        sample_rate: SAMPLE_RATE,
-        channels: CHANNELS,
-        ..MusicConfig::default()
-    })
-    .unwrap();
-    mixer.set_music(music).unwrap();
+    let (audio, mixer) = detached_audio();
     let (scene_tx, scenes) = rtrb::RingBuffer::new(2);
     let host = PlayHost {
-        audio: Audio {
-            output: Arc::new(AudioPosition::new()),
-            music: Arc::clone(player.position()),
-            player,
-            mixer: mixer_handle,
-            volumes: AppliedVolumes::new(Volumes::of(&Settings::default().audio)),
-        },
+        audio,
+        output: None,
+        requested: Settings::default().audio,
+        switching: false,
+        no_output: false,
+        retired: None,
+        track: None,
         loader,
         scenes: scene_tx,
         os_cursor: CursorVisibility::default(),
@@ -843,6 +857,267 @@ fn changed_settings_reach_the_audio_and_the_next_play() {
     assert_eq!(host.input.mouse_buttons, settings.gameplay.mouse_buttons);
     assert_eq!(host.input.bindings, settings.input.bindings);
     assert_ne!(host.input.bindings, Bindings::default());
+}
+
+#[test]
+fn a_changed_output_is_asked_of_the_output_thread_once() {
+    let mut fixture = host("output-ask", false);
+    let (link, mut ends) = output::test_link();
+    fixture.host.output = Some(link);
+    let mut settings = Settings::default();
+    // Volumes alone keep the output.
+    settings.audio.master_volume = 0.5;
+    fixture.host.apply_settings(&settings);
+    assert!(ends.requests.pop().is_err());
+    settings.audio.device = Some("hdmi".into());
+    fixture.host.apply_settings(&settings);
+    assert!(fixture.host.switching);
+    assert!(matches!(
+        ends.requests.pop(),
+        Ok(Request::Open(a)) if a.device.as_deref() == Some("hdmi")
+    ));
+    // Asked once, however long it takes.
+    fixture.host.apply_settings(&settings);
+    assert!(ends.requests.pop().is_err());
+    // An output that did not open is not asked for again until the settings change.
+    assert!(ends.opened.push(output::Opened::Lost).is_ok());
+    let mut s = state();
+    fixture.host.advance(1, &mut s);
+    assert!(!fixture.host.switching);
+    fixture.host.apply_settings(&settings);
+    assert!(ends.requests.pop().is_err());
+    settings.audio.buffer_frames *= 2;
+    fixture.host.apply_settings(&settings);
+    assert!(matches!(ends.requests.pop(), Ok(Request::Open(_))));
+}
+
+/// Runs `mixer`'s callback for `buffers` buffers of 64 frames from stream frame `frame`;
+/// the frame after them.
+fn run_callback(mixer: &mut slam_audio::Mixer, mut frame: u64, buffers: usize) -> u64 {
+    let mut out = vec![0.0f32; usize::from(CHANNELS) * 64];
+    for _ in 0..buffers {
+        let info = slam_audio::CallbackInfo {
+            frame,
+            timestamp_ns: 0,
+            latency_ns: 0,
+            sample_rate: SAMPLE_RATE,
+            channels: CHANNELS,
+        };
+        slam_audio::AudioCallback::process(mixer, &mut out, &info);
+        frame += 64;
+        std::thread::sleep(Duration::from_millis(1));
+    }
+    frame
+}
+
+#[test]
+fn a_new_output_plays_the_track_on_from_where_the_old_one_left_it() {
+    let mut fixture = host("output-switch", true);
+    let track = fixture.dir.join("audio.wav");
+    let player = &mut fixture.host.audio.player;
+    player.set_rate(1.5).unwrap();
+    let generation = player.load(TrackSource::File(track.clone())).unwrap();
+    fixture.host.track = Some(track);
+    let deadline = std::time::Instant::now() + Duration::from_secs(10);
+    let mut frame = 0;
+    loop {
+        assert!(
+            std::time::Instant::now() < deadline,
+            "the track did not load"
+        );
+        frame = run_callback(&mut fixture._mixer, frame, 1);
+        match fixture.host.audio.player.poll_event() {
+            Some(MusicEvent::Loaded { generation: g, .. }) if g == generation => break,
+            Some(MusicEvent::Failed { .. }) => panic!("the track did not load"),
+            _ => {}
+        }
+    }
+    fixture.host.audio.player.play().unwrap();
+    frame = run_callback(&mut fixture._mixer, frame, 20);
+    fixture
+        .host
+        .audio
+        .output
+        .publish(slam_audio::PositionSnapshot {
+            frame,
+            timestamp_ns: 1,
+            latency_ns: 0,
+            sample_rate: SAMPLE_RATE,
+        });
+    let (left, moving) = output::resume_point(
+        fixture.host.audio.output.read(),
+        fixture.host.audio.music.read(),
+    )
+    .expect("a track to resume");
+    assert!(moving && left > 0);
+
+    let (link, mut ends) = output::test_link();
+    fixture.host.output = Some(link);
+    fixture.host.switching = true;
+    let (new, mut new_mixer) = detached_audio();
+    assert!(
+        ends.opened
+            .push(output::Opened::Asked(Box::new(new)))
+            .is_ok()
+    );
+    let mut s = state();
+    fixture.host.advance(1, &mut s);
+    assert!(!fixture.host.switching);
+    assert!(matches!(ends.requests.pop(), Ok(Request::Retire(_))));
+    let player = &fixture.host.audio.player;
+    assert_eq!(player.rate(), 1.5);
+
+    // The new output plays the same track on from there.
+    let deadline = std::time::Instant::now() + Duration::from_secs(10);
+    let mut frame = 0;
+    loop {
+        assert!(
+            std::time::Instant::now() < deadline,
+            "the track did not go on"
+        );
+        frame = run_callback(&mut new_mixer, frame, 1);
+        let _ = fixture.host.audio.player.poll_event();
+        if let Some(music) = fixture.host.audio.music.read()
+            && music.generation == fixture.host.audio.player.generation()
+            && music.anchor.moves()
+        {
+            assert!(music.anchor.track_frame >= left as f64, "{music:?}");
+            assert!(
+                music.anchor.track_frame < left as f64 + 48_000.0,
+                "{music:?}"
+            );
+            break;
+        }
+    }
+}
+
+#[test]
+fn no_play_starts_while_the_output_switches() {
+    let mut fixture = host("output-wait", true);
+    let (link, _ends) = output::test_link();
+    fixture.host.output = Some(link);
+    fixture.host.switching = true;
+    let (mut s, mut snap) = listing(&fixture);
+    s.tick(TRANSITION_NS + 1, &[key(KEY_ENTER)], &mut snap);
+    fixture.host.advance(TRANSITION_NS + 2, &mut s);
+    assert!(!s.is_loading());
+    assert!(matches!(fixture.host.pending, Pending::Idle));
+}
+
+#[test]
+fn no_play_starts_without_an_output_until_one_opens() {
+    let mut fixture = host("output-lost", true);
+    let (link, mut ends) = output::test_link();
+    fixture.host.output = Some(link);
+    fixture.host.switching = true;
+    assert!(ends.opened.push(output::Opened::Lost).is_ok());
+    let (mut s, mut snap) = listing(&fixture);
+    fixture.host.advance(TRANSITION_NS + 1, &mut s);
+    assert!(fixture.host.no_output && !fixture.host.switching);
+    s.tick(TRANSITION_NS + 2, &[key(KEY_ENTER)], &mut snap);
+    fixture.host.advance(TRANSITION_NS + 3, &mut s);
+    assert!(!s.is_loading());
+    // The previous output, opened again, brings the plays back.
+    fixture.host.switching = true;
+    let (audio, _mixer) = detached_audio();
+    assert!(
+        ends.opened
+            .push(output::Opened::Previous(Box::new(audio)))
+            .is_ok()
+    );
+    fixture.host.advance(TRANSITION_NS + 4, &mut s);
+    assert!(!fixture.host.no_output && !fixture.host.switching);
+    assert!(matches!(ends.requests.pop(), Ok(Request::Retire(_))));
+}
+
+#[test]
+fn old_handles_wait_for_room_in_the_ring() {
+    let mut fixture = host("output-later", false);
+    let (link, mut ends) = output::test_link();
+    fixture.host.output = Some(link);
+    fixture.host.switching = true;
+    let (audio, _mixer) = detached_audio();
+    assert!(
+        ends.opened
+            .push(output::Opened::Asked(Box::new(audio)))
+            .is_ok()
+    );
+    // A full ring keeps the old handles on the host until it has room.
+    let link = fixture.host.output.as_mut().unwrap();
+    while link
+        .request(Request::List(Box::new(Settings::default().audio)))
+        .is_ok()
+    {}
+    fixture.host.switch_output();
+    assert!(!fixture.host.switching);
+    assert!(fixture.host.retired.is_some());
+    while ends.requests.pop().is_ok() {}
+    fixture.host.switch_output();
+    assert!(fixture.host.retired.is_none());
+    assert!(matches!(ends.requests.pop(), Ok(Request::Retire(_))));
+}
+
+#[test]
+fn a_full_ring_asks_for_the_output_again() {
+    let mut fixture = host("output-again", false);
+    let (link, mut ends) = output::test_link();
+    fixture.host.output = Some(link);
+    let link = fixture.host.output.as_mut().unwrap();
+    while link
+        .request(Request::List(Box::new(Settings::default().audio)))
+        .is_ok()
+    {}
+    let mut settings = Settings::default();
+    settings.audio.device = Some("hdmi".into());
+    fixture.host.apply_settings(&settings);
+    assert!(!fixture.host.switching);
+    while ends.requests.pop().is_ok() {}
+    fixture.host.apply_settings(&settings);
+    assert!(fixture.host.switching);
+    assert!(matches!(ends.requests.pop(), Ok(Request::Open(_))));
+}
+
+#[test]
+fn opening_the_settings_lists_the_devices_again() {
+    let mut fixture = host("output-list", false);
+    let (link, mut ends) = output::test_link();
+    fixture.host.output = Some(link);
+    let mut s = state();
+    let mut snap = ShellSnapshot::default();
+    // The menu's settings entry.
+    s.tick(0, &[key(KEY_DOWN), key(KEY_ENTER)], &mut snap);
+    assert!(matches!(s.stack().top(), AppScreen::Settings(_)));
+    fixture.host.advance(1, &mut s);
+    assert!(matches!(ends.requests.pop(), Ok(Request::List(_))));
+    fixture.host.advance(2, &mut s);
+    assert!(ends.requests.pop().is_err(), "once per opening");
+    let devices = vec![
+        slam_audio::DeviceInfo {
+            id: "usb".into(),
+            name: "USB".into(),
+        },
+        slam_audio::DeviceInfo {
+            id: "hdmi".into(),
+            name: "HDMI".into(),
+        },
+    ];
+    assert!(
+        ends.lists
+            .push(Box::new(output::DeviceList {
+                devices,
+                saved: None
+            }))
+            .is_ok()
+    );
+    fixture.host.advance(3, &mut s);
+    let AppScreen::Settings(screen) = s.stack().top() else {
+        panic!("the settings screen");
+    };
+    let snapshot = screen.snapshot();
+    let Some(RowWidget::Dropdown(device)) = snapshot.widgets.get(rows::device_row()) else {
+        panic!("the device row");
+    };
+    assert_eq!((device.count(), device.selected()), (3, 0));
 }
 
 #[test]
