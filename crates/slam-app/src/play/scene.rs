@@ -12,6 +12,7 @@ use slam_play::circles::{
 };
 use slam_play::cursor::{CursorScale, CursorView, MAX_CURSOR_SPRITES};
 use slam_play::fail::FailFrame;
+use slam_play::gameplay_sounds::DEFAULT_POSITIONAL_LEVEL;
 use slam_play::hud::OFFSET_PLACEHOLDER;
 use slam_play::judgements::JudgementView;
 use slam_play::resume::MAX_TARGET_SPRITES;
@@ -89,6 +90,8 @@ pub struct PlaySettings {
     pub cursor_size: f32,
     /// Lazer's `AutoCursorSize`: the cursor's size follows the beatmap's circle size.
     pub auto_cursor_size: bool,
+    /// Lazer's `PositionalHitsoundsLevel` (ADR-0087).
+    pub positional_hitsounds_level: f32,
 }
 
 impl Default for PlaySettings {
@@ -106,6 +109,7 @@ impl Default for PlaySettings {
             cursor_trail: true,
             cursor_size: 1.0,
             auto_cursor_size: false,
+            positional_hitsounds_level: DEFAULT_POSITIONAL_LEVEL,
         }
     }
 }
@@ -243,8 +247,15 @@ pub fn prepare(
     let hitsounds = Hitsounds::new(beatmap, sample_skins, &mut cache);
     // Ported from osu!lazer 2026.1005.0-lazer: osu.Game/Screens/Play/FailAnimationContainer.cs (load)
     let fail_sound = slam_play::hitsounds::effect("Gameplay/failsound", sample_skins, &mut cache);
-    let sounds = GameplaySounds::new(beatmap, hitsounds, SoundSettings::for_mods(mods))
-        .with_fail_sound(fail_sound);
+    let sounds = GameplaySounds::new(
+        beatmap,
+        hitsounds,
+        SoundSettings {
+            positional_level: settings.positional_hitsounds_level,
+            ..SoundSettings::for_mods(mods)
+        },
+    )
+    .with_fail_sound(fail_sound);
     let circle_mods = CircleMods::new(mods);
     let windows = slam_osu::hit_windows::HitWindows::new(beatmap.difficulty.overall_difficulty);
     let cursor_scale = CursorScale::new(

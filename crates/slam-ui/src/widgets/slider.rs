@@ -227,6 +227,8 @@ pub struct SliderView {
     /// Drop trailing zeros and a bare point, as `0.##` does.
     trim_zeros: bool,
     unit: String,
+    /// Shown instead of the value and the unit at zero; empty shows the number.
+    zero_text: String,
     /// The value `value_line` shows (as bits, so that NaN-free comparison is exact).
     shown: Option<u64>,
     value_line: Line,
@@ -261,6 +263,7 @@ impl SliderView {
             decimals,
             trim_zeros: false,
             unit: unit.to_owned(),
+            zero_text: String::new(),
             shown: None,
             value_line,
             charset,
@@ -274,6 +277,23 @@ impl SliderView {
     /// lazer's `0.##` format.
     pub fn trimmed(mut self) -> SliderView {
         self.trim_zeros = true;
+        self
+    }
+
+    /// Shows `text` (localised) instead of the value and the unit when the value is zero,
+    /// as lazer's "Disabled" of the hitsound stereo separation. Empty shows the number.
+    pub fn with_zero_text(mut self, text: &str) -> SliderView {
+        self.zero_text = text.to_owned();
+        self.charset.text.push_str(text);
+        self.lay_out_charset();
+        // Grow the value line to hold the zero text, so that showing it later in a frame
+        // does not allocate.
+        self.value_line.text.clear();
+        self.value_line.text.reserve(text.len());
+        self.value_line.text.push_str(text);
+        let size = self.theme.widget_text_size * self.scale;
+        self.type_setter.lay_out(&mut self.value_line, size);
+        self.shown = None;
         self
     }
 
@@ -300,6 +320,12 @@ impl SliderView {
         }
         self.shown = Some(bits);
         self.value_line.text.clear();
+        if value == 0.0 && !self.zero_text.is_empty() {
+            self.value_line.text.push_str(&self.zero_text);
+            let size = self.theme.widget_text_size * self.scale;
+            self.type_setter.lay_out(&mut self.value_line, size);
+            return;
+        }
         let _ = write!(
             self.value_line.text,
             "{value:.decimals$}",
@@ -404,6 +430,15 @@ mod view_tests {
         assert_eq!(shown(&mut view, 10.0), "10x");
         assert_eq!(shown(&mut view, 0.1), "0.1x");
         assert_eq!(shown(&mut view, 0.0), "0x");
+    }
+
+    #[test]
+    fn a_zero_text_replaces_the_value_and_unit_at_zero_only() {
+        let registry = Arc::new(FontRegistry::with_builtin());
+        let mut view = SliderView::new(registry, Theme::default(), 0, "%").with_zero_text("Off");
+        assert_eq!(shown(&mut view, 0.0), "Off");
+        assert_eq!(shown(&mut view, 20.0), "20%");
+        assert_eq!(shown(&mut view, 0.0), "Off");
     }
 
     #[test]

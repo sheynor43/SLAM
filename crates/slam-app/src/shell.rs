@@ -2719,6 +2719,7 @@ fn run_with<B: render::Backend>(
                 cursor_trail: options.cursor_trail,
                 cursor_size: options.cursor_size as f32,
                 auto_cursor_size: options.auto_cursor_size,
+                positional_hitsounds_level: options.positional_hitsounds_level,
                 skin: options.skin,
                 ..PlaySettings::default()
             }

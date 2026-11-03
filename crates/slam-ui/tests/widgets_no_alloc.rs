@@ -150,3 +150,44 @@ fn widget_views_push_without_allocating_once_warm() {
     });
     assert!(shapes.len() > 6);
 }
+
+#[test]
+fn a_slider_shows_its_zero_text_without_allocating_once_warm() {
+    let theme = Theme::default();
+    let registry = Arc::new(FontRegistry::with_builtin());
+    let mut glyphs = glyph_atlas(Arc::clone(&registry), &GlyphAtlasConfig::new(LIMITS)).unwrap();
+    let mut view =
+        SliderView::new(Arc::clone(&registry), theme, 0, "%").with_zero_text("Выключено");
+    let layout = SliderLayout::new(BOUNDS, &theme, 1.0);
+    let mut slider = Slider::new(0.0, 100.0, 1.0, 20.0);
+    view.request_glyphs(&mut glyphs);
+    let (mut shapes, mut text) = (
+        SpriteBatch::with_capacity(256),
+        SpriteBatch::with_capacity(1024),
+    );
+    let mut frame = |slider: &Slider, glyphs: &mut _| {
+        shapes.clear();
+        text.clear();
+        view.push(
+            &mut shapes,
+            &mut text,
+            glyphs,
+            slider,
+            &layout,
+            0.5,
+            white(),
+        );
+    };
+
+    // Warm on numbers only: the zero text is first shown inside the checked frames.
+    frame(&slider, &mut glyphs);
+    slider.set(100.0);
+    frame(&slider, &mut glyphs);
+
+    assert_no_alloc(|| {
+        for value in [0.0, 20.0, 0.0, 100.0, 0.0] {
+            slider.set(value);
+            frame(&slider, &mut glyphs);
+        }
+    });
+}
