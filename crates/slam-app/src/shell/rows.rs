@@ -7,12 +7,13 @@ use slam_input::{Displays, WindowMode};
 use slam_osu::replay::Actions;
 use slam_play::FpsCorner;
 use slam_text::FontRegistry;
-use slam_ui::i18n::{FluentArgs, Localizer};
+use slam_ui::i18n::{BUILTIN_LANGUAGES, FALLBACK_LANGUAGE, FluentArgs, Localizer};
 use slam_ui::settings_screen::{
     RowKind, RowLabels, RowSpec, RowValue, RowWidget, SettingsLabels, SettingsScreen,
 };
 use slam_ui::theme::Theme;
 use slam_ui::widgets::DropdownView;
+use std::borrow::Cow;
 use std::sync::Arc;
 
 use super::keybinds;
@@ -162,6 +163,8 @@ pub enum Row {
     SmokeKey2,
     ToggleFpsKey,
     ResetKeys,
+    /// The interface language, applied at the next start (ADR-0088).
+    Language,
     ScreenMode,
     /// lazer's warning that windowed modes add latency (ADR-0072).
     NotFullscreenNote,
@@ -195,7 +198,7 @@ pub enum Row {
 const _: () = assert!(Row::ALL.len() <= slam_ui::settings_screen::MAX_ROWS);
 
 impl Row {
-    pub const ALL: [Row; 45] = [
+    pub const ALL: [Row; 46] = [
         Row::MasterVolume,
         Row::MusicVolume,
         Row::HitsoundVolume,
@@ -216,6 +219,7 @@ impl Row {
         Row::SmokeKey2,
         Row::ToggleFpsKey,
         Row::ResetKeys,
+        Row::Language,
         Row::ScreenMode,
         Row::NotFullscreenNote,
         Row::Display,
@@ -284,7 +288,8 @@ impl Row {
             | Row::SmokeKey2
             | Row::ToggleFpsKey
             | Row::ResetKeys => 2,
-            Row::ScreenMode
+            Row::Language
+            | Row::ScreenMode
             | Row::NotFullscreenNote
             | Row::Display
             | Row::FullscreenSize
@@ -334,6 +339,7 @@ impl Row {
             Row::SmokeKey2 => "settings-keys-smoke-2",
             Row::ToggleFpsKey => "settings-keys-toggle-fps",
             Row::ResetKeys => "settings-keys-reset",
+            Row::Language => "settings-layout-language",
             Row::ScreenMode => "settings-layout-screen-mode",
             Row::NotFullscreenNote => "settings-layout-not-fullscreen-note",
             Row::Display => "settings-layout-display",
@@ -365,7 +371,7 @@ impl Row {
     /// for these. The others apply when the screen closes, the offset, mouse buttons and
     /// background from the next play (ADR-0048).
     pub fn restart_required(self) -> bool {
-        matches!(self, Row::Backend | Row::BufferFrames)
+        matches!(self, Row::Backend | Row::BufferFrames | Row::Language)
     }
 }
 
@@ -593,6 +599,12 @@ impl Rows {
                 step: 0.01,
                 value: round_to(s.gameplay.hit_error_scale, 2),
             },
+            Row::Language => choice(
+                BUILTIN_LANGUAGES.len(),
+                BUILTIN_LANGUAGES.iter().position(|l| {
+                    l.langid == s.general.language.as_deref().unwrap_or(FALLBACK_LANGUAGE)
+                }),
+            ),
             Row::HitsoundDelay => choice(
                 HitsoundDelay::ALL.len(),
                 HitsoundDelay::ALL
@@ -762,6 +774,11 @@ impl Rows {
                     }
                 }
             },
+            (Row::Language, RowValue::Choice(i)) => {
+                if let Some(language) = BUILTIN_LANGUAGES.get(i) {
+                    settings.general.language = Some(language.langid.to_owned());
+                }
+            }
             (Row::HitsoundDelay, RowValue::Choice(i)) => {
                 if let Some(delay) = HitsoundDelay::ALL.get(i) {
                     settings.audio.hitsound_delay = *delay;
@@ -930,6 +947,15 @@ impl Rows {
                         .map(|screens| text(screens_key(*screens)))
                         .collect(),
                     Row::Skin => skin_options(localizer, &self.skins),
+                    // Each language by its own name, as lazer.
+                    Row::Language => BUILTIN_LANGUAGES
+                        .iter()
+                        .map(|l| {
+                            localizer
+                                .language_name(l.langid)
+                                .map_or_else(|| l.langid.to_owned(), Cow::into_owned)
+                        })
+                        .collect(),
                     Row::ScreenMode => WindowMode::ALL
                         .iter()
                         .map(|mode| text(mode_key(*mode)))
@@ -1308,10 +1334,36 @@ mod tests {
     }
 
     #[test]
-    fn only_the_output_rows_wait_for_a_restart() {
+    fn only_the_output_and_language_rows_wait_for_a_restart() {
         for row in Row::ALL {
-            let output = matches!(row, Row::Backend | Row::BufferFrames);
-            assert_eq!(row.restart_required(), output, "{row:?}");
+            let waits = matches!(row, Row::Backend | Row::BufferFrames | Row::Language);
+            assert_eq!(row.restart_required(), waits, "{row:?}");
+        }
+    }
+
+    #[test]
+    fn the_language_row_lists_languages_by_their_own_names_and_sets_the_tag() {
+        let (rows, mut s) = rows();
+        assert_eq!(Row::Language.section(), 3);
+        assert_eq!(Row::ALL[index(Row::Language) + 1], Row::ScreenMode);
+        // No language in the file is English.
+        assert_eq!(dropdown(&opened(&rows, &s), Row::Language), (2, 0));
+        rows.apply(&mut s, index(Row::Language), RowValue::Choice(1));
+        assert_eq!(s.general.language.as_deref(), Some("ru"));
+        assert_eq!(dropdown(&opened(&rows, &s), Row::Language), (2, 1));
+        rows.apply(&mut s, index(Row::Language), RowValue::Choice(2));
+        assert_eq!(s.general.language.as_deref(), Some("ru"));
+        rows.apply(&mut s, index(Row::Language), RowValue::Choice(0));
+        assert_eq!(s.general.language.as_deref(), Some("en"));
+
+        let mut localizer = Localizer::builtin().unwrap();
+        for _ in 0..2 {
+            let labels = rows.labels(&localizer);
+            assert_eq!(
+                labels.rows[index(Row::Language)].options,
+                ["English", "Русский"]
+            );
+            localizer.set_language("ru").unwrap();
         }
     }
 

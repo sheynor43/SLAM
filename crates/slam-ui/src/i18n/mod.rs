@@ -16,6 +16,9 @@ pub use fluent_bundle::FluentArgs;
 /// Language of the fallback bundle, always present.
 pub const FALLBACK_LANGUAGE: &str = "en";
 
+/// The key of a language's own name, in each language.
+pub const LANGUAGE_NAME_KEY: &str = "settings-language-name";
+
 /// A language as a list of `(file name, .ftl source)` pairs.
 #[derive(Debug, Clone, Copy)]
 pub struct LanguageSource<'a> {
@@ -190,6 +193,18 @@ impl Localizer {
     /// generation must be formatted again.
     pub fn generation(&self) -> u64 {
         self.generation
+    }
+
+    /// The name of language `langid` in that language (`settings-language-name`), whatever
+    /// language is active, as lazer lists languages. `None` for a language it does not have.
+    pub fn language_name(&self, langid: &str) -> Option<Cow<'_, str>> {
+        let id = parse_langid(langid).ok()?;
+        let bundle = if id == self.english {
+            &self.fallback
+        } else {
+            &self.languages.iter().find(|(l, _)| *l == id)?.1
+        };
+        Self::format_in(bundle, LANGUAGE_NAME_KEY, None)
     }
 
     /// Formats `key` (`message` or `message.attribute`). Falls back to English, then

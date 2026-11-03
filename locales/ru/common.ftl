@@ -161,6 +161,7 @@ settings-input-high-precision-warning =
     На вашей платформе эта настройка работает с ошибками. При проблемах
     меняйте чувствительность вне игры, а эту настройку пока не включайте.
 settings-input-sensitivity-hint = Включите высокоточную мышь, чтобы менять чувствительность
+settings-layout-language = Язык
 settings-layout-screen-mode = Режим экрана
 settings-layout-display = Монитор
 settings-layout-resolution = Разрешение

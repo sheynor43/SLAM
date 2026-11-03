@@ -1410,3 +1410,20 @@ fn a_passed_play_saves_its_replay_before_the_results() {
         Some(crate::replays::md5_hex(&map).as_str())
     );
 }
+
+#[test]
+fn the_interface_starts_in_the_settings_language() {
+    let mut settings = Settings::default();
+    let menu = |settings: &Settings| {
+        interface_localizer(settings)
+            .unwrap()
+            .format("settings-layout-language", None)
+            .into_owned()
+    };
+    assert_eq!(menu(&settings), "Language");
+    settings.general.language = Some("ru".to_owned());
+    assert_eq!(menu(&settings), "Язык");
+    // Not from the file reader: an unknown tag stays English.
+    settings.general.language = Some("de".to_owned());
+    assert_eq!(menu(&settings), "Language");
+}

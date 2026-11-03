@@ -1062,3 +1062,36 @@ fn a_gameplay_binding_on_f11_is_skipped() {
             .all(|b| b.input != key("F11"))
     );
 }
+
+#[test]
+fn language_reads_built_in_tags_and_falls_back_to_english() {
+    let missing = file::from_toml_str("[audio]\nmaster_volume = 1.0\n");
+    assert_eq!(missing.status, LoadStatus::Ok, "{:?}", missing.warnings);
+    assert_eq!(missing.settings.general.language, None);
+    for tag in ["en", "ru"] {
+        let read = file::from_toml_str(&format!("[general]\nlanguage = \"{tag}\"\n"));
+        assert_eq!(read.status, LoadStatus::Ok, "{:?}", read.warnings);
+        assert_eq!(read.settings.general.language.as_deref(), Some(tag));
+    }
+    for bad in ["\"de\"", "\"\"", "1"] {
+        let loaded = file::from_toml_str(&format!("[general]\nlanguage = {bad}\n"));
+        assert_eq!(loaded.status, LoadStatus::Recovered, "{bad}");
+        assert_eq!(loaded.settings.general.language, None, "{bad}");
+        assert!(
+            loaded
+                .warnings
+                .iter()
+                .any(|w| w.starts_with("general.language")),
+            "{bad}"
+        );
+    }
+}
+
+#[test]
+fn language_survives_a_write_and_read() {
+    let mut settings = Settings::default();
+    settings.general.language = Some("ru".to_owned());
+    let text = file::to_toml_string(&settings).unwrap();
+    assert!(text.contains("[general]\nlanguage = \"ru\""), "{text}");
+    assert_eq!(file::from_toml_str(&text).settings, settings);
+}

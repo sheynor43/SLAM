@@ -7,6 +7,7 @@ use serde::de::DeserializeOwned;
 use slam_engine::MAX_UPDATE_HZ;
 use slam_engine::limiter::MIN_HZ;
 use slam_play::input::{Bindings, MAX_BINDINGS};
+use slam_ui::i18n::BUILTIN_LANGUAGES;
 use toml::{Table, Value};
 
 use super::keys;
@@ -207,6 +208,20 @@ fn from_table(mut table: Table) -> Loaded {
     } else {
         migrate(&mut table, version);
     }
+
+    let mut general = cx.section(&mut table, "general");
+    let mut language: Option<String> = None;
+    cx.opt(&mut general, "general", "language", &mut language);
+    if let Some(tag) = language {
+        if BUILTIN_LANGUAGES.iter().any(|l| l.langid == tag) {
+            settings.general.language = Some(tag);
+        } else {
+            cx.warn(format!(
+                "general.language: unknown language \"{tag}\", using English"
+            ));
+        }
+    }
+    cx.unknown(&general, "general");
 
     let mut paths = cx.section(&mut table, "paths");
     cx.opt(&mut paths, "paths", "songs", &mut settings.paths.songs);

@@ -2502,6 +2502,17 @@ impl WithBackend for App {
     }
 }
 
+/// The built-in languages with the settings' language active; an unknown one stays English.
+fn interface_localizer(settings: &Settings) -> Result<Localizer, String> {
+    let mut localizer = Localizer::builtin().map_err(|e| e.to_string())?;
+    if let Some(language) = &settings.general.language
+        && let Err(e) = localizer.set_language(language)
+    {
+        tracing::warn!("settings: general.language: {e}, using English");
+    }
+    Ok(localizer)
+}
+
 fn run_with<B: render::Backend>(
     settings: Settings,
     mut window: InputWindow,
@@ -2522,8 +2533,8 @@ fn run_with<B: render::Backend>(
     let registry = Arc::new(FontRegistry::with_builtin());
     let glyphs = glyph_atlas(Arc::clone(&registry), &GlyphAtlasConfig::new(limits))
         .map_err(|e| e.to_string())?;
-    // English until the language setting exists (#98).
-    let localizer = Arc::new(Localizer::builtin().map_err(|e| e.to_string())?);
+    // The language applies from the start only: the texts below are laid out once (ADR-0088).
+    let localizer = Arc::new(interface_localizer(&settings)?);
     let text = |key: &str| localizer.format(key, None).into_owned();
     let labels = MenuLabels {
         title: text("menu-title"),
