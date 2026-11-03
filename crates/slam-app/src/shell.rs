@@ -75,8 +75,10 @@ mod draw_rate;
 mod live;
 
 use live::{AppliedUpdateRate, AppliedVolumes, Volumes};
+use output::{DeviceList, DeviceViews, OutputLink, Request};
 mod keybinds;
 mod mod_settings;
+mod output;
 mod results;
 mod rows;
 
@@ -272,6 +274,9 @@ pub struct ShellState {
     /// The results went back to the song select: the track they played on stops, not yet
     /// taken by [`ShellState::take_track_stop`].
     track_stop: bool,
+    /// The settings screen opened: its device list is to be made again (ADR-0089), not yet
+    /// taken by [`ShellState::take_device_list_request`].
+    device_list_request: bool,
     /// The settings in force: what the file said, then what the settings screen committed.
     settings: Settings,
     /// The options of the settings screen's dropdowns, fixed for the run.
@@ -335,6 +340,7 @@ impl ShellState {
             held_results: Vec::new(),
             retry_request: false,
             track_stop: false,
+            device_list_request: false,
             settings: Settings::default(),
             rows: Rows::new(&Settings::default()),
             editing: None,
@@ -436,8 +442,27 @@ impl ShellState {
 
     /// A shell whose settings screen offers the output devices the backend lists (#286).
     pub fn with_devices(mut self, devices: Vec<slam_audio::DeviceInfo>) -> ShellState {
-        self.rows.set_devices(devices, &self.settings);
+        self.rows
+            .set_devices(devices, self.settings.audio.device.as_deref());
         self
+    }
+
+    /// The audio settings to list the output devices for, once after the settings screen
+    /// opened (ADR-0089).
+    pub fn take_device_list_request(&mut self) -> Option<&crate::settings::Audio> {
+        std::mem::take(&mut self.device_list_request).then_some(&self.settings.audio)
+    }
+
+    /// Offers the devices of `list` on the device row and on an open settings screen; the
+    /// draw thread gets the dropdown made for the same list (ADR-0089).
+    pub fn set_devices(&mut self, list: &mut DeviceList) {
+        self.rows
+            .set_devices(std::mem::take(&mut list.devices), list.saved.as_deref());
+        if let AppScreen::Settings(screen) = self.stack.top_mut() {
+            let settings = self.editing.as_ref().unwrap_or(&self.settings);
+            let (options, selected) = self.rows.device_choice(settings);
+            screen.set_dropdown(rows::device_row(), options, selected);
+        }
     }
 
     /// The settings in force.
@@ -1073,12 +1098,15 @@ impl ShellState {
                         .and_then(|input| menu.input(input, &self.layout))
                     {
                         Some(MenuAction::Play) => Some(Nav::Push(AppScreen::SongSelect)),
-                        Some(MenuAction::Settings) => Some(Nav::Push(open_settings(
-                            &self.rows,
-                            &self.settings,
-                            &mut self.editing,
-                            &self.songs_folder,
-                        ))),
+                        Some(MenuAction::Settings) => {
+                            self.device_list_request = true;
+                            Some(Nav::Push(open_settings(
+                                &self.rows,
+                                &self.settings,
+                                &mut self.editing,
+                                &self.songs_folder,
+                            )))
+                        }
                         Some(MenuAction::Exit) => Some(Nav::Exit),
                         None => None,
                     }
@@ -1469,6 +1497,20 @@ impl Retiring {
 /// The update side of plays: loads them, runs the one on top, frees them via the loader.
 struct PlayHost {
     audio: Audio,
+    /// The `slam-audio-output` thread, which owns the output (ADR-0089); `None` in tests
+    /// and when it did not start.
+    output: Option<OutputLink<Audio>>,
+    /// The output settings last asked of the output thread.
+    requested: crate::settings::Audio,
+    /// An output is opening: `audio` is silent, and no play starts until it comes.
+    switching: bool,
+    /// Neither the asked nor the previous output opened: `audio` is silent, and no play
+    /// starts until an output opens.
+    no_output: bool,
+    /// Old handles the output thread has not taken yet, offered again every tick.
+    retired: Option<Box<Audio>>,
+    /// The track `audio.player` last loaded, to play on in a new output.
+    track: Option<PathBuf>,
     loader: LoaderLink,
     /// Scenes for the draw thread, one per play, named by the play's id.
     scenes: rtrb::Producer<(u64, PlayScene)>,
@@ -1560,7 +1602,7 @@ impl PlayHost {
     }
 
     /// Hands changed settings to the audio thread and to the next play (ADR-0048). Does
-    /// not allocate or block.
+    /// not block; allocates only to ask for another output (ADR-0089).
     fn apply_settings(&mut self, settings: &Settings) {
         let audio = &mut self.audio;
         audio.volumes.sync(
@@ -1568,6 +1610,22 @@ impl PlayHost {
             &mut audio.mixer,
             &mut audio.player,
         );
+        // One output at a time, and none under a play: its clock follows the output.
+        if !self.switching
+            && self.game.is_none()
+            && output::output_changed(&settings.audio, &self.requested)
+            && let Some(link) = &mut self.output
+        {
+            // Allocates, as the player closed the settings screen; a full ring asks again
+            // on the next tick.
+            if link
+                .request(Request::Open(Box::new(settings.audio.clone())))
+                .is_ok()
+            {
+                self.requested.clone_from(&settings.audio);
+                self.switching = true;
+            }
+        }
         // A play copies these when it starts (ADR-0049 for the bindings).
         self.input.bindings = settings.input.bindings;
         self.input.offsets.global_ms = settings.timing.global_offset_ms;
@@ -1578,6 +1636,16 @@ impl PlayHost {
     /// when a play is asked for, starts or ends; logs and frees on the loader thread.
     fn advance(&mut self, now_ns: u64, state: &mut ShellState) {
         self.end_game(now_ns, state);
+        self.switch_output();
+        if let Some(link) = &mut self.output {
+            if let Some(settings) = state.take_device_list_request() {
+                // A full ring drops it: the screen keeps the list it has.
+                let _ = link.request(Request::List(Box::new(settings.clone())));
+            }
+            if let Some(mut list) = link.list() {
+                state.set_devices(&mut list);
+            }
+        }
         // Tried until the queue takes it, while no play owns the track.
         if self.track_reset
             && self.game.is_none()
@@ -1601,7 +1669,8 @@ impl PlayHost {
         if let Some(map) = request {
             self.next_request += 1;
             let asked = match map {
-                Some(map) if self.game.is_none() => {
+                // A play started on a closed output would never hear its track.
+                Some(map) if self.game.is_none() && !self.switching && !self.no_output => {
                     let options = PlayOptions {
                         mods: state.selected_mods().clone(),
                         ..live::play_options(state.settings())
@@ -1622,8 +1691,10 @@ impl PlayHost {
             match loaded.result {
                 Ok(mut prepared) if current && state.is_loading() => {
                     let audio = std::mem::take(&mut prepared.audio);
+                    let track = audio.clone();
                     match self.audio.player.load(TrackSource::File(audio)) {
                         Ok(generation) => {
+                            self.track = Some(track);
                             self.pending = Pending::Track {
                                 id: loaded.id,
                                 prepared,
@@ -1761,6 +1832,60 @@ impl PlayHost {
             } else {
                 retiring.idle_since = None;
             }
+        }
+    }
+
+    /// Takes the output the output thread opened, once no play or play's track waits on the
+    /// old one (ADR-0089): the track plays on from where the old output left it, with its
+    /// rate. The old handles go to the output thread to be freed: their player joins its
+    /// decoder. Allocates only then.
+    fn switch_output(&mut self) {
+        let Some(link) = &mut self.output else {
+            return;
+        };
+        if let Some(old) = self.retired.take()
+            && let Err(Request::Retire(old)) = link.request(Request::Retire(old))
+        {
+            self.retired = Some(old);
+        }
+        if !self.switching
+            || self.retired.is_some()
+            || self.game.is_some()
+            || matches!(self.pending, Pending::Track { .. })
+        {
+            return;
+        }
+        let mut new = match link.opened() {
+            None => return,
+            Some(output::Opened::Lost) => {
+                self.switching = false;
+                self.no_output = true;
+                return;
+            }
+            Some(output::Opened::Asked(new) | output::Opened::Previous(new)) => new,
+        };
+        self.switching = false;
+        self.no_output = false;
+        let music = self
+            .audio
+            .music
+            .read()
+            .filter(|m| m.generation == self.audio.player.generation());
+        let resume = output::resume_point(self.audio.output.read(), music);
+        if let (Some(track), Some((frame, playing))) = (&self.track, resume) {
+            let player = &mut new.player;
+            // A fresh queue takes these; a failure leaves the track stopped.
+            let _ = player.set_rate(self.audio.player.rate());
+            let _ = player
+                .load(TrackSource::File(track.clone()))
+                .and_then(|_| player.seek(frame));
+            if playing {
+                let _ = player.play();
+            }
+        }
+        std::mem::swap(&mut self.audio, &mut new);
+        if let Err(Request::Retire(old)) = link.request(Request::Retire(new)) {
+            self.retired = Some(old);
         }
     }
 
@@ -1932,8 +2057,8 @@ impl Shell {
     }
 
     /// Asks for the draw rate the visible screens call for, hands changed settings to the
-    /// threads that use them (ADR-0048) and to the saver. Neither blocks, allocates or
-    /// touches the disk.
+    /// threads that use them (ADR-0048) and to the saver. Neither blocks nor touches the
+    /// disk; allocates only to ask for another output (ADR-0089).
     fn apply_settings(&mut self, now_ns: u64) {
         let settings = self.state.settings();
         self.update_rate.sync(settings);
@@ -2025,6 +2150,8 @@ struct View<B: render::Backend> {
     skin_views: Option<SkinViews>,
     /// Display and resolution dropdowns (ADR-0072).
     display_views: Option<ShownViews>,
+    /// Output device dropdowns listed when the settings screen opens (ADR-0089).
+    device_views: Option<DeviceViews>,
     shapes: SpriteBatch,
     text: SpriteBatch,
     /// Scenes of plays the update thread starts, and the one shown with its GPU resources.
@@ -2142,6 +2269,12 @@ impl<B: render::Backend> Draw<ShellSnapshot> for View<B> {
         {
             // Its glyphs are requested as it is drawn, like every text's.
             self.settings.swap_dropdown(rows::skin_row(), &mut view);
+            views.give_back(view);
+        }
+        if let Some(views) = &mut self.device_views
+            && let Some(mut view) = views.take()
+        {
+            self.settings.swap_dropdown(rows::device_row(), &mut view);
             views.give_back(view);
         }
         if let Some(views) = &mut self.display_views {
@@ -2360,8 +2493,8 @@ fn pick_backend(name: Option<&str>, available: &[Backend]) -> Option<Backend> {
 }
 
 /// The output devices of the backend the settings pick, for the settings screen (#286):
-/// listed once at the start, as the device applies at the next start. Empty if the
-/// backend cannot list them.
+/// at the start, then by the output thread each time the screen opens (ADR-0089). Empty if
+/// the backend cannot list them.
 fn output_devices(settings: &crate::settings::Audio) -> Vec<slam_audio::DeviceInfo> {
     let Some(backend) = pick_backend(settings.backend.as_deref(), Backend::available()) else {
         return Vec::new();
@@ -2370,6 +2503,43 @@ fn output_devices(settings: &crate::settings::Audio) -> Vec<slam_audio::DeviceIn
         tracing::warn!("audio: cannot list the output devices: {e}");
         Vec::new()
     })
+}
+
+/// Opens outputs and lists devices on the output thread (ADR-0089).
+struct AppOpener {
+    registry: Arc<FontRegistry>,
+    theme: Theme,
+    localizer: Arc<Localizer>,
+}
+
+impl output::Opener for AppOpener {
+    type Audio = Audio;
+    type Stream = slam_audio::OutputStream;
+
+    fn open(
+        &mut self,
+        settings: &crate::settings::Audio,
+    ) -> Result<(Audio, slam_audio::OutputStream), String> {
+        open_audio(settings)
+    }
+
+    fn devices(&mut self, settings: &crate::settings::Audio) -> Vec<slam_audio::DeviceInfo> {
+        output_devices(settings)
+    }
+
+    fn view(
+        &mut self,
+        devices: &[slam_audio::DeviceInfo],
+        saved: Option<&str>,
+    ) -> Option<DropdownView> {
+        Some(rows::device_view(
+            &self.registry,
+            self.theme,
+            &self.localizer,
+            devices.to_vec(),
+            saved,
+        ))
+    }
 }
 
 /// Opens the output the settings name with the mixer and music player.
@@ -2763,15 +2933,36 @@ fn run_with<B: render::Backend>(
     .map_err(|e| e.to_string())?;
     let (scene_tx, scene_rx) = rtrb::RingBuffer::<(u64, PlayScene)>::new(2);
     // Without an output the window still opens; the song select does not play.
-    let (audio, stream) = match open_audio(&settings.audio) {
-        Ok((audio, stream)) => (Some(audio), Some(stream)),
+    // The output thread owns the output from here on and closes it when it is dropped,
+    // after the engine (ADR-0089). Without the thread there is no output.
+    let (audio, output, device_views, output_thread) = match open_audio(&settings.audio) {
+        Ok((audio, stream)) => {
+            let opener = AppOpener {
+                registry: Arc::clone(&registry),
+                theme,
+                localizer: Arc::clone(&localizer),
+            };
+            match output::spawn(opener, stream, settings.audio.clone()) {
+                Ok((link, views, thread)) => (Some(audio), Some(link), Some(views), Some(thread)),
+                Err(e) => {
+                    tracing::warn!("audio: cannot start the output thread: {e}");
+                    (None, None, None, None)
+                }
+            }
+        }
         Err(e) => {
             tracing::warn!("audio: {e}");
-            (None, None)
+            (None, None, None, None)
         }
     };
     let host = audio.map(|audio| PlayHost {
         audio,
+        output,
+        requested: settings.audio.clone(),
+        switching: false,
+        no_output: false,
+        retired: None,
+        track: None,
         loader,
         scenes: scene_tx,
         os_cursor: window.cursor_visibility(),
@@ -2834,6 +3025,7 @@ fn run_with<B: render::Backend>(
         settings: settings_view,
         skin_views,
         display_views,
+        device_views,
         shapes: SpriteBatch::with_capacity(MAX_SHAPES),
         text: SpriteBatch::with_capacity(MAX_GLYPH_SPRITES),
         scenes: Some(scene_rx),
@@ -2913,7 +3105,7 @@ fn run_with<B: render::Backend>(
             std::thread::sleep(Duration::from_millis(5));
         }
     }
-    drop(stream);
+    drop(output_thread);
     // A place the window was given just before closing waits no longer.
     if shell.window_save_at.take().is_some() {
         shell.state.save_settings();

@@ -40,6 +40,27 @@ pub fn skin_row() -> usize {
         .expect("Row::ALL lists every row")
 }
 
+/// The index of the output device row.
+pub fn device_row() -> usize {
+    Row::ALL
+        .iter()
+        .position(|row| *row == Row::Device)
+        .expect("Row::ALL lists every row")
+}
+
+/// The settings screen's device dropdown over `devices`, `saved` being the chosen one
+/// (ADR-0089). Lays its texts out: call it off the hot paths.
+pub fn device_view(
+    registry: &Arc<FontRegistry>,
+    theme: Theme,
+    localizer: &Localizer,
+    devices: Vec<DeviceInfo>,
+    saved: Option<&str>,
+) -> DropdownView {
+    let options = device_labels(localizer, &device_options(devices, saved));
+    DropdownView::new(Arc::clone(registry), theme, &options)
+}
+
 /// The indices of the display, fullscreen size and windowed size rows (ADR-0072).
 pub fn display_rows() -> [usize; 3] {
     [Row::Display, Row::FullscreenSize, Row::WindowedSize].map(|row| {
@@ -372,24 +393,22 @@ impl Row {
         }
     }
 
-    /// Whether a change only takes effect after a restart: the output must be reopened
-    /// for these. The others apply when the screen closes, the offset, mouse buttons and
-    /// background from the next play (ADR-0048).
+    /// Whether a change only takes effect after a restart: the language (ADR-0088). The
+    /// others apply when the screen closes, the output reopened (ADR-0089), the offset,
+    /// mouse buttons and background from the next play (ADR-0048).
     pub fn restart_required(self) -> bool {
-        matches!(
-            self,
-            Row::Backend | Row::Device | Row::BufferFrames | Row::Language
-        )
+        self == Row::Language
     }
 }
 
-/// The options of the dropdown rows. Built once, from the settings the window starts with:
-/// the options stay the same for the whole run, so that the draw side's texts match.
+/// The options of the dropdown rows. Built from the settings the window starts with; the
+/// device, skin and display lists change with the draw side's dropdowns.
 #[derive(Clone, Debug)]
 pub struct Rows {
     /// `None` follows the first available backend.
     backends: Vec<Option<String>>,
-    /// The system default, then the devices the backend listed at the start (#286).
+    /// The system default, then the devices the backend listed when the settings screen
+    /// last opened (#286, ADR-0089).
     devices: Vec<DeviceOption>,
     buffers: Vec<u32>,
     update_hz: Vec<f64>,
@@ -440,6 +459,26 @@ fn device_options(listed: Vec<DeviceInfo>, saved: Option<&str>) -> Vec<DeviceOpt
         });
     }
     options
+}
+
+/// The device row's option texts.
+fn device_labels(localizer: &Localizer, devices: &[DeviceOption]) -> Vec<String> {
+    devices
+        .iter()
+        .map(|d| match &d.id {
+            None => localizer
+                .format("settings-option-default", None)
+                .into_owned(),
+            Some(_) if d.listed => d.name.clone(),
+            Some(id) => {
+                let mut args = FluentArgs::new();
+                args.set("name", id.clone());
+                localizer
+                    .format("settings-option-unavailable-device", Some(&args))
+                    .into_owned()
+            }
+        })
+        .collect()
 }
 
 /// The Fluent key of a corner option.
@@ -530,10 +569,20 @@ impl Rows {
         }
     }
 
-    /// The rows with the output devices the backend lists (#286). Call before the screen is
-    /// built: the options stay the same for the whole run.
-    pub fn set_devices(&mut self, devices: Vec<DeviceInfo>, settings: &Settings) {
-        self.devices = device_options(devices, settings.audio.device.as_deref());
+    /// The rows with the output devices the backend lists, `saved` being the chosen one
+    /// (#286, ADR-0089): the same options as the dropdown made for the list.
+    pub fn set_devices(&mut self, devices: Vec<DeviceInfo>, saved: Option<&str>) {
+        self.devices = device_options(devices, saved);
+    }
+
+    /// The device row's option count and the option `settings` choose.
+    pub fn device_choice(&self, settings: &Settings) -> (usize, usize) {
+        let selected = self
+            .devices
+            .iter()
+            .position(|d| d.id == settings.audio.device)
+            .unwrap_or(0);
+        (self.devices.len(), selected)
     }
 
     /// The number of the display lists shown (ADR-0072).
@@ -987,21 +1036,7 @@ impl Rows {
                             None => text("settings-option-default"),
                         })
                         .collect(),
-                    Row::Device => self
-                        .devices
-                        .iter()
-                        .map(|d| match &d.id {
-                            None => text("settings-option-default"),
-                            Some(_) if d.listed => d.name.clone(),
-                            Some(id) => {
-                                let mut args = FluentArgs::new();
-                                args.set("name", id.clone());
-                                localizer
-                                    .format("settings-option-unavailable-device", Some(&args))
-                                    .into_owned()
-                            }
-                        })
-                        .collect(),
+                    Row::Device => device_labels(localizer, &self.devices),
                     Row::BufferFrames => self
                         .buffers
                         .iter()
@@ -1413,14 +1448,26 @@ mod tests {
     }
 
     #[test]
-    fn only_the_output_and_language_rows_wait_for_a_restart() {
+    fn only_the_language_row_waits_for_a_restart() {
         for row in Row::ALL {
-            let waits = matches!(
-                row,
-                Row::Backend | Row::Device | Row::BufferFrames | Row::Language
-            );
-            assert_eq!(row.restart_required(), waits, "{row:?}");
+            assert_eq!(row.restart_required(), row == Row::Language, "{row:?}");
         }
+    }
+
+    #[test]
+    fn the_device_choice_follows_a_new_list() {
+        let mut s = Settings::default();
+        s.audio.device = Some("hdmi".into());
+        let mut rows = Rows::new(&s);
+        assert_eq!(rows.device_choice(&s), (2, 1), "saved, not listed yet");
+        rows.set_devices(
+            vec![device("usb", "USB"), device("hdmi", "HDMI")],
+            s.audio.device.as_deref(),
+        );
+        assert_eq!(rows.device_choice(&s), (3, 2));
+        assert_eq!(dropdown(&opened(&rows, &s), Row::Device), (3, 2));
+        s.audio.device = None;
+        assert_eq!(rows.device_choice(&s), (3, 0));
     }
 
     fn device(id: &str, name: &str) -> DeviceInfo {
@@ -1438,7 +1485,7 @@ mod tests {
         let mut rows = Rows::new(&s);
         rows.set_devices(
             vec![device("alsa_output.usb", "USB DAC"), device("hdmi", "HDMI")],
-            &s,
+            s.audio.device.as_deref(),
         );
         // No device in the file follows the system default.
         assert_eq!(dropdown(&opened(&rows, &s), Row::Device), (3, 0));
@@ -1459,7 +1506,7 @@ mod tests {
         let mut s = Settings::default();
         s.audio.device = Some("unplugged".into());
         let mut rows = Rows::new(&s);
-        rows.set_devices(vec![device("hdmi", "HDMI")], &s);
+        rows.set_devices(vec![device("hdmi", "HDMI")], s.audio.device.as_deref());
         assert_eq!(dropdown(&opened(&rows, &s), Row::Device), (3, 2));
         let labels = rows.labels(&Localizer::builtin().unwrap());
         let options = &labels.rows[index(Row::Device)].options;
@@ -1473,7 +1520,7 @@ mod tests {
         assert_eq!(applied.audio.device.as_deref(), Some("unplugged"));
         // Listed under its id, it is not offered twice.
         let mut listed = Rows::new(&s);
-        listed.set_devices(vec![device("unplugged", "Back")], &s);
+        listed.set_devices(vec![device("unplugged", "Back")], s.audio.device.as_deref());
         assert_eq!(dropdown(&opened(&listed, &s), Row::Device), (2, 1));
     }
 
