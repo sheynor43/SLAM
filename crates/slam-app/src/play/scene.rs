@@ -10,7 +10,7 @@ use slam_osu::{Beatmap, ModSet};
 use slam_play::circles::{
     CircleMods, CircleSettings, CircleSkinConfig, CircleStyle, CircleVisuals, HitCircles,
 };
-use slam_play::cursor::{CursorView, MAX_CURSOR_SPRITES};
+use slam_play::cursor::{CursorScale, CursorView, MAX_CURSOR_SPRITES};
 use slam_play::fail::FailFrame;
 use slam_play::hud::OFFSET_PLACEHOLDER;
 use slam_play::judgements::JudgementView;
@@ -85,6 +85,10 @@ pub struct PlaySettings {
     pub hit_lighting: bool,
     /// Lazer's `ShowCursorTrail`.
     pub cursor_trail: bool,
+    /// Lazer's `GameplayCursorSize` (ADR-0086).
+    pub cursor_size: f32,
+    /// Lazer's `AutoCursorSize`: the cursor's size follows the beatmap's circle size.
+    pub auto_cursor_size: bool,
 }
 
 impl Default for PlaySettings {
@@ -100,6 +104,8 @@ impl Default for PlaySettings {
             snaking: Snaking::default(),
             hit_lighting: true,
             cursor_trail: true,
+            cursor_size: 1.0,
+            auto_cursor_size: false,
         }
     }
 }
@@ -241,6 +247,11 @@ pub fn prepare(
         .with_fail_sound(fail_sound);
     let circle_mods = CircleMods::new(mods);
     let windows = slam_osu::hit_windows::HitWindows::new(beatmap.difficulty.overall_difficulty);
+    let cursor_scale = CursorScale::new(
+        settings.cursor_size,
+        settings.auto_cursor_size,
+        beatmap.difficulty.circle_size,
+    );
     let circle_settings = CircleSettings {
         beatmap_colours: settings.beatmap_colours,
         ..CircleSettings::default()
@@ -287,8 +298,8 @@ pub fn prepare(
             settings.hit_error_scale as f32,
         ),
         hit_error_hiding: slam_play::hit_error::SpinnerHiding::new(beatmap),
-        cursor: CursorView::new(settings.cursor_trail),
-        resume: slam_play::resume::ResumeView::new(settings.cursor_trail),
+        cursor: CursorView::new(settings.cursor_trail, cursor_scale),
+        resume: slam_play::resume::ResumeView::new(settings.cursor_trail, cursor_scale),
     };
 
     let (mut requests, uploads): (TextureRequests, TextureUploads) =

@@ -76,6 +76,8 @@ fn round_trip_non_default() {
     s.gameplay.snaking_out = true;
     s.gameplay.hit_lighting = false;
     s.gameplay.cursor_trail = false;
+    s.gameplay.cursor_size = 0.65;
+    s.gameplay.auto_cursor_size = true;
     s.gameplay.hit_error_scale = 1.5;
     s.input.bindings = Bindings::new(&[
         Binding {
@@ -230,6 +232,37 @@ fn hit_error_scale_is_rounded_to_its_step_and_out_of_range_falls_back() {
                 .warnings
                 .iter()
                 .any(|w| w.starts_with("gameplay.hit_error_scale")),
+            "{bad}"
+        );
+    }
+}
+
+#[test]
+fn cursor_size_defaults_to_lazers_rounds_and_falls_back_out_of_range() {
+    let missing = file::from_toml_str("[gameplay]\ndim = 0.2\n");
+    assert_eq!(missing.status, LoadStatus::Ok, "{:?}", missing.warnings);
+    assert_eq!(missing.settings.gameplay.cursor_size, 1.0);
+    assert!(!missing.settings.gameplay.auto_cursor_size);
+    let read = file::from_toml_str("[gameplay]\ncursor_size = 0.104\nauto_cursor_size = true\n");
+    assert_eq!(read.status, LoadStatus::Ok, "{:?}", read.warnings);
+    assert_eq!(read.settings.gameplay.cursor_size, 0.1);
+    assert!(read.settings.gameplay.auto_cursor_size);
+    assert_eq!(
+        file::from_toml_str("[gameplay]\ncursor_size = 2\n")
+            .settings
+            .gameplay
+            .cursor_size,
+        2.0
+    );
+    for bad in ["0.05", "2.5", "\"big\""] {
+        let loaded = file::from_toml_str(&format!("[gameplay]\ncursor_size = {bad}\n"));
+        assert_eq!(loaded.status, LoadStatus::Recovered, "{bad}");
+        assert_eq!(loaded.settings.gameplay.cursor_size, 1.0, "{bad}");
+        assert!(
+            loaded
+                .warnings
+                .iter()
+                .any(|w| w.starts_with("gameplay.cursor_size")),
             "{bad}"
         );
     }

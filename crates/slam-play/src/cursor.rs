@@ -273,10 +273,46 @@ const FADE_CLOCK_RESET_THRESHOLD: f32 = 1_000_000.0;
 // Ported from osu!lazer 2026.1005.0-lazer: osu.Game.Rulesets.Osu/Skinning/Legacy/LegacyCursorTrail.cs (FadeExponent)
 const FADE_EXPONENT: f32 = 1.0;
 
-/// Lazer's `GameplayCursorSize` until settings exist (#98). It stands for the cursor's
-/// `CursorScale` too (size × mod adjustment × automatic size by CS), which differ from it once
-/// those exist; `IntervalMultiplier` takes the size alone.
-const CURSOR_SIZE: f32 = 1.0;
+// Ported from osu!lazer 2026.1005.0-lazer: osu.Game/Beatmaps/BeatmapDifficulty.cs (DEFAULT_DIFFICULTY)
+const DEFAULT_DIFFICULTY: f32 = 5.0;
+
+/// The cursor's size (ADR-0086): the player's setting and the scale the cursor is drawn with.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct CursorScale {
+    /// Lazer's `GameplayCursorSize`, 0.1 to 2.
+    pub size: f32,
+    /// Lazer's `CursorScale`: the size, times the automatic size by circle size when on.
+    pub scale: f32,
+}
+
+impl Default for CursorScale {
+    fn default() -> Self {
+        CursorScale {
+            size: 1.0,
+            scale: 1.0,
+        }
+    }
+}
+
+impl CursorScale {
+    /// The scale of a cursor of `size`, adjusted to the beatmap's `circle_size` (with mods)
+    /// when `auto_size` is on (lazer's `AutoCursorSize`).
+    // Ported from osu!lazer 2026.1005.0-lazer: osu.Game.Rulesets.Osu/UI/Cursor/OsuCursor.cs (CalculateCursorScale)
+    pub fn new(size: f32, auto_size: bool, circle_size: f32) -> Self {
+        let mut scale = size;
+        if auto_size {
+            scale *= scale_for_circle_size(circle_size);
+        }
+        CursorScale { size, scale }
+    }
+}
+
+/// The automatic cursor scale for a beatmap's circle size: 1 at CS 4, larger for larger
+/// circles (smaller CS).
+// Ported from osu!lazer 2026.1005.0-lazer: osu.Game.Rulesets.Osu/UI/Cursor/OsuCursor.cs (GetScaleForCircleSize)
+pub fn scale_for_circle_size(circle_size: f32) -> f32 {
+    1.0 - 0.7 * (1.0 + circle_size - DEFAULT_DIFFICULTY) / DEFAULT_DIFFICULTY
+}
 
 #[derive(Debug, Clone, Copy, PartialEq)]
 struct TrailPart {
@@ -361,6 +397,8 @@ pub struct CursorTrail {
     /// The disjoint trail's cursor position and the clock time it last left a part.
     current_position: Option<Vec2>,
     last_trail_time: f64,
+    /// The cursor's size, which the parts and the spacing between them follow.
+    cursor_scale: CursorScale,
 }
 
 impl Default for CursorTrail {
@@ -382,7 +420,13 @@ impl CursorTrail {
             resampler: InputResampler::default(),
             current_position: None,
             last_trail_time: 0.0,
+            cursor_scale: CursorScale::default(),
         }
+    }
+
+    /// Sets the cursor's size the trail follows; kept by [`reset`](Self::reset).
+    pub fn set_cursor_scale(&mut self, cursor_scale: CursorScale) {
+        self.cursor_scale = cursor_scale;
     }
 
     /// Forgets every part, as a new trail.
@@ -494,7 +538,8 @@ impl CursorTrail {
         let distance = diff.length();
         let direction = diff / distance;
         // Ported from osu!lazer 2026.1005.0-lazer: osu.Game.Rulesets.Osu/Skinning/Legacy/LegacyCursorTrail.cs (IntervalMultiplier, AvoidDrawingNearCursor)
-        let interval = display_width * CURSOR_SIZE / 2.5 * (1.0 / CURSOR_SIZE.max(1.0));
+        let CursorScale { size, scale } = self.cursor_scale;
+        let interval = display_width * scale / 2.5 * (1.0 / size.max(1.0));
         let stop_at = distance - interval;
         let mut d = interval;
         while d < stop_at {
@@ -544,7 +589,7 @@ impl CursorTrail {
                 continue;
             }
             let alpha = (part.time - self.time).clamp(0.0, 1.0).powf(FADE_EXPONENT);
-            let scale = part.scale * CURSOR_SIZE * layout.scale();
+            let scale = part.scale * self.cursor_scale.scale * layout.scale();
             let size = [display.x * scale, display.y * scale];
             let at = layout.to_window(part.position);
             batch.push(&Sprite {
@@ -598,18 +643,26 @@ pub struct CursorFrame<'a> {
 }
 
 impl CursorView {
-    /// A cursor with its trail drawn or not (lazer's `ShowCursorTrail`, on by default).
+    /// A cursor of `scale` with its trail drawn or not (lazer's `ShowCursorTrail`, on by
+    /// default).
     // Ported from osu!lazer 2026.1005.0-lazer: osu.Game.Rulesets.Osu/UI/Cursor/OsuCursorContainer.cs (load)
-    pub fn new(trail: bool) -> Self {
-        CursorView {
+    pub fn new(trail: bool, scale: CursorScale) -> Self {
+        let mut view = CursorView {
             trail_hidden: !trail,
             ..CursorView::default()
-        }
+        };
+        view.trail.set_cursor_scale(scale);
+        view
     }
 
     /// Whether the trail is drawn.
     pub fn trail_shown(&self) -> bool {
         !self.trail_hidden
+    }
+
+    /// The cursor's size it draws with.
+    pub fn scale(&self) -> CursorScale {
+        self.trail.cursor_scale
     }
 
     /// Writes the trail and the cursor of one frame. Hidden until the cursor first moves.
@@ -684,12 +737,14 @@ impl CursorView {
                 blend: Blend::Alpha,
             });
         };
-        // Only `cursor` expands and spins (`ExpandTarget`); `cursormiddle` stays on top.
+        // Only `cursor` expands and spins (`ExpandTarget`); `cursormiddle` stays on top. Both
+        // are in the container the cursor's scale is set on.
+        let cursor_scale = self.trail.cursor_scale.scale;
         if let Some(cursor) = &textures.cursor {
-            piece(cursor, scale * CURSOR_SIZE, rotation);
+            piece(cursor, scale * cursor_scale, rotation);
         }
         if let Some(middle) = &textures.middle {
-            piece(middle, CURSOR_SIZE, 0.0);
+            piece(middle, cursor_scale, 0.0);
         }
     }
 }
@@ -883,6 +938,60 @@ mod tests {
         );
         assert_eq!(used(&trail).len(), 9);
         assert_eq!(trail.last_position, Some(Vec2::new(90.5, 0.0)));
+    }
+
+    #[test]
+    fn the_automatic_size_follows_lazers_formula() {
+        assert_eq!(scale_for_circle_size(4.0), 1.0);
+        assert!((scale_for_circle_size(5.0) - 0.86).abs() < 1e-6);
+        assert!((scale_for_circle_size(0.0) - 1.56).abs() < 1e-6);
+        assert!((scale_for_circle_size(10.0) - 0.16).abs() < 1e-6);
+        // Off, the circle size does not count.
+        assert_eq!(
+            CursorScale::new(1.5, false, 10.0),
+            CursorScale {
+                size: 1.5,
+                scale: 1.5
+            }
+        );
+        // HR's CS 5.2: the size times the automatic scale, the size kept apart.
+        let hard_rock = CursorScale::new(1.5, true, 5.2);
+        assert_eq!(hard_rock.size, 1.5);
+        assert_eq!(hard_rock.scale, 1.5 * scale_for_circle_size(5.2));
+    }
+
+    #[test]
+    fn the_spacing_of_parts_follows_the_scale_but_shrinks_by_the_size_above_1() {
+        let xs = |cursor_scale| {
+            let mut trail = CursorTrail::new();
+            trail.set_cursor_scale(cursor_scale);
+            let moves = [Vec2::new(0.5, 0.0), Vec2::new(100.5, 0.0)];
+            trail.update(0, moves.into_iter(), false, 25.0, 1.0, 1.0);
+            used(&trail)
+                .iter()
+                .map(|p| p.position.x)
+                .collect::<Vec<f32>>()
+        };
+        // Size 2: an interval of 25 × 2 / 2.5 / 2, the same 10 as at size 1.
+        let size_2 = CursorScale {
+            size: 2.0,
+            scale: 2.0,
+        };
+        assert_eq!(xs(size_2), xs(CursorScale::default()));
+        // Size 1 shrunk to 0.5 by the circle size: every 5.
+        let auto = CursorScale {
+            size: 1.0,
+            scale: 0.5,
+        };
+        let parts = xs(auto);
+        assert_eq!(parts[..3], [5.5, 10.5, 15.5]);
+        assert_eq!(*parts.last().unwrap(), 90.5);
+        // Size 0.5: every 5 as well, the size below 1 does not divide.
+        let small = CursorScale {
+            size: 0.5,
+            scale: 0.5,
+        };
+        assert_eq!(xs(small), parts);
     }
 
     #[test]

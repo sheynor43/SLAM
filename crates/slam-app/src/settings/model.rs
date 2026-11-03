@@ -414,6 +414,12 @@ pub struct Gameplay {
     pub hit_lighting: bool,
     /// The cursor leaves a trail (lazer's `OsuRulesetSetting.ShowCursorTrail`).
     pub cursor_trail: bool,
+    /// Size of the gameplay cursor and its trail, 0.1 ..= 2.0 in steps of 0.01 (lazer's
+    /// `OsuSetting.GameplayCursorSize`, ADR-0086).
+    pub cursor_size: f64,
+    /// Adjusts the cursor's size to the beatmap's circle size (lazer's
+    /// `OsuSetting.AutoCursorSize`).
+    pub auto_cursor_size: bool,
     /// Size multiplier of the hit error meter, 0.5 ..= 2.0 in steps of 0.1. Temporary,
     /// until the HUD layout editor takes it over (ADR-0050).
     pub hit_error_scale: f64,
@@ -431,6 +437,8 @@ impl Default for Gameplay {
             snaking_out: false,
             hit_lighting: true,
             cursor_trail: true,
+            cursor_size: 1.0,
+            auto_cursor_size: false,
             hit_error_scale: 1.0,
         }
     }

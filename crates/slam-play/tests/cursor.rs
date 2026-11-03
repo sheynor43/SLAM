@@ -8,7 +8,7 @@ use slam_osu::Vec2;
 use slam_play::PlayfieldLayout;
 use slam_play::circles::SkinSprite;
 use slam_play::cursor::{
-    CursorFrame, CursorPath, CursorSkinConfig, CursorTextures, CursorView, ExpandTimes,
+    CursorFrame, CursorPath, CursorScale, CursorSkinConfig, CursorTextures, CursorView, ExpandTimes,
 };
 use slam_render::atlas::UvRect;
 use slam_render::sprite::SpriteBatch;
@@ -311,7 +311,7 @@ fn the_trail_goes_under_the_cursor_and_starts_over_with_the_play() {
 #[test]
 fn a_cursor_without_its_trail_draws_only_the_cursor() {
     let mut path = CursorPath::default();
-    let mut view = CursorView::new(false);
+    let mut view = CursorView::new(false, CursorScale::default());
     let config = CursorSkinConfig {
         disjoint: false,
         ..CursorSkinConfig::default()
@@ -331,6 +331,67 @@ fn a_cursor_without_its_trail_draws_only_the_cursor() {
     // `cursor` and `cursormiddle`, no trail parts.
     assert_eq!(batch.len(), 2);
     assert!(batch.batches().iter().all(|b| b.texture != TRAIL));
+}
+
+#[test]
+fn the_cursor_its_middle_and_its_trail_take_the_cursor_scale() {
+    let mut path = CursorPath::default();
+    let scale = CursorScale {
+        size: 2.0,
+        scale: 0.5,
+    };
+    let mut view = CursorView::new(true, scale);
+    let config = CursorSkinConfig {
+        rotate: false,
+        trail_rotate: false,
+        ..CursorSkinConfig::default()
+    };
+    let textures = textures(config);
+    let at = Vec2::new(100.0, 100.0);
+    path.push(at);
+    let mut batch = SpriteBatch::new();
+    view.push(
+        &mut batch,
+        &layout(),
+        &frame(&path, at, ExpandTimes::default(), 0.0),
+        &textures,
+    );
+    batch.clear();
+    // A disjoint part a sixtieth of a second into the trail's clock.
+    view.push(
+        &mut batch,
+        &layout(),
+        &frame(&path, at, ExpandTimes::default(), 17.0),
+        &textures,
+    );
+    let order: Vec<TextureId> = batch.batches().iter().map(|b| b.texture).collect();
+    assert_eq!(order, [TRAIL, CURSOR, MIDDLE]);
+    let c = layout().to_window(at);
+    // Half of 16, 64 and 32 window pixels at 768 lines, each centred.
+    let expected = [
+        [c.x - 4.0, c.y - 4.0, c.x + 4.0, c.y + 4.0],
+        [c.x - 16.0, c.y - 16.0, c.x + 16.0, c.y + 16.0],
+        [c.x - 8.0, c.y - 8.0, c.x + 8.0, c.y + 8.0],
+    ];
+    let q = quads(&batch);
+    for (quad, expected) in q.iter().zip(expected) {
+        assert!(close(*quad, expected), "{q:?}");
+    }
+    // A restart starts a new trail of the same scale, from the moves after it.
+    for time in [1000.0, 1017.0] {
+        if time > 1000.0 {
+            path.push(at);
+        }
+        batch.clear();
+        let restarted = CursorFrame {
+            restarts: 1,
+            ..frame(&path, at, ExpandTimes::default(), time)
+        };
+        view.push(&mut batch, &layout(), &restarted, &textures);
+    }
+    assert_eq!(batch.batches()[0].texture, TRAIL);
+    let q = quads(&batch);
+    assert!(close(q[0], expected[0]), "{q:?}");
 }
 
 #[test]
