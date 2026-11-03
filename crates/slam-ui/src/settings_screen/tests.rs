@@ -1019,3 +1019,21 @@ fn input_to_a_focus_left_in_another_section_is_ignored() {
         Some(SettingsAction::Close)
     );
 }
+
+#[test]
+fn an_open_list_covers_the_rows_on_the_side_it_opens() {
+    let l = layout();
+    let count = 6;
+    // The first row's list opens below; a row low enough opens it above.
+    assert!(l.dropdown_at(0, count).list().y > l.row(0).y);
+    let low = (1..64)
+        .find(|slot| l.dropdown_at(*slot, count).list().y < l.row(*slot).y)
+        .expect("a low row opens its list above");
+    assert!(l.covered_by_list(0, count, 1));
+    assert!(!l.covered_by_list(0, count, 0), "not its own row");
+    assert!(l.covered_by_list(low, count, low - 1));
+    assert!(!l.covered_by_list(low, count, low + 1));
+    assert!(!l.covered_by_list(low, count, low));
+    // Rows past the list stay drawn.
+    assert!(!l.covered_by_list(0, count, 40));
+}

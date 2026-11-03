@@ -381,6 +381,14 @@ impl SettingsLayout {
     pub fn dropdown_at(&self, slot: usize, count: usize) -> DropdownLayout {
         self.dropdown(slot, count)
     }
+
+    /// Whether the open list of the dropdown at `open` with `count` options covers the row
+    /// at `slot`. The list opens below its row, or above it when there is more room there.
+    pub fn covered_by_list(&self, open: usize, count: usize, slot: usize) -> bool {
+        let list = self.dropdown(open, count).list();
+        let row = self.row(slot);
+        slot != open && row.y < list.y + list.height && list.y < row.y + row.height
+    }
 }
 
 /// What the draw side needs; cloning copies fixed-size data and an `Arc`, no allocation.

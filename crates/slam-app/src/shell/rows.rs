@@ -1,7 +1,7 @@
 //! The settings screen's rows: what each edits in [`Settings`], and their texts. The
 //! screen itself (`slam-ui`) knows only indices and values.
 
-use slam_audio::Backend;
+use slam_audio::{Backend, DeviceInfo};
 use slam_engine::RATE_PRESETS;
 use slam_input::{Displays, WindowMode};
 use slam_osu::replay::Actions;
@@ -150,6 +150,8 @@ pub enum Row {
     HitsoundDelay,
     PositionalHitsoundsLevel,
     Backend,
+    /// The output device, applied at the next start (#286).
+    Device,
     BufferFrames,
     GlobalOffset,
     MouseButtons,
@@ -198,7 +200,7 @@ pub enum Row {
 const _: () = assert!(Row::ALL.len() <= slam_ui::settings_screen::MAX_ROWS);
 
 impl Row {
-    pub const ALL: [Row; 46] = [
+    pub const ALL: [Row; 47] = [
         Row::MasterVolume,
         Row::MusicVolume,
         Row::HitsoundVolume,
@@ -206,6 +208,7 @@ impl Row {
         Row::HitsoundDelay,
         Row::PositionalHitsoundsLevel,
         Row::Backend,
+        Row::Device,
         Row::BufferFrames,
         Row::GlobalOffset,
         Row::MouseButtons,
@@ -275,6 +278,7 @@ impl Row {
             | Row::HitsoundDelay
             | Row::PositionalHitsoundsLevel
             | Row::Backend
+            | Row::Device
             | Row::BufferFrames => 0,
             Row::GlobalOffset => 1,
             Row::MouseButtons
@@ -326,6 +330,7 @@ impl Row {
             Row::HitsoundDelay => "settings-audio-hitsound-delay",
             Row::PositionalHitsoundsLevel => "settings-audio-positional-hitsounds-level",
             Row::Backend => "settings-audio-backend",
+            Row::Device => "settings-audio-device",
             Row::BufferFrames => "settings-audio-buffer",
             Row::GlobalOffset => "settings-offset-global",
             Row::MouseButtons => "settings-keys-mouse-buttons",
@@ -371,7 +376,10 @@ impl Row {
     /// for these. The others apply when the screen closes, the offset, mouse buttons and
     /// background from the next play (ADR-0048).
     pub fn restart_required(self) -> bool {
-        matches!(self, Row::Backend | Row::BufferFrames | Row::Language)
+        matches!(
+            self,
+            Row::Backend | Row::Device | Row::BufferFrames | Row::Language
+        )
     }
 }
 
@@ -381,6 +389,8 @@ impl Row {
 pub struct Rows {
     /// `None` follows the first available backend.
     backends: Vec<Option<String>>,
+    /// The system default, then the devices the backend listed at the start (#286).
+    devices: Vec<DeviceOption>,
     buffers: Vec<u32>,
     update_hz: Vec<f64>,
     draw: Vec<DrawRate>,
@@ -392,6 +402,44 @@ pub struct Rows {
     /// Height of the window's title bar in points, as the window last reported it
     /// (ADR-0073).
     title_bar: i32,
+}
+
+/// An option of the output device row (#286).
+#[derive(Clone, Debug, PartialEq, Eq)]
+struct DeviceOption {
+    /// The id the stream opens; `None` follows the system default.
+    id: Option<String>,
+    /// The backend's name for the device; empty for the default.
+    name: String,
+    /// Whether the backend listed it: a saved device that is not connected stays offered,
+    /// so that the file keeps it until the player picks another.
+    listed: bool,
+}
+
+/// The device row's options: the system default, the `listed` devices, and `saved` if the
+/// backend did not list it.
+fn device_options(listed: Vec<DeviceInfo>, saved: Option<&str>) -> Vec<DeviceOption> {
+    let mut options: Vec<DeviceOption> = std::iter::once(DeviceOption {
+        id: None,
+        name: String::new(),
+        listed: true,
+    })
+    .chain(listed.into_iter().map(|device| DeviceOption {
+        id: Some(device.id),
+        name: device.name,
+        listed: true,
+    }))
+    .collect();
+    if let Some(saved) = saved
+        && !options.iter().any(|o| o.id.as_deref() == Some(saved))
+    {
+        options.push(DeviceOption {
+            id: Some(saved.to_owned()),
+            name: saved.to_owned(),
+            listed: false,
+        });
+    }
+    options
 }
 
 /// The Fluent key of a corner option.
@@ -464,6 +512,7 @@ impl Rows {
         draw.extend(hz.into_iter().map(DrawRate::Hz));
         Rows {
             backends,
+            devices: device_options(Vec::new(), settings.audio.device.as_deref()),
             buffers: with_current(&BUFFER_PRESETS, settings.audio.buffer_frames),
             update_hz: with_current(&RATE_PRESETS, settings.frame.update_hz),
             draw,
@@ -479,6 +528,12 @@ impl Rows {
             displays: Box::default(),
             title_bar: 0,
         }
+    }
+
+    /// The rows with the output devices the backend lists (#286). Call before the screen is
+    /// built: the options stay the same for the whole run.
+    pub fn set_devices(&mut self, devices: Vec<DeviceInfo>, settings: &Settings) {
+        self.devices = device_options(devices, settings.audio.device.as_deref());
     }
 
     /// The number of the display lists shown (ADR-0072).
@@ -614,6 +669,10 @@ impl Rows {
             Row::Backend => choice(
                 self.backends.len(),
                 self.backends.iter().position(|b| *b == s.audio.backend),
+            ),
+            Row::Device => choice(
+                self.devices.len(),
+                self.devices.iter().position(|d| d.id == s.audio.device),
             ),
             Row::BufferFrames => choice(
                 self.buffers.len(),
@@ -789,6 +848,11 @@ impl Rows {
                     settings.audio.backend = backend.clone();
                 }
             }
+            (Row::Device, RowValue::Choice(i)) => {
+                if let Some(device) = self.devices.get(i) {
+                    settings.audio.device = device.id.clone();
+                }
+            }
             (Row::BufferFrames, RowValue::Choice(i)) => {
                 if let Some(frames) = self.buffers.get(i) {
                     settings.audio.buffer_frames = *frames;
@@ -921,6 +985,21 @@ impl Rows {
                         .map(|b| match b {
                             Some(name) => name.clone(),
                             None => text("settings-option-default"),
+                        })
+                        .collect(),
+                    Row::Device => self
+                        .devices
+                        .iter()
+                        .map(|d| match &d.id {
+                            None => text("settings-option-default"),
+                            Some(_) if d.listed => d.name.clone(),
+                            Some(id) => {
+                                let mut args = FluentArgs::new();
+                                args.set("name", id.clone());
+                                localizer
+                                    .format("settings-option-unavailable-device", Some(&args))
+                                    .into_owned()
+                            }
                         })
                         .collect(),
                     Row::BufferFrames => self
@@ -1336,9 +1415,66 @@ mod tests {
     #[test]
     fn only_the_output_and_language_rows_wait_for_a_restart() {
         for row in Row::ALL {
-            let waits = matches!(row, Row::Backend | Row::BufferFrames | Row::Language);
+            let waits = matches!(
+                row,
+                Row::Backend | Row::Device | Row::BufferFrames | Row::Language
+            );
             assert_eq!(row.restart_required(), waits, "{row:?}");
         }
+    }
+
+    fn device(id: &str, name: &str) -> DeviceInfo {
+        DeviceInfo {
+            id: id.to_owned(),
+            name: name.to_owned(),
+        }
+    }
+
+    #[test]
+    fn the_device_row_offers_the_default_then_the_listed_devices_and_sets_the_id() {
+        let mut s = Settings::default();
+        assert_eq!(Row::Device.section(), 0);
+        assert_eq!(Row::ALL[index(Row::Backend) + 1], Row::Device);
+        let mut rows = Rows::new(&s);
+        rows.set_devices(
+            vec![device("alsa_output.usb", "USB DAC"), device("hdmi", "HDMI")],
+            &s,
+        );
+        // No device in the file follows the system default.
+        assert_eq!(dropdown(&opened(&rows, &s), Row::Device), (3, 0));
+        let labels = rows.labels(&Localizer::builtin().unwrap());
+        assert_eq!(
+            labels.rows[index(Row::Device)].options,
+            ["Default", "USB DAC", "HDMI"]
+        );
+        rows.apply(&mut s, index(Row::Device), RowValue::Choice(2));
+        assert_eq!(s.audio.device.as_deref(), Some("hdmi"));
+        assert_eq!(dropdown(&opened(&rows, &s), Row::Device), (3, 2));
+        rows.apply(&mut s, index(Row::Device), RowValue::Choice(0));
+        assert_eq!(s.audio.device, None);
+    }
+
+    #[test]
+    fn a_saved_device_the_backend_does_not_list_stays_offered_as_unavailable() {
+        let mut s = Settings::default();
+        s.audio.device = Some("unplugged".into());
+        let mut rows = Rows::new(&s);
+        rows.set_devices(vec![device("hdmi", "HDMI")], &s);
+        assert_eq!(dropdown(&opened(&rows, &s), Row::Device), (3, 2));
+        let labels = rows.labels(&Localizer::builtin().unwrap());
+        let options = &labels.rows[index(Row::Device)].options;
+        assert_eq!(options[1], "HDMI");
+        assert!(options[2].contains("unplugged"), "{options:?}");
+        assert_ne!(options[2], "unplugged", "marked as unavailable");
+        // Picking it again keeps it saved.
+        let mut applied = s.clone();
+        applied.audio.device = None;
+        rows.apply(&mut applied, index(Row::Device), RowValue::Choice(2));
+        assert_eq!(applied.audio.device.as_deref(), Some("unplugged"));
+        // Listed under its id, it is not offered twice.
+        let mut listed = Rows::new(&s);
+        listed.set_devices(vec![device("unplugged", "Back")], &s);
+        assert_eq!(dropdown(&opened(&listed, &s), Row::Device), (2, 1));
     }
 
     #[test]
@@ -1455,6 +1591,7 @@ mod tests {
         let (rows, s) = rows();
         for row in [
             Row::Backend,
+            Row::Device,
             Row::BufferFrames,
             Row::UpdateHz,
             Row::DrawHz,
@@ -1470,6 +1607,7 @@ mod tests {
             applied.frame.draw = DrawRate::Hz(1.0);
             applied.frame.menu_draw = DrawRate::Hz(1.0);
             applied.audio.backend = Some("other".into());
+            applied.audio.device = Some("other".into());
             rows.apply(&mut applied, index(row), RowValue::Choice(selected));
             assert!(selected < options);
             let again = rows.specs(&applied)[index(row)].kind;

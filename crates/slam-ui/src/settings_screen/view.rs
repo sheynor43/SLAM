@@ -502,13 +502,13 @@ impl SettingsView {
             return;
         }
 
-        // An open list covers the rows below it, whose texts would show through (all
+        // An open list covers rows below or above it, whose texts would show through (all
         // texts are drawn over all rectangles): those rows are left out.
-        let open_slot = (0..snapshot.len).find_map(|i| match &snapshot.widgets[i] {
+        let open_list = (0..snapshot.len).find_map(|i| match &snapshot.widgets[i] {
             RowWidget::Dropdown(d)
                 if d.is_open() && self.meta[i].0 == snapshot.section && !snapshot.hidden[i] =>
             {
-                Some(usize::from(snapshot.slots[i]))
+                Some((usize::from(snapshot.slots[i]), d.count()))
             }
             _ => None,
         });
@@ -519,7 +519,7 @@ impl SettingsView {
             let slot = usize::from(snapshot.slots[i]);
             if section != snapshot.section
                 || snapshot.hidden[i]
-                || open_slot.is_some_and(|open| slot > open)
+                || open_list.is_some_and(|(open, count)| layout.covered_by_list(open, count, slot))
             {
                 continue;
             }

@@ -434,6 +434,12 @@ impl ShellState {
         self
     }
 
+    /// A shell whose settings screen offers the output devices the backend lists (#286).
+    pub fn with_devices(mut self, devices: Vec<slam_audio::DeviceInfo>) -> ShellState {
+        self.rows.set_devices(devices, &self.settings);
+        self
+    }
+
     /// The settings in force.
     pub fn settings(&self) -> &Settings {
         &self.settings
@@ -2353,6 +2359,19 @@ fn pick_backend(name: Option<&str>, available: &[Backend]) -> Option<Backend> {
     named.or_else(|| available.first().copied())
 }
 
+/// The output devices of the backend the settings pick, for the settings screen (#286):
+/// listed once at the start, as the device applies at the next start. Empty if the
+/// backend cannot list them.
+fn output_devices(settings: &crate::settings::Audio) -> Vec<slam_audio::DeviceInfo> {
+    let Some(backend) = pick_backend(settings.backend.as_deref(), Backend::available()) else {
+        return Vec::new();
+    };
+    slam_audio::devices(backend).unwrap_or_else(|e| {
+        tracing::warn!("audio: cannot list the output devices: {e}");
+        Vec::new()
+    })
+}
+
 /// Opens the output the settings name with the mixer and music player.
 fn open_audio(
     settings: &crate::settings::Audio,
@@ -2597,7 +2616,8 @@ fn run_with<B: render::Backend>(
     let results = ResultsView::new(Arc::clone(&registry), theme, &results_labels);
 
     let mut state = ShellState::new(theme, pixels_w as f32, pixels_h as f32, pixels_per_point)
-        .with_settings(settings.clone());
+        .with_settings(settings.clone())
+        .with_devices(output_devices(&settings.audio));
     let settings_view = SettingsView::new(
         Arc::clone(&registry),
         theme,
