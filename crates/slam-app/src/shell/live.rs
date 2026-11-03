@@ -46,6 +46,8 @@ pub struct Volumes {
     pub master: f32,
     /// The track's volume, which takes the master volume itself.
     pub music: f32,
+    /// The menus' tracks' volume: the music's times the menu music volume (ADR-0090).
+    pub menu_music: f32,
     pub hitsounds: f32,
     pub effects: f32,
     /// Start delay of the hitsound group, milliseconds (ADR-0077).
@@ -58,9 +60,11 @@ impl Volumes {
     pub fn of(settings: &Audio) -> Volumes {
         let gain = |v: f64| if v.is_finite() { v as f32 } else { 0.0 };
         let master = gain(settings.master_volume);
+        let music = master * gain(settings.music_volume);
         Volumes {
             master,
-            music: master * gain(settings.music_volume),
+            music,
+            menu_music: music * gain(settings.menu_music_volume),
             hitsounds: gain(settings.hitsound_volume),
             effects: gain(settings.effects_volume),
             hitsound_delay_ms: settings.hitsound_delay.ms(),
@@ -73,6 +77,7 @@ impl Volumes {
 pub struct AppliedVolumes {
     master: Applied<f32>,
     music: Applied<f32>,
+    menu_music: [Applied<f32>; 2],
     hitsounds: Applied<f32>,
     effects: Applied<f32>,
     hitsound_delay_ms: Applied<f64>,
@@ -84,6 +89,7 @@ impl AppliedVolumes {
         AppliedVolumes {
             master: Applied::new(volumes.master),
             music: Applied::new(volumes.music),
+            menu_music: [Applied::new(volumes.menu_music); 2],
             hitsounds: Applied::new(volumes.hitsounds),
             effects: Applied::new(volumes.effects),
             hitsound_delay_ms: Applied::new(volumes.hitsound_delay_ms),
@@ -91,10 +97,19 @@ impl AppliedVolumes {
     }
 
     /// Sends the gains that changed. Does not allocate or block.
-    pub fn sync(&mut self, wanted: Volumes, mixer: &mut MixerHandle, player: &mut MusicPlayer) {
+    pub fn sync(
+        &mut self,
+        wanted: Volumes,
+        mixer: &mut MixerHandle,
+        player: &mut MusicPlayer,
+        previews: &mut [MusicPlayer; 2],
+    ) {
         self.master
             .sync(wanted.master, |g| mixer.set_master_gain(g));
         self.music.sync(wanted.music, |g| player.set_volume(g));
+        for (applied, preview) in self.menu_music.iter_mut().zip(previews) {
+            applied.sync(wanted.menu_music, |g| preview.set_volume(g));
+        }
         self.hitsounds.sync(wanted.hitsounds, |g| {
             mixer.set_group_gain(VoiceGroup::Hitsounds, g)
         });
@@ -220,6 +235,7 @@ mod tests {
         let audio = Audio {
             master_volume: 0.5,
             music_volume: 0.5,
+            menu_music_volume: 0.5,
             hitsound_volume: 0.75,
             effects_volume: 0.25,
             ..Audio::default()
@@ -229,6 +245,7 @@ mod tests {
             Volumes {
                 master: 0.5,
                 music: 0.25,
+                menu_music: 0.125,
                 hitsounds: 0.75,
                 effects: 0.25,
                 hitsound_delay_ms: 0.0,
@@ -255,7 +272,13 @@ mod tests {
             hitsound_delay: HitsoundDelay::Stable,
             ..audio
         };
-        applied.sync(Volumes::of(&stable), &mut handle, &mut player);
+        let mut previews = [0, 1].map(|_| slam_audio::music(&MusicConfig::default()).unwrap().1);
+        applied.sync(
+            Volumes::of(&stable),
+            &mut handle,
+            &mut player,
+            &mut previews,
+        );
 
         let sample = Arc::new(Sample::from_interleaved(vec![0.5; 2], 48_000, 2).unwrap());
         for group in [VoiceGroup::Hitsounds, VoiceGroup::Effects] {

@@ -166,6 +166,8 @@ const PLATFORM_WARNING: bool = cfg!(any(target_os = "linux", target_os = "macos"
 pub enum Row {
     MasterVolume,
     MusicVolume,
+    MenuMusic,
+    MenuMusicVolume,
     HitsoundVolume,
     EffectsVolume,
     HitsoundDelay,
@@ -221,9 +223,11 @@ pub enum Row {
 const _: () = assert!(Row::ALL.len() <= slam_ui::settings_screen::MAX_ROWS);
 
 impl Row {
-    pub const ALL: [Row; 47] = [
+    pub const ALL: [Row; 49] = [
         Row::MasterVolume,
         Row::MusicVolume,
+        Row::MenuMusic,
+        Row::MenuMusicVolume,
         Row::HitsoundVolume,
         Row::EffectsVolume,
         Row::HitsoundDelay,
@@ -294,6 +298,8 @@ impl Row {
         match self {
             Row::MasterVolume
             | Row::MusicVolume
+            | Row::MenuMusic
+            | Row::MenuMusicVolume
             | Row::HitsoundVolume
             | Row::EffectsVolume
             | Row::HitsoundDelay
@@ -346,6 +352,8 @@ impl Row {
         match self {
             Row::MasterVolume => "settings-audio-master-volume",
             Row::MusicVolume => "settings-audio-music-volume",
+            Row::MenuMusic => "settings-audio-menu-music",
+            Row::MenuMusicVolume => "settings-audio-menu-music-volume",
             Row::HitsoundVolume => "settings-audio-hitsound-volume",
             Row::EffectsVolume => "settings-audio-effects-volume",
             Row::HitsoundDelay => "settings-audio-hitsound-delay",
@@ -687,6 +695,10 @@ impl Rows {
             Row::NotFullscreenNote => RowKind::Note,
             Row::MasterVolume => percent(s.audio.master_volume),
             Row::MusicVolume => percent(s.audio.music_volume),
+            Row::MenuMusic => RowKind::Toggle {
+                value: s.audio.menu_music,
+            },
+            Row::MenuMusicVolume => percent(s.audio.menu_music_volume),
             Row::HitsoundVolume => percent(s.audio.hitsound_volume),
             Row::EffectsVolume => percent(s.audio.effects_volume),
             Row::Dim => percent(s.gameplay.dim),
@@ -832,6 +844,10 @@ impl Rows {
         match (row, value) {
             (Row::MasterVolume, RowValue::Slider(v)) => settings.audio.master_volume = percent(v),
             (Row::MusicVolume, RowValue::Slider(v)) => settings.audio.music_volume = percent(v),
+            (Row::MenuMusic, RowValue::Toggle(v)) => settings.audio.menu_music = v,
+            (Row::MenuMusicVolume, RowValue::Slider(v)) => {
+                settings.audio.menu_music_volume = percent(v);
+            }
             (Row::HitsoundVolume, RowValue::Slider(v)) => {
                 settings.audio.hitsound_volume = percent(v);
             }
@@ -1080,6 +1096,7 @@ impl Rows {
                     Row::GlobalOffset => text("settings-unit-ms"),
                     Row::MasterVolume
                     | Row::MusicVolume
+                    | Row::MenuMusicVolume
                     | Row::HitsoundVolume
                     | Row::EffectsVolume
                     | Row::Dim

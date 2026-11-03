@@ -4,9 +4,9 @@
 use std::sync::Arc;
 
 use slam_audio::{
-    AudioCallback, AudioPosition, CallbackInfo, ClockError, FilterKind, GameClock, MixerConfig,
-    MusicConfig, MusicEvent, PlayError, PositionSnapshot, Sample, SineTone, TrackAdjustment,
-    TrackSource, VoiceGroup, VoiceId, VoiceParams,
+    AudioCallback, AudioPosition, CallbackInfo, ClockError, Easing, FilterKind, GameClock,
+    MixerConfig, MusicConfig, MusicEvent, PlayError, PositionSnapshot, Sample, SineTone,
+    TrackAdjustment, TrackSource, VoiceGroup, VoiceId, VoiceParams,
 };
 use slam_testkit::assert_no_alloc;
 
@@ -245,6 +245,13 @@ fn music_commands_and_mixing_do_not_allocate() {
                         kind: FilterKind::HighPass,
                         cutoff_hz: if round % 14 == 5 { 300.0 } else { 1.0 },
                         duration_ms: 0.0,
+                    },
+                    // The fade scales the track frame by frame (ADR-0090).
+                    TrackAdjustment::Fade {
+                        volume: if round % 14 == 5 { 0.0 } else { 1.0 },
+                        delay_ms: 5.0,
+                        duration_ms: 20.0,
+                        easing: Easing::OutQuint,
                     },
                 ])),
                 _ => handle.play(&hit, 0.5).unwrap(),

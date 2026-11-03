@@ -2,6 +2,7 @@
 
 #[cfg(target_os = "linux")]
 mod alsa_delay;
+mod fade;
 mod filter;
 mod game_clock;
 mod hal;
@@ -15,6 +16,7 @@ mod seqlock;
 mod tone;
 mod wasapi;
 
+pub use fade::Easing;
 pub use filter::{FilterKind, MAX_LOW_PASS_CUTOFF, MIN_HIGH_PASS_CUTOFF};
 pub use game_clock::{ClockError, ClockSnapshot, GameClock, TrackControl};
 pub use hal::{
@@ -22,8 +24,9 @@ pub use hal::{
     StreamCounters, WasapiMode, devices, open_output,
 };
 pub use mixer::{
-    BUS_RAMP_MS, MAX_GROUP_DELAY_MS, MAX_VOICE_RATE, Mixer, MixerConfig, MixerHandle, MixerStats,
-    PlayError, SAMPLE_CONCURRENCY, VoiceGroup, VoiceId, VoiceParams, VoiceStart, mixer,
+    BUS_RAMP_MS, MAX_GROUP_DELAY_MS, MAX_MUSIC_SOURCES, MAX_VOICE_RATE, Mixer, MixerConfig,
+    MixerHandle, MixerStats, PlayError, SAMPLE_CONCURRENCY, VoiceGroup, VoiceId, VoiceParams,
+    VoiceStart, mixer,
 };
 pub use music::{
     MAX_MUSIC_FREQUENCY, MAX_MUSIC_RATE, MIN_MUSIC_RATE, MUSIC_FADE_MS, MusicAnchor, MusicConfig,

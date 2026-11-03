@@ -279,6 +279,20 @@ fn from_table(mut table: Table) -> Loaded {
         &mut settings.audio.effects_volume,
         0.0..=1.0,
     );
+    cx.field(
+        &mut audio,
+        "audio",
+        "menu_music",
+        &mut settings.audio.menu_music,
+        |_| Ok(()),
+    );
+    cx.float(
+        &mut audio,
+        "audio",
+        "menu_music_volume",
+        &mut settings.audio.menu_music_volume,
+        0.0..=1.0,
+    );
     let mut delay: Option<String> = None;
     cx.opt(&mut audio, "audio", "hitsound_delay", &mut delay);
     if let Some(name) = delay {

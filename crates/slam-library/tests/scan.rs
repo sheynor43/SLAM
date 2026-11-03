@@ -211,3 +211,25 @@ fn each_difficulty_keeps_its_background() {
         ]
     );
 }
+
+#[test]
+fn each_difficulty_keeps_its_audio_file_and_preview_time() {
+    let t = Tmp::new("audio");
+    let d = t.0.join("set");
+    let with = |version: &str, general: &str| {
+        osu(0, "A", "S", version).replace("Mode: 0\n", &format!("Mode: 0\n{general}"))
+    };
+    write(
+        &d,
+        "a.osu",
+        &with("Easy", "AudioFilename: audio.mp3\nPreviewTime: 45000\n"),
+    );
+    write(&d, "b.osu", &osu(0, "A", "S", "Hard"));
+    let e = scan_set(&d).unwrap().unwrap();
+    let audio: Vec<_> = e
+        .difficulties
+        .iter()
+        .map(|d| (d.version.as_str(), d.audio.as_str(), d.preview_time))
+        .collect();
+    assert_eq!(audio, [("Easy", "audio.mp3", 45_000), ("Hard", "", -1)]);
+}

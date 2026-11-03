@@ -147,6 +147,8 @@ fn songs(sets: &[(&str, &[&str])]) -> Vec<slam_library::scan::BeatmapSetEntry> {
                     circle_size: 4.0,
                     hp: 5.0,
                     background: None,
+                    audio: String::new(),
+                    preview_time: -1,
                 })
                 .collect(),
         })
@@ -538,10 +540,21 @@ fn detached_audio() -> (Audio, slam_audio::Mixer) {
     })
     .unwrap();
     mixer.set_music(music).unwrap();
+    let previews = [0, 1].map(|_| {
+        let (music, preview) = slam_audio::music(&MusicConfig {
+            sample_rate: SAMPLE_RATE,
+            channels: CHANNELS,
+            ..MusicConfig::default()
+        })
+        .unwrap();
+        mixer.add_music(music).unwrap();
+        preview
+    });
     let audio = Audio {
         output: Arc::new(AudioPosition::new()),
         music: Arc::clone(player.position()),
         player,
+        previews,
         mixer: mixer_handle,
         volumes: AppliedVolumes::new(Volumes::of(&Settings::default().audio)),
     };
@@ -593,6 +606,9 @@ fn host(name: &str, with_track: bool) -> HostFixture {
         no_output: false,
         retired: None,
         track: None,
+        menu_music: MenuMusic::default(),
+        selection: (None, 0),
+        rng: 1,
         loader,
         scenes: scene_tx,
         os_cursor: CursorVisibility::default(),
@@ -1118,6 +1134,83 @@ fn opening_the_settings_lists_the_devices_again() {
         panic!("the device row");
     };
     assert_eq!((device.count(), device.selected()), (3, 0));
+}
+
+#[test]
+fn the_song_select_previews_the_settled_selection_unless_turned_off() {
+    let mut fixture = host("preview", true);
+    let (mut producer, link) = crate::songs::link();
+    let mut s = state().with_songs(link);
+    let mut snap = ShellSnapshot::default();
+    let mut sets = songs(&[("set", &["Normal"])]);
+    sets[0].difficulties[0].path = fixture.dir.join("map.osu");
+    sets[0].difficulties[0].audio = "audio.wav".into();
+    producer
+        .push(crate::songs::publish(
+            &sets,
+            SongSelectStatus::Ready,
+            Arc::from(""),
+        ))
+        .unwrap();
+    s.tick(0, &[key(KEY_ENTER)], &mut snap);
+    s.tick(TRANSITION_NS, &[], &mut snap);
+    assert!(s.selected().is_some());
+    // Not before the selection settles.
+    fixture.host.advance(TRANSITION_NS, &mut s);
+    fixture.host.advance(TRANSITION_NS + 1, &mut s);
+    let loads = |h: &PlayHost| {
+        h.audio
+            .previews
+            .iter()
+            .map(MusicPlayer::generation)
+            .sum::<u32>()
+    };
+    assert_eq!(loads(&fixture.host), 0);
+    fixture
+        .host
+        .advance(TRANSITION_NS + SELECTION_DEBOUNCE_NS + 1, &mut s);
+    assert_eq!(loads(&fixture.host), 1, "the preview loads");
+    // Turned off in the settings, nothing new loads.
+    let mut off = s.settings().clone();
+    off.audio.menu_music = false;
+    let mut quiet = state().with_settings(off);
+    fixture.host.menu_music = MenuMusic::default();
+    for audio in &mut fixture.host.audio.previews {
+        while audio.poll_event().is_some() {}
+    }
+    let before = loads(&fixture.host);
+    fixture
+        .host
+        .advance(TRANSITION_NS + 2 * SELECTION_DEBOUNCE_NS, &mut quiet);
+    assert_eq!(loads(&fixture.host), before);
+}
+
+#[test]
+fn the_menu_picks_only_difficulties_with_an_audio_file() {
+    let file = |audio: Option<&str>| crate::songs::SongFile {
+        path: PathBuf::from("set/map.osu"),
+        approach_rate: 5.0,
+        circle_size: 4.0,
+        drain_rate: 5.0,
+        overall_difficulty: 5.0,
+        background: None,
+        audio: audio.map(PathBuf::from),
+        preview_ms: 1_000,
+    };
+    let mut rng = 1;
+    assert!(random_track(&mut rng, &[]).is_none());
+    let files: Vec<Box<[crate::songs::SongFile]>> = vec![
+        vec![file(None)].into(),
+        vec![file(None), file(Some("set/b.mp3"))].into(),
+    ];
+    for _ in 0..20 {
+        if let Some(picked) = random_track(&mut rng, &files) {
+            assert_eq!(picked.path, Path::new("set/b.mp3"));
+            assert_eq!(picked.preview_ms, 1_000);
+        }
+    }
+    let none: Vec<Box<[crate::songs::SongFile]>> = vec![vec![file(None)].into()];
+    assert!(random_track(&mut rng, &none).is_none());
 }
 
 #[test]

@@ -59,6 +59,11 @@ pub struct DifficultyEntry {
     /// The background image named in `[Events]`, relative to the set directory and with
     /// `/` separators, as the file writes it; its case may not match the file on disk.
     pub background: Option<String>,
+    /// The audio file (`AudioFilename`), relative to the set directory as the file writes
+    /// it; empty when it names none.
+    pub audio: String,
+    /// `PreviewTime` in milliseconds, -1 for none (ADR-0090).
+    pub preview_time: i32,
 }
 
 /// Why a set could not be scanned.
@@ -138,6 +143,8 @@ fn scan_set_counted(dir: &Path) -> Result<SetScan, ScanError> {
             circle_size: b.difficulty.circle_size,
             hp: b.difficulty.drain_rate,
             background: b.events.background,
+            audio: b.general.audio_filename,
+            preview_time: b.general.preview_time,
         });
     }
 

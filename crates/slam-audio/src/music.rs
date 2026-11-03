@@ -41,6 +41,7 @@ use symphonia::core::io::{MediaSource, MediaSourceStream};
 use symphonia::core::meta::MetadataOptions;
 use symphonia::core::units::{TimeBase, Timestamp};
 
+use crate::fade::{Easing, Fade};
 use crate::filter::{FILTER_CHUNK, FilterKind, TrackFilters};
 use crate::hal::{AudioCallback, AudioError, CallbackInfo};
 use crate::mixer::PlayError;
@@ -86,6 +87,15 @@ pub enum TrackAdjustment {
         kind: FilterKind,
         cutoff_hz: f32,
         duration_ms: f64,
+    },
+    /// Moves a third volume multiplier, on top of the other two, to `volume` (clamped to
+    /// 0..=1) after `delay_ms`, over `duration_ms` along `easing` (lazer's `VolumeTo` on a
+    /// track, ADR-0090). Starts from where an earlier fade is.
+    Fade {
+        volume: f32,
+        delay_ms: f64,
+        duration_ms: f64,
+        easing: Easing,
     },
 }
 
@@ -403,6 +413,13 @@ enum AudioCommand {
         cutoff: f32,
         frames: u64,
     },
+    /// Move the fade multiplier to `volume` after `delay` frames, over `frames`.
+    Fade {
+        volume: f32,
+        delay: u64,
+        frames: u64,
+        easing: Easing,
+    },
     /// Drop audio of older generations and stand at `frame` until blocks of
     /// `generation` arrive.
     Flush {
@@ -537,6 +554,7 @@ fn parts(config: &MusicConfig) -> Result<(MusicSource, MusicPlayer, Decoder), Au
         frequency_target: 1.0,
         frequency_left: 0,
         filters: TrackFilters::new(config.sample_rate),
+        fade: Fade::default(),
         scratch: vec![0.0; FILTER_CHUNK * channels].into_boxed_slice(),
         generation: 0,
         epoch: None,
@@ -630,6 +648,8 @@ pub struct MusicSource {
     /// Output frames left in the frequency's move.
     frequency_left: u64,
     filters: TrackFilters,
+    /// The timed volume multiplier (ADR-0090).
+    fade: Fade,
     /// Where the track is rendered while a filter is on: [`FILTER_CHUNK`] frames.
     scratch: Box<[f32]>,
     generation: u32,
@@ -676,9 +696,13 @@ impl MusicSource {
         }
         let ch = usize::from(self.channels);
         let frames = out.len() / ch;
-        if self.filters.is_active() {
-            // The filters act on the track alone: it is rendered and filtered apart, then
-            // added.
+        let fading = !self.fade.is_unity();
+        // Decided once per buffer: a filter that turns off within it is processed to the
+        // end of the buffer, and so resets when it turns on again.
+        let filtering = self.filters.is_active();
+        if filtering || fading {
+            // The filters and the fade act on the track alone: it is rendered and filtered
+            // apart, then added.
             let mut scratch = std::mem::take(&mut self.scratch);
             let mut done = 0;
             while done < frames {
@@ -686,7 +710,19 @@ impl MusicSource {
                 let chunk = &mut scratch[..n * ch];
                 chunk.fill(0.0);
                 self.render(chunk, info.frame + done as u64);
-                self.filters.process(chunk, ch);
+                if filtering {
+                    self.filters.process(chunk, ch);
+                } else {
+                    self.filters.advance(n as u64);
+                }
+                if fading {
+                    for frame in chunk.chunks_exact_mut(ch) {
+                        let g = self.fade.next();
+                        for s in frame {
+                            *s *= g;
+                        }
+                    }
+                }
                 for (o, s) in out[done * ch..(done + n) * ch].iter_mut().zip(chunk.iter()) {
                     *o += s;
                 }
@@ -965,6 +1001,12 @@ impl MusicSource {
                     cutoff,
                     frames,
                 } => self.filters.set(kind, cutoff, frames),
+                AudioCommand::Fade {
+                    volume,
+                    delay,
+                    frames,
+                    easing,
+                } => self.fade.start(volume, delay, frames, easing),
                 AudioCommand::Flush { generation, frame } => {
                     if self.playing {
                         self.cut_tail();
@@ -1363,6 +1405,17 @@ impl MusicPlayer {
                     kind,
                     cutoff: if cutoff_hz.is_nan() { 0.0 } else { cutoff_hz },
                     frames: self.frames_in(duration_ms),
+                },
+                TrackAdjustment::Fade {
+                    volume,
+                    delay_ms,
+                    duration_ms,
+                    easing,
+                } => AudioCommand::Fade {
+                    volume: unit_gain(volume),
+                    delay: self.frames_in(delay_ms),
+                    frames: self.frames_in(duration_ms),
+                    easing,
                 },
             };
         }
@@ -3517,6 +3570,86 @@ mod tests {
             assert!((v - ramp_at(start + i as f64)).abs() < 1e-6);
         }
         assert_eq!(rig.player.stats().underruns.load(Ordering::Relaxed), 0);
+    }
+
+    #[test]
+    fn a_fade_scales_the_track_frame_by_frame_and_stays_across_a_seek() {
+        let mut rig = playing_ramp(256);
+        let ms = |frames: f64| frames * 1_000.0 / f64::from(RATE);
+        rig.player
+            .adjust(&[TrackAdjustment::Fade {
+                volume: 0.0,
+                delay_ms: ms(10.0),
+                duration_ms: ms(100.0),
+                easing: Easing::None,
+            }])
+            .unwrap();
+        rig.pump();
+        let first = rig.frame as f64;
+        let out = rig.run(256);
+        let start = rig.snapshot().track_frame_at(first);
+        for (i, &v) in out.iter().enumerate() {
+            let gain = if i < 10 {
+                1.0
+            } else {
+                (1.0 - (i - 10) as f64 / 100.0).max(0.0)
+            };
+            let expected = ramp_at(start + i as f64) * gain as f32;
+            assert!((v - expected).abs() < 1e-5, "{i}: {v} vs {expected}");
+        }
+        // Silent, the track still moves; a seek keeps the fade.
+        rig.player.seek(10_000).unwrap();
+        rig.pump();
+        assert!(rig.run(256).iter().all(|&v| v == 0.0));
+        rig.player
+            .adjust(&[TrackAdjustment::Fade {
+                volume: 1.0,
+                delay_ms: 0.0,
+                duration_ms: 0.0,
+                easing: Easing::Out,
+            }])
+            .unwrap();
+        rig.pump();
+        let first = rig.frame as f64;
+        let out = rig.run(256);
+        let start = rig.snapshot().track_frame_at(first);
+        for (i, &v) in out.iter().enumerate() {
+            assert!((v - ramp_at(start + i as f64)).abs() < 1e-5, "{i}: {v}");
+        }
+    }
+
+    #[test]
+    fn a_fade_runs_over_chunk_and_buffer_ends_with_a_filter_on() {
+        let mut rig = playing_ramp(256);
+        let ms = |frames: f64| frames * 1_000.0 / f64::from(RATE);
+        // An open low-pass leaves the track as it is.
+        rig.player
+            .adjust(&[
+                TrackAdjustment::Filter {
+                    kind: FilterKind::LowPass,
+                    cutoff_hz: crate::MAX_LOW_PASS_CUTOFF,
+                    duration_ms: 0.0,
+                },
+                TrackAdjustment::Fade {
+                    volume: 0.0,
+                    delay_ms: 0.0,
+                    duration_ms: ms(1_000.0),
+                    easing: Easing::None,
+                },
+            ])
+            .unwrap();
+        let mut heard = Vec::new();
+        let first = rig.frame as f64;
+        for frames in [300, 500, 400] {
+            rig.pump();
+            heard.extend(rig.run(frames));
+        }
+        let start = rig.snapshot().track_frame_at(first);
+        for (i, &v) in heard.iter().enumerate() {
+            let gain = (1.0 - i as f64 / 1_000.0).max(0.0) as f32;
+            let expected = ramp_at(start + i as f64) * gain;
+            assert!((v - expected).abs() < 1e-4, "{i}: {v} vs {expected}");
+        }
     }
 
     #[test]

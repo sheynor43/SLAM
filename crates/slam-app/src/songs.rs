@@ -49,6 +49,10 @@ pub struct SongFile {
     pub overall_difficulty: f32,
     /// The background image as the file names it, relative to the set folder (ADR-0066).
     pub background: Option<String>,
+    /// The audio file; `None` when the file names none (ADR-0090).
+    pub audio: Option<PathBuf>,
+    /// `PreviewTime` in milliseconds, -1 for none.
+    pub preview_ms: i32,
 }
 
 /// The difficulties of a published list, by set and difficulty, in the list's order.
@@ -345,6 +349,10 @@ pub fn publish(
                     drain_rate: d.hp,
                     overall_difficulty: d.overall_difficulty,
                     background: d.background.clone(),
+                    audio: (!d.audio.is_empty())
+                        .then(|| d.path.parent().map(|dir| dir.join(&d.audio)))
+                        .flatten(),
+                    preview_ms: d.preview_time,
                 })
                 .collect()
         })
@@ -619,6 +627,8 @@ mod tests {
                     circle_size: 4.0,
                     hp: 5.0,
                     background: None,
+                    audio: String::new(),
+                    preview_time: -1,
                 })
                 .collect(),
         }

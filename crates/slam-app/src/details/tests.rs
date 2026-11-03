@@ -13,6 +13,8 @@ fn file(path: PathBuf) -> SongFile {
         drain_rate: 5.0,
         overall_difficulty: 8.0,
         background: None,
+        audio: None,
+        preview_ms: -1,
     }
 }
 
