@@ -67,6 +67,7 @@ fn labels() -> SettingsLabels {
         button: String::new(),
         shows_value: false,
         trim_zeros: false,
+        zero_text: String::new(),
         hint: String::new(),
     };
     SettingsLabels {

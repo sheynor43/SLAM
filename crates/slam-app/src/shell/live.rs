@@ -148,6 +148,7 @@ pub fn play_options(settings: &Settings) -> PlayOptions {
         cursor_trail: settings.gameplay.cursor_trail,
         cursor_size: settings.gameplay.cursor_size,
         auto_cursor_size: settings.gameplay.auto_cursor_size,
+        positional_hitsounds_level: settings.audio.positional_hitsounds_level,
         hit_error_scale: settings.gameplay.hit_error_scale,
         skin: skins::skin_path(
             settings.paths.songs.as_deref(),
@@ -322,6 +323,7 @@ mod tests {
         settings.gameplay.cursor_trail = false;
         settings.gameplay.cursor_size = 0.65;
         settings.gameplay.auto_cursor_size = true;
+        settings.audio.positional_hitsounds_level = 0.65;
         assert_eq!(
             play_options(&settings),
             PlayOptions {
@@ -335,6 +337,7 @@ mod tests {
                 cursor_trail: false,
                 cursor_size: 0.65,
                 auto_cursor_size: true,
+                positional_hitsounds_level: 0.65,
                 hit_error_scale: 1.5,
                 skin: None,
                 mods: ModSet::default(),

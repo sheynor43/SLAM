@@ -274,6 +274,15 @@ fn from_table(mut table: Table) -> Loaded {
             )),
         }
     }
+    let mut level = f64::from(settings.audio.positional_hitsounds_level);
+    cx.float(
+        &mut audio,
+        "audio",
+        "positional_hitsounds_level",
+        &mut level,
+        0.0..=1.0,
+    );
+    settings.audio.positional_hitsounds_level = ((level * 100.0).round() / 100.0) as f32;
     cx.unknown(&audio, "audio");
 
     let mut timing = cx.section(&mut table, "timing");

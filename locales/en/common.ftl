@@ -7,6 +7,7 @@ settings-audio-music-volume = Music
 settings-audio-hitsound-volume = Hitsounds
 settings-audio-effects-volume = Effects
 settings-audio-hitsound-delay = Hitsound delay
+settings-audio-positional-hitsounds-level = Hitsound stereo separation
 settings-keybind-listening = Press a key...
 song-select-beatmap-count =
     { $count ->
@@ -128,6 +129,7 @@ settings-unit-percent = %
 settings-unit-ms = { " " }ms
 settings-unit-times = ×
 settings-option-default = Default
+settings-option-disabled = Disabled
 settings-option-unlimited = Unlimited
 settings-option-hz = { $value } Hz
 settings-option-windowed = Windowed

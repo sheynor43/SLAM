@@ -147,6 +147,7 @@ pub enum Row {
     HitsoundVolume,
     EffectsVolume,
     HitsoundDelay,
+    PositionalHitsoundsLevel,
     Backend,
     BufferFrames,
     GlobalOffset,
@@ -194,12 +195,13 @@ pub enum Row {
 const _: () = assert!(Row::ALL.len() <= slam_ui::settings_screen::MAX_ROWS);
 
 impl Row {
-    pub const ALL: [Row; 44] = [
+    pub const ALL: [Row; 45] = [
         Row::MasterVolume,
         Row::MusicVolume,
         Row::HitsoundVolume,
         Row::EffectsVolume,
         Row::HitsoundDelay,
+        Row::PositionalHitsoundsLevel,
         Row::Backend,
         Row::BufferFrames,
         Row::GlobalOffset,
@@ -267,6 +269,7 @@ impl Row {
             | Row::HitsoundVolume
             | Row::EffectsVolume
             | Row::HitsoundDelay
+            | Row::PositionalHitsoundsLevel
             | Row::Backend
             | Row::BufferFrames => 0,
             Row::GlobalOffset => 1,
@@ -316,6 +319,7 @@ impl Row {
             Row::HitsoundVolume => "settings-audio-hitsound-volume",
             Row::EffectsVolume => "settings-audio-effects-volume",
             Row::HitsoundDelay => "settings-audio-hitsound-delay",
+            Row::PositionalHitsoundsLevel => "settings-audio-positional-hitsounds-level",
             Row::Backend => "settings-audio-backend",
             Row::BufferFrames => "settings-audio-buffer",
             Row::GlobalOffset => "settings-offset-global",
@@ -576,6 +580,7 @@ impl Rows {
             Row::HitsoundVolume => percent(s.audio.hitsound_volume),
             Row::EffectsVolume => percent(s.audio.effects_volume),
             Row::Dim => percent(s.gameplay.dim),
+            Row::PositionalHitsoundsLevel => percent(f64::from(s.audio.positional_hitsounds_level)),
             Row::CursorSize => RowKind::Slider {
                 min: CURSOR_SIZE_RANGE.0,
                 max: CURSOR_SIZE_RANGE.1,
@@ -714,6 +719,9 @@ impl Rows {
                 settings.audio.effects_volume = percent(v);
             }
             (Row::Dim, RowValue::Slider(v)) => settings.gameplay.dim = percent(v),
+            (Row::PositionalHitsoundsLevel, RowValue::Slider(v)) => {
+                settings.audio.positional_hitsounds_level = percent(v).clamp(0.0, 1.0) as f32;
+            }
             (Row::CursorSize, RowValue::Slider(v)) => {
                 settings.gameplay.cursor_size =
                     round_to(v, 2).clamp(CURSOR_SIZE_RANGE.0, CURSOR_SIZE_RANGE.1);
@@ -934,7 +942,8 @@ impl Rows {
                     | Row::MusicVolume
                     | Row::HitsoundVolume
                     | Row::EffectsVolume
-                    | Row::Dim => text("settings-unit-percent"),
+                    | Row::Dim
+                    | Row::PositionalHitsoundsLevel => text("settings-unit-percent"),
                     Row::HitErrorScale | Row::Sensitivity | Row::CursorSize => {
                         text("settings-unit-times")
                     }
@@ -944,6 +953,11 @@ impl Rows {
                     Row::ResetKeys => text("settings-keys-reset-button"),
                     // The placeholder of an empty folder.
                     Row::SongsFolder => text("settings-library-songs-folder-none"),
+                    _ => String::new(),
+                };
+                // Lazer shows the stereo separation at zero as "Disabled".
+                let zero_text = match row {
+                    Row::PositionalHitsoundsLevel => text("settings-option-disabled"),
                     _ => String::new(),
                 };
                 let hint = match row {
@@ -961,6 +975,7 @@ impl Rows {
                     shows_value: *row == Row::SongsFolder,
                     // Lazer shows the cursor size as `{v:0.##}x`.
                     trim_zeros: matches!(row, Row::Sensitivity | Row::CursorSize),
+                    zero_text,
                     hint,
                 }
             })
@@ -995,6 +1010,8 @@ pub fn round_for_save(settings: &mut Settings) {
         *volume = round_to(*volume, 2);
     }
     settings.gameplay.hit_error_scale = round_to(settings.gameplay.hit_error_scale, 2);
+    settings.audio.positional_hitsounds_level =
+        round_to(f64::from(settings.audio.positional_hitsounds_level), 2) as f32;
     settings.input.sensitivity = InputSettings::clean_sensitivity(settings.input.sensitivity);
     settings.timing.global_offset_ms = settings.timing.global_offset_ms.round();
 }
@@ -1265,6 +1282,20 @@ mod tests {
             assert_eq!(specs[index(row)].kind, RowKind::Toggle { value }, "{row:?}");
         }
         assert_eq!(
+            specs[index(Row::PositionalHitsoundsLevel)].kind,
+            RowKind::Slider {
+                min: 0.0,
+                max: 100.0,
+                step: 1.0,
+                value: 20.0
+            }
+        );
+        assert_eq!(
+            Row::ALL[index(Row::HitsoundDelay) + 1],
+            Row::PositionalHitsoundsLevel
+        );
+        assert_eq!(Row::PositionalHitsoundsLevel.section(), 0);
+        assert_eq!(
             specs[index(Row::CursorSize)].kind,
             RowKind::Slider {
                 min: 0.1,
@@ -1317,6 +1348,18 @@ mod tests {
         assert_eq!(s.gameplay.cursor_size, 0.7);
         rows.apply(&mut s, index(Row::CursorSize), RowValue::Slider(0.0));
         assert_eq!(s.gameplay.cursor_size, 0.1);
+        rows.apply(
+            &mut s,
+            index(Row::PositionalHitsoundsLevel),
+            RowValue::Slider(35.0),
+        );
+        assert_eq!(s.audio.positional_hitsounds_level, 0.35);
+        rows.apply(
+            &mut s,
+            index(Row::PositionalHitsoundsLevel),
+            RowValue::Slider(400.0),
+        );
+        assert_eq!(s.audio.positional_hitsounds_level, 1.0);
         rows.apply(&mut s, index(Row::AutoCursorSize), RowValue::Toggle(true));
         assert!(s.gameplay.auto_cursor_size);
         // 0.3 and 0.07 exactly as typed, not 0.30000000000000004.
@@ -1542,6 +1585,11 @@ mod tests {
         assert_eq!(labels.rows[index(Row::HitErrorScale)].unit, "×");
         assert_eq!(labels.rows[index(Row::CursorSize)].unit, "×");
         assert!(labels.rows[index(Row::CursorSize)].trim_zeros);
+        let level = &labels.rows[index(Row::PositionalHitsoundsLevel)];
+        assert_eq!(level.label, "Hitsound stereo separation");
+        assert_eq!(level.unit, "%");
+        assert_eq!(level.zero_text, "Disabled");
+        assert!(labels.rows[index(Row::Dim)].zero_text.is_empty());
         localizer.set_language("ru").unwrap();
         let labels = rows.labels(&localizer);
         let draw = &labels.rows[index(Row::DrawHz)].options;

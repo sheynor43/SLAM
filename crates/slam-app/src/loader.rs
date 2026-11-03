@@ -51,6 +51,8 @@ pub struct PlayOptions {
     pub cursor_size: f64,
     /// The cursor's size follows the beatmap's circle size.
     pub auto_cursor_size: bool,
+    /// How far hitsounds pan with the object's position (ADR-0087).
+    pub positional_hitsounds_level: f32,
     /// Size multiplier of the hit error meter (ADR-0050).
     pub hit_error_scale: f64,
     /// The chosen skin's folder (ADR-0051); `None` plays on the default skin.
@@ -210,6 +212,7 @@ pub fn spawn(mut config: LoaderConfig) -> std::io::Result<(LoaderLink, SceneTras
                     config.settings.cursor_trail = options.cursor_trail;
                     config.settings.cursor_size = options.cursor_size as f32;
                     config.settings.auto_cursor_size = options.auto_cursor_size;
+                    config.settings.positional_hitsounds_level = options.positional_hitsounds_level;
                     config.settings.skin = options.skin;
                     config.settings.mods = options.mods;
                     let result = prepare(
@@ -269,6 +272,7 @@ mod tests {
             cursor_trail: true,
             cursor_size: 1.0,
             auto_cursor_size: false,
+            positional_hitsounds_level: 0.2,
             hit_error_scale: 1.0,
             skin: None,
             mods: ModSet::default(),

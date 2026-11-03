@@ -35,6 +35,8 @@ pub struct RowLabels {
     pub shows_value: bool,
     /// A slider shows its value without trailing zeros (`0.##`).
     pub trim_zeros: bool,
+    /// A slider shows this instead of its value at zero; empty shows the number.
+    pub zero_text: String,
     /// A note on the row, shown while [`SettingsScreen::set_hint`] says so: in the room of
     /// a slider (which is then not drawn), beside a toggle. Lines are split by `\n`, at
     /// most [`MAX_HINT_LINES`]; each must fit the widget column on one line.
@@ -242,7 +244,12 @@ impl SettingsView {
                             decimals(step),
                             &row.unit,
                         );
-                        RowView::Slider(if row.trim_zeros { view.trimmed() } else { view })
+                        let view = if row.trim_zeros { view.trimmed() } else { view };
+                        RowView::Slider(if row.zero_text.is_empty() {
+                            view
+                        } else {
+                            view.with_zero_text(&row.zero_text)
+                        })
                     }
                     RowKind::Dropdown { .. } => RowView::Dropdown(DropdownView::new(
                         Arc::clone(&registry),

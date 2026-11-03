@@ -252,9 +252,19 @@ fn run_failing(
     mods: &ModSet,
     failing: &[(f64, f64)],
 ) -> (Vec<Command>, Vec<Judged>, u64) {
+    run_with(input, mods, SoundSettings::for_mods(mods), failing)
+}
+
+/// [`run_failing`] with explicit sound `settings`.
+fn run_with(
+    input: ReplayInput,
+    mods: &ModSet,
+    settings: SoundSettings,
+    failing: &[(f64, f64)],
+) -> (Vec<Command>, Vec<Judged>, u64) {
     let map = beatmap();
     let (sounds, samples) = hitsounds(&map, &SAMPLES);
-    let mut sounds = GameplaySounds::new(&map, sounds, SoundSettings::for_mods(mods));
+    let mut sounds = GameplaySounds::new(&map, sounds, settings);
     let mut recorder = Recorder::new(samples, 0);
     recorder.failing = failing.to_vec();
     let mut sim = Simulator::new(&map, input, OsuRules::new(&map, mods));
@@ -363,6 +373,40 @@ fn hits_play_in_their_update_and_the_slider_slides_with_its_ball() {
         previous = balance;
     }
     assert_eq!(previous, at(448.0));
+}
+
+#[test]
+fn the_positional_level_scales_hits_and_sliding() {
+    let mods = ModSet::default();
+    let level = |positional_level| {
+        let settings = SoundSettings {
+            positional_level,
+            ..SoundSettings::for_mods(&mods)
+        };
+        let (commands, _, failed) = run_with(
+            frames(holding_slider_until(SLIDER_END + 100.0)),
+            &mods,
+            settings,
+            &[],
+        );
+        assert_eq!(failed, 0);
+        commands
+    };
+
+    // Full separation: the circle at x = 64 is far left, the sliding ends at x = 448.
+    let full = level(1.0);
+    let first = without_balance(&full);
+    assert_eq!(first[0], play(1000.0, "normal-hitnormal.wav", 0, -0.75));
+    assert_eq!(first[2], slide(SLIDER_START, 2, -0.75));
+    assert_eq!(balances(&full, 2).last().map(|c| c.1), Some(0.75));
+
+    // Disabled: every sample is centred and the sliding never pans.
+    let off = level(0.0);
+    assert!(without_balance(&off).iter().all(|c| match *c {
+        Command::Play { balance, .. } => balance == 0.0,
+        _ => true,
+    }));
+    assert!(balances(&off, 2).is_empty());
 }
 
 #[test]

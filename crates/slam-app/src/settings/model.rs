@@ -115,6 +115,9 @@ pub struct Audio {
     pub effects_volume: f64,
     /// Start delay of the gameplay hitsounds (ADR-0077).
     pub hitsound_delay: HitsoundDelay,
+    /// How far hitsounds pan with the object's horizontal position, 0.0..=1.0 in steps of
+    /// 0.01; 0 turns it off (lazer's `OsuSetting.PositionalHitsoundsLevel`, ADR-0087).
+    pub positional_hitsounds_level: f32,
 }
 
 /// Extra delay of a stable hitsound over a SLAM one, click to sound, milliseconds
@@ -168,6 +171,7 @@ impl Default for Audio {
             hitsound_volume: 1.0,
             effects_volume: 1.0,
             hitsound_delay: HitsoundDelay::default(),
+            positional_hitsounds_level: slam_play::gameplay_sounds::DEFAULT_POSITIONAL_LEVEL,
         }
     }
 }

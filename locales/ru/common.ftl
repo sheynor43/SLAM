@@ -7,6 +7,7 @@ settings-audio-music-volume = Музыка
 settings-audio-hitsound-volume = Хитсаунды
 settings-audio-effects-volume = Эффекты
 settings-audio-hitsound-delay = Задержка хитсаундов
+settings-audio-positional-hitsounds-level = Разделение стерео хитсаундов
 settings-keybind-listening = Нажмите клавишу...
 song-select-beatmap-count =
     { $count ->
@@ -132,6 +133,7 @@ settings-unit-percent = %
 settings-unit-ms = { " " }мс
 settings-unit-times = ×
 settings-option-default = По умолчанию
+settings-option-disabled = Выключено
 settings-option-unlimited = Без ограничения
 settings-option-hz = { $value } Гц
 settings-option-windowed = Оконный

@@ -59,6 +59,7 @@ fn round_trip_non_default() {
     s.audio.hitsound_volume = 0.75;
     s.audio.effects_volume = 0.125;
     s.audio.hitsound_delay = HitsoundDelay::Stable;
+    s.audio.positional_hitsounds_level = 0.65;
     s.timing.global_offset_ms = -12.5;
     s.frame.update_hz = 2000.0;
     s.frame.draw = DrawRate::Hz(240.0);
@@ -263,6 +264,35 @@ fn cursor_size_defaults_to_lazers_rounds_and_falls_back_out_of_range() {
                 .warnings
                 .iter()
                 .any(|w| w.starts_with("gameplay.cursor_size")),
+            "{bad}"
+        );
+    }
+}
+
+#[test]
+fn positional_hitsounds_level_defaults_to_lazers_rounds_and_falls_back_out_of_range() {
+    let missing = file::from_toml_str("[audio]\nmaster_volume = 1.0\n");
+    assert_eq!(missing.status, LoadStatus::Ok, "{:?}", missing.warnings);
+    assert_eq!(missing.settings.audio.positional_hitsounds_level, 0.2);
+    let read = file::from_toml_str("[audio]\npositional_hitsounds_level = 0.504\n");
+    assert_eq!(read.status, LoadStatus::Ok, "{:?}", read.warnings);
+    assert_eq!(read.settings.audio.positional_hitsounds_level, 0.5);
+    for (ok, want) in [("0", 0.0), ("1", 1.0)] {
+        let loaded = file::from_toml_str(&format!("[audio]\npositional_hitsounds_level = {ok}\n"));
+        assert_eq!(loaded.settings.audio.positional_hitsounds_level, want);
+    }
+    for bad in ["-0.1", "1.5", "\"loud\""] {
+        let loaded = file::from_toml_str(&format!("[audio]\npositional_hitsounds_level = {bad}\n"));
+        assert_eq!(loaded.status, LoadStatus::Recovered, "{bad}");
+        assert_eq!(
+            loaded.settings.audio.positional_hitsounds_level, 0.2,
+            "{bad}"
+        );
+        assert!(
+            loaded
+                .warnings
+                .iter()
+                .any(|w| w.starts_with("audio.positional_hitsounds_level")),
             "{bad}"
         );
     }
