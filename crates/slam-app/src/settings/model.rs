@@ -88,6 +88,14 @@ pub struct Paths {
     pub songs: Option<PathBuf>,
 }
 
+/// Interface settings (ADR-0088).
+#[derive(Clone, Debug, Default, PartialEq, Serialize)]
+pub struct General {
+    /// Tag of a built-in interface language; `None` is English. Applied at start.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub language: Option<String>,
+}
+
 /// Skin choice (ADR-0051).
 #[derive(Clone, Debug, Default, PartialEq, Serialize)]
 pub struct SkinSettings {
@@ -666,6 +674,7 @@ pub enum KeySlot {
 /// All user settings.
 #[derive(Clone, Debug, Default, PartialEq, Serialize)]
 pub struct Settings {
+    pub general: General,
     pub paths: Paths,
     pub skin: SkinSettings,
     pub audio: Audio,

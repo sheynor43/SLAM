@@ -154,3 +154,15 @@ fn builtin_languages_are_clean() {
     assert!(report.is_clean(), "{report}");
     Localizer::builtin().unwrap();
 }
+
+#[test]
+fn language_names_come_from_each_language() {
+    let mut l = Localizer::builtin().unwrap();
+    for _ in 0..2 {
+        assert_eq!(l.language_name("en").as_deref(), Some("English"));
+        assert_eq!(l.language_name("ru").as_deref(), Some("Русский"));
+        assert_eq!(l.language_name("de"), None);
+        assert_eq!(l.language_name("not a tag"), None);
+        l.set_language("ru").unwrap();
+    }
+}
