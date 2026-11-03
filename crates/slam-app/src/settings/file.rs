@@ -402,6 +402,21 @@ fn from_table(mut table: Table) -> Loaded {
     cx.float(
         &mut gameplay,
         "gameplay",
+        "cursor_size",
+        &mut settings.gameplay.cursor_size,
+        0.1..=2.0,
+    );
+    settings.gameplay.cursor_size = (settings.gameplay.cursor_size * 100.0).round() / 100.0;
+    cx.field(
+        &mut gameplay,
+        "gameplay",
+        "auto_cursor_size",
+        &mut settings.gameplay.auto_cursor_size,
+        |_| Ok(()),
+    );
+    cx.float(
+        &mut gameplay,
+        "gameplay",
         "hit_error_scale",
         &mut settings.gameplay.hit_error_scale,
         0.5..=2.0,

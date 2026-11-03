@@ -47,6 +47,10 @@ pub struct PlayOptions {
     pub hit_lighting: bool,
     /// The cursor leaves a trail.
     pub cursor_trail: bool,
+    /// Size of the cursor (ADR-0086).
+    pub cursor_size: f64,
+    /// The cursor's size follows the beatmap's circle size.
+    pub auto_cursor_size: bool,
     /// Size multiplier of the hit error meter (ADR-0050).
     pub hit_error_scale: f64,
     /// The chosen skin's folder (ADR-0051); `None` plays on the default skin.
@@ -204,6 +208,8 @@ pub fn spawn(mut config: LoaderConfig) -> std::io::Result<(LoaderLink, SceneTras
                     config.settings.snaking = options.snaking();
                     config.settings.hit_lighting = options.hit_lighting;
                     config.settings.cursor_trail = options.cursor_trail;
+                    config.settings.cursor_size = options.cursor_size as f32;
+                    config.settings.auto_cursor_size = options.auto_cursor_size;
                     config.settings.skin = options.skin;
                     config.settings.mods = options.mods;
                     let result = prepare(
@@ -261,6 +267,8 @@ mod tests {
             snaking_out: false,
             hit_lighting: true,
             cursor_trail: true,
+            cursor_size: 1.0,
+            auto_cursor_size: false,
             hit_error_scale: 1.0,
             skin: None,
             mods: ModSet::default(),
@@ -372,6 +380,38 @@ mod tests {
             assert_eq!(view.judgements.style.hit_lighting, on);
             assert_eq!(view.cursor.trail_shown(), on);
             assert_eq!(view.resume.trail_shown(), on);
+            link.free(Trash::Prepared(prepared));
+        }
+        drop(thread);
+    }
+
+    #[test]
+    fn a_play_sizes_its_cursor_by_the_circle_size_with_mods() {
+        use slam_osu::mods::Mod;
+        use slam_play::cursor::CursorScale;
+        let (mut link, _scenes, thread) = spawn(config()).unwrap();
+        // No `CircleSize`: 5, and 6.5 with HR.
+        let map =
+            Path::new(env!("CARGO_MANIFEST_DIR")).join("../slam-osu/tests/data/slider-samples.osu");
+        let hr = ModSet::new(vec![Mod::from_acronym("HR")]).unwrap();
+        for (id, auto, mods, scale) in [
+            (1, false, hr.clone(), 1.5),
+            // 1.5 × (1 − 0.7 × (1 + 6.5 − 5) / 5).
+            (2, true, hr, 0.975),
+            (3, true, ModSet::default(), 1.5 * 0.86),
+        ] {
+            let options = PlayOptions {
+                cursor_size: 1.5,
+                auto_cursor_size: auto,
+                mods,
+                ..options()
+            };
+            assert!(link.request(id, map.clone(), options));
+            let prepared = wait(&mut link).result.unwrap();
+            let view = prepared.scene.view();
+            let CursorScale { size, scale: got } = view.cursor.scale();
+            assert_eq!(size, 1.5);
+            assert!((got - scale).abs() < 1e-5, "{id}: {got}");
             link.free(Trash::Prepared(prepared));
         }
         drop(thread);

@@ -2717,6 +2717,8 @@ fn run_with<B: render::Backend>(
                 snaking: options.snaking(),
                 hit_lighting: options.hit_lighting,
                 cursor_trail: options.cursor_trail,
+                cursor_size: options.cursor_size as f32,
+                auto_cursor_size: options.auto_cursor_size,
                 skin: options.skin,
                 ..PlaySettings::default()
             }

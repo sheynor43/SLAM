@@ -12,7 +12,7 @@ use slam_render::sprite::{Sprite, SpriteBatch};
 use slam_render::{Blend, Color};
 
 use crate::circles::Easing;
-use crate::cursor::{CursorFrame, CursorTextures, CursorView, ExpandTimes};
+use crate::cursor::{CursorFrame, CursorScale, CursorTextures, CursorView, ExpandTimes};
 use crate::playfield::PlayfieldLayout;
 use crate::session::{PlaySnapshot, PlayState, RESUME_CURSOR_SIZE, hovers};
 
@@ -55,26 +55,39 @@ const RED: Color = Color {
 const PULSE_RED: f32 = 0.45;
 
 /// The draw side of the resume overlay.
-#[derive(Debug, Clone, Default)]
+#[derive(Debug, Clone)]
 pub struct ResumeView {
     cursor: CursorView,
     /// The resume shown ([`PlaySnapshot::resumes`]) and the engine time it was first drawn.
     shown: Option<(u32, u64)>,
     hover: HoverFade,
+    /// The target's scale by the cursor's size; its hit area keeps [`RESUME_CURSOR_SIZE`].
+    target_scale: f32,
 }
 
 impl ResumeView {
-    /// The overlay with its cursor's trail drawn or not, as the gameplay cursor's.
-    pub fn new(cursor_trail: bool) -> Self {
+    /// The overlay with its cursor's trail drawn or not and its cursor of `cursor_scale`, as
+    /// the gameplay cursor's. The target is drawn no smaller than at scale 1.
+    // Ported from osu!lazer 2026.1005.0-lazer: osu.Game.Rulesets.Osu/UI/OsuResumeOverlay.cs (OsuClickToResumeCursor.CalculateCursorScale)
+    pub fn new(cursor_trail: bool, cursor_scale: CursorScale) -> Self {
         ResumeView {
-            cursor: CursorView::new(cursor_trail),
-            ..ResumeView::default()
+            cursor: CursorView::new(cursor_trail, cursor_scale),
+            shown: None,
+            hover: HoverFade::default(),
+            target_scale: cursor_scale.scale.max(1.0),
         }
     }
 
     /// Whether the overlay's cursor draws its trail.
     pub fn trail_shown(&self) -> bool {
         self.cursor.trail_shown()
+    }
+}
+
+impl Default for ResumeView {
+    /// The overlay with the trail drawn and the cursor at scale 1, lazer's defaults.
+    fn default() -> Self {
+        ResumeView::new(true, CursorScale::default())
     }
 }
 
@@ -142,7 +155,13 @@ impl ResumeView {
         if let Some(disc) = disc {
             let elapsed = now_ns.saturating_sub(shown_ns) as f64;
             let target = TargetPose::at(elapsed, self.hover.white(now_ns));
-            target.push(batch, layout, snapshot.resume_target, disc);
+            target.push(
+                batch,
+                layout,
+                snapshot.resume_target,
+                disc,
+                self.target_scale,
+            );
         }
 
         let frame = CursorFrame {
@@ -186,9 +205,16 @@ impl TargetPose {
         }
     }
 
-    fn push(&self, batch: &mut SpriteBatch, layout: &PlayfieldLayout, at: Vec2, disc: AtlasRegion) {
+    fn push(
+        &self,
+        batch: &mut SpriteBatch,
+        layout: &PlayfieldLayout,
+        at: Vec2,
+        disc: AtlasRegion,
+        cursor_scale: f32,
+    ) {
         let centre = layout.to_window(at);
-        let side = RESUME_CURSOR_SIZE * layout.scale() * self.scale;
+        let side = RESUME_CURSOR_SIZE * layout.scale() * cursor_scale * self.scale;
         let mut circle = |side: f32, colour: Color| {
             let mut sprite = Sprite::new(
                 disc.texture,
@@ -260,5 +286,49 @@ mod tests {
         hover.set(false, 400 * MS as u64);
         assert_eq!(hover.white(400 * MS as u64), 1.0);
         assert_eq!(hover.white(800 * MS as u64), 0.0);
+    }
+
+    #[test]
+    fn the_target_takes_the_cursor_scale_but_never_shrinks_below_its_size() {
+        let scale = |size, auto, cs| ResumeView::new(true, CursorScale::new(size, auto, cs));
+        assert_eq!(scale(0.5, false, 5.0).target_scale, 1.0);
+        assert_eq!(scale(1.5, false, 5.0).target_scale, 1.5);
+        // CS 10 makes it 0.16 of the size: 0.32, drawn at 1.
+        assert_eq!(scale(2.0, true, 10.0).target_scale, 1.0);
+        assert_eq!(ResumeView::default().target_scale, 1.0);
+    }
+
+    #[test]
+    fn the_target_is_drawn_at_its_size_times_the_cursor_scale() {
+        use slam_render::atlas::UvRect;
+        use slam_render::hal::{Extent, Origin};
+        use slam_render::textures::TextureId;
+
+        let disc = AtlasRegion {
+            texture: TextureId(1),
+            origin: Origin::new(0, 0),
+            size: Extent::new(1, 1),
+            uv: UvRect {
+                u0: 0.0,
+                v0: 0.0,
+                u1: 1.0,
+                v1: 1.0,
+            },
+        };
+        // 1024×768: a playfield scale of 1.6.
+        let layout = PlayfieldLayout::new(1024.0, 768.0);
+        let settled = TargetPose::at(PULSE_NS * 2.0, 0.0);
+        let mut batch = SpriteBatch::new();
+        settled.push(&mut batch, &layout, Vec2::new(256.0, 192.0), disc, 1.5);
+        let xs: Vec<f32> = batch.vertices()[batch.vertices().len() - 4..]
+            .iter()
+            .map(|v| v.position[0])
+            .collect();
+        let width = xs.iter().copied().fold(f32::NEG_INFINITY, f32::max)
+            - xs.iter().copied().fold(f32::INFINITY, f32::min);
+        assert!(
+            (width - RESUME_CURSOR_SIZE * 1.6 * 1.5).abs() < 1e-2,
+            "{width}"
+        );
     }
 }
