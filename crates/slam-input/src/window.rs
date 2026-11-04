@@ -42,6 +42,7 @@ use crate::mode::{
 #[cfg(windows)]
 use crate::native::NativeHandle;
 use crate::relative::{Change, MouseSettings, RelativeMouse};
+use crate::video_driver as choice;
 use crate::win_key::{WinKeyBlock, WinKeyHook, should_hook};
 use crate::{
     EventSink, InputCounters, InputEvent, InputKind, TickMapper, convert, convert_text, windowing,
@@ -278,24 +279,8 @@ impl InputWindow {
         if SDL_ACTIVE.swap(true, Ordering::AcqRel) {
             return Err(WindowError::AlreadyActive);
         }
-        // Fast parameter checks only: full checks validate every window pointer in a
-        // global registry under an rwlock, on each frame's swap (ADR-0018). Our
-        // pointers are valid by construction. SDL_Quit resets hints, so set it on
-        // every initialisation.
-        // SAFETY: valid C strings; hints may be set before SDL_Init.
-        unsafe { SDL_SetHint(SDL_HINT_INVALID_PARAM_CHECKS, c"1".as_ptr()) };
-        // X11 defaults to GLX, which has no context priority (ADR-0075).
-        #[cfg(target_os = "linux")]
-        // SAFETY: valid C strings; X11 reads the hint inside SDL_Init, so set it first.
-        // The environment variable still overrides it.
-        unsafe {
-            SDL_SetHint(sdl3_sys::hints::SDL_HINT_VIDEO_FORCE_EGL, c"1".as_ptr())
-        };
-        // SAFETY: SDL is not initialised (guarded by `SDL_ACTIVE`).
-        if !unsafe { SDL_Init(SDL_INIT_VIDEO) } {
-            let err = WindowError::Init(sdl_error());
-            // SAFETY: undoes the partial initialisation.
-            unsafe { SDL_Quit() };
+        let hint = choice::driver_hint(choice::preferred_video_driver(), choice::env_sets_driver());
+        if let Err(err) = choice::init_with_fallback(hint, init_video) {
             SDL_ACTIVE.store(false, Ordering::Release);
             return Err(err);
         }
@@ -1078,6 +1063,37 @@ fn video_driver() -> String {
     unsafe { CStr::from_ptr(ptr) }
         .to_string_lossy()
         .into_owned()
+}
+
+/// Sets the hints SDL reads at initialisation, `driver` among them, and starts the video
+/// subsystem; on failure shuts SDL down again. SDL_Quit resets hints, so they are set
+/// on every attempt.
+fn init_video(driver: Option<&CStr>) -> Result<(), WindowError> {
+    // Fast parameter checks only: full checks validate every window pointer in a
+    // global registry under an rwlock, on each frame's swap (ADR-0018). Our
+    // pointers are valid by construction.
+    // SAFETY: valid C strings; hints may be set before SDL_Init.
+    unsafe { SDL_SetHint(SDL_HINT_INVALID_PARAM_CHECKS, c"1".as_ptr()) };
+    // X11 defaults to GLX, which has no context priority (ADR-0075).
+    #[cfg(target_os = "linux")]
+    // SAFETY: valid C strings; X11 reads the hint inside SDL_Init, so set it first.
+    // The environment variable still overrides it.
+    unsafe {
+        SDL_SetHint(sdl3_sys::hints::SDL_HINT_VIDEO_FORCE_EGL, c"1".as_ptr())
+    };
+    if let Some(driver) = driver {
+        // SAFETY: valid C strings; SDL_Init reads the hint, so set it first (ADR-0097).
+        unsafe { SDL_SetHint(sdl3_sys::hints::SDL_HINT_VIDEO_DRIVER, driver.as_ptr()) };
+    }
+    // SAFETY: SDL is not initialised: the caller holds `SDL_ACTIVE`, and a failed
+    // attempt shuts SDL down below.
+    if !unsafe { SDL_Init(SDL_INIT_VIDEO) } {
+        let err = WindowError::Init(sdl_error());
+        // SAFETY: undoes the partial initialisation.
+        unsafe { SDL_Quit() };
+        return Err(err);
+    }
+    Ok(())
 }
 
 pub(crate) fn sdl_error() -> String {

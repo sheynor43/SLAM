@@ -5,7 +5,7 @@ use std::sync::atomic::{AtomicU32, Ordering};
 use slam_audio::StreamConfig;
 use slam_engine::EngineConfig;
 use slam_engine::limiter::LimiterMode;
-use slam_input::{MouseButton, WindowMode};
+use slam_input::{MouseButton, VideoDriver, WindowMode};
 use slam_osu::replay::Actions;
 use slam_play::input::{Binding, Bindings, Input, MAX_BINDINGS};
 use slam_play::{BackgroundSettings, FpsCorner};
@@ -79,6 +79,7 @@ fn round_trip_non_default() {
     s.gameplay.beatmap_hitsounds = false;
     s.gameplay.always_play_first_combo_break = false;
     s.gameplay.disable_win_key = false;
+    s.window.video_driver = VideoDriver::Wayland;
     s.gameplay.mouse_buttons = false;
     s.gameplay.snaking_in = true;
     s.gameplay.snaking_out = true;
@@ -980,6 +981,34 @@ fn window_defaults_are_lazer_first_start() {
     assert_eq!(window.display, 0);
     assert_eq!(window.windowed_position, [0.5, 0.5]);
     assert!(window.minimise_on_focus_loss);
+    assert_eq!(window.video_driver, VideoDriver::Auto);
+}
+
+#[test]
+fn video_driver_is_read_and_an_invalid_one_falls_back_to_auto() {
+    for (name, driver) in [
+        ("auto", VideoDriver::Auto),
+        ("wayland", VideoDriver::Wayland),
+        ("x11", VideoDriver::X11),
+    ] {
+        let loaded = file::from_toml_str(&format!("[window]\nvideo_driver = \"{name}\"\n"));
+        assert_eq!(loaded.status, LoadStatus::Ok, "{:?}", loaded.warnings);
+        assert_eq!(loaded.settings.window.video_driver, driver);
+        let text = file::to_toml_string(&loaded.settings).unwrap();
+        assert!(
+            text.contains(&format!("video_driver = \"{name}\"")),
+            "{text}"
+        );
+    }
+    let loaded = file::from_toml_str("[window]\nvideo_driver = \"mir\"\n");
+    assert_eq!(loaded.status, LoadStatus::Recovered);
+    assert_eq!(loaded.settings.window.video_driver, VideoDriver::Auto);
+    assert!(
+        loaded
+            .warnings
+            .iter()
+            .any(|w| w.contains("window.video_driver"))
+    );
 }
 
 #[test]
@@ -1000,10 +1029,11 @@ fn window_section_is_read_and_written() {
             display: 1,
             windowed_position: [0.3, -0.5],
             minimise_on_focus_loss: false,
+            video_driver: VideoDriver::Auto,
         }
     );
     let text = file::to_toml_string(&loaded.settings).unwrap();
-    assert!(text.contains("[window]\nmode = \"borderless\"\nfullscreen_size = \"1920x1080\"\nwindowed_size = \"1280x720\"\ndisplay = 1\nwindowed_position = [0.3, -0.5]\nminimise_on_focus_loss = false\n"), "{text}");
+    assert!(text.contains("[window]\nmode = \"borderless\"\nfullscreen_size = \"1920x1080\"\nwindowed_size = \"1280x720\"\ndisplay = 1\nwindowed_position = [0.3, -0.5]\nminimise_on_focus_loss = false\nvideo_driver = \"auto\"\n"), "{text}");
     assert_eq!(file::from_toml_str(&text).settings.window, window);
 
     let native = file::to_toml_string(&Settings::default()).unwrap();

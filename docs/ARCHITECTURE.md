@@ -522,7 +522,7 @@ logs/
 
 ## 19. Платформы, сборка, лицензии
 
-- **Платформы**: Windows 10+ x64, Linux x64 (X11 и Wayland). macOS — позже (Metal-бэкенд, CoreAudio).
+- **Платформы**: Windows 10+ x64, Linux x64 (X11 и Wayland; драйвер выбирает SDL или настройка `video_driver`, [ADR-0097](adr/0097-linux-video-driver.md)). macOS — позже (Metal-бэкенд, CoreAudio).
 - **Сборка**: Rust stable (версия закреплена в `rust-toolchain.toml`); C++-компилятор для Luau и signalsmith-stretch (MSVC на Windows, gcc/clang на Linux; для кросс-проверки Windows на Linux — MinGW-w64).
 - **SDL3** (`sdl3-sys`): на Linux собирается из исходников и линкуется статически (нужен CMake). X11 и Wayland подгружаются во время работы, но поддержка попадает в сборку, только если при сборке есть их заголовки (`libx11-dev`, `libwayland-dev`, `libxkbcommon-dev` и т. п.); без них CMake SDL отказывается конфигурироваться (сборка падает). CI ставит эти пакеты перед сборкой. На Windows используется SDL3 из системы (pkg-config).
 - **Упаковка**: Windows — установщик + портативный архив; Linux — AppImage (Flatpak позже: его песочница мешает импорту из других клиентов). Альфа: только портативный `.zip` и AppImage, собираются по тегу `v*`; дефолтный скин встроен в бинарник и распаковывается в `cache/default-skin/<хеш>/` ([ADR-0068](adr/0068-alpha-release-packaging.md)).
