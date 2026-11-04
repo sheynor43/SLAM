@@ -12,8 +12,8 @@ use toml::{Table, Value};
 
 use super::keys;
 use super::model::{
-    BindingEntry, DrawRate, FpsScreens, HitsoundDelay, InputSettings, KeySlot, Settings, Timing,
-    Window, corner_from_name, parse_size, window_mode_from_name,
+    BindingEntry, Combo, DrawRate, FpsScreens, HitsoundDelay, InputSettings, KeySlot, Settings,
+    Timing, Window, corner_from_name, parse_size, window_mode_from_name,
 };
 
 /// The schema version this build writes.
@@ -518,7 +518,7 @@ fn from_table(mut table: Table) -> Loaded {
                             if let Some(binding) = entry.to_binding() {
                                 if Settings::key_allowed(
                                     KeySlot::Play(binding.action, 0),
-                                    binding.input,
+                                    Combo::plain(binding.input),
                                 ) {
                                     entries.push(binding);
                                 } else {
@@ -563,33 +563,48 @@ fn from_table(mut table: Table) -> Loaded {
     cx.unknown(&input, "input");
 
     let mut hotkeys = cx.section(&mut table, "hotkeys");
-    let mut toggle_fps: Option<String> = None;
-    cx.opt(&mut hotkeys, "hotkeys", "toggle_fps", &mut toggle_fps);
-    if let Some(name) = toggle_fps {
-        match keys::input_from_name(&name) {
-            Some(input) => settings.hotkeys.toggle_fps = Some(input),
-            None => cx.warn(format!(
-                "hotkeys.toggle_fps: unknown input \"{name}\", left unbound"
-            )),
+    for (name, slot) in [
+        ("toggle_fps", KeySlot::ToggleFps),
+        ("toggle_settings", KeySlot::ToggleSettings),
+    ] {
+        let mut value: Option<String> = None;
+        cx.opt(&mut hotkeys, "hotkeys", name, &mut value);
+        let Some(value) = value else { continue };
+        let combo = if value.trim().is_empty() {
+            None
+        } else {
+            match keys::combo_from_name(&value) {
+                Some(combo) => Some(combo),
+                None => {
+                    cx.warn(format!(
+                        "hotkeys.{name}: unknown input \"{value}\", left unbound"
+                    ));
+                    None
+                }
+            }
+        };
+        match slot {
+            KeySlot::ToggleFps => settings.hotkeys.toggle_fps = combo,
+            _ => settings.hotkeys.toggle_settings = combo,
         }
     }
     cx.unknown(&hotkeys, "hotkeys");
-    // A hotkey on a gameplay or menu key would do both: the other wins, as the settings
-    // screen cannot write it so.
-    if let Some(input) = settings.hotkeys.toggle_fps
-        && (settings
-            .input
-            .bindings
-            .as_slice()
-            .iter()
-            .any(|b| b.input == input)
-            || !Settings::key_allowed(KeySlot::ToggleFps, input))
-    {
-        cx.warn(format!(
-            "hotkeys.toggle_fps: {} is a gameplay or menu key, left unbound",
-            keys::input_name(input)
-        ));
-        settings.hotkeys.toggle_fps = None;
+    // A hotkey on a gameplay or menu key, or on another hotkey's, would do both: the other
+    // wins, as the settings screen cannot write it so.
+    for (name, slot) in [
+        ("toggle_fps", KeySlot::ToggleFps),
+        ("toggle_settings", KeySlot::ToggleSettings),
+    ] {
+        let Some(combo) = settings.key(slot) else {
+            continue;
+        };
+        if settings.key_conflict(slot, combo).is_some() || !Settings::key_allowed(slot, combo) {
+            cx.warn(format!(
+                "hotkeys.{name}: {} is a gameplay, menu or other hotkey's key, left unbound",
+                keys::combo_name(combo)
+            ));
+            settings.clear_key(slot);
+        }
     }
 
     cx.unknown(&table, "");

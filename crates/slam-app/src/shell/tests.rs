@@ -243,7 +243,7 @@ fn songs_flag() {
 }
 
 /// A shell in the song select at rest over two published sets.
-fn in_song_select() -> (
+pub(super) fn in_song_select() -> (
     ShellState,
     ShellSnapshot,
     rtrb::Producer<crate::songs::Published>,
@@ -613,6 +613,7 @@ fn host(name: &str, with_track: bool) -> HostFixture {
         scenes: scene_tx,
         os_cursor: CursorVisibility::default(),
         win_key: WinKeyBlock::default(),
+        menu_shown: false,
         pending: Pending::Idle,
         game: None,
         retiring: None,
@@ -1170,7 +1171,7 @@ fn opening_the_settings_lists_the_devices_again() {
     let mut snap = ShellSnapshot::default();
     // The menu's settings entry.
     s.tick(0, &[key(KEY_DOWN), key(KEY_ENTER)], &mut snap);
-    assert!(matches!(s.stack().top(), AppScreen::Settings(_)));
+    assert!(s.settings_open());
     fixture.host.advance(1, &mut s);
     assert!(matches!(ends.requests.pop(), Ok(Request::List(_))));
     fixture.host.advance(2, &mut s);
@@ -1194,10 +1195,7 @@ fn opening_the_settings_lists_the_devices_again() {
             .is_ok()
     );
     fixture.host.advance(3, &mut s);
-    let AppScreen::Settings(screen) = s.stack().top() else {
-        panic!("the settings screen");
-    };
-    let snapshot = screen.snapshot();
+    let snapshot = s.settings_screen().expect("the settings panel").snapshot();
     let Some(RowWidget::Dropdown(device)) = snapshot.widgets.get(rows::device_row()) else {
         panic!("the device row");
     };
@@ -1317,7 +1315,7 @@ fn acronyms(s: &ShellState) -> Vec<&str> {
 }
 
 /// A tick `n` after the song select came in.
-fn at(n: u64) -> u64 {
+pub(super) fn at(n: u64) -> u64 {
     TRANSITION_NS + n
 }
 
@@ -1582,9 +1580,9 @@ fn the_control_hotkeys_wait_while_a_play_loads() {
 fn control_released_during_a_play_is_released_after_it() {
     let (mut s, _snap, _producer) = in_song_select();
     s.follow_pointer(&[key(KEY_LEFT_CTRL), key_up(KEY_LEFT_CTRL)]);
-    assert_eq!(s.ctrl, 0);
+    assert_eq!(s.modifiers, 0);
     s.follow_pointer(&[key(KEY_RIGHT_CTRL)]);
-    assert_eq!(s.ctrl, 2);
+    assert_eq!(s.modifiers, 2);
 }
 
 #[test]

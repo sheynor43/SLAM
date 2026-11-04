@@ -26,25 +26,31 @@ fn key(scancode: u16) -> InputEvent {
 /// Opens the settings from the menu and lets the transition end.
 fn opened(s: &mut ShellState, snap: &mut ShellSnapshot) {
     s.tick(0, &[key(KEY_DOWN), key(KEY_ENTER)], snap);
-    assert!(matches!(s.stack().top(), AppScreen::Settings(_)));
+    assert!(s.settings_open());
     s.tick(TRANSITION_NS, &[], snap);
 }
 
 const LATER: u64 = 10 * TRANSITION_NS;
+
+/// A little over the panel's slide.
+const PANEL_NS: u64 = 300_000_000;
 
 #[test]
 fn the_menu_opens_the_settings_and_escape_closes_them() {
     let mut s = state();
     let mut snap = ShellSnapshot::default();
     s.tick(0, &[key(KEY_DOWN), key(KEY_ENTER)], &mut snap);
-    assert!(matches!(
-        snap.layers[1].as_ref().unwrap().view,
-        ScreenView::Settings(_)
-    ));
+    assert!(snap.panel.is_some());
+    assert!(s.settings_open());
+    // The menu stays under the panel.
     s.tick(TRANSITION_NS, &[], &mut snap);
     assert_eq!(snap.layers.iter().flatten().count(), 1);
     s.tick(LATER, &[key(KEY_ESCAPE)], &mut snap);
-    assert!(matches!(s.stack().top(), AppScreen::Menu(_)));
+    assert!(!s.settings_open());
+    // The panel slides out, then goes.
+    s.tick(LATER + PANEL_NS * 2, &[], &mut snap);
+    assert!(snap.panel.is_none());
+    assert!(s.settings_screen().is_none());
 }
 
 #[test]
@@ -105,9 +111,9 @@ fn escape_closes_an_open_list_before_the_screen() {
     );
     s.tick(LATER, &[key(KEY_ENTER)], &mut snap);
     s.tick(LATER, &[key(KEY_ESCAPE)], &mut snap);
-    assert!(matches!(s.stack().top(), AppScreen::Settings(_)));
+    assert!(s.settings_open());
     s.tick(LATER, &[key(KEY_ESCAPE)], &mut snap);
-    assert!(matches!(s.stack().top(), AppScreen::Menu(_)));
+    assert!(!s.settings_open());
 }
 
 #[test]
@@ -454,10 +460,7 @@ fn on_keys(s: &mut ShellState, snap: &mut ShellSnapshot) {
 }
 
 fn settings_screen(s: &ShellState) -> &SettingsScreen {
-    match s.stack().top() {
-        AppScreen::Settings(screen) => screen,
-        other => panic!("not the settings: {other:?}"),
-    }
+    s.settings_screen().expect("the settings panel is open")
 }
 
 fn edited(s: &ShellState) -> &Settings {
@@ -487,7 +490,7 @@ fn a_key_the_menus_do_not_know_is_captured_and_saved_on_close() {
         Some(Input::Key(KEY_Z))
     );
     s.tick(LATER, &[key(KEY_ESCAPE)], &mut snap);
-    assert!(matches!(s.stack().top(), AppScreen::Menu(_)));
+    assert!(!s.settings_open());
     assert_eq!(
         s.settings().input.slot(Actions::LEFT, 0),
         Some(Input::Key(KEY_Q))
@@ -514,12 +517,12 @@ fn escape_while_listening_cancels_and_keeps_the_screen_open() {
     let mut snap = ShellSnapshot::default();
     on_keys(&mut s, &mut snap);
     s.tick(LATER, &[key(KEY_ENTER), key(KEY_ESCAPE)], &mut snap);
-    assert!(matches!(s.stack().top(), AppScreen::Settings(_)));
+    assert!(s.settings_open());
     assert!(!settings_screen(&s).is_listening());
     assert_eq!(*edited(&s), Settings::default());
     // Now it closes.
     s.tick(LATER, &[key(KEY_ESCAPE)], &mut snap);
-    assert!(matches!(s.stack().top(), AppScreen::Menu(_)));
+    assert!(!s.settings_open());
     assert!(s.take_save_request().is_none());
 }
 
@@ -529,7 +532,7 @@ fn delete_while_listening_clears_the_slot() {
     let mut snap = ShellSnapshot::default();
     on_keys(&mut s, &mut snap);
     s.tick(LATER, &[key(KEY_ENTER), key(KEY_DELETE)], &mut snap);
-    assert!(matches!(s.stack().top(), AppScreen::Settings(_)));
+    assert!(s.settings_open());
     // The mouse button moved up into the first slot.
     assert_eq!(
         edited(&s).input.slot(Actions::LEFT, 0),
@@ -564,7 +567,7 @@ fn a_click_starts_listening_and_the_next_press_of_any_button_is_captured() {
     assert_eq!(*edited(&s), Settings::default());
     s.tick(LATER, &[mouse(MouseButton::X1, true)], &mut snap);
     assert!(!settings_screen(&s).is_listening());
-    assert!(matches!(s.stack().top(), AppScreen::Settings(_)));
+    assert!(s.settings_open());
     assert_eq!(
         edited(&s).input.slot(Actions::LEFT, 1),
         Some(Input::Mouse(MouseButton::X1))
@@ -597,7 +600,7 @@ fn a_taken_key_asks_and_keeping_changes_nothing() {
     assert_eq!(*edited(&s), Settings::default());
     // Escape keeps and does not close.
     s.tick(LATER, &[key(KEY_ESCAPE)], &mut snap);
-    assert!(matches!(s.stack().top(), AppScreen::Settings(_)));
+    assert!(s.settings_open());
     assert!(settings_screen(&s).conflict().is_none());
     assert_eq!(*edited(&s), Settings::default());
     // Activate keeps by default.
@@ -663,7 +666,7 @@ const KEY_F12: u16 = 69;
 
 fn with_fps_hotkey() -> ShellState {
     let mut s = state();
-    s.settings.hotkeys.toggle_fps = Some(Input::Key(KEY_F12));
+    s.settings.hotkeys.toggle_fps = Some(Combo::plain(Input::Key(KEY_F12)));
     s
 }
 
@@ -730,12 +733,18 @@ fn the_fps_hotkey_row_captures_a_key_and_a_gameplay_key_asks() {
     s.tick(LATER, &downs, &mut snap);
     assert_eq!(settings_screen(&s).focus(), Row::ToggleFpsKey as usize);
     s.tick(LATER, &[key(KEY_ENTER), key(KEY_F12)], &mut snap);
-    assert_eq!(edited(&s).hotkeys.toggle_fps, Some(Input::Key(KEY_F12)));
+    assert_eq!(
+        edited(&s).hotkeys.toggle_fps,
+        Some(Combo::plain(Input::Key(KEY_F12)))
+    );
     // Captured, not toggled: the hotkey in force is still unbound.
     assert!(!edited(&s).frame.show_fps);
     // Space skips in gameplay and a left click works the menus: refused, F11 stays.
     s.tick(LATER, &[key(KEY_ENTER), key(KEY_SPACE)], &mut snap);
-    assert_eq!(edited(&s).hotkeys.toggle_fps, Some(Input::Key(KEY_F12)));
+    assert_eq!(
+        edited(&s).hotkeys.toggle_fps,
+        Some(Combo::plain(Input::Key(KEY_F12)))
+    );
     let Some(RowWidget::Key(row)) = settings_screen(&s).widget(Row::ToggleFpsKey as usize) else {
         panic!("a key row");
     };
@@ -745,7 +754,10 @@ fn the_fps_hotkey_row_captures_a_key_and_a_gameplay_key_asks() {
         &[key(KEY_ENTER), mouse(MouseButton::Left, true)],
         &mut snap,
     );
-    assert_eq!(edited(&s).hotkeys.toggle_fps, Some(Input::Key(KEY_F12)));
+    assert_eq!(
+        edited(&s).hotkeys.toggle_fps,
+        Some(Combo::plain(Input::Key(KEY_F12)))
+    );
     assert!(settings_screen(&s).conflict().is_none());
     // Z is the left key: the screen asks before taking it.
     s.tick(LATER, &[key(KEY_ENTER), key(KEY_Z)], &mut snap);
@@ -753,7 +765,10 @@ fn the_fps_hotkey_row_captures_a_key_and_a_gameplay_key_asks() {
         settings_screen(&s).conflict().map(|c| c.other),
         Some(Some(Row::LeftKey1 as usize))
     );
-    assert_eq!(edited(&s).hotkeys.toggle_fps, Some(Input::Key(KEY_F12)));
+    assert_eq!(
+        edited(&s).hotkeys.toggle_fps,
+        Some(Combo::plain(Input::Key(KEY_F12)))
+    );
 }
 
 fn with_folder_commands() -> (
@@ -808,9 +823,7 @@ fn the_songs_folder_row_shows_the_folder_and_opens_the_picker() {
     // The folder arrived while the screen was open.
     s.tick(LATER, &[], &mut snap);
     assert_eq!(settings_screen(&s).value_text(), "/games/osu/Songs");
-    let ScreenView::Settings(view) = &snap.layers[0].as_ref().unwrap().view else {
-        panic!("settings");
-    };
+    let view = &snap.panel.as_ref().expect("the panel").settings;
     assert_eq!(&*view.value_text, "/games/osu/Songs");
     // The library section is the last; its only row is the focused one.
     let tabs = [key(KEY_TAB); SECTIONS - 1];
@@ -1112,7 +1125,7 @@ fn held_arrows_walk_and_step_the_settings_but_not_the_language() {
     assert_ne!(s.editing.as_ref().expect("open").window.mode, mode);
     // Neither Enter nor Escape repeats.
     s.tick(LATER, &[repeat(KEY_ESCAPE), repeat(KEY_ENTER)], &mut snap);
-    assert!(matches!(s.stack().top(), AppScreen::Settings(_)));
+    assert!(s.settings_open());
 }
 
 #[test]
@@ -1136,4 +1149,239 @@ fn a_key_held_past_its_capture_does_not_walk_until_released() {
     };
     s.tick(LATER, &[up, repeat(KEY_DOWN)], &mut snap);
     assert_eq!(settings_screen(&s).focus(), Row::LeftKey2 as usize);
+}
+
+const KEY_O: u16 = 18;
+const KEY_P: u16 = 19;
+const KEY_LCTRL: u16 = 224;
+const KEY_LSHIFT: u16 = 225;
+
+fn key_up(scancode: u16) -> InputEvent {
+    InputEvent {
+        time_ns: 0,
+        kind: InputKind::Key {
+            scancode,
+            down: false,
+        },
+    }
+}
+
+fn text(text: &str) -> InputEvent {
+    InputEvent {
+        time_ns: 0,
+        kind: InputKind::Text(slam_input::TextChunk::new(text).unwrap()),
+    }
+}
+
+/// Presses `scancode` with the modifiers already held and lets it go.
+fn tap(s: &mut ShellState, snap: &mut ShellSnapshot, now: u64, scancode: u16) {
+    s.tick(now, &[key(scancode), key_up(scancode)], snap);
+}
+
+fn with_localizer() -> ShellState {
+    let mut s = state();
+    s.set_localizer(Arc::new(
+        slam_ui::i18n::Localizer::builtin().expect("the built-in languages"),
+    ));
+    s
+}
+
+#[test]
+fn ctrl_o_opens_and_closes_the_panel_on_the_menu() {
+    let mut s = state();
+    let mut snap = ShellSnapshot::default();
+    s.tick(0, &[key(KEY_LCTRL)], &mut snap);
+    tap(&mut s, &mut snap, 1, KEY_O);
+    assert!(s.settings_open());
+    assert!(snap.panel.is_some());
+    assert!(matches!(s.stack().top(), AppScreen::Menu(_)));
+    s.tick(LATER, &[], &mut snap);
+    assert_eq!(snap.panel.as_ref().unwrap().openness, 1.0);
+    tap(&mut s, &mut snap, LATER, KEY_O);
+    assert!(!s.settings_open());
+    s.tick(LATER + PANEL_NS, &[], &mut snap);
+    assert!(snap.panel.is_none());
+    assert!(s.settings_screen().is_none());
+}
+
+#[test]
+fn ctrl_o_opens_and_closes_the_panel_on_the_song_select() {
+    let (mut s, mut snap, _producer) = super::tests::in_song_select();
+    let t = super::tests::at(1);
+    s.tick(t, &[key(KEY_LCTRL)], &mut snap);
+    tap(&mut s, &mut snap, t, KEY_O);
+    assert!(s.settings_open());
+    assert_eq!(*s.stack().top(), AppScreen::SongSelect);
+    tap(&mut s, &mut snap, t + LATER, KEY_O);
+    assert!(!s.settings_open());
+    s.tick(t + LATER + PANEL_NS, &[], &mut snap);
+    assert!(s.settings_screen().is_none());
+    assert_eq!(*s.stack().top(), AppScreen::SongSelect);
+}
+
+#[test]
+fn plain_o_does_not_toggle_the_panel() {
+    let mut s = state();
+    let mut snap = ShellSnapshot::default();
+    tap(&mut s, &mut snap, 1, KEY_O);
+    assert!(!s.settings_open());
+    // Nor with a different modifier set.
+    s.tick(2, &[key(KEY_LCTRL), key(KEY_LSHIFT)], &mut snap);
+    tap(&mut s, &mut snap, 3, KEY_O);
+    assert!(!s.settings_open());
+}
+
+#[test]
+fn rebinding_the_settings_hotkey_moves_the_toggle() {
+    let mut s = state();
+    let mut snap = ShellSnapshot::default();
+    on_keys(&mut s, &mut snap);
+    let downs = [key(KEY_DOWN); Row::ToggleSettingsKey as usize - Row::LeftKey1 as usize];
+    s.tick(LATER, &downs, &mut snap);
+    assert_eq!(settings_screen(&s).focus(), Row::ToggleSettingsKey as usize);
+    // The modifiers alone do not end the capture.
+    s.tick(
+        LATER,
+        &[key(KEY_ENTER), key(KEY_LCTRL), key(KEY_LSHIFT)],
+        &mut snap,
+    );
+    assert!(settings_screen(&s).is_listening());
+    s.tick(LATER, &[key(KEY_P)], &mut snap);
+    assert!(!settings_screen(&s).is_listening());
+    let combo = Combo {
+        mods: Mods::CTRL.with(Mods::SHIFT),
+        input: Input::Key(KEY_P),
+    };
+    assert_eq!(edited(&s).hotkeys.toggle_settings, Some(combo));
+    s.tick(
+        LATER,
+        &[key_up(KEY_P), key_up(KEY_LCTRL), key_up(KEY_LSHIFT)],
+        &mut snap,
+    );
+    // Close with Escape: the new binding is in force.
+    s.tick(LATER, &[key(KEY_ESCAPE)], &mut snap);
+    assert_eq!(s.settings().hotkeys.toggle_settings, Some(combo));
+    let t = 2 * LATER;
+    s.tick(t, &[], &mut snap);
+    assert!(s.settings_screen().is_none());
+
+    s.tick(t, &[key(KEY_LCTRL)], &mut snap);
+    tap(&mut s, &mut snap, t, KEY_O);
+    assert!(!s.settings_open(), "Ctrl+O no longer toggles");
+    s.tick(t, &[key_up(KEY_LCTRL)], &mut snap);
+    s.tick(t, &[key(KEY_LCTRL), key(KEY_LSHIFT)], &mut snap);
+    tap(&mut s, &mut snap, t, KEY_P);
+    assert!(s.settings_open(), "Ctrl+Shift+P does");
+    // Ctrl+P alone is not it.
+    let t = 3 * LATER;
+    tap(&mut s, &mut snap, t, KEY_P);
+    assert!(!s.settings_open());
+}
+
+#[test]
+fn text_typed_over_the_panel_searches_its_rows() {
+    let mut s = with_localizer();
+    let mut snap = ShellSnapshot::default();
+    s.tick(0, &[key(KEY_LCTRL)], &mut snap);
+    tap(&mut s, &mut snap, 1, KEY_O);
+    s.tick(LATER, &[key(KEY_LEFT)], &mut snap);
+    assert!(settings_screen(&s).search().is_empty());
+    s.tick(LATER, &[text("vol"), text("ume")], &mut snap);
+    let screen = settings_screen(&s);
+    assert!(screen.searching());
+    assert_eq!(screen.search().as_str(), "volume");
+    let view = &snap.panel.as_ref().unwrap().settings;
+    let shown = view.hidden[..view.len].iter().filter(|h| !**h).count();
+    assert!(shown > 0 && shown < view.len, "{shown} of {}", view.len);
+    // The menu under the panel got no text.
+    assert!(matches!(s.stack().top(), AppScreen::Menu(_)));
+}
+
+#[test]
+fn escape_clears_the_search_and_then_closes() {
+    let mut s = with_localizer();
+    let mut snap = ShellSnapshot::default();
+    s.tick(0, &[key(KEY_LCTRL)], &mut snap);
+    tap(&mut s, &mut snap, 1, KEY_O);
+    s.tick(LATER, &[text("volume")], &mut snap);
+    assert!(settings_screen(&s).searching());
+    tap(&mut s, &mut snap, LATER, KEY_ESCAPE);
+    assert!(s.settings_open());
+    assert!(!settings_screen(&s).searching());
+    tap(&mut s, &mut snap, LATER, KEY_ESCAPE);
+    assert!(!s.settings_open());
+}
+
+/// A press and release at `x`, `y`: the primary button.
+fn click_events(x: f32, y: f32) -> [InputEvent; 3] {
+    [
+        move_to(x, y),
+        mouse(MouseButton::Left, true),
+        mouse(MouseButton::Left, false),
+    ]
+}
+
+#[test]
+fn a_press_and_release_outside_the_panel_closes_it() {
+    let mut s = state();
+    let mut snap = ShellSnapshot::default();
+    opened(&mut s, &mut snap);
+    let width = s.settings_layout.width();
+    s.tick(LATER, &click_events(width + 20.0, 300.0), &mut snap);
+    assert!(!s.settings_open());
+
+    // Pressed inside, released outside: stays.
+    let mut s = state();
+    let mut snap = ShellSnapshot::default();
+    opened(&mut s, &mut snap);
+    let width = s.settings_layout.width();
+    s.tick(
+        LATER,
+        &[
+            move_to(width * 0.5, 300.0),
+            mouse(MouseButton::Left, true),
+            move_to(width + 20.0, 300.0),
+            mouse(MouseButton::Left, false),
+        ],
+        &mut snap,
+    );
+    assert!(s.settings_open());
+
+    // Pressed outside, released inside: stays too.
+    s.tick(
+        LATER,
+        &[
+            move_to(width + 20.0, 300.0),
+            mouse(MouseButton::Left, true),
+            move_to(width * 0.5, 300.0),
+            mouse(MouseButton::Left, false),
+        ],
+        &mut snap,
+    );
+    assert!(s.settings_open());
+}
+
+#[test]
+fn the_panel_opens_over_a_play_only_with_its_menu() {
+    let (mut s, mut snap, _producer) = super::tests::in_song_select();
+    let t = super::tests::at(1);
+    s.tick(t, &[key(KEY_ENTER)], &mut snap);
+    let start = 2 * TRANSITION_NS;
+    s.finish_loading(start, Some(1));
+    assert_eq!(*s.stack().top(), AppScreen::Play(1));
+    let t = start + TRANSITION_NS;
+    s.tick(t, &[], &mut snap);
+
+    s.follow_pointer(&[key(KEY_LCTRL)]);
+    s.watch_hotkeys(&[key(KEY_O)]);
+    s.tick(t + 1, &[key(KEY_O)], &mut snap);
+    assert!(!s.settings_open());
+    assert!(!s.settings_allowed());
+
+    s.set_play_menu(true);
+    assert!(s.settings_allowed());
+    s.tick(t + 2, &[key_up(KEY_O), key(KEY_O)], &mut snap);
+    assert!(s.settings_open());
+    assert!(snap.panel.is_some());
+    assert_eq!(*s.stack().top(), AppScreen::Play(1));
 }

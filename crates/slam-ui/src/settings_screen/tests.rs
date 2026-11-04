@@ -1037,3 +1037,191 @@ fn an_open_list_covers_the_rows_on_the_side_it_opens() {
     // Rows past the list stay drawn.
     assert!(!l.covered_by_list(0, count, 40));
 }
+
+fn texts(list: &[&str]) -> Arc<[Box<str>]> {
+    list.iter().map(|t| Box::<str>::from(*t)).collect()
+}
+
+fn type_str(s: &mut SettingsScreen, text: &str) {
+    for c in text.chars() {
+        input(s, SettingsInput::Type(c));
+    }
+}
+
+/// Section 0: master volume, music volume, hit lighting. Section 1: effect volume, skin.
+fn searchable() -> SettingsScreen {
+    let mut s = SettingsScreen::new(
+        &[
+            slider(0, 50.0),
+            slider(0, 60.0),
+            toggle(0, false),
+            slider(1, 70.0),
+            slider(1, 80.0),
+        ],
+        2,
+    );
+    s.set_search_texts(texts(&[
+        "master volume audio",
+        "music volume audio",
+        "hit lighting gameplay",
+        "effect volume sound",
+        "skin sound",
+    ]));
+    s
+}
+
+#[test]
+fn search_lists_matches_of_all_sections_with_global_slots() {
+    let mut s = searchable();
+    assert!(!s.searching());
+    type_str(&mut s, "volume");
+    assert!(s.searching());
+    assert_eq!(s.search().as_str(), "volume");
+    let snap = s.snapshot();
+    assert_eq!(snap.hidden[..5], [false, false, true, false, true]);
+    assert_eq!((s.slot(0), s.slot(1), s.slot(3)), (0, 1, 2));
+    // Tabs unselected: the screen shows a list, not a section.
+    assert!(snap.search.as_str() == "volume");
+    // The focus is on the first result and moves over the results of both sections.
+    assert_eq!(s.focus(), 0);
+    input(&mut s, SettingsInput::Down);
+    input(&mut s, SettingsInput::Down);
+    assert_eq!(s.focus(), 3);
+    input(&mut s, SettingsInput::Down);
+    assert_eq!(s.focus(), 3);
+    // A second word narrows it: every word must match.
+    type_str(&mut s, " music");
+    let snap = s.snapshot();
+    assert_eq!(snap.hidden[..5], [true, false, true, true, true]);
+    assert_eq!(s.focus(), 1);
+    // Erasing widens it again.
+    for _ in 0..6 {
+        input(&mut s, SettingsInput::Erase);
+    }
+    assert_eq!(s.search().as_str(), "volume");
+    assert_eq!(s.snapshot().hidden[..5], [false, false, true, false, true]);
+}
+
+#[test]
+fn search_is_by_substring_and_a_leading_space_is_ignored() {
+    let mut s = searchable();
+    input(&mut s, SettingsInput::Type(' '));
+    assert!(!s.searching());
+    type_str(&mut s, "ght");
+    assert_eq!(s.snapshot().hidden[..5], [true, true, false, true, true]);
+    type_str(&mut s, "zzz");
+    assert_eq!(s.snapshot().hidden[..5], [true; 5]);
+}
+
+#[test]
+fn back_clears_the_search_before_it_closes() {
+    let mut s = searchable();
+    type_str(&mut s, "sk");
+    assert_eq!(input(&mut s, SettingsInput::Back), None);
+    assert!(!s.searching());
+    assert!(s.snapshot().hidden[..5].iter().all(|h| !h));
+    assert_eq!(
+        input(&mut s, SettingsInput::Back),
+        Some(SettingsAction::Close)
+    );
+}
+
+#[test]
+fn switching_section_clears_the_search() {
+    let mut s = searchable();
+    type_str(&mut s, "volume");
+    input(&mut s, SettingsInput::NextSection);
+    assert!(!s.searching());
+    assert_eq!(s.search().as_str(), "");
+    assert_eq!(s.section(), 1);
+}
+
+/// 30 sliders in one section, in a window that fits only some of them.
+fn long_screen() -> (SettingsScreen, SettingsLayout) {
+    let rows: Vec<RowSpec> = (0..30).map(|i| slider(0, f64::from(i))).collect();
+    let layout = SettingsLayout::new(1280.0, 500.0, &theme());
+    assert!(
+        layout.visible_rows() >= 3.0 && layout.visible_rows() < 20.0,
+        "{}",
+        layout.visible_rows()
+    );
+    (SettingsScreen::new(&rows, 1), layout)
+}
+
+#[test]
+fn moving_the_focus_past_the_bottom_scrolls_to_keep_it_visible() {
+    let (mut s, l) = long_screen();
+    let visible = l.visible_rows().floor() as usize;
+    assert_eq!(s.scroll(), 0.0);
+    for _ in 0..visible - 1 {
+        s.input(SettingsInput::Down, &l);
+    }
+    assert_eq!(s.scroll(), 0.0);
+    s.input(SettingsInput::Down, &l);
+    assert_eq!(s.focus(), visible);
+    assert_eq!(s.scroll(), 1.0);
+    assert!(l.scrolled(s.scroll()).shows(s.slot(s.focus())));
+    for _ in 0..30 {
+        s.input(SettingsInput::Down, &l);
+    }
+    assert_eq!(s.focus(), 29);
+    assert!(l.scrolled(s.scroll()).shows(s.slot(29)));
+    // And back up.
+    for _ in 0..30 {
+        s.input(SettingsInput::Up, &l);
+    }
+    assert_eq!((s.focus(), s.scroll()), (0, 0.0));
+}
+
+#[test]
+fn the_wheel_scrolls_the_rows_and_is_clamped() {
+    let (mut s, l) = long_screen();
+    s.input(SettingsInput::Scroll { lines: 3.0 }, &l);
+    assert_eq!(s.scroll(), 3.0);
+    s.input(SettingsInput::Scroll { lines: -10.0 }, &l);
+    assert_eq!(s.scroll(), 0.0);
+    s.input(SettingsInput::Scroll { lines: 1000.0 }, &l);
+    let max = (30.0 - l.visible_rows()).ceil();
+    assert_eq!(s.scroll(), max);
+    // The last row is shown whole at the end.
+    assert!(l.scrolled(s.scroll()).shows(29));
+    // A short list does not scroll.
+    let mut short = screen();
+    short.input(SettingsInput::Scroll { lines: 5.0 }, &layout());
+    assert_eq!(short.scroll(), 0.0);
+}
+
+#[test]
+fn the_wheel_scrolls_an_open_dropdown_not_the_rows() {
+    let rows: Vec<RowSpec> = std::iter::once(dropdown(0, 40, 0))
+        .chain((0..19).map(|i| slider(0, f64::from(i))))
+        .collect();
+    let l = SettingsLayout::new(1280.0, 500.0, &theme());
+    let mut s = SettingsScreen::new(&rows, 1);
+    s.input(SettingsInput::Activate, &l);
+    s.input(SettingsInput::Scroll { lines: 4.0 }, &l);
+    assert_eq!(s.scroll(), 0.0);
+}
+
+#[test]
+fn pointing_respects_the_scroll() {
+    let (mut s, l) = long_screen();
+    s.input(SettingsInput::Scroll { lines: 5.0 }, &l);
+    let scrolled = l.scrolled(s.scroll());
+    // Row 2 is above the content now: not found, wherever it lies.
+    assert_eq!(s.row_at(&scrolled, 0.0, 0.0), None);
+    let (x, y) = centre(scrolled.row(2));
+    assert_eq!(s.row_at(&scrolled, x, y), None);
+    let (x, y) = centre(scrolled.row(5));
+    assert_eq!(s.row_at(&scrolled, x, y), Some(5));
+    let (x, y) = centre(scrolled.row(7));
+    assert_eq!(s.row_at(&scrolled, x, y), Some(7));
+    // A slot past the content area is not pointed at either.
+    let below = (6..30).find(|slot| !scrolled.shows(*slot)).unwrap();
+    let (x, y) = centre(scrolled.row(below));
+    assert_eq!(s.row_at(&scrolled, x, y), None);
+    // A press at row 0's old place focuses the row there now (5), not row 0.
+    let (x, y) = centre(l.row(0));
+    s.input(SettingsInput::PointerPress { x, y }, &l);
+    assert_eq!(s.focus(), 5);
+}

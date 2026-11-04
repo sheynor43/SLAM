@@ -3,6 +3,7 @@
 
 use std::sync::Arc;
 
+use slam_render::Color;
 use slam_render::atlas::AtlasRegion;
 use slam_render::sprite::SpriteBatch;
 use slam_text::{FontRegistry, Glyph, GlyphCache, GlyphKey};
@@ -14,6 +15,7 @@ use super::{
 use crate::menu::Rect;
 use crate::menu::view::{Frame, Line, Typesetter};
 use crate::screen::Pose;
+use crate::song_select::{QUERY_CAPACITY, SearchQuery};
 use crate::theme::{Theme, faded};
 use crate::widgets::{
     DropdownView, SliderLayout, SliderView, ToggleLayout, ToggleView, fill, push_left, push_right,
@@ -61,6 +63,8 @@ pub struct KeyLabels {
     pub keys: Vec<String>,
     /// The name of each mouse button, in the order of [`MouseKey::ALL`].
     pub mouse: [String; 5],
+    /// The prefixes of the modifiers of a hotkey: "Ctrl+", "Shift+", "Alt+".
+    pub mods: [String; 3],
     /// "This input is already bound:".
     pub conflict_title: String,
     /// The answer that keeps the old binding.
@@ -72,7 +76,10 @@ pub struct KeyLabels {
 /// The screen's localised texts, already formatted.
 #[derive(Clone, Debug, Default)]
 pub struct SettingsLabels {
-    pub title: String,
+    /// Shown in the empty search box (ADR-0095).
+    pub search_placeholder: String,
+    /// Shown instead of rows when nothing matches the search.
+    pub no_results: String,
     /// Section names, in section order.
     pub sections: Vec<String>,
     /// One entry per row, in row order.
@@ -88,6 +95,7 @@ struct KeyLines {
     prompt: Line,
     keys: Vec<Line>,
     mouse: Vec<Line>,
+    mods: Vec<Line>,
     title: Line,
     keep: Line,
     apply: Line,
@@ -100,6 +108,7 @@ impl KeyLines {
             prompt: Line::new(&labels.prompt),
             keys: labels.keys.iter().map(|k| Line::new(k)).collect(),
             mouse: labels.mouse.iter().map(|k| Line::new(k)).collect(),
+            mods: labels.mods.iter().map(|k| Line::new(k)).collect(),
             title: Line::new(&labels.conflict_title),
             keep: Line::new(&labels.conflict_keep),
             apply: Line::new(&labels.conflict_apply),
@@ -117,6 +126,7 @@ impl KeyLines {
         .into_iter()
         .chain(&self.keys)
         .chain(&self.mouse)
+        .chain(&self.mods)
     }
 
     fn all_mut(&mut self) -> impl Iterator<Item = &mut Line> {
@@ -130,18 +140,55 @@ impl KeyLines {
         .into_iter()
         .chain(&mut self.keys)
         .chain(&mut self.mouse)
+        .chain(&mut self.mods)
     }
 
-    /// The label of `value`.
+    /// The label of `value`'s key; [`KeyLines::prefixes`] has its modifiers.
     fn line(&self, value: KeyValue) -> &Line {
         match value {
             KeyValue::Empty => &self.empty,
-            KeyValue::Key(code) => self.keys.get(usize::from(code)).unwrap_or(&self.empty),
+            KeyValue::Key(code) | KeyValue::Chord { key: code, .. } => {
+                self.keys.get(usize::from(code)).unwrap_or(&self.empty)
+            }
             KeyValue::Mouse(button) => self
                 .mouse
                 .get(MouseKey::index(button))
                 .unwrap_or(&self.empty),
         }
+    }
+}
+
+impl KeyLines {
+    /// The modifier prefixes of `value`, in order.
+    fn prefixes(&self, value: KeyValue) -> impl Iterator<Item = &Line> {
+        let mods = match value {
+            KeyValue::Chord { mods, .. } => mods,
+            _ => 0,
+        };
+        [KeyValue::CTRL, KeyValue::SHIFT, KeyValue::ALT]
+            .into_iter()
+            .zip(&self.mods)
+            .filter(move |(bit, _)| mods & bit != 0)
+            .map(|(_, line)| line)
+    }
+
+    /// Draws `value`, its modifiers first, left in `rect`.
+    #[allow(clippy::too_many_arguments)]
+    fn push(
+        &self,
+        text: &mut SpriteBatch,
+        value: KeyValue,
+        rect: &Rect,
+        pad: f32,
+        colour: Color,
+        glyphs: &mut GlyphCache,
+    ) {
+        let mut x = pad;
+        for prefix in self.prefixes(value) {
+            push_left(text, prefix, rect, x, colour, glyphs);
+            x += prefix.layout.width();
+        }
+        push_left(text, self.line(value), rect, x, colour, glyphs);
     }
 }
 
@@ -177,7 +224,11 @@ pub struct SettingsView {
     type_setter: Typesetter,
     frame: Frame,
     layout: SettingsLayout,
-    title: Line,
+    placeholder: Line,
+    no_results: Line,
+    /// The search as typed, laid out when it changes; its buffers are reserved up front.
+    search: Line,
+    search_seen: SearchQuery,
     tabs: Vec<Line>,
     labels: Vec<Line>,
     marker: Line,
@@ -193,7 +244,7 @@ pub struct SettingsView {
 impl std::fmt::Debug for SettingsView {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("SettingsView")
-            .field("title", &self.title.text)
+            .field("placeholder", &self.placeholder.text)
             .finish_non_exhaustive()
     }
 }
@@ -280,7 +331,14 @@ impl SettingsView {
             type_setter: Typesetter::new(registry, theme.font_weight),
             frame: Frame { width, height },
             layout: SettingsLayout::new(width, height, &theme),
-            title: Line::new(&labels.title),
+            placeholder: Line::new(&labels.search_placeholder),
+            no_results: Line::new(&labels.no_results),
+            search: {
+                let mut line = Line::new("");
+                line.text.reserve(QUERY_CAPACITY);
+                line
+            },
+            search_seen: SearchQuery::default(),
             tabs: labels.sections.iter().map(|s| Line::new(s)).collect(),
             labels: (0..rows.len())
                 .map(|i| Line::new(labels.rows.get(i).map_or("", |r| &r.label)))
@@ -318,14 +376,24 @@ impl SettingsView {
         }
     }
 
+    /// Lays the texts out for the settings panel on a `width` × `height` window
+    /// ([`super::panel::panel_width`]), as [`SettingsView::lay_out_for`]. Allocates: call it
+    /// off the hot paths.
+    pub fn lay_out_for_panel(&mut self, width: f32, height: f32) {
+        let panel = super::panel::panel_width(width, height, &self.theme);
+        self.lay_out_for(panel, height);
+    }
+
     fn lay_out(&mut self) {
         let Frame { width, height } = self.frame;
         self.layout = SettingsLayout::new(width, height, &self.theme);
         let scale = self.layout.scale;
         let text = self.theme.widget_text_size * scale;
-        self.type_setter
-            .lay_out(&mut self.title, self.theme.settings_title_size * scale);
-        for line in self.tabs.iter_mut().chain(&mut self.labels) {
+        for line in self.tabs.iter_mut().chain(&mut self.labels).chain([
+            &mut self.placeholder,
+            &mut self.no_results,
+            &mut self.search,
+        ]) {
             self.type_setter.lay_out(line, text);
         }
         self.type_setter
@@ -422,7 +490,8 @@ impl SettingsView {
     /// Asks `glyphs` for every glyph the screen shows. Returns how many are not ready yet;
     /// repeat with [`GlyphCache::process`] in between until none are.
     pub fn request_glyphs(&self, glyphs: &mut GlyphCache) -> usize {
-        let own = std::iter::once(&self.title)
+        let own = [&self.placeholder, &self.no_results, &self.search]
+            .into_iter()
             .chain(&self.tabs)
             .chain(&self.labels)
             .chain(std::iter::once(&self.marker))
@@ -488,20 +557,45 @@ impl SettingsView {
             }
             self.lay_out_value();
         }
-        let layout = self.layout.shifted(pose.offset * width);
+        if self.search_seen != snapshot.search {
+            self.search_seen = snapshot.search;
+            self.search.text.clear();
+            self.search.text.push_str(snapshot.search.as_str());
+            self.type_setter.lay_out(
+                &mut self.search,
+                self.theme.widget_text_size * self.layout.scale,
+            );
+        }
+        let layout = self
+            .layout
+            .shifted(pose.offset * width)
+            .scrolled(snapshot.scroll);
         let (theme, opacity) = (self.theme, pose.opacity);
         let pad = theme.widget_pad * layout.scale;
 
-        push_left(
-            text,
-            &self.title,
-            &layout.title,
-            0.0,
-            faded(theme.text, opacity),
-            glyphs,
-        );
+        let search = layout.search();
+        fill(shapes, white, &search, faded(theme.button_fill, opacity));
+        if snapshot.search.is_empty() {
+            push_left(
+                text,
+                &self.placeholder,
+                &search,
+                pad,
+                faded(theme.disabled_text, opacity),
+                glyphs,
+            );
+        } else {
+            push_left(
+                text,
+                &self.search,
+                &search,
+                pad,
+                faded(theme.text, opacity),
+                glyphs,
+            );
+        }
         for (i, tab) in self.tabs.iter().enumerate() {
-            let fill_colour = if i == snapshot.section {
+            let fill_colour = if !snapshot.searching && i == snapshot.section {
                 theme.button_hover_fill
             } else {
                 theme.button_fill
@@ -526,7 +620,9 @@ impl SettingsView {
         // texts are drawn over all rectangles): those rows are left out.
         let open_list = (0..snapshot.len).find_map(|i| match &snapshot.widgets[i] {
             RowWidget::Dropdown(d)
-                if d.is_open() && self.meta[i].0 == snapshot.section && !snapshot.hidden[i] =>
+                if d.is_open()
+                    && (snapshot.searching || self.meta[i].0 == snapshot.section)
+                    && !snapshot.hidden[i] =>
             {
                 Some((usize::from(snapshot.slots[i]), d.count()))
             }
@@ -534,11 +630,15 @@ impl SettingsView {
         });
         // The open list is drawn last, over the other widgets' rectangles.
         let mut open_row = None;
+        let mut any = false;
         for i in 0..snapshot.len.min(self.meta.len()) {
             let (section, _, restart) = self.meta[i];
             let slot = usize::from(snapshot.slots[i]);
-            if section != snapshot.section
-                || snapshot.hidden[i]
+            let in_view =
+                (snapshot.searching || section == snapshot.section) && !snapshot.hidden[i];
+            any |= in_view;
+            if !in_view
+                || !layout.shows(slot)
                 || open_list.is_some_and(|(open, count)| layout.covered_by_list(open, count, slot))
             {
                 continue;
@@ -597,13 +697,19 @@ impl SettingsView {
             let widget = layout.widget(slot);
             match (&mut self.views[i], &snapshot.widgets[i]) {
                 (RowView::Key, RowWidget::Key(key)) => {
-                    let (colour, line) = if key.is_listening() {
-                        (theme.button_hover_fill, &self.keys.prompt)
+                    let colour = if key.is_listening() {
+                        theme.button_hover_fill
                     } else {
-                        (theme.button_fill, self.keys.line(key.value()))
+                        theme.button_fill
                     };
                     fill(shapes, white, &widget, faded(colour, opacity));
-                    push_left(text, line, &widget, pad, faded(theme.text, opacity), glyphs);
+                    let text_colour = faded(theme.text, opacity);
+                    if key.is_listening() {
+                        push_left(text, &self.keys.prompt, &widget, pad, text_colour, glyphs);
+                    } else {
+                        self.keys
+                            .push(text, key.value(), &widget, pad, text_colour, glyphs);
+                    }
                 }
                 (RowView::Button(line), RowWidget::Button) => {
                     let colour = if i == snapshot.focus {
@@ -661,6 +767,16 @@ impl SettingsView {
                 }
             }
         }
+        if snapshot.searching && !any {
+            push_left(
+                text,
+                &self.no_results,
+                &layout.dialog_row(0),
+                pad,
+                faded(theme.disabled_text, opacity),
+                glyphs,
+            );
+        }
         if let Some(i) = open_row
             && let (RowView::Dropdown(view), RowWidget::Dropdown(dropdown)) =
                 (&mut self.views[i], &snapshot.widgets[i])
@@ -699,9 +815,9 @@ impl SettingsView {
             colour,
             glyphs,
         );
-        push_left(
+        self.keys.push(
             text,
-            self.keys.line(conflict.key),
+            conflict.key,
             &layout.dialog_row(1),
             pad,
             colour,

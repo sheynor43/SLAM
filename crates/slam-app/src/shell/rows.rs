@@ -196,6 +196,7 @@ pub enum Row {
     SmokeKey1,
     SmokeKey2,
     ToggleFpsKey,
+    ToggleSettingsKey,
     ResetKeys,
     /// The interface language, applied as it is picked (ADR-0088, ADR-0091).
     Language,
@@ -234,7 +235,7 @@ pub enum Row {
 const _: () = assert!(Row::ALL.len() <= slam_ui::settings_screen::MAX_ROWS);
 
 impl Row {
-    pub const ALL: [Row; 51] = [
+    pub const ALL: [Row; 52] = [
         Row::MasterVolume,
         Row::MusicVolume,
         Row::MenuMusic,
@@ -257,6 +258,7 @@ impl Row {
         Row::SmokeKey1,
         Row::SmokeKey2,
         Row::ToggleFpsKey,
+        Row::ToggleSettingsKey,
         Row::ResetKeys,
         Row::Language,
         Row::ScreenMode,
@@ -298,6 +300,7 @@ impl Row {
             Row::SmokeKey1 => KeySlot::Play(Actions::SMOKE, 0),
             Row::SmokeKey2 => KeySlot::Play(Actions::SMOKE, 1),
             Row::ToggleFpsKey => KeySlot::ToggleFps,
+            Row::ToggleSettingsKey => KeySlot::ToggleSettings,
             _ => return None,
         })
     }
@@ -331,6 +334,7 @@ impl Row {
             | Row::SmokeKey1
             | Row::SmokeKey2
             | Row::ToggleFpsKey
+            | Row::ToggleSettingsKey
             | Row::ResetKeys => 2,
             Row::Language
             | Row::ScreenMode
@@ -387,6 +391,7 @@ impl Row {
             Row::SmokeKey1 => "settings-keys-smoke-1",
             Row::SmokeKey2 => "settings-keys-smoke-2",
             Row::ToggleFpsKey => "settings-keys-toggle-fps",
+            Row::ToggleSettingsKey => "settings-keys-toggle-settings",
             Row::ResetKeys => "settings-keys-reset",
             Row::Language => "settings-layout-language",
             Row::ScreenMode => "settings-layout-screen-mode",
@@ -858,7 +863,8 @@ impl Rows {
             | Row::RightKey2
             | Row::SmokeKey1
             | Row::SmokeKey2
-            | Row::ToggleFpsKey => RowKind::Button,
+            | Row::ToggleFpsKey
+            | Row::ToggleSettingsKey => RowKind::Button,
         }
     }
 
@@ -1062,6 +1068,26 @@ impl Rows {
         }
     }
 
+    /// What the search of the settings panel looks in, per row (ADR-0095): the row's name
+    /// and its section's, in the language shown and in English, lowercased. Allocates: the
+    /// panel asks for it as it opens.
+    pub fn search_texts(localizer: &Localizer) -> Arc<[Box<str>]> {
+        Row::ALL
+            .iter()
+            .map(|row| {
+                let section = SECTION_KEYS[row.section().min(SECTION_KEYS.len() - 1)];
+                let fields = [
+                    localizer.format(row.label_key(), None),
+                    localizer.format(section, None),
+                    localizer.format_english(row.label_key()),
+                    localizer.format_english(section),
+                ];
+                let fields: Vec<&str> = fields.iter().map(|f| f.as_ref()).collect();
+                slam_ui::song_select::search_text(&fields).into_boxed_str()
+            })
+            .collect()
+    }
+
     /// The screen's texts in the language of `localizer`.
     pub fn labels(&self, localizer: &Localizer) -> SettingsLabels {
         let text = |key: &str| localizer.format(key, None).into_owned();
@@ -1172,7 +1198,8 @@ impl Rows {
             })
             .collect();
         SettingsLabels {
-            title: text("settings-title"),
+            search_placeholder: text("settings-search-placeholder"),
+            no_results: text("settings-search-no-results"),
             sections: SECTION_KEYS.iter().map(|key| text(key)).collect(),
             rows,
             restart: text("settings-restart-marker"),
@@ -1866,7 +1893,11 @@ mod tests {
             let texts = labels
                 .sections
                 .iter()
-                .chain([&labels.title, &labels.restart])
+                .chain([
+                    &labels.search_placeholder,
+                    &labels.no_results,
+                    &labels.restart,
+                ])
                 .chain(
                     labels
                         .rows

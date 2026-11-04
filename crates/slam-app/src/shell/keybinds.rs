@@ -7,17 +7,23 @@ use slam_ui::i18n::{FluentArgs, Localizer};
 use slam_ui::settings_screen::{KeyLabels, KeyValue, MouseKey, SettingsAction, SettingsScreen};
 
 use super::rows::Row;
-use crate::settings::{BINDING_SLOTS, KeySlot, Settings};
+use crate::settings::{BINDING_SLOTS, Combo, KeySlot, Mods, Settings};
 
 /// How many scancodes get a label: SDL's scancodes are below 512.
 const SCANCODES: usize = 512;
 
-/// The screen's value for a binding slot.
-pub fn key_value(input: Option<Input>) -> KeyValue {
+/// The screen's value for a binding slot. A mouse button keeps no modifiers.
+pub fn key_value(combo: Option<Combo>) -> KeyValue {
+    let Some(Combo { mods, input }) = combo else {
+        return KeyValue::Empty;
+    };
     match input {
-        None => KeyValue::Empty,
-        Some(Input::Key(code)) => KeyValue::Key(code),
-        Some(Input::Mouse(button)) => KeyValue::Mouse(match button {
+        Input::Key(key) if !mods.is_empty() => KeyValue::Chord {
+            mods: mods.bits(),
+            key,
+        },
+        Input::Key(code) => KeyValue::Key(code),
+        Input::Mouse(button) => KeyValue::Mouse(match button {
             MouseButton::Left => MouseKey::Left,
             MouseButton::Middle => MouseKey::Middle,
             MouseButton::Right => MouseKey::Right,
@@ -27,19 +33,23 @@ pub fn key_value(input: Option<Input>) -> KeyValue {
     }
 }
 
-/// The input a captured value stands for; `None` for an empty slot.
-pub fn input_of(value: KeyValue) -> Option<Input> {
-    match value {
-        KeyValue::Empty => None,
-        KeyValue::Key(code) => Some(Input::Key(code)),
-        KeyValue::Mouse(button) => Some(Input::Mouse(match button {
+/// The hotkey or binding a captured value stands for; `None` for an empty slot.
+pub fn combo_of(value: KeyValue) -> Option<Combo> {
+    Some(match value {
+        KeyValue::Empty => return None,
+        KeyValue::Key(code) => Combo::plain(Input::Key(code)),
+        KeyValue::Chord { mods, key } => Combo {
+            mods: Mods::from_bits(mods),
+            input: Input::Key(key),
+        },
+        KeyValue::Mouse(button) => Combo::plain(Input::Mouse(match button {
             MouseKey::Left => MouseButton::Left,
             MouseKey::Middle => MouseButton::Middle,
             MouseKey::Right => MouseButton::Right,
             MouseKey::X1 => MouseButton::X1,
             MouseKey::X2 => MouseButton::X2,
         })),
-    }
+    })
 }
 
 /// The Fluent key of a named keyboard key.
@@ -106,6 +116,11 @@ pub fn key_labels(localizer: &Localizer) -> KeyLabels {
             text("key-mouse-x1"),
             text("key-mouse-x2"),
         ],
+        mods: [
+            text("key-mod-ctrl"),
+            text("key-mod-shift"),
+            text("key-mod-alt"),
+        ],
         conflict_title: text("settings-keybind-conflict-title"),
         conflict_keep: text("settings-keybind-conflict-keep"),
         conflict_apply: text("settings-keybind-conflict-apply"),
@@ -126,19 +141,19 @@ pub fn refresh(screen: &mut SettingsScreen, settings: &Settings) {
 pub fn apply(screen: &mut SettingsScreen, settings: &mut Settings, action: SettingsAction) {
     match action {
         SettingsAction::KeyCaptured { row, key } => {
-            let (Some(slot), Some(input)) =
-                (Row::ALL.get(row).and_then(|r| r.key_slot()), input_of(key))
+            let (Some(slot), Some(combo)) =
+                (Row::ALL.get(row).and_then(|r| r.key_slot()), combo_of(key))
             else {
                 return;
             };
             // A key the slot may not take leaves it as it was.
-            if !Settings::key_allowed(slot, input) {
+            if !Settings::key_allowed(slot, combo) {
                 refresh(screen, settings);
                 return;
             }
-            match settings.key_conflict(slot, input) {
+            match settings.key_conflict(slot, combo) {
                 None => {
-                    settings.bind_key(slot, input);
+                    settings.bind_key(slot, combo);
                 }
                 Some(other) => {
                     let other_row = match other {
@@ -154,10 +169,10 @@ pub fn apply(screen: &mut SettingsScreen, settings: &mut Settings, action: Setti
             key,
             apply: true,
         } => {
-            if let (Some(slot), Some(input)) =
-                (Row::ALL.get(row).and_then(|r| r.key_slot()), input_of(key))
+            if let (Some(slot), Some(combo)) =
+                (Row::ALL.get(row).and_then(|r| r.key_slot()), combo_of(key))
             {
-                settings.bind_key(slot, input);
+                settings.bind_key(slot, combo);
             }
         }
         SettingsAction::KeyCleared { row } => {
@@ -191,10 +206,23 @@ mod tests {
             Input::Mouse(MouseButton::X2),
         ];
         for input in inputs {
-            assert_eq!(input_of(key_value(Some(input))), Some(input));
+            let combo = Combo::plain(input);
+            assert_eq!(combo_of(key_value(Some(combo))), Some(combo));
         }
+        let chord = Combo {
+            mods: Mods::CTRL.with(Mods::ALT),
+            input: Input::Key(18),
+        };
+        assert_eq!(
+            key_value(Some(chord)),
+            KeyValue::Chord {
+                mods: KeyValue::CTRL | KeyValue::ALT,
+                key: 18
+            }
+        );
+        assert_eq!(combo_of(key_value(Some(chord))), Some(chord));
         assert_eq!(key_value(None), KeyValue::Empty);
-        assert_eq!(input_of(KeyValue::Empty), None);
+        assert_eq!(combo_of(KeyValue::Empty), None);
     }
 
     #[test]

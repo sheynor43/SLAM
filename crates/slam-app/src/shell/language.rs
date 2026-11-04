@@ -126,7 +126,7 @@ impl InterfaceViews {
         self.menu.lay_out_for(width, height);
         self.song_select.lay_out_for(width, height);
         self.results.lay_out_for(width, height);
-        self.settings.lay_out_for(width, height);
+        self.settings.lay_out_for_panel(width, height);
     }
 }
 

@@ -77,6 +77,41 @@ impl SearchQuery {
     }
 }
 
+/// Calls `f` with the words of `query`, lowercased into stack buffers: what a search
+/// matches as substrings of a lowercased text. Does not allocate.
+pub(crate) fn with_terms<R>(query: &SearchQuery, f: impl FnOnce(&[&str]) -> R) -> R {
+    let mut buf = [0u8; TERM_BYTES];
+    let mut len = 0;
+    let mut spans = [(0, 0); MAX_TERMS];
+    let mut count = 0;
+    let mut start = None;
+    for c in query.as_str().chars().chain([' ']) {
+        if c.is_whitespace() {
+            if let Some(start) = start.take()
+                && count < MAX_TERMS
+            {
+                spans[count] = (start, len);
+                count += 1;
+            }
+            continue;
+        }
+        start.get_or_insert(len);
+        for lower in c.to_lowercase() {
+            let width = lower.len_utf8();
+            if len + width <= TERM_BYTES {
+                lower.encode_utf8(&mut buf[len..]);
+                len += width;
+            }
+        }
+    }
+    let text = std::str::from_utf8(&buf[..len]).unwrap_or("");
+    let mut terms = [""; MAX_TERMS];
+    for (term, &(from, to)) in terms.iter_mut().zip(&spans[..count]) {
+        *term = &text[from..to];
+    }
+    f(&terms[..count])
+}
+
 /// The lowercased `fields` joined by `'\n'`, as [`super::SetRow::search`] and
 /// [`super::DifficultyRow::search`] hold them. Allocates: call it off the update thread.
 pub fn search_text(fields: &[&str]) -> String {
@@ -188,38 +223,10 @@ impl SongFilter {
         self.ends.clear();
         self.difficulties.clear();
 
-        // The words, lowercased into stack buffers.
-        let mut buf = [0u8; TERM_BYTES];
-        let mut len = 0;
-        let mut spans = [(0, 0); MAX_TERMS];
-        let mut count = 0;
-        let mut start = None;
-        for c in query.as_str().chars().chain([' ']) {
-            if c.is_whitespace() {
-                if let Some(start) = start.take()
-                    && count < MAX_TERMS
-                {
-                    spans[count] = (start, len);
-                    count += 1;
-                }
-                continue;
-            }
-            start.get_or_insert(len);
-            for lower in c.to_lowercase() {
-                let width = lower.len_utf8();
-                if len + width <= TERM_BYTES {
-                    lower.encode_utf8(&mut buf[len..]);
-                    len += width;
-                }
-            }
-        }
-        let text = std::str::from_utf8(&buf[..len]).unwrap_or("");
-        let mut terms = [""; MAX_TERMS];
-        for (term, &(from, to)) in terms.iter_mut().zip(&spans[..count]) {
-            *term = &text[from..to];
-        }
-        let terms = &terms[..count];
+        with_terms(query, |terms| self.apply_terms(list, terms));
+    }
 
+    fn apply_terms(&mut self, list: &SongList, terms: &[&str]) {
         for (index, set) in list.sets.iter().enumerate() {
             if terms.is_empty() {
                 self.difficulties.extend(0..set.difficulties.len());
