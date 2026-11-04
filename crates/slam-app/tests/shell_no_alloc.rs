@@ -89,6 +89,7 @@ fn song_select_ticks_and_new_lists_do_not_allocate() {
                     background: None,
                     audio: String::new(),
                     preview_time: -1,
+                    metadata: Default::default(),
                 })
                 .collect(),
         })
@@ -268,6 +269,7 @@ fn on_results() -> (
             background: None,
             audio: String::new(),
             preview_time: -1,
+            metadata: Default::default(),
         }],
     }];
     let (mut producer, songs) = link();
@@ -444,6 +446,7 @@ fn background_and_detail_changes_do_not_allocate_on_the_update_or_draw_thread() 
                     background: (i % 2 == 0).then(|| "bg.jpg".to_owned()),
                     audio: String::new(),
                     preview_time: -1,
+                    metadata: Default::default(),
                 }],
             }
         })

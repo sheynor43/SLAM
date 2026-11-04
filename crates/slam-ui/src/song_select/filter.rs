@@ -1,16 +1,15 @@
 //! The song select's search: the query the player types and the list of sets and
 //! difficulties that match it.
 //!
-//! The matching follows osu!lazer's plain-word search. The query is split on whitespace;
-//! a difficulty passes when every word is a case-insensitive substring of at least one of
-//! its fields (difficulty name, creator, artist, title, their original-script forms,
-//! source, tags). A set is shown when one of its difficulties passes, and only the passing
-//! ones are listed under it.
+//! The query is parsed by [`super::query`] as osu!lazer's query language (ADR-0099). Each
+//! difficulty is checked against it with its own fields; a set is shown when one of its
+//! difficulties passes, and only the passing ones are listed under it.
 //!
-//! Case folding is done once off the update thread: [`search_text`] lowercases the fields
-//! when the list is built. The words are lowercased the same way (per character, so that
-//! both sides agree) into stack buffers when the query changes.
+//! Case folding is done once off the update thread: [`SearchFields::new`] lowercases the
+//! fields when the list is built. The query is lowercased the same way (per character, so
+//! that both sides agree) into stack buffers when it changes.
 
+use super::query::Criteria;
 use super::{Row, SongList};
 
 /// Bytes of the query the player can type.
@@ -112,8 +111,8 @@ pub(crate) fn with_terms<R>(query: &SearchQuery, f: impl FnOnce(&[&str]) -> R) -
     f(&terms[..count])
 }
 
-/// The lowercased `fields` joined by `'\n'`, as [`super::SetRow::search`] and
-/// [`super::DifficultyRow::search`] hold them. Allocates: call it off the update thread.
+/// The lowercased `fields` joined by `'\n'`: what a plain-word search over them looks in.
+/// Allocates: call it off the update thread.
 pub fn search_text(fields: &[&str]) -> String {
     let mut text = String::with_capacity(fields.iter().map(|f| f.len() + 1).sum());
     for (i, field) in fields.iter().enumerate() {
@@ -123,6 +122,85 @@ pub fn search_text(fields: &[&str]) -> String {
         text.extend(field.chars().flat_map(char::to_lowercase));
     }
     text
+}
+
+/// A field of a difficulty the search looks at, in the order lazer tries them.
+// Ported from osu!lazer 2026.1005.0-lazer: osu.Game/Beatmaps/BeatmapInfoExtensions.cs (Match)
+// Ported from osu!lazer 2026.1005.0-lazer: osu.Game/Beatmaps/BeatmapMetadataInfoExtensions.cs (Match)
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Field {
+    Difficulty,
+    Creator,
+    Artist,
+    ArtistUnicode,
+    Title,
+    TitleUnicode,
+    Source,
+    Tags,
+}
+
+impl Field {
+    pub const ALL: [Field; 8] = [
+        Field::Difficulty,
+        Field::Creator,
+        Field::Artist,
+        Field::ArtistUnicode,
+        Field::Title,
+        Field::TitleUnicode,
+        Field::Source,
+        Field::Tags,
+    ];
+}
+
+/// The text fields of one difficulty, by name, for [`SearchFields::new`].
+#[derive(Clone, Copy, Debug, Default)]
+pub struct SearchSource<'a> {
+    pub difficulty: &'a str,
+    pub creator: &'a str,
+    pub artist: &'a str,
+    pub artist_unicode: &'a str,
+    pub title: &'a str,
+    pub title_unicode: &'a str,
+    pub source: &'a str,
+    pub tags: &'a str,
+}
+
+/// A difficulty's [`Field`]s lowercased in one string.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct SearchFields {
+    text: String,
+    /// Where each field ends in `text`, in [`Field::ALL`] order.
+    ends: [u32; Field::ALL.len()],
+}
+
+impl SearchFields {
+    /// Lowercases `source` per character. Allocates: call it off the update thread.
+    pub fn new(source: SearchSource<'_>) -> SearchFields {
+        let fields = [
+            source.difficulty,
+            source.creator,
+            source.artist,
+            source.artist_unicode,
+            source.title,
+            source.title_unicode,
+            source.source,
+            source.tags,
+        ];
+        let mut text = String::with_capacity(fields.iter().map(|f| f.len()).sum());
+        let mut ends = [0; Field::ALL.len()];
+        for (end, field) in ends.iter_mut().zip(fields) {
+            text.extend(field.chars().flat_map(char::to_lowercase));
+            *end = u32::try_from(text.len()).unwrap_or(u32::MAX);
+        }
+        SearchFields { text, ends }
+    }
+
+    /// The lowercased `field`.
+    pub fn get(&self, field: Field) -> &str {
+        let i = field as usize;
+        let start = i.checked_sub(1).map_or(0, |prev| self.ends[prev] as usize);
+        self.text.get(start..self.ends[i] as usize).unwrap_or("")
+    }
 }
 
 /// The sets and difficulties of a [`SongList`] that pass the query, as indices into it.
@@ -223,37 +301,18 @@ impl SongFilter {
         self.ends.clear();
         self.difficulties.clear();
 
-        with_terms(query, |terms| self.apply_terms(list, terms));
-    }
-
-    fn apply_terms(&mut self, list: &SongList, terms: &[&str]) {
+        // A blank query shows everything, sets without difficulties too.
+        let blank = query.as_str().trim().is_empty();
+        let criteria = Criteria::parse(query.as_str());
         for (index, set) in list.sets.iter().enumerate() {
-            if terms.is_empty() {
-                self.difficulties.extend(0..set.difficulties.len());
-            } else {
-                // Ported from osu!lazer 2026.1005.0-lazer: osu.Game/Beatmaps/BeatmapInfoExtensions.cs (Match)
-                // Ported from osu!lazer 2026.1005.0-lazer: osu.Game/Beatmaps/BeatmapMetadataInfoExtensions.cs (Match)
-                // Ported from osu!lazer 2026.1005.0-lazer: osu.Game/Screens/Select/FilterCriteria.cs (OptionalTextFilter)
-                // Words found in the set's own fields hold for all of its difficulties.
-                let mut in_set = 0u64;
-                for (i, term) in terms.iter().enumerate() {
-                    if set.search.contains(term) {
-                        in_set |= 1 << i;
-                    }
+            let first = self.difficulties.len();
+            for (d, difficulty) in set.difficulties.iter().enumerate() {
+                if blank || criteria.matches(difficulty) {
+                    self.difficulties.push(d);
                 }
-                let first = self.difficulties.len();
-                for (d, difficulty) in set.difficulties.iter().enumerate() {
-                    let passes = terms
-                        .iter()
-                        .enumerate()
-                        .all(|(i, term)| in_set >> i & 1 != 0 || difficulty.search.contains(term));
-                    if passes {
-                        self.difficulties.push(d);
-                    }
-                }
-                if self.difficulties.len() == first {
-                    continue;
-                }
+            }
+            if !blank && self.difficulties.len() == first {
+                continue;
             }
             self.sets.push(index);
             self.ends.push(self.difficulties.len());

@@ -149,6 +149,7 @@ fn songs(sets: &[(&str, &[&str])]) -> Vec<slam_library::scan::BeatmapSetEntry> {
                     background: None,
                     audio: String::new(),
                     preview_time: -1,
+                    metadata: Default::default(),
                 })
                 .collect(),
         })

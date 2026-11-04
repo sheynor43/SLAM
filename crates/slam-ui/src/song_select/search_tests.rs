@@ -1,27 +1,42 @@
 use super::SongSelectInput as I;
 use super::*;
 
-/// The example beatmap of lazer's `FilterMatchingTest` plus a second difficulty.
+/// The example beatmap of lazer's `FilterMatchingTest`.
+// Ported from osu!lazer 2026.1005.0-lazer: osu.Game.Tests/NonVisual/Filtering/FilterMatchingTest.cs (getExampleBeatmap)
+pub(super) fn example_source(version: &str) -> SearchSource<'_> {
+    SearchSource {
+        difficulty: version,
+        creator: "The Author",
+        artist: "The Artist",
+        artist_unicode: "check unicode too",
+        title: "Title goes here",
+        title_unicode: "TitleUnicode goes here",
+        source: "unit tests",
+        tags: "look for tags too",
+    }
+}
+
+/// The example beatmap as lazer's tests set it up: AR 5, HP 3, CS 2.
+pub(super) fn example_difficulty(version: &str) -> DifficultyRow {
+    DifficultyRow {
+        approach_rate: 5.0,
+        drain_rate: 3.0,
+        circle_size: 2.0,
+        ..DifficultyRow::new(example_source(version))
+    }
+}
+
+/// The example beatmap plus a second difficulty.
 fn example_set(key: u64) -> SetRow {
-    let diff = |version: &str| DifficultyRow {
-        version: version.to_owned(),
-        search: search_text(&[version]),
-    };
     SetRow {
         key,
         artist: "The Artist".to_owned(),
         title: "Title goes here".to_owned(),
         creator: "The Author".to_owned(),
-        search: search_text(&[
-            "The Author",
-            "The Artist",
-            "check unicode too",
-            "Title goes here",
-            "TitleUnicode goes here",
-            "unit tests",
-            "look for tags too",
-        ]),
-        difficulties: vec![diff("version as well"), diff("Extra")],
+        difficulties: vec![
+            example_difficulty("version as well"),
+            example_difficulty("Extra"),
+        ],
     }
 }
 
@@ -31,12 +46,15 @@ fn plain_set(key: u64, artist: &str, title: &str, versions: &[&str]) -> SetRow {
         artist: artist.to_owned(),
         title: title.to_owned(),
         creator: String::new(),
-        search: search_text(&["", artist, title]),
         difficulties: versions
             .iter()
-            .map(|v| DifficultyRow {
-                version: (*v).to_owned(),
-                search: search_text(&[v]),
+            .map(|v| {
+                DifficultyRow::new(SearchSource {
+                    difficulty: v,
+                    artist,
+                    title,
+                    ..SearchSource::default()
+                })
             })
             .collect(),
     }
@@ -128,13 +146,14 @@ fn case_folding_covers_cyrillic_and_unicode_fields() {
         1,
         "\u{41f}\u{440}\u{438}\u{43c}\u{435}\u{440}",
         "Title",
-        &["Easy"],
+        &[],
     );
-    set.search = search_text(&[
-        "",
-        "\u{41f}\u{440}\u{438}\u{43c}\u{435}\u{440}",
-        "\u{418}\u{43c}\u{44f} \u{43f}\u{435}\u{441}\u{43d}\u{438}",
-    ]);
+    set.difficulties.push(DifficultyRow::new(SearchSource {
+        difficulty: "Easy",
+        artist: "\u{41f}\u{440}\u{438}\u{43c}\u{435}\u{440}",
+        title_unicode: "\u{418}\u{43c}\u{44f} \u{43f}\u{435}\u{441}\u{43d}\u{438}",
+        ..SearchSource::default()
+    }));
     for terms in [
         "\u{43f}\u{440}\u{438}",
         "\u{41f}\u{420}\u{418}",

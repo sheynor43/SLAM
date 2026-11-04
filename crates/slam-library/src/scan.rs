@@ -64,6 +64,32 @@ pub struct DifficultyEntry {
     pub audio: String,
     /// `PreviewTime` in milliseconds, -1 for none (ADR-0090).
     pub preview_time: i32,
+    /// This difficulty's own metadata: guest difficulties may differ from the set's
+    /// (ADR-0099).
+    pub metadata: DifficultyMetadata,
+}
+
+/// The `[Metadata]` of one difficulty file that the search looks at.
+#[derive(Debug, Clone, Default, PartialEq)]
+pub struct DifficultyMetadata {
+    /// Romanised artist.
+    pub artist: String,
+    /// Romanised title.
+    pub title: String,
+    /// Mapper.
+    pub creator: String,
+    /// Artist in the original script; empty when the file has none.
+    pub artist_unicode: String,
+    /// Title in the original script; empty when the file has none.
+    pub title_unicode: String,
+    /// Source (the game, anime or album).
+    pub source: String,
+    /// Space-separated tags.
+    pub tags: String,
+    /// `BeatmapID`, -1 for none.
+    pub beatmap_id: i32,
+    /// `BeatmapSetID`, -1 for none.
+    pub beatmap_set_id: i32,
 }
 
 /// Why a set could not be scanned.
@@ -81,17 +107,6 @@ struct SetScan {
     skipped: usize,
 }
 
-/// The set-level metadata of one difficulty file.
-struct SetMeta {
-    artist: String,
-    title: String,
-    creator: String,
-    artist_unicode: String,
-    title_unicode: String,
-    source: String,
-    tags: String,
-}
-
 fn scan_set_counted(dir: &Path) -> Result<SetScan, ScanError> {
     let options = DecodeOptions {
         headers_only: true,
@@ -99,7 +114,6 @@ fn scan_set_counted(dir: &Path) -> Result<SetScan, ScanError> {
     };
     let mut skipped = 0;
     let mut difficulties = Vec::new();
-    let mut meta: Vec<SetMeta> = Vec::new();
 
     for item in fs::read_dir(dir)? {
         let Ok(item) = item else {
@@ -126,15 +140,6 @@ fn scan_set_counted(dir: &Path) -> Result<SetScan, ScanError> {
         if b.general.mode != MODE_STANDARD {
             continue;
         }
-        meta.push(SetMeta {
-            artist: b.metadata.artist,
-            title: b.metadata.title,
-            creator: b.metadata.creator,
-            artist_unicode: b.metadata.artist_unicode,
-            title_unicode: b.metadata.title_unicode,
-            source: b.metadata.source,
-            tags: b.metadata.tags,
-        });
         difficulties.push(DifficultyEntry {
             path,
             version: b.metadata.version,
@@ -145,21 +150,29 @@ fn scan_set_counted(dir: &Path) -> Result<SetScan, ScanError> {
             background: b.events.background,
             audio: b.general.audio_filename,
             preview_time: b.general.preview_time,
+            metadata: DifficultyMetadata {
+                artist: b.metadata.artist,
+                title: b.metadata.title,
+                creator: b.metadata.creator,
+                artist_unicode: b.metadata.artist_unicode,
+                title_unicode: b.metadata.title_unicode,
+                source: b.metadata.source,
+                tags: b.metadata.tags,
+                beatmap_id: b.metadata.beatmap_id,
+                beatmap_set_id: b.metadata.beatmap_set_id.unwrap_or(-1),
+            },
         });
     }
 
-    // Sort difficulties and their metadata together so the first one is deterministic.
-    let mut order: Vec<usize> = (0..difficulties.len()).collect();
-    order.sort_by(|&a, &b| cmp_difficulty(&difficulties[a], &difficulties[b]));
-    let Some(&first) = order.first() else {
+    // Sorted so that the first difficulty, whose metadata the set shows, is deterministic.
+    difficulties.sort_by(cmp_difficulty);
+    let Some(first) = difficulties.first() else {
         return Ok(SetScan {
             entry: None,
             skipped,
         });
     };
-    let meta = meta.swap_remove(first);
-    let mut slots: Vec<Option<DifficultyEntry>> = difficulties.into_iter().map(Some).collect();
-    let difficulties = order.into_iter().filter_map(|i| slots[i].take()).collect();
+    let meta = first.metadata.clone();
 
     Ok(SetScan {
         entry: Some(BeatmapSetEntry {
