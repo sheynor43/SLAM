@@ -325,6 +325,8 @@ pub struct ShellState {
     panel: Option<Panel>,
     /// The play shows its pause or fail menu: the settings panel may open over it.
     play_menu: bool,
+    /// The settings panel closed with changes not yet looked at by the play (ADR-0096).
+    settings_changed: bool,
     /// Formats the search texts of the settings panel as it opens; `None` in tests.
     localizer: Option<Arc<Localizer>>,
     /// The key a key row took, until it is released: its OS repeats are not navigation
@@ -388,6 +390,7 @@ impl ShellState {
             modifiers: 0,
             panel: None,
             play_menu: false,
+            settings_changed: false,
             localizer: None,
             captured_key: 0,
             theme,
@@ -548,7 +551,7 @@ impl ShellState {
 
     /// Commits the edits of a settings screen still open, as closing it does.
     pub fn commit_editing(&mut self) {
-        commit_settings(
+        let _ = commit_settings(
             &mut self.settings,
             &mut self.editing,
             &mut self.save_request,
@@ -871,11 +874,19 @@ impl ShellState {
             return;
         };
         panel.motion.close(now_ns);
-        commit_settings(
+        if commit_settings(
             &mut self.settings,
             &mut self.editing,
             &mut self.save_request,
-        );
+        ) {
+            self.settings_changed = true;
+        }
+    }
+
+    /// Whether the settings panel closed with changes since last asked: a play running takes
+    /// the ones it was prepared with anew (ADR-0096).
+    pub fn take_settings_changed(&mut self) -> bool {
+        std::mem::take(&mut self.settings_changed)
     }
 
     /// The open settings panel's screen.
@@ -1555,17 +1566,19 @@ fn commit_settings(
     settings: &mut Settings,
     editing: &mut Option<Settings>,
     save_request: &mut Option<Box<Settings>>,
-) {
+) -> bool {
     let Some(mut edited) = editing.take() else {
-        return;
+        return false;
     };
     // The songs folder is the library's: it may have changed while the screen was open.
     edited.paths.songs.clone_from(&settings.paths.songs);
     round_for_save(&mut edited);
-    if edited != *settings {
-        *settings = edited.clone();
-        *save_request = Some(Box::new(edited));
+    if edited == *settings {
+        return false;
     }
+    *settings = edited.clone();
+    *save_request = Some(Box::new(edited));
+    true
 }
 
 /// The input as the settings screen understands it.
@@ -1780,6 +1793,17 @@ struct Game {
     map: Option<PathBuf>,
     /// What the replays of the play's passed attempts name its beatmap by.
     beatmap: Arc<ReplayBeatmap>,
+    /// What the play was prepared with; `None` when not known.
+    options: Option<PlayOptions>,
+}
+
+/// The play prepared again with changed settings, to take its scene and samples (ADR-0096).
+enum Reskin {
+    Idle,
+    /// Asked of the loader as this request, with these options, for the play of this id.
+    Preparing(u64, PlayOptions, u64),
+    /// Ready for the play of this id, waiting for it to show its pause or fail menu.
+    Ready(Box<Prepared>, PlayOptions, u64),
 }
 
 /// A quit play whose voices the mixer silences. The session keeps its samples until the
@@ -1838,6 +1862,10 @@ struct PlayHost {
     /// The track still has to be given its plain sound after a play.
     track_reset: bool,
     next_request: u64,
+    /// The options of the play asked of the loader, as request id.
+    play_requested: Option<(u64, PlayOptions)>,
+    /// The running play prepared again with changed settings (ADR-0096).
+    reskin: Reskin,
     /// The window in points, as gameplay input takes it.
     points: [f32; 2],
     input: PlayInput,
@@ -2018,6 +2046,7 @@ impl PlayHost {
                         mods: state.selected_mods().clone(),
                         ..live::play_options(state.settings())
                     };
+                    self.play_requested = Some((self.next_request, options.clone()));
                     self.loader.request(self.next_request, map, options)
                 }
                 _ => false,
@@ -2029,7 +2058,16 @@ impl PlayHost {
                 state.finish_loading(now_ns, None);
             }
         }
-        if let Some(loaded) = self.loader.poll() {
+        self.ask_reskin(state);
+        let loaded = match self.loader.poll() {
+            Some(loaded) if matches!(self.reskin, Reskin::Preparing(id, ..) if id == loaded.id) => {
+                self.take_reskin(loaded);
+                None
+            }
+            other => other,
+        };
+        self.apply_reskin();
+        if let Some(loaded) = loaded {
             let current = matches!(self.pending, Pending::Preparing(id) if id == loaded.id);
             match loaded.result {
                 Ok(mut prepared) if current && state.is_loading() => {
@@ -2086,8 +2124,8 @@ impl PlayHost {
             match self.audio.player.poll_event() {
                 Some(MusicEvent::Loaded { generation: g, .. }) if g == generation => {
                     if self.scenes.slots() == 0 {
-                        // The draw thread has not taken the last scene: unreachable with
-                        // one play at a time, but a play without a scene must not start.
+                        // The draw thread has not taken the last scene (a reskin's of the
+                        // play before, ADR-0096): a play without a scene must not start.
                         self.free_pending();
                         state.finish_loading(now_ns, None);
                     } else if let Pending::Track { prepared, .. } =
@@ -2114,6 +2152,130 @@ impl PlayHost {
                 None => {}
             }
         }
+    }
+
+    /// Asks the loader for the running play again when the settings panel closed with
+    /// changes to what it was prepared with (ADR-0096). Allocates, on that event only.
+    fn ask_reskin(&mut self, state: &mut ShellState) {
+        if !state.take_settings_changed() {
+            return;
+        }
+        let Some(game) = &self.game else {
+            return;
+        };
+        let (Some(map), Some(loaded_with)) = (&game.map, &game.options) else {
+            return;
+        };
+        if game.ending != Ending::Playing {
+            return;
+        }
+        let options = PlayOptions {
+            mods: loaded_with.mods.clone(),
+            ..live::play_options(state.settings())
+        };
+        if options == *loaded_with {
+            // Back to the play's own look: what was coming or waiting is not wanted. A
+            // result still coming finds no request and is freed.
+            if let Reskin::Ready(prepared, ..) = std::mem::replace(&mut self.reskin, Reskin::Idle) {
+                self.loader.free(Trash::Prepared(prepared));
+            }
+            return;
+        }
+        if let Reskin::Preparing(_, wanted, _) | Reskin::Ready(_, wanted, _) = &self.reskin
+            && options == *wanted
+        {
+            return;
+        }
+        self.next_request += 1;
+        if !self
+            .loader
+            .request(self.next_request, map.clone(), options.clone())
+        {
+            // The loader's queue is full: asked again on the next tick.
+            state.settings_changed = true;
+        } else {
+            // A newer look wins over one still coming or waiting.
+            let id = game.id;
+            if let Reskin::Ready(prepared, ..) = std::mem::replace(
+                &mut self.reskin,
+                Reskin::Preparing(self.next_request, options, id),
+            ) {
+                self.loader.free(Trash::Prepared(prepared));
+            }
+        }
+    }
+
+    /// Keeps the play prepared again, for [`PlayHost::apply_reskin`].
+    fn take_reskin(&mut self, loaded: crate::loader::LoadResult) {
+        let Reskin::Preparing(_, options, id) = std::mem::replace(&mut self.reskin, Reskin::Idle)
+        else {
+            return;
+        };
+        match loaded.result {
+            // The same beatmap only: a file changed on disk would not match the session's
+            // objects.
+            Ok(prepared)
+                if self
+                    .game
+                    .as_ref()
+                    .is_some_and(|g| g.id == id && g.beatmap.hash == prepared.beatmap_hash) =>
+            {
+                self.reskin = Reskin::Ready(prepared, options, id);
+            }
+            Ok(prepared) => self.loader.free(Trash::Prepared(prepared)),
+            // The loader logged it; the play keeps its look.
+            Err(message) => self.loader.free(Trash::Message(message)),
+        }
+    }
+
+    /// Gives the running play the scene and samples prepared again, once it shows its
+    /// pause or fail menu (ADR-0096); the rest goes back to the loader to free. Allocates
+    /// as the scene goes to the draw thread, on that event only.
+    fn apply_reskin(&mut self) {
+        let stale = matches!(&self.reskin, Reskin::Ready(_, _, id)
+            if self.game.as_ref().is_none_or(|g| g.id != *id));
+        // The scene and the samples change together: without room for the scene, neither
+        // does until the draw thread takes the last one.
+        if !matches!(self.reskin, Reskin::Ready(..))
+            || (!stale && (!self.menu_shown() || self.scenes.slots() == 0))
+        {
+            return;
+        }
+        let Reskin::Ready(prepared, options, id) =
+            std::mem::replace(&mut self.reskin, Reskin::Idle)
+        else {
+            return;
+        };
+        let Some(game) = self.game.as_mut().filter(|g| g.id == id) else {
+            self.loader.free(Trash::Prepared(prepared));
+            return;
+        };
+        let Prepared {
+            beatmap,
+            mods,
+            audio,
+            mut sounds,
+            scene,
+            background_name,
+            beatmap_hash,
+        } = *prepared;
+        // A full mixer queue leaves a looping voice to the pause's own stops.
+        let _ = game
+            .session
+            .replace_samples(&mut sounds, &mut self.audio.mixer);
+        if let Err(rtrb::PushError::Full((_, scene))) = self.scenes.push((game.id, scene)) {
+            // Room was checked above; the update thread is the only producer.
+            self.loader.free(Trash::Other(Box::new(scene)));
+        }
+        game.options = Some(options);
+        self.loader.free(Trash::Other(Box::new((
+            beatmap,
+            mods,
+            audio,
+            sounds,
+            background_name,
+            beatmap_hash,
+        ))));
     }
 
     /// Moves a quit play along: its sounds stop and its screen goes; once the mixer has
@@ -2349,6 +2511,10 @@ impl PlayHost {
             mods: shown_mods,
             map,
             beatmap: replay_beatmap,
+            options: self
+                .play_requested
+                .take()
+                .and_then(|(request, options)| (request == id).then_some(options)),
         });
     }
 }
@@ -2675,11 +2841,14 @@ impl<B: render::Backend> Draw<ShellSnapshot> for View<B> {
         if let Some(scenes) = &mut self.scenes
             && let Ok((id, mut scene)) = scenes.pop()
         {
+            // A play's new look (ADR-0096) is shown as its old scene was: if the play has
+            // gone meanwhile, it goes at once instead of waiting for the next play.
+            let shown = self.scene_shown && self.scene.as_ref().is_some_and(|(old, ..)| *old == id);
             retire(&mut self.scene, &mut self.scene_trash, &mut r.device);
             // The glyphs come in over the first frames; the lead-in runs meanwhile.
             let gpu = scene.start(&mut r.device, Duration::ZERO, None);
             self.scene = Some((id, scene, gpu));
-            self.scene_shown = false;
+            self.scene_shown = shown;
         }
         if let Some((id, _, _)) = &self.scene {
             match (scene_on_layers(snapshot, *id), self.scene_shown) {
@@ -3486,6 +3655,8 @@ fn run_with<B: render::Backend>(
         retiring: None,
         track_reset: false,
         next_request: 0,
+        play_requested: None,
+        reskin: Reskin::Idle,
         points: [
             pixels_w as f32 / pixels_per_point,
             pixels_h as f32 / pixels_per_point,

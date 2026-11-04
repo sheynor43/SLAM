@@ -619,6 +619,8 @@ fn host(name: &str, with_track: bool) -> HostFixture {
         retiring: None,
         track_reset: false,
         next_request: 0,
+        play_requested: None,
+        reskin: Reskin::Idle,
         points: [1280.0, 720.0],
         input: PlayInput::new(&Settings::default()),
         beatmap_offsets: HashMap::new(),
@@ -866,6 +868,149 @@ fn the_windows_key_setting_applies_at_once() {
     assert!(PlayInput::new(&settings).disable_win_key);
     settings.gameplay.disable_win_key = false;
     assert!(!PlayInput::new(&settings).disable_win_key);
+}
+
+#[test]
+fn changed_settings_reskin_the_running_play_in_its_menu() {
+    let mut fixture = host("reskin", true);
+    let (mut s, mut snap) = listing(&fixture);
+    s.tick(TRANSITION_NS + 1, &[key(KEY_ENTER)], &mut snap);
+    let now = advance_until(&mut fixture, &mut s, TRANSITION_NS + 1, |_, s| s.playing());
+    let (id, _) = fixture.scenes.pop().expect("the play's scene");
+    let loaded_with = fixture.host.game.as_ref().unwrap().options.clone().unwrap();
+    // Closed with no change: nothing is asked.
+    s.settings_changed = true;
+    fixture.host.advance(now + 1, &mut s);
+    assert!(matches!(fixture.host.reskin, Reskin::Idle));
+    // A look changed: the play is prepared again, and waits for its menu.
+    s.settings.gameplay.hit_lighting = !s.settings.gameplay.hit_lighting;
+    s.settings_changed = true;
+    let now = advance_until(&mut fixture, &mut s, now + 2, |h, _| {
+        matches!(h.reskin, Reskin::Ready(..))
+    });
+    for t in 1..20 {
+        fixture.host.advance(now + t, &mut s);
+    }
+    assert!(matches!(fixture.host.reskin, Reskin::Ready(..)));
+    assert!(fixture.scenes.pop().is_err());
+    // In the pause menu it takes the new scene, under the same id, and the new options.
+    fixture.host.menu_shown = true;
+    fixture.host.advance(now + 30, &mut s);
+    assert!(matches!(fixture.host.reskin, Reskin::Idle));
+    let (again, _) = fixture.scenes.pop().expect("the new scene");
+    assert_eq!(again, id);
+    let game = fixture.host.game.as_ref().unwrap();
+    let options = game.options.as_ref().unwrap();
+    assert_ne!(options.hit_lighting, loaded_with.hit_lighting);
+    assert_eq!(options.mods, loaded_with.mods);
+    // The attempt goes on: the same session.
+    assert_eq!(game.id, id);
+}
+
+/// A play on its way to a reskin that is ready: returns the time and the play's id.
+fn ready_reskin(fixture: &mut HostFixture, s: &mut ShellState, snap: &mut ShellSnapshot) -> u64 {
+    s.tick(TRANSITION_NS + 1, &[key(KEY_ENTER)], snap);
+    let now = advance_until(fixture, s, TRANSITION_NS + 1, |_, s| s.playing());
+    let _ = fixture.scenes.pop();
+    s.settings.gameplay.hit_lighting = !s.settings.gameplay.hit_lighting;
+    s.settings_changed = true;
+    advance_until(fixture, s, now + 1, |h, _| {
+        matches!(h.reskin, Reskin::Ready(..))
+    })
+}
+
+#[test]
+fn a_reskin_waits_for_room_for_its_scene() {
+    let mut fixture = host("reskin-full", true);
+    let (mut s, mut snap) = listing(&fixture);
+    s.tick(TRANSITION_NS + 1, &[key(KEY_ENTER)], &mut snap);
+    let now = advance_until(&mut fixture, &mut s, TRANSITION_NS + 1, |_, s| s.playing());
+    // The draw thread takes no scene in this test: the play's own and a first reskin's
+    // fill the ring of two.
+    fixture.host.menu_shown = true;
+    s.settings.gameplay.hit_lighting = !s.settings.gameplay.hit_lighting;
+    s.settings_changed = true;
+    let now = advance_until(&mut fixture, &mut s, now + 1, |h, _| {
+        matches!(h.reskin, Reskin::Idle) && h.scenes.slots() == 0
+    });
+    let options = fixture.host.game.as_ref().unwrap().options.clone();
+    s.settings.gameplay.cursor_trail = !s.settings.gameplay.cursor_trail;
+    s.settings_changed = true;
+    let now = advance_until(&mut fixture, &mut s, now + 1, |h, _| {
+        matches!(h.reskin, Reskin::Ready(..))
+    });
+    // No room: neither the samples nor the scene change.
+    for t in 1..10 {
+        fixture.host.advance(now + t, &mut s);
+    }
+    assert!(matches!(fixture.host.reskin, Reskin::Ready(..)));
+    assert_eq!(fixture.host.game.as_ref().unwrap().options, options);
+    // Taken: it goes through.
+    while fixture.scenes.pop().is_ok() {}
+    fixture.host.advance(now + 20, &mut s);
+    assert!(matches!(fixture.host.reskin, Reskin::Idle));
+    assert!(fixture.scenes.pop().is_ok());
+    assert_ne!(fixture.host.game.as_ref().unwrap().options, options);
+}
+
+#[test]
+fn settings_back_to_the_plays_own_cancel_the_reskin() {
+    let mut fixture = host("reskin-back", true);
+    let (mut s, mut snap) = listing(&fixture);
+    let now = ready_reskin(&mut fixture, &mut s, &mut snap);
+    s.settings.gameplay.hit_lighting = !s.settings.gameplay.hit_lighting;
+    s.settings_changed = true;
+    fixture.host.advance(now + 1, &mut s);
+    assert!(matches!(fixture.host.reskin, Reskin::Idle));
+    fixture.host.menu_shown = true;
+    fixture.host.advance(now + 2, &mut s);
+    assert!(fixture.scenes.pop().is_err());
+}
+
+#[test]
+fn a_reskin_of_another_beatmap_file_is_dropped() {
+    let mut fixture = host("reskin-hash", true);
+    let (mut s, mut snap) = listing(&fixture);
+    s.tick(TRANSITION_NS + 1, &[key(KEY_ENTER)], &mut snap);
+    let now = advance_until(&mut fixture, &mut s, TRANSITION_NS + 1, |_, s| s.playing());
+    let _ = fixture.scenes.pop();
+    // As if the file changed on disk after the play started.
+    let game = fixture.host.game.as_mut().unwrap();
+    let mut beatmap = (*game.beatmap).clone();
+    beatmap.hash = "changed".into();
+    game.beatmap = Arc::new(beatmap);
+    s.settings.gameplay.hit_lighting = !s.settings.gameplay.hit_lighting;
+    s.settings_changed = true;
+    fixture.host.advance(now + 1, &mut s);
+    assert!(matches!(fixture.host.reskin, Reskin::Preparing(..)));
+    let now = advance_until(&mut fixture, &mut s, now + 2, |h, _| {
+        matches!(h.reskin, Reskin::Idle)
+    });
+    fixture.host.menu_shown = true;
+    for t in 1..50 {
+        fixture.host.advance(now + t, &mut s);
+    }
+    assert!(matches!(fixture.host.reskin, Reskin::Idle));
+    assert!(fixture.scenes.pop().is_err());
+}
+
+#[test]
+fn a_reskin_for_an_ended_play_is_dropped() {
+    let mut fixture = host("reskin-ended", true);
+    let (mut s, mut snap) = listing(&fixture);
+    s.tick(TRANSITION_NS + 1, &[key(KEY_ENTER)], &mut snap);
+    let now = advance_until(&mut fixture, &mut s, TRANSITION_NS + 1, |_, s| s.playing());
+    let _ = fixture.scenes.pop();
+    s.settings.gameplay.hit_lighting = !s.settings.gameplay.hit_lighting;
+    s.settings_changed = true;
+    let now = advance_until(&mut fixture, &mut s, now + 1, |h, _| {
+        matches!(h.reskin, Reskin::Ready(..))
+    });
+    // The play goes before its menu shows: the preparation is freed, never applied.
+    fixture.host.game = None;
+    fixture.host.advance(now + 1, &mut s);
+    assert!(matches!(fixture.host.reskin, Reskin::Idle));
+    assert!(fixture.scenes.pop().is_err());
 }
 
 #[test]
