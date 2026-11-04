@@ -1412,6 +1412,60 @@ fn ctrl_up_and_down_change_the_mod_speed() {
 }
 
 #[test]
+fn held_keys_repeat_the_walks_and_the_mod_steps_only() {
+    let (mut s, mut snap, _producer) = in_song_select();
+    s.tick(
+        at(1),
+        &[key(KEY_DOWN), repeat(KEY_UP), repeat(KEY_DOWN)],
+        &mut snap,
+    );
+    assert_eq!(s.song_select().selected(), Some((0, 1)));
+    s.tick(
+        at(2),
+        &[
+            key(KEY_LEFT_CTRL),
+            key(KEY_UP),
+            repeat(KEY_UP),
+            repeat(KEY_F4),
+        ],
+        &mut snap,
+    );
+    assert_eq!(detail(&snap, 1, 3), TileDetail::Speed(110));
+    assert_eq!(detail(&snap, 2, 0), TileDetail::ApproachRate(51));
+    // The carousel stays while Control is held.
+    assert_eq!(s.song_select().selected(), Some((0, 1)));
+    // A held letter or F1 acts once.
+    s.tick(
+        at(3),
+        &[
+            key_up(KEY_LEFT_CTRL),
+            key(KEY_F1),
+            repeat(KEY_F1),
+            repeat(KEY_Q),
+        ],
+        &mut snap,
+    );
+    assert!(song_view(&snap).mods.open);
+    assert_eq!(acronyms(&s), ["DA", "DT"]);
+}
+
+#[test]
+fn a_held_backspace_erases_with_control_too() {
+    let (mut s, mut snap, _producer) = in_song_select();
+    s.tick(at(1), &[text("abc")], &mut snap);
+    s.tick(
+        at(2),
+        &[
+            key(KEY_LEFT_CTRL),
+            repeat(KEY_BACKSPACE),
+            repeat(KEY_BACKSPACE),
+        ],
+        &mut snap,
+    );
+    assert_eq!(s.song_select().query().as_str(), "a");
+}
+
+#[test]
 fn ctrl_f3_and_f4_change_the_approach_rate() {
     let (mut s, mut snap, _producer) = in_song_select();
     // The test difficulties have an approach rate of 5.
