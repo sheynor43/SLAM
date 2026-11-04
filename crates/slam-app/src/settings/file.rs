@@ -477,6 +477,16 @@ fn from_table(mut table: Table) -> Loaded {
     settings.gameplay.hit_error_scale = (settings.gameplay.hit_error_scale * 100.0).round() / 100.0;
     cx.unknown(&gameplay, "gameplay");
 
+    let mut song_select = cx.section(&mut table, "song_select");
+    cx.float(
+        &mut song_select,
+        "song_select",
+        "background_dim",
+        &mut settings.song_select.background_dim,
+        0.0..=1.0,
+    );
+    cx.unknown(&song_select, "song_select");
+
     read_window(&mut cx, &mut table, &mut settings.window);
 
     let mut input = cx.section(&mut table, "input");

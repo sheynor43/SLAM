@@ -243,6 +243,8 @@ pub struct ShellSnapshot {
     pub fps: FpsDisplay,
     /// The song select's background (ADR-0066).
     pub background: BackgroundTarget,
+    /// Dim of the song select's background, 0 ..= 1 (ADR-0098).
+    pub background_dim: f32,
     /// The display lists the settings screen shows (ADR-0072).
     pub display_generation: u64,
     /// How many language switches asked for views so far: a new one closes the curtain
@@ -1489,6 +1491,12 @@ impl ShellState {
         }
         snapshot.display_generation = self.rows.display_generation();
         snapshot.fps = FpsDisplay::of(&self.editing.as_ref().unwrap_or(&self.settings).frame);
+        snapshot.background_dim = self
+            .editing
+            .as_ref()
+            .unwrap_or(&self.settings)
+            .song_select
+            .background_dim as f32;
         let details = self.beatmap_details(now_ns);
         self.song_select.set_details(details);
         if let Some(backgrounds) = &mut self.backgrounds {
@@ -2917,6 +2925,7 @@ impl<B: render::Backend> Draw<ShellSnapshot> for View<B> {
         // On every screen: releases queued during a play would otherwise fill the queue.
         if let Some((uploads, fade)) = &mut self.backgrounds {
             uploads.process(&mut r.device, &mut r.textures);
+            fade.set_dim(snapshot.background_dim);
             fade.advance(snapshot.background, info.wait.woke_ns, |h| uploads.get(h));
         }
         let (width, height) = (size.width as f32, size.height as f32);

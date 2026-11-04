@@ -219,6 +219,7 @@ pub enum Row {
     FpsCorner,
     FpsScreens,
     Dim,
+    SongSelectDim,
     BeatmapSkins,
     BeatmapColours,
     BeatmapHitsounds,
@@ -239,7 +240,7 @@ pub enum Row {
 const _: () = assert!(Row::ALL.len() <= slam_ui::settings_screen::MAX_ROWS);
 
 impl Row {
-    pub const ALL: [Row; 53] = [
+    pub const ALL: [Row; 54] = [
         Row::MasterVolume,
         Row::MusicVolume,
         Row::MenuMusic,
@@ -279,6 +280,7 @@ impl Row {
         Row::FpsCorner,
         Row::FpsScreens,
         Row::Dim,
+        Row::SongSelectDim,
         Row::BeatmapSkins,
         Row::BeatmapColours,
         Row::BeatmapHitsounds,
@@ -356,6 +358,7 @@ impl Row {
             | Row::FpsCorner
             | Row::FpsScreens => 4,
             Row::Dim
+            | Row::SongSelectDim
             | Row::BeatmapSkins
             | Row::BeatmapColours
             | Row::BeatmapHitsounds
@@ -413,6 +416,7 @@ impl Row {
             Row::FpsCorner => "settings-frame-fps-corner",
             Row::FpsScreens => "settings-frame-fps-screens",
             Row::Dim => "settings-gameplay-dim",
+            Row::SongSelectDim => "settings-song-select-dim",
             Row::BeatmapSkins => "settings-gameplay-beatmap-skins",
             Row::BeatmapColours => "settings-gameplay-beatmap-colours",
             Row::BeatmapHitsounds => "settings-gameplay-beatmap-hitsounds",
@@ -746,6 +750,7 @@ impl Rows {
             Row::HitsoundVolume => percent(s.audio.hitsound_volume),
             Row::EffectsVolume => percent(s.audio.effects_volume),
             Row::Dim => percent(s.gameplay.dim),
+            Row::SongSelectDim => percent(s.song_select.background_dim),
             Row::PositionalHitsoundsLevel => percent(f64::from(s.audio.positional_hitsounds_level)),
             Row::CursorSize => RowKind::Slider {
                 min: CURSOR_SIZE_RANGE.0,
@@ -912,6 +917,9 @@ impl Rows {
                 settings.audio.effects_volume = percent(v);
             }
             (Row::Dim, RowValue::Slider(v)) => settings.gameplay.dim = percent(v),
+            (Row::SongSelectDim, RowValue::Slider(v)) => {
+                settings.song_select.background_dim = percent(v);
+            }
             (Row::PositionalHitsoundsLevel, RowValue::Slider(v)) => {
                 settings.audio.positional_hitsounds_level = percent(v).clamp(0.0, 1.0) as f32;
             }
@@ -1193,6 +1201,7 @@ impl Rows {
                     | Row::HitsoundVolume
                     | Row::EffectsVolume
                     | Row::Dim
+                    | Row::SongSelectDim
                     | Row::PositionalHitsoundsLevel => text("settings-unit-percent"),
                     Row::HitErrorScale | Row::Sensitivity | Row::CursorSize => {
                         text("settings-unit-times")
@@ -1257,6 +1266,7 @@ pub fn round_for_save(settings: &mut Settings) {
         &mut audio.hitsound_volume,
         &mut audio.effects_volume,
         &mut settings.gameplay.dim,
+        &mut settings.song_select.background_dim,
     ] {
         *volume = round_to(*volume, 2);
     }
@@ -1924,6 +1934,21 @@ mod tests {
         assert_eq!(labels.sections[SECTIONS - 1], "Library");
         // Only this row shows a value.
         assert_eq!(labels.rows.iter().filter(|r| r.shows_value).count(), 1);
+    }
+
+    #[test]
+    fn the_song_select_dim_row_follows_the_dim_row() {
+        assert_eq!(index(Row::SongSelectDim), index(Row::Dim) + 1);
+        assert_eq!(Row::SongSelectDim.section(), Row::Dim.section());
+        let rows = Rows::new(&Settings::default());
+        let mut s = Settings::default();
+        rows.apply(&mut s, index(Row::SongSelectDim), RowValue::Slider(35.0));
+        assert_eq!(s.song_select.background_dim, 0.35);
+        assert_eq!(s.gameplay.dim, Settings::default().gameplay.dim);
+        let mut s = Settings::default();
+        s.song_select.background_dim = 0.30000000000000004;
+        round_for_save(&mut s);
+        assert_eq!(s.song_select.background_dim, 0.3);
     }
 
     #[test]

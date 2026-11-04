@@ -180,6 +180,7 @@ settings-frame-show-fps = Show FPS
 settings-frame-fps-corner = FPS counter position
 settings-frame-fps-screens = Show FPS counter
 settings-gameplay-dim = Background dim
+settings-song-select-dim = Song select background dim
 settings-gameplay-beatmap-skins = Beatmap skins
 settings-gameplay-beatmap-colours = Beatmap colours
 settings-gameplay-beatmap-hitsounds = Beatmap hitsounds
