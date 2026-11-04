@@ -1,10 +1,12 @@
 name: Release
 
 # Builds the Linux AppImage and the Windows portable zip for a `v*` tag and publishes them
-# as a pre-release (ADR-0068).
+# as a pre-release (ADR-0068). A manual run builds the same packages from any branch and
+# keeps them as workflow artifacts without publishing, for testing an unreleased build.
 on:
   push:
     tags: ["v*"]
+  workflow_dispatch:
 
 env:
   CARGO_TERM_COLOR: always
@@ -65,7 +67,7 @@ jobs:
           cp assets/default-skin/README.md "$app/usr/share/doc/slam/DEFAULT_SKIN_README.md"
           cp packaging/release-notes.md "$app/usr/share/doc/slam/README.md"
           ./scripts/release-check.sh "$app"
-          ./appimagetool --runtime-file runtime --no-appstream "$app" "SLAM-${GITHUB_REF_NAME}-x86_64.AppImage"
+          ./appimagetool --runtime-file runtime --no-appstream "$app" "SLAM-${GITHUB_REF_NAME//\//-}-x86_64.AppImage"
       - uses: actions/upload-artifact@v7
         with:
           name: linux
@@ -84,7 +86,7 @@ jobs:
       - name: Pack
         shell: bash
         run: |
-          dir="SLAM-${GITHUB_REF_NAME}-windows-x64"
+          dir="SLAM-${GITHUB_REF_NAME//\//-}-windows-x64"
           mkdir "$dir"
           cp target/release/slam.exe "$dir/"
           cp LICENSE-MIT LICENSE-APACHE THIRD_PARTY_NOTICES "$dir/"
@@ -102,6 +104,7 @@ jobs:
   publish:
     name: Publish pre-release
     needs: [linux, windows]
+    if: github.ref_type == 'tag'
     runs-on: ubuntu-latest
     permissions:
       contents: write
