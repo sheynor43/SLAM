@@ -424,6 +424,9 @@ pub struct Gameplay {
     /// Play the combo break sound on the first break of a play even when the break happens while
     /// the combo is already low (lazer's `OsuSetting.AlwaysPlayFirstComboBreak`, on by default).
     pub always_play_first_combo_break: bool,
+    /// Block the Windows key while playing (lazer's `OsuSetting.GameplayDisableWinKey`, on by
+    /// default; ADR-0094). Only Windows shows and applies it.
+    pub disable_win_key: bool,
     pub mouse_buttons: bool,
     /// Sliders grow towards their end as they appear (lazer's `OsuRulesetSetting.SnakingInSliders`,
     /// on by default there; off in SLAM, ADR-0085).
@@ -454,6 +457,7 @@ impl Default for Gameplay {
             beatmap_colours: true,
             beatmap_hitsounds: true,
             always_play_first_combo_break: true,
+            disable_win_key: true,
             mouse_buttons: true,
             snaking_in: false,
             snaking_out: false,

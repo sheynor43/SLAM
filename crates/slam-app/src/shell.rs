@@ -19,7 +19,7 @@ use slam_engine::{
 };
 use slam_input::{
     CursorVisibility, InputEvent, InputKind, InputWindow, MouseButton, MouseSettings, TextInput,
-    TickMapper, WindowScale, WindowSettings, WindowState, event_ring, sdl_ticks_ns,
+    TickMapper, WinKeyBlock, WindowScale, WindowSettings, WindowState, event_ring, sdl_ticks_ns,
 };
 use slam_osu::Difficulty;
 use slam_osu::mods::{
@@ -1611,6 +1611,8 @@ struct PlayHost {
     scenes: rtrb::Producer<(u64, PlayScene)>,
     /// Hides the OS cursor while the play draws its own.
     os_cursor: CursorVisibility,
+    /// Blocks the Windows key while playing (ADR-0094).
+    win_key: WinKeyBlock,
     pending: Pending,
     game: Option<Game>,
     /// Apart from `game`: a mixer that stops taking commands (lost device) keeps this
@@ -1636,6 +1638,9 @@ struct PlayInput {
     /// Mouse buttons press in gameplay (lazer's `MouseDisableButtons` off).
     mouse_buttons: bool,
     offsets: Offsets,
+    /// Block the Windows key while playing (lazer's `GameplayDisableWinKey`, ADR-0094);
+    /// applies at once, not from the next play.
+    disable_win_key: bool,
 }
 
 impl PlayInput {
@@ -1648,11 +1653,27 @@ impl PlayInput {
                 // Each play takes its beatmap's ([`PlayHost::beatmap_offsets`]).
                 beatmap_ms: 0.0,
             },
+            disable_win_key: settings.gameplay.disable_win_key,
         }
     }
 }
 
+/// Whether the Windows key is blocked in `state`: while lazer's player is
+/// `LocalUserPlayingState.Playing`, so not paused, resuming, in a break, failed or passed.
+// Ported from osu!lazer 2026.1005.0-lazer: osu.Game/Screens/Play/Player.cs (updateGameplayState)
+fn blocks_win_key(state: PlayState, is_break_time: bool) -> bool {
+    matches!(state, PlayState::Waiting | PlayState::Playing) && !is_break_time
+}
+
 impl PlayHost {
+    /// Shows or hides the OS cursor and blocks the Windows key as the play's state asks.
+    fn follow_play(&self, snapshot: &PlaySnapshot) {
+        self.os_cursor.set_hidden(snapshot.state.hides_os_cursor());
+        self.win_key.set_blocked(
+            self.input.disable_win_key && blocks_win_key(snapshot.state, snapshot.is_break_time),
+        );
+    }
+
     /// Runs the play on top with `events`.
     fn tick_game(&mut self, now_ns: u64, events: &[InputEvent], snapshot: &mut PlaySnapshot) {
         let Some(game) = self.game.as_mut() else {
@@ -1682,10 +1703,10 @@ impl PlayHost {
                 ended: SystemTime::now(),
             }));
         }
-        self.os_cursor.set_hidden(snapshot.state.hides_os_cursor());
         if play_over(snapshot.state) {
             game.ending = Ending::Sounds;
         }
+        self.follow_play(snapshot);
     }
 
     /// The window is `width` × `height` points.
@@ -1726,6 +1747,7 @@ impl PlayHost {
         self.input.bindings = settings.input.bindings;
         self.input.offsets.global_ms = settings.timing.global_offset_ms;
         self.input.mouse_buttons = settings.gameplay.mouse_buttons;
+        self.input.disable_win_key = settings.gameplay.disable_win_key;
     }
 
     /// Takes requests, prepared plays and track events; ends a quit play. Allocates only
@@ -1882,6 +1904,7 @@ impl PlayHost {
             && let Some(mut game) = self.game.take()
         {
             self.os_cursor.set_hidden(false);
+            self.win_key.set_blocked(false);
             // The results come from the session before it retires.
             let results = game.session.results().map(|r| {
                 results::results_data(
@@ -3205,6 +3228,7 @@ fn run_with<B: render::Backend>(
         loader,
         scenes: scene_tx,
         os_cursor: window.cursor_visibility(),
+        win_key: window.win_key_block(),
         pending: Pending::Idle,
         game: None,
         retiring: None,

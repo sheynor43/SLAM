@@ -25,6 +25,7 @@ mod mode;
 mod native;
 mod relative;
 mod ring;
+mod win_key;
 mod window;
 mod windowing;
 
@@ -46,4 +47,5 @@ pub use mode::{
 pub use native::NativeHandle;
 pub use relative::{MAX_SENSITIVITY, MIN_SENSITIVITY, MouseSettings};
 pub use ring::{BUTTON_RESERVE, EventSink, EventSource, Notify, event_ring};
+pub use win_key::WinKeyBlock;
 pub use window::{CursorVisibility, InputWindow, QuitHandle, TextInput, WindowError, dispatch};

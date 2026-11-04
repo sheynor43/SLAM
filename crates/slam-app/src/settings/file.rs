@@ -412,6 +412,13 @@ fn from_table(mut table: Table) -> Loaded {
     cx.field(
         &mut gameplay,
         "gameplay",
+        "disable_win_key",
+        &mut settings.gameplay.disable_win_key,
+        |_| Ok(()),
+    );
+    cx.field(
+        &mut gameplay,
+        "gameplay",
         "mouse_buttons",
         &mut settings.gameplay.mouse_buttons,
         |_| Ok(()),

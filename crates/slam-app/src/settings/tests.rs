@@ -77,6 +77,7 @@ fn round_trip_non_default() {
     s.gameplay.beatmap_colours = false;
     s.gameplay.beatmap_hitsounds = false;
     s.gameplay.always_play_first_combo_break = false;
+    s.gameplay.disable_win_key = false;
     s.gameplay.mouse_buttons = false;
     s.gameplay.snaking_in = true;
     s.gameplay.snaking_out = true;
