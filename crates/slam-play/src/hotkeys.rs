@@ -204,6 +204,15 @@ impl Hotkeys {
                     _ => None,
                 }
             }
+            // Lazer's `KeyBindingContainer` repeats the last pressed action on OS key
+            // repeats (`HandleRepeats` is true outside ruleset bindings) and the offset
+            // control takes every press. Only the steps repeat here (ADR-0092).
+            // Ported from osu!lazer 2026.1005.0-lazer: osu-framework/osu.Framework/Input/Bindings/KeyBindingContainer.cs (handleRepeat)
+            InputKind::KeyRepeat { scancode } if self.kinds() == 0 => match scancode {
+                SCANCODE_EQUALS => Some(GlobalAction::IncreaseOffset),
+                SCANCODE_MINUS => Some(GlobalAction::DecreaseOffset),
+                _ => None,
+            },
             InputKind::MouseButton { button, down: true } if self.kinds() == 0 => match button {
                 MouseButton::X1 => Some(GlobalAction::Back),
                 MouseButton::Middle => Some(GlobalAction::PauseGameplay),
@@ -228,6 +237,13 @@ impl Hotkeys {
                 SCANCODE_DOWN => Some(MenuKey::SelectNext),
                 SCANCODE_SPACE | SCANCODE_RETURN | SCANCODE_KP_ENTER => Some(MenuKey::Select),
                 SCANCODE_F1 => Some(MenuKey::SaveReplay),
+                _ => None,
+            },
+            // Holding an arrow walks the buttons; a held Enter or F1 does not press
+            // again (ADR-0092).
+            InputKind::KeyRepeat { scancode } if self.kinds() == 0 => match scancode {
+                SCANCODE_UP => Some(MenuKey::SelectPrevious),
+                SCANCODE_DOWN => Some(MenuKey::SelectNext),
                 _ => None,
             },
             _ => None,
@@ -282,6 +298,60 @@ mod tests {
         InputEvent {
             time_ns: t * MS,
             kind: InputKind::Key { scancode, down },
+        }
+    }
+
+    fn repeat(t: u64, scancode: u16) -> InputEvent {
+        InputEvent {
+            time_ns: t * MS,
+            kind: InputKind::KeyRepeat { scancode },
+        }
+    }
+
+    #[test]
+    fn repeats_step_the_offset_only() {
+        let mut h = Hotkeys::default();
+        assert_eq!(
+            h.on_event(&repeat(0, SCANCODE_EQUALS)),
+            Some(GlobalAction::IncreaseOffset)
+        );
+        assert_eq!(
+            h.on_event(&repeat(0, SCANCODE_MINUS)),
+            Some(GlobalAction::DecreaseOffset)
+        );
+        for scancode in [
+            SCANCODE_ESCAPE,
+            SCANCODE_SPACE,
+            SCANCODE_F10,
+            SCANCODE_GRAVE,
+        ] {
+            assert_eq!(h.on_event(&repeat(0, scancode)), None, "{scancode}");
+        }
+        // A held R with Ctrl repeats, but quick retry keeps its single hold.
+        h.on_event(&key(0, SCANCODE_LCTRL, true));
+        assert_eq!(h.on_event(&repeat(0, SCANCODE_EQUALS)), None);
+        assert_eq!(h.on_event(&repeat(0, SCANCODE_R)), None);
+        assert_eq!(h.fire(10_000 * MS), None);
+    }
+
+    #[test]
+    fn menu_repeats_move_the_selection_only() {
+        let h = Hotkeys::default();
+        assert_eq!(
+            h.menu_key(&repeat(0, SCANCODE_UP)),
+            Some(MenuKey::SelectPrevious)
+        );
+        assert_eq!(
+            h.menu_key(&repeat(0, SCANCODE_DOWN)),
+            Some(MenuKey::SelectNext)
+        );
+        for scancode in [
+            SCANCODE_SPACE,
+            SCANCODE_RETURN,
+            SCANCODE_KP_ENTER,
+            SCANCODE_F1,
+        ] {
+            assert_eq!(h.menu_key(&repeat(0, scancode)), None, "{scancode}");
         }
     }
 

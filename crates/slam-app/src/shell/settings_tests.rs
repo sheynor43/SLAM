@@ -1077,3 +1077,62 @@ fn a_language_switch_on_the_open_screen_lists_the_devices_again() {
     shell.apply_settings(LATER);
     assert!(shell.state.take_device_list_request().is_some());
 }
+
+fn repeat(scancode: u16) -> InputEvent {
+    InputEvent {
+        time_ns: 0,
+        kind: InputKind::KeyRepeat { scancode },
+    }
+}
+
+#[test]
+fn held_arrows_walk_and_step_the_settings_but_not_the_language() {
+    let mut s = state();
+    let mut snap = ShellSnapshot::default();
+    opened(&mut s, &mut snap);
+    s.tick(
+        LATER,
+        &[repeat(KEY_PAGE_DOWN), repeat(KEY_PAGE_DOWN)],
+        &mut snap,
+    );
+    assert_eq!(settings_screen(&s).section(), 2);
+    s.tick(LATER, &[key(KEY_TAB)], &mut snap);
+    assert_eq!(settings_screen(&s).focus(), Row::Language as usize);
+    // A held arrow would switch the language behind the curtain again and again.
+    s.tick(LATER, &[repeat(KEY_RIGHT), repeat(KEY_LEFT)], &mut snap);
+    assert!(s.editing.as_ref().expect("open").general.language.is_none());
+    s.tick(LATER, &[key(KEY_RIGHT)], &mut snap);
+    assert!(s.editing.as_ref().expect("open").general.language.is_some());
+    // Elsewhere the repeats walk the rows and step the values.
+    s.tick(LATER, &[repeat(KEY_DOWN)], &mut snap);
+    assert_eq!(settings_screen(&s).focus(), Row::ScreenMode as usize);
+    let mode = s.editing.as_ref().expect("open").window.mode;
+    s.tick(LATER, &[repeat(KEY_LEFT)], &mut snap);
+    assert_ne!(s.editing.as_ref().expect("open").window.mode, mode);
+    // Neither Enter nor Escape repeats.
+    s.tick(LATER, &[repeat(KEY_ESCAPE), repeat(KEY_ENTER)], &mut snap);
+    assert!(matches!(s.stack().top(), AppScreen::Settings(_)));
+}
+
+#[test]
+fn a_key_held_past_its_capture_does_not_walk_until_released() {
+    let mut s = state();
+    let mut snap = ShellSnapshot::default();
+    on_keys(&mut s, &mut snap);
+    s.tick(LATER, &[key(KEY_ENTER), key(KEY_DOWN)], &mut snap);
+    assert_eq!(
+        edited(&s).input.slot(Actions::LEFT, 0),
+        Some(Input::Key(KEY_DOWN))
+    );
+    s.tick(LATER, &[repeat(KEY_DOWN), repeat(KEY_DOWN)], &mut snap);
+    assert_eq!(settings_screen(&s).focus(), Row::LeftKey1 as usize);
+    let up = InputEvent {
+        time_ns: 0,
+        kind: InputKind::Key {
+            scancode: KEY_DOWN,
+            down: false,
+        },
+    };
+    s.tick(LATER, &[up, repeat(KEY_DOWN)], &mut snap);
+    assert_eq!(settings_screen(&s).focus(), Row::LeftKey2 as usize);
+}

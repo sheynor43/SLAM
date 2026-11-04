@@ -309,6 +309,9 @@ pub struct ShellState {
     setting_rows_for: Option<(usize, usize, usize)>,
     /// The Control keys held: bit 0 the left one, bit 1 the right one.
     ctrl: u8,
+    /// The key a key row took, until it is released: its OS repeats are not navigation
+    /// (ADR-0092). 0 when none.
+    captured_key: u16,
     /// Last cursor position in pixels.
     cursor: [f32; 2],
     /// Input arrives in window points, layout is in pixels.
@@ -365,6 +368,7 @@ impl ShellState {
             setting_rows: mod_settings::SettingRows::default(),
             setting_rows_for: None,
             ctrl: 0,
+            captured_key: 0,
             theme,
             cursor: [0.0, 0.0],
             pixels_per_point,
@@ -921,6 +925,16 @@ impl ShellState {
     /// the key only the results use.
     fn screen_input(&mut self, kind: InputKind) -> Option<ScreenInput> {
         self.track_ctrl(kind);
+        // Lazer's key row in focus drops repeats (`KeyBindingRow.OnKeyDown`): a key held
+        // past its capture neither walks the rows nor answers the conflict.
+        match kind {
+            InputKind::KeyRepeat { scancode } if scancode == self.captured_key => return None,
+            InputKind::Key {
+                scancode,
+                down: false,
+            } if scancode == self.captured_key => self.captured_key = 0,
+            _ => {}
+        }
         // A key row that listens takes every key and mouse button, whatever the menus make
         // of them; Escape still goes through, as it cancels.
         if matches!(self.stack.top(), AppScreen::Settings(s) if s.is_listening()) {
@@ -933,6 +947,7 @@ impl ShellState {
                     scancode,
                     down: true,
                 } if scancode != KEY_ESCAPE => {
+                    self.captured_key = scancode;
                     return Some(ScreenInput::Capture(KeyValue::Key(scancode)));
                 }
                 InputKind::MouseButton { button, down: true } => {
@@ -963,11 +978,31 @@ impl ShellState {
                 _ => {}
             }
         }
+        // Lazer repeats the last pressed global action on OS key repeats. Here only the
+        // steps and the walks repeat: a held Enter, Escape or letter acts once (ADR-0092).
+        if let InputKind::KeyRepeat { scancode } = kind {
+            if song_select && self.ctrl != 0 {
+                match scancode {
+                    KEY_UP => return Some(ScreenInput::ModSpeed(SPEED_STEP)),
+                    KEY_DOWN => return Some(ScreenInput::ModSpeed(-SPEED_STEP)),
+                    KEY_F3 => return Some(ScreenInput::ApproachRate(-APPROACH_RATE_STEP)),
+                    KEY_F4 => return Some(ScreenInput::ApproachRate(APPROACH_RATE_STEP)),
+                    _ => {}
+                }
+            }
+            return Some(ScreenInput::Repeat(match scancode {
+                // Holding Backspace keeps erasing the search (ADR-0065).
+                KEY_BACKSPACE if song_select => SongSelectInput::Erase,
+                KEY_UP => SongSelectInput::Up,
+                KEY_DOWN => SongSelectInput::Down,
+                KEY_LEFT => SongSelectInput::Left,
+                KEY_RIGHT => SongSelectInput::Right,
+                KEY_PAGE_UP => SongSelectInput::PageUp,
+                KEY_PAGE_DOWN => SongSelectInput::PageDown,
+                _ => return None,
+            }));
+        }
         Some(ScreenInput::Common(match kind {
-            // Holding Backspace keeps erasing the search, and only that (ADR-0065).
-            InputKind::KeyRepeat {
-                scancode: KEY_BACKSPACE,
-            } if song_select => SongSelectInput::Erase,
             InputKind::Key {
                 scancode,
                 down: true,
@@ -1215,6 +1250,16 @@ impl ShellState {
                         None => None,
                     }
                 }
+                // Each language choice is a switch behind the curtain: a held arrow on
+                // the language row would close it again and again (ADR-0092).
+                AppScreen::Settings(screen)
+                    if matches!(
+                        input,
+                        ScreenInput::Repeat(SongSelectInput::Left | SongSelectInput::Right)
+                    ) && Row::ALL.get(screen.focus()) == Some(&Row::Language) =>
+                {
+                    None
+                }
                 AppScreen::Settings(screen) => {
                     let action = settings_input(input)
                         .and_then(|input| screen.input(input, &self.settings_layout));
@@ -1313,6 +1358,8 @@ impl ShellState {
 #[derive(Clone, Copy, Debug, PartialEq)]
 enum ScreenInput {
     Common(SongSelectInput),
+    /// An OS repeat of a held key that steps or walks (ADR-0092).
+    Repeat(SongSelectInput),
     Retry,
     /// The Tab key.
     Tab,
@@ -1333,7 +1380,7 @@ enum ScreenInput {
 impl ScreenInput {
     fn common(self) -> Option<SongSelectInput> {
         match self {
-            ScreenInput::Common(input) => Some(input),
+            ScreenInput::Common(input) | ScreenInput::Repeat(input) => Some(input),
             ScreenInput::Release => Some(SongSelectInput::PointerRelease),
             _ => None,
         }
@@ -1401,6 +1448,15 @@ fn settings_input(input: ScreenInput) -> Option<SettingsInput> {
             SongSelectInput::Scroll { lines } => SettingsInput::Scroll { lines },
             _ => return None,
         },
+        ScreenInput::Repeat(input) => match input {
+            SongSelectInput::Up => SettingsInput::Up,
+            SongSelectInput::Down => SettingsInput::Down,
+            SongSelectInput::Left => SettingsInput::Left,
+            SongSelectInput::Right => SettingsInput::Right,
+            SongSelectInput::PageUp => SettingsInput::PrevSection,
+            SongSelectInput::PageDown => SettingsInput::NextSection,
+            _ => return None,
+        },
     })
 }
 
@@ -1439,7 +1495,7 @@ fn results_input(input: ScreenInput) -> Option<ResultsInput> {
         ScreenInput::Common(SongSelectInput::PointerPress { x, y }) => {
             ResultsInput::PointerPress { x, y }
         }
-        ScreenInput::Common(_) => return None,
+        ScreenInput::Common(_) | ScreenInput::Repeat(_) => return None,
     })
 }
 

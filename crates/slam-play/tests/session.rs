@@ -2714,6 +2714,38 @@ fn offset_hotkeys_change_the_beatmap_offset_and_time_at_once() {
 }
 
 #[test]
+fn a_held_offset_key_repeats_its_step() {
+    let map = beatmap();
+    let mut d = Driver::new(&map, ModSet::default());
+    d.run_to(1500.0);
+    let down = d.key(EQUALS, true);
+    d.tick(&[down]);
+    let repeat = press(d.now, InputKind::KeyRepeat { scancode: EQUALS });
+    d.tick(&[repeat, repeat]);
+    assert_eq!(d.session.beatmap_offset(), 3.0);
+}
+
+#[test]
+fn held_arrows_walk_the_pause_menu() {
+    let map = beatmap();
+    let mut d = Driver::new(&map, ModSet::default());
+    d.run_to(1500.0);
+    d.tap(ESCAPE);
+    assert_eq!(d.state(), PlayState::Paused);
+    // Continue, then two repeats past retry to quit.
+    let down = d.key(DOWN, true);
+    d.tick(&[down]);
+    let repeat = press(d.now, InputKind::KeyRepeat { scancode: DOWN });
+    d.tick(&[repeat, repeat]);
+    // A repeated Enter presses nothing.
+    let enter = press(d.now, InputKind::KeyRepeat { scancode: ENTER });
+    d.tick(&[enter]);
+    assert_eq!(d.state(), PlayState::Paused);
+    d.tap(ENTER);
+    assert_eq!(d.state(), PlayState::Exited);
+}
+
+#[test]
 fn the_offset_stays_within_fifty_ms() {
     let map = beatmap();
     let mut d = Driver::new(&map, ModSet::default());
