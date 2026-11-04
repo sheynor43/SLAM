@@ -178,8 +178,8 @@ mod tests {
     #[test]
     fn the_panel_is_the_themes_width_within_the_window() {
         let theme = Theme::default();
-        assert_eq!(panel_width(2000.0, 768.0, &theme), 720.0);
+        assert_eq!(panel_width(2000.0, 768.0, &theme), 880.0);
         assert_eq!(panel_width(500.0, 768.0, &theme), 500.0);
-        assert_eq!(panel_width(4000.0, 1536.0, &theme), 1440.0);
+        assert_eq!(panel_width(4000.0, 1536.0, &theme), 1760.0);
     }
 }

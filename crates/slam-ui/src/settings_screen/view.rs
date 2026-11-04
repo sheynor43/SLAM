@@ -249,6 +249,19 @@ impl std::fmt::Debug for SettingsView {
     }
 }
 
+/// The smallest a text shrinks to fit its place, as a share of its size; past it, it
+/// overflows.
+const MIN_FIT: f32 = 0.7;
+
+/// Lays `line` out at `size`, smaller if that is wider than `width`, down to [`MIN_FIT`].
+fn lay_out_fitted(type_setter: &mut Typesetter, line: &mut Line, size: f32, width: f32) {
+    type_setter.lay_out(line, size);
+    let laid = line.layout.width();
+    if laid > width && laid > 0.0 && width > 0.0 {
+        type_setter.lay_out(line, size * (width / laid).max(MIN_FIT));
+    }
+}
+
 /// Decimals a slider with this `step` shows.
 fn decimals(step: f64) -> usize {
     let mut decimals = 0;
@@ -389,11 +402,21 @@ impl SettingsView {
         self.layout = SettingsLayout::new(width, height, &self.theme);
         let scale = self.layout.scale;
         let text = self.theme.widget_text_size * scale;
-        for line in self.tabs.iter_mut().chain(&mut self.labels).chain([
+        let pad = 2.0 * self.theme.widget_pad * scale;
+        // In the panel a long name may not fit its column: it shrinks, down to a floor.
+        let label = self.layout.label(0).width - pad;
+        for line in &mut self.labels {
+            lay_out_fitted(&mut self.type_setter, line, text, label);
+        }
+        let tab = self.layout.tabs[0].width - pad;
+        for line in &mut self.tabs {
+            lay_out_fitted(&mut self.type_setter, line, text, tab);
+        }
+        for line in [
             &mut self.placeholder,
             &mut self.no_results,
             &mut self.search,
-        ]) {
+        ] {
             self.type_setter.lay_out(line, text);
         }
         self.type_setter
@@ -405,9 +428,10 @@ impl SettingsView {
         for line in self.hints.iter_mut().flatten() {
             self.type_setter.lay_out(line, hint);
         }
+        let widget = self.layout.widget(0).width - pad;
         for view in &mut self.views {
             if let RowView::Button(line) = view {
-                self.type_setter.lay_out(line, text);
+                lay_out_fitted(&mut self.type_setter, line, text, widget);
             }
         }
         if let Some(value) = &mut self.value {
