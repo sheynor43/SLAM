@@ -3,7 +3,7 @@
 
 use slam_audio::{Backend, DeviceInfo};
 use slam_engine::RATE_PRESETS;
-use slam_input::{Displays, WindowMode};
+use slam_input::{Displays, VideoDriver, WindowMode};
 use slam_osu::replay::Actions;
 use slam_play::FpsCorner;
 use slam_text::FontRegistry;
@@ -166,6 +166,8 @@ const WIN_KEY_LABEL: &str = if cfg!(windows) {
 } else {
     "settings-gameplay-disable-shortcuts"
 };
+/// The video driver row shows on Linux only: other platforms have one driver (ADR-0097).
+const VIDEO_DRIVER_ROW: bool = cfg!(target_os = "linux");
 /// Whether the platform has known issues with the high precision mouse (ADR-0069): lazer
 /// switches it off by default and warns on Linux and macOS.
 const PLATFORM_WARNING: bool = cfg!(any(target_os = "linux", target_os = "macos"));
@@ -208,6 +210,8 @@ pub enum Row {
     WindowedSize,
     /// Shown in fullscreen only, as lazer (ADR-0073).
     MinimiseOnFocusLoss,
+    /// The video driver SDL starts with on Linux, applied after a restart (ADR-0097).
+    VideoDriver,
     UpdateHz,
     DrawHz,
     MenuDrawHz,
@@ -235,7 +239,7 @@ pub enum Row {
 const _: () = assert!(Row::ALL.len() <= slam_ui::settings_screen::MAX_ROWS);
 
 impl Row {
-    pub const ALL: [Row; 52] = [
+    pub const ALL: [Row; 53] = [
         Row::MasterVolume,
         Row::MusicVolume,
         Row::MenuMusic,
@@ -267,6 +271,7 @@ impl Row {
         Row::FullscreenSize,
         Row::WindowedSize,
         Row::MinimiseOnFocusLoss,
+        Row::VideoDriver,
         Row::UpdateHz,
         Row::DrawHz,
         Row::MenuDrawHz,
@@ -342,7 +347,8 @@ impl Row {
             | Row::Display
             | Row::FullscreenSize
             | Row::WindowedSize
-            | Row::MinimiseOnFocusLoss => 3,
+            | Row::MinimiseOnFocusLoss
+            | Row::VideoDriver => 3,
             Row::UpdateHz
             | Row::DrawHz
             | Row::MenuDrawHz
@@ -399,6 +405,7 @@ impl Row {
             Row::Display => "settings-layout-display",
             Row::FullscreenSize | Row::WindowedSize => "settings-layout-resolution",
             Row::MinimiseOnFocusLoss => "settings-layout-minimise-on-focus-loss",
+            Row::VideoDriver => "settings-layout-video-driver",
             Row::UpdateHz => "settings-frame-update-rate",
             Row::DrawHz => "settings-frame-draw-rate",
             Row::MenuDrawHz => "settings-frame-menu-draw-rate",
@@ -423,11 +430,12 @@ impl Row {
         }
     }
 
-    /// Whether a change only takes effect after a restart: none does now. Rows apply when
-    /// the screen closes, the output reopened (ADR-0089), the language as it is picked
-    /// (ADR-0091); the offset, mouse buttons and background from the next play (ADR-0048).
+    /// Whether a change only takes effect after a restart: the video driver does, SDL
+    /// reads it once at startup (ADR-0097). Other rows apply when the screen closes, the
+    /// output reopened (ADR-0089), the language as it is picked (ADR-0091); the offset,
+    /// mouse buttons and background from the next play (ADR-0048).
     pub fn restart_required(self) -> bool {
-        false
+        self == Row::VideoDriver
     }
 }
 
@@ -544,6 +552,15 @@ fn mode_key(mode: WindowMode) -> &'static str {
         WindowMode::Windowed => "settings-option-windowed",
         WindowMode::Borderless => "settings-option-borderless",
         WindowMode::Fullscreen => "settings-option-fullscreen",
+    }
+}
+
+/// The Fluent key of a video driver option.
+fn video_driver_key(driver: VideoDriver) -> &'static str {
+    match driver {
+        VideoDriver::Auto => "settings-option-auto",
+        VideoDriver::Wayland => "settings-option-wayland",
+        VideoDriver::X11 => "settings-option-x11",
     }
 }
 
@@ -852,6 +869,12 @@ impl Rows {
                 WindowMode::ALL.len(),
                 WindowMode::ALL.iter().position(|m| *m == s.window.mode),
             ),
+            Row::VideoDriver => choice(
+                VideoDriver::ALL.len(),
+                VideoDriver::ALL
+                    .iter()
+                    .position(|d| *d == s.window.video_driver),
+            ),
             Row::Display | Row::FullscreenSize | Row::WindowedSize => {
                 let (options, selected) = self.display_choice(row, s);
                 choice(options, Some(selected))
@@ -986,6 +1009,11 @@ impl Rows {
                     settings.window.mode = *mode;
                 }
             }
+            (Row::VideoDriver, RowValue::Choice(i)) => {
+                if let Some(driver) = VideoDriver::ALL.get(i) {
+                    settings.window.video_driver = *driver;
+                }
+            }
             (Row::Display, RowValue::Choice(i)) => {
                 if i < self.displays.displays.len() {
                     settings.window.display = u8::try_from(i).unwrap_or(u8::MAX);
@@ -1038,6 +1066,7 @@ impl Rows {
                 Row::MinimiseOnFocusLoss => screen.set_hidden(i, mode != WindowMode::Fullscreen),
                 // Ported from osu!lazer 2026.1005.0-lazer: osu.Game/Overlays/Settings/Sections/Gameplay/InputSettings.cs
                 Row::DisableWinKey => screen.set_hidden(i, !WIN_KEY_ROW),
+                Row::VideoDriver => screen.set_hidden(i, !VIDEO_DRIVER_ROW),
                 Row::Display | Row::FullscreenSize | Row::WindowedSize => {
                     let (options, selected) = self.display_choice(*row, settings);
                     if let Some(RowWidget::Dropdown(dropdown)) = screen.widget(i)
@@ -1149,6 +1178,10 @@ impl Rows {
                     Row::ScreenMode => WindowMode::ALL
                         .iter()
                         .map(|mode| text(mode_key(*mode)))
+                        .collect(),
+                    Row::VideoDriver => VideoDriver::ALL
+                        .iter()
+                        .map(|driver| text(video_driver_key(*driver)))
                         .collect(),
                     _ => Vec::new(),
                 };
@@ -1545,10 +1578,39 @@ mod tests {
     }
 
     #[test]
-    fn no_row_waits_for_a_restart() {
+    fn only_the_video_driver_row_waits_for_a_restart() {
         for row in Row::ALL {
-            assert!(!row.restart_required(), "{row:?}");
+            assert_eq!(row.restart_required(), row == Row::VideoDriver, "{row:?}");
         }
+        let (rows, s) = rows();
+        assert!(rows.specs(&s)[index(Row::VideoDriver)].restart_required);
+    }
+
+    #[test]
+    fn the_video_driver_row_shows_on_linux_only() {
+        let (rows, s) = rows();
+        let screen = opened(&rows, &s);
+        assert_eq!(
+            screen.is_hidden(index(Row::VideoDriver)),
+            !cfg!(target_os = "linux")
+        );
+        assert_eq!(Row::VideoDriver.section(), Row::ScreenMode.section());
+    }
+
+    #[test]
+    fn picking_a_video_driver_updates_the_settings_and_labels_the_options() {
+        let (rows, mut s) = rows();
+        assert_eq!(dropdown(&opened(&rows, &s), Row::VideoDriver), (3, 0));
+        for (i, driver) in VideoDriver::ALL.iter().enumerate() {
+            rows.apply(&mut s, index(Row::VideoDriver), RowValue::Choice(i));
+            assert_eq!(s.window.video_driver, *driver);
+            assert_eq!(dropdown(&opened(&rows, &s), Row::VideoDriver), (3, i));
+        }
+        let localizer = Localizer::builtin().unwrap();
+        let labels = rows.labels(&localizer);
+        let row = &labels.rows[index(Row::VideoDriver)];
+        assert_eq!(row.label, "Video driver (Linux)");
+        assert_eq!(row.options, ["Auto", "Wayland", "X11"]);
     }
 
     #[test]

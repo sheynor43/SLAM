@@ -6,6 +6,7 @@ use std::path::{Path, PathBuf};
 use serde::de::DeserializeOwned;
 use slam_engine::MAX_UPDATE_HZ;
 use slam_engine::limiter::MIN_HZ;
+use slam_input::VideoDriver;
 use slam_play::input::{Bindings, MAX_BINDINGS};
 use slam_ui::i18n::BUILTIN_LANGUAGES;
 use toml::{Table, Value};
@@ -684,6 +685,16 @@ fn read_window(cx: &mut Ctx, table: &mut Table, window: &mut Window) {
         &mut window.minimise_on_focus_loss,
         |_| Ok(()),
     );
+    let mut driver: Option<String> = None;
+    cx.opt(&mut section, "window", "video_driver", &mut driver);
+    if let Some(name) = driver {
+        match VideoDriver::parse(&name) {
+            Some(driver) => window.video_driver = driver,
+            None => cx.warn(format!(
+                "window.video_driver: unknown driver \"{name}\", using the default"
+            )),
+        }
+    }
     cx.unknown(&section, "window");
 }
 

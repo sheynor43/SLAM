@@ -8,7 +8,7 @@ use slam_engine::EngineConfig;
 use slam_engine::limiter::{InvalidRate, LimiterMode, MAX_HZ, MIN_HZ};
 use slam_input::{
     DEFAULT_POSITION, DEFAULT_WINDOWED_SIZE, MAX_DISPLAY, MAX_SIDE, MIN_WINDOWED_SIZE, MouseButton,
-    POSITION_RANGE, WindowMode, WindowState,
+    POSITION_RANGE, VideoDriver, WindowMode, WindowState,
 };
 use slam_osu::replay::Actions;
 use slam_play::input::{Binding, Bindings, Input, MAX_BINDINGS};
@@ -223,6 +223,10 @@ pub struct Window {
     pub windowed_position: [f32; 2],
     /// Minimise on focus loss in fullscreen, as lazer's `MinimiseOnFocusLossInFullscreen`.
     pub minimise_on_focus_loss: bool,
+    /// The video driver SDL uses on Linux; read once at startup, so a change applies after
+    /// a restart (ADR-0097).
+    #[serde(serialize_with = "serialize_video_driver")]
+    pub video_driver: VideoDriver,
 }
 
 impl Window {
@@ -259,6 +263,7 @@ impl Default for Window {
             display: 0,
             windowed_position: DEFAULT_POSITION,
             minimise_on_focus_loss: true,
+            video_driver: VideoDriver::Auto,
         }
     }
 }
@@ -286,6 +291,13 @@ pub fn window_mode_from_name(name: &str) -> Option<WindowMode> {
 pub fn parse_size(text: &str) -> Option<[u16; 2]> {
     let (w, h) = text.split_once('x')?;
     Some([w.parse().ok()?, h.parse().ok()?])
+}
+
+fn serialize_video_driver<S: Serializer>(
+    driver: &VideoDriver,
+    serializer: S,
+) -> Result<S::Ok, S::Error> {
+    serializer.serialize_str(driver.as_str())
 }
 
 fn serialize_window_mode<S: Serializer>(

@@ -3376,6 +3376,8 @@ fn with_songs(mut settings: Settings, songs: Option<PathBuf>) -> Settings {
 /// Opens the window with the main menu and runs until it is closed. With a songs folder, the
 /// song select lists the beatmap sets of that folder.
 pub fn run(settings: Settings) -> Result<(), String> {
+    // Read once, before SDL starts; a change at runtime waits for a restart (ADR-0097).
+    slam_input::set_video_driver(settings.window.video_driver);
     let (state, position) = (settings.window.state(), settings.window.windowed_position);
     let window = |kind| {
         match kind {
