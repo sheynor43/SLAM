@@ -786,6 +786,7 @@ fn the_song_select_button_asks_for_the_folder_picker() {
     let click = [
         move_to(b.x + b.width / 2.0, b.y + b.height / 2.0),
         mouse(MouseButton::Left, true),
+        mouse(MouseButton::Left, false),
     ];
     s.tick(LATER, &click, &mut snap);
     assert_eq!(commands.pop(), Ok(Command::PickFolder));
