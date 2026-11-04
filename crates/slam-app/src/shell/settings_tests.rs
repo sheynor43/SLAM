@@ -193,6 +193,11 @@ fn shell_with(link: crate::settings::saver::SaveLink) -> Shell {
         window_sent: Settings::default().window.state(),
         position_sent: Settings::default().window.windowed_position,
         window_save_at: None,
+        language: super::language::AppliedLanguage::new(
+            Arc::new(slam_ui::i18n::Localizer::builtin().unwrap()),
+            None,
+            None,
+        ),
     }
 }
 
@@ -969,7 +974,7 @@ fn a_window_mode_switch_reaches_an_open_settings_screen() {
 #[test]
 fn display_lists_reach_an_open_settings_screen_and_go_back() {
     let (sender, link, _views, _thread) =
-        crate::displays::spawn(Box::new(|_, _| None)).expect("thread starts");
+        crate::displays::spawn(Box::new(|_, _| None), Box::new(|| 0)).expect("thread starts");
     let mut s = state().with_displays(link);
     let mut snap = ShellSnapshot::default();
     opened(&mut s, &mut snap);
@@ -1021,4 +1026,54 @@ fn window_edits_reach_the_window_before_the_screen_closes() {
     assert_eq!(edited(&shell.state).window.mode, switched.mode);
     shell.apply_settings(LATER);
     assert_eq!(shell.window.get(), switched);
+}
+
+#[test]
+fn committed_settings_in_another_language_switch_the_interface() {
+    let (link, _taken) = crate::settings::saver::detached(1);
+    let mut shell = shell_with(link);
+    let localizer = Arc::new(slam_ui::i18n::Localizer::builtin().unwrap());
+    shell.language = super::language::AppliedLanguage::new(Arc::clone(&localizer), None, None);
+    shell.apply_settings(0);
+    assert_eq!(localizer.generation(), 0);
+    let mut settings = shell.state.settings().clone();
+    settings.general.language = Some("ru".to_owned());
+    shell.state = state().with_settings(settings);
+    shell.apply_settings(LATER);
+    assert_eq!(localizer.format("settings-layout-language", None), "Язык");
+    shell.apply_settings(LATER);
+    assert_eq!(localizer.generation(), 1, "switched once");
+}
+
+#[test]
+fn a_language_picked_on_the_open_settings_screen_switches_at_once() {
+    let (link, _taken) = crate::settings::saver::detached(1);
+    let mut shell = shell_with(link);
+    let localizer = Arc::new(slam_ui::i18n::Localizer::builtin().unwrap());
+    shell.language = super::language::AppliedLanguage::new(Arc::clone(&localizer), None, None);
+    let mut snap = ShellSnapshot::default();
+    opened(&mut shell.state, &mut snap);
+    shell.apply_settings(0);
+    shell.state.editing.as_mut().expect("open").general.language = Some("ru".to_owned());
+    shell.apply_settings(LATER);
+    assert_eq!(localizer.format("settings-layout-language", None), "Язык");
+    assert!(
+        shell.state.settings().general.language.is_none(),
+        "not committed yet"
+    );
+}
+
+#[test]
+fn a_language_switch_on_the_open_screen_lists_the_devices_again() {
+    let (link, _taken) = crate::settings::saver::detached(1);
+    let mut shell = shell_with(link);
+    let mut snap = ShellSnapshot::default();
+    opened(&mut shell.state, &mut snap);
+    // Opening asked for the list already.
+    let _ = shell.state.take_device_list_request();
+    shell.apply_settings(0);
+    assert!(shell.state.take_device_list_request().is_none());
+    shell.state.editing.as_mut().expect("open").general.language = Some("ru".to_owned());
+    shell.apply_settings(LATER);
+    assert!(shell.state.take_device_list_request().is_some());
 }

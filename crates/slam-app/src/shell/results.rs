@@ -243,7 +243,7 @@ mod tests {
 
     #[test]
     fn the_average_reads_early_or_late_by_its_sign() {
-        let mut localizer = localizer();
+        let localizer = localizer();
         let cases = [
             (-1.234, "1.23 ms early"),
             (1.234, "1.23 ms late"),

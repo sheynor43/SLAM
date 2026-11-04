@@ -181,6 +181,10 @@ pub fn lists(displays: &Displays, generation: u64) -> DisplayLists {
 /// Builds the draw thread's dropdowns; `None` in tests, without fonts.
 pub type MakeViews = Box<dyn Fn(&Displays, &DisplayLists) -> Option<DisplayViews> + Send>;
 
+/// The interface language's generation ([`slam_ui::i18n::Localizer::generation`]): when it
+/// changes, the last list is made again in the new language (ADR-0091).
+pub type LanguageGeneration = Box<dyn Fn() -> u64 + Send>;
+
 /// The update thread's end.
 pub struct ListsLink {
     lists: rtrb::Consumer<Box<DisplayLists>>,
@@ -332,6 +336,17 @@ impl<V> ShownViews<V> {
         }
     }
 
+    /// Moves our dropdowns from `from` to `to`, which replaces it (a settings screen laid
+    /// out in another language, ADR-0091): `from` gets its own back. Does not allocate.
+    pub fn move_screen(&mut self, from: &mut impl DropdownRows<V>, to: &mut impl DropdownRows<V>) {
+        let display_in = self.display_in;
+        self.take_back(from);
+        // The resolution lists follow at the next `show`.
+        if display_in && let Some(views) = &mut self.views {
+            self.display_in = to.swap_dropdown(self.rows[0], &mut views.display);
+        }
+    }
+
     /// Gives `screen` back the dropdowns it had before ours.
     fn take_back(&mut self, screen: &mut impl DropdownRows<V>) {
         self.swap_sizes(screen);
@@ -385,9 +400,11 @@ impl Ends {
 
 /// Starts the `slam-displays` thread. Display lists sent on the returned sender (from the
 /// window's callback) come out as lists for the update thread and dropdowns for the draw
-/// thread; a list equal to the previous one is skipped.
+/// thread; a list equal to the previous one is skipped, unless the interface language
+/// changed since (`language`).
 pub fn spawn(
     make_views: MakeViews,
+    language: LanguageGeneration,
 ) -> std::io::Result<(Sender<Displays>, ListsLink, ViewsLink, DisplaysThread)> {
     let (sender, receiver) = channel();
     let (lists, lists_rx) = rtrb::RingBuffer::new(RING);
@@ -404,7 +421,7 @@ pub fn spawn(
     let flag = Arc::clone(&stop);
     let thread = std::thread::Builder::new()
         .name("slam-displays".to_owned())
-        .spawn(move || run(&receiver, ends, &make_views, &flag))?;
+        .spawn(move || run(&receiver, ends, &make_views, &language, &flag))?;
     Ok((
         sender,
         ListsLink {
@@ -422,17 +439,31 @@ pub fn spawn(
     ))
 }
 
-fn run(receiver: &Receiver<Displays>, mut ends: Ends, make_views: &MakeViews, stop: &AtomicBool) {
+fn run(
+    receiver: &Receiver<Displays>,
+    mut ends: Ends,
+    make_views: &MakeViews,
+    language: &LanguageGeneration,
+    stop: &AtomicBool,
+) {
     let mut previous: Option<Displays> = None;
     // A list not sent yet for full rings: sent once there is room, unless a newer comes.
     let mut waiting: Option<Displays> = None;
     let mut generation = 0;
+    let mut language_seen = language();
     while !stop.load(Ordering::Relaxed) {
         ends.free_returned();
         match receiver.recv_timeout(FREE_INTERVAL) {
             Ok(displays) => waiting = Some(displays),
             Err(RecvTimeoutError::Timeout) => {}
             Err(RecvTimeoutError::Disconnected) => break,
+        }
+        // The texts are in another language: the last list goes again.
+        let current = language();
+        if current != language_seen {
+            language_seen = current;
+            let last = previous.take();
+            waiting = waiting.or(last);
         }
         let Some(displays) = waiting.take() else {
             continue;

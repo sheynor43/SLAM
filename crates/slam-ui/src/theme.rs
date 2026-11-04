@@ -112,6 +112,10 @@ pub struct Theme {
     pub settings_label_ratio: f32,
     /// Size of the "after restart" marker.
     pub settings_marker_size: f32,
+    /// Fill of the curtain's slats while the language switches (ADR-0091).
+    pub curtain_fill: Color,
+    /// Height of the accent edge leading each slat.
+    pub curtain_edge: f32,
 }
 
 impl Default for Theme {
@@ -225,6 +229,8 @@ impl Default for Theme {
             settings_row_pitch: 52.0,
             settings_label_ratio: 0.4,
             settings_marker_size: 14.0,
+            curtain_fill: Color::rgb(0.11, 0.11, 0.15),
+            curtain_edge: 4.0,
         }
     }
 }

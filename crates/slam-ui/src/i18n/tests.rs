@@ -51,7 +51,7 @@ fn no_isolation_marks() {
 
 #[test]
 fn falls_back_to_english_then_key() {
-    let mut l = localizer();
+    let l = localizer();
     l.set_language("ru").unwrap();
     assert_eq!(l.format("hello", None), "Привет");
     assert_eq!(l.format("only-en", None), "Only English");
@@ -62,7 +62,7 @@ fn falls_back_to_english_then_key() {
 
 #[test]
 fn switching_changes_output_and_bumps_generation() {
-    let mut l = localizer();
+    let l = localizer();
     assert_eq!(l.generation(), 0);
     assert_eq!(l.format("hello", None), "Hello");
     l.set_language("ru").unwrap();
@@ -76,7 +76,7 @@ fn switching_changes_output_and_bumps_generation() {
 
 #[test]
 fn unknown_language_leaves_state_unchanged() {
-    let mut l = localizer();
+    let l = localizer();
     l.set_language("ru").unwrap();
     let generation = l.generation();
     assert_eq!(
@@ -89,6 +89,26 @@ fn unknown_language_leaves_state_unchanged() {
     ));
     assert_eq!(l.generation(), generation);
     assert_eq!(l.language().to_string(), "ru");
+}
+
+#[test]
+fn a_switch_on_one_thread_shows_on_another() {
+    let l = std::sync::Arc::new(localizer());
+    let other = std::sync::Arc::clone(&l);
+    std::thread::spawn(move || other.set_language("ru").unwrap())
+        .join()
+        .unwrap();
+    assert_eq!(l.format("hello", None), "Привет");
+    assert_eq!(l.language().to_string(), "ru");
+    assert_eq!(l.generation(), 1);
+}
+
+#[test]
+fn switching_to_the_active_language_still_bumps_the_generation() {
+    let l = localizer();
+    l.set_language("en").unwrap();
+    assert_eq!(l.generation(), 1);
+    assert_eq!(l.language().to_string(), "en");
 }
 
 #[test]
@@ -110,7 +130,7 @@ fn count(l: &Localizer, n: i64) -> String {
 
 #[test]
 fn builtin_plurals() {
-    let mut l = Localizer::builtin().unwrap();
+    let l = Localizer::builtin().unwrap();
     assert_eq!(count(&l, 1), "1 beatmap");
     assert_eq!(count(&l, 2), "2 beatmaps");
     l.set_language("ru").unwrap();
@@ -157,7 +177,7 @@ fn builtin_languages_are_clean() {
 
 #[test]
 fn language_names_come_from_each_language() {
-    let mut l = Localizer::builtin().unwrap();
+    let l = Localizer::builtin().unwrap();
     for _ in 0..2 {
         assert_eq!(l.language_name("en").as_deref(), Some("English"));
         assert_eq!(l.language_name("ru").as_deref(), Some("Русский"));

@@ -108,12 +108,23 @@ pub struct FpsOverlay {
 impl FpsOverlay {
     /// Lays out every character the counter shows: call it off the hot paths.
     pub fn new(source: FpsSource, registry: Arc<FontRegistry>, labels: &FpsLabels) -> FpsOverlay {
+        FpsOverlay::with_view(source, FpsView::new(registry, labels))
+    }
+
+    /// The counter over `view`, laid out already.
+    pub fn with_view(source: FpsSource, view: FpsView) -> FpsOverlay {
         FpsOverlay {
             source,
             counter: FpsCounter::new(),
-            view: FpsView::new(registry, labels),
+            view,
             shown: false,
         }
+    }
+
+    /// Exchanges the counter's texts with `view`, laid out in another language (ADR-0091).
+    /// The caller frees the old one off the hot paths. Does not allocate.
+    pub fn swap_view(&mut self, view: &mut FpsView) {
+        std::mem::swap(&mut self.view, view);
     }
 
     /// See [`FpsView::request_glyphs`].

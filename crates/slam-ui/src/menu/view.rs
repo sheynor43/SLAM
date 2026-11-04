@@ -121,6 +121,17 @@ impl MenuView {
         view
     }
 
+    /// Lays the texts out for a `width` × `height` window ahead of the first `push`, so that
+    /// a view made off the draw thread does not lay them out there (ADR-0091). Allocates:
+    /// call it off the hot paths.
+    pub fn lay_out_for(&mut self, width: f32, height: f32) {
+        let frame = Frame { width, height };
+        if frame != self.frame {
+            self.frame = frame;
+            self.lay_out();
+        }
+    }
+
     fn lay_out(&mut self) {
         let Frame { width, height } = self.frame;
         self.layout = MenuLayout::new(width, height, &self.theme);

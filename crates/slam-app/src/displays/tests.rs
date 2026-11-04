@@ -92,7 +92,7 @@ fn a_missing_display_shows_as_the_primary_one() {
 #[test]
 fn the_thread_skips_equal_lists_and_frees_returned_ones() {
     let (sender, mut lists_link, mut views_link, thread) =
-        spawn(Box::new(|_, _| None)).expect("thread starts");
+        spawn(Box::new(|_, _| None), Box::new(|| 0)).expect("thread starts");
     let displays = Displays {
         list: vec![display(&[[1920, 1080]], [1920, 1080])],
         primary: 0,
@@ -235,6 +235,68 @@ fn views_older_than_the_lists_shown_are_taken_off() {
     shown.show(&mut screen, 3, 0);
     assert_eq!(screen.0, ["g3 displays", "g3 full 0", "g3 windowed 0"]);
     assert_eq!(returned.pop().ok().map(|v| v.generation), Some(1));
+}
+
+#[test]
+fn a_language_switch_sends_the_last_list_again() {
+    use std::sync::atomic::AtomicU64;
+    let language = Arc::new(AtomicU64::new(0));
+    let seen = Arc::clone(&language);
+    let (sender, mut lists_link, _views_link, thread) = spawn(
+        Box::new(|_, _| None),
+        Box::new(move || seen.load(Ordering::Relaxed)),
+    )
+    .expect("thread starts");
+    let displays = Displays {
+        list: vec![display(&[[1920, 1080]], [1920, 1080])],
+        primary: 0,
+        windowed_size: [1366, 768],
+    };
+    sender.send(displays).expect("thread listens");
+    let mut received = Vec::new();
+    for _ in 0..1000 {
+        while let Ok(lists) = lists_link.lists.pop() {
+            received.push(lists.generation);
+            if received.len() == 1 {
+                language.store(1, Ordering::Relaxed);
+            }
+        }
+        if received.len() >= 2 {
+            break;
+        }
+        std::thread::sleep(Duration::from_millis(5));
+    }
+    assert_eq!(received, [1, 2]);
+    drop(thread);
+}
+
+#[test]
+fn moving_to_a_new_screen_gives_the_old_one_its_own_back() {
+    let (mut shown, (mut producer, _returned)) = shown_views();
+    let mut old = screen();
+    producer.push(views(1, 2)).unwrap();
+    shown.receive();
+    shown.show(&mut old, 1, 1);
+    let mut new = Screen(vec![
+        "new display".into(),
+        "new full".into(),
+        "new windowed".into(),
+    ]);
+    shown.move_screen(&mut old, &mut new);
+    assert_eq!(old.0, ["own display", "own full", "own windowed"]);
+    assert_eq!(new.0, ["g1 displays", "new full", "new windowed"]);
+    shown.show(&mut new, 1, 1);
+    assert_eq!(new.0, ["g1 displays", "g1 full 1", "g1 windowed 1"]);
+}
+
+#[test]
+fn moving_before_any_views_changes_neither_screen() {
+    let (mut shown, _ends) = shown_views();
+    let mut old = screen();
+    let mut new = Screen(vec!["new display".into()]);
+    shown.move_screen(&mut old, &mut new);
+    assert_eq!(old.0, ["own display", "own full", "own windowed"]);
+    assert_eq!(new.0, ["new display"]);
 }
 
 #[test]

@@ -5,6 +5,7 @@ mod check;
 
 use std::borrow::Cow;
 use std::fmt;
+use std::sync::atomic::{AtomicU64, Ordering};
 
 use fluent_bundle::FluentResource;
 use fluent_bundle::concurrent::FluentBundle;
@@ -118,15 +119,32 @@ fn build_bundle(source: &LanguageSource<'_>) -> Result<(LanguageIdentifier, Bund
     Ok((langid, bundle))
 }
 
+/// Bits of [`Localizer::state`] holding the active language; the rest is the generation.
+const ACTIVE_BITS: u32 = 16;
+const ACTIVE_MASK: u64 = (1 << ACTIVE_BITS) - 1;
+
 /// Looks up UI strings: active language, then English, then the key itself.
+///
+/// The language switches through a shared reference (ADR-0091): every thread holding the
+/// localizer sees the switch at its next lookup, without locks.
 pub struct Localizer {
     fallback: Bundle,
     /// Non-English languages that can be activated.
     languages: Vec<(LanguageIdentifier, Bundle)>,
-    /// Index into `languages`; `None` means English only.
-    active: Option<usize>,
     english: LanguageIdentifier,
-    generation: u64,
+    /// The generation above [`ACTIVE_BITS`], the active language below: 0 is English,
+    /// `i + 1` is `languages[i]`. One word, so a reader never sees a language with
+    /// another switch's generation.
+    state: AtomicU64,
+}
+
+impl fmt::Debug for Localizer {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("Localizer")
+            .field("language", self.language())
+            .field("generation", &self.generation())
+            .finish_non_exhaustive()
+    }
 }
 
 impl Localizer {
@@ -140,16 +158,15 @@ impl Localizer {
         let mut languages = Vec::with_capacity(others.len());
         for source in others {
             let (id, bundle) = build_bundle(source)?;
-            if id != english_id {
+            if id != english_id && languages.len() < ACTIVE_MASK as usize {
                 languages.push((id, bundle));
             }
         }
         Ok(Self {
             fallback,
             languages,
-            active: None,
             english: english_id,
-            generation: 0,
+            state: AtomicU64::new(0),
         })
     }
 
@@ -163,36 +180,48 @@ impl Localizer {
         std::iter::once(&self.english).chain(self.languages.iter().map(|(id, _)| id))
     }
 
+    /// Index into `languages` of the active language; `None` means English only.
+    fn active(&self) -> Option<usize> {
+        match self.state.load(Ordering::Acquire) & ACTIVE_MASK {
+            0 => None,
+            code => Some(code as usize - 1),
+        }
+    }
+
     /// The active language.
     pub fn language(&self) -> &LanguageIdentifier {
-        match self.active {
+        match self.active() {
             Some(i) => &self.languages[i].0,
             None => &self.english,
         }
     }
 
-    /// Switches the active language. On error nothing changes.
-    pub fn set_language(&mut self, langid: &str) -> Result<(), I18nError> {
+    /// Switches the active language for every holder of this localizer. On error nothing
+    /// changes. Allocates on parsing `langid`: call it off the hot paths.
+    pub fn set_language(&self, langid: &str) -> Result<(), I18nError> {
         let id = parse_langid(langid)?;
-        let active = if id == self.english {
-            None
+        let code = if id == self.english {
+            0
         } else {
-            Some(
-                self.languages
-                    .iter()
-                    .position(|(l, _)| *l == id)
-                    .ok_or_else(|| I18nError::UnknownLanguage(langid.to_owned()))?,
-            )
+            self.languages
+                .iter()
+                .position(|(l, _)| *l == id)
+                .ok_or_else(|| I18nError::UnknownLanguage(langid.to_owned()))? as u64
+                + 1
         };
-        self.active = active;
-        self.generation += 1;
+        // A plain read-modify-write: two switches at once each bump the generation.
+        let _ = self
+            .state
+            .try_update(Ordering::AcqRel, Ordering::Acquire, |state| {
+                Some(((state >> ACTIVE_BITS) + 1) << ACTIVE_BITS | code)
+            });
         Ok(())
     }
 
-    /// Bumped on every successful language switch; cached strings from an older
-    /// generation must be formatted again.
+    /// Bumped on every successful language switch, even to the same language; strings
+    /// formatted under an older generation must be formatted again.
     pub fn generation(&self) -> u64 {
-        self.generation
+        self.state.load(Ordering::Acquire) >> ACTIVE_BITS
     }
 
     /// The name of language `langid` in that language (`settings-language-name`), whatever
@@ -210,13 +239,14 @@ impl Localizer {
     /// Formats `key` (`message` or `message.attribute`). Falls back to English, then
     /// to the key itself.
     pub fn format<'a>(&'a self, key: &'a str, args: Option<&'a FluentArgs<'_>>) -> Cow<'a, str> {
-        if let Some(i) = self.active
+        let active = self.active();
+        if let Some(i) = active
             && let Some(text) = Self::format_in(&self.languages[i].1, key, args)
         {
             return text;
         }
         if let Some(text) = Self::format_in(&self.fallback, key, args) {
-            if self.active.is_some() {
+            if active.is_some() {
                 tracing::debug!(key, "missing translation, using English");
             }
             return text;

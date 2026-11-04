@@ -199,7 +199,7 @@ mod tests {
 
     #[test]
     fn every_key_and_mouse_label_exists_in_both_languages() {
-        let mut localizer = Localizer::builtin().unwrap();
+        let localizer = Localizer::builtin().unwrap();
         for language in ["en", "ru"] {
             localizer.set_language(language).unwrap();
             let labels = key_labels(&localizer);

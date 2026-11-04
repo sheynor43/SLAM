@@ -363,6 +363,11 @@ impl DropdownView {
         view
     }
 
+    /// How many options it shows.
+    pub fn options(&self) -> usize {
+        self.options.len()
+    }
+
     fn lay_out(&mut self) {
         let size = self.theme.widget_text_size * self.scale;
         for option in &mut self.options {
