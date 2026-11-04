@@ -1303,9 +1303,13 @@ impl Driver {
             &mods,
             &track,
             LiveInput::new(Bindings::default(), layout()),
-            GameplaySounds::new(map, sounds, SoundSettings::for_mods(&mods)).with_fail_sound(Some(
-                Arc::new(Sample::from_interleaved(vec![0.1; 2 * 10], RATE, 2).unwrap()),
-            )),
+            GameplaySounds::new(map, sounds, SoundSettings::for_mods(&mods))
+                .with_fail_sound(Some(Arc::new(
+                    Sample::from_interleaved(vec![0.1; 2 * 10], RATE, 2).unwrap(),
+                )))
+                .with_combo_break_sound(Some(Arc::new(
+                    Sample::from_interleaved(vec![0.2; 2 * 10], RATE, 2).unwrap(),
+                ))),
             Offsets::default(),
         );
         let mut driver = Driver {
@@ -2126,6 +2130,35 @@ const FAILED: [TrackAdjustment; 4] = [
         duration_ms: 0.0,
     },
 ];
+
+#[test]
+fn breaking_the_first_combo_plays_the_combo_break_sound() {
+    let map = beatmap();
+    let mut d = Driver::new(&map, mods(vec![slam_osu::mods::Mod::NoFail]));
+    d.run_to(990.0);
+    let aim = d.mouse(Vec2::new(100.0, 100.0));
+    d.tick(&[aim]);
+    d.run_to(1000.0);
+    d.tap(Z);
+    assert_eq!(d.session.score().statistics().combo, 1);
+    assert_eq!(d.sink.effects, 0);
+    // The slider's head is missed: the combo of 1 breaks, the first break of the play.
+    d.run_until(1_000, |s| s.hud.combo == 0);
+    assert_eq!(d.sink.effects, 1);
+    // Later misses at no combo are silent.
+    d.run_to(3500.0);
+    assert_eq!(d.sink.effects, 1);
+    // A restart makes the next break the first again.
+    d.hold(None, GRAVE, 200);
+    assert_eq!(d.snapshot.restarts, 1);
+    d.run_to(990.0);
+    let aim = d.mouse(Vec2::new(100.0, 100.0));
+    d.tick(&[aim]);
+    d.run_to(1000.0);
+    d.tap(Z);
+    d.run_until(1_000, |s| s.hud.combo == 0);
+    assert_eq!(d.sink.effects, 2);
+}
 
 #[test]
 fn failing_slows_the_track_to_a_stop_with_the_fail_sound_and_filters() {

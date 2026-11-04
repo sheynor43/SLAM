@@ -181,6 +181,7 @@ settings-gameplay-dim = Затемнение фона
 settings-gameplay-beatmap-skins = Скины карт
 settings-gameplay-beatmap-colours = Цвета карты
 settings-gameplay-beatmap-hitsounds = Хитсаунды карты
+settings-gameplay-always-play-first-combo-break = Всегда играть звук первого обрыва комбо
 settings-gameplay-snaking-in = Змейка слайдеров при появлении
 settings-gameplay-snaking-out = Змейка слайдеров при прохождении
 settings-gameplay-hit-lighting = Подсветка попаданий

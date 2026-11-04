@@ -3147,6 +3147,7 @@ fn run_with<B: render::Backend>(
                 beatmap_skins: options.beatmap_skins,
                 beatmap_colours: options.beatmap_colours,
                 beatmap_hitsounds: options.beatmap_hitsounds,
+                always_play_first_combo_break: options.always_play_first_combo_break,
                 dim: options.dim,
                 hit_error_scale: options.hit_error_scale,
                 snaking: options.snaking(),

@@ -405,6 +405,13 @@ fn from_table(mut table: Table) -> Loaded {
     cx.field(
         &mut gameplay,
         "gameplay",
+        "always_play_first_combo_break",
+        &mut settings.gameplay.always_play_first_combo_break,
+        |_| Ok(()),
+    );
+    cx.field(
+        &mut gameplay,
+        "gameplay",
         "mouse_buttons",
         &mut settings.gameplay.mouse_buttons,
         |_| Ok(()),

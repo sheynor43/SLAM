@@ -177,6 +177,7 @@ settings-gameplay-dim = Background dim
 settings-gameplay-beatmap-skins = Beatmap skins
 settings-gameplay-beatmap-colours = Beatmap colours
 settings-gameplay-beatmap-hitsounds = Beatmap hitsounds
+settings-gameplay-always-play-first-combo-break = Always play first combo break sound
 settings-gameplay-snaking-in = Snaking in sliders
 settings-gameplay-snaking-out = Snaking out sliders
 settings-gameplay-hit-lighting = Hit lighting

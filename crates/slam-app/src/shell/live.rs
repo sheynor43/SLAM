@@ -157,6 +157,7 @@ pub fn play_options(settings: &Settings) -> PlayOptions {
         beatmap_skins: settings.gameplay.beatmap_skins,
         beatmap_colours: settings.gameplay.beatmap_colours,
         beatmap_hitsounds: settings.gameplay.beatmap_hitsounds,
+        always_play_first_combo_break: settings.gameplay.always_play_first_combo_break,
         snaking_in: settings.gameplay.snaking_in,
         snaking_out: settings.gameplay.snaking_out,
         hit_lighting: settings.gameplay.hit_lighting,
@@ -339,6 +340,7 @@ mod tests {
         settings.gameplay.beatmap_skins = false;
         settings.gameplay.beatmap_colours = false;
         settings.gameplay.beatmap_hitsounds = false;
+        settings.gameplay.always_play_first_combo_break = false;
         settings.gameplay.hit_error_scale = 1.5;
         settings.gameplay.snaking_in = true;
         settings.gameplay.snaking_out = true;
@@ -354,6 +356,7 @@ mod tests {
                 beatmap_skins: false,
                 beatmap_colours: false,
                 beatmap_hitsounds: false,
+                always_play_first_combo_break: false,
                 snaking_in: true,
                 snaking_out: true,
                 hit_lighting: false,
