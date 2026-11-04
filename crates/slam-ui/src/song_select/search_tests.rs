@@ -440,9 +440,11 @@ fn play_and_pointer_use_indices_into_the_list() {
         })
     );
     press(&mut s, I::PointerPress { x, y });
+    press(&mut s, I::PointerRelease);
     assert_eq!(s.selected(), Some((3, 1)));
+    press(&mut s, I::PointerPress { x, y });
     assert_eq!(
-        press(&mut s, I::PointerPress { x, y }),
+        press(&mut s, I::PointerRelease),
         Some(SongSelectAction::Play {
             set: 3,
             difficulty: 1
