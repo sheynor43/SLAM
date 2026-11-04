@@ -157,6 +157,15 @@ const DRAW_PRESETS: [f64; 9] = [
     60.0, 120.0, 144.0, 240.0, 360.0, 1000.0, 2000.0, 4000.0, 8000.0,
 ];
 
+/// The Windows key row shows on Windows, as lazer's, and on Linux, where it blocks the
+/// desktop's shortcuts (ADR-0094).
+const WIN_KEY_ROW: bool = cfg!(any(windows, target_os = "linux"));
+/// What the Windows key row says: Linux blocks every desktop shortcut, not one key.
+const WIN_KEY_LABEL: &str = if cfg!(windows) {
+    "settings-gameplay-disable-win-key"
+} else {
+    "settings-gameplay-disable-shortcuts"
+};
 /// Whether the platform has known issues with the high precision mouse (ADR-0069): lazer
 /// switches it off by default and warns on Linux and macOS.
 const PLATFORM_WARNING: bool = cfg!(any(target_os = "linux", target_os = "macos"));
@@ -209,6 +218,7 @@ pub enum Row {
     BeatmapColours,
     BeatmapHitsounds,
     AlwaysPlayFirstComboBreak,
+    DisableWinKey,
     SnakingIn,
     SnakingOut,
     HitLighting,
@@ -224,7 +234,7 @@ pub enum Row {
 const _: () = assert!(Row::ALL.len() <= slam_ui::settings_screen::MAX_ROWS);
 
 impl Row {
-    pub const ALL: [Row; 50] = [
+    pub const ALL: [Row; 51] = [
         Row::MasterVolume,
         Row::MusicVolume,
         Row::MenuMusic,
@@ -266,6 +276,7 @@ impl Row {
         Row::BeatmapColours,
         Row::BeatmapHitsounds,
         Row::AlwaysPlayFirstComboBreak,
+        Row::DisableWinKey,
         Row::SnakingIn,
         Row::SnakingOut,
         Row::HitLighting,
@@ -339,6 +350,7 @@ impl Row {
             | Row::BeatmapColours
             | Row::BeatmapHitsounds
             | Row::AlwaysPlayFirstComboBreak
+            | Row::DisableWinKey
             | Row::SnakingIn
             | Row::SnakingOut
             | Row::HitLighting
@@ -393,6 +405,7 @@ impl Row {
             Row::BeatmapColours => "settings-gameplay-beatmap-colours",
             Row::BeatmapHitsounds => "settings-gameplay-beatmap-hitsounds",
             Row::AlwaysPlayFirstComboBreak => "settings-gameplay-always-play-first-combo-break",
+            Row::DisableWinKey => WIN_KEY_LABEL,
             Row::SnakingIn => "settings-gameplay-snaking-in",
             Row::SnakingOut => "settings-gameplay-snaking-out",
             Row::HitLighting => "settings-gameplay-hit-lighting",
@@ -808,6 +821,9 @@ impl Rows {
             Row::AlwaysPlayFirstComboBreak => RowKind::Toggle {
                 value: s.gameplay.always_play_first_combo_break,
             },
+            Row::DisableWinKey => RowKind::Toggle {
+                value: s.gameplay.disable_win_key,
+            },
             Row::SnakingIn => RowKind::Toggle {
                 value: s.gameplay.snaking_in,
             },
@@ -898,6 +914,7 @@ impl Rows {
             (Row::AlwaysPlayFirstComboBreak, RowValue::Toggle(v)) => {
                 settings.gameplay.always_play_first_combo_break = v
             }
+            (Row::DisableWinKey, RowValue::Toggle(v)) => settings.gameplay.disable_win_key = v,
             (Row::SnakingIn, RowValue::Toggle(v)) => settings.gameplay.snaking_in = v,
             (Row::SnakingOut, RowValue::Toggle(v)) => settings.gameplay.snaking_out = v,
             (Row::HitLighting, RowValue::Toggle(v)) => settings.gameplay.hit_lighting = v,
@@ -1013,6 +1030,8 @@ impl Rows {
                 // Ported from osu!lazer 2026.1005.0-lazer: osu.Game/Overlays/Settings/Sections/Graphics/LayoutSettings.cs (updateDisplaySettingsVisibility, updateScreenModeWarning)
                 Row::NotFullscreenNote => screen.set_hidden(i, mode == WindowMode::Fullscreen),
                 Row::MinimiseOnFocusLoss => screen.set_hidden(i, mode != WindowMode::Fullscreen),
+                // Ported from osu!lazer 2026.1005.0-lazer: osu.Game/Overlays/Settings/Sections/Gameplay/InputSettings.cs
+                Row::DisableWinKey => screen.set_hidden(i, !WIN_KEY_ROW),
                 Row::Display | Row::FullscreenSize | Row::WindowedSize => {
                     let (options, selected) = self.display_choice(*row, settings);
                     if let Some(RowWidget::Dropdown(dropdown)) = screen.widget(i)
@@ -1262,6 +1281,23 @@ mod tests {
     }
 
     #[test]
+    fn the_windows_key_row_shows_on_windows_and_linux() {
+        let (rows, s) = rows();
+        let screen = opened(&rows, &s);
+        assert_eq!(
+            screen.is_hidden(index(Row::DisableWinKey)),
+            !cfg!(any(windows, target_os = "linux"))
+        );
+        // Linux says what it blocks: every shortcut of the desktop.
+        let label = Row::DisableWinKey.label_key();
+        assert_eq!(
+            label == "settings-gameplay-disable-shortcuts",
+            !cfg!(windows),
+            "{label}"
+        );
+    }
+
+    #[test]
     fn the_minimise_row_shows_in_fullscreen_only_and_sets_the_setting() {
         let (rows, mut s) = rows();
         for mode in WindowMode::ALL {
@@ -1449,6 +1485,7 @@ mod tests {
             (Row::SnakingOut, false),
             (Row::HitLighting, true),
             (Row::AlwaysPlayFirstComboBreak, true),
+            (Row::DisableWinKey, true),
             (Row::CursorTrail, true),
             (Row::AutoCursorSize, false),
         ] {
@@ -1605,6 +1642,7 @@ mod tests {
             index(Row::AlwaysPlayFirstComboBreak),
             RowValue::Toggle(false),
         );
+        rows.apply(&mut s, index(Row::DisableWinKey), RowValue::Toggle(false));
         rows.apply(
             &mut s,
             index(Row::HitErrorScale),
@@ -1647,6 +1685,7 @@ mod tests {
         assert!(!s.gameplay.cursor_trail);
         assert!(!s.gameplay.beatmap_hitsounds);
         assert!(!s.gameplay.always_play_first_combo_break);
+        assert!(!s.gameplay.disable_win_key);
         rows.apply(&mut s, index(Row::ShowFps), RowValue::Toggle(true));
         assert!(s.frame.show_fps);
         // The first draw option is Unlimited, the second 60 Hz.

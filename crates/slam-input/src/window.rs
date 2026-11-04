@@ -42,6 +42,7 @@ use crate::mode::{
 #[cfg(windows)]
 use crate::native::NativeHandle;
 use crate::relative::{Change, MouseSettings, RelativeMouse};
+use crate::win_key::{WinKeyBlock, WinKeyHook, should_hook};
 use crate::{
     EventSink, InputCounters, InputEvent, InputKind, TickMapper, convert, convert_text, windowing,
 };
@@ -94,6 +95,11 @@ pub struct InputWindow {
     cursor_hidden: Arc<AtomicBool>,
     /// Whether it is hidden now.
     cursor_applied: bool,
+    /// Whether the Windows key should be blocked, set by any thread (ADR-0094).
+    win_key_wanted: Arc<AtomicBool>,
+    win_key_hook: WinKeyHook,
+    /// Whether the window has keyboard focus.
+    focused: bool,
     /// Whether typed text should be delivered, set by any thread.
     text_wanted: Arc<AtomicBool>,
     /// Whether SDL delivers it now.
@@ -360,6 +366,9 @@ impl InputWindow {
             alive,
             cursor_hidden: Arc::default(),
             cursor_applied: false,
+            win_key_wanted: Arc::default(),
+            win_key_hook: WinKeyHook::default(),
+            focused: window_flags.0 & SDL_WINDOW_INPUT_FOCUS.0 != 0,
             text_wanted: Arc::default(),
             text_applied: false,
             mouse_settings: MouseSettings::default(),
@@ -685,6 +694,28 @@ impl InputWindow {
         }
     }
 
+    /// A handle that blocks the Windows key while a play runs.
+    pub fn win_key_block(&self) -> WinKeyBlock {
+        WinKeyBlock::new(Arc::clone(&self.win_key_wanted))
+    }
+
+    /// Hooks the Windows key while [`WinKeyBlock`] asks and the window has focus.
+    fn apply_win_key(&mut self) {
+        let wanted = self.win_key_wanted.load(Ordering::Relaxed);
+        if self
+            .win_key_hook
+            .set(should_hook(wanted, self.focused), self.window)
+        {
+            // Rare (a play starts, pauses, ends, or the focus moves): says which path the
+            // block took, as an X11 grab under a Wayland compositor blocks nothing of it.
+            tracing::info!(
+                on = self.win_key_hook.is_on(),
+                wayland = self.wayland,
+                "system shortcuts block"
+            );
+        }
+    }
+
     /// A handle that turns typed text on and off.
     pub fn text_input(&self) -> TextInput {
         TextInput {
@@ -755,8 +786,14 @@ impl InputWindow {
     fn follow_window(&mut self, event: &SDL_Event) -> bool {
         // SAFETY: `type` is the common prefix of every SDL_Event variant.
         let change = match SDL_EventType(unsafe { event.r#type }) {
-            SDL_EVENT_WINDOW_FOCUS_GAINED => self.relative.set_focused(true),
-            SDL_EVENT_WINDOW_FOCUS_LOST => self.relative.set_focused(false),
+            SDL_EVENT_WINDOW_FOCUS_GAINED => {
+                self.focused = true;
+                self.relative.set_focused(true)
+            }
+            SDL_EVENT_WINDOW_FOCUS_LOST => {
+                self.focused = false;
+                self.relative.set_focused(false)
+            }
             SDL_EVENT_WINDOW_MOUSE_ENTER => self.relative.set_cursor_in_window(true),
             SDL_EVENT_WINDOW_MOUSE_LEAVE => self.relative.set_cursor_in_window(false),
             SDL_EVENT_WINDOW_ENTER_FULLSCREEN => self.relative.set_confined(true),
@@ -819,10 +856,29 @@ impl InputWindow {
         E: FnMut() -> u64,
         S: FnMut() -> u64,
     {
+        let result = self.pump(sink, mapper);
+        // Nothing runs the hook once the loop is left: a global hook that stays until the
+        // window drops would stall every key press of the system while the program shuts
+        // down (ADR-0094).
+        let _ = self.win_key_hook.set(false, self.window);
+        result
+    }
+
+    /// The event loop of [`InputWindow::run`].
+    fn pump<E, S>(
+        &mut self,
+        sink: &mut EventSink,
+        mapper: &mut TickMapper<E, S>,
+    ) -> Result<(), WindowError>
+    where
+        E: FnMut() -> u64,
+        S: FnMut() -> u64,
+    {
         mapper.calibrate();
         let mut event = SDL_Event::default();
         loop {
             self.apply_cursor();
+            self.apply_win_key();
             self.apply_text_input();
             self.apply_mouse();
             self.apply_window_state();
@@ -957,6 +1013,9 @@ where
 
 impl Drop for InputWindow {
     fn drop(&mut self) {
+        // While the window and SDL still live: the grab needs them, and a hook must not
+        // outlive the thread's message loop.
+        let _ = self.win_key_hook.set(false, self.window);
         // `get_mut` synchronises with the drop of a GlContext on another thread, so
         // its SDL calls happen before the teardown below.
         *self.alive.lock().unwrap_or_else(PoisonError::into_inner) = false;

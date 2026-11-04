@@ -23,6 +23,10 @@ sdl3-sys = { workspace = true, features = ["build-from-source-static", "no-defau
 [target.'cfg(all(windows, not(target_env = "msvc")))'.dependencies]
 sdl3-sys = { workspace = true, features = ["use-pkg-config"] }
 
+# The Windows key's low-level keyboard hook (ADR-0094).
+[target.'cfg(windows)'.dependencies]
+windows-sys = { workspace = true, features = ["Win32_System_LibraryLoader", "Win32_UI_WindowsAndMessaging"] }
+
 [dev-dependencies]
 slam-testkit = { path = "../slam-testkit" }
 

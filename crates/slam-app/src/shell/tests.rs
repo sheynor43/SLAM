@@ -612,6 +612,7 @@ fn host(name: &str, with_track: bool) -> HostFixture {
         loader,
         scenes: scene_tx,
         os_cursor: CursorVisibility::default(),
+        win_key: WinKeyBlock::default(),
         pending: Pending::Idle,
         game: None,
         retiring: None,
@@ -807,6 +808,63 @@ fn the_play_goes_when_the_results_show_or_the_player_quits() {
     ] {
         assert!(!play_over(state), "{state:?}");
     }
+}
+
+#[test]
+fn the_windows_key_is_blocked_only_while_playing() {
+    // As lazer's `LocalUserPlayingState.Playing`: not paused, resuming, in a break, failed
+    // or passed.
+    for state in [PlayState::Waiting, PlayState::Playing] {
+        assert!(blocks_win_key(state, false), "{state:?}");
+        assert!(!blocks_win_key(state, true), "{state:?} in a break");
+    }
+    for state in [
+        PlayState::Paused,
+        PlayState::Resuming,
+        PlayState::Failing,
+        PlayState::Failed,
+        PlayState::Passed,
+        PlayState::Results,
+        PlayState::Exited,
+    ] {
+        assert!(!blocks_win_key(state, false), "{state:?}");
+    }
+}
+
+#[test]
+fn the_host_blocks_the_windows_key_while_playing() {
+    let mut fixture = host("win-key", false);
+    let block = WinKeyBlock::default();
+    fixture.host.win_key = block.clone();
+    let mut snapshot = PlaySnapshot {
+        state: PlayState::Playing,
+        is_break_time: false,
+        ..PlaySnapshot::default()
+    };
+    fixture.host.follow_play(&snapshot);
+    assert!(block.is_blocked());
+    snapshot.state = PlayState::Paused;
+    fixture.host.follow_play(&snapshot);
+    assert!(!block.is_blocked());
+    // Switched off in the pause: playing on does not block.
+    let mut settings = Settings::default();
+    settings.gameplay.disable_win_key = false;
+    fixture.host.apply_settings(&settings);
+    snapshot.state = PlayState::Playing;
+    fixture.host.follow_play(&snapshot);
+    assert!(!block.is_blocked());
+    settings.gameplay.disable_win_key = true;
+    fixture.host.apply_settings(&settings);
+    fixture.host.follow_play(&snapshot);
+    assert!(block.is_blocked());
+}
+
+#[test]
+fn the_windows_key_setting_applies_at_once() {
+    let mut settings = Settings::default();
+    assert!(PlayInput::new(&settings).disable_win_key);
+    settings.gameplay.disable_win_key = false;
+    assert!(!PlayInput::new(&settings).disable_win_key);
 }
 
 #[test]
