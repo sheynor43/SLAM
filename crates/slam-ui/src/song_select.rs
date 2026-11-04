@@ -13,7 +13,9 @@ use std::sync::Arc;
 
 use crate::menu::Rect;
 use crate::theme::Theme;
+use drag::{ListDrag, Release};
 
+pub mod drag;
 pub mod filter;
 pub mod mod_select;
 pub mod view;
@@ -117,11 +119,13 @@ pub enum SongSelectInput {
         x: f32,
         y: f32,
     },
+    /// The primary button went down: starts a click or a drag of the list.
     PointerPress {
         x: f32,
         y: f32,
     },
-    /// The primary button was released: ends a slider drag in the settings panel.
+    /// The primary button was released: clicks what was pressed unless the press dragged
+    /// the list, and ends a slider drag in the settings panel.
     PointerRelease,
 }
 
@@ -160,6 +164,13 @@ pub enum SongSelectAction {
 pub enum Row {
     Set(usize),
     Difficulty { set: usize, difficulty: usize },
+}
+
+/// What a press went down on; the release clicks it if the pointer is still over it.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Pressed {
+    Row(Row),
+    ChooseFolder,
 }
 
 /// Where the list, status line and hint are: a panel on the right of the window. A pure
@@ -246,6 +257,11 @@ impl SongSelectLayout {
             indent: theme.song_indent * scale,
             scale,
         }
+    }
+
+    /// A row's height in theme reference pixels, the unit of the list's drag.
+    pub fn reference_row_height(&self) -> f32 {
+        self.row_height / self.scale
     }
 
     /// How many rows fit the list area (fractional).
@@ -369,6 +385,10 @@ pub struct SongSelect {
     pointer: Option<(f32, f32)>,
     hovered: Option<Row>,
     folder_hovered: bool,
+    /// The list dragged with the primary button and flung (ADR-0093).
+    drag: ListDrag,
+    /// What the held press went down on: the row, or the "choose folder" button.
+    pressed: Option<Pressed>,
     status: SongSelectStatus,
     scanning_text: Arc<str>,
     generation: u64,
@@ -406,6 +426,8 @@ impl SongSelect {
             pointer: None,
             hovered: None,
             folder_hovered: false,
+            drag: ListDrag::default(),
+            pressed: None,
             status: SongSelectStatus::default(),
             scanning_text: Arc::from(""),
             generation: 0,
@@ -589,12 +611,22 @@ impl SongSelect {
         &self.mods
     }
 
-    /// Advances the time-driven parts of the screen (the settings panel's collapse delay) to
+    /// Advances the time-driven parts of the screen (the settings panel's collapse delay, the
+    /// fling of the list) to
     /// `now_ns`, a monotonic clock in nanoseconds. Does not allocate.
     pub fn tick(&mut self, now_ns: u64, layout: &SongSelectLayout) {
         self.viewport = layout.viewport_rows();
         if self.mods.is_open() {
             self.mods.tick(now_ns, &layout.mods);
+        }
+        let per_row = layout.reference_row_height();
+        if let Some(scroll) =
+            self.drag
+                .tick(now_ns, self.scroll * per_row, self.max_scroll() * per_row)
+        {
+            self.scroll = scroll / per_row;
+            self.clamp_scroll();
+            self.update_hover(layout);
         }
     }
 
@@ -720,12 +752,9 @@ impl SongSelect {
                     self.play()
                 }
             }
-            I::Back
-            | I::ModHotkey { .. }
-            | I::ToggleCustomisation
-            | I::ResetSetting
-            | I::Space
-            | I::PointerRelease => moved = false,
+            I::Back | I::ModHotkey { .. } | I::ToggleCustomisation | I::ResetSetting | I::Space => {
+                moved = false
+            }
             I::Type(c) => {
                 self.type_char(c);
                 moved = false;
@@ -735,6 +764,8 @@ impl SongSelect {
                 moved = false;
             }
             I::ToggleMods => {
+                self.drag.cancel();
+                self.pressed = None;
                 self.mods.open();
                 moved = false;
             }
@@ -745,6 +776,7 @@ impl SongSelect {
                 moved = false;
             }
             I::Scroll { lines } => {
+                self.drag.stop();
                 self.scroll += lines;
                 self.clamp_scroll();
                 moved = false;
@@ -752,39 +784,39 @@ impl SongSelect {
             I::PointerMove { x, y } => {
                 self.pointer = Some((x, y));
                 moved = false;
+                let offset = self.drag.moved(x, y, layout.scale);
+                if offset != 0.0 {
+                    self.scroll += offset / layout.reference_row_height();
+                }
             }
             I::PointerPress { x, y } => {
                 self.pointer = Some((x, y));
                 moved = false;
-                if self.shows_choose_folder() && layout.choose_folder.contains(x, y) {
-                    action = Some(SongSelectAction::ChooseFolder);
-                }
-                match layout.row_at(x, y, self.scroll, &self.filter, self.set) {
-                    Some(Row::Set(set)) => {
-                        if let Some(position) = self.filter.set_position(set)
-                            && position != self.set
-                        {
-                            self.select_set(position);
-                        }
-                    }
-                    Some(Row::Difficulty { difficulty, .. }) => {
-                        if let Some(position) =
-                            self.filter.difficulty_position(self.set, difficulty)
-                        {
-                            if position == self.difficulty {
-                                action = self.play();
-                            }
-                            self.difficulty = position;
-                        }
-                    }
-                    None => {}
+                self.drag.press(x, y);
+                self.pressed = self.pressed_at(x, y, layout);
+            }
+            I::PointerRelease => {
+                moved = false;
+                let pressed = self.pressed.take();
+                if let Some(Release::Click { .. }) = self.drag.release()
+                    && let Some((x, y)) = self.pointer
+                    && pressed.is_some()
+                    && self.pressed_at(x, y, layout) == pressed
+                {
+                    action = self.click(pressed, layout);
                 }
             }
         }
         if moved {
+            self.drag.stop();
             self.ensure_visible();
         }
         self.clamp_scroll();
+        self.update_hover(layout);
+        action
+    }
+
+    fn update_hover(&mut self, layout: &SongSelectLayout) {
         self.hovered = self
             .pointer
             .and_then(|(x, y)| layout.row_at(x, y, self.scroll, &self.filter, self.set));
@@ -792,7 +824,46 @@ impl SongSelect {
             && self
                 .pointer
                 .is_some_and(|(x, y)| layout.choose_folder.contains(x, y));
-        action
+    }
+
+    /// What is under `(x, y)` to click.
+    fn pressed_at(&self, x: f32, y: f32, layout: &SongSelectLayout) -> Option<Pressed> {
+        if self.shows_choose_folder() && layout.choose_folder.contains(x, y) {
+            return Some(Pressed::ChooseFolder);
+        }
+        layout
+            .row_at(x, y, self.scroll, &self.filter, self.set)
+            .map(Pressed::Row)
+    }
+
+    /// Clicks `pressed`: selects a row, and plays the selected difficulty clicked again.
+    fn click(
+        &mut self,
+        pressed: Option<Pressed>,
+        layout: &SongSelectLayout,
+    ) -> Option<SongSelectAction> {
+        self.viewport = layout.viewport_rows();
+        match pressed? {
+            Pressed::ChooseFolder => Some(SongSelectAction::ChooseFolder),
+            Pressed::Row(Row::Set(set)) => {
+                if let Some(position) = self.filter.set_position(set)
+                    && position != self.set
+                {
+                    self.select_set(position);
+                }
+                None
+            }
+            Pressed::Row(Row::Difficulty { difficulty, .. }) => {
+                let position = self.filter.difficulty_position(self.set, difficulty)?;
+                let action = if position == self.difficulty {
+                    self.play()
+                } else {
+                    None
+                };
+                self.difficulty = position;
+                action
+            }
+        }
     }
 }
 

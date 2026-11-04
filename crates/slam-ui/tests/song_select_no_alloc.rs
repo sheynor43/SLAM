@@ -572,3 +572,34 @@ fn changing_details_push_without_allocating_once_warm() {
         }
     });
 }
+
+#[test]
+fn dragging_and_flinging_the_list_do_not_allocate() {
+    let layout = SongSelectLayout::new(1280.0, 720.0, &Theme::default());
+    let mut screen = SongSelect::new();
+    put(&mut screen, list_of(200));
+    screen.set_status(SongSelectStatus::Ready);
+    screen.tick(0, &layout);
+    let x = layout.list.x + layout.list.width / 2.0;
+    let y = layout.list.y + layout.list.height / 2.0;
+    assert_no_alloc(|| {
+        let mut now = 0;
+        screen.input(SongSelectInput::PointerPress { x, y }, &layout);
+        for i in 1..=10 {
+            let y = y - i as f32 * 30.0;
+            screen.input(SongSelectInput::PointerMove { x, y }, &layout);
+            now += 16_000_000;
+            screen.tick(now, &layout);
+        }
+        screen.input(SongSelectInput::PointerRelease, &layout);
+        for _ in 0..100 {
+            now += 16_000_000;
+            screen.tick(now, &layout);
+            std::hint::black_box(screen.snapshot());
+        }
+        // A click: press and release in place.
+        screen.input(SongSelectInput::PointerPress { x, y }, &layout);
+        std::hint::black_box(screen.input(SongSelectInput::PointerRelease, &layout));
+    });
+    assert!(screen.snapshot().scroll > 0.0);
+}

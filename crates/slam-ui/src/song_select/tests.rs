@@ -43,6 +43,12 @@ fn press(s: &mut SongSelect, input: SongSelectInput) -> Option<SongSelectAction>
     s.input(input, &layout())
 }
 
+/// The primary button pressed and released at `(x, y)` without moving.
+fn click(s: &mut SongSelect, x: f32, y: f32) -> Option<SongSelectAction> {
+    assert_eq!(press(s, I::PointerPress { x, y }), None);
+    press(s, I::PointerRelease)
+}
+
 #[test]
 fn keyboard_navigation_table() {
     // (sets as (key, difficulties), inputs, expected selection)
@@ -194,21 +200,21 @@ fn pointer_selects_and_second_press_activates() {
     let l = layout();
     // set 0 is expanded: its difficulties are rows 1 and 2, set 1 is row 3
     let (x, y) = centre_of(&l, 3, 0.0);
-    assert_eq!(press(&mut s, I::PointerPress { x, y }), None);
+    assert_eq!(click(&mut s, x, y), None);
     assert_eq!(s.selected(), Some((1, 0)));
     // its second difficulty is row 3 again (set 1 is now row 1, difficulties 2 to 4)
     let (x, y) = centre_of(&l, 3, 0.0);
-    assert_eq!(press(&mut s, I::PointerPress { x, y }), None);
+    assert_eq!(click(&mut s, x, y), None);
     assert_eq!(s.selected(), Some((1, 1)));
     assert_eq!(
-        press(&mut s, I::PointerPress { x, y }),
+        click(&mut s, x, y),
         Some(SongSelectAction::Play {
             set: 1,
             difficulty: 1
         })
     );
     // outside the list: nothing
-    assert_eq!(press(&mut s, I::PointerPress { x: 1.0, y: 1.0 }), None);
+    assert_eq!(click(&mut s, 1.0, 1.0), None);
     assert_eq!(s.selected(), Some((1, 1)));
 }
 
@@ -234,7 +240,7 @@ fn hit_testing_follows_the_scroll() {
     assert_eq!(s.selected(), Some((0, 0)));
     let (x, y) = centre_of(&l, 20, scroll);
     assert_eq!(l.row_at(x, y, scroll, s.filter(), 0), Some(Row::Set(19)));
-    press(&mut s, I::PointerPress { x, y });
+    click(&mut s, x, y);
     assert_eq!(s.selected(), Some((19, 0)));
 }
 
@@ -435,17 +441,14 @@ fn choose_folder_by_click_and_enter() {
     );
     assert_eq!(s.input(I::PointerMove { x, y }, &l), None);
     assert!(s.snapshot().folder_hovered);
-    assert_eq!(
-        s.input(I::PointerPress { x, y }, &l),
-        Some(SongSelectAction::ChooseFolder)
-    );
+    assert_eq!(click(&mut s, x, y), Some(SongSelectAction::ChooseFolder));
     // Outside the button: nothing.
-    assert_eq!(s.input(I::PointerPress { x: 1.0, y: 1.0 }, &l), None);
+    assert_eq!(click(&mut s, 1.0, 1.0), None);
     assert!(!s.snapshot().folder_hovered);
     // While scanning the button is absent.
     s.set_status(SongSelectStatus::Scanning { sets: 0 });
     assert_eq!(s.input(I::Activate, &l), None);
-    assert_eq!(s.input(I::PointerPress { x, y }, &l), None);
+    assert_eq!(click(&mut s, x, y), None);
 }
 
 #[test]
@@ -459,4 +462,203 @@ fn enter_with_a_list_still_plays() {
             difficulty: 0
         })
     );
+}
+
+const MS: u64 = 1_000_000;
+
+/// 50 sets of one difficulty, ticked at time 0.
+fn long_list() -> (SongSelect, SongSelectLayout) {
+    let sets: Vec<(u64, usize)> = (0..50).map(|k| (k, 1)).collect();
+    let mut s = screen(&sets);
+    let l = layout();
+    s.tick(0, &l);
+    (s, l)
+}
+
+/// Drags from the centre of row `from` by `rows` row heights upwards, one tick of `step`
+/// ms per row height, starting at `now`; returns the time after the last tick.
+fn drag_up(s: &mut SongSelect, l: &SongSelectLayout, from: usize, rows: usize, now: u64) -> u64 {
+    let (x, y) = centre_of(l, from, 0.0);
+    press(s, I::PointerPress { x, y });
+    let mut now = now;
+    for i in 1..=rows {
+        let y = y - i as f32 * l.row_height;
+        press(s, I::PointerMove { x, y });
+        now += 16 * MS;
+        s.tick(now, l);
+    }
+    now
+}
+
+#[test]
+fn dragging_scrolls_and_does_not_select() {
+    let (mut s, l) = long_list();
+    let (x, y) = centre_of(&l, 5, 0.0);
+    press(&mut s, I::PointerPress { x, y });
+    // Up to the click distance nothing moves.
+    press(&mut s, I::PointerMove { x, y: y - 9.0 });
+    assert_eq!(s.snapshot().scroll, 0.0);
+    // Past it the list follows the pointer from there on: 3 rows up scroll 3 rows.
+    let start = y - 11.0;
+    press(&mut s, I::PointerMove { x, y: start });
+    assert_eq!(s.snapshot().scroll, 0.0);
+    press(
+        &mut s,
+        I::PointerMove {
+            x,
+            y: start - 3.0 * l.row_height,
+        },
+    );
+    assert!((s.snapshot().scroll - 3.0).abs() < 1e-4);
+    // The release is no click: the selection stays.
+    assert_eq!(press(&mut s, I::PointerRelease), None);
+    assert_eq!(s.selected(), Some((0, 0)));
+}
+
+#[test]
+fn a_small_move_is_still_a_click() {
+    let (mut s, l) = long_list();
+    let (x, y) = centre_of(&l, 5, 0.0);
+    press(&mut s, I::PointerPress { x, y });
+    press(
+        &mut s,
+        I::PointerMove {
+            x: x + 4.0,
+            y: y + 6.0,
+        },
+    );
+    assert_eq!(press(&mut s, I::PointerRelease), None);
+    assert_eq!(s.selected(), Some((4, 0)));
+    // A sideways drag does not block the click either, as lazer's (only the scroll axis).
+    let (x, y) = centre_of(&l, 8, 0.0);
+    press(&mut s, I::PointerPress { x, y });
+    press(
+        &mut s,
+        I::PointerMove {
+            x: x - 40.0,
+            y: y + 2.0,
+        },
+    );
+    press(&mut s, I::PointerRelease);
+    assert_eq!(s.selected(), Some((7, 0)));
+}
+
+#[test]
+fn a_release_off_the_pressed_row_does_not_click() {
+    let (mut s, l) = long_list();
+    let (x, y) = centre_of(&l, 5, 0.0);
+    press(&mut s, I::PointerPress { x, y });
+    // Leaves the list sideways without scrolling: the press drags, but does not block.
+    press(&mut s, I::PointerMove { x: 1.0, y });
+    assert_eq!(press(&mut s, I::PointerRelease), None);
+    assert_eq!(s.selected(), Some((0, 0)));
+}
+
+#[test]
+fn a_fast_release_flings_and_slows_down() {
+    let (mut s, l) = long_list();
+    let now = drag_up(&mut s, &l, 8, 4, 0);
+    let dragged = s.snapshot().scroll;
+    press(&mut s, I::PointerRelease);
+    let mut last = dragged;
+    let mut steps = Vec::new();
+    let mut now = now;
+    for _ in 0..60 {
+        now += 16 * MS;
+        s.tick(now, &l);
+        let scroll = s.snapshot().scroll;
+        steps.push(scroll - last);
+        last = scroll;
+    }
+    assert!(last > dragged + 1.0, "flings on: {dragged} -> {last}");
+    // Each step moves less than the one before, and it settles.
+    assert!(steps.windows(2).all(|w| w[1] <= w[0] + 1e-6), "{steps:?}");
+    for _ in 0..600 {
+        now += 16 * MS;
+        s.tick(now, &l);
+    }
+    let settled = s.snapshot().scroll;
+    now += 16 * MS;
+    s.tick(now, &l);
+    assert_eq!(s.snapshot().scroll, settled);
+}
+
+#[test]
+fn a_held_still_release_does_not_fling() {
+    let (mut s, l) = long_list();
+    let now = drag_up(&mut s, &l, 8, 4, 0);
+    // Held for half a second: 0.95^500 of the speed is left, under the cutoff.
+    s.tick(now + 500 * MS, &l);
+    let held = s.snapshot().scroll;
+    press(&mut s, I::PointerRelease);
+    s.tick(now + 516 * MS, &l);
+    s.tick(now + 1000 * MS, &l);
+    assert_eq!(s.snapshot().scroll, held);
+}
+
+#[test]
+fn the_fling_stops_at_the_end_of_the_list() {
+    let (mut s, l) = long_list();
+    let max = 51.0 - l.viewport_rows();
+    press(&mut s, I::Scroll { lines: max - 1.0 });
+    let mut now = drag_up(&mut s, &l, 8, 4, 0);
+    press(&mut s, I::PointerRelease);
+    for _ in 0..600 {
+        now += 16 * MS;
+        s.tick(now, &l);
+        assert!(s.snapshot().scroll <= max + 1e-4);
+    }
+    assert!((s.snapshot().scroll - max).abs() < 1e-3);
+    // Dragging past the start stops there too.
+    press(&mut s, I::Scroll { lines: -1000.0 });
+    let (x, y) = centre_of(&l, 2, 0.0);
+    press(&mut s, I::PointerPress { x, y });
+    press(&mut s, I::PointerMove { x, y: y + 400.0 });
+    assert_eq!(s.snapshot().scroll, 0.0);
+}
+
+#[test]
+fn a_press_or_the_keyboard_stops_the_fling() {
+    let (mut s, l) = long_list();
+    let mut now = drag_up(&mut s, &l, 8, 4, 0);
+    press(&mut s, I::PointerRelease);
+    now += 16 * MS;
+    s.tick(now, &l);
+    let (x, y) = centre_of(&l, 3, 0.0);
+    press(&mut s, I::PointerPress { x, y });
+    let stopped = s.snapshot().scroll;
+    now += 16 * MS;
+    s.tick(now, &l);
+    assert_eq!(s.snapshot().scroll, stopped);
+    // The press that stopped it still clicks.
+    press(&mut s, I::PointerRelease);
+    assert!(s.selected().is_some_and(|(set, _)| set > 0));
+
+    let (mut s, l) = long_list();
+    let mut now = drag_up(&mut s, &l, 8, 4, 0);
+    press(&mut s, I::PointerRelease);
+    now += 16 * MS;
+    s.tick(now, &l);
+    press(&mut s, I::Down);
+    let kept = s.snapshot().scroll;
+    now += 16 * MS;
+    s.tick(now, &l);
+    assert_eq!(s.snapshot().scroll, kept);
+}
+
+#[test]
+fn hover_follows_the_fling() {
+    let (mut s, l) = long_list();
+    let mut now = drag_up(&mut s, &l, 8, 4, 0);
+    press(&mut s, I::PointerRelease);
+    let before = s.snapshot().hovered;
+    // The fling starts on the tick after the release.
+    now += MS;
+    s.tick(now, &l);
+    now += 100 * MS;
+    s.tick(now, &l);
+    let scroll = s.snapshot().scroll;
+    let (x, y) = s.pointer.unwrap();
+    assert_eq!(s.snapshot().hovered, l.row_at(x, y, scroll, s.filter(), 0));
+    assert_ne!(s.snapshot().hovered, before);
 }
