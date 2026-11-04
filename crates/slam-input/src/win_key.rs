@@ -70,19 +70,26 @@ impl WinKeyHook {
     /// match `on`. A failed install is logged once and tried again only when `on` changes
     /// (the loop calls this before every event). `window` is the valid window of this
     /// thread, or null in tests (nothing is grabbed then).
-    pub(crate) fn set(&mut self, on: bool, window: *mut sdl3_sys::video::SDL_Window) {
+    /// Returns whether it tried anything, for the caller to log.
+    pub(crate) fn set(&mut self, on: bool, window: *mut sdl3_sys::video::SDL_Window) -> bool {
         if self.tried == Some(on) {
-            return;
+            return false;
         }
         self.tried = Some(on);
         if on == self.is_set() {
-            return;
+            return false;
         }
         if on {
             self.install(window);
         } else {
             self.remove(window);
         }
+        true
+    }
+
+    /// Whether the hook or grab is in place.
+    pub(crate) fn is_on(&self) -> bool {
+        self.is_set()
     }
 
     #[cfg(windows)]
