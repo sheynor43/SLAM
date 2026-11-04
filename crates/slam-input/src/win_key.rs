@@ -1,7 +1,9 @@
 //! Blocking the Windows key while a play runs (ADR-0094), as lazer's
-//! `GameplayWinKeyBlocker`: a low-level keyboard hook on the window's thread eats the left
-//! and right Windows keys, and nothing else, while the window has focus and the update
-//! thread asks for it. On other platforms the wish is kept and nothing is hooked.
+//! `GameplayWinKeyBlocker`: on Windows a low-level keyboard hook on the window's thread eats
+//! the left and right Windows keys, and nothing else, while the window has focus and the
+//! update thread asks for it. On Linux, which cannot block one key, SDL's keyboard grab
+//! takes the desktop's shortcuts (Super among them) instead. Elsewhere the wish is kept and
+//! nothing happens.
 
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -50,26 +52,36 @@ pub(crate) fn eats(message: usize, virtual_key: u32) -> bool {
     (WM_KEYDOWN..=WM_SYSKEYUP).contains(&message) && matches!(virtual_key, VK_LWIN | VK_RWIN)
 }
 
-/// The hook, installed and removed on the window's thread, whose message loop runs it.
+/// The hook (Windows) or keyboard grab (Linux), set and removed on the window's thread,
+/// whose message loop runs the hook.
 #[derive(Default)]
 pub(crate) struct WinKeyHook {
     #[cfg(windows)]
     hook: Option<windows_sys::Win32::UI::WindowsAndMessaging::HHOOK>,
     #[cfg(not(windows))]
     hooked: bool,
+    /// What [`WinKeyHook::set`] last tried: a failure is not tried again, and logged
+    /// again, until the wish or the focus changes.
+    tried: Option<bool>,
 }
 
 impl WinKeyHook {
-    /// Installs or removes the hook to match `on`. A failed install is logged and tried
-    /// again on the next call.
-    pub(crate) fn set(&mut self, on: bool) {
+    /// Installs or removes the hook (grabs or releases `window`'s keyboard on Linux) to
+    /// match `on`. A failed install is logged once and tried again only when `on` changes
+    /// (the loop calls this before every event). `window` is the valid window of this
+    /// thread, or null in tests (nothing is grabbed then).
+    pub(crate) fn set(&mut self, on: bool, window: *mut sdl3_sys::video::SDL_Window) {
+        if self.tried == Some(on) {
+            return;
+        }
+        self.tried = Some(on);
         if on == self.is_set() {
             return;
         }
         if on {
-            self.install();
+            self.install(window);
         } else {
-            self.remove();
+            self.remove(window);
         }
     }
 
@@ -84,7 +96,7 @@ impl WinKeyHook {
     }
 
     #[cfg(windows)]
-    fn install(&mut self) {
+    fn install(&mut self, _window: *mut sdl3_sys::video::SDL_Window) {
         use windows_sys::Win32::System::LibraryLoader::GetModuleHandleW;
         use windows_sys::Win32::UI::WindowsAndMessaging::{SetWindowsHookExW, WH_KEYBOARD_LL};
         // SAFETY: a null name asks for the executable's own module handle; `keyboard_proc`
@@ -109,7 +121,7 @@ impl WinKeyHook {
     }
 
     #[cfg(windows)]
-    fn remove(&mut self) {
+    fn remove(&mut self, _window: *mut sdl3_sys::video::SDL_Window) {
         use windows_sys::Win32::UI::WindowsAndMessaging::UnhookWindowsHookEx;
         if let Some(hook) = self.hook.take() {
             // SAFETY: `hook` came from `SetWindowsHookExW` on this thread and is removed
@@ -124,20 +136,34 @@ impl WinKeyHook {
     }
 
     #[cfg(not(windows))]
-    fn install(&mut self) {
-        self.hooked = true;
+    fn install(&mut self, window: *mut sdl3_sys::video::SDL_Window) {
+        if grab(window, true) {
+            self.hooked = true;
+        }
     }
 
     #[cfg(not(windows))]
-    fn remove(&mut self) {
+    fn remove(&mut self, window: *mut sdl3_sys::video::SDL_Window) {
+        // Released or not, it is not retried: the window keeps no grab past its own life.
+        grab(window, false);
         self.hooked = false;
     }
 }
 
-impl Drop for WinKeyHook {
-    fn drop(&mut self) {
-        self.set(false);
+/// Grabs or releases the keyboard of `window` on Linux: the compositor's shortcuts are
+/// inhibited on Wayland, the keyboard grabbed on X11 (ADR-0094). Elsewhere and with a null
+/// window does nothing and succeeds. Returns whether it succeeded.
+#[cfg(not(windows))]
+fn grab(window: *mut sdl3_sys::video::SDL_Window, on: bool) -> bool {
+    if !cfg!(target_os = "linux") || window.is_null() {
+        return true;
     }
+    // SAFETY: `window` is the valid window of this thread, which SDL video runs on.
+    let done = unsafe { sdl3_sys::video::SDL_SetWindowKeyboardGrab(window, on) };
+    if !done {
+        tracing::warn!(error = %crate::window::sdl_error(), on, "the keyboard grab failed");
+    }
+    done
 }
 
 // Ported from osu!lazer 2026.1005.0-lazer: osu.Desktop/Windows/WindowsKey.cs (lowLevelKeyboardProc)
@@ -189,15 +215,15 @@ mod tests {
     }
 
     #[test]
-    fn the_hook_follows_set_and_goes_on_drop() {
+    #[cfg(not(windows))]
+    fn the_hook_follows_set() {
+        let null = std::ptr::null_mut();
         let mut hook = WinKeyHook::default();
-        hook.set(true);
+        hook.set(true, null);
         assert!(hook.is_set());
-        hook.set(true);
-        hook.set(false);
+        hook.set(true, null);
+        hook.set(false, null);
         assert!(!hook.is_set());
-        hook.set(true);
-        drop(hook);
     }
 
     #[test]

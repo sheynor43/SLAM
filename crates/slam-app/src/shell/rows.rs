@@ -157,8 +157,15 @@ const DRAW_PRESETS: [f64; 9] = [
     60.0, 120.0, 144.0, 240.0, 360.0, 1000.0, 2000.0, 4000.0, 8000.0,
 ];
 
-/// The Windows key row shows only on Windows, as lazer's (ADR-0094).
-const WIN_KEY_ROW: bool = cfg!(windows);
+/// The Windows key row shows on Windows, as lazer's, and on Linux, where it blocks the
+/// desktop's shortcuts (ADR-0094).
+const WIN_KEY_ROW: bool = cfg!(any(windows, target_os = "linux"));
+/// What the Windows key row says: Linux blocks every desktop shortcut, not one key.
+const WIN_KEY_LABEL: &str = if cfg!(windows) {
+    "settings-gameplay-disable-win-key"
+} else {
+    "settings-gameplay-disable-shortcuts"
+};
 /// Whether the platform has known issues with the high precision mouse (ADR-0069): lazer
 /// switches it off by default and warns on Linux and macOS.
 const PLATFORM_WARNING: bool = cfg!(any(target_os = "linux", target_os = "macos"));
@@ -398,7 +405,7 @@ impl Row {
             Row::BeatmapColours => "settings-gameplay-beatmap-colours",
             Row::BeatmapHitsounds => "settings-gameplay-beatmap-hitsounds",
             Row::AlwaysPlayFirstComboBreak => "settings-gameplay-always-play-first-combo-break",
-            Row::DisableWinKey => "settings-gameplay-disable-win-key",
+            Row::DisableWinKey => WIN_KEY_LABEL,
             Row::SnakingIn => "settings-gameplay-snaking-in",
             Row::SnakingOut => "settings-gameplay-snaking-out",
             Row::HitLighting => "settings-gameplay-hit-lighting",
@@ -1274,10 +1281,20 @@ mod tests {
     }
 
     #[test]
-    fn the_windows_key_row_shows_on_windows_only() {
+    fn the_windows_key_row_shows_on_windows_and_linux() {
         let (rows, s) = rows();
         let screen = opened(&rows, &s);
-        assert_eq!(screen.is_hidden(index(Row::DisableWinKey)), !cfg!(windows));
+        assert_eq!(
+            screen.is_hidden(index(Row::DisableWinKey)),
+            !cfg!(any(windows, target_os = "linux"))
+        );
+        // Linux says what it blocks: every shortcut of the desktop.
+        let label = Row::DisableWinKey.label_key();
+        assert_eq!(
+            label == "settings-gameplay-disable-shortcuts",
+            !cfg!(windows),
+            "{label}"
+        );
     }
 
     #[test]

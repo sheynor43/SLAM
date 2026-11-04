@@ -179,6 +179,7 @@ settings-gameplay-beatmap-colours = Beatmap colours
 settings-gameplay-beatmap-hitsounds = Beatmap hitsounds
 settings-gameplay-always-play-first-combo-break = Always play first combo break sound
 settings-gameplay-disable-win-key = Disable Windows key during gameplay
+settings-gameplay-disable-shortcuts = Disable system shortcuts during gameplay
 settings-gameplay-snaking-in = Snaking in sliders
 settings-gameplay-snaking-out = Snaking out sliders
 settings-gameplay-hit-lighting = Hit lighting

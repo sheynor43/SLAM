@@ -702,7 +702,8 @@ impl InputWindow {
     /// Hooks the Windows key while [`WinKeyBlock`] asks and the window has focus.
     fn apply_win_key(&mut self) {
         let wanted = self.win_key_wanted.load(Ordering::Relaxed);
-        self.win_key_hook.set(should_hook(wanted, self.focused));
+        self.win_key_hook
+            .set(should_hook(wanted, self.focused), self.window);
     }
 
     /// A handle that turns typed text on and off.
@@ -849,7 +850,7 @@ impl InputWindow {
         // Nothing runs the hook once the loop is left: a global hook that stays until the
         // window drops would stall every key press of the system while the program shuts
         // down (ADR-0094).
-        self.win_key_hook.set(false);
+        self.win_key_hook.set(false, self.window);
         result
     }
 
@@ -1002,6 +1003,9 @@ where
 
 impl Drop for InputWindow {
     fn drop(&mut self) {
+        // While the window and SDL still live: the grab needs them, and a hook must not
+        // outlive the thread's message loop.
+        self.win_key_hook.set(false, self.window);
         // `get_mut` synchronises with the drop of a GlContext on another thread, so
         // its SDL calls happen before the teardown below.
         *self.alive.lock().unwrap_or_else(PoisonError::into_inner) = false;

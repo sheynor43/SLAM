@@ -425,7 +425,7 @@ pub struct Gameplay {
     /// the combo is already low (lazer's `OsuSetting.AlwaysPlayFirstComboBreak`, on by default).
     pub always_play_first_combo_break: bool,
     /// Block the Windows key while playing (lazer's `OsuSetting.GameplayDisableWinKey`, on by
-    /// default; ADR-0094). Only Windows shows and applies it.
+    /// default; ADR-0094); on Linux, every shortcut of the desktop. Other platforms ignore it.
     pub disable_win_key: bool,
     pub mouse_buttons: bool,
     /// Sliders grow towards their end as they appear (lazer's `OsuRulesetSetting.SnakingInSliders`,
