@@ -432,6 +432,24 @@ impl GameplaySounds {
         self
     }
 
+    /// Takes the samples and settings of `other`, sounds made for the same beatmap and mods
+    /// with another skin or other settings (ADR-0096), and gives it these to free off the
+    /// update thread. The looping voices stop first; the state of the attempt stays: what
+    /// has sounded, the first combo break, the spinners. Returns whether every stop was
+    /// queued, as [`GameplaySounds::stop_all`]. Does not allocate.
+    pub fn replace_samples(
+        &mut self,
+        other: &mut GameplaySounds,
+        sink: &mut impl VoiceSink,
+    ) -> bool {
+        let stopped = self.stop_all(sink);
+        std::mem::swap(&mut self.hitsounds, &mut other.hitsounds);
+        std::mem::swap(&mut self.settings, &mut other.settings);
+        std::mem::swap(&mut self.fail, &mut other.fail);
+        std::mem::swap(&mut self.combo_break, &mut other.combo_break);
+        stopped
+    }
+
     // Ported from osu!lazer 2026.1005.0-lazer: osu.Game/Screens/Play/ComboEffects.cs (onComboChange)
     /// Takes a change of the score's combo from `old` to `new` at gameplay time `time`: a
     /// break from above 20, or the first break of the play (if

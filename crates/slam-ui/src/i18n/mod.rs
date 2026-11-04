@@ -236,6 +236,12 @@ impl Localizer {
         Self::format_in(bundle, LANGUAGE_NAME_KEY, None)
     }
 
+    /// Formats `key` in English, whatever language is active: what a search also matches,
+    /// as lazer's `FilterTerms` hold both texts (ADR-0095). Falls back to the key itself.
+    pub fn format_english<'a>(&'a self, key: &'a str) -> Cow<'a, str> {
+        Self::format_in(&self.fallback, key, None).unwrap_or(Cow::Borrowed(key))
+    }
+
     /// Formats `key` (`message` or `message.attribute`). Falls back to English, then
     /// to the key itself.
     pub fn format<'a>(&'a self, key: &'a str, args: Option<&'a FluentArgs<'_>>) -> Cow<'a, str> {

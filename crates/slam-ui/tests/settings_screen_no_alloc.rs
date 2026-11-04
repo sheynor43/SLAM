@@ -71,7 +71,8 @@ fn labels() -> SettingsLabels {
         hint: String::new(),
     };
     SettingsLabels {
-        title: "Settings".into(),
+        search_placeholder: "Type to search".into(),
+        no_results: "Nothing found".into(),
         sections: vec!["Audio".into(), "Frame".into(), "Keys".into()],
         rows: vec![
             row("Master", "%", &[]),
@@ -91,6 +92,7 @@ fn labels() -> SettingsLabels {
             prompt: "Press a key...".into(),
             keys: (0..512).map(|i| format!("Key {i}")).collect(),
             mouse: ["Left", "Middle", "Right", "X1", "X2"].map(String::from),
+            mods: ["Ctrl+", "Shift+", "Alt+"].map(String::from),
             conflict_title: "Already bound:".into(),
             conflict_keep: "Keep".into(),
             conflict_apply: "Apply".into(),
@@ -467,6 +469,56 @@ fn hints_and_disabled_rows_draw_without_allocating() {
             screen.set_hint(1, i % 2 == 0);
             screen.input(SettingsInput::Right, &layout);
             frame(&screen, &mut glyphs);
+        }
+    });
+}
+
+/// Typing, erasing and clearing the search, and scrolling the rows, touch no allocator
+/// (the row texts are given once, at the start).
+#[test]
+fn search_and_scroll_do_not_allocate() {
+    let layout = SettingsLayout::new(1280.0, 720.0, &Theme::default());
+    let specs: Vec<RowSpec> = (0..30)
+        .map(|i| RowSpec {
+            section: i % 2,
+            kind: RowKind::Slider {
+                min: 0.0,
+                max: 100.0,
+                step: 1.0,
+                value: 10.0,
+            },
+            restart_required: false,
+        })
+        .collect();
+    let mut screen = SettingsScreen::new(&specs, 2);
+    let texts: Arc<[Box<str>]> = (0..30)
+        .map(|i| format!("row number {i} volume").into_boxed_str())
+        .collect();
+    screen.set_search_texts(texts);
+    // Warm the first use of each path.
+    for c in "row 1".chars() {
+        screen.input(SettingsInput::Type(c), &layout);
+    }
+    screen.input(SettingsInput::Back, &layout);
+    assert_no_alloc(|| {
+        for _ in 0..20 {
+            for c in "row number".chars() {
+                std::hint::black_box(screen.input(SettingsInput::Type(c), &layout));
+            }
+            for _ in 0..4 {
+                screen.input(SettingsInput::Down, &layout);
+                screen.input(SettingsInput::Scroll { lines: 2.0 }, &layout);
+            }
+            for _ in 0..3 {
+                screen.input(SettingsInput::Erase, &layout);
+            }
+            std::hint::black_box(screen.snapshot());
+            screen.input(SettingsInput::Back, &layout);
+            screen.input(SettingsInput::Scroll { lines: 50.0 }, &layout);
+            screen.input(SettingsInput::Scroll { lines: -50.0 }, &layout);
+            screen.input(SettingsInput::NextSection, &layout);
+            screen.input(SettingsInput::Down, &layout);
+            screen.input(SettingsInput::Type(' '), &layout);
         }
     });
 }

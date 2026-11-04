@@ -510,3 +510,61 @@ fn background_and_detail_changes_do_not_allocate_on_the_update_or_draw_thread() 
     drop(kept);
     let _ = std::fs::remove_dir_all(&root);
 }
+
+#[test]
+fn searching_and_moving_in_the_open_settings_panel_does_not_allocate() {
+    use std::sync::Arc;
+
+    use slam_input::TextChunk;
+
+    let mut state = ShellState::new(Theme::default(), 1280.0, 720.0, 1.0);
+    state.set_localizer(Arc::new(
+        slam_ui::i18n::Localizer::builtin().expect("the built-in languages"),
+    ));
+    let mut snapshot = ShellSnapshot::default();
+    let key = |scancode, down| InputEvent {
+        time_ns: 0,
+        kind: InputKind::Key { scancode, down },
+    };
+    let text = |s: &str| InputEvent {
+        time_ns: 0,
+        kind: InputKind::Text(TextChunk::new(s).unwrap()),
+    };
+    // Opening allocates (the copy of the settings and the texts); it happens before.
+    state.tick(0, &[key(224, true)], &mut snapshot);
+    state.tick(1, &[key(18, true), key(18, false)], &mut snapshot);
+    assert!(state.settings_open());
+    let start = TRANSITION_NS;
+    for now in start..start + 20 {
+        state.tick(now, &[], &mut snapshot);
+    }
+    let events = [
+        text("v"),
+        text("ol"),
+        key(81, true),
+        key(81, true),
+        key(82, true),
+        key(42, true),
+        text("u"),
+        key(42, true),
+        key(42, true),
+        key(42, true),
+        key(81, true),
+        key(80, true),
+        key(79, true),
+    ];
+    assert_no_alloc(|| {
+        for now in start + 100..start + 200 {
+            state.tick(now, &events, &mut snapshot);
+        }
+    });
+    // The events did reach the search: each round types four letters and erases them.
+    state.tick(start + 300, &[text("vo")], &mut snapshot);
+    assert_eq!(
+        state
+            .settings_screen()
+            .map(|screen| screen.search().as_str()),
+        Some("vo")
+    );
+    assert!(snapshot.panel.is_some());
+}

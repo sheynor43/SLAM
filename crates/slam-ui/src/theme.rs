@@ -112,6 +112,14 @@ pub struct Theme {
     pub settings_label_ratio: f32,
     /// Size of the "after restart" marker.
     pub settings_marker_size: f32,
+    /// Width of the settings panel that slides in from the left (ADR-0095).
+    pub settings_panel_width: f32,
+    /// Fill of the settings panel.
+    pub settings_panel_fill: Color,
+    /// Fill over the screen under the open settings panel, at full opacity once it is in.
+    pub settings_dim_fill: Color,
+    /// How long the settings panel slides in or out, in milliseconds.
+    pub settings_panel_ms: f32,
     /// Fill of the curtain's slats while the language switches (ADR-0091).
     pub curtain_fill: Color,
     /// Height of the accent edge leading each slat.
@@ -225,10 +233,24 @@ impl Default for Theme {
             },
             settings_margin: 32.0,
             settings_title_size: 40.0,
-            settings_tab_width: 200.0,
+            settings_tab_width: 170.0,
             settings_row_pitch: 52.0,
-            settings_label_ratio: 0.4,
+            settings_label_ratio: 0.45,
             settings_marker_size: 14.0,
+            settings_panel_width: 880.0,
+            settings_panel_fill: Color {
+                r: 0.08,
+                g: 0.08,
+                b: 0.11,
+                a: 0.97,
+            },
+            settings_dim_fill: Color {
+                r: 0.0,
+                g: 0.0,
+                b: 0.0,
+                a: 0.5,
+            },
+            settings_panel_ms: 250.0,
             curtain_fill: Color::rgb(0.11, 0.11, 0.15),
             curtain_edge: 4.0,
         }

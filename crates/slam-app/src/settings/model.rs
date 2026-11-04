@@ -649,22 +649,91 @@ impl Serialize for InputSettings {
     }
 }
 
-/// Keys of the whole window, outside the gameplay bindings (ADR-0060). Unbound by default,
-/// as lazer's.
-#[derive(Clone, Copy, Debug, Default, PartialEq, Serialize)]
-pub struct Hotkeys {
-    /// Shows or hides the FPS counter (lazer's `ToggleFPSDisplay`).
-    #[serde(
-        skip_serializing_if = "Option::is_none",
-        serialize_with = "serialize_input"
-    )]
-    pub toggle_fps: Option<Input>,
+/// Modifier keys held with a hotkey (ADR-0095); left and right are not told apart.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash)]
+pub struct Mods(u8);
+
+impl Mods {
+    pub const NONE: Mods = Mods(0);
+    pub const CTRL: Mods = Mods(1);
+    pub const SHIFT: Mods = Mods(2);
+    pub const ALT: Mods = Mods(4);
+    /// Every modifier, in the order they are written: Ctrl, Shift, Alt.
+    pub const ALL: [Mods; 3] = [Mods::CTRL, Mods::SHIFT, Mods::ALT];
+
+    pub const fn from_bits(bits: u8) -> Mods {
+        Mods(bits & 7)
+    }
+
+    pub const fn bits(self) -> u8 {
+        self.0
+    }
+
+    pub const fn is_empty(self) -> bool {
+        self.0 == 0
+    }
+
+    pub const fn contains(self, other: Mods) -> bool {
+        self.0 & other.0 == other.0
+    }
+
+    pub const fn with(self, other: Mods) -> Mods {
+        Mods(self.0 | other.0)
+    }
 }
 
-fn serialize_input<S: Serializer>(input: &Option<Input>, serializer: S) -> Result<S::Ok, S::Error> {
-    match input {
-        Some(input) => serializer.serialize_str(&keys::input_name(*input)),
-        None => serializer.serialize_none(),
+/// A hotkey: an input with the modifiers held for it (ADR-0095).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Combo {
+    pub mods: Mods,
+    pub input: Input,
+}
+
+impl Combo {
+    /// `input` without modifiers.
+    pub const fn plain(input: Input) -> Combo {
+        Combo {
+            mods: Mods::NONE,
+            input,
+        }
+    }
+}
+
+/// O, lazer's key for `ToggleSettings` with Ctrl.
+const KEY_O: u16 = 18;
+
+/// Keys of the whole window, outside the gameplay bindings (ADR-0060, ADR-0095).
+#[derive(Clone, Copy, Debug, PartialEq, Serialize)]
+pub struct Hotkeys {
+    /// Shows or hides the FPS counter (lazer's `ToggleFPSDisplay`); unbound by default, as
+    /// lazer's.
+    #[serde(
+        skip_serializing_if = "Option::is_none",
+        serialize_with = "serialize_combo"
+    )]
+    pub toggle_fps: Option<Combo>,
+    /// Opens or closes the settings panel (lazer's `ToggleSettings`, Ctrl+O). Always
+    /// written, an empty name when unbound: left out it would come back as Ctrl+O.
+    #[serde(serialize_with = "serialize_combo")]
+    pub toggle_settings: Option<Combo>,
+}
+
+impl Default for Hotkeys {
+    fn default() -> Hotkeys {
+        Hotkeys {
+            toggle_fps: None,
+            toggle_settings: Some(Combo {
+                mods: Mods::CTRL,
+                input: Input::Key(KEY_O),
+            }),
+        }
+    }
+}
+
+fn serialize_combo<S: Serializer>(combo: &Option<Combo>, serializer: S) -> Result<S::Ok, S::Error> {
+    match combo {
+        Some(combo) => serializer.serialize_str(&keys::combo_name(*combo)),
+        None => serializer.serialize_str(""),
     }
 }
 
@@ -683,6 +752,17 @@ pub enum KeySlot {
     /// `action`'s binding number `slot`.
     Play(Actions, usize),
     ToggleFps,
+    ToggleSettings,
+}
+
+impl KeySlot {
+    /// The hotkey slots.
+    pub const HOTKEYS: [KeySlot; 2] = [KeySlot::ToggleFps, KeySlot::ToggleSettings];
+
+    /// Whether it is a hotkey, which takes modifiers.
+    pub fn is_hotkey(self) -> bool {
+        !matches!(self, KeySlot::Play(..))
+    }
 }
 
 /// All user settings.
@@ -706,72 +786,100 @@ impl Settings {
         self.input.bindings
     }
 
-    /// The input in `slot`, `None` if it is empty.
-    pub fn key(&self, slot: KeySlot) -> Option<Input> {
+    /// The input in `slot`, `None` if it is empty. Gameplay slots have no modifiers.
+    pub fn key(&self, slot: KeySlot) -> Option<Combo> {
         match slot {
-            KeySlot::Play(action, n) => self.input.slot(action, n),
+            KeySlot::Play(action, n) => self.input.slot(action, n).map(Combo::plain),
             KeySlot::ToggleFps => self.hotkeys.toggle_fps,
+            KeySlot::ToggleSettings => self.hotkeys.toggle_settings,
         }
     }
 
-    /// Where else `input` is bound when it goes into `slot`: one input does one thing,
-    /// gameplay or hotkey. A gameplay slot past [`BINDING_SLOTS`] is still a conflict.
-    pub fn key_conflict(&self, slot: KeySlot, input: Input) -> Option<KeySlot> {
+    fn hotkey_mut(&mut self, slot: KeySlot) -> Option<&mut Option<Combo>> {
         match slot {
-            KeySlot::Play(action, n) => {
-                if let Some((other, other_slot)) = self.input.conflict(action, n, input) {
-                    return Some(KeySlot::Play(other, other_slot));
-                }
-                (self.hotkeys.toggle_fps == Some(input)).then_some(KeySlot::ToggleFps)
-            }
-            KeySlot::ToggleFps => {
-                let list = self.input.bindings.as_slice();
-                let i = list.iter().position(|b| b.input == input)?;
-                let action = list[i].action;
-                let n = list[..i].iter().filter(|b| b.action == action).count();
-                Some(KeySlot::Play(action, n))
-            }
+            KeySlot::Play(..) => None,
+            KeySlot::ToggleFps => Some(&mut self.hotkeys.toggle_fps),
+            KeySlot::ToggleSettings => Some(&mut self.hotkeys.toggle_settings),
         }
     }
 
-    /// Whether `input` may go into `slot`. Not for a hotkey: the main mouse buttons (lazer's
-    /// `AllowMainMouseButtons = false` for global bindings), the menus' keys and the
-    /// gameplay screen's own keys (ADR-0060).
-    pub fn key_allowed(slot: KeySlot, input: Input) -> bool {
+    /// The hotkey `combo` triggers, if any.
+    pub fn hotkey(&self, combo: Combo) -> Option<KeySlot> {
+        KeySlot::HOTKEYS
+            .into_iter()
+            .find(|slot| self.key(*slot) == Some(combo))
+    }
+
+    /// Where else `combo` is bound when it goes into `slot`: one input does one thing,
+    /// gameplay or hotkey. A gameplay slot past [`BINDING_SLOTS`] is still a conflict. A
+    /// gameplay key only meets a hotkey without modifiers.
+    pub fn key_conflict(&self, slot: KeySlot, combo: Combo) -> Option<KeySlot> {
+        if let KeySlot::Play(action, n) = slot
+            && let Some((other, other_slot)) = self.input.conflict(action, n, combo.input)
+        {
+            return Some(KeySlot::Play(other, other_slot));
+        }
+        let hotkey = KeySlot::HOTKEYS
+            .into_iter()
+            .find(|other| *other != slot && self.key(*other) == Some(combo));
+        if hotkey.is_some() || !slot.is_hotkey() || !combo.mods.is_empty() {
+            return hotkey;
+        }
+        let list = self.input.bindings.as_slice();
+        let i = list.iter().position(|b| b.input == combo.input)?;
+        let action = list[i].action;
+        let n = list[..i].iter().filter(|b| b.action == action).count();
+        Some(KeySlot::Play(action, n))
+    }
+
+    /// Whether `combo` may go into `slot`. Gameplay slots take no modifiers. Not for a
+    /// hotkey: the main mouse buttons (lazer's `AllowMainMouseButtons = false` for global
+    /// bindings), and, without modifiers, the menus' keys and the gameplay screen's own keys
+    /// (ADR-0060, ADR-0095). F11 belongs to the window.
+    pub fn key_allowed(slot: KeySlot, combo: Combo) -> bool {
+        let input = combo.input;
         if input == Input::Key(KEY_F11) {
             return false;
         }
-        match slot {
-            KeySlot::Play(..) => true,
-            KeySlot::ToggleFps => {
-                !matches!(
-                    input,
-                    Input::Mouse(MouseButton::Left | MouseButton::Right)
-                        | Input::Key(MENU_KEYS_FIRST..=MENU_KEYS_LAST)
-                        | Input::Key(KEY_TAB | KEY_BACKSPACE | KEY_DELETE)
-                ) && !slam_play::hotkeys::is_gameplay_hotkey(input)
-            }
+        if !slot.is_hotkey() {
+            return combo.mods.is_empty();
         }
+        if matches!(input, Input::Mouse(MouseButton::Left | MouseButton::Right)) {
+            return false;
+        }
+        !combo.mods.is_empty()
+            || !(matches!(
+                input,
+                Input::Key(MENU_KEYS_FIRST..=MENU_KEYS_LAST)
+                    | Input::Key(KEY_TAB | KEY_BACKSPACE | KEY_DELETE)
+            ) || slam_play::hotkeys::is_gameplay_hotkey(input))
     }
 
-    /// Puts `input` into `slot` and takes it out of every other slot. Returns `false` and
+    /// Puts `combo` into `slot` and takes it out of every other slot. Returns `false` and
     /// changes nothing when the gameplay bindings are full.
-    pub fn bind_key(&mut self, slot: KeySlot, input: Input) -> bool {
+    pub fn bind_key(&mut self, slot: KeySlot, combo: Combo) -> bool {
         match slot {
             KeySlot::Play(action, n) => {
-                if !self.input.bind(action, n, input) {
+                if !self.input.bind(action, n, combo.input) {
                     return false;
                 }
-                if self.hotkeys.toggle_fps == Some(input) {
-                    self.hotkeys.toggle_fps = None;
-                }
             }
-            KeySlot::ToggleFps => {
-                while let Some(KeySlot::Play(action, n)) = self.key_conflict(slot, input) {
+            _ => {
+                while let Some(KeySlot::Play(action, n)) = self.key_conflict(slot, combo) {
                     self.input.clear(action, n);
                 }
-                self.hotkeys.toggle_fps = Some(input);
             }
+        }
+        for other in KeySlot::HOTKEYS {
+            if other != slot
+                && self.key(other) == Some(combo)
+                && let Some(hotkey) = self.hotkey_mut(other)
+            {
+                *hotkey = None;
+            }
+        }
+        if let Some(hotkey) = self.hotkey_mut(slot) {
+            *hotkey = Some(combo);
         }
         true
     }
@@ -780,11 +888,15 @@ impl Settings {
     pub fn clear_key(&mut self, slot: KeySlot) {
         match slot {
             KeySlot::Play(action, n) => self.input.clear(action, n),
-            KeySlot::ToggleFps => self.hotkeys.toggle_fps = None,
+            _ => {
+                if let Some(hotkey) = self.hotkey_mut(slot) {
+                    *hotkey = None;
+                }
+            }
         }
     }
 
-    /// The default gameplay bindings (lazer's) and no hotkeys.
+    /// The default gameplay bindings and hotkeys (lazer's).
     pub fn reset_keys(&mut self) {
         self.input.reset();
         self.hotkeys = Hotkeys::default();

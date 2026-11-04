@@ -7,6 +7,8 @@ use slam_input::MouseButton;
 use slam_osu::replay::Actions;
 use slam_play::input::Input;
 
+use super::model::{Combo, Mods};
+
 /// Named keys outside the letter, digit and function-key runs.
 const NAMED: &[(&str, u16)] = &[
     ("Enter", 40),
@@ -110,6 +112,45 @@ pub fn input_from_name(name: &str) -> Option<Input> {
         return Some(Input::Mouse(button));
     }
     key_from_name(name).map(Input::Key)
+}
+
+/// The written names of the modifiers, in [`Mods::ALL`] order.
+const MOD_NAMES: [&str; 3] = ["Ctrl", "Shift", "Alt"];
+
+/// Canonical name of a hotkey: the modifiers, then the input, joined by `+` (ADR-0095).
+pub fn combo_name(combo: Combo) -> String {
+    let mut name = String::new();
+    for (m, written) in Mods::ALL.into_iter().zip(MOD_NAMES) {
+        if combo.mods.contains(m) {
+            name.push_str(written);
+            name.push('+');
+        }
+    }
+    name.push_str(&input_name(combo.input));
+    name
+}
+
+/// The hotkey called `name`, case-insensitive: `Ctrl+`, `Shift+` and `Alt+` prefixes in
+/// any order, then an input name. `None` for an empty or unknown name.
+pub fn combo_from_name(name: &str) -> Option<Combo> {
+    let mut rest = name.trim();
+    let mut mods = Mods::NONE;
+    'prefixes: loop {
+        for (m, written) in Mods::ALL.into_iter().zip(MOD_NAMES) {
+            if let Some(head) = rest.get(..written.len() + 1)
+                && head.eq_ignore_ascii_case(&format!("{written}+"))
+            {
+                mods = mods.with(m);
+                rest = rest[written.len() + 1..].trim_start();
+                continue 'prefixes;
+            }
+        }
+        break;
+    }
+    Some(Combo {
+        mods,
+        input: input_from_name(rest)?,
+    })
 }
 
 /// Canonical name of a single action, `None` for anything else.

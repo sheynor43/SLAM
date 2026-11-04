@@ -44,6 +44,9 @@ use slam_ui::results::{
     ResultsView, StatKind,
 };
 use slam_ui::screen::{MAX_LAYERS, Nav, Navigated, Pose, ScreenStack};
+use slam_ui::settings_screen::panel::{
+    PanelMotion, panel_layout, panel_pose, panel_width, push_backdrop,
+};
 use slam_ui::settings_screen::{
     KeyValue, RowWidget, SettingsAction, SettingsInput, SettingsLayout, SettingsScreen,
     SettingsSnapshot, SettingsView,
@@ -68,7 +71,7 @@ use crate::play::pack_size;
 use crate::play::scene::{CHANNELS, PlayScene, PlaySettings, Prepared, SAMPLE_RATE, SceneGpu};
 use crate::replays::{ReplayBeatmap, ReplayJob};
 use crate::settings::saver::SaveLink;
-use crate::settings::{Dirs, InputSettings, Settings};
+use crate::settings::{Combo, Dirs, InputSettings, KeySlot, Mods, Settings};
 use crate::songs::{FolderChange, SkinViews, SongFiles, SongsLink};
 
 mod draw_rate;
@@ -130,7 +133,11 @@ const KEY_DOWN: u16 = 81;
 const KEY_UP: u16 = 82;
 const KEY_KEYPAD_ENTER: u16 = 88;
 const KEY_LEFT_CTRL: u16 = 224;
+const KEY_LEFT_SHIFT: u16 = 225;
+const KEY_LEFT_ALT: u16 = 226;
 const KEY_RIGHT_CTRL: u16 = 228;
+const KEY_RIGHT_SHIFT: u16 = 229;
+const KEY_RIGHT_ALT: u16 = 230;
 
 /// The keys of the mod select's hotkeys, by key row, as lazer's sequential hotkey handler maps
 /// them: the top letter row is the first column, the home row the second (the third column,
@@ -197,14 +204,9 @@ pub enum AppScreen {
     Play(u64),
     /// The score of a passed play.
     Results(Results),
-    /// The settings; the values being edited live in [`ShellState`].
-    Settings(Box<SettingsScreen>),
 }
 
-/// What the draw thread needs to draw a screen. The settings' snapshot is large (about 24
-/// row widgets, roughly 1 KB per `ScreenView`, times `MAX_LAYERS`, copied through the
-/// triple buffer every tick), but it is written every tick: a box would allocate on the
-/// update thread.
+/// What the draw thread needs to draw a screen.
 #[derive(Clone, Debug)]
 #[allow(clippy::large_enum_variant)]
 pub enum ScreenView {
@@ -214,7 +216,15 @@ pub enum ScreenView {
     /// a play going out leaves at once instead of sliding with a stale snapshot.
     Play(u64),
     Results(ResultsSnapshot),
-    Settings(SettingsSnapshot),
+}
+
+/// The settings panel as drawn (ADR-0095). Its snapshot is large (roughly 1 KB), but it is
+/// written every tick the panel shows: a box would allocate on the update thread.
+#[derive(Clone, Debug)]
+pub struct PanelView {
+    pub settings: SettingsSnapshot,
+    /// How far the panel is in: 0 out of sight, 1 fully in.
+    pub openness: f32,
 }
 
 #[derive(Clone, Debug)]
@@ -238,6 +248,8 @@ pub struct ShellSnapshot {
     /// How many language switches asked for views so far: a new one closes the curtain
     /// (ADR-0091).
     pub language_switch: u64,
+    /// The settings panel over the screens, while it shows.
+    pub panel: Option<PanelView>,
 }
 
 /// The update logic without the window: input to navigation to snapshot.
@@ -307,8 +319,16 @@ pub struct ShellState {
     setting_rows: mod_settings::SettingRows,
     /// The difficulty (and library state) the rows' beatmap values were built for.
     setting_rows_for: Option<(usize, usize, usize)>,
-    /// The Control keys held: bit 0 the left one, bit 1 the right one.
-    ctrl: u8,
+    /// The modifier keys held, by [`modifier_bit`]: left and right Control, Shift and Alt.
+    modifiers: u8,
+    /// The settings panel, open or sliding out (ADR-0095).
+    panel: Option<Panel>,
+    /// The play shows its pause or fail menu: the settings panel may open over it.
+    play_menu: bool,
+    /// The settings panel closed with changes not yet looked at by the play (ADR-0096).
+    settings_changed: bool,
+    /// Formats the search texts of the settings panel as it opens; `None` in tests.
+    localizer: Option<Arc<Localizer>>,
     /// The key a key row took, until it is released: its OS repeats are not navigation
     /// (ADR-0092). 0 when none.
     captured_key: u16,
@@ -335,7 +355,7 @@ impl ShellState {
             layout: MenuLayout::new(width, height, &theme),
             song_layout: SongSelectLayout::new(width, height, &theme),
             results_layout: ResultsLayout::new(width, height, &theme),
-            settings_layout: SettingsLayout::new(width, height, &theme),
+            settings_layout: panel_layout(width, height, &theme),
             song_select,
             songs: None,
             displays: None,
@@ -367,7 +387,11 @@ impl ShellState {
             slider_bounds: SliderBounds::default(),
             setting_rows: mod_settings::SettingRows::default(),
             setting_rows_for: None,
-            ctrl: 0,
+            modifiers: 0,
+            panel: None,
+            play_menu: false,
+            settings_changed: false,
+            localizer: None,
             captured_key: 0,
             theme,
             cursor: [0.0, 0.0],
@@ -476,10 +500,12 @@ impl ShellState {
     pub fn set_devices(&mut self, list: &mut DeviceList) {
         self.rows
             .set_devices(std::mem::take(&mut list.devices), list.saved.as_deref());
-        if let AppScreen::Settings(screen) = self.stack.top_mut() {
+        if let Some(panel) = &mut self.panel {
             let settings = self.editing.as_ref().unwrap_or(&self.settings);
             let (options, selected) = self.rows.device_choice(settings);
-            screen.set_dropdown(rows::device_row(), options, selected);
+            panel
+                .screen
+                .set_dropdown(rows::device_row(), options, selected);
         }
     }
 
@@ -525,7 +551,7 @@ impl ShellState {
 
     /// Commits the edits of a settings screen still open, as closing it does.
     pub fn commit_editing(&mut self) {
-        commit_settings(
+        let _ = commit_settings(
             &mut self.settings,
             &mut self.editing,
             &mut self.save_request,
@@ -755,11 +781,11 @@ impl ShellState {
         }
     }
 
-    /// Follows the pointer and the Control keys while the play has the input, so that the
+    /// Follows the pointer and the modifier keys while the play has the input, so that the
     /// screen under it knows where they are when the play goes.
     pub fn follow_pointer(&mut self, events: &[InputEvent]) {
         for event in events {
-            self.track_ctrl(event.kind);
+            self.track_modifiers(event.kind);
             if let InputKind::MouseMove { x, y } = event.kind {
                 self.cursor = [x * self.pixels_per_point, y * self.pixels_per_point];
             }
@@ -770,10 +796,102 @@ impl ShellState {
     /// reach the play too, which has no binding on them (ADR-0060).
     pub fn watch_hotkeys(&mut self, events: &[InputEvent]) {
         for event in events {
-            if self.is_toggle_fps(event.kind) {
+            if self.hotkey(event.kind) == Some(KeySlot::ToggleFps) {
                 self.toggle_fps();
             }
         }
+    }
+
+    /// Sets whether the play shows its pause or fail menu, over which the settings panel
+    /// may open (ADR-0095).
+    pub fn set_play_menu(&mut self, shown: bool) {
+        self.play_menu = shown;
+    }
+
+    /// Gives the settings panel the localizer for its search texts.
+    pub fn set_localizer(&mut self, localizer: Arc<Localizer>) {
+        self.localizer = Some(localizer);
+    }
+
+    /// Whether the settings panel is open or opening, and so takes the input.
+    pub fn settings_open(&self) -> bool {
+        self.panel.as_ref().is_some_and(|p| p.motion.is_open())
+    }
+
+    /// Whether `events` press the settings panel's hotkey.
+    pub fn toggles_settings(&mut self, events: &[InputEvent]) -> bool {
+        let mut modifiers = self.modifiers;
+        events.iter().any(|event| {
+            track(&mut modifiers, event.kind);
+            hotkey_of(&self.settings, modifiers, event.kind) == Some(KeySlot::ToggleSettings)
+        })
+    }
+
+    /// Whether the settings panel may open over the screen shown: not over the play
+    /// itself, only its pause or fail menu (ADR-0095).
+    pub fn settings_allowed(&self) -> bool {
+        match self.stack.top() {
+            AppScreen::Play(_) => self.play_menu,
+            _ => true,
+        }
+    }
+
+    /// Opens the settings panel over the screen shown, or, open, starts closing it.
+    /// Allocates on opening, as a navigation.
+    fn toggle_settings(&mut self, now_ns: u64) {
+        if self.settings_open() {
+            self.close_settings(now_ns);
+        } else if self.settings_allowed() {
+            self.open_settings(now_ns);
+        }
+    }
+
+    /// Opens the settings panel with the settings in force to edit, or turns a closing one
+    /// back. Allocates.
+    fn open_settings(&mut self, now_ns: u64) {
+        if let Some(panel) = &mut self.panel {
+            panel.motion.reopen(now_ns);
+            return;
+        }
+        self.editing = Some(self.settings.clone());
+        let mut screen = SettingsScreen::new(&self.rows.specs(&self.settings), SECTIONS);
+        self.rows.refresh(&mut screen, &self.settings);
+        screen.set_value_text(Arc::clone(&self.songs_folder));
+        if let Some(localizer) = &self.localizer {
+            screen.set_search_texts(Rows::search_texts(localizer));
+        }
+        self.panel = Some(Panel {
+            screen: Box::new(screen),
+            motion: PanelMotion::opening(now_ns, &self.theme),
+            pressed_outside: false,
+        });
+        self.device_list_request = true;
+    }
+
+    /// Commits the edits and starts sliding the panel out; it goes when out of sight.
+    fn close_settings(&mut self, now_ns: u64) {
+        let Some(panel) = &mut self.panel else {
+            return;
+        };
+        panel.motion.close(now_ns);
+        if commit_settings(
+            &mut self.settings,
+            &mut self.editing,
+            &mut self.save_request,
+        ) {
+            self.settings_changed = true;
+        }
+    }
+
+    /// Whether the settings panel closed with changes since last asked: a play running takes
+    /// the ones it was prepared with anew (ADR-0096).
+    pub fn take_settings_changed(&mut self) -> bool {
+        std::mem::take(&mut self.settings_changed)
+    }
+
+    /// The open settings panel's screen.
+    pub fn settings_screen(&self) -> Option<&SettingsScreen> {
+        self.panel.as_ref().map(|p| &*p.screen)
     }
 
     /// The window changed itself from `before` to `after` (ADR-0071, ADR-0073), each a
@@ -834,17 +952,14 @@ impl ShellState {
         self.pixels_per_point = pixels_per_point;
     }
 
-    /// Whether `kind` presses the FPS counter's hotkey.
-    fn is_toggle_fps(&self, kind: InputKind) -> bool {
-        let pressed = match kind {
-            InputKind::Key {
-                scancode,
-                down: true,
-            } => Input::Key(scancode),
-            InputKind::MouseButton { button, down: true } => Input::Mouse(button),
-            _ => return false,
-        };
-        self.settings.hotkeys.toggle_fps == Some(pressed)
+    /// The hotkey `kind` presses with the modifiers held, if any (ADR-0095).
+    fn hotkey(&self, kind: InputKind) -> Option<KeySlot> {
+        hotkey_of(&self.settings, self.modifiers, kind)
+    }
+
+    /// The modifiers held.
+    fn mods(&self) -> Mods {
+        mods_of(self.modifiers)
     }
 
     /// Shows or hides the FPS counter and saves the settings, as lazer's
@@ -856,29 +971,18 @@ impl ShellState {
         if let Some(editing) = &mut self.editing {
             editing.frame.show_fps = show;
         }
-        if let (AppScreen::Settings(screen), Some(row)) = (
-            self.stack.top_mut(),
+        if let (Some(panel), Some(row)) = (
+            &mut self.panel,
             Row::ALL.iter().position(|r| *r == Row::ShowFps),
         ) {
-            screen.set_toggle(row, show);
+            panel.screen.set_toggle(row, show);
         }
         self.save_request = Some(Box::new(self.settings.clone()));
     }
 
-    /// Notes a Control key going down or up.
-    fn track_ctrl(&mut self, kind: InputKind) {
-        if let InputKind::Key { scancode, down } = kind {
-            let bit = match scancode {
-                KEY_LEFT_CTRL => 1,
-                KEY_RIGHT_CTRL => 2,
-                _ => return,
-            };
-            if down {
-                self.ctrl |= bit;
-            } else {
-                self.ctrl &= !bit;
-            }
-        }
+    /// Notes a modifier key going down or up.
+    fn track_modifiers(&mut self, kind: InputKind) {
+        track(&mut self.modifiers, kind);
     }
 
     fn set_loading(&mut self, loading: bool) {
@@ -918,13 +1022,13 @@ impl ShellState {
         self.layout = MenuLayout::new(width, height, &self.theme);
         self.song_layout = SongSelectLayout::new(width, height, &self.theme);
         self.results_layout = ResultsLayout::new(width, height, &self.theme);
-        self.settings_layout = SettingsLayout::new(width, height, &self.theme);
+        self.settings_layout = panel_layout(width, height, &self.theme);
     }
 
     /// The input of the screens, as the song select (the larger set) understands it, and
     /// the key only the results use.
     fn screen_input(&mut self, kind: InputKind) -> Option<ScreenInput> {
-        self.track_ctrl(kind);
+        self.track_modifiers(kind);
         // Lazer's key row in focus drops repeats (`KeyBindingRow.OnKeyDown`): a key held
         // past its capture neither walks the rows nor answers the conflict.
         match kind {
@@ -937,7 +1041,18 @@ impl ShellState {
         }
         // A key row that listens takes every key and mouse button, whatever the menus make
         // of them; Escape still goes through, as it cancels.
-        if matches!(self.stack.top(), AppScreen::Settings(s) if s.is_listening()) {
+        let listening = self
+            .panel
+            .as_ref()
+            .filter(|p| p.motion.is_open())
+            .and_then(|p| p.screen.listening_row());
+        if let Some(row) = listening {
+            // A hotkey takes the modifiers held with its key, which alone do not end the
+            // capture (ADR-0095).
+            let hotkey = Row::ALL
+                .get(row)
+                .and_then(|r| r.key_slot())
+                .is_some_and(KeySlot::is_hotkey);
             match kind {
                 InputKind::Key {
                     scancode: KEY_DELETE,
@@ -946,29 +1061,41 @@ impl ShellState {
                 InputKind::Key {
                     scancode,
                     down: true,
+                } if hotkey && modifier_bit(scancode).is_some() => return None,
+                InputKind::Key {
+                    scancode,
+                    down: true,
                 } if scancode != KEY_ESCAPE => {
                     self.captured_key = scancode;
-                    return Some(ScreenInput::Capture(KeyValue::Key(scancode)));
+                    let mods = if hotkey { self.mods() } else { Mods::NONE };
+                    return Some(ScreenInput::Capture(keybinds::key_value(Some(Combo {
+                        mods,
+                        input: Input::Key(scancode),
+                    }))));
                 }
                 InputKind::MouseButton { button, down: true } => {
                     return Some(ScreenInput::Capture(keybinds::key_value(Some(
-                        Input::Mouse(button),
+                        Combo::plain(Input::Mouse(button)),
                     ))));
                 }
                 _ => {}
             }
         }
-        if self.is_toggle_fps(kind) {
-            return Some(ScreenInput::ToggleFps);
+        match self.hotkey(kind) {
+            Some(KeySlot::ToggleFps) => return Some(ScreenInput::ToggleFps),
+            Some(KeySlot::ToggleSettings) => return Some(ScreenInput::ToggleSettings),
+            _ => {}
         }
-        // The letters are the mod hotkeys on the song select, and Retry on the results.
-        let song_select = matches!(self.stack.top(), AppScreen::SongSelect);
+        // The letters are the mod hotkeys on the song select, and Retry on the results;
+        // the open settings panel has them instead.
+        let song_select =
+            matches!(self.stack.top(), AppScreen::SongSelect) && !self.settings_open();
         if let InputKind::Key {
             scancode,
             down: true,
         } = kind
             && song_select
-            && self.ctrl != 0
+            && self.mods().contains(Mods::CTRL)
         {
             match scancode {
                 KEY_UP => return Some(ScreenInput::ModSpeed(SPEED_STEP)),
@@ -981,7 +1108,7 @@ impl ShellState {
         // Lazer repeats the last pressed global action on OS key repeats. Here only the
         // steps and the walks repeat: a held Enter, Escape or letter acts once (ADR-0092).
         if let InputKind::KeyRepeat { scancode } = kind {
-            if song_select && self.ctrl != 0 {
+            if song_select && self.mods().contains(Mods::CTRL) {
                 match scancode {
                     KEY_UP => return Some(ScreenInput::ModSpeed(SPEED_STEP)),
                     KEY_DOWN => return Some(ScreenInput::ModSpeed(-SPEED_STEP)),
@@ -992,7 +1119,7 @@ impl ShellState {
             }
             return Some(ScreenInput::Repeat(match scancode {
                 // Holding Backspace keeps erasing the search (ADR-0065).
-                KEY_BACKSPACE if song_select => SongSelectInput::Erase,
+                KEY_BACKSPACE if song_select || self.settings_open() => SongSelectInput::Erase,
                 KEY_UP => SongSelectInput::Up,
                 KEY_DOWN => SongSelectInput::Down,
                 KEY_LEFT => SongSelectInput::Left,
@@ -1058,10 +1185,8 @@ impl ShellState {
         }))
     }
 
-    /// Takes the newest display lists, if any, and shows them on an open settings screen.
-    /// The old lists go back to the `slam-displays` thread. Only the top screen is
-    /// refreshed: a settings screen drawn under another layer would keep its old option
-    /// counts while the draw thread takes the new dropdowns. Nothing opens over it today.
+    /// Takes the newest display lists, if any, and shows them on the open settings panel.
+    /// The old lists go back to the `slam-displays` thread.
     fn receive_displays(&mut self) {
         let Some(link) = &mut self.displays else {
             return;
@@ -1071,9 +1196,11 @@ impl ShellState {
         };
         self.rows.swap_displays(&mut lists);
         link.give_back(lists);
-        if let AppScreen::Settings(screen) = self.stack.top_mut() {
-            self.rows
-                .refresh(screen, self.editing.as_ref().unwrap_or(&self.settings));
+        if let Some(panel) = &mut self.panel {
+            self.rows.refresh(
+                &mut panel.screen,
+                self.editing.as_ref().unwrap_or(&self.settings),
+            );
         }
     }
 
@@ -1101,8 +1228,8 @@ impl ShellState {
         // Every publication brings a new `Arc`; the text rarely changes.
         if *published.folder != *self.songs_folder {
             self.songs_folder = published.folder;
-            if let AppScreen::Settings(screen) = self.stack.top_mut() {
-                screen.set_value_text(Arc::clone(&self.songs_folder));
+            if let Some(panel) = &mut self.panel {
+                panel.screen.set_value_text(Arc::clone(&self.songs_folder));
             }
         }
     }
@@ -1113,15 +1240,28 @@ impl ShellState {
     fn change_folder(&mut self, change: &mut FolderChange) {
         std::mem::swap(&mut self.settings.paths.songs, &mut change.songs);
         self.rows.swap_skins(&mut change.skins);
-        if let AppScreen::Settings(screen) = self.stack.top_mut() {
+        if let Some(panel) = &mut self.panel {
             let settings = self.editing.as_ref().unwrap_or(&self.settings);
             let (options, selected) = self.rows.skin_choice(settings);
-            screen.set_dropdown(rows::skin_row(), options, selected);
+            panel
+                .screen
+                .set_dropdown(rows::skin_row(), options, selected);
         }
     }
 
-    /// Types `text` into the song select's search (ADR-0065); other screens take no text.
+    /// Types `text` into the open settings panel's search (ADR-0095), else the song
+    /// select's (ADR-0065); other screens take no text.
     fn type_text(&mut self, text: &str) {
+        if self.settings_open() {
+            if let Some(panel) = &mut self.panel {
+                for c in text.chars() {
+                    panel
+                        .screen
+                        .input(SettingsInput::Type(c), &self.settings_layout);
+                }
+            }
+            return;
+        }
         if !matches!(self.stack.top(), AppScreen::SongSelect) {
             return;
         }
@@ -1138,6 +1278,68 @@ impl ShellState {
 
     /// Gives `events` to the top screen and applies what it asks for at `now_ns`. Stops at
     /// the first exit.
+    /// Gives `input` to the open settings panel: its screen, laid out where the panel is
+    /// now, or, outside the panel, a press and release that close it (ADR-0095).
+    fn panel_input(&mut self, input: ScreenInput, now_ns: u64) {
+        let Some(panel) = &mut self.panel else {
+            return;
+        };
+        let width = self.settings_layout.width();
+        let shift = panel.motion.shift(now_ns, width);
+        let outside = |x: f32| x >= width + shift;
+        match input {
+            ScreenInput::Common(SongSelectInput::PointerPress { x, .. }) => {
+                panel.pressed_outside = outside(x);
+                if panel.pressed_outside {
+                    return;
+                }
+            }
+            ScreenInput::Release if panel.pressed_outside => {
+                panel.pressed_outside = false;
+                if outside(self.cursor[0]) {
+                    self.close_settings(now_ns);
+                }
+                return;
+            }
+            // Each language choice is a switch behind the curtain: a held arrow on the
+            // language row would close it again and again (ADR-0092).
+            ScreenInput::Repeat(SongSelectInput::Left | SongSelectInput::Right)
+                if Row::ALL.get(panel.screen.focus()) == Some(&Row::Language) =>
+            {
+                return;
+            }
+            _ => {}
+        }
+        let layout = self.settings_layout.shifted(shift);
+        let action = settings_input(input).and_then(|input| panel.screen.input(input, &layout));
+        let screen = &mut panel.screen;
+        match action {
+            Some(SettingsAction::Changed { row, value }) => {
+                if let Some(editing) = &mut self.editing {
+                    self.rows.apply(editing, row, value);
+                    self.rows.refresh(screen, editing);
+                }
+            }
+            Some(SettingsAction::Pressed { row })
+                if Row::ALL.get(row) == Some(&Row::SongsFolder) =>
+            {
+                self.pick_folder();
+            }
+            Some(
+                action @ (SettingsAction::KeyCaptured { .. }
+                | SettingsAction::KeyCleared { .. }
+                | SettingsAction::Pressed { .. }
+                | SettingsAction::ConflictResolved { .. }),
+            ) => {
+                if let Some(editing) = &mut self.editing {
+                    keybinds::apply(screen, editing, action);
+                }
+            }
+            Some(SettingsAction::Close) => self.close_settings(now_ns),
+            None => {}
+        }
+    }
+
     pub fn handle(&mut self, events: &[InputEvent], now_ns: u64) -> Navigated {
         for event in events {
             // The shell takes window modes from the window itself (`Shell::sync_window`).
@@ -1155,7 +1357,16 @@ impl ShellState {
                 self.toggle_fps();
                 continue;
             }
+            if input == ScreenInput::ToggleSettings {
+                self.toggle_settings(now_ns);
+                continue;
+            }
+            if self.settings_open() {
+                self.panel_input(input, now_ns);
+                continue;
+            }
             let common = input.common();
+            let mut open_panel = false;
             let nav = match self.stack.top_mut() {
                 AppScreen::Menu(menu) => {
                     match common
@@ -1164,13 +1375,8 @@ impl ShellState {
                     {
                         Some(MenuAction::Play) => Some(Nav::Push(AppScreen::SongSelect)),
                         Some(MenuAction::Settings) => {
-                            self.device_list_request = true;
-                            Some(Nav::Push(open_settings(
-                                &self.rows,
-                                &self.settings,
-                                &mut self.editing,
-                                &self.songs_folder,
-                            )))
+                            open_panel = true;
+                            None
                         }
                         Some(MenuAction::Exit) => Some(Nav::Exit),
                         None => None,
@@ -1250,58 +1456,12 @@ impl ShellState {
                         None => None,
                     }
                 }
-                // Each language choice is a switch behind the curtain: a held arrow on
-                // the language row would close it again and again (ADR-0092).
-                AppScreen::Settings(screen)
-                    if matches!(
-                        input,
-                        ScreenInput::Repeat(SongSelectInput::Left | SongSelectInput::Right)
-                    ) && Row::ALL.get(screen.focus()) == Some(&Row::Language) =>
-                {
-                    None
-                }
-                AppScreen::Settings(screen) => {
-                    let action = settings_input(input)
-                        .and_then(|input| screen.input(input, &self.settings_layout));
-                    match action {
-                        Some(SettingsAction::Changed { row, value }) => {
-                            if let Some(editing) = &mut self.editing {
-                                self.rows.apply(editing, row, value);
-                                self.rows.refresh(screen, editing);
-                            }
-                            None
-                        }
-                        Some(SettingsAction::Pressed { row })
-                            if Row::ALL.get(row) == Some(&Row::SongsFolder) =>
-                        {
-                            self.pick_folder();
-                            None
-                        }
-                        Some(
-                            action @ (SettingsAction::KeyCaptured { .. }
-                            | SettingsAction::KeyCleared { .. }
-                            | SettingsAction::Pressed { .. }
-                            | SettingsAction::ConflictResolved { .. }),
-                        ) => {
-                            if let Some(editing) = &mut self.editing {
-                                keybinds::apply(screen, editing, action);
-                            }
-                            None
-                        }
-                        Some(SettingsAction::Close) => {
-                            commit_settings(
-                                &mut self.settings,
-                                &mut self.editing,
-                                &mut self.save_request,
-                            );
-                            Some(Nav::Pop)
-                        }
-                        None => None,
-                    }
-                }
                 // The play takes its input from the window's play host.
                 AppScreen::Play(_) => None,
             };
+            if open_panel {
+                self.open_settings(now_ns);
+            }
             if let Some(nav) = nav
                 && self.stack.navigate(nav, now_ns) == Navigated::Exit
             {
@@ -1342,13 +1502,24 @@ impl ShellState {
                     AppScreen::Menu(menu) => ScreenView::Menu(menu.snapshot()),
                     AppScreen::SongSelect => ScreenView::SongSelect(self.song_select.snapshot()),
                     AppScreen::Results(results) => ScreenView::Results(results.snapshot()),
-                    AppScreen::Settings(settings) => ScreenView::Settings(settings.snapshot()),
                     AppScreen::Play(id) if std::ptr::eq(screen, top) => ScreenView::Play(*id),
                     AppScreen::Play(_) => return None,
                 };
                 Some(LayerSnapshot { view, pose })
             });
         }
+        if self
+            .panel
+            .as_ref()
+            .is_some_and(|p| p.motion.is_gone(now_ns))
+        {
+            // Navigation: the screen goes with the panel.
+            self.panel = None;
+        }
+        snapshot.panel = self.panel.as_ref().map(|p| PanelView {
+            settings: p.screen.snapshot(),
+            openness: p.motion.openness(now_ns),
+        });
         navigated
     }
 }
@@ -1375,6 +1546,8 @@ enum ScreenInput {
     ApproachRate(f64),
     /// The FPS counter's hotkey, on any screen (ADR-0060).
     ToggleFps,
+    /// The settings panel's hotkey (ADR-0095).
+    ToggleSettings,
 }
 
 impl ScreenInput {
@@ -1387,38 +1560,25 @@ impl ScreenInput {
     }
 }
 
-/// The settings screen with the values in `editing` for the player to change; a snapshot
-/// of `settings` when it opens. Navigation.
-fn open_settings(
-    rows: &Rows,
-    settings: &Settings,
-    editing: &mut Option<Settings>,
-    songs_folder: &Arc<str>,
-) -> AppScreen {
-    *editing = Some(settings.clone());
-    let mut screen = SettingsScreen::new(&rows.specs(settings), SECTIONS);
-    rows.refresh(&mut screen, settings);
-    screen.set_value_text(Arc::clone(songs_folder));
-    AppScreen::Settings(Box::new(screen))
-}
-
 /// Makes the edited settings the ones in force, and asks for them to be saved, if they
 /// differ. The sliders' values are rounded to their steps first.
 fn commit_settings(
     settings: &mut Settings,
     editing: &mut Option<Settings>,
     save_request: &mut Option<Box<Settings>>,
-) {
+) -> bool {
     let Some(mut edited) = editing.take() else {
-        return;
+        return false;
     };
     // The songs folder is the library's: it may have changed while the screen was open.
     edited.paths.songs.clone_from(&settings.paths.songs);
     round_for_save(&mut edited);
-    if edited != *settings {
-        *settings = edited.clone();
-        *save_request = Some(Box::new(edited));
+    if edited == *settings {
+        return false;
     }
+    *settings = edited.clone();
+    *save_request = Some(Box::new(edited));
+    true
 }
 
 /// The input as the settings screen understands it.
@@ -1431,7 +1591,8 @@ fn settings_input(input: ScreenInput) -> Option<SettingsInput> {
         ScreenInput::Retry
         | ScreenInput::ModSpeed(_)
         | ScreenInput::ApproachRate(_)
-        | ScreenInput::ToggleFps => {
+        | ScreenInput::ToggleFps
+        | ScreenInput::ToggleSettings => {
             return None;
         }
         ScreenInput::Common(input) => match input {
@@ -1446,6 +1607,8 @@ fn settings_input(input: ScreenInput) -> Option<SettingsInput> {
             SongSelectInput::PointerMove { x, y } => SettingsInput::PointerMove { x, y },
             SongSelectInput::PointerPress { x, y } => SettingsInput::PointerPress { x, y },
             SongSelectInput::Scroll { lines } => SettingsInput::Scroll { lines },
+            // Backspace, as the song select's search takes it.
+            SongSelectInput::DeselectMods => SettingsInput::Erase,
             _ => return None,
         },
         ScreenInput::Repeat(input) => match input {
@@ -1455,6 +1618,7 @@ fn settings_input(input: ScreenInput) -> Option<SettingsInput> {
             SongSelectInput::Right => SettingsInput::Right,
             SongSelectInput::PageUp => SettingsInput::PrevSection,
             SongSelectInput::PageDown => SettingsInput::NextSection,
+            SongSelectInput::Erase => SettingsInput::Erase,
             _ => return None,
         },
     })
@@ -1462,6 +1626,69 @@ fn settings_input(input: ScreenInput) -> Option<SettingsInput> {
 
 /// Whether the play screen goes: the player quit, or the results show (a second after
 /// passing, as lazer's `progressToResults`).
+/// The settings panel over the screens (ADR-0095).
+struct Panel {
+    screen: Box<SettingsScreen>,
+    motion: PanelMotion,
+    /// The primary button went down outside the panel: its release outside closes it, as
+    /// lazer's `OsuFocusedOverlayContainer`.
+    pressed_outside: bool,
+}
+
+/// The bit of [`ShellState::modifiers`] for a modifier key's scancode.
+fn modifier_bit(scancode: u16) -> Option<u8> {
+    Some(match scancode {
+        KEY_LEFT_CTRL => 1,
+        KEY_RIGHT_CTRL => 2,
+        KEY_LEFT_SHIFT => 4,
+        KEY_RIGHT_SHIFT => 8,
+        KEY_LEFT_ALT => 16,
+        KEY_RIGHT_ALT => 32,
+        _ => return None,
+    })
+}
+
+/// Notes in `modifiers` a modifier key going down or up.
+fn track(modifiers: &mut u8, kind: InputKind) {
+    if let InputKind::Key { scancode, down } = kind
+        && let Some(bit) = modifier_bit(scancode)
+    {
+        if down {
+            *modifiers |= bit;
+        } else {
+            *modifiers &= !bit;
+        }
+    }
+}
+
+/// The modifiers held in `modifiers`, left and right as one.
+fn mods_of(modifiers: u8) -> Mods {
+    let mut mods = Mods::NONE;
+    for (bits, m) in [(3, Mods::CTRL), (12, Mods::SHIFT), (48, Mods::ALT)] {
+        if modifiers & bits != 0 {
+            mods = mods.with(m);
+        }
+    }
+    mods
+}
+
+/// The hotkey of `settings` that `kind` presses with `modifiers` held: the modifiers must
+/// be exactly the hotkey's (ADR-0095).
+fn hotkey_of(settings: &Settings, modifiers: u8, kind: InputKind) -> Option<KeySlot> {
+    let input = match kind {
+        InputKind::Key {
+            scancode,
+            down: true,
+        } if modifier_bit(scancode).is_none() => Input::Key(scancode),
+        InputKind::MouseButton { button, down: true } => Input::Mouse(button),
+        _ => return None,
+    };
+    settings.hotkey(Combo {
+        mods: mods_of(modifiers),
+        input,
+    })
+}
+
 fn play_over(state: PlayState) -> bool {
     matches!(state, PlayState::Results | PlayState::Exited)
 }
@@ -1484,7 +1711,8 @@ fn results_input(input: ScreenInput) -> Option<ResultsInput> {
         | ScreenInput::Clear
         | ScreenInput::ModSpeed(_)
         | ScreenInput::ApproachRate(_)
-        | ScreenInput::ToggleFps => {
+        | ScreenInput::ToggleFps
+        | ScreenInput::ToggleSettings => {
             return None;
         }
         ScreenInput::Retry => ResultsInput::Retry,
@@ -1565,6 +1793,17 @@ struct Game {
     map: Option<PathBuf>,
     /// What the replays of the play's passed attempts name its beatmap by.
     beatmap: Arc<ReplayBeatmap>,
+    /// What the play was prepared with; `None` when not known.
+    options: Option<PlayOptions>,
+}
+
+/// The play prepared again with changed settings, to take its scene and samples (ADR-0096).
+enum Reskin {
+    Idle,
+    /// Asked of the loader as this request, with these options, for the play of this id.
+    Preparing(u64, PlayOptions, u64),
+    /// Ready for the play of this id, waiting for it to show its pause or fail menu.
+    Ready(Box<Prepared>, PlayOptions, u64),
 }
 
 /// A quit play whose voices the mixer silences. The session keeps its samples until the
@@ -1613,6 +1852,8 @@ struct PlayHost {
     os_cursor: CursorVisibility,
     /// Blocks the Windows key while playing (ADR-0094).
     win_key: WinKeyBlock,
+    /// The play showed its pause or fail menu at its last tick (ADR-0095).
+    menu_shown: bool,
     pending: Pending,
     game: Option<Game>,
     /// Apart from `game`: a mixer that stops taking commands (lost device) keeps this
@@ -1621,6 +1862,10 @@ struct PlayHost {
     /// The track still has to be given its plain sound after a play.
     track_reset: bool,
     next_request: u64,
+    /// The options of the play asked of the loader, as request id.
+    play_requested: Option<(u64, PlayOptions)>,
+    /// The running play prepared again with changed settings (ADR-0096).
+    reskin: Reskin,
     /// The window in points, as gameplay input takes it.
     points: [f32; 2],
     input: PlayInput,
@@ -1666,8 +1911,15 @@ fn blocks_win_key(state: PlayState, is_break_time: bool) -> bool {
 }
 
 impl PlayHost {
+    /// Whether the play shows its pause or fail menu, over which the settings panel may
+    /// open (ADR-0095).
+    fn menu_shown(&self) -> bool {
+        self.game.is_some() && self.menu_shown
+    }
+
     /// Shows or hides the OS cursor and blocks the Windows key as the play's state asks.
-    fn follow_play(&self, snapshot: &PlaySnapshot) {
+    fn follow_play(&mut self, snapshot: &PlaySnapshot) {
+        self.menu_shown = matches!(snapshot.state, PlayState::Paused | PlayState::Failed);
         self.os_cursor.set_hidden(snapshot.state.hides_os_cursor());
         self.win_key.set_blocked(
             self.input.disable_win_key && blocks_win_key(snapshot.state, snapshot.is_break_time),
@@ -1794,6 +2046,7 @@ impl PlayHost {
                         mods: state.selected_mods().clone(),
                         ..live::play_options(state.settings())
                     };
+                    self.play_requested = Some((self.next_request, options.clone()));
                     self.loader.request(self.next_request, map, options)
                 }
                 _ => false,
@@ -1805,7 +2058,16 @@ impl PlayHost {
                 state.finish_loading(now_ns, None);
             }
         }
-        if let Some(loaded) = self.loader.poll() {
+        self.ask_reskin(state);
+        let loaded = match self.loader.poll() {
+            Some(loaded) if matches!(self.reskin, Reskin::Preparing(id, ..) if id == loaded.id) => {
+                self.take_reskin(loaded);
+                None
+            }
+            other => other,
+        };
+        self.apply_reskin();
+        if let Some(loaded) = loaded {
             let current = matches!(self.pending, Pending::Preparing(id) if id == loaded.id);
             match loaded.result {
                 Ok(mut prepared) if current && state.is_loading() => {
@@ -1862,8 +2124,8 @@ impl PlayHost {
             match self.audio.player.poll_event() {
                 Some(MusicEvent::Loaded { generation: g, .. }) if g == generation => {
                     if self.scenes.slots() == 0 {
-                        // The draw thread has not taken the last scene: unreachable with
-                        // one play at a time, but a play without a scene must not start.
+                        // The draw thread has not taken the last scene (a reskin's of the
+                        // play before, ADR-0096): a play without a scene must not start.
                         self.free_pending();
                         state.finish_loading(now_ns, None);
                     } else if let Pending::Track { prepared, .. } =
@@ -1890,6 +2152,130 @@ impl PlayHost {
                 None => {}
             }
         }
+    }
+
+    /// Asks the loader for the running play again when the settings panel closed with
+    /// changes to what it was prepared with (ADR-0096). Allocates, on that event only.
+    fn ask_reskin(&mut self, state: &mut ShellState) {
+        if !state.take_settings_changed() {
+            return;
+        }
+        let Some(game) = &self.game else {
+            return;
+        };
+        let (Some(map), Some(loaded_with)) = (&game.map, &game.options) else {
+            return;
+        };
+        if game.ending != Ending::Playing {
+            return;
+        }
+        let options = PlayOptions {
+            mods: loaded_with.mods.clone(),
+            ..live::play_options(state.settings())
+        };
+        if options == *loaded_with {
+            // Back to the play's own look: what was coming or waiting is not wanted. A
+            // result still coming finds no request and is freed.
+            if let Reskin::Ready(prepared, ..) = std::mem::replace(&mut self.reskin, Reskin::Idle) {
+                self.loader.free(Trash::Prepared(prepared));
+            }
+            return;
+        }
+        if let Reskin::Preparing(_, wanted, _) | Reskin::Ready(_, wanted, _) = &self.reskin
+            && options == *wanted
+        {
+            return;
+        }
+        self.next_request += 1;
+        if !self
+            .loader
+            .request(self.next_request, map.clone(), options.clone())
+        {
+            // The loader's queue is full: asked again on the next tick.
+            state.settings_changed = true;
+        } else {
+            // A newer look wins over one still coming or waiting.
+            let id = game.id;
+            if let Reskin::Ready(prepared, ..) = std::mem::replace(
+                &mut self.reskin,
+                Reskin::Preparing(self.next_request, options, id),
+            ) {
+                self.loader.free(Trash::Prepared(prepared));
+            }
+        }
+    }
+
+    /// Keeps the play prepared again, for [`PlayHost::apply_reskin`].
+    fn take_reskin(&mut self, loaded: crate::loader::LoadResult) {
+        let Reskin::Preparing(_, options, id) = std::mem::replace(&mut self.reskin, Reskin::Idle)
+        else {
+            return;
+        };
+        match loaded.result {
+            // The same beatmap only: a file changed on disk would not match the session's
+            // objects.
+            Ok(prepared)
+                if self
+                    .game
+                    .as_ref()
+                    .is_some_and(|g| g.id == id && g.beatmap.hash == prepared.beatmap_hash) =>
+            {
+                self.reskin = Reskin::Ready(prepared, options, id);
+            }
+            Ok(prepared) => self.loader.free(Trash::Prepared(prepared)),
+            // The loader logged it; the play keeps its look.
+            Err(message) => self.loader.free(Trash::Message(message)),
+        }
+    }
+
+    /// Gives the running play the scene and samples prepared again, once it shows its
+    /// pause or fail menu (ADR-0096); the rest goes back to the loader to free. Allocates
+    /// as the scene goes to the draw thread, on that event only.
+    fn apply_reskin(&mut self) {
+        let stale = matches!(&self.reskin, Reskin::Ready(_, _, id)
+            if self.game.as_ref().is_none_or(|g| g.id != *id));
+        // The scene and the samples change together: without room for the scene, neither
+        // does until the draw thread takes the last one.
+        if !matches!(self.reskin, Reskin::Ready(..))
+            || (!stale && (!self.menu_shown() || self.scenes.slots() == 0))
+        {
+            return;
+        }
+        let Reskin::Ready(prepared, options, id) =
+            std::mem::replace(&mut self.reskin, Reskin::Idle)
+        else {
+            return;
+        };
+        let Some(game) = self.game.as_mut().filter(|g| g.id == id) else {
+            self.loader.free(Trash::Prepared(prepared));
+            return;
+        };
+        let Prepared {
+            beatmap,
+            mods,
+            audio,
+            mut sounds,
+            scene,
+            background_name,
+            beatmap_hash,
+        } = *prepared;
+        // A full mixer queue leaves a looping voice to the pause's own stops.
+        let _ = game
+            .session
+            .replace_samples(&mut sounds, &mut self.audio.mixer);
+        if let Err(rtrb::PushError::Full((_, scene))) = self.scenes.push((game.id, scene)) {
+            // Room was checked above; the update thread is the only producer.
+            self.loader.free(Trash::Other(Box::new(scene)));
+        }
+        game.options = Some(options);
+        self.loader.free(Trash::Other(Box::new((
+            beatmap,
+            mods,
+            audio,
+            sounds,
+            background_name,
+            beatmap_hash,
+        ))));
     }
 
     /// Moves a quit play along: its sounds stop and its screen goes; once the mixer has
@@ -2055,7 +2441,7 @@ impl PlayHost {
                         })
                     })
                     .unwrap_or(Want::Keep),
-                AppScreen::Menu(_) | AppScreen::Settings(_) => Want::Menu,
+                AppScreen::Menu(_) => Want::Menu,
             }
         };
         let rng = &mut self.rng;
@@ -2125,6 +2511,10 @@ impl PlayHost {
             mods: shown_mods,
             map,
             beatmap: replay_beatmap,
+            options: self
+                .play_requested
+                .take()
+                .and_then(|(request, options)| (request == id).then_some(options)),
         });
     }
 }
@@ -2286,15 +2676,28 @@ impl Update for Shell {
         }
         let now = info.now_ns;
         let playing = self.state.playing();
+        // The settings panel may open over the pause and fail menus, not over the play
+        // itself (ADR-0095); the play's last tick tells which shows.
+        self.state
+            .set_play_menu(self.host.as_ref().is_some_and(PlayHost::menu_shown));
+        // Over the play, the open panel (or the hotkey opening it) takes the input; the
+        // play stands still in its menu meanwhile.
+        let panel = playing
+            && (self.state.settings_open()
+                || (self.state.settings_allowed() && self.state.toggles_settings(events)));
         // On from the menus, so the first letter typed on the song select is not lost while
         // the window applies the wish after its next event.
-        self.text_input.set_enabled(!playing);
+        self.text_input.set_enabled(!playing || panel);
         let navigated = match &mut self.host {
-            Some(host) if playing => {
+            Some(host) if playing && !panel => {
                 host.tick_game(now, events, &mut snapshot.play);
                 self.state.follow_pointer(events);
                 self.state.watch_hotkeys(events);
                 self.state.tick(now, &[], snapshot)
+            }
+            Some(host) if playing => {
+                host.tick_game(now, &[], &mut snapshot.play);
+                self.state.tick(now, events, snapshot)
             }
             _ => self.state.tick(now, events, snapshot),
         };
@@ -2438,11 +2841,14 @@ impl<B: render::Backend> Draw<ShellSnapshot> for View<B> {
         if let Some(scenes) = &mut self.scenes
             && let Ok((id, mut scene)) = scenes.pop()
         {
+            // A play's new look (ADR-0096) is shown as its old scene was: if the play has
+            // gone meanwhile, it goes at once instead of waiting for the next play.
+            let shown = self.scene_shown && self.scene.as_ref().is_some_and(|(old, ..)| *old == id);
             retire(&mut self.scene, &mut self.scene_trash, &mut r.device);
             // The glyphs come in over the first frames; the lead-in runs meanwhile.
             let gpu = scene.start(&mut r.device, Duration::ZERO, None);
             self.scene = Some((id, scene, gpu));
-            self.scene_shown = false;
+            self.scene_shown = shown;
         }
         if let Some((id, _, _)) = &self.scene {
             match (scene_on_layers(snapshot, *id), self.scene_shown) {
@@ -2520,7 +2926,8 @@ impl<B: render::Backend> Draw<ShellSnapshot> for View<B> {
         self.text.clear();
         // Where each layer's sprites end: layers are drawn one after another, shapes then
         // text, so a screen coming in covers the text of the one leaving.
-        let mut ends = [(0_u32, 0_u32, false); MAX_LAYERS];
+        // The screens' layers and the settings panel's.
+        let mut ends = [(0_u32, 0_u32, false); MAX_LAYERS + 1];
         let mut layers = 0;
         for layer in snapshot.layers.iter().flatten() {
             match &layer.view {
@@ -2570,33 +2977,45 @@ impl<B: render::Backend> Draw<ShellSnapshot> for View<B> {
                     layer.pose,
                     r.white,
                 ),
-                ScreenView::Settings(settings) => {
-                    if let Some(views) = &mut self.display_views
-                        && let Some(RowWidget::Dropdown(display)) =
-                            settings.widgets.get(views.display_row())
-                    {
-                        views.show(
-                            &mut self.settings,
-                            snapshot.display_generation,
-                            display.selected(),
-                        );
-                    }
-                    self.settings.push(
-                        &mut self.shapes,
-                        &mut self.text,
-                        &mut self.glyphs,
-                        width,
-                        height,
-                        settings,
-                        layer.pose,
-                        r.white,
-                    );
-                }
                 // Drawn whole, without the transition's slide.
                 ScreenView::Play(_) => {}
             }
             let play = matches!(layer.view, ScreenView::Play(_));
             ends[layers] = (self.shapes.len() as u32, self.text.len() as u32, play);
+            layers += 1;
+        }
+        // The settings panel over the screens and the play, under the curtain (ADR-0095).
+        if let Some(panel) = &snapshot.panel {
+            let settings = &panel.settings;
+            if let Some(views) = &mut self.display_views
+                && let Some(RowWidget::Dropdown(display)) =
+                    settings.widgets.get(views.display_row())
+            {
+                views.show(
+                    &mut self.settings,
+                    snapshot.display_generation,
+                    display.selected(),
+                );
+            }
+            push_backdrop(
+                &mut self.shapes,
+                &self.theme,
+                r.white,
+                width,
+                height,
+                panel.openness,
+            );
+            self.settings.push(
+                &mut self.shapes,
+                &mut self.text,
+                &mut self.glyphs,
+                panel_width(width, height, &self.theme),
+                height,
+                settings,
+                panel_pose(panel.openness),
+                r.white,
+            );
+            ends[layers] = (self.shapes.len() as u32, self.text.len() as u32, false);
             layers += 1;
         }
         // Last, over every screen and the play (ADR-0060).
@@ -3018,6 +3437,7 @@ fn run_with<B: render::Backend>(
     let mut state = ShellState::new(theme, pixels_w as f32, pixels_h as f32, pixels_per_point)
         .with_settings(settings.clone())
         .with_devices(output_devices(&settings.audio));
+    state.set_localizer(Arc::clone(&localizer));
     // Laid out again in another language by the `slam-language` thread (ADR-0091).
     let language::InterfaceViews {
         menu,
@@ -3229,11 +3649,14 @@ fn run_with<B: render::Backend>(
         scenes: scene_tx,
         os_cursor: window.cursor_visibility(),
         win_key: window.win_key_block(),
+        menu_shown: false,
         pending: Pending::Idle,
         game: None,
         retiring: None,
         track_reset: false,
         next_request: 0,
+        play_requested: None,
+        reskin: Reskin::Idle,
         points: [
             pixels_w as f32 / pixels_per_point,
             pixels_h as f32 / pixels_per_point,

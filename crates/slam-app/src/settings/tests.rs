@@ -14,7 +14,8 @@ use super::dirs::{Os, resolve};
 use super::file::{self, LoadStatus};
 use super::keys;
 use super::model::{
-    DrawRate, FpsScreens, Frame, HitsoundDelay, InputSettings, KeySlot, Settings, Window,
+    Combo, DrawRate, FpsScreens, Frame, HitsoundDelay, InputSettings, KeySlot, Mods, Settings,
+    Window,
 };
 
 fn temp_dir(tag: &str) -> PathBuf {
@@ -71,7 +72,7 @@ fn round_trip_non_default() {
     s.frame.show_fps = true;
     s.frame.fps_corner = FpsCorner::TopLeft;
     s.frame.fps_screens = FpsScreens::Gameplay;
-    s.hotkeys.toggle_fps = Some(keys::input_from_name("F12").unwrap());
+    s.hotkeys.toggle_fps = Some(plain("F12"));
     s.gameplay.dim = 0.3;
     s.gameplay.beatmap_skins = false;
     s.gameplay.beatmap_colours = false;
@@ -466,6 +467,10 @@ fn key(name: &str) -> Input {
     keys::input_from_name(name).unwrap()
 }
 
+fn plain(name: &str) -> Combo {
+    Combo::plain(key(name))
+}
+
 #[test]
 fn default_slots_follow_lazer() {
     let input = InputSettings::default();
@@ -788,7 +793,7 @@ fn fps_counter_values_are_read_by_name() {
     assert_eq!(loaded.status, LoadStatus::Ok, "{:?}", loaded.warnings);
     assert_eq!(loaded.settings.frame.fps_corner, FpsCorner::TopRight);
     assert_eq!(loaded.settings.frame.fps_screens, FpsScreens::Menus);
-    assert_eq!(loaded.settings.hotkeys.toggle_fps, Some(key("F12")));
+    assert_eq!(loaded.settings.hotkeys.toggle_fps, Some(plain("F12")));
 
     let loaded = file::from_toml_str(
         "[frame]\nfps_corner = \"middle\"\nfps_screens = 3\n[hotkeys]\ntoggle_fps = \"Nope\"\n",
@@ -827,21 +832,21 @@ fn hotkeys_and_gameplay_keys_conflict_both_ways() {
     let mut s = Settings::default();
     let fps = KeySlot::ToggleFps;
     assert_eq!(
-        s.key_conflict(fps, Input::Mouse(MouseButton::Right)),
+        s.key_conflict(fps, Combo::plain(Input::Mouse(MouseButton::Right))),
         Some(KeySlot::Play(Actions::RIGHT, 1))
     );
-    assert_eq!(s.key_conflict(fps, key("F12")), None);
-    assert!(s.bind_key(fps, key("F12")));
-    assert_eq!(s.key(fps), Some(key("F12")));
+    assert_eq!(s.key_conflict(fps, plain("F12")), None);
+    assert!(s.bind_key(fps, plain("F12")));
+    assert_eq!(s.key(fps), Some(plain("F12")));
     assert_eq!(
-        s.key_conflict(KeySlot::Play(Actions::SMOKE, 1), key("F12")),
+        s.key_conflict(KeySlot::Play(Actions::SMOKE, 1), plain("F12")),
         Some(fps)
     );
     // Taking the hotkey's input for gameplay unbinds the hotkey, and the other way round.
-    assert!(s.bind_key(KeySlot::Play(Actions::SMOKE, 1), key("F12")));
+    assert!(s.bind_key(KeySlot::Play(Actions::SMOKE, 1), plain("F12")));
     assert_eq!(s.key(fps), None);
-    assert!(s.bind_key(fps, key("Z")));
-    assert_eq!(s.key(fps), Some(key("Z")));
+    assert!(s.bind_key(fps, plain("Z")));
+    assert_eq!(s.key(fps), Some(plain("Z")));
     assert_eq!(
         s.input.slot(Actions::LEFT, 0),
         Some(Input::Mouse(MouseButton::Left))
@@ -856,7 +861,7 @@ fn hotkeys_and_gameplay_keys_conflict_both_ways() {
 
     s.clear_key(fps);
     assert_eq!(s.key(fps), None);
-    s.bind_key(fps, key("F12"));
+    s.bind_key(fps, plain("F12"));
     s.reset_keys();
     assert_eq!(s.key(fps), None);
     assert_eq!(s.bindings(), Bindings::default());
@@ -868,7 +873,7 @@ fn a_hotkey_cannot_take_menu_or_gameplay_screen_keys() {
     for name in [
         "Space", "Escape", "Enter", "Up", "Left", "Tab", "=", "-", "`", "F1", "F10",
     ] {
-        assert!(!Settings::key_allowed(fps, key(name)), "{name}");
+        assert!(!Settings::key_allowed(fps, plain(name)), "{name}");
     }
     for button in [
         MouseButton::Left,
@@ -878,22 +883,22 @@ fn a_hotkey_cannot_take_menu_or_gameplay_screen_keys() {
         MouseButton::X2,
     ] {
         assert!(
-            !Settings::key_allowed(fps, Input::Mouse(button)),
+            !Settings::key_allowed(fps, Combo::plain(Input::Mouse(button))),
             "{button:?}"
         );
     }
-    assert!(Settings::key_allowed(fps, key("F12")));
-    assert!(Settings::key_allowed(fps, key("Q")));
+    assert!(Settings::key_allowed(fps, plain("F12")));
+    assert!(Settings::key_allowed(fps, plain("Q")));
     // F11 cycles the window mode (ADR-0070): no slot takes it.
-    assert!(!Settings::key_allowed(fps, key("F11")));
+    assert!(!Settings::key_allowed(fps, plain("F11")));
     assert!(!Settings::key_allowed(
         KeySlot::Play(Actions::LEFT, 0),
-        key("F11")
+        plain("F11")
     ));
     // Gameplay slots take anything else, as before.
     assert!(Settings::key_allowed(
         KeySlot::Play(Actions::LEFT, 0),
-        Input::Mouse(MouseButton::Left)
+        Combo::plain(Input::Mouse(MouseButton::Left))
     ));
 
     let loaded = file::from_toml_str("[hotkeys]\ntoggle_fps = \"Space\"\n");
@@ -1100,4 +1105,131 @@ fn language_survives_a_write_and_read() {
     let text = file::to_toml_string(&settings).unwrap();
     assert!(text.contains("[general]\nlanguage = \"ru\""), "{text}");
     assert_eq!(file::from_toml_str(&text).settings, settings);
+}
+
+fn combo(mods: Mods, name: &str) -> Combo {
+    Combo {
+        mods,
+        input: key(name),
+    }
+}
+
+#[test]
+fn combo_names_round_trip() {
+    let ctrl_o = combo(Mods::CTRL, "O");
+    assert_eq!(keys::combo_name(ctrl_o), "Ctrl+O");
+    assert_eq!(keys::combo_from_name("Ctrl+O"), Some(ctrl_o));
+
+    let chord = combo(Mods::CTRL.with(Mods::SHIFT), "F5");
+    assert_eq!(keys::combo_name(chord), "Ctrl+Shift+F5");
+    assert_eq!(keys::combo_from_name("Ctrl+Shift+F5"), Some(chord));
+
+    // Prefixes in any order and any case; written back in the canonical order.
+    let parsed = keys::combo_from_name("alt+ctrl+x").unwrap();
+    assert_eq!(parsed, combo(Mods::CTRL.with(Mods::ALT), "X"));
+    assert_eq!(keys::combo_name(parsed), "Ctrl+Alt+X");
+
+    // No modifiers is the plain input's name.
+    assert_eq!(keys::combo_name(plain("F12")), "F12");
+    assert_eq!(keys::combo_from_name("f12"), Some(plain("F12")));
+
+    assert_eq!(keys::combo_from_name(""), None);
+    assert_eq!(keys::combo_from_name("Ctrl+"), None);
+    assert_eq!(keys::combo_from_name("Nope"), None);
+    assert_eq!(keys::combo_from_name("Ctrl+Nope"), None);
+}
+
+#[test]
+fn toggle_settings_defaults_to_ctrl_o_and_is_written() {
+    let s = Settings::default();
+    assert_eq!(s.hotkeys.toggle_settings, Some(combo(Mods::CTRL, "O")));
+    assert_eq!(s.key(KeySlot::ToggleSettings), Some(combo(Mods::CTRL, "O")));
+    let text = file::to_toml_string(&s).unwrap();
+    assert!(text.contains("toggle_settings = \"Ctrl+O\""), "{text}");
+    // A file without the entry keeps the default.
+    let loaded = file::from_toml_str("[audio]\nmaster_volume = 0.5\n");
+    assert_eq!(
+        loaded.settings.hotkeys.toggle_settings,
+        s.hotkeys.toggle_settings
+    );
+
+    let mut s = s;
+    s.clear_key(KeySlot::ToggleSettings);
+    s.reset_keys();
+    assert_eq!(s.hotkeys.toggle_settings, Some(combo(Mods::CTRL, "O")));
+}
+
+#[test]
+fn an_unbound_toggle_settings_survives_a_save_and_load() {
+    let dir = temp_dir("unbound-toggle");
+    let path = dir.join("slam.toml");
+    let mut s = Settings::default();
+    s.clear_key(KeySlot::ToggleSettings);
+    let text = file::to_toml_string(&s).unwrap();
+    assert!(text.contains("toggle_settings = \"\""), "{text}");
+    file::save(&path, &s).unwrap();
+    let loaded = file::load(&path);
+    assert_eq!(loaded.status, LoadStatus::Ok, "{:?}", loaded.warnings);
+    assert_eq!(loaded.settings.hotkeys.toggle_settings, None);
+
+    let loaded = file::from_toml_str("[hotkeys]\ntoggle_settings = \"Ctrl+Shift+P\"\n");
+    assert_eq!(loaded.status, LoadStatus::Ok, "{:?}", loaded.warnings);
+    assert_eq!(
+        loaded.settings.hotkeys.toggle_settings,
+        Some(combo(Mods::CTRL.with(Mods::SHIFT), "P"))
+    );
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn a_hotkey_with_modifiers_does_not_conflict_with_the_gameplay_key() {
+    let mut s = Settings::default();
+    let fps = KeySlot::ToggleFps;
+    // Z is the left key.
+    let ctrl_z = combo(Mods::CTRL, "Z");
+    assert_eq!(s.key_conflict(fps, ctrl_z), None);
+    assert!(s.bind_key(fps, ctrl_z));
+    assert_eq!(s.key(fps), Some(ctrl_z));
+    assert_eq!(s.input.slot(Actions::LEFT, 0), Some(key("Z")));
+    // A plain one does, and taking it unbinds the gameplay slot.
+    assert_eq!(
+        s.key_conflict(fps, plain("Z")),
+        Some(KeySlot::Play(Actions::LEFT, 0))
+    );
+    // The gameplay key meets a plain hotkey only.
+    assert!(s.bind_key(fps, plain("F12")));
+    assert_eq!(
+        s.key_conflict(KeySlot::Play(Actions::SMOKE, 1), plain("F12")),
+        Some(fps)
+    );
+}
+
+#[test]
+fn binding_a_combo_clears_the_other_hotkey_with_it() {
+    let mut s = Settings::default();
+    let ctrl_o = combo(Mods::CTRL, "O");
+    assert!(s.bind_key(KeySlot::ToggleFps, ctrl_o));
+    assert_eq!(s.key(KeySlot::ToggleFps), Some(ctrl_o));
+    assert_eq!(s.key(KeySlot::ToggleSettings), None);
+    assert_eq!(s.hotkey(ctrl_o), Some(KeySlot::ToggleFps));
+    // Different modifiers are a different combo.
+    assert!(s.bind_key(
+        KeySlot::ToggleSettings,
+        combo(Mods::CTRL.with(Mods::SHIFT), "O")
+    ));
+    assert_eq!(s.key(KeySlot::ToggleFps), Some(ctrl_o));
+}
+
+#[test]
+fn modifiers_let_a_hotkey_take_menu_keys_but_not_gameplay_slots() {
+    let fps = KeySlot::ToggleFps;
+    assert!(!Settings::key_allowed(fps, plain("Tab")));
+    assert!(Settings::key_allowed(fps, combo(Mods::CTRL, "Tab")));
+    let left = KeySlot::Play(Actions::LEFT, 0);
+    assert!(!Settings::key_allowed(left, combo(Mods::CTRL, "Q")));
+    assert!(Settings::key_allowed(left, plain("Q")));
+    // F11 belongs to the window, with or without modifiers.
+    assert!(!Settings::key_allowed(fps, plain("F11")));
+    assert!(!Settings::key_allowed(fps, combo(Mods::ALT, "F11")));
+    assert!(!Settings::key_allowed(left, plain("F11")));
 }

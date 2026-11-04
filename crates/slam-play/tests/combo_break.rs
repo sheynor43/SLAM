@@ -136,3 +136,37 @@ fn a_skin_without_the_sample_is_silent_and_a_full_queue_drops_it() {
     s.combo_changed(3, 0, 200.0, &mut sink);
     assert_eq!(sink.plays, 0);
 }
+
+#[test]
+fn replaced_samples_sound_and_the_attempt_state_stays() {
+    // A skin without combobreak, then one with it (ADR-0096).
+    let mut s = sounds(true, false);
+    let mut sink = Sink::default();
+    s.combo_changed(3, 0, 100.0, &mut sink);
+    assert_eq!(sink.plays, 0);
+    let mut other = sounds(false, true);
+    assert!(s.replace_samples(&mut other, &mut sink));
+    // The first break was spent before the swap: a low break stays silent, although the new
+    // settings would also not play it; a break from above 20 sounds with the new sample.
+    s.combo_changed(3, 0, 200.0, &mut sink);
+    assert_eq!(sink.plays, 0);
+    s.combo_changed(25, 0, 300.0, &mut sink);
+    assert_eq!(sink.plays, 1);
+    // The old samples went to `other`, to be freed elsewhere: it has none.
+    let mut sink2 = Sink::default();
+    other.combo_changed(30, 0, 100.0, &mut sink2);
+    assert_eq!(sink2.plays, 0);
+}
+
+#[test]
+fn the_first_break_state_survives_with_always_play_first() {
+    let mut s = sounds(true, true);
+    let mut sink = Sink::default();
+    s.combo_changed(3, 0, 100.0, &mut sink);
+    assert_eq!(sink.plays, 1);
+    let mut other = sounds(true, true);
+    s.replace_samples(&mut other, &mut sink);
+    // Not the first break any more.
+    s.combo_changed(3, 0, 200.0, &mut sink);
+    assert_eq!(sink.plays, 1);
+}

@@ -909,6 +909,17 @@ impl PlaySession {
         self.sounds.stop_all(sink)
     }
 
+    /// Takes the samples of `sounds`, made for this play's beatmap and mods with another
+    /// skin or other settings, and leaves it this play's old ones to free off the update
+    /// thread (ADR-0096); see [`GameplaySounds::replace_samples`]. Does not allocate.
+    pub fn replace_samples(
+        &mut self,
+        sounds: &mut GameplaySounds,
+        sink: &mut impl VoiceSink,
+    ) -> bool {
+        self.sounds.replace_samples(sounds, sink)
+    }
+
     /// Whether gameplay takes input and time: playing, failing or passed.
     fn in_gameplay(&self) -> bool {
         matches!(
