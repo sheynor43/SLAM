@@ -68,6 +68,8 @@ pub struct Options {
     pub beatmap_colours: bool,
     /// Play the beatmap's own hitsound samples (lazer's `BeatmapHitsounds`); on by default.
     pub beatmap_hitsounds: bool,
+    /// Always play the first combo break sound (lazer's `AlwaysPlayFirstComboBreak`); on by default.
+    pub always_play_first_combo_break: bool,
     /// Show the FPS counter (lazer's `ShowFpsDisplay`); off by default.
     pub show_fps: bool,
     /// Mouse buttons press in gameplay (lazer's `MouseDisableButtons` off); on by default,
@@ -93,6 +95,7 @@ impl Options {
             beatmap_skins: self.beatmap_skins,
             beatmap_colours: self.beatmap_colours,
             beatmap_hitsounds: self.beatmap_hitsounds,
+            always_play_first_combo_break: self.always_play_first_combo_break,
             mods: self.mods.clone(),
             dim: self.dim,
             hit_error_scale: self.hit_error_scale,
@@ -115,6 +118,7 @@ impl Options {
             beatmap_skins: true,
             beatmap_colours: true,
             beatmap_hitsounds: true,
+            always_play_first_combo_break: true,
             show_fps: false,
             mouse_buttons: true,
             mods: ModSet::default(),

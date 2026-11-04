@@ -208,6 +208,7 @@ pub enum Row {
     BeatmapSkins,
     BeatmapColours,
     BeatmapHitsounds,
+    AlwaysPlayFirstComboBreak,
     SnakingIn,
     SnakingOut,
     HitLighting,
@@ -223,7 +224,7 @@ pub enum Row {
 const _: () = assert!(Row::ALL.len() <= slam_ui::settings_screen::MAX_ROWS);
 
 impl Row {
-    pub const ALL: [Row; 49] = [
+    pub const ALL: [Row; 50] = [
         Row::MasterVolume,
         Row::MusicVolume,
         Row::MenuMusic,
@@ -264,6 +265,7 @@ impl Row {
         Row::BeatmapSkins,
         Row::BeatmapColours,
         Row::BeatmapHitsounds,
+        Row::AlwaysPlayFirstComboBreak,
         Row::SnakingIn,
         Row::SnakingOut,
         Row::HitLighting,
@@ -336,6 +338,7 @@ impl Row {
             | Row::BeatmapSkins
             | Row::BeatmapColours
             | Row::BeatmapHitsounds
+            | Row::AlwaysPlayFirstComboBreak
             | Row::SnakingIn
             | Row::SnakingOut
             | Row::HitLighting
@@ -389,6 +392,7 @@ impl Row {
             Row::BeatmapSkins => "settings-gameplay-beatmap-skins",
             Row::BeatmapColours => "settings-gameplay-beatmap-colours",
             Row::BeatmapHitsounds => "settings-gameplay-beatmap-hitsounds",
+            Row::AlwaysPlayFirstComboBreak => "settings-gameplay-always-play-first-combo-break",
             Row::SnakingIn => "settings-gameplay-snaking-in",
             Row::SnakingOut => "settings-gameplay-snaking-out",
             Row::HitLighting => "settings-gameplay-hit-lighting",
@@ -801,6 +805,9 @@ impl Rows {
             Row::BeatmapHitsounds => RowKind::Toggle {
                 value: s.gameplay.beatmap_hitsounds,
             },
+            Row::AlwaysPlayFirstComboBreak => RowKind::Toggle {
+                value: s.gameplay.always_play_first_combo_break,
+            },
             Row::SnakingIn => RowKind::Toggle {
                 value: s.gameplay.snaking_in,
             },
@@ -888,6 +895,9 @@ impl Rows {
             (Row::BeatmapSkins, RowValue::Toggle(v)) => settings.gameplay.beatmap_skins = v,
             (Row::BeatmapColours, RowValue::Toggle(v)) => settings.gameplay.beatmap_colours = v,
             (Row::BeatmapHitsounds, RowValue::Toggle(v)) => settings.gameplay.beatmap_hitsounds = v,
+            (Row::AlwaysPlayFirstComboBreak, RowValue::Toggle(v)) => {
+                settings.gameplay.always_play_first_combo_break = v
+            }
             (Row::SnakingIn, RowValue::Toggle(v)) => settings.gameplay.snaking_in = v,
             (Row::SnakingOut, RowValue::Toggle(v)) => settings.gameplay.snaking_out = v,
             (Row::HitLighting, RowValue::Toggle(v)) => settings.gameplay.hit_lighting = v,
@@ -1438,6 +1448,7 @@ mod tests {
             (Row::SnakingIn, false),
             (Row::SnakingOut, false),
             (Row::HitLighting, true),
+            (Row::AlwaysPlayFirstComboBreak, true),
             (Row::CursorTrail, true),
             (Row::AutoCursorSize, false),
         ] {
@@ -1591,6 +1602,11 @@ mod tests {
         );
         rows.apply(
             &mut s,
+            index(Row::AlwaysPlayFirstComboBreak),
+            RowValue::Toggle(false),
+        );
+        rows.apply(
+            &mut s,
             index(Row::HitErrorScale),
             RowValue::Slider(1.2300000000000002),
         );
@@ -1630,6 +1646,7 @@ mod tests {
         assert!(!s.gameplay.hit_lighting);
         assert!(!s.gameplay.cursor_trail);
         assert!(!s.gameplay.beatmap_hitsounds);
+        assert!(!s.gameplay.always_play_first_combo_break);
         rows.apply(&mut s, index(Row::ShowFps), RowValue::Toggle(true));
         assert!(s.frame.show_fps);
         // The first draw option is Unlimited, the second 60 Hz.

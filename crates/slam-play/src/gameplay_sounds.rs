@@ -71,6 +71,9 @@ const HITSOUND: VoiceParams = VoiceParams {
     group: VoiceGroup::Hitsounds,
 };
 
+/// Combo above which a break always sounds (lazer's `ComboEffects`).
+const COMBO_BREAK_MIN_COMBO: u32 = 20;
+
 /// Start of the fail sound: lazer's `FailAnimationContainer` plays it outside the
 /// ruleset's samples, under the effects volume.
 const EFFECT: VoiceParams = VoiceParams {
@@ -137,6 +140,9 @@ pub struct SoundSettings {
     /// The skin's `SpinnerFrequencyModulate`: whether `spinnerspin` rises in pitch with the
     /// spinner's progress.
     pub spinner_frequency_modulate: bool,
+    /// Lazer's `AlwaysPlayFirstComboBreak`: the first combo break of a play sounds whatever
+    /// the combo was.
+    pub always_play_first_combo_break: bool,
 }
 
 impl SoundSettings {
@@ -152,6 +158,7 @@ impl SoundSettings {
             }),
             rate: mods.true_gameplay_rate(),
             spinner_frequency_modulate: true,
+            always_play_first_combo_break: true,
         }
     }
 }
@@ -314,6 +321,11 @@ pub struct GameplaySounds {
     fail: Option<Arc<Sample>>,
     /// The fail sound playing, or [`VoiceId::NONE`].
     fail_voice: VoiceId,
+    /// The skin's `combobreak`, if it has one.
+    combo_break: Option<Arc<Sample>>,
+    /// Gameplay time of the first combo break that sounded or would have (lazer's
+    /// `firstBreakTime`).
+    first_break_time: Option<f64>,
 }
 
 impl GameplaySounds {
@@ -401,6 +413,8 @@ impl GameplaySounds {
             failed: 0,
             fail: None,
             fail_voice: VoiceId::NONE,
+            combo_break: None,
+            first_break_time: None,
         }
     }
 
@@ -409,6 +423,41 @@ impl GameplaySounds {
     pub fn with_fail_sound(mut self, sample: Option<Arc<Sample>>) -> Self {
         self.fail = sample;
         self
+    }
+
+    /// Plays `sample` when the combo breaks ([`hitsounds::effect`](crate::hitsounds::effect)
+    /// of `Gameplay/combobreak`); no sound without one.
+    pub fn with_combo_break_sound(mut self, sample: Option<Arc<Sample>>) -> Self {
+        self.combo_break = sample;
+        self
+    }
+
+    // Ported from osu!lazer 2026.1005.0-lazer: osu.Game/Screens/Play/ComboEffects.cs (onComboChange)
+    /// Takes a change of the score's combo from `old` to `new` at gameplay time `time`: a
+    /// break from above 20, or the first break of the play (if
+    /// [`SoundSettings::always_play_first_combo_break`]), plays the combo break sound under the
+    /// effects volume. Gameplay never rewinds, so lazer's rewind checks have nothing to do
+    /// here, and it takes no judgements while seeking or paused. Lazer's catching up after a
+    /// long frame (`IsCatchingUp`, samples disabled) is not modelled, as for the hitsounds: a
+    /// break in one long step sounds.
+    pub fn combo_changed(&mut self, old: u32, new: u32, time: f64, sink: &mut impl VoiceSink) {
+        // A bindable notifies only when its value changes: a miss at no combo is silent,
+        // even as the first break.
+        if old == new {
+            return;
+        }
+        if new == 0
+            && (old > COMBO_BREAK_MIN_COMBO
+                || (self.settings.always_play_first_combo_break && self.first_break_time.is_none()))
+        {
+            self.first_break_time = Some(time);
+            // Not a looping or pausable sound: it plays out, as the fail sound.
+            if let Some(sample) = &self.combo_break
+                && sink.play_voice(sample, EFFECT).is_err()
+            {
+                self.failed += 1;
+            }
+        }
     }
 
     // Ported from osu!lazer 2026.1005.0-lazer: osu.Game/Screens/Play/FailAnimationContainer.cs (Start)
@@ -497,6 +546,8 @@ impl GameplaySounds {
         }
         self.seen = 0;
         self.previous_time = f64::NEG_INFINITY;
+        // Lazer's restart makes a new `ComboEffects`.
+        self.first_break_time = None;
         stopped
     }
 

@@ -40,6 +40,7 @@ pub struct PlayOptions {
     pub beatmap_skins: bool,
     pub beatmap_colours: bool,
     pub beatmap_hitsounds: bool,
+    pub always_play_first_combo_break: bool,
     /// Sliders snake in as they appear (ADR-0085).
     pub snaking_in: bool,
     /// Sliders snake out behind the ball (ADR-0085).
@@ -209,6 +210,8 @@ pub fn spawn(mut config: LoaderConfig) -> std::io::Result<(LoaderLink, SceneTras
                     config.settings.beatmap_skins = options.beatmap_skins;
                     config.settings.beatmap_colours = options.beatmap_colours;
                     config.settings.beatmap_hitsounds = options.beatmap_hitsounds;
+                    config.settings.always_play_first_combo_break =
+                        options.always_play_first_combo_break;
                     config.settings.hit_error_scale = options.hit_error_scale;
                     config.settings.snaking = options.snaking();
                     config.settings.hit_lighting = options.hit_lighting;
@@ -275,6 +278,7 @@ mod tests {
             beatmap_skins: true,
             beatmap_colours: true,
             beatmap_hitsounds: true,
+            always_play_first_combo_break: true,
             snaking_in: false,
             snaking_out: false,
             hit_lighting: true,

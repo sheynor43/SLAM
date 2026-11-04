@@ -967,7 +967,13 @@ impl PlaySession {
         for (index, judgement) in self.log.events().iter().enumerate().skip(self.applied) {
             let failed_before = self.health.has_failed();
             self.health.apply(judgement, &mut self.mods);
+            let old_combo = self.score.statistics().combo;
             self.score.apply(judgement, failed_before);
+            // Ported from osu!lazer 2026.1005.0-lazer: osu.Game/Screens/Play/Player.cs (createGameplayComponents)
+            // `ComboEffects` follows the score processor's combo, at the gameplay clock's time.
+            let new_combo = self.score.statistics().combo;
+            self.sounds
+                .combo_changed(old_combo, new_combo, step_time, sink);
             // Ported from osu!lazer 2026.1005.0-lazer: osu.Game/Rulesets/Scoring/ScoreProcessor.cs (ApplyResultInternal)
             // Judgements after the fail make no hit events.
             if !failed_before {

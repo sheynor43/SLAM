@@ -421,6 +421,9 @@ pub struct Gameplay {
     pub beatmap_colours: bool,
     /// Play the beatmap's own hitsound samples (lazer's `BeatmapHitsounds`).
     pub beatmap_hitsounds: bool,
+    /// Play the combo break sound on the first break of a play even when the break happens while
+    /// the combo is already low (lazer's `OsuSetting.AlwaysPlayFirstComboBreak`, on by default).
+    pub always_play_first_combo_break: bool,
     pub mouse_buttons: bool,
     /// Sliders grow towards their end as they appear (lazer's `OsuRulesetSetting.SnakingInSliders`,
     /// on by default there; off in SLAM, ADR-0085).
@@ -450,6 +453,7 @@ impl Default for Gameplay {
             beatmap_skins: true,
             beatmap_colours: true,
             beatmap_hitsounds: true,
+            always_play_first_combo_break: true,
             mouse_buttons: true,
             snaking_in: false,
             snaking_out: false,

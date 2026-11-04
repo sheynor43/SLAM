@@ -75,6 +75,9 @@ pub struct PlaySettings {
     pub beatmap_colours: bool,
     /// Play the beatmap's own hitsound samples (lazer's `BeatmapHitsounds`).
     pub beatmap_hitsounds: bool,
+    /// Play the combo break sound on the first break of a play even when the break happens while
+    /// the combo is already low (lazer's `OsuSetting.AlwaysPlayFirstComboBreak`, on by default).
+    pub always_play_first_combo_break: bool,
     pub mods: ModSet,
     /// How dark the background is, 0 ..= 1 (lazer's `DimLevel`).
     pub dim: f64,
@@ -101,6 +104,7 @@ impl Default for PlaySettings {
             beatmap_skins: true,
             beatmap_colours: true,
             beatmap_hitsounds: true,
+            always_play_first_combo_break: true,
             mods: ModSet::default(),
             dim: BackgroundSettings::default().dim_level,
             hit_error_scale: 1.0,
@@ -247,15 +251,19 @@ pub fn prepare(
     let hitsounds = Hitsounds::new(beatmap, sample_skins, &mut cache);
     // Ported from osu!lazer 2026.1005.0-lazer: osu.Game/Screens/Play/FailAnimationContainer.cs (load)
     let fail_sound = slam_play::hitsounds::effect("Gameplay/failsound", sample_skins, &mut cache);
+    // Ported from osu!lazer 2026.1005.0-lazer: osu.Game/Screens/Play/ComboEffects.cs (load)
+    let combo_break = slam_play::hitsounds::effect("Gameplay/combobreak", sample_skins, &mut cache);
     let sounds = GameplaySounds::new(
         beatmap,
         hitsounds,
         SoundSettings {
             positional_level: settings.positional_hitsounds_level,
+            always_play_first_combo_break: settings.always_play_first_combo_break,
             ..SoundSettings::for_mods(mods)
         },
     )
-    .with_fail_sound(fail_sound);
+    .with_fail_sound(fail_sound)
+    .with_combo_break_sound(combo_break);
     let circle_mods = CircleMods::new(mods);
     let windows = slam_osu::hit_windows::HitWindows::new(beatmap.difficulty.overall_difficulty);
     let cursor_scale = CursorScale::new(
