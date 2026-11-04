@@ -949,23 +949,33 @@ fn a_new_output_plays_the_track_on_from_where_the_old_one_left_it() {
         }
     }
     fixture.host.audio.player.play().unwrap();
-    frame = run_callback(&mut fixture._mixer, frame, 20);
-    fixture
-        .host
-        .audio
-        .output
-        .publish(slam_audio::PositionSnapshot {
-            frame,
-            timestamp_ns: 1,
-            latency_ns: 0,
-            sample_rate: SAMPLE_RATE,
-        });
-    let (left, moving) = output::resume_point(
-        fixture.host.audio.output.read(),
-        fixture.host.audio.music.read(),
-    )
-    .expect("a track to resume");
-    assert!(moving && left > 0);
+    // The decoder thread fills the track's buffer at its own pace: on a slow machine the
+    // first buffers after `play` may still find it empty (an underrun stops the anchor).
+    let deadline = std::time::Instant::now() + Duration::from_secs(10);
+    let left = loop {
+        assert!(
+            std::time::Instant::now() < deadline,
+            "the track did not start"
+        );
+        frame = run_callback(&mut fixture._mixer, frame, 1);
+        fixture
+            .host
+            .audio
+            .output
+            .publish(slam_audio::PositionSnapshot {
+                frame,
+                timestamp_ns: 1,
+                latency_ns: 0,
+                sample_rate: SAMPLE_RATE,
+            });
+        if let Some((left, true)) = output::resume_point(
+            fixture.host.audio.output.read(),
+            fixture.host.audio.music.read(),
+        ) && left > 0
+        {
+            break left;
+        }
+    };
 
     let (link, mut ends) = output::test_link();
     fixture.host.output = Some(link);
