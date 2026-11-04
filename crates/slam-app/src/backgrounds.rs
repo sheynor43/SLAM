@@ -29,8 +29,11 @@ pub const FADE_IN_NS: u64 = 500_000_000;
 /// How long the old background fades out (linear).
 pub const FADE_OUT_NS: u64 = 250_000_000;
 
-/// How dark the background is behind the song select; a setting later (ADR-0066).
-pub const DIM: f32 = 0.7;
+/// The grey the background sprite is tinted with for a `dim` of 0 ..= 1 (ADR-0098); a
+/// value outside the range is clamped.
+pub fn grey_for_dim(dim: f32) -> f32 {
+    1.0 - dim.clamp(0.0, 1.0)
+}
 
 /// Textures given back and not yet released: the picker asks for no new background while
 /// all are taken.
@@ -371,6 +374,8 @@ pub struct BackgroundFade {
     incoming: Option<TextureHandle>,
     /// When the target was ready (or found to have no image) and its fade began.
     fade_from_ns: Option<u64>,
+    /// How dark the background is, 0 ..= 1 (ADR-0098).
+    dim: f32,
 }
 
 /// One sprite of a background: its texture and opacity.
@@ -387,7 +392,13 @@ impl BackgroundFade {
             target: BackgroundTarget::default(),
             incoming: None,
             fade_from_ns: None,
+            dim: 0.0,
         }
+    }
+
+    /// Sets how dark the background is, 0 ..= 1; the next frame draws it so.
+    pub fn set_dim(&mut self, dim: f32) {
+        self.dim = dim;
     }
 
     /// Advances to `target` at `now_ns`; `state` tells what the loader made of a handle.
@@ -449,7 +460,8 @@ impl BackgroundFade {
     }
 
     /// Pushes the background covering a `width` x `height` window at `now_ns`, faded by
-    /// `opacity` (the layer's). Nothing for handles not ready, nor without a default: the theme shows.
+    /// `opacity` (the layer's) and darkened by [`BackgroundFade::set_dim`] (ADR-0098).
+    /// Nothing for handles not ready, nor without a default: the theme shows.
     pub fn push(
         &self,
         batch: &mut SpriteBatch,
@@ -459,7 +471,7 @@ impl BackgroundFade {
         opacity: f32,
         region: impl Fn(TextureHandle) -> Option<AtlasRegion>,
     ) {
-        let grey = 1.0 - DIM;
+        let grey = grey_for_dim(self.dim);
         for (handle, alpha) in self.layers(now_ns).into_iter().flatten() {
             let Some(region) = region(handle) else {
                 continue;

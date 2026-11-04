@@ -1385,3 +1385,15 @@ fn the_panel_opens_over_a_play_only_with_its_menu() {
     assert!(snap.panel.is_some());
     assert_eq!(*s.stack().top(), AppScreen::Play(1));
 }
+
+#[test]
+fn the_snapshot_carries_the_song_select_dim() {
+    let mut s = state();
+    let mut snap = ShellSnapshot::default();
+    s.tick(LATER, &[], &mut snap);
+    assert!((snap.background_dim - 0.7).abs() < 1e-6);
+    opened(&mut s, &mut snap);
+    s.editing.as_mut().unwrap().song_select.background_dim = 0.25;
+    s.tick(LATER, &[], &mut snap);
+    assert!((snap.background_dim - 0.25).abs() < 1e-6);
+}

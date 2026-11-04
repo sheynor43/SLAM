@@ -18,9 +18,12 @@ use drag::{ListDrag, Release};
 pub mod drag;
 pub mod filter;
 pub mod mod_select;
+pub mod query;
 pub mod view;
 
-pub use filter::{QUERY_CAPACITY, SearchQuery, SongFilter, search_text};
+pub use filter::{
+    Field, QUERY_CAPACITY, SearchFields, SearchQuery, SearchSource, SongFilter, search_text,
+};
 
 pub use mod_select::{
     CustomisationLayout, CustomisationSnapshot, CustomisationState, MAX_CHOICES, MAX_SETTING_ROWS,
@@ -31,12 +34,13 @@ pub use view::{DetailLabels, SongSelectLabels, SongSelectView};
 
 /// The sets to show, built by the application from the library. Immutable once built;
 /// shared as `Arc<SongList>` and replaced wholesale when the library changes.
-#[derive(Clone, Debug, Default, PartialEq, Eq)]
+#[derive(Clone, Debug, Default, PartialEq)]
 pub struct SongList {
     pub sets: Vec<SetRow>,
 }
 
-#[derive(Clone, Debug, PartialEq, Eq)]
+/// A set as the list shows it: its artist, title and creator are the first difficulty's.
+#[derive(Clone, Debug, PartialEq)]
 pub struct SetRow {
     /// Opaque identity chosen by the application; the selection follows it across
     /// [`SongSelect::set_list`].
@@ -44,17 +48,40 @@ pub struct SetRow {
     pub artist: String,
     pub title: String,
     pub creator: String,
-    /// What the search matches: the set's fields lowercased and joined by `'\n'`, made by
-    /// [`search_text`].
-    pub search: String,
     pub difficulties: Vec<DifficultyRow>,
 }
 
-#[derive(Clone, Debug, PartialEq, Eq)]
+/// A difficulty: its name and what the search checks it against (ADR-0099).
+#[derive(Clone, Debug, PartialEq)]
 pub struct DifficultyRow {
     pub version: String,
-    /// What the search matches: the version lowercased, made by [`search_text`].
-    pub search: String,
+    /// The difficulty's own text fields, lowercased.
+    pub search: SearchFields,
+    pub approach_rate: f32,
+    pub circle_size: f32,
+    pub overall_difficulty: f32,
+    pub drain_rate: f32,
+    /// `BeatmapID`, -1 for none.
+    pub beatmap_id: i32,
+    /// `BeatmapSetID`, -1 for none.
+    pub beatmap_set_id: i32,
+}
+
+impl DifficultyRow {
+    /// A difficulty named `source.difficulty` with the fields of `source`, the default
+    /// difficulty settings (5) and no online IDs. Allocates.
+    pub fn new(source: SearchSource<'_>) -> DifficultyRow {
+        DifficultyRow {
+            version: source.difficulty.to_owned(),
+            search: SearchFields::new(source),
+            approach_rate: 5.0,
+            circle_size: 5.0,
+            overall_difficulty: 5.0,
+            drain_rate: 5.0,
+            beatmap_id: -1,
+            beatmap_set_id: -1,
+        }
+    }
 }
 
 /// What the screen shows besides the list.
@@ -867,6 +894,10 @@ impl SongSelect {
     }
 }
 
+#[cfg(test)]
+mod matching_tests;
+#[cfg(test)]
+mod query_tests;
 #[cfg(test)]
 mod search_tests;
 #[cfg(test)]

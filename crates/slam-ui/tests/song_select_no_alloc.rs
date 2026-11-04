@@ -11,9 +11,9 @@ use slam_testkit::assert_no_alloc;
 use slam_text::{FontRegistry, GlyphAtlasConfig, glyph_atlas};
 use slam_ui::screen::Pose;
 use slam_ui::song_select::{
-    DifficultyRow, ModColumns, SetRow, SettingRow, SettingRowKind, SongFilter, SongList,
-    SongSelect, SongSelectInput, SongSelectLabels, SongSelectLayout, SongSelectStatus,
-    SongSelectView, search_text,
+    DifficultyRow, ModColumns, QUERY_CAPACITY, SearchSource, SetRow, SettingRow, SettingRowKind,
+    SongFilter, SongList, SongSelect, SongSelectInput, SongSelectLabels, SongSelectLayout,
+    SongSelectStatus, SongSelectView,
 };
 use slam_ui::theme::Theme;
 
@@ -33,11 +33,15 @@ fn list_of(count: u64) -> Arc<SongList> {
                 artist: format!("artist {k}"),
                 title: format!("title {k}"),
                 creator: "mapper".into(),
-                search: search_text(&["mapper", &format!("artist {k}"), &format!("title {k}")]),
                 difficulties: (0..3)
-                    .map(|d| DifficultyRow {
-                        version: format!("diff {d}"),
-                        search: format!("diff {d}"),
+                    .map(|d| {
+                        DifficultyRow::new(SearchSource {
+                            difficulty: &format!("diff {d}"),
+                            creator: "mapper",
+                            artist: &format!("artist {k}"),
+                            title: &format!("title {k}"),
+                            ..SearchSource::default()
+                        })
                     })
                     .collect(),
             })
@@ -464,6 +468,20 @@ fn searching_does_not_allocate() {
             std::hint::black_box(screen.input(input, &layout));
             std::hint::black_box(screen.snapshot());
         }
+        // The query language (ADR-0099): every kind of filter, typed one character at a
+        // time, each re-filtering the list.
+        for c in "ar>=5 cs<9 od!=3 hp:5 star>1 bpm=180 length<3:30 status=r,l \
+                  lastplayed<1y2M played=0 ranked>=2012.03 divisor:4 \
+                  creator!=\"x y\"! artist=artist title=\"title 1\" source=s tag=t tag!=u \
+                  diff=d \"artist 1\" \"title\"! 42 [diff 1]"
+            .chars()
+        {
+            std::hint::black_box(screen.input(SongSelectInput::Type(c), &layout));
+        }
+        for _ in 0..QUERY_CAPACITY {
+            screen.input(SongSelectInput::Erase, &layout);
+        }
+        assert!(screen.query().is_empty());
         screen.input(SongSelectInput::Type('t'), &layout);
         old = screen.set_list(Arc::clone(&list), next);
         std::hint::black_box(screen.snapshot());

@@ -184,6 +184,7 @@ settings-frame-show-fps = Показывать FPS
 settings-frame-fps-corner = Положение счётчика FPS
 settings-frame-fps-screens = Где показывать счётчик FPS
 settings-gameplay-dim = Затемнение фона
+settings-song-select-dim = Затемнение фона на выборе песни
 settings-gameplay-beatmap-skins = Скины карт
 settings-gameplay-beatmap-colours = Цвета карты
 settings-gameplay-beatmap-hitsounds = Хитсаунды карты

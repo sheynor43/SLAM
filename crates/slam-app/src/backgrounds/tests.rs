@@ -513,3 +513,12 @@ fn releases_the_full_ring_refused_go_out_on_a_later_tick() {
     rig.tick(0, None);
     assert_eq!(rig.sent().1, [h[RING]]);
 }
+
+#[test]
+fn grey_follows_the_dim() {
+    assert_eq!(grey_for_dim(0.0), 1.0);
+    assert!((grey_for_dim(0.7) - 0.3).abs() < 1e-6);
+    assert_eq!(grey_for_dim(1.0), 0.0);
+    assert_eq!(grey_for_dim(2.0), 0.0);
+    assert_eq!(grey_for_dim(-1.0), 1.0);
+}

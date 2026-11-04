@@ -18,9 +18,9 @@ use slam_input::{FolderCallback, FolderPick};
 
 use crate::backgrounds::BackgroundLoader;
 use crate::details::DetailsReader;
-use slam_library::scan::{BeatmapSetEntry, ScanEvent, Scanner, sort_sets};
+use slam_library::scan::{BeatmapSetEntry, DifficultyEntry, ScanEvent, Scanner, sort_sets};
 use slam_ui::song_select::{
-    DifficultyRow, SetRow, SongFilter, SongList, SongSelectStatus, search_text,
+    DifficultyRow, SearchFields, SearchSource, SetRow, SongFilter, SongList, SongSelectStatus,
 };
 use slam_ui::widgets::DropdownView;
 
@@ -330,6 +330,30 @@ fn set_key(dir: &Path) -> u64 {
     hasher.finish()
 }
 
+/// The published form of a scanned difficulty: its search fields lowercased (ADR-0099).
+fn difficulty_row(d: &DifficultyEntry) -> DifficultyRow {
+    let m = &d.metadata;
+    DifficultyRow {
+        version: d.version.clone(),
+        search: SearchFields::new(SearchSource {
+            difficulty: &d.version,
+            creator: &m.creator,
+            artist: &m.artist,
+            artist_unicode: &m.artist_unicode,
+            title: &m.title,
+            title_unicode: &m.title_unicode,
+            source: &m.source,
+            tags: &m.tags,
+        }),
+        approach_rate: d.approach_rate,
+        circle_size: d.circle_size,
+        overall_difficulty: d.overall_difficulty,
+        drain_rate: d.hp,
+        beatmap_id: m.beatmap_id,
+        beatmap_set_id: m.beatmap_set_id,
+    }
+}
+
 /// Builds the published form of sorted `sets`.
 pub fn publish(
     sets: &[BeatmapSetEntry],
@@ -344,23 +368,7 @@ pub fn publish(
                 artist: set.artist.clone(),
                 title: set.title.clone(),
                 creator: set.creator.clone(),
-                search: search_text(&[
-                    &set.creator,
-                    &set.artist,
-                    &set.artist_unicode,
-                    &set.title,
-                    &set.title_unicode,
-                    &set.source,
-                    &set.tags,
-                ]),
-                difficulties: set
-                    .difficulties
-                    .iter()
-                    .map(|d| DifficultyRow {
-                        version: d.version.clone(),
-                        search: search_text(&[&d.version]),
-                    })
-                    .collect(),
+                difficulties: set.difficulties.iter().map(difficulty_row).collect(),
             })
             .collect(),
     };
@@ -651,7 +659,8 @@ fn run(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use slam_library::scan::DifficultyEntry;
+    use slam_library::scan::DifficultyMetadata;
+    use slam_ui::song_select::Field;
 
     fn set(dir: &str, versions: &[&str]) -> BeatmapSetEntry {
         BeatmapSetEntry {
@@ -675,6 +684,14 @@ mod tests {
                     background: None,
                     audio: String::new(),
                     preview_time: -1,
+                    metadata: DifficultyMetadata {
+                        artist: format!("{dir} artist"),
+                        title: format!("{dir} title"),
+                        creator: "mapper".to_owned(),
+                        beatmap_id: -1,
+                        beatmap_set_id: -1,
+                        ..DifficultyMetadata::default()
+                    },
                 })
                 .collect(),
         }
@@ -702,17 +719,34 @@ mod tests {
 
     #[test]
     fn published_rows_carry_lowercased_search_text() {
-        let mut entry = set("a", &["Hard Mode"]);
-        entry.artist_unicode = "\u{418}\u{43c}\u{44f}".to_owned();
-        entry.source = "Some Game".to_owned();
-        entry.tags = "Tag One".to_owned();
+        let mut entry = set("a", &["Hard Mode", "Guest"]);
+        let guest = &mut entry.difficulties[1];
+        guest.metadata.creator = "Guest Mapper".to_owned();
+        guest.metadata.artist_unicode = "\u{418}\u{43c}\u{44f}".to_owned();
+        guest.metadata.source = "Some Game".to_owned();
+        guest.metadata.tags = "Tag One".to_owned();
+        guest.metadata.beatmap_id = 7;
+        guest.metadata.beatmap_set_id = 3;
+        guest.approach_rate = 9.5;
         let published = publish(&[entry], SongSelectStatus::Ready, Arc::from(""));
-        let row = &published.list.sets[0];
+        let [hard, guest] = &published.list.sets[0].difficulties[..] else {
+            panic!("two difficulties");
+        };
+        // Each difficulty has its own fields (ADR-0099).
+        assert_eq!(hard.search.get(Field::Difficulty), "hard mode");
+        assert_eq!(hard.search.get(Field::Creator), "mapper");
+        assert_eq!(hard.search.get(Field::Source), "");
+        assert_eq!(guest.search.get(Field::Creator), "guest mapper");
+        assert_eq!(guest.search.get(Field::Artist), "a artist");
         assert_eq!(
-            row.search,
-            "mapper\na artist\n\u{438}\u{43c}\u{44f}\na title\n\nsome game\ntag one"
+            guest.search.get(Field::ArtistUnicode),
+            "\u{438}\u{43c}\u{44f}"
         );
-        assert_eq!(row.difficulties[0].search, "hard mode");
+        assert_eq!(guest.search.get(Field::Title), "a title");
+        assert_eq!(guest.search.get(Field::Source), "some game");
+        assert_eq!(guest.search.get(Field::Tags), "tag one");
+        assert_eq!((guest.beatmap_id, guest.beatmap_set_id), (7, 3));
+        assert_eq!(guest.approach_rate, 9.5);
         // The buffers are made for the list, off the update thread.
         assert_eq!(published.filter.set_count(), 1);
         assert_eq!(published.filter.set_index(0), Some(0));

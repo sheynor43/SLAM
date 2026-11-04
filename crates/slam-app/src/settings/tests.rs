@@ -1263,3 +1263,30 @@ fn modifiers_let_a_hotkey_take_menu_keys_but_not_gameplay_slots() {
     assert!(!Settings::key_allowed(fps, combo(Mods::ALT, "F11")));
     assert!(!Settings::key_allowed(left, plain("F11")));
 }
+
+#[test]
+fn song_select_dim_defaults_and_round_trips() {
+    assert_eq!(Settings::default().song_select.background_dim, 0.7);
+    let loaded = file::from_toml_str("[song_select]\nbackground_dim = 0.25\n");
+    assert_eq!(loaded.status, LoadStatus::Ok, "{:?}", loaded.warnings);
+    assert_eq!(loaded.settings.song_select.background_dim, 0.25);
+    let missing = file::from_toml_str("[gameplay]\ndim = 0.2\n");
+    assert_eq!(missing.settings.song_select.background_dim, 0.7);
+}
+
+#[test]
+fn song_select_dim_out_of_range_or_nan_falls_back() {
+    for text in ["1.5", "-0.1", "nan"] {
+        let loaded = file::from_toml_str(&format!("[song_select]\nbackground_dim = {text}\n"));
+        assert_eq!(loaded.status, LoadStatus::Recovered, "{text}");
+        assert_eq!(loaded.settings.song_select.background_dim, 0.7, "{text}");
+        assert!(
+            loaded
+                .warnings
+                .iter()
+                .any(|w| w.starts_with("song_select.background_dim")),
+            "{text}: {:?}",
+            loaded.warnings
+        );
+    }
+}

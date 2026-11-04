@@ -422,6 +422,21 @@ impl Default for Frame {
     }
 }
 
+/// Song select options.
+#[derive(Clone, Debug, PartialEq, Serialize)]
+pub struct SongSelect {
+    /// Dim of the song select's background, 0 ..= 1 (ADR-0098).
+    pub background_dim: f64,
+}
+
+impl Default for SongSelect {
+    fn default() -> SongSelect {
+        SongSelect {
+            background_dim: 0.7,
+        }
+    }
+}
+
 /// Gameplay options.
 #[derive(Clone, Debug, PartialEq, Serialize)]
 pub struct Gameplay {
@@ -788,6 +803,7 @@ pub struct Settings {
     pub frame: Frame,
     pub window: Window,
     pub gameplay: Gameplay,
+    pub song_select: SongSelect,
     pub input: InputSettings,
     pub hotkeys: Hotkeys,
 }

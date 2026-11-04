@@ -7,11 +7,15 @@ fn set(key: u64, diffs: usize) -> SetRow {
         artist: format!("artist {key}"),
         title: format!("title {key}"),
         creator: "mapper".to_owned(),
-        search: search_text(&["mapper", &format!("artist {key}"), &format!("title {key}")]),
         difficulties: (0..diffs)
-            .map(|d| DifficultyRow {
-                version: format!("diff {d}"),
-                search: format!("diff {d}"),
+            .map(|d| {
+                DifficultyRow::new(SearchSource {
+                    difficulty: &format!("diff {d}"),
+                    creator: "mapper",
+                    artist: &format!("artist {key}"),
+                    title: &format!("title {key}"),
+                    ..SearchSource::default()
+                })
             })
             .collect(),
     }
