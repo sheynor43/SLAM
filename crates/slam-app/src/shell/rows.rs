@@ -188,7 +188,7 @@ pub enum Row {
     SmokeKey2,
     ToggleFpsKey,
     ResetKeys,
-    /// The interface language, applied at the next start (ADR-0088).
+    /// The interface language, applied as it is picked (ADR-0088, ADR-0091).
     Language,
     ScreenMode,
     /// lazer's warning that windowed modes add latency (ADR-0072).
@@ -401,11 +401,11 @@ impl Row {
         }
     }
 
-    /// Whether a change only takes effect after a restart: the language (ADR-0088). The
-    /// others apply when the screen closes, the output reopened (ADR-0089), the offset,
-    /// mouse buttons and background from the next play (ADR-0048).
+    /// Whether a change only takes effect after a restart: none does now. Rows apply when
+    /// the screen closes, the output reopened (ADR-0089), the language as it is picked
+    /// (ADR-0091); the offset, mouse buttons and background from the next play (ADR-0048).
     pub fn restart_required(self) -> bool {
-        self == Row::Language
+        false
     }
 }
 
@@ -655,6 +655,11 @@ impl Rows {
             .and_then(|name| self.skins.iter().position(|n| n == name))
             .map_or(0, |i| i + 1);
         (self.skins.len() + 1, selected)
+    }
+
+    /// The skin folder names the skin row lists after the default skin.
+    pub fn skins(&self) -> &[String] {
+        &self.skins
     }
 
     /// Exchanges the skin folder names with `skins`, for a new songs folder (ADR-0064).
@@ -1465,9 +1470,9 @@ mod tests {
     }
 
     #[test]
-    fn only_the_language_row_waits_for_a_restart() {
+    fn no_row_waits_for_a_restart() {
         for row in Row::ALL {
-            assert_eq!(row.restart_required(), row == Row::Language, "{row:?}");
+            assert!(!row.restart_required(), "{row:?}");
         }
     }
 
@@ -1556,7 +1561,7 @@ mod tests {
         rows.apply(&mut s, index(Row::Language), RowValue::Choice(0));
         assert_eq!(s.general.language.as_deref(), Some("en"));
 
-        let mut localizer = Localizer::builtin().unwrap();
+        let localizer = Localizer::builtin().unwrap();
         for _ in 0..2 {
             let labels = rows.labels(&localizer);
             assert_eq!(
@@ -1745,7 +1750,7 @@ mod tests {
     #[test]
     fn the_skin_options_are_labelled() {
         let (rows, _) = with_skins(&["Alpha"], None);
-        let mut localizer = Localizer::builtin().unwrap();
+        let localizer = Localizer::builtin().unwrap();
         localizer.set_language("en").unwrap();
         let labels = rows.labels(&localizer);
         assert_eq!(labels.rows[index(Row::Skin)].label, "Skin");
@@ -1764,7 +1769,7 @@ mod tests {
             rows.specs(&s)[index(Row::SongsFolder)].kind,
             RowKind::Button
         );
-        let mut localizer = Localizer::builtin().unwrap();
+        let localizer = Localizer::builtin().unwrap();
         localizer.set_language("en").unwrap();
         let labels = rows.labels(&localizer);
         let row = &labels.rows[index(Row::SongsFolder)];
@@ -1796,7 +1801,7 @@ mod tests {
     fn labels_cover_every_row_and_option_in_both_languages() {
         let (rows, s) = rows();
         let specs = rows.specs(&s);
-        let mut localizer = Localizer::builtin().unwrap();
+        let localizer = Localizer::builtin().unwrap();
         for language in ["en", "ru"] {
             localizer.set_language(language).unwrap();
             let labels = rows.labels(&localizer);
@@ -1889,7 +1894,7 @@ mod tests {
 
     #[test]
     fn the_sensitivity_hint_and_unit_are_localised() {
-        let mut localizer = Localizer::builtin().unwrap();
+        let localizer = Localizer::builtin().unwrap();
         localizer.set_language("en").unwrap();
         let (rows, _) = rows();
         let labels = rows.labels(&localizer);

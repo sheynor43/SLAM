@@ -592,7 +592,7 @@ fn host(name: &str, with_track: bool) -> HostFixture {
             max_texture_slots: 16,
         },
         registry: Arc::new(FontRegistry::with_builtin()),
-        hud_labels: crate::play::scene::hud_labels(&Localizer::builtin().unwrap()),
+        localizer: Arc::new(Localizer::builtin().unwrap()),
         replays: Some(dir.join("replays")),
     })
     .unwrap();

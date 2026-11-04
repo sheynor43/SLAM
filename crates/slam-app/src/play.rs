@@ -258,6 +258,11 @@ pub(crate) fn pack_size(width: u32, height: u32) -> u64 {
     (u64::from(width) << 32) | u64::from(height)
 }
 
+/// The width and height [`pack_size`] packed.
+pub(crate) fn unpack_size(size: u64) -> (u32, u32) {
+    ((size >> 32) as u32, size as u32)
+}
+
 impl Update for Gameplay {
     type Snapshot = PlaySnapshot;
 

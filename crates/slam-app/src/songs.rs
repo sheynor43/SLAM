@@ -125,6 +125,33 @@ pub struct Folders {
     pub save: Box<dyn Fn(&Path) + Send>,
     /// Lists the skins next to a songs folder.
     pub skins: Box<dyn Fn(&Path) -> SkinList + Send>,
+    /// Lays the skin dropdown out again in a new interface language.
+    pub relabel: SkinRelabel,
+}
+
+/// Lays out the skin dropdown over the given skins.
+pub type MakeSkinView = Box<dyn Fn(&[String]) -> Option<DropdownView> + Send>;
+
+/// The skin dropdown in another interface language (ADR-0091): when `language` changes, the
+/// skins listed last are laid out again, without listing the folder anew.
+pub struct SkinRelabel {
+    /// The skins the settings screen lists at start; replaced by each chosen folder's.
+    pub names: Vec<String>,
+    /// The interface language's generation ([`slam_ui::i18n::Localizer::generation`]).
+    pub language: Box<dyn Fn() -> u64 + Send>,
+    /// The dropdown over `names`; `None` in tests, without fonts.
+    pub view: MakeSkinView,
+}
+
+impl SkinRelabel {
+    /// Never lays out again: the language never changes.
+    pub fn none() -> SkinRelabel {
+        SkinRelabel {
+            names: Vec::new(),
+            language: Box::new(|| 0),
+            view: Box::new(|_| None),
+        }
+    }
 }
 
 /// The draw thread's end: new skin dropdowns in, replaced ones back to be freed.
@@ -384,6 +411,8 @@ struct Library {
     change: Option<Box<FolderChange>>,
     /// Its skin dropdown, not sent to the draw thread yet.
     skin_view: Option<DropdownView>,
+    /// The interface language the skin dropdown was last laid out in.
+    language_seen: u64,
     /// Answers of the folder picker, from whichever thread the OS answers on.
     picks: (Sender<FolderPick>, Receiver<FolderPick>),
     /// When the open folder picker was asked for: further requests are ignored until it
@@ -394,6 +423,7 @@ struct Library {
 
 impl Library {
     fn new(root: Option<PathBuf>, folders: Folders) -> Library {
+        let language_seen = (folders.relabel.language)();
         let mut library = Library {
             folders,
             root: None,
@@ -404,6 +434,7 @@ impl Library {
             retired_folders: Vec::new(),
             change: None,
             skin_view: None,
+            language_seen,
             picks: channel(),
             picking: None,
             dirty: true,
@@ -467,6 +498,7 @@ impl Library {
                 tracing::info!("songs: folder {}", songs.display());
                 (self.folders.save)(&songs);
                 let skins = (self.folders.skins)(&songs);
+                self.folders.relabel.names.clone_from(&skins.names);
                 self.change = Some(Box::new(FolderChange {
                     songs: Some(songs.clone()),
                     skins: skins.names,
@@ -476,6 +508,19 @@ impl Library {
             }
             FolderPick::Cancelled => {}
             FolderPick::Failed(e) => tracing::warn!("songs: no folder picker: {e}"),
+        }
+    }
+
+    /// Lays the skin dropdown out again if the interface language changed; it replaces one
+    /// not sent yet, which has the same skins.
+    fn relabel_skins(&mut self) {
+        let language = (self.folders.relabel.language)();
+        if language == self.language_seen {
+            return;
+        }
+        self.language_seen = language;
+        if let Some(view) = (self.folders.relabel.view)(&self.folders.relabel.names) {
+            self.skin_view = Some(view);
         }
     }
 
@@ -556,6 +601,7 @@ fn run(
             drop(old);
         }
         library.receive_pick();
+        library.relabel_skins();
         if let Some(backgrounds) = &mut ends.backgrounds {
             backgrounds.poll();
         }
@@ -717,6 +763,7 @@ mod tests {
             resolve: Path::to_path_buf,
             save: Box::new(|_| {}),
             skins: no_skins(),
+            relabel: SkinRelabel::none(),
         }
     }
 
@@ -756,6 +803,7 @@ mod tests {
                 names: vec![format!("skin of {}", songs.display())],
                 view: None,
             }),
+            relabel: SkinRelabel::none(),
         };
         let (mut link, _views, _thread) =
             spawn(None, folders, Box::new(|n| format!("{n} sets")), None, None).unwrap();
@@ -802,6 +850,7 @@ mod tests {
                 saves.fetch_add(1, Ordering::Relaxed);
             }),
             skins: no_skins(),
+            relabel: SkinRelabel::none(),
         }
     }
 
@@ -917,6 +966,39 @@ mod tests {
     }
 
     #[test]
+    fn a_language_switch_lays_the_skins_listed_last_out_again() {
+        use std::sync::atomic::AtomicU64;
+        let language = Arc::new(AtomicU64::new(0));
+        let seen = Arc::clone(&language);
+        let mut folders = answering(
+            FolderPick::Chosen(std::env::temp_dir()),
+            Arc::new(std::sync::atomic::AtomicUsize::new(0)),
+        );
+        folders.skins = Box::new(|_| SkinList {
+            names: vec!["Alpha".to_owned(), "beta".to_owned()],
+            view: None,
+        });
+        folders.relabel = SkinRelabel {
+            names: vec!["at start".to_owned()],
+            language: Box::new(move || seen.load(Ordering::Relaxed)),
+            view: Box::new(|names| Some(dropdown(names.len() + 1))),
+        };
+        let mut library = Library::new(None, folders);
+        library.relabel_skins();
+        assert!(library.skin_view.is_none(), "the language did not change");
+        language.store(1, Ordering::Relaxed);
+        library.relabel_skins();
+        assert_eq!(library.skin_view.take().map(|v| v.options()), Some(2));
+        library.pick_folder();
+        library.receive_pick();
+        language.store(2, Ordering::Relaxed);
+        library.relabel_skins();
+        assert_eq!(library.skin_view.take().map(|v| v.options()), Some(3));
+        library.relabel_skins();
+        assert!(library.skin_view.is_none());
+    }
+
+    #[test]
     fn a_second_request_while_the_picker_is_open_is_ignored() {
         let opened = Arc::new(std::sync::atomic::AtomicUsize::new(0));
         let count = Arc::clone(&opened);
@@ -929,6 +1011,7 @@ mod tests {
             resolve: Path::to_path_buf,
             save: Box::new(|_| {}),
             skins: no_skins(),
+            relabel: SkinRelabel::none(),
         };
         let mut library = Library::new(None, folders);
         library.pick_folder();

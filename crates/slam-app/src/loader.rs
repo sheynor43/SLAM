@@ -9,9 +9,10 @@ use std::time::Duration;
 
 use slam_audio::{MusicEvent, PlayError};
 use slam_osu::mods::ModSet;
-use slam_play::{HudLabels, PlaySession};
+use slam_play::PlaySession;
 use slam_render::Limits;
 use slam_text::FontRegistry;
+use slam_ui::i18n::Localizer;
 
 use crate::play::scene::{PlayScene, PlaySettings, Prepared, prepare};
 use crate::replays::ReplayJob;
@@ -119,8 +120,8 @@ pub struct LoaderConfig {
     pub settings: PlaySettings,
     pub limits: Limits,
     pub registry: Arc<FontRegistry>,
-    /// The HUD's texts.
-    pub hud_labels: HudLabels,
+    /// Lays out the HUD's texts, again for each play after a language switch (ADR-0091).
+    pub localizer: Arc<Localizer>,
     /// Where replays of finished plays are saved; `None` saves none.
     pub replays: Option<PathBuf>,
 }
@@ -189,6 +190,8 @@ pub fn spawn(mut config: LoaderConfig) -> std::io::Result<(LoaderLink, SceneTras
     let thread = std::thread::Builder::new()
         .name("slam-play-loader".to_owned())
         .spawn(move || {
+            let mut hud_labels = crate::play::scene::hud_labels(&config.localizer);
+            let mut generation = config.localizer.generation();
             while !flag.load(Ordering::Relaxed) {
                 let mut idle = true;
                 while let Ok(trash) = trash_rx.pop() {
@@ -215,12 +218,18 @@ pub fn spawn(mut config: LoaderConfig) -> std::io::Result<(LoaderLink, SceneTras
                     config.settings.positional_hitsounds_level = options.positional_hitsounds_level;
                     config.settings.skin = options.skin;
                     config.settings.mods = options.mods;
+                    // The generation first: a switch while laying out shows next time.
+                    let current = config.localizer.generation();
+                    if current != generation {
+                        generation = current;
+                        hud_labels = crate::play::scene::hud_labels(&config.localizer);
+                    }
                     let result = prepare(
                         &map,
                         &config.settings,
                         config.limits,
                         Arc::clone(&config.registry),
-                        &config.hud_labels,
+                        &hud_labels,
                     )
                     .map(Box::new)
                     .inspect_err(|e| tracing::warn!("{e}"));
@@ -289,7 +298,7 @@ mod tests {
                 max_texture_slots: 16,
             },
             registry: Arc::new(FontRegistry::with_builtin()),
-            hud_labels: crate::play::scene::hud_labels(&Localizer::builtin().unwrap()),
+            localizer: Arc::new(Localizer::builtin().unwrap()),
             replays: None,
         }
     }

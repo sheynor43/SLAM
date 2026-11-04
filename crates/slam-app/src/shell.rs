@@ -38,12 +38,10 @@ use slam_render::upload::{TextureLoaderConfig, TextureState, TextureUploads, tex
 use slam_render::{Color, Device, Extent, TextureFormat, shaders};
 use slam_text::{FontRegistry, GlyphAtlasConfig, GlyphCache, glyph_atlas};
 use slam_ui::i18n::Localizer;
-use slam_ui::menu::{
-    MainMenu, MenuAction, MenuInput, MenuLabels, MenuLayout, MenuSnapshot, MenuView,
-};
+use slam_ui::menu::{MainMenu, MenuAction, MenuInput, MenuLayout, MenuSnapshot, MenuView};
 use slam_ui::results::{
-    Results, ResultsAction, ResultsData, ResultsInput, ResultsLabels, ResultsLayout, ResultsMods,
-    ResultsSnapshot, ResultsView, StatKind,
+    Results, ResultsAction, ResultsData, ResultsInput, ResultsLayout, ResultsMods, ResultsSnapshot,
+    ResultsView, StatKind,
 };
 use slam_ui::screen::{MAX_LAYERS, Nav, Navigated, Pose, ScreenStack};
 use slam_ui::settings_screen::{
@@ -51,9 +49,9 @@ use slam_ui::settings_screen::{
     SettingsSnapshot, SettingsView,
 };
 use slam_ui::song_select::{
-    BeatmapDetails, DetailLabels, DetailStats, ModColumns, ModSelect, SettingValue, SongFilter,
-    SongList, SongSelect, SongSelectAction, SongSelectInput, SongSelectLabels, SongSelectLayout,
-    SongSelectSnapshot, SongSelectStatus, SongSelectView, TileDetail,
+    BeatmapDetails, DetailStats, ModColumns, ModSelect, SettingValue, SongFilter, SongList,
+    SongSelect, SongSelectAction, SongSelectInput, SongSelectLayout, SongSelectSnapshot,
+    SongSelectStatus, SongSelectView, TileDetail,
 };
 use slam_ui::theme::Theme;
 use slam_ui::widgets::DropdownView;
@@ -76,9 +74,11 @@ use crate::songs::{FolderChange, SkinViews, SongFiles, SongsLink};
 mod draw_rate;
 mod live;
 
+use language::{LanguageSwap, LanguageViews};
 use live::{AppliedUpdateRate, AppliedVolumes, Volumes};
 use output::{DeviceList, DeviceViews, OutputLink, Request};
 mod keybinds;
+mod language;
 mod menu_music;
 mod mod_settings;
 use menu_music::{MenuMusic, Picked, Want};
@@ -99,8 +99,8 @@ pub const USAGE: &str = "usage: slam-app [--songs DIR]\n\
 /// backgrounds.
 const MAX_TEXTURES: usize = 16 + MAX_BACKGROUNDS as usize;
 /// Rectangles of one frame: the buttons or rows of up to two layers, the FPS counter's
-/// box and two backgrounds of each layer.
-const MAX_SHAPES: usize = 256 + 1 + 2 * MAX_LAYERS;
+/// box, two backgrounds of each layer and the language curtain (ADR-0091).
+const MAX_SHAPES: usize = 256 + 1 + 2 * MAX_LAYERS + slam_ui::curtain::MAX_SPRITES;
 /// Glyph sprites of one frame: the texts of up to two layers and the FPS counter.
 const MAX_GLYPH_SPRITES: usize = 8192 + MAX_FPS_GLYPHS;
 /// How long the draw thread waits for the glyphs before the first frame.
@@ -235,6 +235,9 @@ pub struct ShellSnapshot {
     pub background: BackgroundTarget,
     /// The display lists the settings screen shows (ADR-0072).
     pub display_generation: u64,
+    /// How many language switches asked for views so far: a new one closes the curtain
+    /// (ADR-0091).
+    pub language_switch: u64,
 }
 
 /// The update logic without the window: input to navigation to snapshot.
@@ -453,6 +456,13 @@ impl ShellState {
 
     /// The audio settings to list the output devices for, once after the settings screen
     /// opened (ADR-0089).
+    /// Lists the output devices again if the settings screen is open (ADR-0091).
+    pub fn relist_devices(&mut self) {
+        if self.editing.is_some() {
+            self.device_list_request = true;
+        }
+    }
+
     pub fn take_device_list_request(&mut self) -> Option<&crate::settings::Audio> {
         std::mem::take(&mut self.device_list_request).then_some(&self.settings.audio)
     }
@@ -478,6 +488,12 @@ impl ShellState {
     /// the ones in force.
     pub fn live_input(&self) -> &InputSettings {
         &self.editing.as_ref().unwrap_or(&self.settings).input
+    }
+
+    /// The settings in force with the settings screen's edits: the language switches as it
+    /// is picked (ADR-0091).
+    pub fn live_settings(&self) -> &Settings {
+        self.editing.as_ref().unwrap_or(&self.settings)
     }
 
     /// The window settings in force: the settings screen's edits count at once, as lazer
@@ -2055,6 +2071,8 @@ struct Shell {
     update_rate: AppliedUpdateRate,
     /// Writes the settings file on its own thread; without a settings folder, `None`.
     saver: Option<SaveLink>,
+    /// The interface language in force (ADR-0091).
+    language: language::AppliedLanguage,
     /// Typed text is on in the menus and off during plays (ADR-0065).
     text_input: TextInput,
     /// Relative mouse mode and sensitivity, for the input thread (ADR-0069).
@@ -2150,6 +2168,13 @@ impl Shell {
         if let Some(host) = &mut self.host {
             host.apply_settings(settings);
         }
+        if self
+            .language
+            .apply(self.state.live_settings(), self.state.rows())
+        {
+            // The open screen's device list in the new language too.
+            self.state.relist_devices();
+        }
         self.sync_window(now_ns);
         let gameplay = self.state.gameplay_visible(now_ns);
         if let Some(mode) = self
@@ -2172,6 +2197,9 @@ impl Update for Shell {
     type Snapshot = ShellSnapshot;
 
     fn tick(&mut self, info: &TickInfo, events: &[InputEvent], snapshot: &mut ShellSnapshot) {
+        // First: every slot published carries it, the early returns' too. A switch applied
+        // later this tick shows on the next.
+        snapshot.language_switch = self.language.switches();
         self.follow_surface();
         // Between the exit and the window closing, input no longer navigates.
         if self.exited.load(Ordering::Relaxed) {
@@ -2247,6 +2275,10 @@ struct View<B: render::Backend> {
     surface_size: Arc<AtomicU64>,
     /// The FPS counter over every screen (ADR-0060).
     fps: FpsOverlay,
+    /// Views laid out in a language switched to (ADR-0091).
+    languages: Option<LanguageViews>,
+    /// The curtain over a language switch and the views it waits for.
+    swap: LanguageSwap<Box<language::InterfaceViews>>,
     /// The menu's texture loader and the song select's background (ADR-0066).
     backgrounds: Option<(TextureUploads, BackgroundFade)>,
     _quit: crate::bench::QuitOnDrop,
@@ -2361,6 +2393,41 @@ impl<B: render::Backend> Draw<ShellSnapshot> for View<B> {
         if let Some(views) = &mut self.display_views {
             views.receive();
         }
+        let now = info.wait.woke_ns;
+        let arrived = self.languages.as_mut().and_then(LanguageViews::take);
+        if let Some(older) = self.swap.receive(now, snapshot.language_switch, arrived)
+            && let Some(languages) = &mut self.languages
+        {
+            languages.give_back(older);
+        }
+        if let Some(mut views) = self.swap.take()
+            && let Some(languages) = &mut self.languages
+        {
+            language::carry_dropdowns(
+                &mut self.settings,
+                &mut views.settings,
+                &[rows::skin_row(), rows::device_row()],
+            );
+            if let Some(shown) = &mut self.display_views {
+                shown.move_screen(&mut self.settings, &mut views.settings);
+            }
+            std::mem::swap(&mut self.menu, &mut views.menu);
+            std::mem::swap(&mut self.song_select, &mut views.song_select);
+            std::mem::swap(&mut self.results, &mut views.results);
+            std::mem::swap(&mut self.settings, &mut views.settings);
+            self.fps.swap_view(&mut views.fps);
+            languages.give_back(views);
+        }
+        self.swap.advance(now, || {
+            glyphs_pending(
+                &mut self.glyphs,
+                &self.menu,
+                &self.song_select,
+                &self.results,
+                &self.settings,
+                &self.fps,
+            )
+        });
         self.glyphs.process(&mut r.device, &mut r.textures);
         // On every screen: releases queued during a play would otherwise fill the queue.
         if let Some((uploads, fade)) = &mut self.backgrounds {
@@ -2455,6 +2522,15 @@ impl<B: render::Backend> Draw<ShellSnapshot> for View<B> {
         }
         // Last, over every screen and the play (ADR-0060).
         let overlay_from = (self.shapes.len() as u32, self.text.len() as u32);
+        // Over every screen, under the FPS counter.
+        self.swap.curtain().push(
+            &mut self.shapes,
+            &self.theme,
+            width,
+            height,
+            info.wait.woke_ns,
+            r.white,
+        );
         self.fps
             .push(&mut self.shapes, &mut self.text, &mut self.glyphs, r.white);
         r.renderer.begin_frame();
@@ -2553,12 +2629,31 @@ impl<B: render::Backend> Draw<ShellSnapshot> for View<B> {
 
 impl<B: render::Backend> View<B> {
     fn request_glyphs(&mut self) -> usize {
-        self.menu.request_glyphs(&mut self.glyphs)
-            + self.song_select.request_glyphs(&mut self.glyphs)
-            + self.results.request_glyphs(&mut self.glyphs)
-            + self.settings.request_glyphs(&mut self.glyphs)
-            + self.fps.request_glyphs(&mut self.glyphs)
+        glyphs_pending(
+            &mut self.glyphs,
+            &self.menu,
+            &self.song_select,
+            &self.results,
+            &self.settings,
+            &self.fps,
+        )
     }
+}
+
+/// Asks `glyphs` for every glyph of the screens' texts; how many are not ready yet.
+fn glyphs_pending(
+    glyphs: &mut GlyphCache,
+    menu: &MenuView,
+    song_select: &SongSelectView,
+    results: &ResultsView,
+    settings: &SettingsView,
+    fps: &FpsOverlay,
+) -> usize {
+    menu.request_glyphs(glyphs)
+        + song_select.request_glyphs(glyphs)
+        + results.request_glyphs(glyphs)
+        + settings.request_glyphs(glyphs)
+        + fps.request_glyphs(glyphs)
 }
 
 /// The backend `name` names if this build has it, else the first available one.
@@ -2811,7 +2906,7 @@ impl WithBackend for App {
 
 /// The built-in languages with the settings' language active; an unknown one stays English.
 fn interface_localizer(settings: &Settings) -> Result<Localizer, String> {
-    let mut localizer = Localizer::builtin().map_err(|e| e.to_string())?;
+    let localizer = Localizer::builtin().map_err(|e| e.to_string())?;
     if let Some(language) = &settings.general.language
         && let Err(e) = localizer.set_language(language)
     {
@@ -2840,78 +2935,31 @@ fn run_with<B: render::Backend>(
     let registry = Arc::new(FontRegistry::with_builtin());
     let glyphs = glyph_atlas(Arc::clone(&registry), &GlyphAtlasConfig::new(limits))
         .map_err(|e| e.to_string())?;
-    // The language applies from the start only: the texts below are laid out once (ADR-0088).
     let localizer = Arc::new(interface_localizer(&settings)?);
-    let text = |key: &str| localizer.format(key, None).into_owned();
-    let labels = MenuLabels {
-        title: text("menu-title"),
-        buttons: [
-            text("menu-play-button"),
-            text("menu-settings-button"),
-            text("menu-exit-button"),
-        ],
-    };
-    let menu = MenuView::new(Arc::clone(&registry), theme, &labels);
-    let song_labels = SongSelectLabels {
-        no_folder: text("song-select-no-folder"),
-        failed: text("song-select-failed"),
-        loading: text("song-select-loading"),
-        empty: text("song-select-empty"),
-        choose_folder: text("song-select-choose-folder"),
-        hint: text("song-select-hint"),
-        search_placeholder: text("song-select-search-placeholder"),
-        search_no_matches: text("song-select-search-no-matches"),
-        mods_title: text("song-select-mods-title"),
-        mods_hint: text("song-select-mods-hint"),
-        mods_customise: text("song-select-mods-customise"),
-        setting_texts: mod_settings::TEXT_KEYS
-            .iter()
-            .map(|key| (*key, text(key)))
-            .collect(),
-        mod_column_titles: [
-            text("song-select-mods-reduction"),
-            text("song-select-mods-increase"),
-            text("song-select-mods-conversion"),
-        ],
-        details: DetailLabels {
-            length: text("song-select-details-length"),
-            bpm: text("song-select-details-bpm"),
-            circles: text("song-select-details-circles"),
-            sliders: text("song-select-details-sliders"),
-            spinners: text("song-select-details-spinners"),
-            circle_size: text("song-select-details-circle-size"),
-            approach_rate: text("song-select-details-approach-rate"),
-            overall_difficulty: text("song-select-details-overall-difficulty"),
-            drain_rate: text("song-select-details-drain-rate"),
-        },
-        mod_columns: mod_columns(),
-    };
-    let song_select = SongSelectView::new(Arc::clone(&registry), theme, &song_labels);
-    let results_labels = ResultsLabels {
-        score: text("results-score-title"),
-        accuracy: text("results-accuracy-title"),
-        max_combo: text("results-max-combo-title"),
-        mods: text("results-mods-title"),
-        no_mods: text("results-no-mods"),
-        average_hit_error: text("results-average-hit-error-title"),
-        unstable_rate: text("results-unstable-rate-title"),
-        not_available: text("results-not-available"),
-        stats: StatKind::ALL.map(|kind| text(results_label_key(kind))),
-        retry: text("results-retry-button"),
-        back: text("results-back-button"),
-        hint: text("results-hint"),
-    };
-    let results = ResultsView::new(Arc::clone(&registry), theme, &results_labels);
-
     let mut state = ShellState::new(theme, pixels_w as f32, pixels_h as f32, pixels_per_point)
         .with_settings(settings.clone())
         .with_devices(output_devices(&settings.audio));
-    let settings_view = SettingsView::new(
+    // Laid out again in another language by the `slam-language` thread (ADR-0091).
+    let language::InterfaceViews {
+        menu,
+        song_select,
+        results,
+        settings: settings_view,
+        fps: fps_view,
+        ..
+    } = language::interface_views(&registry, theme, &localizer, state.rows(), &settings);
+    let (language_link, language_views, _language) = match language::spawn(
         Arc::clone(&registry),
         theme,
-        &state.rows().specs(&settings),
-        &state.rows().labels(&localizer),
-    );
+        Arc::clone(&localizer),
+        Arc::clone(&surface_size),
+    ) {
+        Ok((link, views, thread)) => (Some(link), Some(views), Some(thread)),
+        Err(e) => {
+            tracing::warn!("language: cannot start the thread: {e}");
+            (None, None, None)
+        }
+    };
     // Joined when `run` returns, after the engine: it writes what is still queued.
     let (saver, saver_thread) = match Dirs::detect() {
         Some(dirs) => match crate::settings::saver::spawn(dirs.settings_file()) {
@@ -2962,6 +3010,18 @@ fn run_with<B: render::Backend>(
                     }
                 })
             },
+            relabel: {
+                let (registry, localizer) = (Arc::clone(&registry), Arc::clone(&localizer));
+                let language = Arc::clone(&localizer);
+                crate::songs::SkinRelabel {
+                    names: state.rows().skins().to_vec(),
+                    language: Box::new(move || language.generation()),
+                    view: Box::new(move |names| {
+                        let options = rows::skin_options(&localizer, names);
+                        Some(DropdownView::new(Arc::clone(&registry), theme, &options))
+                    }),
+                }
+            },
         };
         // Without the menu's texture loader the song select shows the theme's background.
         let (loader, fade) = match texture_loader(&TextureLoaderConfig {
@@ -2996,13 +3056,14 @@ fn run_with<B: render::Backend>(
     // Joined when `run` returns, after the engine. Without the thread the settings screen
     // hides the display and resolution rows.
     let (display_views, _displays) = {
+        let language = Arc::clone(&localizer);
         let (registry, localizer) = (Arc::clone(&registry), Arc::clone(&localizer));
         let make_views: crate::displays::MakeViews = Box::new(move |displays, lists| {
             Some(rows::display_views(
                 &registry, theme, &localizer, displays, lists,
             ))
         });
-        match crate::displays::spawn(make_views) {
+        match crate::displays::spawn(make_views, Box::new(move || language.generation())) {
             Ok((sender, lists, views, thread)) => {
                 state = state.with_displays(lists);
                 window.set_displays_callback(Box::new(move |displays| {
@@ -3022,7 +3083,6 @@ fn run_with<B: render::Backend>(
         }
     };
     // The play: a loader thread, scenes for the draw thread, the audio output.
-    let hud_labels = crate::play::scene::hud_labels(&localizer);
     let (loader, scene_trash, _loader) = crate::loader::spawn(LoaderConfig {
         // The skin travels with each request; this is what the first one starts from.
         settings: {
@@ -3045,7 +3105,7 @@ fn run_with<B: render::Backend>(
         },
         limits,
         registry: Arc::clone(&registry),
-        hud_labels: hud_labels.clone(),
+        localizer: Arc::clone(&localizer),
         replays: Dirs::detect().map(|dirs| dirs.replays()),
     })
     .map_err(|e| e.to_string())?;
@@ -3135,6 +3195,11 @@ fn run_with<B: render::Backend>(
         rate_switch: DrawRateSwitch::new(menu_rate),
         update_rate: AppliedUpdateRate::new(update_rate.clone(), settings.frame.update_hz),
         saver,
+        language: language::AppliedLanguage::new(
+            Arc::clone(&localizer),
+            settings.general.language.clone(),
+            language_link,
+        ),
     };
     let draw = View {
         surface: Some(surface),
@@ -3155,15 +3220,16 @@ fn run_with<B: render::Backend>(
         scene_shown: false,
         scene_trash: Some(scene_trash),
         surface_size,
-        fps: FpsOverlay::new(
+        fps: FpsOverlay::with_view(
             FpsSource::new(
                 Arc::clone(&counters),
                 update_rate.clone(),
                 draw_rate.clone(),
             ),
-            Arc::clone(&registry),
-            &hud_labels.fps,
+            fps_view,
         ),
+        languages: language_views,
+        swap: LanguageSwap::default(),
         backgrounds,
         _quit: crate::bench::QuitOnDrop(window.quit_handle()),
     };
