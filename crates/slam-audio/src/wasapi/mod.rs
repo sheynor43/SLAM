@@ -201,6 +201,36 @@ pub(crate) fn latency_ns(frame: u64, position: u64, frequency: u64, rate: u32) -
     u64::try_from(frame_ns.saturating_sub(played_ns)).unwrap_or(u64::MAX)
 }
 
+/// Whether the device, at `position` in units of `frequency` per second, has consumed every
+/// one of the `written` stream frames: it ran dry before this callback. A healthy stream
+/// always has at least one buffer queued when its event fires. Some exclusive-mode drivers
+/// accept a period shorter than the one they signal at and then starve on every event.
+///
+/// In exclusive mode the position is what the device played and runs past `written` when
+/// it starves; in shared mode it is what the engine took from the buffer and stops exactly
+/// at `written`, hence `>=`.
+pub(crate) fn ran_dry(written: u64, position: u64, frequency: u64, rate: u32) -> bool {
+    if frequency == 0 || rate == 0 {
+        return false;
+    }
+    // played / frequency >= written / rate, without rounding either side.
+    u128::from(position) * u128::from(rate) >= u128::from(written) * u128::from(frequency)
+}
+
+/// Whether a callback finding the device at `position` counts as an underrun. Before any
+/// audio follows the silent pre-`Start` fill (`written == prefill`) a drained device has
+/// only played silence: the shared engine pulls the whole fill at once, so the first event
+/// always sees it drained.
+pub(crate) fn underrun(
+    written: u64,
+    prefill: u64,
+    position: u64,
+    frequency: u64,
+    rate: u32,
+) -> bool {
+    written > prefill && ran_dry(written, position, frequency, rate)
+}
+
 /// `IAudioClock` QPC position (100-ns units) in engine clock nanoseconds. The engine
 /// clock is `ticks · 10⁹ / frequency`; the audio clock reports `ticks · 10⁷ / frequency`,
 /// so the bases agree to within 100 ns.
@@ -382,6 +412,51 @@ mod tests {
         assert_eq!(latency_ns(100, 0, 0, 48_000), 0);
         // Device halfway through a frame: no whole-frame rounding (10 ms + 10.4 µs, each instant floored to 1 ns).
         assert_eq!(latency_ns(10_480, 19_999, 96_000, 48_000), 10_010_417);
+    }
+
+    #[test]
+    fn ran_dry_when_the_device_played_everything_written() {
+        // One 480-frame buffer still queued: healthy.
+        assert!(!ran_dry(10_480, 10_000, 48_000, 48_000));
+        // A single frame queued is still not dry.
+        assert!(!ran_dry(10_001, 10_000, 48_000, 48_000));
+        // Device exactly at or past the written end: it starved.
+        assert!(ran_dry(10_000, 10_000, 48_000, 48_000));
+        assert!(ran_dry(10_000, 13_000, 48_000, 48_000));
+        // Clock in bytes (stereo f32: 384000 B/s): 10000 frames played of 10480 / 10000.
+        assert!(!ran_dry(10_480, 80_000, 384_000, 48_000));
+        assert!(ran_dry(10_000, 80_000, 384_000, 48_000));
+        // Half a frame short of the end (clock at 96 kHz): not yet.
+        assert!(!ran_dry(10_000, 19_999, 96_000, 48_000));
+        // No clock frequency or rate: no verdict.
+        assert!(!ran_dry(0, 10_000, 0, 48_000));
+        assert!(!ran_dry(0, 10_000, 48_000, 0));
+        // No overflow at the extremes.
+        assert!(ran_dry(u64::MAX, u64::MAX, u64::from(u32::MAX), u32::MAX));
+        assert!(!ran_dry(
+            u64::MAX,
+            u64::MAX - 1,
+            u64::from(u32::MAX),
+            u32::MAX
+        ));
+    }
+
+    #[test]
+    fn underrun_ignores_the_silent_prefill() {
+        // Shared start: 960 silent frames written, the engine took them all (7680 B at
+        // 384000 B/s). Not an underrun: only silence was due.
+        assert!(!underrun(960, 960, 7_680, 384_000, 48_000));
+        // The next callback drained as well: a real gap.
+        assert!(underrun(1_440, 960, 11_520, 384_000, 48_000));
+        // Healthy after the prefill: a buffer still queued.
+        assert!(!underrun(1_440, 960, 7_680, 384_000, 48_000));
+        // No prefill (`frames_due` was 0 at start): the first written audio counts.
+        assert!(underrun(480, 0, 480, 48_000, 48_000));
+        assert!(!underrun(0, 0, 0, 48_000, 48_000));
+        // Exclusive after a failed `GetBuffer` (frames counted as written anyway): the
+        // device replaying the stale buffer is not reported twice, only once caught up.
+        assert!(!underrun(1_008, 144, 864, 48_000, 48_000));
+        assert!(underrun(1_008, 144, 1_008, 48_000, 48_000));
     }
 
     #[test]

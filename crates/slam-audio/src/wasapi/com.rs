@@ -35,7 +35,7 @@ use windows::core::{HSTRING, Interface, PWSTR, w};
 use super::{
     EnginePeriods, SampleFormat, aligned_period_hns, channel_mask, convert, exclusive_period_hns,
     fallback_chain, frames_from_hns, latency_ns, low_latency_period, qpc_hns_to_ns,
-    shared_frames_to_write,
+    shared_frames_to_write, underrun,
 };
 use crate::hal::{AudioCallback, AudioError, CallbackInfo, DeviceInfo, StreamConfig};
 use crate::hal::{StreamCounters, StreamHandle, WasapiMode};
@@ -292,6 +292,7 @@ fn stream_thread(
         counters,
         scratch: Vec::new(),
         written: 0,
+        prefill: 0,
         rate: config.sample_rate,
         channels: config.channels,
     };
@@ -539,6 +540,10 @@ struct Render<'a> {
     scratch: Vec<f32>,
     /// Stream frames handed to the device so far.
     written: u64,
+    /// Silent frames written before `Start`. The shared engine pulls them all at once,
+    /// so the device looks drained at the first event without any audible gap; in
+    /// exclusive mode skipping that first check is harmless (it played silence).
+    prefill: u64,
     rate: u32,
     channels: u16,
 }
@@ -571,6 +576,7 @@ impl Session {
                     .ReleaseBuffer(frames, AUDCLNT_BUFFERFLAGS_SILENT.0 as u32)?;
             }
             render.written += u64::from(frames);
+            render.prefill = render.written;
             self.client.Start()
         }
     }
@@ -621,7 +627,8 @@ impl Session {
             }
         };
 
-        let (timestamp_ns, latency_ns) = self.timing(render.written, render.rate);
+        let (timestamp_ns, latency_ns, dry) =
+            self.timing(render.written, render.prefill, render.rate);
         let info = CallbackInfo {
             frame: render.written,
             timestamp_ns,
@@ -651,13 +658,17 @@ impl Session {
             convert(staged, bytes, self.format);
             true
         };
-        let flags = if delivered {
-            0
-        } else {
+        // At most one miss per callback: a late buffer that also could not be written is
+        // still one gap.
+        if dry || !delivered {
             render
                 .counters
                 .missed_buffers
                 .fetch_add(1, Ordering::Relaxed);
+        }
+        let flags = if delivered {
+            0
+        } else {
             AUDCLNT_BUFFERFLAGS_SILENT.0 as u32
         };
         // SAFETY: releases exactly the frames obtained above.
@@ -675,9 +686,10 @@ impl Session {
         Ok(())
     }
 
-    /// `(timestamp_ns, latency_ns)` for stream frame `frame` from the audio clock; zeros
-    /// if the clock has no report.
-    fn timing(&self, frame: u64, rate: u32) -> (u64, u64) {
+    /// `(timestamp_ns, latency_ns, underrun)` for stream frame `frame` (`prefill` silent
+    /// frames before `Start`) from the audio clock; zeros and `false` if the clock has no
+    /// report.
+    fn timing(&self, frame: u64, prefill: u64, rate: u32) -> (u64, u64, bool) {
         let mut device_position = 0;
         let mut qpc_hns = 0;
         // SAFETY: COM call with valid out pointers.
@@ -687,11 +699,12 @@ impl Session {
         }
         .is_ok();
         if !ok || qpc_hns == 0 {
-            return (0, 0);
+            return (0, 0, false);
         }
         (
             qpc_hns_to_ns(qpc_hns),
             latency_ns(frame, device_position, self.clock_frequency, rate),
+            underrun(frame, prefill, device_position, self.clock_frequency, rate),
         )
     }
 }

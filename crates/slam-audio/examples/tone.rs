@@ -113,12 +113,14 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             .read()
             .map(|p| p.output_frame_at(monotonic_ns()) / f64::from(p.sample_rate));
         println!(
-            "frames/callback {n} ({:.2} ms) | latency {:.2} ms | output {} | callbacks {} | missed {}",
+            "frames/callback {n} ({:.2} ms) | latency {:.2} ms | output {} | callbacks {} | missed {} \
+             | failed {}",
             f64::from(n) * 1e3 / f64::from(rate),
             latency_ns.load(Ordering::Relaxed) as f64 / 1e6,
             output.map_or("-".to_owned(), |s| format!("{s:.3} s")),
             stream.counters().callbacks.load(Ordering::Relaxed),
             stream.counters().missed_buffers.load(Ordering::Relaxed),
+            stream.counters().failed.load(Ordering::Relaxed),
         );
     }
     Ok(())
