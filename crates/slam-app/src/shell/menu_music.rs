@@ -22,9 +22,6 @@ const MENU_LEAD_MS: f64 = 2_600.0;
 /// After a track failed to open, the menu waits this long before trying another.
 const RETRY_NS: u64 = 1_000_000_000;
 
-/// Frames per millisecond of the tracks (the mixer's rate).
-const FRAMES_PER_MS: f64 = crate::play::scene::SAMPLE_RATE as f64 / 1_000.0;
-
 /// What the screens want to hear.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub enum Want<'a> {
@@ -54,6 +51,8 @@ pub trait Deck {
     fn fade(&mut self, volume: f32, delay_ms: f64, duration_ms: f64, easing: Easing);
     /// Whether the track played to its end since the last load or seek.
     fn ended(&self) -> bool;
+    /// Track frames per second: the mixer's rate (ADR-0102).
+    fn sample_rate(&self) -> u32;
 }
 
 impl Deck for MusicPlayer {
@@ -81,6 +80,10 @@ impl Deck for MusicPlayer {
             duration_ms,
             easing,
         }]);
+    }
+
+    fn sample_rate(&self) -> u32 {
+        MusicPlayer::sample_rate(self)
     }
 
     fn ended(&self) -> bool {
@@ -242,11 +245,12 @@ impl MenuMusic {
         if generation != slot.generation {
             return;
         }
-        let point = preview_point(slot.preview_ms, length);
-        slot.restart = clamp_frame(point - DELAY_BEFORE_FADE_MS * FRAMES_PER_MS, length);
         let d = &mut decks[deck];
+        let frames_per_ms = f64::from(d.sample_rate()) / 1_000.0;
+        let point = preview_point(slot.preview_ms, length, frames_per_ms);
+        slot.restart = clamp_frame(point - DELAY_BEFORE_FADE_MS * frames_per_ms, length);
         match entry {
-            Entry::MenuIntro => d.seek(clamp_frame(point - MENU_LEAD_MS * FRAMES_PER_MS, length)),
+            Entry::MenuIntro => d.seek(clamp_frame(point - MENU_LEAD_MS * frames_per_ms, length)),
             Entry::Rise | Entry::Cross => d.seek(slot.restart),
             Entry::MenuNext => {}
         }
@@ -397,9 +401,9 @@ impl MenuMusic {
 /// lazer's preview point, track frames: `PreviewTime` when within the track, else 40 % of
 /// its length.
 // Ported from osu!lazer 2026.1005.0-lazer: osu.Game/Beatmaps/WorkingBeatmap.cs (PrepareTrackForPreview)
-fn preview_point(preview_ms: i32, length: Option<u64>) -> f64 {
+fn preview_point(preview_ms: i32, length: Option<u64>, frames_per_ms: f64) -> f64 {
     let length = length.map_or(f64::INFINITY, |l| l as f64);
-    let point = f64::from(preview_ms) * FRAMES_PER_MS;
+    let point = f64::from(preview_ms) * frames_per_ms;
     if point < 0.0 || point > length {
         if length.is_finite() {
             // lazer multiplies by the `float` 0.4.

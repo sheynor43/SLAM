@@ -38,7 +38,7 @@ use super::{
     aligned_period_hns, calibrates, calibration_verdict, channel_mask, convert,
     exclusive_period_hns, fallback_chain, frames_from_hns, latency_ns, lead_frames,
     low_latency_period, median_ns, next_exclusive_period_hns, qpc_hns_to_ns,
-    shared_frames_to_write, underrun,
+    shared_frames_to_write, stalls, underrun,
 };
 use crate::hal::{AudioCallback, AudioError, CallbackInfo, DeviceInfo, StreamConfig};
 use crate::hal::{StreamCounters, StreamHandle, WasapiMode};
@@ -409,7 +409,8 @@ fn settle_exclusive(
 struct Calibration {
     /// Median interval between buffer events, nanoseconds.
     step_ns: u64,
-    /// The device kept running ahead of the stream: the period is too short.
+    /// The device kept running ahead of the stream (ADR-0101) or stalled at the written
+    /// count with events further apart than the period (ADR-0103): the period is too short.
     starving: bool,
 }
 
@@ -436,16 +437,51 @@ struct Session {
 }
 
 /// Opens the device and initialises the first mode of the fallback chain that works.
-fn open_session(mode: WasapiMode, config: &StreamConfig) -> Result<Session, AudioError> {
-    let enumerator = enumerator().map_err(unavailable)?;
+/// The endpoint with `id`, or the default render endpoint.
+fn endpoint(id: Option<&str>) -> windows::core::Result<IMMDevice> {
+    let enumerator = enumerator()?;
     // SAFETY: COM calls on a valid enumerator; the id string outlives the call.
-    let device = unsafe {
-        match &config.device {
-            Some(id) => enumerator.GetDevice(&HSTRING::from(id.as_str())),
+    unsafe {
+        match id {
+            Some(id) => enumerator.GetDevice(&HSTRING::from(id)),
             None => enumerator.GetDefaultAudioEndpoint(eRender, eConsole),
         }
     }
-    .map_err(unavailable)?;
+}
+
+/// Rate of the engine's mix format on `device` (ADR-0102): what Shared and LowLatency
+/// run at and the rate Exclusive is tried with. Runs COM on a short-lived thread like
+/// [`devices`].
+pub(crate) fn device_rate(device: Option<&str>) -> Result<Option<u32>, AudioError> {
+    thread::scope(|scope| {
+        scope
+            .spawn(|| {
+                let _com = Com::init().map_err(unavailable)?;
+                mix_rate(device).map(Some).map_err(unavailable)
+            })
+            .join()
+            .unwrap_or_else(|_| {
+                Err(AudioError::Unavailable(
+                    "WASAPI: reading the mix format panicked".to_owned(),
+                ))
+            })
+    })
+}
+
+fn mix_rate(device: Option<&str>) -> windows::core::Result<u32> {
+    let device = endpoint(device)?;
+    // SAFETY: COM calls on a valid device; the mix format is read once and freed once.
+    unsafe {
+        let client: IAudioClient = device.Activate(CLSCTX_ALL, None)?;
+        let mix = client.GetMixFormat()?;
+        let rate = mix.read_unaligned().nSamplesPerSec;
+        CoTaskMemFree(Some(mix as *const _));
+        Ok(rate)
+    }
+}
+
+fn open_session(mode: WasapiMode, config: &StreamConfig) -> Result<Session, AudioError> {
+    let device = endpoint(config.device.as_deref()).map_err(unavailable)?;
 
     let mut failures = Vec::new();
     for &candidate in fallback_chain(mode) {
@@ -704,7 +740,7 @@ impl Render<'_> {
 impl Session {
     /// Writes silence for [`CALIBRATION_WARMUP`] + [`CALIBRATION_EVENTS`] buffer events and
     /// measures the interval between wake-ups and how far the device runs ahead of the
-    /// stream (ADR-0101). Afterwards `render.written` includes the buffers the device
+    /// stream (ADR-0101, ADR-0103). Afterwards `render.written` includes the buffers the device
     /// replayed, so the latency and underrun accounting of the render loop start from the
     /// device's real position. `None` if `quit` is set, the events stop coming or the clock fails.
     fn calibrate(
@@ -759,9 +795,11 @@ impl Session {
         }
         let verdict = calibration_verdict(&leads, self.buffer_frames);
         render.written += verdict.replayed;
+        let step_ns = median_ns(&mut intervals);
+        let period_hns = aligned_period_hns(self.buffer_frames, self.rate);
         Ok(Some(Calibration {
-            step_ns: median_ns(&mut intervals),
-            starving: verdict.starving,
+            step_ns,
+            starving: verdict.starving || stalls(&leads, self.buffer_frames, step_ns, period_hns),
         }))
     }
 

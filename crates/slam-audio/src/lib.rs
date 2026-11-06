@@ -20,8 +20,9 @@ pub use fade::Easing;
 pub use filter::{FilterKind, MAX_LOW_PASS_CUTOFF, MIN_HIGH_PASS_CUTOFF};
 pub use game_clock::{ClockError, ClockSnapshot, GameClock, TrackControl};
 pub use hal::{
-    AudioCallback, AudioError, Backend, CallbackInfo, DeviceInfo, OutputStream, StreamConfig,
-    StreamCounters, WasapiMode, devices, open_output,
+    AudioCallback, AudioError, Backend, CallbackInfo, DEFAULT_SAMPLE_RATE, DeviceInfo,
+    OutputStream, StreamConfig, StreamCounters, WasapiMode, device_rate, devices, open_output,
+    stream_rate,
 };
 pub use mixer::{
     BUS_RAMP_MS, MAX_GROUP_DELAY_MS, MAX_MUSIC_SOURCES, MAX_VOICE_RATE, Mixer, MixerConfig,

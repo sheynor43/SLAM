@@ -8,7 +8,7 @@
 
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU32, AtomicU64, Ordering};
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use slam_audio::{AudioCallback, Backend, CallbackInfo, SineTone, StreamConfig};
 
@@ -83,9 +83,12 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     let frames = Arc::new(AtomicU32::new(0));
     let latency_ns = Arc::new(AtomicU64::new(0));
+    // At the device's rate, as the game opens it (ADR-0102).
+    let sample_rate = slam_audio::stream_rate(slam_audio::device_rate(backend, device.as_deref()));
     let config = StreamConfig {
         device,
         buffer_frames,
+        sample_rate,
         name: "SLAM test tone".to_owned(),
         ..StreamConfig::default()
     };
@@ -94,12 +97,14 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         frames: Arc::clone(&frames),
         latency_ns: Arc::clone(&latency_ns),
     };
+    let opening = Instant::now();
     let stream = slam_audio::open_output(backend, config, Box::new(probe))?;
+    let open_ms = opening.elapsed().as_secs_f64() * 1e3;
     let rate = stream.config().sample_rate;
     let granted = stream.config().buffer_frames;
     println!(
         "opened {}: requested {buffer_frames} frames ({:.2} ms), granted {granted} ({:.2} ms) \
-         at {rate} Hz",
+         at {rate} Hz in {open_ms:.0} ms",
         stream.backend().name(),
         f64::from(buffer_frames) * 1e3 / f64::from(rate),
         f64::from(granted) * 1e3 / f64::from(rate),

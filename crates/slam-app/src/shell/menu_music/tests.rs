@@ -6,6 +6,8 @@ struct Fake {
     log: Vec<String>,
     generation: u32,
     ended: bool,
+    /// The track's rate; `None` is 48 kHz.
+    rate: Option<u32>,
 }
 
 impl Deck for Fake {
@@ -31,6 +33,9 @@ impl Deck for Fake {
     }
     fn ended(&self) -> bool {
         self.ended
+    }
+    fn sample_rate(&self) -> u32 {
+        self.rate.unwrap_or(48_000)
     }
 }
 
@@ -72,6 +77,18 @@ fn a_preview_from_silence_starts_before_its_point_and_rises() {
     // The same track wanted again changes nothing.
     m.tick(MS, preview("a.mp3", 10_000), &mut d, none);
     assert!(take(&mut d[1]).is_empty());
+}
+
+#[test]
+fn the_preview_point_is_in_frames_of_the_decks_rate() {
+    let mut m = MenuMusic::default();
+    let mut d = decks();
+    d[1].rate = Some(44_100);
+    m.tick(0, preview("a.mp3", 10_000), &mut d, none);
+    take(&mut d[1]);
+    m.loaded(1, 1, Some(LENGTH), &mut d);
+    // 10 s minus 30 ms, at 44.1 kHz.
+    assert_eq!(take(&mut d[1])[0], "seek 439677");
 }
 
 #[test]
@@ -289,6 +306,9 @@ impl Deck for Full {
     }
     fn ended(&self) -> bool {
         false
+    }
+    fn sample_rate(&self) -> u32 {
+        self.0.sample_rate()
     }
 }
 

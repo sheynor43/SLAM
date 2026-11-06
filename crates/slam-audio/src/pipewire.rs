@@ -108,6 +108,139 @@ pub(crate) fn devices() -> Result<Vec<DeviceInfo>, AudioError> {
     Ok(found.take())
 }
 
+/// Rate of the PipeWire graph from the `settings` metadata (ADR-0102): `clock.force-rate`
+/// when set, else `clock.rate`. The graph rate is global, whatever sink plays.
+/// Connects, binds the metadata, waits for two round trips, disconnects.
+pub(crate) fn device_rate() -> Result<Option<u32>, AudioError> {
+    pw::init();
+    let mainloop = pw::main_loop::MainLoopRc::new(None).map_err(unavailable)?;
+    let context = pw::context::ContextRc::new(&mainloop, None).map_err(unavailable)?;
+    let core = context.connect_rc(None).map_err(unavailable)?;
+    let registry = core.get_registry_rc().map_err(unavailable)?;
+
+    let settings = Rc::new(RefCell::new(ClockSettings::default()));
+    // The bound metadata and its listener: dropping them unbinds.
+    let bound = Rc::new(RefCell::new(Vec::new()));
+    let _registry_listener = registry
+        .add_listener_local()
+        .global({
+            let registry = registry.downgrade();
+            let settings = Rc::clone(&settings);
+            let bound = Rc::clone(&bound);
+            move |global| {
+                if global.type_ != pw::types::ObjectType::Metadata {
+                    return;
+                }
+                let Some(props) = global.props else { return };
+                if props.get("metadata.name") != Some("settings") {
+                    return;
+                }
+                let Some(registry) = registry.upgrade() else {
+                    return;
+                };
+                let Ok(metadata) = registry.bind::<pw::metadata::Metadata, _>(global) else {
+                    return;
+                };
+                let settings = Rc::clone(&settings);
+                let listener = metadata
+                    .add_listener_local()
+                    .property(move |subject, key, _type, value| {
+                        if subject == pw::core::PW_ID_CORE {
+                            settings.borrow_mut().set(key, value);
+                        }
+                        0
+                    })
+                    .register();
+                bound.borrow_mut().push((metadata, listener));
+            }
+        })
+        .register();
+
+    let error = Rc::new(RefCell::new(None));
+    // The first round trip lists the globals and binds the metadata; the second
+    // delivers its properties.
+    let pending = Rc::new(RefCell::new((core.sync(0).map_err(unavailable)?, 0)));
+    let _core_listener = core
+        .add_listener_local()
+        .done({
+            let mainloop = mainloop.clone();
+            let core = core.clone();
+            let pending = Rc::clone(&pending);
+            let error = Rc::clone(&error);
+            move |id, seq| {
+                let mut pending = pending.borrow_mut();
+                if id != pw::core::PW_ID_CORE || seq != pending.0 {
+                    return;
+                }
+                pending.1 += 1;
+                if pending.1 >= 2 {
+                    mainloop.quit();
+                    return;
+                }
+                match core.sync(0) {
+                    Ok(seq) => pending.0 = seq,
+                    Err(err) => {
+                        *error.borrow_mut() = Some(err.to_string());
+                        mainloop.quit();
+                    }
+                }
+            }
+        })
+        .error({
+            let mainloop = mainloop.clone();
+            let error = Rc::clone(&error);
+            move |_id, _seq, _res, message| {
+                *error.borrow_mut() = Some(message.to_owned());
+                mainloop.quit();
+            }
+        })
+        .register();
+    let timeout = mainloop.loop_().add_timer({
+        let mainloop = mainloop.clone();
+        let error = Rc::clone(&error);
+        move |_| {
+            *error.borrow_mut() = Some("timed out reading the clock rate".to_owned());
+            mainloop.quit();
+        }
+    });
+    let _ = timeout.update_timer(Some(CONNECT_TIMEOUT), None);
+    mainloop.run();
+    bound.borrow_mut().clear();
+
+    if let Some(message) = error.take() {
+        return Err(AudioError::Unavailable(format!("PipeWire: {message}")));
+    }
+    Ok(settings.borrow().rate())
+}
+
+/// The clock keys of the PipeWire `settings` metadata.
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
+struct ClockSettings {
+    rate: Option<u32>,
+    force_rate: Option<u32>,
+}
+
+impl ClockSettings {
+    /// Applies a metadata property event (`None` key: all removed).
+    fn set(&mut self, key: Option<&str>, value: Option<&str>) {
+        let parsed = value.and_then(|v| v.trim().parse().ok());
+        match key {
+            None => *self = Self::default(),
+            Some("clock.rate") => self.rate = parsed,
+            Some("clock.force-rate") => self.force_rate = parsed,
+            Some(_) => {}
+        }
+    }
+
+    /// The forced rate when set (non-zero), else the rate.
+    fn rate(self) -> Option<u32> {
+        self.force_rate
+            .filter(|&r| r != 0)
+            .or(self.rate)
+            .filter(|&r| r != 0)
+    }
+}
+
 /// Open PipeWire stream: the thread running its main loop.
 pub(crate) struct PwStream {
     quit: pw::channel::Sender<()>,
@@ -568,6 +701,26 @@ mod tests {
             ]
         );
         assert_eq!(channel_layout(6).len(), 6);
+    }
+
+    #[test]
+    fn clock_rate_prefers_a_forced_rate() {
+        let mut s = ClockSettings::default();
+        assert_eq!(s.rate(), None);
+        s.set(Some("clock.rate"), Some("48000"));
+        assert_eq!(s.rate(), Some(48_000));
+        s.set(Some("clock.force-rate"), Some("0"));
+        assert_eq!(s.rate(), Some(48_000));
+        s.set(Some("clock.force-rate"), Some("44100"));
+        assert_eq!(s.rate(), Some(44_100));
+        s.set(Some("clock.force-rate"), None);
+        assert_eq!(s.rate(), Some(48_000));
+        s.set(Some("clock.quantum"), Some("1024"));
+        s.set(Some("clock.rate"), Some("bogus"));
+        assert_eq!(s.rate(), None);
+        s.set(Some("clock.rate"), Some("96000"));
+        s.set(None, None);
+        assert_eq!(s, ClockSettings::default());
     }
 
     #[test]

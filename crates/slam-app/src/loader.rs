@@ -29,6 +29,8 @@ pub struct LoadRequest {
     pub id: u64,
     pub map: PathBuf,
     pub options: PlayOptions,
+    /// Rate of the mixer the play's samples are for (ADR-0102).
+    pub sample_rate: u32,
 }
 
 /// The settings a play takes when it is prepared, sent with each request so that a
@@ -135,9 +137,23 @@ pub struct LoaderLink {
 }
 
 impl LoaderLink {
-    /// Asks for a play of `map`; `false` if too many requests wait.
-    pub fn request(&mut self, id: u64, map: PathBuf, options: PlayOptions) -> bool {
-        self.requests.push(LoadRequest { id, map, options }).is_ok()
+    /// Asks for a play of `map` with samples at `sample_rate`; `false` if too many
+    /// requests wait.
+    pub fn request(
+        &mut self,
+        id: u64,
+        map: PathBuf,
+        options: PlayOptions,
+        sample_rate: u32,
+    ) -> bool {
+        self.requests
+            .push(LoadRequest {
+                id,
+                map,
+                options,
+                sample_rate,
+            })
+            .is_ok()
     }
 
     /// A finished preparation, if any.
@@ -203,9 +219,15 @@ pub fn spawn(mut config: LoaderConfig) -> std::io::Result<(LoaderLink, SceneTras
                     idle = false;
                 }
                 if result_tx.slots() > 0
-                    && let Ok(LoadRequest { id, map, options }) = request_rx.pop()
+                    && let Ok(LoadRequest {
+                        id,
+                        map,
+                        options,
+                        sample_rate,
+                    }) = request_rx.pop()
                 {
                     idle = false;
+                    config.settings.sample_rate = sample_rate;
                     config.settings.dim = options.dim;
                     config.settings.beatmap_skins = options.beatmap_skins;
                     config.settings.beatmap_colours = options.beatmap_colours;
@@ -323,7 +345,7 @@ mod tests {
         let (mut link, _scenes, thread) = spawn(config()).unwrap();
         let map =
             Path::new(env!("CARGO_MANIFEST_DIR")).join("../slam-osu/tests/data/slider-samples.osu");
-        assert!(link.request(7, map, options()));
+        assert!(link.request(7, map, options(), slam_audio::DEFAULT_SAMPLE_RATE));
         let result = wait(&mut link);
         assert_eq!(result.id, 7);
         let prepared = result.result.unwrap();
@@ -331,7 +353,12 @@ mod tests {
         assert_eq!(prepared.scene.dim(), 0.7);
         link.free(Trash::Prepared(prepared));
 
-        assert!(link.request(8, PathBuf::from("/nonexistent/map.osu"), options()));
+        assert!(link.request(
+            8,
+            PathBuf::from("/nonexistent/map.osu"),
+            options(),
+            slam_audio::DEFAULT_SAMPLE_RATE
+        ));
         let result = wait(&mut link);
         assert_eq!(result.id, 8);
         assert!(result.result.is_err());
@@ -347,10 +374,66 @@ mod tests {
             skin: Some(PathBuf::from("/nonexistent/Skins/Gone")),
             ..options()
         };
-        assert!(link.request(3, map, options));
+        assert!(link.request(3, map, options, slam_audio::DEFAULT_SAMPLE_RATE));
         let result = wait(&mut link);
         assert_eq!(result.id, 3);
         link.free(Trash::Prepared(result.result.unwrap()));
+        drop(thread);
+    }
+
+    /// Records the rates of the samples it is asked to play.
+    #[derive(Default)]
+    struct Rates(Vec<u32>);
+
+    impl slam_play::gameplay_sounds::VoiceSink for Rates {
+        fn play_voice(
+            &mut self,
+            sample: &Arc<slam_audio::Sample>,
+            _: slam_audio::VoiceParams,
+        ) -> Result<slam_audio::VoiceId, slam_audio::PlayError> {
+            self.0.push(sample.sample_rate());
+            Ok(slam_audio::VoiceId::NONE)
+        }
+        fn stop_voice(&mut self, _: slam_audio::VoiceId) -> Result<(), slam_audio::PlayError> {
+            Ok(())
+        }
+        fn set_voice_balance(
+            &mut self,
+            _: slam_audio::VoiceId,
+            _: f32,
+        ) -> Result<(), slam_audio::PlayError> {
+            Ok(())
+        }
+        fn set_voice_gain(
+            &mut self,
+            _: slam_audio::VoiceId,
+            _: f32,
+            _: f64,
+        ) -> Result<(), slam_audio::PlayError> {
+            Ok(())
+        }
+        fn set_voice_rate(
+            &mut self,
+            _: slam_audio::VoiceId,
+            _: f64,
+        ) -> Result<(), slam_audio::PlayError> {
+            Ok(())
+        }
+    }
+
+    #[test]
+    fn samples_are_prepared_at_the_rate_of_the_request() {
+        let (mut link, _scenes, thread) = spawn(config()).unwrap();
+        let map =
+            Path::new(env!("CARGO_MANIFEST_DIR")).join("../slam-osu/tests/data/slider-samples.osu");
+        for (id, rate) in [(1, 44_100), (2, 96_000)] {
+            assert!(link.request(id, map.clone(), options(), rate));
+            let mut prepared = wait(&mut link).result.unwrap();
+            let mut sink = Rates::default();
+            prepared.sounds.play_fail(&mut sink);
+            assert_eq!(sink.0, [rate]);
+            link.free(Trash::Prepared(prepared));
+        }
         drop(thread);
     }
 
@@ -361,7 +444,7 @@ mod tests {
             Path::new(env!("CARGO_MANIFEST_DIR")).join("../slam-osu/tests/data/slider-samples.osu");
         for (id, dim) in [(1, 0.25), (2, 0.9)] {
             let options = PlayOptions { dim, ..options() };
-            assert!(link.request(id, map.clone(), options));
+            assert!(link.request(id, map.clone(), options, slam_audio::DEFAULT_SAMPLE_RATE));
             let result = wait(&mut link);
             assert_eq!(result.id, id);
             let prepared = result.result.unwrap();
@@ -384,7 +467,7 @@ mod tests {
                 cursor_trail: on,
                 ..options()
             };
-            assert!(link.request(id, map.clone(), options));
+            assert!(link.request(id, map.clone(), options, slam_audio::DEFAULT_SAMPLE_RATE));
             let prepared = wait(&mut link).result.unwrap();
             let view = prepared.scene.view();
             assert_eq!(
@@ -423,7 +506,7 @@ mod tests {
                 mods,
                 ..options()
             };
-            assert!(link.request(id, map.clone(), options));
+            assert!(link.request(id, map.clone(), options, slam_audio::DEFAULT_SAMPLE_RATE));
             let prepared = wait(&mut link).result.unwrap();
             let view = prepared.scene.view();
             let CursorScale { size, scale: got } = view.cursor.scale();
@@ -446,7 +529,7 @@ mod tests {
                 mods: mods.clone(),
                 ..options()
             };
-            assert!(link.request(id, map.clone(), options));
+            assert!(link.request(id, map.clone(), options, slam_audio::DEFAULT_SAMPLE_RATE));
             let prepared = wait(&mut link).result.unwrap();
             assert_eq!(prepared.mods, mods);
             link.free(Trash::Prepared(prepared));
