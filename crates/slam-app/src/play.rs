@@ -34,7 +34,7 @@ pub mod fps;
 mod perf;
 pub mod scene;
 use perf::{DrawFigures, FramePerf, ReportSources, SharedFrameTimes};
-use scene::{CHANNELS, PlayScene, PlaySettings, Prepared, SAMPLE_RATE, SceneGpu};
+use scene::{CHANNELS, PlayScene, PlaySettings, Prepared, SceneGpu};
 
 pub const USAGE: &str = "usage: slam-app play MAP.osu [--skin DIR] [--backend NAME] \
                          [--device ID] [--renderer auto|opengl|d3d11] [--fullscreen] [--buffer FRAMES] [--fps HZ|unlimited] \
@@ -493,14 +493,16 @@ fn play<B: render::Backend>(
             .first()
             .ok_or("no audio backend in this build")?,
     };
+    let sample_rate =
+        slam_audio::stream_rate(slam_audio::device_rate(backend, options.device.as_deref()));
     let (mut mixer, mut mixer_handle) = slam_audio::mixer(&MixerConfig {
-        sample_rate: SAMPLE_RATE,
+        sample_rate,
         channels: CHANNELS,
         ..MixerConfig::default()
     })
     .map_err(|e| e.to_string())?;
     let (music, mut player) = slam_audio::music(&MusicConfig {
-        sample_rate: SAMPLE_RATE,
+        sample_rate,
         channels: CHANNELS,
         ..MusicConfig::default()
     })
@@ -518,7 +520,7 @@ fn play<B: render::Backend>(
         backend,
         StreamConfig {
             device: options.device.clone(),
-            sample_rate: SAMPLE_RATE,
+            sample_rate,
             channels: CHANNELS,
             buffer_frames: options.buffer_frames,
             name: "SLAM".to_owned(),
@@ -545,7 +547,10 @@ fn play<B: render::Backend>(
         ..
     } = scene::prepare(
         &options.map,
-        &options.settings(),
+        &PlaySettings {
+            sample_rate,
+            ..options.settings()
+        },
         limits,
         Arc::clone(&registry),
         &labels,

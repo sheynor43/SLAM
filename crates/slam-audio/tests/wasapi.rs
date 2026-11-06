@@ -24,11 +24,15 @@ fn check_mode(mode: WasapiMode) {
         }
     }
 
+    // As the game opens it (ADR-0102): at the device's rate, so a 44.1 kHz device opens
+    // every mode without a fallback.
+    let sample_rate = slam_audio::stream_rate(slam_audio::device_rate(backend, None));
     let (checker, shared) = common::Checker::new();
     let stream = slam_audio::open_output(
         backend,
         StreamConfig {
             name: "SLAM test".to_owned(),
+            sample_rate,
             ..StreamConfig::default()
         },
         Box::new(checker),
@@ -38,8 +42,9 @@ fn check_mode(mode: WasapiMode) {
         panic!("opened as {:?}", stream.backend());
     };
     eprintln!(
-        "{mode:?} opened as {opened:?}, {} frames per buffer",
-        stream.config().buffer_frames
+        "{mode:?} opened as {opened:?}, {} frames per buffer at {} Hz",
+        stream.config().buffer_frames,
+        stream.config().sample_rate
     );
     let fallback = match mode {
         WasapiMode::Exclusive => &[
@@ -54,7 +59,7 @@ fn check_mode(mode: WasapiMode) {
     if opened != mode {
         eprintln!("NOTE: {mode:?} fell back to {opened:?} on a free device");
     }
-    assert_eq!(stream.config().sample_rate, 48_000);
+    assert_eq!(stream.config().sample_rate, sample_rate);
     common::play_and_check(stream, &shared);
 }
 

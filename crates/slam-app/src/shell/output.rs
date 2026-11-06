@@ -283,17 +283,24 @@ pub fn output_changed(settings: &AudioSettings, requested: &AudioSettings) -> bo
         || settings.buffer_frames != requested.buffer_frames
 }
 
-/// Where a closed output left the track: the track frame last handed to the device and
-/// whether it was moving. `None` without a track or once it ended.
+/// Where a closed output left the track: the track frame last handed to the device, in
+/// frames of a track at `rate` (the new output's mixer may run at another rate than the
+/// old one, ADR-0102), and whether it was moving. `None` without a track or once it
+/// ended.
 pub fn resume_point(
     output: Option<PositionSnapshot>,
     music: Option<MusicSnapshot>,
+    rate: u32,
 ) -> Option<(u64, bool)> {
     let (output, music) = (output?, music?);
     if music.ended {
         return None;
     }
-    let frame = music.track_frame_at(output.frame as f64).max(0.0);
+    let mut frame = music.track_frame_at(output.frame as f64).max(0.0);
+    // The old track's frames are at the old mixer's rate, the output's.
+    if output.sample_rate != 0 && output.sample_rate != rate {
+        frame = frame * f64::from(rate) / f64::from(output.sample_rate);
+    }
     Some((frame as u64, music.anchor.moves()))
 }
 

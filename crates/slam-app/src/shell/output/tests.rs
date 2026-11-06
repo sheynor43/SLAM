@@ -238,8 +238,26 @@ fn a_moving_track_resumes_where_the_old_output_left_it() {
         false,
     );
     assert_eq!(
-        resume_point(Some(output), Some(music)),
+        resume_point(Some(output), Some(music), 48_000),
         Some((1_000 + 36_000, true))
+    );
+}
+
+#[test]
+fn the_resume_frame_is_moved_to_the_new_outputs_rate() {
+    let (output, music) = snapshots(
+        MusicAnchor {
+            device_frame: 24_000,
+            track_frame: 96_000.0,
+            speed: 0.0,
+            accel: 0.0,
+        },
+        false,
+    );
+    // Two seconds at 48 kHz are two seconds at 44.1 kHz.
+    assert_eq!(
+        resume_point(Some(output), Some(music), 44_100),
+        Some((88_200, false))
     );
 }
 
@@ -255,7 +273,7 @@ fn a_paused_track_stays_paused_at_its_frame() {
         false,
     );
     assert_eq!(
-        resume_point(Some(output), Some(music)),
+        resume_point(Some(output), Some(music), 48_000),
         Some((5_000, false))
     );
 }
@@ -263,7 +281,7 @@ fn a_paused_track_stays_paused_at_its_frame() {
 #[test]
 fn an_ended_or_missing_track_does_not_resume() {
     let (output, music) = snapshots(MusicAnchor::default(), true);
-    assert_eq!(resume_point(Some(output), Some(music)), None);
-    assert_eq!(resume_point(None, Some(music)), None);
-    assert_eq!(resume_point(Some(output), None), None);
+    assert_eq!(resume_point(Some(output), Some(music), 48_000), None);
+    assert_eq!(resume_point(None, Some(music), 48_000), None);
+    assert_eq!(resume_point(Some(output), None, 48_000), None);
 }

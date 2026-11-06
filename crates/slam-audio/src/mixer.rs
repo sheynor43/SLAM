@@ -76,7 +76,7 @@ pub enum PlayError {
     /// stream). The command is dropped.
     #[error("mixer command queue is full")]
     QueueFull,
-    /// The sample was not converted to the mixer's rate and channels.
+    /// The sample's channels are not the mixer's.
     #[error("sample format does not match the mixer")]
     FormatMismatch,
     /// The rate is not finite or out of range: the track's
@@ -165,7 +165,9 @@ pub struct VoiceParams {
     /// `min(1, 1 + b)`. Channels after the second and mono streams are unaffected.
     pub balance: f32,
     /// Playback rate relative to the sample's own: 0 (paused) ..= [`MAX_VOICE_RATE`].
-    /// Pitch changes with it. Rates below 2⁻³³ round to 0. Lazer's 100 Hz floor is the
+    /// Pitch changes with it. A sample at another rate than the mixer's (prepared before
+    /// the output changed, ADR-0102) plays at its own pitch: the step is scaled by the
+    /// ratio of the rates. Rates below 2⁻³³ round to 0. Lazer's 100 Hz floor is the
     /// caller's to apply.
     pub rate: f64,
     /// Restarts from the first frame after the last until stopped.
@@ -779,8 +781,9 @@ impl Mixer {
                     }
                 }
                 Command::Rate { voice, step } => {
+                    let mixer_rate = self.sample_rate;
                     if let Some(voice) = self.voice(voice) {
-                        voice.step = step;
+                        voice.step = scaled_step(step, voice.sample.sample_rate(), mixer_rate);
                     }
                 }
                 Command::StopAll => {
@@ -916,10 +919,14 @@ impl MixerHandle {
         sample: &Arc<Sample>,
         params: VoiceParams,
     ) -> Result<VoiceId, PlayError> {
-        if sample.sample_rate() != self.sample_rate || sample.channels() != self.channels {
+        if sample.channels() != self.channels {
             return Err(PlayError::FormatMismatch);
         }
-        let step = rate_step(params.rate)?;
+        let step = scaled_step(
+            rate_step(params.rate)?,
+            sample.sample_rate(),
+            self.sample_rate,
+        );
         if sample.data().is_empty() {
             // Nothing to hear; queuing it could only steal a sounding voice.
             return Ok(VoiceId::NONE);
@@ -1089,6 +1096,17 @@ fn clamp_balance(balance: f32) -> f32 {
     }
 }
 
+/// `step` (in the sample's frames per output frame at the sample's own rate) for a
+/// sample at `sample_rate` played by a mixer at `mixer_rate` (ADR-0102).
+fn scaled_step(step: u64, sample_rate: u32, mixer_rate: u32) -> u64 {
+    if sample_rate == mixer_rate {
+        return step;
+    }
+    // `step` ≤ MAX_VOICE_RATE · 2³² = 2³⁵ and `sample_rate` < 2¹⁹: the product stays under
+    // 2⁵⁴. Larger arguments saturate rather than wrap.
+    step.saturating_mul(u64::from(sample_rate)) / u64::from(mixer_rate.max(1))
+}
+
 /// The 32.32 cursor step for `rate`.
 fn rate_step(rate: f64) -> Result<u64, PlayError> {
     if !(0.0..=MAX_VOICE_RATE).contains(&rate) {
@@ -1250,8 +1268,6 @@ mod tests {
         let (_m, mut h) = mono_mixer(4, 1);
         let wrong_channels = sample(&[0.0, 0.0], 2);
         assert_eq!(h.play(&wrong_channels, 1.0), Err(PlayError::FormatMismatch));
-        let wrong_rate = Arc::new(Sample::from_interleaved(vec![0.0], 44_100, 1).unwrap());
-        assert_eq!(h.play(&wrong_rate, 1.0), Err(PlayError::FormatMismatch));
         let s = sample(&[0.0], 1);
         h.play(&s, 1.0).unwrap();
         assert_eq!(h.play(&s, 1.0), Err(PlayError::QueueFull));
@@ -2270,6 +2286,96 @@ mod tests {
         );
         assert_close(&run(&mut m, 5), &[0.2, 0.3, 0.4, 0.2, 0.0]);
         assert_eq!(m.stats.active_voices.load(Ordering::Relaxed), 0);
+    }
+
+    /// A mono sample at `rate`.
+    fn sample_at(data: &[f32], rate: u32) -> Arc<Sample> {
+        Arc::new(Sample::from_interleaved(data.to_vec(), rate, 1).unwrap())
+    }
+
+    #[test]
+    fn a_sample_at_half_the_mixer_rate_keeps_its_pitch() {
+        let (mut m, mut h) = mono_mixer(4, 4);
+        h.play_voice(&sample_at(&[0.2, 0.4], RATE / 2), VoiceParams::default())
+            .unwrap();
+        // Like rate 0.5 on a sample at the mixer's rate.
+        assert_close(&run(&mut m, 5), &[0.2, 0.3, 0.4, 0.2, 0.0]);
+    }
+
+    #[test]
+    fn the_voice_rate_multiplies_the_rate_ratio() {
+        let (mut m, mut h) = mono_mixer(4, 4);
+        let voice = h
+            .play_voice(
+                &sample_at(&RAMP, RATE * 2),
+                VoiceParams {
+                    rate: 0.5,
+                    ..VoiceParams::default()
+                },
+            )
+            .unwrap();
+        // 0.5 × 2 = 1 sample frame per output frame.
+        assert_close(&run(&mut m, 2), &[0.0, 0.1]);
+        h.set_voice_rate(voice, 1.0).unwrap();
+        // 1 × 2 = 2 from the next buffer.
+        assert_close(&run(&mut m, 3), &[0.2, 0.4, 0.6]);
+    }
+
+    #[test]
+    fn a_delayed_sample_at_another_rate_starts_and_stops_on_output_frames() {
+        let (mut m, mut h) = mono_mixer(4, 8);
+        h.set_group_delay(VoiceGroup::Hitsounds, ms(2)).unwrap();
+        let voice = h
+            .play_voice(
+                &sample_at(&[0.0, 1.0], RATE / 2),
+                VoiceParams {
+                    looping: true,
+                    group: VoiceGroup::Hitsounds,
+                    ..VoiceParams::default()
+                },
+            )
+            .unwrap();
+        // Waits two output frames as at the mixer's rate, then half a sample frame a frame.
+        assert_close(&run(&mut m, 5), &[0.0, 0.0, 0.0, 0.5, 1.0]);
+        h.stop_voice(voice).unwrap();
+        // The stop waits the same two output frames.
+        assert_close(&run(&mut m, 4), &[0.5, 0.0, 0.0, 0.0]);
+        assert_eq!(m.voices.len(), 0);
+    }
+
+    #[test]
+    fn a_loop_at_another_rate_interpolates_across_the_seam() {
+        let (mut m, mut h) = mono_mixer(4, 4);
+        h.play_voice(
+            &sample_at(&RAMP[..4], RATE * 3 / 2),
+            VoiceParams { rate: 1.0, ..LOOP },
+        )
+        .unwrap();
+        // As `looping_at_a_fractional_rate_interpolates_across_the_seam`: step 1.5.
+        assert_close(&run(&mut m, 6), &[0.0, 0.15, 0.3, 0.05, 0.2, 0.15]);
+    }
+
+    #[test]
+    fn a_step_longer_than_a_loop_wraps_at_once() {
+        let (mut m, mut h) = mono_mixer(4, 4);
+        // 8 × 2 = 16 frames of a 3-frame loop per output frame: 0, 16 % 3 = 1, 17 % 3 = 2.
+        h.play_voice(
+            &sample_at(&RAMP[..3], RATE * 2),
+            VoiceParams {
+                rate: MAX_VOICE_RATE,
+                ..LOOP
+            },
+        )
+        .unwrap();
+        assert_close(&run(&mut m, 3), &[0.0, 0.1, 0.2]);
+    }
+
+    #[test]
+    fn scaled_step_is_exact_for_equal_rates_and_bounded_for_extremes() {
+        assert_eq!(scaled_step(FRAME, 48_000, 48_000), FRAME);
+        assert_eq!(scaled_step(FRAME, 44_100, 88_200), FRAME / 2);
+        let max = rate_step(MAX_VOICE_RATE).unwrap();
+        assert_eq!(scaled_step(max, 384_000, 8_000), max * 48);
     }
 
     #[test]

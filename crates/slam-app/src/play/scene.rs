@@ -43,8 +43,8 @@ use slam_ui::i18n::{FluentArgs, Localizer};
 use super::find_beatmap_file;
 use super::fps::{FpsOverlay, MAX_FPS_GLYPHS};
 
-/// The mixer's format; the shell's output and the `play` command's use it.
-pub(crate) const SAMPLE_RATE: u32 = 48_000;
+/// The mixer's channels; the shell's output and the `play` command's use them. The rate
+/// is the device's (ADR-0102), [`PlaySettings::sample_rate`].
 pub(crate) const CHANNELS: u16 = 2;
 /// Sprites of one frame: every live circle's pieces, numbers and approach circle (a ring
 /// of `RING_QUADS` quads), slider ticks (up to `MAX_LIVE_NESTED`) and repeats, and judgement
@@ -95,6 +95,8 @@ pub struct PlaySettings {
     pub auto_cursor_size: bool,
     /// Lazer's `PositionalHitsoundsLevel` (ADR-0087).
     pub positional_hitsounds_level: f32,
+    /// Rate of the mixer the samples are prepared for (ADR-0102).
+    pub sample_rate: u32,
 }
 
 impl Default for PlaySettings {
@@ -114,6 +116,7 @@ impl Default for PlaySettings {
             cursor_size: 1.0,
             auto_cursor_size: false,
             positional_hitsounds_level: DEFAULT_POSITIONAL_LEVEL,
+            sample_rate: slam_audio::DEFAULT_SAMPLE_RATE,
         }
     }
 }
@@ -241,7 +244,7 @@ pub fn prepare(
     let mods = &loaded.mods;
     let beatmap = &loaded.beatmap;
 
-    let mut cache = SampleCache::new(SAMPLE_RATE, CHANNELS);
+    let mut cache = SampleCache::new(settings.sample_rate, CHANNELS);
     let sample_skins = SampleSkins {
         // Like lazer's `AllowSampleLookup`, disabled beatmap hitsounds drop the whole
         // beatmap skin from the sample lookup.

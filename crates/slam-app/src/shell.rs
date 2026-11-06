@@ -68,7 +68,7 @@ use crate::displays::{ListsLink, ShownViews};
 use crate::loader::{LoaderConfig, LoaderLink, PlayOptions, SceneTrash, Trash};
 use crate::play::fps::{FpsDisplay, FpsOverlay, FpsSource, MAX_FPS_GLYPHS};
 use crate::play::pack_size;
-use crate::play::scene::{CHANNELS, PlayScene, PlaySettings, Prepared, SAMPLE_RATE, SceneGpu};
+use crate::play::scene::{CHANNELS, PlayScene, PlaySettings, Prepared, SceneGpu};
 use crate::replays::{ReplayBeatmap, ReplayJob};
 use crate::settings::saver::SaveLink;
 use crate::settings::{Combo, Dirs, InputSettings, KeySlot, Mods, Settings};
@@ -1764,6 +1764,8 @@ struct Audio {
     music: Arc<MusicPosition>,
     /// The gains `mixer` and `player` were last given.
     volumes: AppliedVolumes,
+    /// Rate of the mixer, the tracks and the output (ADR-0102).
+    sample_rate: u32,
 }
 
 /// How long a play's track may take to open.
@@ -2063,7 +2065,8 @@ impl PlayHost {
                         ..live::play_options(state.settings())
                     };
                     self.play_requested = Some((self.next_request, options.clone()));
-                    self.loader.request(self.next_request, map, options)
+                    self.loader
+                        .request(self.next_request, map, options, self.audio.sample_rate)
                 }
                 Some(_) if self.no_output => {
                     tracing::warn!("play: not started, no audio output is open");
@@ -2212,10 +2215,12 @@ impl PlayHost {
             return;
         }
         self.next_request += 1;
-        if !self
-            .loader
-            .request(self.next_request, map.clone(), options.clone())
-        {
+        if !self.loader.request(
+            self.next_request,
+            map.clone(),
+            options.clone(),
+            self.audio.sample_rate,
+        ) {
             // The loader's queue is full: asked again on the next tick.
             state.settings_changed = true;
         } else {
@@ -2366,8 +2371,9 @@ impl PlayHost {
         }
     }
 
-    /// Takes the output the output thread opened, once no play or play's track waits on the
-    /// old one (ADR-0089): the track plays on from where the old output left it, with its
+    /// Takes the output the output thread opened, once no play, play's preparation or
+    /// play's track waits on the old one (ADR-0089; the preparation's samples are at the old
+    /// output's rate, ADR-0102): the track plays on from where the old output left it, with its
     /// rate. The old handles go to the output thread to be freed: their player joins its
     /// decoder. Allocates only then.
     fn switch_output(&mut self) {
@@ -2382,7 +2388,7 @@ impl PlayHost {
         if !self.switching
             || self.retired.is_some()
             || self.game.is_some()
-            || matches!(self.pending, Pending::Track { .. })
+            || matches!(self.pending, Pending::Preparing(_) | Pending::Track { .. })
         {
             return;
         }
@@ -2402,7 +2408,7 @@ impl PlayHost {
             .music
             .read()
             .filter(|m| m.generation == self.audio.player.generation());
-        let resume = output::resume_point(self.audio.output.read(), music);
+        let resume = output::resume_point(self.audio.output.read(), music, new.sample_rate);
         if let (Some(track), Some((frame, playing))) = (&self.track, resume) {
             let player = &mut new.player;
             // A fresh queue takes these; a failure leaves the track stopped.
@@ -3284,14 +3290,23 @@ fn open_audio(
 ) -> Result<(Audio, slam_audio::OutputStream), String> {
     let backend = pick_backend(settings.backend.as_deref(), Backend::available())
         .ok_or("no audio backend in this build")?;
+    let listed = settings
+        .device
+        .as_ref()
+        .and_then(|_| slam_audio::devices(backend).ok());
+    let device = pick_device(settings.device.as_deref(), listed.as_deref());
+    // The device's own rate spares the system a resampler and lets WASAPI LowLatency
+    // and Exclusive open (ADR-0102).
+    let sample_rate = slam_audio::stream_rate(slam_audio::device_rate(backend, device.as_deref()));
+    tracing::info!(sample_rate, "audio: mixer rate");
     let (mut mixer, mut mixer_handle) = slam_audio::mixer(&MixerConfig {
-        sample_rate: SAMPLE_RATE,
+        sample_rate,
         channels: CHANNELS,
         ..MixerConfig::default()
     })
     .map_err(|e| e.to_string())?;
     let (music, mut player) = slam_audio::music(&MusicConfig {
-        sample_rate: SAMPLE_RATE,
+        sample_rate,
         channels: CHANNELS,
         ..MusicConfig::default()
     })
@@ -3300,7 +3315,7 @@ fn open_audio(
     let mut previews = Vec::with_capacity(2);
     for _ in 0..2 {
         let (music, mut preview) = slam_audio::music(&MusicConfig {
-            sample_rate: SAMPLE_RATE,
+            sample_rate,
             channels: CHANNELS,
             ..MusicConfig::default()
         })
@@ -3330,15 +3345,11 @@ fn open_audio(
     mixer_handle
         .set_group_delay(VoiceGroup::Hitsounds, volumes.hitsound_delay_ms)
         .map_err(|e| e.to_string())?;
-    let listed = settings
-        .device
-        .as_ref()
-        .and_then(|_| slam_audio::devices(backend).ok());
     let stream = slam_audio::open_output(
         backend,
         StreamConfig {
-            device: pick_device(settings.device.as_deref(), listed.as_deref()),
-            sample_rate: SAMPLE_RATE,
+            device,
+            sample_rate,
             channels: CHANNELS,
             buffer_frames: settings.buffer_frames,
             name: "SLAM".to_owned(),
@@ -3353,6 +3364,7 @@ fn open_audio(
         previews,
         mixer: mixer_handle,
         volumes: AppliedVolumes::new(volumes),
+        sample_rate,
     };
     Ok((audio, stream))
 }
