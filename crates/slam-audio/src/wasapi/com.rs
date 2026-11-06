@@ -1,13 +1,14 @@
 //! WASAPI through COM: device listing, stream setup per mode and the render loop.
 //!
 //! Each stream owns a thread (`slam-audio-wasapi`) in the COM multithreaded apartment,
-//! registered with MMCSS as "Pro Audio". It sets the stream up, reports the result to
-//! `open_output`, then waits on the stream event and fills one buffer per wake-up.
+//! registered with MMCSS as "Pro Audio". It sets the stream up (for a short exclusive
+//! period, calibrates it against the driver's real event step, ADR-0101), reports the
+//! result to `open_output`, then waits on the stream event and fills one buffer per wake-up.
 
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, mpsc};
 use std::thread::{self, JoinHandle};
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use windows::Win32::Devices::FunctionDiscovery::PKEY_Device_FriendlyName;
 use windows::Win32::Foundation::{CloseHandle, HANDLE, WAIT_FAILED, WAIT_OBJECT_0};
@@ -33,8 +34,10 @@ use windows::Win32::System::Threading::{
 use windows::core::{HSTRING, Interface, PWSTR, w};
 
 use super::{
-    EnginePeriods, SampleFormat, aligned_period_hns, channel_mask, convert, exclusive_period_hns,
-    fallback_chain, frames_from_hns, latency_ns, low_latency_period, qpc_hns_to_ns,
+    CALIBRATION_EVENTS, CALIBRATION_WARMUP, EnginePeriods, MAX_EXCLUSIVE_ATTEMPTS, SampleFormat,
+    aligned_period_hns, calibrates, calibration_verdict, channel_mask, convert,
+    exclusive_period_hns, fallback_chain, frames_from_hns, latency_ns, lead_frames,
+    low_latency_period, median_ns, next_exclusive_period_hns, qpc_hns_to_ns,
     shared_frames_to_write, underrun,
 };
 use crate::hal::{AudioCallback, AudioError, CallbackInfo, DeviceInfo, StreamConfig};
@@ -279,13 +282,6 @@ fn stream_thread(
     let _mmcss = Mmcss::join()
         .inspect_err(|err| tracing::warn!(%err, "MMCSS \"Pro Audio\" unavailable"))
         .ok();
-    let session = match open_session(mode, config) {
-        Ok(session) => session,
-        Err(err) => {
-            let _ = ready.send(Err(err));
-            return;
-        }
-    };
     let mut render = Render {
         callback,
         position,
@@ -296,13 +292,13 @@ fn stream_thread(
         rate: config.sample_rate,
         channels: config.channels,
     };
-    if session.format != SampleFormat::F32 {
-        render.scratch = vec![0.0; session.buffer_frames as usize * usize::from(config.channels)];
-    }
-    if let Err(err) = session.start(&mut render) {
-        let _ = ready.send(Err(AudioError::Stream(format!("WASAPI: starting: {err}"))));
-        return;
-    }
+    let session = match open_started(mode, config, &mut render, quit) {
+        Ok(session) => session,
+        Err(err) => {
+            let _ = ready.send(Err(err));
+            return;
+        }
+    };
     let _ = ready.send(Ok((session.mode, session.period_frames)));
 
     let result = session.run(&mut render, quit);
@@ -314,8 +310,117 @@ fn stream_thread(
     }
 }
 
+/// Opens the first working mode of `mode`'s fallback chain, starts it and settles a short
+/// exclusive period (ADR-0101). If reopening an exclusive stream fails midway (the device
+/// taken by another program, a period the driver rejects), falls back to the shared modes
+/// as an unavailable exclusive mode would.
+fn open_started(
+    mode: WasapiMode,
+    config: &StreamConfig,
+    render: &mut Render,
+    quit: &AtomicBool,
+) -> Result<Session, AudioError> {
+    let session = open_session(mode, config)?;
+    let exclusive = session.mode == WasapiMode::Exclusive;
+    render.fit(&session);
+    render.written = 0;
+    session
+        .start(render)
+        .map_err(|err| AudioError::Stream(format!("WASAPI: starting: {err}")))?;
+    match settle_exclusive(session, render, config, quit) {
+        Ok(session) => Ok(session),
+        Err(err) if exclusive => {
+            tracing::warn!(%err, "WASAPI exclusive: reopening failed, falling back");
+            open_started(WasapiMode::LowLatency, config, render, quit).map_err(|fallback| {
+                AudioError::Stream(format!(
+                    "WASAPI: exclusive failed while settling its period ({err}); {fallback}"
+                ))
+            })
+        }
+        Err(err) => Err(AudioError::Stream(format!("WASAPI: starting: {err}"))),
+    }
+}
+
+/// Calibrates a short exclusive period and reopens the stream with a longer one until the
+/// driver keeps up (ADR-0101): requested period → measured event step → device default.
+/// Runs after `Start` and before the stream is reported open; the calibration writes
+/// silence, which the callback never sees and the underrun check treats as prefill.
+fn settle_exclusive(
+    mut session: Session,
+    render: &mut Render,
+    config: &StreamConfig,
+    quit: &AtomicBool,
+) -> windows::core::Result<Session> {
+    if session.mode != WasapiMode::Exclusive {
+        return Ok(session);
+    }
+    for attempt in 1..=MAX_EXCLUSIVE_ATTEMPTS {
+        let current_hns = aligned_period_hns(session.buffer_frames, session.rate);
+        if !calibrates(current_hns, session.default_hns, attempt > 1) {
+            break;
+        }
+        let Some(calibration) = session.calibrate(render, quit)? else {
+            // Closing, or no events for a while: the render loop sees either.
+            break;
+        };
+        if !calibration.starving {
+            break;
+        }
+        let next_hns =
+            next_exclusive_period_hns(current_hns, session.default_hns, calibration.step_ns);
+        let Some(next_hns) = next_hns.filter(|_| attempt < MAX_EXCLUSIVE_ATTEMPTS) else {
+            tracing::warn!(
+                period_frames = session.buffer_frames,
+                event_step_us = calibration.step_ns / 1_000,
+                "WASAPI exclusive: the device keeps running dry, out of periods to try"
+            );
+            break;
+        };
+        tracing::info!(
+            period_frames = session.buffer_frames,
+            event_step_us = calibration.step_ns / 1_000,
+            next_period_us = next_hns / 10,
+            "WASAPI exclusive: the driver signals less often than the period, reopening"
+        );
+        // SAFETY: COM call on a valid client.
+        unsafe { session.client.Stop() }?;
+        let device = session.device.clone();
+        // Releases the device: an exclusive endpoint takes one client at a time.
+        drop(session);
+        let (client, format, period) = init_exclusive(&device, config, Some(next_hns))?;
+        session = finish_session(
+            &device,
+            WasapiMode::Exclusive,
+            client,
+            format,
+            period,
+            config.sample_rate,
+        )?;
+        render.fit(&session);
+        // A new client counts its position from zero; the callback has seen nothing yet.
+        render.written = 0;
+        session.start(render)?;
+    }
+    render.prefill = render.written;
+    Ok(session)
+}
+
+/// Outcome of an exclusive-period calibration.
+struct Calibration {
+    /// Median interval between buffer events, nanoseconds.
+    step_ns: u64,
+    /// The device kept running ahead of the stream: the period is too short.
+    starving: bool,
+}
+
 /// An initialised audio client with its services.
 struct Session {
+    /// The endpoint, kept to reopen an exclusive stream with another period (ADR-0101).
+    device: IMMDevice,
+    /// Stream sample rate, Hz.
+    rate: u32,
+    /// Device default period (`GetDevicePeriod`), 100-ns units.
+    default_hns: i64,
     mode: WasapiMode,
     format: SampleFormat,
     /// Endpoint buffer size, frames.
@@ -465,59 +570,94 @@ fn init_mode(
                 )?;
                 (client.cast::<IAudioClient>()?, SampleFormat::F32, period)
             }
-            WasapiMode::Exclusive => {
-                let mut client: IAudioClient = device.Activate(CLSCTX_ALL, None)?;
-                let format = SampleFormat::EXCLUSIVE_PREFERENCE
-                    .into_iter()
-                    .find(|&f| {
-                        let wave = wave_format(f, rate, channels);
-                        client
-                            .IsFormatSupported(
-                                AUDCLNT_SHAREMODE_EXCLUSIVE,
-                                as_wave_format(&wave),
-                                None,
-                            )
-                            .is_ok()
-                    })
-                    .ok_or_else(|| {
-                        mode_error(format!("no exclusive format for {rate} Hz × {channels} ch"))
-                    })?;
-                let wave = wave_format(format, rate, channels);
+            WasapiMode::Exclusive => init_exclusive(device, config, None)?,
+        };
+        finish_session(device, mode, client, format, period_frames, rate)
+    }
+}
+
+/// Initialises an exclusive-mode client with period `period_hns`, or the requested
+/// `buffer_frames` (at least the device minimum) when `None`. Returns the client, its
+/// sample format and the buffer size (event-driven exclusive streams consume the whole
+/// buffer per event).
+fn init_exclusive(
+    device: &IMMDevice,
+    config: &StreamConfig,
+    period_hns: Option<i64>,
+) -> windows::core::Result<(IAudioClient, SampleFormat, u32)> {
+    let rate = config.sample_rate;
+    let channels = config.channels;
+    // SAFETY (whole block): COM calls on valid interfaces with pointers to live locals.
+    unsafe {
+        let mut client: IAudioClient = device.Activate(CLSCTX_ALL, None)?;
+        let format = SampleFormat::EXCLUSIVE_PREFERENCE
+            .into_iter()
+            .find(|&f| {
+                let wave = wave_format(f, rate, channels);
+                client
+                    .IsFormatSupported(AUDCLNT_SHAREMODE_EXCLUSIVE, as_wave_format(&wave), None)
+                    .is_ok()
+            })
+            .ok_or_else(|| {
+                mode_error(format!("no exclusive format for {rate} Hz × {channels} ch"))
+            })?;
+        let wave = wave_format(format, rate, channels);
+        let period_hns = match period_hns {
+            Some(hns) => hns,
+            None => {
                 let mut min_hns = 0;
                 client.GetDevicePeriod(None, Some(&mut min_hns))?;
-                let period_hns = exclusive_period_hns(config.buffer_frames, rate, min_hns);
-                let init = |client: &IAudioClient, period_hns| {
-                    client.Initialize(
-                        AUDCLNT_SHAREMODE_EXCLUSIVE,
-                        AUDCLNT_STREAMFLAGS_EVENTCALLBACK,
-                        period_hns,
-                        period_hns,
-                        as_wave_format(&wave),
-                        None,
-                    )
-                };
-                if let Err(err) = init(&client, period_hns) {
-                    if err.code() != AUDCLNT_E_BUFFER_SIZE_NOT_ALIGNED {
-                        return Err(err);
-                    }
-                    // The size the driver can do; retry on a fresh client.
-                    let aligned = client.GetBufferSize()?;
-                    client = device.Activate(CLSCTX_ALL, None)?;
-                    init(&client, aligned_period_hns(aligned, rate))?;
-                }
-                // Event-driven exclusive streams consume the whole buffer per event.
-                let period = client.GetBufferSize()?;
-                (client, format, period)
+                exclusive_period_hns(config.buffer_frames, rate, min_hns)
             }
         };
+        let init = |client: &IAudioClient, period_hns| {
+            client.Initialize(
+                AUDCLNT_SHAREMODE_EXCLUSIVE,
+                AUDCLNT_STREAMFLAGS_EVENTCALLBACK,
+                period_hns,
+                period_hns,
+                as_wave_format(&wave),
+                None,
+            )
+        };
+        if let Err(err) = init(&client, period_hns) {
+            if err.code() != AUDCLNT_E_BUFFER_SIZE_NOT_ALIGNED {
+                return Err(err);
+            }
+            // The size the driver can do; retry on a fresh client.
+            let aligned = client.GetBufferSize()?;
+            drop(client);
+            client = device.Activate(CLSCTX_ALL, None)?;
+            init(&client, aligned_period_hns(aligned, rate))?;
+        }
+        let period = client.GetBufferSize()?;
+        Ok((client, format, period))
+    }
+}
 
+/// Wraps an initialised client into a [`Session`]: event, services, clock and periods.
+fn finish_session(
+    device: &IMMDevice,
+    mode: WasapiMode,
+    client: IAudioClient,
+    format: SampleFormat,
+    period_frames: u32,
+    rate: u32,
+) -> windows::core::Result<Session> {
+    // SAFETY (whole block): COM calls on valid interfaces with pointers to live locals.
+    unsafe {
         let event = Event::new()?;
         client.SetEventHandle(event.0)?;
         let render: IAudioRenderClient = client.GetService()?;
         let clock: IAudioClock = client.GetService()?;
         let clock_frequency = clock.GetFrequency()?;
         let buffer_frames = client.GetBufferSize()?;
+        let mut default_hns = 0;
+        client.GetDevicePeriod(Some(&mut default_hns), None)?;
         Ok(Session {
+            device: device.clone(),
+            rate,
+            default_hns,
             mode,
             format,
             buffer_frames,
@@ -548,7 +688,97 @@ struct Render<'a> {
     channels: u16,
 }
 
+impl Render<'_> {
+    /// Sizes the `f32` staging buffer for `session` (empty for float devices).
+    fn fit(&mut self, session: &Session) {
+        self.scratch.clear();
+        if session.format != SampleFormat::F32 {
+            self.scratch.resize(
+                session.buffer_frames as usize * usize::from(self.channels),
+                0.0,
+            );
+        }
+    }
+}
+
 impl Session {
+    /// Writes silence for [`CALIBRATION_WARMUP`] + [`CALIBRATION_EVENTS`] buffer events and
+    /// measures the interval between wake-ups and how far the device runs ahead of the
+    /// stream (ADR-0101). Afterwards `render.written` includes the buffers the device
+    /// replayed, so the latency and underrun accounting of the render loop start from the
+    /// device's real position. `None` if `quit` is set, the events stop coming or the clock fails.
+    fn calibrate(
+        &self,
+        render: &mut Render,
+        quit: &AtomicBool,
+    ) -> windows::core::Result<Option<Calibration>> {
+        let mut intervals = [0u64; CALIBRATION_EVENTS];
+        let mut leads = [0i64; CALIBRATION_EVENTS + 1];
+        let mut measured = 0;
+        let mut seen = 0;
+        let mut previous: Option<Instant> = None;
+        while measured < CALIBRATION_EVENTS {
+            if quit.load(Ordering::Relaxed) {
+                return Ok(None);
+            }
+            // SAFETY: a valid event handle owned by `self`.
+            let woke = unsafe { WaitForSingleObject(self.event.0, EVENT_TIMEOUT_MS) };
+            if woke == WAIT_FAILED {
+                return Err(windows::core::Error::from_thread());
+            }
+            if woke != WAIT_OBJECT_0 {
+                return Ok(None);
+            }
+            let now = Instant::now();
+            let lead = self.lead(render.written);
+            // SAFETY: COM calls on a valid render client; the buffer is released unwritten
+            // with the silent flag.
+            unsafe {
+                self.render.GetBuffer(self.buffer_frames)?;
+                self.render
+                    .ReleaseBuffer(self.buffer_frames, AUDCLNT_BUFFERFLAGS_SILENT.0 as u32)?;
+            }
+            render.written += u64::from(self.buffer_frames);
+            let Some(lead) = lead else {
+                // Without the device position the leads say nothing: keep the period. The
+                // buffer is written first, so the device does not replay a stale one.
+                return Ok(None);
+            };
+            seen += 1;
+            if seen == CALIBRATION_WARMUP {
+                leads[0] = lead;
+            } else if seen > CALIBRATION_WARMUP
+                && let Some(previous) = previous
+            {
+                intervals[measured] =
+                    u64::try_from(now.duration_since(previous).as_nanos()).unwrap_or(u64::MAX);
+                measured += 1;
+                leads[measured] = lead;
+            }
+            previous = Some(now);
+        }
+        let verdict = calibration_verdict(&leads, self.buffer_frames);
+        render.written += verdict.replayed;
+        Ok(Some(Calibration {
+            step_ns: median_ns(&mut intervals),
+            starving: verdict.starving,
+        }))
+    }
+
+    /// [`lead_frames`] for the device now, `written` frames handed over; `None` without a
+    /// clock report.
+    fn lead(&self, written: u64) -> Option<i64> {
+        let mut device_position = 0;
+        // SAFETY: COM call with a valid out pointer.
+        unsafe { self.clock.GetPosition(&mut device_position, None) }.ok()?;
+        Some(lead_frames(
+            written,
+            device_position,
+            self.clock_frequency,
+            self.rate,
+        ))
+    }
+
     /// Frames to write now.
     fn frames_due(&self) -> windows::core::Result<u32> {
         if self.mode == WasapiMode::Exclusive {
