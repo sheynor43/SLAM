@@ -1041,7 +1041,7 @@ fn renderer_is_read_and_an_invalid_one_falls_back_to_opengl() {
 #[test]
 fn the_renderer_choice_maps_to_a_backend() {
     use crate::backend::Renderer;
-    assert_eq!(RendererChoice::OpenGl.to_backend(), Renderer::OpenGl);
+    assert_eq!(RendererChoice::OpenGl.to_backend(), Renderer::Auto);
     assert_eq!(RendererChoice::D3d11.to_backend(), Renderer::PreferD3d11);
     assert_eq!(RendererChoice::default(), RendererChoice::OpenGl);
 }

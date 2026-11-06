@@ -1,6 +1,7 @@
-//! The render backend, chosen once at start (ADR-0024, ADR-0080, ADR-0104): OpenGL 3.3
-//! by default; on Windows Direct3D 11 when asked for, from the settings with OpenGL 3.3
-//! when its device or swapchain cannot be made. Scenes are generic over [`Backend`], so
+//! The render backend, chosen once at start (ADR-0024, ADR-0080, ADR-0104, ADR-0105):
+//! OpenGL 3.3 by default, on Windows with Direct3D 11 when OpenGL cannot start; on
+//! Windows Direct3D 11 when asked for, from the settings with OpenGL 3.3 when its
+//! device or swapchain cannot be made. Scenes are generic over [`Backend`], so
 //! a frame runs one backend's code without a `match` or dynamic dispatch.
 
 use slam_engine::gl::SdlGlSurface;
@@ -11,9 +12,11 @@ use slam_render::{Device, DeviceError, Limits};
 /// Which backend to use.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub enum Renderer {
-    /// The platform default: OpenGL 3.3 (ADR-0104).
+    /// The platform default: OpenGL 3.3 (ADR-0104), on Windows with the Direct3D 11
+    /// fallback (the settings, ADR-0105).
     #[default]
     Auto,
+    /// OpenGL 3.3 without the fallback (the command line).
     OpenGl,
     /// Direct3D 11 without the fallback (the command line): failing to make it is an
     /// error.
@@ -104,7 +107,8 @@ impl Backend for SdlGlSurface {
         let device = GlDevice::new(SdlGlSurface(context), GlDebug::for_build())
             .map_err(|e| e.to_string())?;
         let limits = device.limits();
-        let surface = device.into_surface().map_err(|e| e.to_string())?;
+        let mut surface = device.into_surface().map_err(|e| e.to_string())?;
+        hand_off(&mut surface)?;
         Ok(Opened {
             surface,
             limits,
@@ -128,6 +132,25 @@ impl Backend for SdlGlSurface {
     fn finish(device: &mut Self::Device) {
         device.finish();
     }
+}
+
+/// Makes the context current on another thread and releases it there, as the draw
+/// thread will (ADR-0105): on Windows `wglMakeCurrent` has failed there although the
+/// window thread made the context current, and that failure can still fall back.
+fn hand_off(surface: &mut SdlGlSurface) -> Result<(), String> {
+    let context = &mut surface.0;
+    std::thread::scope(|scope| {
+        std::thread::Builder::new()
+            .name("slam-gl-handoff".into())
+            .spawn_scoped(scope, || {
+                context.make_current()?;
+                context.release_current()
+            })
+            .map_err(|e| e.to_string())?
+            .join()
+            .map_err(|_| "the thread panicked".to_owned())?
+    })
+    .map_err(|e| format!("handing the GL context to another thread: {e}"))
 }
 
 #[cfg(windows)]
@@ -198,9 +221,9 @@ pub trait WithBackend {
 }
 
 /// Opens a window with `window` and its surface for the backend `renderer` picks, and
-/// runs `then` with them. With [`Renderer::PreferD3d11`] on Windows, a failure to make
-/// the Direct3D 11 device or swapchain is logged and its window closed before OpenGL's
-/// opens.
+/// runs `then` with them. On Windows, with [`Renderer::Auto`] a failure to start OpenGL
+/// is logged and its window closed before Direct3D 11's opens; with
+/// [`Renderer::PreferD3d11`] the other way round.
 pub fn run<W: WithBackend>(
     renderer: Renderer,
     priority: PriorityRequest,
@@ -208,17 +231,17 @@ pub fn run<W: WithBackend>(
     then: W,
 ) -> Result<W::Output, String> {
     #[cfg(windows)]
-    let primary = || open::<slam_engine::d3d11::SdlNativeWindow>(&window, priority);
+    let d3d11 = || open::<slam_engine::d3d11::SdlNativeWindow>(&window, priority);
     #[cfg(not(windows))]
-    let primary = || -> Result<(InputWindow, Opened<SdlGlSurface>), String> {
+    let d3d11 = || -> Result<(InputWindow, Opened<SdlGlSurface>), String> {
         Err("Direct3D 11 is only available on Windows".into())
     };
-    let opened = choose(renderer, cfg!(windows), primary, || {
+    let opened = choose(renderer, cfg!(windows), d3d11, || {
         open::<SdlGlSurface>(&window, priority)
     })?;
     Ok(match opened {
-        Chosen::Primary((window, opened)) => then.run(window, opened),
-        Chosen::Fallback((window, opened)) => then.run(window, opened),
+        Chosen::D3d11((window, opened)) => then.run(window, opened),
+        Chosen::OpenGl((window, opened)) => then.run(window, opened),
     })
 }
 
@@ -232,30 +255,37 @@ fn open<B: Backend>(
     Ok((window, opened))
 }
 
-/// Which of the platform's primary backend and the OpenGL fallback was opened.
+/// Which backend was opened.
 #[derive(Debug, PartialEq, Eq)]
-enum Chosen<P, F> {
-    Primary(P),
-    Fallback(F),
+enum Chosen<D, G> {
+    D3d11(D),
+    OpenGl(G),
 }
 
-/// Opens the backend `renderer` asks for. `has_primary`: the platform has a backend
-/// besides OpenGL (Direct3D 11), which [`Renderer::PreferD3d11`] tries first.
-fn choose<P, F>(
+/// Opens the backend `renderer` asks for. `has_d3d11`: the platform has Direct3D 11,
+/// which [`Renderer::Auto`] falls back to and [`Renderer::PreferD3d11`] tries first.
+fn choose<D, G>(
     renderer: Renderer,
-    has_primary: bool,
-    primary: impl FnOnce() -> Result<P, String>,
-    fallback: impl FnOnce() -> Result<F, String>,
-) -> Result<Chosen<P, F>, String> {
+    has_d3d11: bool,
+    d3d11: impl FnOnce() -> Result<D, String>,
+    opengl: impl FnOnce() -> Result<G, String>,
+) -> Result<Chosen<D, G>, String> {
     match renderer {
-        Renderer::Auto | Renderer::OpenGl => fallback().map(Chosen::Fallback),
-        Renderer::D3d11 => primary().map(Chosen::Primary),
-        Renderer::PreferD3d11 if !has_primary => fallback().map(Chosen::Fallback),
-        Renderer::PreferD3d11 => match primary() {
-            Ok(primary) => Ok(Chosen::Primary(primary)),
+        Renderer::OpenGl => opengl().map(Chosen::OpenGl),
+        Renderer::D3d11 => d3d11().map(Chosen::D3d11),
+        Renderer::Auto | Renderer::PreferD3d11 if !has_d3d11 => opengl().map(Chosen::OpenGl),
+        Renderer::Auto => match opengl() {
+            Ok(opengl) => Ok(Chosen::OpenGl(opengl)),
+            Err(e) => {
+                tracing::warn!("{e}; falling back to Direct3D 11");
+                d3d11().map(Chosen::D3d11)
+            }
+        },
+        Renderer::PreferD3d11 => match d3d11() {
+            Ok(d3d11) => Ok(Chosen::D3d11(d3d11)),
             Err(e) => {
                 tracing::warn!("{e}; falling back to OpenGL 3.3");
-                fallback().map(Chosen::Fallback)
+                opengl().map(Chosen::OpenGl)
             }
         },
     }
@@ -274,63 +304,91 @@ mod tests {
         }
     }
 
+    fn failing() -> Result<u32, String> {
+        Err("no context".into())
+    }
+
     #[test]
-    fn auto_is_opengl_everywhere() {
-        for has_primary in [true, false] {
-            let (p, f) = (Cell::new(0), Cell::new(0));
+    fn auto_opens_opengl() {
+        for has_d3d11 in [true, false] {
+            let (d, g) = (Cell::new(0), Cell::new(0));
             assert_eq!(
-                choose(Renderer::Auto, has_primary, ok(&p), ok(&f)),
-                Ok(Chosen::Fallback(1))
+                choose(Renderer::Auto, has_d3d11, ok(&d), ok(&g)),
+                Ok(Chosen::OpenGl(1))
             );
-            assert_eq!(p.get(), 0);
+            assert_eq!(d.get(), 0);
         }
     }
 
     #[test]
-    fn prefer_d3d11_opens_the_primary_backend() {
-        let (p, f) = (Cell::new(0), Cell::new(0));
+    fn auto_falls_back_to_d3d11_when_opengl_fails() {
+        let d = Cell::new(0);
         assert_eq!(
-            choose(Renderer::PreferD3d11, true, ok(&p), ok(&f)),
-            Ok(Chosen::Primary(1))
-        );
-        assert_eq!(f.get(), 0);
-    }
-
-    #[test]
-    fn prefer_d3d11_falls_back_when_the_primary_fails() {
-        let f = Cell::new(0);
-        let failing = || -> Result<u32, String> { Err("no swapchain".into()) };
-        assert_eq!(
-            choose(Renderer::PreferD3d11, true, failing, ok(&f)),
-            Ok(Chosen::Fallback(1))
+            choose(Renderer::Auto, true, ok(&d), failing),
+            Ok(Chosen::D3d11(1))
         );
     }
 
     #[test]
-    fn prefer_d3d11_uses_opengl_without_a_primary_backend() {
-        let (p, f) = (Cell::new(0), Cell::new(0));
+    fn auto_reports_the_d3d11_failure_when_both_fail() {
+        let d3d11 = || -> Result<u32, String> { Err("no swapchain".into()) };
         assert_eq!(
-            choose(Renderer::PreferD3d11, false, ok(&p), ok(&f)),
-            Ok(Chosen::Fallback(1))
+            choose(Renderer::Auto, true, d3d11, failing),
+            Err::<Chosen<u32, u32>, _>("no swapchain".into())
         );
-        assert_eq!(p.get(), 0);
+    }
+
+    #[test]
+    fn auto_without_d3d11_reports_the_opengl_failure() {
+        let d = Cell::new(0);
+        assert_eq!(
+            choose(Renderer::Auto, false, ok(&d), failing),
+            Err::<Chosen<u32, u32>, _>("no context".into())
+        );
+        assert_eq!(d.get(), 0);
+    }
+
+    #[test]
+    fn prefer_d3d11_opens_d3d11() {
+        let (d, g) = (Cell::new(0), Cell::new(0));
+        assert_eq!(
+            choose(Renderer::PreferD3d11, true, ok(&d), ok(&g)),
+            Ok(Chosen::D3d11(1))
+        );
+        assert_eq!(g.get(), 0);
+    }
+
+    #[test]
+    fn prefer_d3d11_falls_back_to_opengl_when_d3d11_fails() {
+        let g = Cell::new(0);
+        assert_eq!(
+            choose(Renderer::PreferD3d11, true, failing, ok(&g)),
+            Ok(Chosen::OpenGl(1))
+        );
+    }
+
+    #[test]
+    fn prefer_d3d11_uses_opengl_without_d3d11() {
+        let (d, g) = (Cell::new(0), Cell::new(0));
+        assert_eq!(
+            choose(Renderer::PreferD3d11, false, ok(&d), ok(&g)),
+            Ok(Chosen::OpenGl(1))
+        );
+        assert_eq!(d.get(), 0);
     }
 
     #[test]
     fn an_explicit_backend_does_not_fall_back() {
-        let f = Cell::new(0);
-        let failing = || -> Result<u32, String> { Err("no swapchain".into()) };
+        let (d, g) = (Cell::new(0), Cell::new(0));
         assert_eq!(
-            choose(Renderer::D3d11, true, failing, ok(&f)),
-            Err::<Chosen<u32, u32>, _>("no swapchain".into())
+            choose(Renderer::D3d11, true, failing, ok(&g)),
+            Err::<Chosen<u32, u32>, _>("no context".into())
         );
-        assert_eq!(f.get(), 0);
-        let p = Cell::new(0);
         assert_eq!(
-            choose(Renderer::OpenGl, true, ok(&p), ok(&f)),
-            Ok(Chosen::Fallback(1))
+            choose(Renderer::OpenGl, true, ok(&d), failing),
+            Err::<Chosen<u32, u32>, _>("no context".into())
         );
-        assert_eq!(p.get(), 0);
+        assert_eq!((d.get(), g.get()), (0, 0));
     }
 
     #[test]

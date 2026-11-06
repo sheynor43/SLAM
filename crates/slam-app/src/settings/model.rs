@@ -323,10 +323,11 @@ impl RendererChoice {
         RendererChoice::ALL.into_iter().find(|r| r.as_str() == name)
     }
 
-    /// The backend to ask for: Direct3D 11 falls back to OpenGL when it cannot start.
+    /// The backend to ask for: each falls back to the other when it cannot start
+    /// (ADR-0104, ADR-0105).
     pub fn to_backend(self) -> Renderer {
         match self {
-            RendererChoice::OpenGl => Renderer::OpenGl,
+            RendererChoice::OpenGl => Renderer::Auto,
             RendererChoice::D3d11 => Renderer::PreferD3d11,
         }
     }

@@ -107,7 +107,8 @@
 | [0101](0101-wasapi-exclusive-period-calibration.md) | Период WASAPI Exclusive: калибровка шага событий после старта, переоткрытие с измеренным шагом или периодом по умолчанию | Принято, уточнён ADR-0103 |
 | [0102](0102-device-sample-rate.md) | Микшер, музыка и поток на частоте устройства (`device_rate`), сэмпл с другой частотой — с поправкой шага голоса | Принято |
 | [0103](0103-wasapi-exclusive-stalling-driver.md) | Калибровка WASAPI Exclusive: драйвер, чьи часы останавливаются на записанном (UR12), — недогрузка по опережению около нуля и шагу длиннее периода | Принято |
-| [0104](0104-renderer-setting-opengl-default.md) | Рендер на Windows: OpenGL по умолчанию, Direct3D 11 — по выбору в настройках (`[window] renderer`, после перезапуска, с откатом на OpenGL) | Принято |
+| [0104](0104-renderer-setting-opengl-default.md) | Рендер на Windows: OpenGL по умолчанию, Direct3D 11 — по выбору в настройках (`[window] renderer`, после перезапуска, с откатом на OpenGL) | Принято, уточнён ADR-0105 |
+| [0105](0105-opengl-handoff-retry-and-fallback.md) | Запуск OpenGL: повтор привязки контекста, проверка передачи потоку отрисовки, откат `Auto` на Direct3D 11 на Windows (`--renderer opengl` без отката) | Принято |
 
 ## Шаблон
 

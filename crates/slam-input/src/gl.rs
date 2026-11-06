@@ -5,6 +5,7 @@ use std::ffi::{CStr, c_char, c_int, c_void};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::thread::{self, ThreadId};
+use std::time::Duration;
 
 use sdl3_sys::video::{
     SDL_EGL_GetCurrentDisplay, SDL_EGL_GetProcAddress, SDL_EGL_SetAttributeCallbacks,
@@ -258,6 +259,46 @@ unsafe fn current_priority() -> Option<ContextPriority> {
     ContextPriority::from_egl(value)
 }
 
+/// Pauses between attempts to make a context current (ADR-0105): five attempts within
+/// ~150 ms.
+const MAKE_CURRENT_PAUSES: [Duration; 4] = [
+    Duration::from_millis(10),
+    Duration::from_millis(20),
+    Duration::from_millis(40),
+    Duration::from_millis(80),
+];
+
+/// Runs `attempt` until it succeeds, once more than there are `pauses`, sleeping
+/// through each pause in turn after a failure. Each failure is logged with `what`; the
+/// last one is returned.
+fn retry(
+    what: &str,
+    pauses: &[Duration],
+    mut sleep: impl FnMut(Duration),
+    mut attempt: impl FnMut() -> Result<(), String>,
+) -> Result<(), String> {
+    let attempts = pauses.len() + 1;
+    let mut n = 1;
+    loop {
+        match attempt() {
+            Ok(()) => {
+                if n > 1 {
+                    tracing::info!("{what}: succeeded on attempt {n} of {attempts}");
+                }
+                return Ok(());
+            }
+            Err(e) => {
+                tracing::warn!("{what}: attempt {n} of {attempts} failed: {e}");
+                match pauses.get(n - 1) {
+                    Some(&pause) => sleep(pause),
+                    None => return Err(e),
+                }
+                n += 1;
+            }
+        }
+    }
+}
+
 /// An OpenGL context of an [`crate::InputWindow`]. Created on the main thread, then
 /// made current, used and released by the draw thread (ADR-0018). It is current on at
 /// most one thread: [`GlContext::make_current`] fails while another thread holds it.
@@ -329,6 +370,11 @@ impl GlContext {
 
     /// Makes the context current on the calling thread. Fails if it is current on
     /// another thread.
+    ///
+    /// A failure of the driver is retried with pauses (ADR-0105): `wglMakeCurrent`
+    /// sometimes fails for a moment right after another SLAM window closed. Making the
+    /// context current is part of making a device, never of a frame, so the pauses
+    /// stay out of the hot path.
     pub fn make_current(&mut self) -> Result<(), String> {
         let this = thread::current().id();
         match self.current_on {
@@ -336,14 +382,23 @@ impl GlContext {
             Some(_) => return Err("GL context is current on another thread".into()),
             None => {}
         }
-        // SAFETY: window and context are valid (see `Send`); the context is current on
-        // no thread.
-        if unsafe { SDL_GL_MakeCurrent(self.window, self.context) } {
-            self.current_on = Some(this);
-            Ok(())
-        } else {
-            Err(sdl_error())
-        }
+        let (window, context) = (self.window, self.context);
+        retry(
+            "making the GL context current",
+            &MAKE_CURRENT_PAUSES,
+            thread::sleep,
+            || {
+                // SAFETY: window and context are valid (see `Send`); the context is
+                // current on no thread.
+                if unsafe { SDL_GL_MakeCurrent(window, context) } {
+                    Ok(())
+                } else {
+                    Err(sdl_error())
+                }
+            },
+        )?;
+        self.current_on = Some(this);
+        Ok(())
     }
 
     /// Detaches the context from the calling thread. Fails if it is current on
@@ -355,13 +410,24 @@ impl GlContext {
         {
             return Err("GL context is current on another thread".into());
         }
-        // SAFETY: the window is valid; a null context releases the current one.
-        if unsafe { SDL_GL_MakeCurrent(self.window, std::ptr::null_mut()) } {
-            self.current_on = None;
-            Ok(())
-        } else {
-            Err(sdl_error())
-        }
+        let window = self.window;
+        // Retried like `make_current` (ADR-0105): a context left current on a thread
+        // that ends can be neither destroyed nor made current again.
+        retry(
+            "releasing the GL context",
+            &MAKE_CURRENT_PAUSES,
+            thread::sleep,
+            || {
+                // SAFETY: the window is valid; a null context releases the current one.
+                if unsafe { SDL_GL_MakeCurrent(window, std::ptr::null_mut()) } {
+                    Ok(())
+                } else {
+                    Err(sdl_error())
+                }
+            },
+        )?;
+        self.current_on = None;
+        Ok(())
     }
 
     /// Address of a GL function of the current context, or null.
@@ -415,6 +481,76 @@ impl Drop for GlContext {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn retry_stops_at_the_first_success() {
+        let mut calls = 0;
+        let mut slept = Vec::new();
+        let result = retry(
+            "test",
+            &MAKE_CURRENT_PAUSES,
+            |d| slept.push(d),
+            || {
+                calls += 1;
+                if calls < 3 {
+                    Err(format!("fail {calls}"))
+                } else {
+                    Ok(())
+                }
+            },
+        );
+        assert_eq!(result, Ok(()));
+        assert_eq!(calls, 3);
+        assert_eq!(slept, MAKE_CURRENT_PAUSES[..2]);
+    }
+
+    #[test]
+    fn retry_returns_the_last_error_after_every_pause() {
+        let mut calls = 0;
+        let mut slept = Vec::new();
+        let result = retry(
+            "test",
+            &MAKE_CURRENT_PAUSES,
+            |d| slept.push(d),
+            || {
+                calls += 1;
+                Err(format!("fail {calls}"))
+            },
+        );
+        assert_eq!(result, Err("fail 5".to_owned()));
+        assert_eq!(calls, 5);
+        assert_eq!(slept, MAKE_CURRENT_PAUSES);
+        assert_eq!(slept.iter().sum::<Duration>(), Duration::from_millis(150));
+    }
+
+    #[test]
+    fn retry_without_pauses_tries_once() {
+        let mut calls = 0;
+        let result = retry(
+            "test",
+            &[],
+            |_| panic!("no pause"),
+            || {
+                calls += 1;
+                Err("fail".to_owned())
+            },
+        );
+        assert_eq!(result, Err("fail".to_owned()));
+        assert_eq!(calls, 1);
+    }
+
+    #[test]
+    fn retry_does_not_pause_on_success() {
+        assert_eq!(
+            retry(
+                "test",
+                &MAKE_CURRENT_PAUSES,
+                |_| panic!("no pause"),
+                || Ok(())
+            ),
+            Ok(())
+        );
+    }
 
     #[test]
     fn pixel_size_round_trips() {
