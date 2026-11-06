@@ -1941,6 +1941,15 @@ impl PlayHost {
         );
     }
 
+    /// Lets the play on top follow `events` the settings panel takes over its menu.
+    fn follow_covered(&mut self, events: &[InputEvent]) {
+        if let Some(game) = self.game.as_mut()
+            && game.ending == Ending::Playing
+        {
+            game.session.follow_covered(events);
+        }
+    }
+
     /// Runs the play on top with `events`.
     fn tick_game(&mut self, now_ns: u64, events: &[InputEvent], snapshot: &mut PlaySnapshot) {
         let Some(game) = self.game.as_mut() else {
@@ -2727,6 +2736,10 @@ impl Update for Shell {
                 self.state.tick(now, &[], snapshot)
             }
             Some(host) if playing => {
+                // The play still follows the keys held, or one released over the panel
+                // stays held after it (#324). First, as a release goes before a hold fires
+                // on the play's own ticks.
+                host.follow_covered(events);
                 host.tick_game(now, &[], &mut snapshot.play);
                 self.state.tick(now, events, snapshot)
             }

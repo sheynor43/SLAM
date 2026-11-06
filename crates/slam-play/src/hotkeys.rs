@@ -223,6 +223,23 @@ impl Hotkeys {
         }
     }
 
+    /// Follows `event` without acting on it: the modifiers held and the keys released,
+    /// for input another screen takes (the settings panel over the pause menu). A release
+    /// missed here would leave its modifier held, and every binding without modifiers
+    /// (Escape, F10) dead until it is pressed again (#324). Presses other than modifiers
+    /// start nothing.
+    pub fn follow(&mut self, event: &InputEvent) {
+        match event.kind {
+            InputKind::Key { scancode, .. } if is_modifier(scancode) => {
+                self.on_event(event);
+            }
+            InputKind::Key { down: false, .. } => {
+                self.on_event(event);
+            }
+            _ => {}
+        }
+    }
+
     /// The menu action `event` presses, if any. Call it after [`on_event`](Self::on_event)
     /// took the event (for the modifiers held). Space is also
     /// [`GlobalAction::SkipCutscene`]: the menu takes it first while it shows.
@@ -484,5 +501,38 @@ mod tests {
         assert!(!is_gameplay_hotkey(Input::Key(68)));
         assert!(!is_gameplay_hotkey(Input::Key(SCANCODE_R)));
         assert!(!is_gameplay_hotkey(Input::Mouse(MouseButton::Left)));
+    }
+
+    #[test]
+    fn followed_releases_free_the_modifiers() {
+        let lctrl = SCANCODE_LCTRL;
+        let mut h = Hotkeys::default();
+        // Ctrl goes down in gameplay; the settings panel takes its release (#324).
+        h.on_event(&key(0, lctrl, true));
+        h.follow(&key(10, lctrl, false));
+        assert_eq!(
+            h.on_event(&key(20, SCANCODE_ESCAPE, true)),
+            Some(GlobalAction::Back)
+        );
+        // A modifier pressed in the panel is held when it closes.
+        h.follow(&key(30, lctrl, true));
+        assert_eq!(h.on_event(&key(40, SCANCODE_F10, true)), None);
+        h.on_event(&key(50, lctrl, false));
+        assert_eq!(
+            h.on_event(&key(60, SCANCODE_F10, true)),
+            Some(GlobalAction::ToggleGameplayMouseButtons)
+        );
+    }
+
+    #[test]
+    fn followed_presses_start_no_hold() {
+        let mut h = Hotkeys::default();
+        h.follow(&key(0, SCANCODE_GRAVE, true));
+        assert_eq!(h.fire(HOLD_NS * 2), None);
+        assert_eq!(h.retry_progress(HOLD_NS * 2), 0.0);
+        // A release ends a hold that gameplay started.
+        h.on_event(&key(0, SCANCODE_GRAVE, true));
+        h.follow(&key(10, SCANCODE_GRAVE, false));
+        assert_eq!(h.fire(HOLD_NS * 2), None);
     }
 }
