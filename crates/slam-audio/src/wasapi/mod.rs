@@ -156,6 +156,131 @@ pub(crate) fn aligned_period_hns(frames: u32, rate: u32) -> i64 {
     ((u64::from(frames) * HNS_PER_SECOND + rate / 2) / rate) as i64
 }
 
+/// Events skipped at the start of an exclusive-period calibration (ADR-0101) while the
+/// stream settles.
+pub(crate) const CALIBRATION_WARMUP: usize = 2;
+
+/// Event intervals measured in an exclusive-period calibration (ADR-0101); the leads are
+/// taken on one event more, the last warm-up one.
+pub(crate) const CALIBRATION_EVENTS: usize = 12;
+
+/// Grid the measured event step is rounded to, 100-ns units (0.5 ms).
+const PERIOD_GRID_HNS: i64 = 5_000;
+
+/// Most exclusive periods tried at open (ADR-0101): requested → measured step → default.
+pub(crate) const MAX_EXCLUSIVE_ATTEMPTS: usize = 3;
+
+/// How far an exclusive device is ahead of the stream on a buffer event, before anything
+/// is written, in stream frames: `played − written`, signed. The device is at `position`
+/// in units of `frequency` per second, `written` frames handed to it so far.
+///
+/// On a healthy event the hardware has just moved to the last buffer written, so the lead
+/// is about −buffer, offset by the thread's wake-up delay and the pipeline lag of the
+/// audio clock. Both stay roughly constant. An exclusive device that finds no new buffer
+/// replays the stale one and its position moves on, so every replayed buffer adds a
+/// buffer to the lead for good.
+pub(crate) fn lead_frames(written: u64, position: u64, frequency: u64, rate: u32) -> i64 {
+    if frequency == 0 || rate == 0 {
+        return 0;
+    }
+    let played = u128::from(position) * u128::from(rate) / u128::from(frequency);
+    let played = i128::try_from(played).unwrap_or(i128::MAX);
+    let lead = played - i128::from(written);
+    i64::try_from(lead).unwrap_or(if lead < 0 { i64::MIN } else { i64::MAX })
+}
+
+/// Verdict of an exclusive-period calibration (ADR-0101).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct CalibrationVerdict {
+    /// The device keeps running ahead: the driver signals less often than the period.
+    pub starving: bool,
+    /// Frames the device replayed during the calibration, in whole buffers, to add to the
+    /// written count so the render loop's accounting matches the device.
+    pub replayed: u64,
+}
+
+/// Judges a calibration from the leads ([`lead_frames`]) of consecutive events with
+/// buffers of `buffer` frames.
+///
+/// The ends of the window are the smallest of the first three and of the last three
+/// leads: a late wake-up only raises one event's lead, a replay raises every later one.
+/// Their difference is the growth over the window, with the constant offsets (wake-up
+/// delay, clock lag) cancelled. One replayed buffer (a single scheduling hiccup) is
+/// forgiven: the largest *persistent* step — the rise from one event to the smaller of
+/// the next two — is taken off before comparing the growth with half a buffer. A lone
+/// late wake-up is no persistent step, so it does not hide a driver stepping even
+/// slightly slower than the period, which adds to the lead on every event.
+pub(crate) fn calibration_verdict(leads: &[i64], buffer: u32) -> CalibrationVerdict {
+    let none = CalibrationVerdict {
+        starving: false,
+        replayed: 0,
+    };
+    if leads.len() < 4 || buffer == 0 {
+        return none;
+    }
+    let buffer = i128::from(buffer);
+    let lead = |i: usize| i128::from(leads[i]);
+    let ends = leads.len().min(6) / 2;
+    let first = (0..ends).map(lead).min().unwrap_or(0);
+    let last = (leads.len() - ends..leads.len())
+        .map(lead)
+        .min()
+        .unwrap_or(0);
+    let growth = last - first;
+    let largest_step = (1..leads.len() - 1)
+        .map(|k| lead(k).min(lead(k + 1)) - lead(k - 1))
+        .max()
+        .unwrap_or(0)
+        .max(0);
+    let replayed = if growth > 0 {
+        (growth + buffer / 2) / buffer * buffer
+    } else {
+        0
+    };
+    CalibrationVerdict {
+        starving: 2 * (growth - largest_step) >= buffer,
+        replayed: u64::try_from(replayed).unwrap_or(u64::MAX),
+    }
+}
+
+/// Median of `intervals` (the upper one for an even count); sorts in place. Zero if empty.
+pub(crate) fn median_ns(intervals: &mut [u64]) -> u64 {
+    intervals.sort_unstable();
+    intervals.get(intervals.len() / 2).copied().unwrap_or(0)
+}
+
+/// Whether an exclusive stream with period `current_hns` needs a calibration: periods
+/// below the device default may be shorter than the driver's real event step; a reopened
+/// stream is always checked again.
+pub(crate) fn calibrates(current_hns: i64, default_hns: i64, reopened: bool) -> bool {
+    reopened || current_hns < default_hns
+}
+
+/// Period to reopen a starving exclusive stream with (ADR-0101), or `None` when the
+/// stream already runs at the device default or longer and nothing is left to try.
+///
+/// The candidate is the measured event step `step_ns` rounded up to 0.5 ms; if that is
+/// not longer than `current_hns`, the next 0.5 ms step above it. A candidate at
+/// or past the default period becomes the default period itself.
+pub(crate) fn next_exclusive_period_hns(
+    current_hns: i64,
+    default_hns: i64,
+    step_ns: u64,
+) -> Option<i64> {
+    if current_hns >= default_hns {
+        return None;
+    }
+    let grid = PERIOD_GRID_HNS as u64;
+    let rounded = step_ns.div_ceil(100).div_ceil(grid).saturating_mul(grid);
+    let rounded = i64::try_from(rounded).unwrap_or(i64::MAX);
+    let candidate = if rounded > current_hns {
+        rounded
+    } else {
+        (current_hns / PERIOD_GRID_HNS + 1) * PERIOD_GRID_HNS
+    };
+    Some(candidate.min(default_hns))
+}
+
 /// Shared-engine period limits from `IAudioClient3::GetSharedModeEnginePeriod`, frames.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) struct EnginePeriods {
@@ -381,6 +506,205 @@ mod tests {
             ..engine
         };
         assert_eq!(low_latency_period(128, broken), 480);
+    }
+
+    #[test]
+    fn lead_is_signed_and_clock_unit_independent() {
+        // Healthy event: the device just started the last 144-frame buffer.
+        assert_eq!(lead_frames(1_440, 1_296, 48_000, 48_000), -144);
+        // The device at the written end and past it.
+        assert_eq!(lead_frames(1_440, 1_440, 48_000, 48_000), 0);
+        assert_eq!(lead_frames(1_440, 1_776, 48_000, 48_000), 336);
+        // Clock in bytes (stereo f32, 384000 B/s).
+        assert_eq!(lead_frames(1_440, 1_296 * 8, 384_000, 48_000), -144);
+        // No clock or rate: nothing known.
+        assert_eq!(lead_frames(1_440, 1_440, 0, 48_000), 0);
+        assert_eq!(lead_frames(1_440, 1_440, 48_000, 0), 0);
+        // Saturates at the extremes.
+        assert_eq!(lead_frames(0, u64::MAX, 1, u32::MAX), i64::MAX);
+        assert_eq!(lead_frames(u64::MAX, 0, 1, 1), i64::MIN);
+    }
+
+    /// Leads of `events` events where the device plays `step` frames per event and gets
+    /// `buffer`, starting from a healthy `-buffer - lag`.
+    fn drifting(events: usize, buffer: i64, step: i64, lag: i64) -> Vec<i64> {
+        (0..events as i64)
+            .map(|i| -buffer - lag + i * (step - buffer))
+            .collect()
+    }
+
+    #[test]
+    fn healthy_calibration_is_accepted_whatever_the_clock_lag() {
+        for lag in [0, 40, 100, 140] {
+            let leads = drifting(13, 144, 144, lag);
+            assert_eq!(
+                calibration_verdict(&leads, 144),
+                CalibrationVerdict {
+                    starving: false,
+                    replayed: 0
+                },
+                "lag {lag}"
+            );
+        }
+    }
+
+    #[test]
+    fn ur12_at_3_ms_starves() {
+        // 480 frames played per 144 written.
+        let verdict = calibration_verdict(&drifting(13, 144, 480, 30), 144);
+        assert!(verdict.starving);
+    }
+
+    #[test]
+    fn a_step_slightly_longer_than_the_period_starves() {
+        // 5 ms requested (240 frames), the driver steps at 256 frames.
+        let verdict = calibration_verdict(&drifting(13, 240, 256, 60), 240);
+        assert!(verdict.starving);
+    }
+
+    #[test]
+    fn a_late_wake_up_does_not_hide_a_slow_driver() {
+        // 5.33 ms against 5 ms, plus one wake-up 1 ms (48 frames) late mid-window.
+        let mut leads = drifting(13, 240, 256, 60);
+        leads[6] += 48;
+        assert!(calibration_verdict(&leads, 240).starving);
+    }
+
+    #[test]
+    fn one_replay_is_forgiven_and_realigned() {
+        let mut leads = vec![-150i64; 13];
+        // A late wake-up on event 6 made the device replay one buffer: +144 from then on.
+        for lead in &mut leads[6..] {
+            *lead += 144;
+        }
+        assert_eq!(
+            calibration_verdict(&leads, 144),
+            CalibrationVerdict {
+                starving: false,
+                replayed: 144
+            }
+        );
+    }
+
+    #[test]
+    fn a_late_last_event_does_not_shift_the_count() {
+        let mut leads = vec![-150i64; 13];
+        // The thread woke 2.5 ms late on the last event, but nothing was replayed.
+        leads[12] += 120;
+        assert_eq!(
+            calibration_verdict(&leads, 144),
+            CalibrationVerdict {
+                starving: false,
+                replayed: 0
+            }
+        );
+        // Two late wake-ups in a row at the end.
+        let mut leads = vec![-150i64; 13];
+        leads[11] += 120;
+        leads[12] += 100;
+        assert_eq!(calibration_verdict(&leads, 144).replayed, 0);
+        // Same at the start.
+        let mut leads = vec![-150i64; 13];
+        leads[0] += 120;
+        leads[1] += 100;
+        assert_eq!(calibration_verdict(&leads, 144).replayed, 0);
+    }
+
+    #[test]
+    fn wake_up_jitter_alone_is_not_starving() {
+        let jitter = [0, 30, -10, 50, 0, 70, -20, 10, 60, 0, 40, -30, 20];
+        let leads: Vec<i64> = jitter.iter().map(|j| -150 + j).collect();
+        assert_eq!(
+            calibration_verdict(&leads, 144),
+            CalibrationVerdict {
+                starving: false,
+                replayed: 0
+            }
+        );
+    }
+
+    #[test]
+    fn too_short_a_calibration_has_no_verdict() {
+        let none = CalibrationVerdict {
+            starving: false,
+            replayed: 0,
+        };
+        assert_eq!(calibration_verdict(&[0, 500, 1_000], 144), none);
+        assert_eq!(calibration_verdict(&drifting(13, 144, 480, 0), 0), none);
+    }
+
+    #[test]
+    fn median_ignores_outliers() {
+        let mut intervals = [10_010_000, 9_990_000, 30_000_000, 10_000_000, 1_000];
+        assert_eq!(median_ns(&mut intervals), 10_000_000);
+        let mut even = [4, 1, 3, 2];
+        assert_eq!(median_ns(&mut even), 3);
+        assert_eq!(median_ns(&mut []), 0);
+    }
+
+    #[test]
+    fn only_short_or_reopened_periods_calibrate() {
+        // 3 ms requested, device default 10 ms.
+        assert!(calibrates(30_000, 100_000, false));
+        assert!(!calibrates(100_000, 100_000, false));
+        assert!(!calibrates(200_000, 100_000, false));
+        // After a reopen at the default period: checked once more.
+        assert!(calibrates(100_000, 100_000, true));
+    }
+
+    #[test]
+    fn next_period_follows_the_measured_step() {
+        // UR12: 3 ms requested, events every ~10 ms, default 10 ms.
+        assert_eq!(
+            next_exclusive_period_hns(30_000, 100_000, 10_020_000),
+            Some(100_000)
+        );
+        // A driver stepping at 5.33 ms (256 frames at 48 kHz): rounded up to 5.5 ms.
+        assert_eq!(
+            next_exclusive_period_hns(30_000, 100_000, 5_333_333),
+            Some(55_000)
+        );
+        // Never below the step: 4.1 ms becomes 4.5 ms, an exact 4 ms stays.
+        assert_eq!(
+            next_exclusive_period_hns(30_000, 100_000, 4_100_000),
+            Some(45_000)
+        );
+        assert_eq!(
+            next_exclusive_period_hns(30_000, 100_000, 4_000_000),
+            Some(40_000)
+        );
+        // Step that rounds to the current period or below: the next 0.5 ms above it.
+        assert_eq!(
+            next_exclusive_period_hns(30_000, 100_000, 3_200_000),
+            Some(35_000)
+        );
+        assert_eq!(
+            next_exclusive_period_hns(26_667, 100_000, 2_000_000),
+            Some(30_000)
+        );
+        // Step at or past the default: the default.
+        assert_eq!(
+            next_exclusive_period_hns(55_000, 100_000, 12_000_000),
+            Some(100_000)
+        );
+        assert_eq!(
+            next_exclusive_period_hns(97_000, 100_000, 9_800_000),
+            Some(100_000)
+        );
+        // Already at the default: nothing left to try.
+        assert_eq!(
+            next_exclusive_period_hns(100_000, 100_000, 20_000_000),
+            None
+        );
+        assert_eq!(
+            next_exclusive_period_hns(150_000, 100_000, 20_000_000),
+            None
+        );
+        // A huge step saturates instead of overflowing.
+        assert_eq!(
+            next_exclusive_period_hns(30_000, 100_000, u64::MAX),
+            Some(100_000)
+        );
     }
 
     #[test]
