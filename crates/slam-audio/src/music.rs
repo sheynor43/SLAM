@@ -166,6 +166,12 @@ pub enum MusicError {
     Format(#[from] SampleError),
     #[error("the music decoder thread stopped")]
     DecoderStopped,
+    /// A [`TrackSource::File`] that failed to open or decode, with its path.
+    #[error("{}: {error}", path.display())]
+    File {
+        path: PathBuf,
+        error: Box<MusicError>,
+    },
 }
 
 /// Decoder reports, read with [`MusicPlayer::poll_event`].
@@ -1595,6 +1601,12 @@ impl Decoder {
                 self.begin(generation);
                 self.stream = None;
                 self.pending_end = false;
+                // Cloned for the error (the event is the only place the failure is
+                // reported): `source` moves into `Stream::open`.
+                let path = match &source {
+                    TrackSource::File(path) => Some(path.clone()),
+                    TrackSource::Memory { .. } => None,
+                };
                 match Stream::open(source, self.sample_rate, self.channels) {
                     Ok(stream) => {
                         let length = stream.length;
@@ -1606,6 +1618,13 @@ impl Decoder {
                     Err(error) => {
                         self.restart(0, false);
                         self.pending_end = true;
+                        let error = match path {
+                            Some(path) => MusicError::File {
+                                path,
+                                error: Box::new(error),
+                            },
+                            None => error,
+                        };
                         self.event(MusicEvent::Failed { generation, error });
                     }
                 }
@@ -2803,6 +2822,32 @@ mod tests {
         assert_eq!(rig.run(128), [0.0; 128]);
         assert!(rig.snapshot().ended);
         assert_eq!(rig.source.stats.underruns.load(Ordering::Relaxed), 0);
+    }
+
+    #[test]
+    fn a_failed_file_names_its_path() {
+        let dir = std::env::temp_dir().join(format!("slam-music-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let garbage = dir.join("garbage.ogg");
+        std::fs::write(&garbage, vec![0x5au8; 4_096]).unwrap();
+        let missing = dir.join("missing.mp3");
+        let mut rig = Rig::new(256, 4);
+        for (generation, path) in [(1, &garbage), (2, &missing)] {
+            rig.player.load(TrackSource::File(path.clone())).unwrap();
+            rig.pump();
+            match rig.player.poll_event() {
+                Some(MusicEvent::Failed {
+                    generation: g,
+                    error,
+                }) => {
+                    assert_eq!(g, generation);
+                    let message = error.to_string();
+                    assert!(message.contains(&path.display().to_string()), "{message}");
+                }
+                other => panic!("{other:?}"),
+            }
+        }
+        std::fs::remove_dir_all(&dir).ok();
     }
 
     #[test]
