@@ -37,7 +37,7 @@ use perf::{DrawFigures, FramePerf, ReportSources, SharedFrameTimes};
 use scene::{CHANNELS, PlayScene, PlaySettings, Prepared, SAMPLE_RATE, SceneGpu};
 
 pub const USAGE: &str = "usage: slam-app play MAP.osu [--skin DIR] [--backend NAME] \
-                         [--device ID] [--renderer auto|opengl|d3d11] [--buffer FRAMES] [--fps HZ|unlimited] \
+                         [--device ID] [--renderer auto|opengl|d3d11] [--fullscreen] [--buffer FRAMES] [--fps HZ|unlimited] \
                          [--update-hz HZ] [--mods HDHR] [--dim PERCENT] [--volume PERCENT] [--no-beatmap-skins] [--no-beatmap-colours] [--no-beatmap-hitsounds] [--show-fps] [--no-mouse-buttons] [--no-stats]";
 
 /// How long the track may take to open.
@@ -54,6 +54,8 @@ pub struct Options {
     pub backend: Option<Backend>,
     /// Graphics API of the window; `auto` picks the best available.
     pub renderer: Renderer,
+    /// Borderless desktop fullscreen instead of a window.
+    pub fullscreen: bool,
     /// Output device id; `None` follows the system default.
     pub device: Option<String>,
     /// Requested frames per audio buffer.
@@ -113,6 +115,7 @@ impl Options {
             skin: None,
             backend: None,
             renderer: Renderer::Auto,
+            fullscreen: false,
             device: None,
             buffer_frames: StreamConfig::default().buffer_frames,
             stats: true,
@@ -142,6 +145,7 @@ impl Options {
                     );
                 }
                 "--device" => options.device = Some(value()?),
+                "--fullscreen" => options.fullscreen = true,
                 "--renderer" => {
                     let name = value()?;
                     options.renderer = Renderer::parse(&name).ok_or_else(|| {
@@ -439,14 +443,19 @@ pub(crate) fn load_track(player: &mut MusicPlayer, path: &Path) -> Result<(), St
 
 /// Plays the beatmap in a window until it is closed and prints the judgements.
 pub fn run(options: &Options) -> Result<(), String> {
-    // A developer tool: always windowed, without the settings' [window] (ADR-0070).
+    // A developer tool: windowed by default, borderless fullscreen with `--fullscreen`;
+    // the settings' [window] is not read (ADR-0070).
     let window = |kind| {
         let [width, height] = DEFAULT_WINDOWED_SIZE.map(i32::from);
-        match kind {
+        let mut window = match kind {
             WindowKind::OpenGl => InputWindow::new_opengl("SLAM", width, height),
             WindowKind::Native => InputWindow::new("SLAM", width, height),
         }
-        .map_err(|e| e.to_string())
+        .map_err(|e| e.to_string())?;
+        if options.fullscreen {
+            window.set_fullscreen(true).map_err(|e| e.to_string())?;
+        }
+        Ok(window)
     };
     render::run(
         options.renderer,
@@ -767,6 +776,12 @@ mod tests {
         let err = parse(&["map.osu", "--renderer", "vulkan"]).unwrap_err();
         assert!(err.starts_with("--renderer: vulkan is not one of"), "{err}");
         assert!(parse(&["map.osu", "--renderer"]).is_err());
+    }
+
+    #[test]
+    fn fullscreen_flag() {
+        assert!(!parse(&["map.osu"]).unwrap().fullscreen);
+        assert!(parse(&["--fullscreen", "map.osu"]).unwrap().fullscreen);
     }
 
     #[test]
