@@ -15,7 +15,7 @@ use std::ops::Range;
 
 use windows::Win32::Foundation::HMODULE;
 use windows::Win32::Graphics::Direct3D::Fxc::{
-    D3DCOMPILE_ENABLE_STRICTNESS, D3DCOMPILE_OPTIMIZATION_LEVEL3, D3DCompile,
+    D3DCOMPILE_ENABLE_STRICTNESS, D3DCOMPILE_OPTIMIZATION_LEVEL3,
 };
 use windows::Win32::Graphics::Direct3D::{
     D3D_DRIVER_TYPE, D3D_DRIVER_TYPE_HARDWARE, D3D_DRIVER_TYPE_WARP, D3D_FEATURE_LEVEL_11_0,
@@ -28,7 +28,10 @@ use windows::Win32::Graphics::Dxgi::Common::{
     DXGI_FORMAT_R32G32B32_FLOAT, DXGI_FORMAT_R32G32B32A32_FLOAT, DXGI_SAMPLE_DESC,
 };
 use windows::Win32::Graphics::Dxgi::DXGI_ERROR_SDK_COMPONENT_MISSING;
-use windows::core::{Interface, PCSTR};
+use windows::Win32::System::LibraryLoader::{
+    GetProcAddress, LOAD_LIBRARY_SEARCH_SYSTEM32, LoadLibraryExW,
+};
+use windows::core::{HRESULT, Interface, PCSTR, s, w};
 
 use crate::hal::{
     Blend, BufferDesc, BufferKind, Color, DescError, DeviceError, DrawError, Extent, IndexFormat,
@@ -262,6 +265,9 @@ impl<S: D3d11Surface> D3d11Device<S> {
             D3d11Adapter::Hardware => D3D_DRIVER_TYPE_HARDWARE,
             D3d11Adapter::Warp => D3D_DRIVER_TYPE_WARP,
         };
+        // Without the shader compiler no pipeline can be made: fail now, so that the
+        // caller can fall back to OpenGL before a window surface exists.
+        d3d_compile()?;
         // One thread makes, uses and drops the device.
         let single = D3D11_CREATE_DEVICE_SINGLETHREADED;
         let (device, context) = match debug {
@@ -776,31 +782,82 @@ impl Bytecode {
     }
 }
 
+/// `D3DCompile` of `d3dcompiler_47.dll`, with the blobs as raw pointers.
+type D3dCompileFn = unsafe extern "system" fn(
+    src: *const c_void,
+    src_len: usize,
+    source_name: PCSTR,
+    defines: *const c_void,
+    include: *mut c_void,
+    entry: PCSTR,
+    target: PCSTR,
+    flags1: u32,
+    flags2: u32,
+    code: *mut *mut c_void,
+    errors: *mut *mut c_void,
+) -> HRESULT;
+
+/// `D3DCompile`, loaded from System32 on first use. Loaded at run time rather than
+/// imported: without the DLL the loader would refuse to start the executable, and the
+/// OpenGL fallback (ADR-0080) would never run. The library stays loaded for the process.
+fn d3d_compile() -> Result<D3dCompileFn, DeviceError> {
+    static COMPILE: std::sync::OnceLock<Result<D3dCompileFn, String>> = std::sync::OnceLock::new();
+    COMPILE
+        .get_or_init(|| {
+            // SAFETY: a NUL-terminated wide name; System32 only, so a DLL of that name
+            // next to the executable is not picked up.
+            let module = unsafe {
+                LoadLibraryExW(w!("d3dcompiler_47.dll"), None, LOAD_LIBRARY_SEARCH_SYSTEM32)
+            }
+            .map_err(|e| format!("d3dcompiler_47.dll: {e}"))?;
+            // SAFETY: a live module and a NUL-terminated export name.
+            let proc = unsafe { GetProcAddress(module, s!("D3DCompile")) }
+                .ok_or_else(|| "d3dcompiler_47.dll has no D3DCompile".to_owned())?;
+            // SAFETY: the export has the documented `D3DCompile` signature, and the
+            // module is never freed, so the pointer stays valid for the process.
+            Ok(unsafe {
+                std::mem::transmute::<unsafe extern "system" fn() -> isize, D3dCompileFn>(proc)
+            })
+        })
+        .clone()
+        .map_err(DeviceError::Unsupported)
+}
+
 /// Compiles the shader's HLSL to Shader Model 5.0 with `D3DCompile`
 /// (`d3dcompiler_47.dll`), as pipeline creation does. Compiler output is in the error.
 pub fn compile_shader(shader: &Shader<'_>) -> Result<Bytecode, DeviceError> {
+    let d3d_compile = d3d_compile()?;
     let hlsl = &shader.hlsl;
     let compile = |entry: &str, target: &str| {
         let name = format!("{}.hlsl\0", shader.name);
         let entry = format!("{entry}\0");
         let target_z = format!("{target}\0");
-        let mut code = None;
-        let mut errors = None;
-        // SAFETY: the source outlives the call, the strings are NUL-terminated and
-        // both out-pointers point to live `Option<ID3DBlob>`s.
+        let mut code_raw = std::ptr::null_mut();
+        let mut errors_raw = std::ptr::null_mut();
+        // SAFETY: the source outlives the call, the strings are NUL-terminated, there
+        // are no defines or includes, and both out-pointers point to live locals.
         let result = unsafe {
-            D3DCompile(
+            d3d_compile(
                 hlsl.source.as_ptr().cast(),
                 hlsl.source.len(),
                 PCSTR(name.as_ptr()),
-                None,
-                None,
+                std::ptr::null(),
+                std::ptr::null_mut(),
                 PCSTR(entry.as_ptr()),
                 PCSTR(target_z.as_ptr()),
                 D3DCOMPILE_OPTIMIZATION_LEVEL3 | D3DCOMPILE_ENABLE_STRICTNESS,
                 0,
-                &mut code,
-                Some(&mut errors),
+                &mut code_raw,
+                &mut errors_raw,
+            )
+        }
+        .ok();
+        // SAFETY: `D3DCompile` hands out owned blob references (or null), released by
+        // the wrappers.
+        let (code, errors) = unsafe {
+            (
+                (!code_raw.is_null()).then(|| ID3DBlob::from_raw(code_raw)),
+                (!errors_raw.is_null()).then(|| ID3DBlob::from_raw(errors_raw)),
             )
         };
         match (result, code) {

@@ -3175,6 +3175,21 @@ fn pick_backend(name: Option<&str>, available: &[Backend]) -> Option<Backend> {
     named.or_else(|| available.first().copied())
 }
 
+/// The device to open: the saved one while the backend still lists it, else the default.
+/// An endpoint can vanish between runs (unplugged, or recreated with a new id when its
+/// format changes on Windows); opening it would leave the game without sound. `listed` is
+/// `None` when the backend cannot list its devices: the saved one is tried as is.
+fn pick_device(saved: Option<&str>, listed: Option<&[slam_audio::DeviceInfo]>) -> Option<String> {
+    let saved = saved?;
+    match listed {
+        Some(devices) if !devices.iter().any(|d| d.id == saved) => {
+            tracing::warn!("audio: device {saved} is gone, taking the default one");
+            None
+        }
+        _ => Some(saved.to_owned()),
+    }
+}
+
 /// The output devices of the backend the settings pick, for the settings screen (#286):
 /// at the start, then by the output thread each time the screen opens (ADR-0089). Empty if
 /// the backend cannot list them.
@@ -3296,10 +3311,14 @@ fn open_audio(
     mixer_handle
         .set_group_delay(VoiceGroup::Hitsounds, volumes.hitsound_delay_ms)
         .map_err(|e| e.to_string())?;
+    let listed = settings
+        .device
+        .as_ref()
+        .and_then(|_| slam_audio::devices(backend).ok());
     let stream = slam_audio::open_output(
         backend,
         StreamConfig {
-            device: settings.device.clone(),
+            device: pick_device(settings.device.as_deref(), listed.as_deref()),
             sample_rate: SAMPLE_RATE,
             channels: CHANNELS,
             buffer_frames: settings.buffer_frames,

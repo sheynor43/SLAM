@@ -29,9 +29,15 @@ const CLICK_ONSET_FLOOR_FACTOR: f32 = 3.0;
 const CLICK_REFRACTORY_S: f64 = 0.030;
 /// The raw high-passed signal must exceed this many median magnitudes for the onset.
 const CLICK_RAW_FACTOR: f32 = 6.0;
+/// Both onset levels are at least this fraction of the loudest click: over near silence
+/// the floor alone walks the onset back into the zero-phase filter's pre-ringing.
+const CLICK_ONSET_PEAK_FRACTION: f32 = 0.02;
 
-/// Tone detector threshold: this many times the median band envelope.
+/// Tone detector threshold: this many times the median band envelope ...
 const TONE_FLOOR_FACTOR: f32 = 10.0;
+/// ... or this fraction of the loudest band envelope, whichever is higher (a
+/// noise-suppressed microphone records near silence, and the floor alone lets clicks in).
+const TONE_PEAK_FRACTION: f32 = 0.1;
 /// Absolute minimum band amplitude (about -100 dBFS).
 const TONE_MIN_LEVEL: f32 = 1e-5;
 /// The tone must stay above the threshold this long (clicks decay sooner).
@@ -201,7 +207,9 @@ pub fn click_onsets(signal: &[f32], rate: u32, tone_hz: f64) -> Vec<f64> {
     let threshold = (CLICK_FLOOR_FACTOR * floor)
         .max(CLICK_PEAK_FRACTION * peak)
         .max(1e-6);
-    let onset_level = CLICK_ONSET_FLOOR_FACTOR * floor;
+    let onset_level = (CLICK_ONSET_FLOOR_FACTOR * floor).max(CLICK_ONSET_PEAK_FRACTION * peak);
+    let raw_peak = magnitude.iter().fold(0.0f32, |m, &v| m.max(v));
+    let strong = (CLICK_RAW_FACTOR * raw_floor).max(CLICK_ONSET_PEAK_FRACTION * raw_peak);
     let refractory = (CLICK_REFRACTORY_S * rate_hz) as usize;
 
     let mut onsets = Vec::new();
@@ -216,7 +224,6 @@ pub fn click_onsets(signal: &[f32], rate: u32, tone_hz: f64) -> Vec<f64> {
             start -= 1;
         }
         // The smoothing window sees the burst early: take the first strong raw sample.
-        let strong = CLICK_RAW_FACTOR * raw_floor;
         let end = (start + 2 * window).min(magnitude.len());
         let onset = (start..end)
             .find(|&k| magnitude[k] > strong)
@@ -232,7 +239,10 @@ pub fn tone_onsets(signal: &[f32], rate: u32, tone_hz: f64) -> Vec<f64> {
     let rate_hz = f64::from(rate);
     let envelope = tone_envelope(signal, rate, tone_hz);
     let floor = median(&envelope);
-    let threshold = (TONE_FLOOR_FACTOR * floor).max(TONE_MIN_LEVEL);
+    let peak = envelope.iter().copied().fold(0.0f32, f32::max);
+    let threshold = (TONE_FLOOR_FACTOR * floor)
+        .max(TONE_PEAK_FRACTION * peak)
+        .max(TONE_MIN_LEVEL);
     let sustain = (TONE_SUSTAIN_S * rate_hz) as usize;
     let refractory = (TONE_REFRACTORY_S * rate_hz) as usize;
 
@@ -546,6 +556,20 @@ mod tests {
         let (signal, truth) = recording(&DELAYS[..3], 0.002, false);
         let a = analyze(&signal, RATE, 1000.0, 50.0);
         assert_eq!((a.clicks.len(), a.pairs.len()), (3, 3));
+        for (pair, (click, tone)) in a.pairs.iter().zip(&truth) {
+            assert!((pair.latency_ms() - (tone - click) * 1000.0).abs() < 0.25);
+        }
+    }
+
+    #[test]
+    fn gated_silence_does_not_turn_clicks_into_tones() {
+        // A noise-suppressed microphone (Fifine on Windows) records near silence between
+        // sounds (about -78 dBFS): a threshold from the noise floor alone lets every
+        // click's 1 kHz content through.
+        let (signal, truth) = recording(&DELAYS, 0.000_1, true);
+        let a = analyze(&signal, RATE, 1000.0, 100.0);
+        assert_eq!(a.tones.len(), 6, "{:?}", a.tones);
+        assert_eq!(a.pairs.len(), 6);
         for (pair, (click, tone)) in a.pairs.iter().zip(&truth) {
             assert!((pair.latency_ms() - (tone - click) * 1000.0).abs() < 0.25);
         }

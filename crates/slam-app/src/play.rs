@@ -420,7 +420,7 @@ pub(crate) fn load_track(player: &mut MusicPlayer, path: &Path) -> Result<(), St
             Some(MusicEvent::Failed {
                 generation: g,
                 error,
-            }) if g == generation => return Err(format!("{}: {error}", path.display())),
+            }) if g == generation => return Err(error.to_string()),
             Some(_) => {}
             None => std::thread::sleep(Duration::from_millis(5)),
         }

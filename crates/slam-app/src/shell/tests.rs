@@ -1437,6 +1437,27 @@ fn an_unknown_backend_falls_back_to_the_first_available() {
     assert_eq!(pick_backend(Some("pipewire"), &[]), None);
 }
 
+#[test]
+fn a_vanished_saved_device_falls_back_to_the_default() {
+    let device = |id: &str| slam_audio::DeviceInfo {
+        id: id.to_owned(),
+        name: id.to_owned(),
+    };
+    let listed = [device("{a}"), device("{b}")];
+    // Still there: kept.
+    assert_eq!(
+        pick_device(Some("{b}"), Some(&listed)),
+        Some("{b}".to_owned())
+    );
+    // Recreated with a new id or unplugged: the default.
+    assert_eq!(pick_device(Some("{old}"), Some(&listed)), None);
+    assert_eq!(pick_device(Some("{old}"), Some(&[])), None);
+    // The backend cannot list: try the saved one anyway.
+    assert_eq!(pick_device(Some("{old}"), None), Some("{old}".to_owned()));
+    // Nothing saved: the default.
+    assert_eq!(pick_device(None, Some(&listed)), None);
+}
+
 // Mod hotkeys: the top letter row is the first column, the home row the second.
 const KEY_Q: u16 = 20; // EZ
 const KEY_W: u16 = 26; // NF

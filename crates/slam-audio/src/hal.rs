@@ -156,7 +156,8 @@ pub struct StreamCounters {
     /// Callbacks invoked by the backend.
     pub callbacks: AtomicU64,
     /// Callbacks that could not deliver audio (no buffer available, unmapped or
-    /// misaligned memory). Each is an audible gap.
+    /// misaligned memory) or found the device already past everything written (it ran
+    /// dry before the callback came; detected by WASAPI only). Each is an audible gap.
     pub missed_buffers: AtomicU64,
     /// The backend dropped or failed the stream after it opened; callbacks have stopped
     /// and the position is stale. Reopen the stream.
