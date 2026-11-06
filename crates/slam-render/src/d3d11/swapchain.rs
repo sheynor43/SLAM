@@ -21,11 +21,13 @@ use windows::core::{BOOL, Interface};
 use super::{D3d11Surface, backend};
 use crate::hal::{DeviceError, Extent};
 
-/// Back buffers of the swapchain (ADR-0082; 2 or 3 is for #271 to measure).
-const BUFFER_COUNT: u32 = 2;
+/// Back buffers of the swapchain (ADR-0082, measured in #271).
+const BUFFER_COUNT: u32 = 3;
 
-/// Frames that may be queued for display.
-const MAX_FRAME_LATENCY: u32 = 1;
+/// Frames that may be queued for display. With one, the wait in `next_frame` keeps the
+/// CPU and the GPU from overlapping: unlimited, the measurement in #271 (RX 6700 XT) gave
+/// half the frame rate of two with three buffers, and a latency of three adds only ~7 %.
+const MAX_FRAME_LATENCY: u32 = 2;
 
 /// How long [`SwapchainSurface::next_frame`] waits for the queue before drawing anyway,
 /// e.g. while the compositor does not show the window.
@@ -42,7 +44,7 @@ pub trait NativeWindow {
 }
 
 /// A flip-model swapchain on a window (ADR-0082): no vsync, tearing where supported,
-/// at most [`MAX_FRAME_LATENCY`] frame queued. Created on the thread that uses it with
+/// at most [`MAX_FRAME_LATENCY`] frames queued. Created on the thread that uses it with
 /// `D3d11Device::new(.., |d| SwapchainSurface::new(d, window))`.
 ///
 /// The buffers follow [`NativeWindow::size_in_pixels`]: [`D3d11Surface::next_frame`]
