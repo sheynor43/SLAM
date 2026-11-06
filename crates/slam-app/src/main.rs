@@ -10,8 +10,14 @@ use slam_app::{bench, click, i18n, play, replay_stats, shell};
 
 fn main() -> ExitCode {
     attach_parent_console();
+    // `info` unless RUST_LOG says otherwise: the startup lines (render backend, audio mode,
+    // library scan) are what a bug report needs.
     tracing_subscriber::fmt()
-        .with_env_filter(tracing_subscriber::EnvFilter::from_default_env())
+        .with_env_filter(
+            tracing_subscriber::EnvFilter::builder()
+                .with_default_directive(tracing_subscriber::filter::LevelFilter::INFO.into())
+                .from_env_lossy(),
+        )
         .init();
     let mut args = std::env::args().skip(1);
     // Developer commands only so far; their console output is not localised.
@@ -118,13 +124,26 @@ fn usage() -> String {
 }
 
 /// A GUI-subsystem process has no console; attaching to the parent's (if started from a
-/// terminal) brings back the logs and the developer commands' output.
+/// terminal) brings back the logs and the developer commands' output. Attaching points
+/// the standard handles at the console, so the ones the parent redirected (`> log.txt`, a
+/// pipe) are put back afterwards.
 #[cfg(all(windows, not(debug_assertions)))]
 fn attach_parent_console() {
-    use windows_sys::Win32::System::Console::{ATTACH_PARENT_PROCESS, AttachConsole};
-    // SAFETY: no pointers; fails harmlessly when there is no parent console.
+    use windows_sys::Win32::System::Console::{
+        ATTACH_PARENT_PROCESS, AttachConsole, GetStdHandle, STD_ERROR_HANDLE, STD_HANDLE,
+        STD_OUTPUT_HANDLE, SetStdHandle,
+    };
+    const STREAMS: [STD_HANDLE; 2] = [STD_OUTPUT_HANDLE, STD_ERROR_HANDLE];
+    // SAFETY: no pointers; each call fails harmlessly (a null or invalid handle when the
+    // stream is not redirected, no attach without a parent console).
     unsafe {
+        let inherited = STREAMS.map(|stream| GetStdHandle(stream));
         AttachConsole(ATTACH_PARENT_PROCESS);
+        for (stream, handle) in STREAMS.into_iter().zip(inherited) {
+            if !handle.is_null() && handle != windows_sys::Win32::Foundation::INVALID_HANDLE_VALUE {
+                SetStdHandle(stream, handle);
+            }
+        }
     }
 }
 
