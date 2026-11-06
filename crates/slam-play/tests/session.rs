@@ -3661,3 +3661,93 @@ fn a_restart_records_anew() {
     );
     assert!(second.len().abs_diff(first.len()) <= 2);
 }
+
+#[test]
+fn a_modifier_released_over_the_settings_panel_is_not_held_after() {
+    let map = beatmap();
+    let mut d = Driver::new(&map, ModSet::default());
+    d.run_to(1500.0);
+    d.tap(ESCAPE);
+    assert_eq!(d.state(), PlayState::Paused);
+    // Ctrl+O: Ctrl reaches the play, then the panel opens and takes the rest (#324).
+    let ctrl = d.key(LCTRL, true);
+    d.tick(&[ctrl]);
+    let released = d.key(LCTRL, false);
+    d.session.follow_covered(&[released]);
+    d.run(1);
+    // The panel closed: Escape continues, as no modifier is held (the cursor never moved,
+    // so no click is waited for).
+    d.tap(ESCAPE);
+    assert_eq!(d.state(), PlayState::Playing);
+}
+
+#[test]
+fn input_followed_under_the_settings_panel_resumes_nothing() {
+    let map = beatmap();
+    let mut d = Driver::new(&map, ModSet::default());
+    let moved = d.mouse(Vec2::new(200.0, 200.0));
+    d.tick(&[moved]);
+    d.run_to(1500.0);
+    d.tap(ESCAPE);
+    d.tap(ESCAPE);
+    assert_eq!(d.state(), PlayState::Resuming);
+    let at = d.snapshot.resume_target;
+    let on = d.mouse(at);
+    let (down, up) = (d.key(Z, true), d.key(Z, false));
+    d.session.follow_covered(&[on, down, up]);
+    d.run(1);
+    assert_eq!(d.state(), PlayState::Resuming);
+}
+
+#[test]
+fn a_tap_key_released_over_the_settings_panel_is_released_after() {
+    let map = beatmap();
+    let mut d = Driver::new(&map, ModSet::default());
+    d.run_to(1500.0);
+    let z = d.key(Z, true);
+    d.tick(&[z]);
+    d.tap(ESCAPE);
+    assert_eq!(d.state(), PlayState::Paused);
+    let released = d.key(Z, false);
+    d.session.follow_covered(&[released]);
+    d.run(1);
+    // The cursor never moved: Escape continues at once, without Z.
+    d.tap(ESCAPE);
+    assert_eq!(d.state(), PlayState::Playing);
+    d.run(1);
+    assert!(!d.session.input().held().contains(Actions::LEFT));
+}
+
+#[test]
+fn the_pause_menu_clicks_where_the_pointer_went_over_the_settings_panel() {
+    let map = beatmap();
+    let mut d = Driver::new(&map, ModSet::default());
+    d.run_to(1500.0);
+    d.tap(ESCAPE);
+    assert_eq!(d.state(), PlayState::Paused);
+    // Over quit when the panel opens, over continue when it closes.
+    let quit = d.menu_mouse(MenuKind::Pause, 2);
+    d.tick(&[quit]);
+    let continue_ = d.menu_mouse(MenuKind::Pause, 0);
+    d.session.follow_covered(&[continue_]);
+    d.run(1);
+    let click = [
+        press(
+            d.now,
+            InputKind::MouseButton {
+                button: MouseButton::Left,
+                down: true,
+            },
+        ),
+        press(
+            d.now,
+            InputKind::MouseButton {
+                button: MouseButton::Left,
+                down: false,
+            },
+        ),
+    ];
+    d.tick(&click);
+    // Continue, not quit; gameplay's cursor never moved, so no resume click is waited for.
+    assert_eq!(d.state(), PlayState::Playing);
+}

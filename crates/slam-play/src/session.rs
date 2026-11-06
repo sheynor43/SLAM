@@ -920,6 +920,29 @@ impl PlaySession {
         self.sounds.replace_samples(sounds, sink)
     }
 
+    /// Follows `events` another screen takes while it covers the pause or fail menu (the
+    /// settings panel, ADR-0095), acting on none of them: the keys and buttons held and the
+    /// pointer, as lazer's input state goes on tracking them under an overlay. Without it, a
+    /// modifier or tap key released over the panel stays held once it closes (#324), and the
+    /// menu's next click lands where the pointer was before the panel opened.
+    /// Allocation-free.
+    pub fn follow_covered(&mut self, events: &[InputEvent]) {
+        let size = self.input.layout().window_size();
+        for event in events {
+            self.hotkeys.follow(event);
+            self.menu.follow_pointer(event);
+            // Hover follows the pointer, as osu-framework finds it again once the panel
+            // is gone; nothing else reaches the menu.
+            if matches!(event.kind, slam_input::InputKind::MouseMove { .. }) {
+                let _ = self.menu.on_event(event, None, size);
+            }
+        }
+        if self.input.is_suspended() {
+            // Nothing resumes from under the panel.
+            let _ = self.input.follow_suspended(events, |_, _| false);
+        }
+    }
+
     /// Whether gameplay takes input and time: playing, failing or passed.
     fn in_gameplay(&self) -> bool {
         matches!(
