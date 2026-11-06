@@ -1,22 +1,26 @@
-//! The render backend, chosen once at start (ADR-0024, ADR-0080): Direct3D 11 first on
-//! Windows and OpenGL 3.3 when its device or swapchain cannot be made, OpenGL 3.3
-//! elsewhere. Scenes are generic over [`Backend`], so a frame runs one backend's code
-//! without a `match` or dynamic dispatch.
+//! The render backend, chosen once at start (ADR-0024, ADR-0080, ADR-0104): OpenGL 3.3
+//! by default; on Windows Direct3D 11 when asked for, from the settings with OpenGL 3.3
+//! when its device or swapchain cannot be made. Scenes are generic over [`Backend`], so
+//! a frame runs one backend's code without a `match` or dynamic dispatch.
 
 use slam_engine::gl::SdlGlSurface;
 use slam_input::{InputWindow, PriorityOutcome, PriorityRequest};
 use slam_render::gl::{GlDebug, GlDevice};
 use slam_render::{Device, DeviceError, Limits};
 
-/// Which backend to use, from the command line.
+/// Which backend to use.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub enum Renderer {
-    /// Direct3D 11 on Windows with the OpenGL fallback, OpenGL elsewhere.
+    /// The platform default: OpenGL 3.3 (ADR-0104).
     #[default]
     Auto,
     OpenGl,
-    /// Direct3D 11 without the fallback: failing to make it is an error.
+    /// Direct3D 11 without the fallback (the command line): failing to make it is an
+    /// error.
     D3d11,
+    /// Direct3D 11 with the OpenGL fallback (the settings, ADR-0104); OpenGL where there
+    /// is no Direct3D 11.
+    PreferD3d11,
 }
 
 impl Renderer {
@@ -194,8 +198,8 @@ pub trait WithBackend {
 }
 
 /// Opens a window with `window` and its surface for the backend `renderer` picks, and
-/// runs `then` with them. With [`Renderer::Auto`] on Windows, a failure to make the
-/// Direct3D 11 device or swapchain is logged and its window closed before OpenGL's
+/// runs `then` with them. With [`Renderer::PreferD3d11`] on Windows, a failure to make
+/// the Direct3D 11 device or swapchain is logged and its window closed before OpenGL's
 /// opens.
 pub fn run<W: WithBackend>(
     renderer: Renderer,
@@ -235,8 +239,8 @@ enum Chosen<P, F> {
     Fallback(F),
 }
 
-/// Opens the backend `renderer` asks for. `has_primary`: the platform's primary backend
-/// is not OpenGL, so [`Renderer::Auto`] tries it first.
+/// Opens the backend `renderer` asks for. `has_primary`: the platform has a backend
+/// besides OpenGL (Direct3D 11), which [`Renderer::PreferD3d11`] tries first.
 fn choose<P, F>(
     renderer: Renderer,
     has_primary: bool,
@@ -244,10 +248,10 @@ fn choose<P, F>(
     fallback: impl FnOnce() -> Result<F, String>,
 ) -> Result<Chosen<P, F>, String> {
     match renderer {
-        Renderer::OpenGl => fallback().map(Chosen::Fallback),
+        Renderer::Auto | Renderer::OpenGl => fallback().map(Chosen::Fallback),
         Renderer::D3d11 => primary().map(Chosen::Primary),
-        Renderer::Auto if !has_primary => fallback().map(Chosen::Fallback),
-        Renderer::Auto => match primary() {
+        Renderer::PreferD3d11 if !has_primary => fallback().map(Chosen::Fallback),
+        Renderer::PreferD3d11 => match primary() {
             Ok(primary) => Ok(Chosen::Primary(primary)),
             Err(e) => {
                 tracing::warn!("{e}; falling back to OpenGL 3.3");
@@ -271,30 +275,42 @@ mod tests {
     }
 
     #[test]
-    fn auto_prefers_the_primary_backend() {
+    fn auto_is_opengl_everywhere() {
+        for has_primary in [true, false] {
+            let (p, f) = (Cell::new(0), Cell::new(0));
+            assert_eq!(
+                choose(Renderer::Auto, has_primary, ok(&p), ok(&f)),
+                Ok(Chosen::Fallback(1))
+            );
+            assert_eq!(p.get(), 0);
+        }
+    }
+
+    #[test]
+    fn prefer_d3d11_opens_the_primary_backend() {
         let (p, f) = (Cell::new(0), Cell::new(0));
         assert_eq!(
-            choose(Renderer::Auto, true, ok(&p), ok(&f)),
+            choose(Renderer::PreferD3d11, true, ok(&p), ok(&f)),
             Ok(Chosen::Primary(1))
         );
         assert_eq!(f.get(), 0);
     }
 
     #[test]
-    fn auto_falls_back_when_the_primary_fails() {
+    fn prefer_d3d11_falls_back_when_the_primary_fails() {
         let f = Cell::new(0);
         let failing = || -> Result<u32, String> { Err("no swapchain".into()) };
         assert_eq!(
-            choose(Renderer::Auto, true, failing, ok(&f)),
+            choose(Renderer::PreferD3d11, true, failing, ok(&f)),
             Ok(Chosen::Fallback(1))
         );
     }
 
     #[test]
-    fn auto_uses_opengl_without_a_primary_backend() {
+    fn prefer_d3d11_uses_opengl_without_a_primary_backend() {
         let (p, f) = (Cell::new(0), Cell::new(0));
         assert_eq!(
-            choose(Renderer::Auto, false, ok(&p), ok(&f)),
+            choose(Renderer::PreferD3d11, false, ok(&p), ok(&f)),
             Ok(Chosen::Fallback(1))
         );
         assert_eq!(p.get(), 0);

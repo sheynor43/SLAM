@@ -52,7 +52,7 @@ pub struct Options {
     pub skin: Option<PathBuf>,
     /// Audio backend (`Backend::name`); `None` takes the first available.
     pub backend: Option<Backend>,
-    /// Graphics API of the window; `auto` picks the best available.
+    /// Graphics API of the window; `auto` is the platform default (OpenGL 3.3).
     pub renderer: Renderer,
     /// Borderless desktop fullscreen instead of a window.
     pub fullscreen: bool,
