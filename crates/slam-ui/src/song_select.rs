@@ -364,6 +364,9 @@ pub struct SongSelectSnapshot {
     pub mods: ModSelectSnapshot,
     /// The selected difficulty's details, as [`SongSelect::set_details`] gave them.
     pub details: Option<BeatmapDetails>,
+    /// The "no audio output" message takes the hints' place, as
+    /// [`SongSelect::set_no_audio`] set it.
+    pub no_audio: bool,
 }
 
 /// What the song select shows of the selected difficulty (ADR-0067), computed by the
@@ -423,6 +426,8 @@ pub struct SongSelect {
     /// Rows that fit the list area at the last input; keeps the selection in view.
     viewport: f32,
     details: Option<BeatmapDetails>,
+    /// A play was refused for want of an audio output (#317).
+    no_audio: bool,
 }
 
 impl Default for SongSelect {
@@ -461,12 +466,19 @@ impl SongSelect {
             mods: ModSelect::default(),
             viewport: 10.0,
             details: None,
+            no_audio: false,
         }
     }
 
     /// Sets the selected difficulty's details for the next snapshots.
     pub fn set_details(&mut self, details: Option<BeatmapDetails>) {
         self.details = details;
+    }
+
+    /// Whether the screen says that nothing plays without an audio output: set when a play
+    /// is refused for that, cleared when an output opens.
+    pub fn set_no_audio(&mut self, no_audio: bool) {
+        self.no_audio = no_audio;
     }
 
     pub fn status(&self) -> SongSelectStatus {
@@ -630,6 +642,7 @@ impl SongSelect {
             generation: self.generation,
             mods: self.mods.snapshot(),
             details: self.details,
+            no_audio: self.no_audio,
         }
     }
 

@@ -750,6 +750,11 @@ impl ShellState {
     /// Ends a load: with the id of a started play, its screen comes in (over the results
     /// of the play it retries, in their place), else the screen that asked takes input
     /// again. Navigation.
+    /// Whether the song select says that nothing plays without an audio output (#317).
+    pub fn set_no_audio(&mut self, no_audio: bool) {
+        self.song_select.set_no_audio(no_audio);
+    }
+
     pub fn finish_loading(&mut self, now_ns: u64, started: Option<u64>) {
         self.set_loading(false);
         if let Some(id) = started {
@@ -2015,6 +2020,9 @@ impl PlayHost {
     fn advance(&mut self, now_ns: u64, state: &mut ShellState) {
         self.end_game(now_ns, state);
         self.switch_output();
+        if !self.no_output {
+            state.set_no_audio(false);
+        }
         self.menu_music(now_ns, state);
         if let Some(link) = &mut self.output {
             if let Some(settings) = state.take_device_list_request() {
@@ -2056,6 +2064,15 @@ impl PlayHost {
                     };
                     self.play_requested = Some((self.next_request, options.clone()));
                     self.loader.request(self.next_request, map, options)
+                }
+                Some(_) if self.no_output => {
+                    tracing::warn!("play: not started, no audio output is open");
+                    state.set_no_audio(true);
+                    false
+                }
+                Some(_) if self.switching => {
+                    tracing::warn!("play: not started, the audio output is being switched");
+                    false
                 }
                 _ => false,
             };
@@ -2715,9 +2732,11 @@ impl Update for Shell {
         }
         match &mut self.host {
             Some(host) => host.advance(now, &mut self.state),
-            // Nothing plays without an audio output.
+            // Nothing plays without an audio output: the song select says so (#317).
             None => {
                 if self.state.take_play_request().is_some() {
+                    tracing::warn!("play: not started, the audio output failed to open");
+                    self.state.set_no_audio(true);
                     self.state.finish_loading(now, None);
                 }
             }

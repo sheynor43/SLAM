@@ -110,6 +110,7 @@ fn labels() -> SongSelectLabels {
         empty: "empty".into(),
         choose_folder: "choose folder".into(),
         hint: "hint".into(),
+        no_audio: "no audio".into(),
         search_placeholder: "search...".into(),
         search_no_matches: "no matches".into(),
         mods_title: "Mods".into(),
@@ -620,4 +621,24 @@ fn dragging_and_flinging_the_list_do_not_allocate() {
         std::hint::black_box(screen.input(SongSelectInput::PointerRelease, &layout));
     });
     assert!(screen.snapshot().scroll > 0.0);
+}
+
+#[test]
+fn switching_to_the_no_audio_message_does_not_allocate() {
+    let mut rig = Rig::new();
+    let mut screen = SongSelect::new();
+    put(&mut screen, list_of(40));
+    screen.set_status(SongSelectStatus::Ready);
+    let hints = screen.snapshot();
+    screen.set_no_audio(true);
+    let refused = screen.snapshot();
+    assert!(refused.no_audio && !hints.no_audio);
+    rig.frame(&hints);
+    rig.frame(&refused);
+    assert_no_alloc(|| {
+        for _ in 0..10 {
+            rig.frame(&hints);
+            rig.frame(&refused);
+        }
+    });
 }

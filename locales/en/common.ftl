@@ -48,6 +48,7 @@ song-select-empty = No beatmaps found in the songs folder.
 song-select-choose-folder = Choose osu! folder
 song-select-loading = Loading beatmap...
 song-select-hint = Enter: play · type to search · F1: mods · Esc: back
+song-select-no-audio = No audio output: maps cannot start without sound.
 song-select-search-placeholder = search...
 song-select-search-no-matches = No beatmaps match the search
 song-select-details-length = Length

@@ -62,6 +62,7 @@ pub fn interface_views(
         empty: text("song-select-empty"),
         choose_folder: text("song-select-choose-folder"),
         hint: text("song-select-hint"),
+        no_audio: text("song-select-no-audio"),
         search_placeholder: text("song-select-search-placeholder"),
         search_no_matches: text("song-select-search-no-matches"),
         mods_title: text("song-select-mods-title"),

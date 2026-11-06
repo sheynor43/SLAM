@@ -46,6 +46,8 @@ pub struct SongSelectLabels {
     /// The button shown when there is nothing to play.
     pub choose_folder: String,
     pub hint: String,
+    /// Shown instead of the hints after a play was refused for want of an audio output.
+    pub no_audio: String,
     /// Shown in the search line while the query is empty.
     pub search_placeholder: String,
     /// Shown instead of the rows when the query matches nothing.
@@ -139,6 +141,7 @@ pub struct SongSelectView {
     empty: Line,
     choose_folder: Line,
     hint: Line,
+    no_audio: Line,
     /// The query, for the query it was laid out for.
     search: Line,
     search_for: Option<SearchQuery>,
@@ -255,6 +258,7 @@ impl SongSelectView {
             empty: Line::new(&labels.empty),
             choose_folder: Line::new(&labels.choose_folder),
             hint: Line::new(&labels.hint),
+            no_audio: Line::new(&labels.no_audio),
             search: Line::new(""),
             search_for: None,
             search_placeholder: Line::new(&labels.search_placeholder),
@@ -329,8 +333,10 @@ impl SongSelectView {
         ] {
             self.type_setter.lay_out(line, status);
         }
-        self.type_setter
-            .lay_out(&mut self.hint, self.theme.song_detail_size * scale);
+        for line in [&mut self.hint, &mut self.no_audio] {
+            self.type_setter
+                .lay_out(line, self.theme.song_detail_size * scale);
+        }
         self.type_setter.lay_out(
             &mut self.detail_charset,
             self.theme.song_detail_size * scale,
@@ -390,6 +396,7 @@ impl SongSelectView {
             &self.empty,
             &self.choose_folder,
             &self.hint,
+            &self.no_audio,
             &self.search,
             &self.search_placeholder,
             &self.search_no_matches,
@@ -897,11 +904,17 @@ impl SongSelectView {
                 }
             }
         }
+        // The refused play's reason stands out from the hints it replaces.
+        let (hint, colour) = if snapshot.no_audio {
+            (&self.no_audio, theme.text)
+        } else {
+            (&self.hint, theme.song_hint_text)
+        };
         left(
-            &self.hint,
+            hint,
             layout.hint.x,
             layout.hint.y + layout.hint.height / 2.0,
-            theme.song_hint_text,
+            colour,
         );
         // The selection, left of the list panel.
         if snapshot.mods.active != [0; MAX_COLUMNS] {
