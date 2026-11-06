@@ -243,6 +243,20 @@ pub(crate) fn calibration_verdict(leads: &[i64], buffer: u32) -> CalibrationVerd
     }
 }
 
+/// Whether a calibration shows a stalling driver (ADR-0103): the device had played
+/// everything written on every event (`leads` all within an eighth of the `buffer` below
+/// zero, for the rounding of the clock), and the event step `step_ns` is longer than the
+/// `period_hns` by more than the 0.5 ms grid. Such a driver does not replay a stale
+/// buffer: its clock stops at the written count, so the lead never grows and
+/// [`calibration_verdict`] cannot see it starve.
+pub(crate) fn stalls(leads: &[i64], buffer: u32, step_ns: u64, period_hns: i64) -> bool {
+    let threshold_ns = u64::try_from(period_hns.saturating_add(PERIOD_GRID_HNS))
+        .unwrap_or(u64::MAX)
+        .saturating_mul(100);
+    let tolerance = i64::from(buffer / 8);
+    !leads.is_empty() && leads.iter().all(|&lead| lead >= -tolerance) && step_ns > threshold_ns
+}
+
 /// Median of `intervals` (the upper one for an even count); sorts in place. Zero if empty.
 pub(crate) fn median_ns(intervals: &mut [u64]) -> u64 {
     intervals.sort_unstable();
@@ -553,6 +567,47 @@ mod tests {
         // 480 frames played per 144 written.
         let verdict = calibration_verdict(&drifting(13, 144, 480, 30), 144);
         assert!(verdict.starving);
+    }
+
+    #[test]
+    fn ur12_clock_stopping_at_the_written_count_stalls() {
+        // Measured on a UR12 (2026-11-06): 3 ms period, events every 10 ms, the clock
+        // reports exactly the written count on every event; no replay, no growth.
+        let leads = vec![0i64; 13];
+        assert!(!calibration_verdict(&leads, 144).starving);
+        assert!(stalls(&leads, 144, 10_001_000, 30_000));
+    }
+
+    #[test]
+    fn a_healthy_stream_does_not_stall() {
+        // The same UR12 at 10 ms: the device one buffer behind on every event.
+        assert!(!stalls(&[-477; 13], 480, 10_000_000, 100_000));
+        // An honest 3 ms driver, even with the clock at the written count.
+        assert!(!stalls(&[0; 13], 144, 3_000_000, 30_000));
+        assert!(!stalls(&[0; 13], 144, 3_500_000, 30_000));
+        assert!(stalls(&[0; 13], 144, 3_500_001, 30_000));
+    }
+
+    #[test]
+    fn a_clock_rounded_below_the_written_count_still_stalls() {
+        assert!(stalls(&[-1; 13], 144, 10_000_000, 30_000));
+        assert!(stalls(&[-18; 13], 144, 10_000_000, 30_000));
+        assert!(!stalls(&[-19; 13], 144, 10_000_000, 30_000));
+    }
+
+    #[test]
+    fn a_replay_in_the_warm_up_of_an_honest_driver_is_no_stall() {
+        // A replaying driver one buffer ahead from before the window, stepping at 3 ms.
+        let leads: Vec<i64> = (0..13).map(|i| 10 + i % 3).collect();
+        assert!(!stalls(&leads, 144, 3_010_000, 30_000));
+    }
+
+    #[test]
+    fn one_event_with_a_buffer_left_is_no_stall() {
+        let mut leads = vec![0i64; 13];
+        leads[4] = -100;
+        assert!(!stalls(&leads, 144, 10_000_000, 30_000));
+        assert!(!stalls(&[], 144, 10_000_000, 30_000));
     }
 
     #[test]

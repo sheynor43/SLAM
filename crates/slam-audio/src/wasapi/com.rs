@@ -38,7 +38,7 @@ use super::{
     aligned_period_hns, calibrates, calibration_verdict, channel_mask, convert,
     exclusive_period_hns, fallback_chain, frames_from_hns, latency_ns, lead_frames,
     low_latency_period, median_ns, next_exclusive_period_hns, qpc_hns_to_ns,
-    shared_frames_to_write, underrun,
+    shared_frames_to_write, stalls, underrun,
 };
 use crate::hal::{AudioCallback, AudioError, CallbackInfo, DeviceInfo, StreamConfig};
 use crate::hal::{StreamCounters, StreamHandle, WasapiMode};
@@ -409,7 +409,8 @@ fn settle_exclusive(
 struct Calibration {
     /// Median interval between buffer events, nanoseconds.
     step_ns: u64,
-    /// The device kept running ahead of the stream: the period is too short.
+    /// The device kept running ahead of the stream (ADR-0101) or stalled at the written
+    /// count with events further apart than the period (ADR-0103): the period is too short.
     starving: bool,
 }
 
@@ -739,7 +740,7 @@ impl Render<'_> {
 impl Session {
     /// Writes silence for [`CALIBRATION_WARMUP`] + [`CALIBRATION_EVENTS`] buffer events and
     /// measures the interval between wake-ups and how far the device runs ahead of the
-    /// stream (ADR-0101). Afterwards `render.written` includes the buffers the device
+    /// stream (ADR-0101, ADR-0103). Afterwards `render.written` includes the buffers the device
     /// replayed, so the latency and underrun accounting of the render loop start from the
     /// device's real position. `None` if `quit` is set, the events stop coming or the clock fails.
     fn calibrate(
@@ -794,9 +795,11 @@ impl Session {
         }
         let verdict = calibration_verdict(&leads, self.buffer_frames);
         render.written += verdict.replayed;
+        let step_ns = median_ns(&mut intervals);
+        let period_hns = aligned_period_hns(self.buffer_frames, self.rate);
         Ok(Some(Calibration {
-            step_ns: median_ns(&mut intervals),
-            starving: verdict.starving,
+            step_ns,
+            starving: verdict.starving || stalls(&leads, self.buffer_frames, step_ns, period_hns),
         }))
     }
 
