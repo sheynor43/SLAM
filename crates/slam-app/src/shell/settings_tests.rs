@@ -180,7 +180,7 @@ fn a_shell_started_with_settings_offers_their_custom_rates() {
 use crate::settings::DrawRate;
 use slam_ui::settings_screen::RowKind;
 
-fn shell_with(link: crate::settings::saver::SaveLink) -> Shell {
+pub(super) fn shell_with(link: crate::settings::saver::SaveLink) -> Shell {
     Shell {
         state: state(),
         host: None,

@@ -1245,9 +1245,13 @@ fn no_play_starts_without_an_output_until_one_opens() {
     let (mut s, mut snap) = listing(&fixture);
     fixture.host.advance(TRANSITION_NS + 1, &mut s);
     assert!(fixture.host.no_output && !fixture.host.switching);
+    assert!(!song_view(&snap).no_audio);
     s.tick(TRANSITION_NS + 2, &[key(KEY_ENTER)], &mut snap);
     fixture.host.advance(TRANSITION_NS + 3, &mut s);
     assert!(!s.is_loading());
+    // The song select says why nothing started (#317).
+    s.tick(TRANSITION_NS + 3, &[], &mut snap);
+    assert!(song_view(&snap).no_audio);
     // The previous output, opened again, brings the plays back.
     fixture.host.switching = true;
     let (audio, _mixer) = detached_audio();
@@ -1259,6 +1263,32 @@ fn no_play_starts_without_an_output_until_one_opens() {
     fixture.host.advance(TRANSITION_NS + 4, &mut s);
     assert!(!fixture.host.no_output && !fixture.host.switching);
     assert!(matches!(ends.requests.pop(), Ok(Request::Retire(_))));
+    s.tick(TRANSITION_NS + 4, &[], &mut snap);
+    assert!(!song_view(&snap).no_audio);
+}
+
+#[test]
+fn without_an_audio_output_the_song_select_says_why_nothing_plays() {
+    let fixture = host("no-audio", true);
+    let (link, _taken) = crate::settings::saver::detached(1);
+    let mut shell = super::settings_tests::shell_with(link);
+    let (s, mut snap) = listing(&fixture);
+    shell.state = s;
+    assert!(!song_view(&snap).no_audio);
+    let tick = |shell: &mut Shell, now_ns, events: &[InputEvent], snap: &mut ShellSnapshot| {
+        let info = TickInfo {
+            now_ns,
+            deadline_ns: now_ns,
+            by_input: false,
+        };
+        shell.tick(&info, events, snap);
+    };
+    tick(&mut shell, TRANSITION_NS + 1, &[key(KEY_ENTER)], &mut snap);
+    assert!(!shell.state.is_loading());
+    tick(&mut shell, TRANSITION_NS + 2, &[], &mut snap);
+    // Still the song select, now with the reason in place of the hints.
+    assert!(song_view(&snap).no_audio);
+    assert!(!shell.state.playing());
 }
 
 #[test]

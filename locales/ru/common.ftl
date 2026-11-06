@@ -52,6 +52,7 @@ song-select-empty = В папке с песнями нет карт.
 song-select-choose-folder = Выбрать папку osu!
 song-select-loading = Загрузка карты...
 song-select-hint = Enter: играть · ввод: поиск · F1: моды · Esc: назад
+song-select-no-audio = Нет аудиовыхода: без звука карты не запускаются.
 song-select-search-placeholder = поиск...
 song-select-search-no-matches = Нет карт по запросу
 song-select-details-length = Длина
