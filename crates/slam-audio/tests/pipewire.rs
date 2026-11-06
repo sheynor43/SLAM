@@ -28,3 +28,12 @@ fn pipewire_stream_plays_without_allocating() {
     assert_eq!(stream.config().sample_rate, 48_000);
     common::play_and_check(stream, &shared);
 }
+
+#[test]
+#[ignore = "needs a running PipeWire server"]
+fn pipewire_reports_the_graph_rate() {
+    let rate = slam_audio::device_rate(Backend::PipeWire, None).expect("reading the rate");
+    let rate = rate.expect("the settings metadata has clock.rate");
+    assert!((8_000..=384_000).contains(&rate), "{rate}");
+    eprintln!("graph rate {rate}");
+}

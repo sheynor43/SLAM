@@ -102,7 +102,7 @@ impl Default for StreamConfig {
     fn default() -> Self {
         Self {
             device: None,
-            sample_rate: 48_000,
+            sample_rate: DEFAULT_SAMPLE_RATE,
             channels: 2,
             buffer_frames: 128,
             name: "SLAM".to_owned(),
@@ -211,8 +211,32 @@ impl std::fmt::Debug for OutputStream {
     }
 }
 
+/// Rate a stream runs at when the device's is unknown or unusable.
+pub const DEFAULT_SAMPLE_RATE: u32 = 48_000;
+
+/// Stream rates [`open_output`] accepts.
+const SAMPLE_RATES: std::ops::RangeInclusive<u32> = 8_000..=384_000;
+
+/// Rate to open the mixer, the music and the stream at, given what [`device_rate`]
+/// reported (ADR-0102): the device's when a stream can run at it, else
+/// [`DEFAULT_SAMPLE_RATE`].
+pub fn stream_rate(device: Result<Option<u32>, AudioError>) -> u32 {
+    match device {
+        Ok(Some(rate)) if SAMPLE_RATES.contains(&rate) => rate,
+        Ok(Some(rate)) => {
+            tracing::warn!(rate, "device rate out of range; using the default");
+            DEFAULT_SAMPLE_RATE
+        }
+        Ok(None) => DEFAULT_SAMPLE_RATE,
+        Err(err) => {
+            tracing::warn!(%err, "device rate unknown; using the default");
+            DEFAULT_SAMPLE_RATE
+        }
+    }
+}
+
 fn validate(config: &StreamConfig) -> Result<(), AudioError> {
-    if !(8_000..=384_000).contains(&config.sample_rate) {
+    if !SAMPLE_RATES.contains(&config.sample_rate) {
         return Err(AudioError::InvalidConfig(
             "sample rate out of 8000..=384000",
         ));
@@ -233,6 +257,28 @@ pub fn devices(backend: Backend) -> Result<Vec<DeviceInfo>, AudioError> {
         Backend::PipeWire => crate::pipewire::devices(),
         #[cfg(windows)]
         Backend::Wasapi(_) => crate::wasapi::devices(),
+    }
+}
+
+/// Rate the output `device` (`None`: the default) of `backend` runs at, without opening
+/// a stream (ADR-0102): the WASAPI mix format, the PipeWire graph rate. `None` when the
+/// backend does not say. Open the mixer, the music and the stream at it to spare the
+/// system a resampler and let WASAPI LowLatency and Exclusive open.
+// Without a backend for the target the match below is empty and diverges.
+#[cfg_attr(
+    not(any(target_os = "linux", windows)),
+    allow(unreachable_code, unused_variables)
+)]
+pub fn device_rate(backend: Backend, device: Option<&str>) -> Result<Option<u32>, AudioError> {
+    match backend {
+        #[cfg(target_os = "linux")]
+        Backend::PipeWire => {
+            // The graph rate is global.
+            let _ = device;
+            crate::pipewire::device_rate()
+        }
+        #[cfg(windows)]
+        Backend::Wasapi(_) => crate::wasapi::device_rate(device),
     }
 }
 
@@ -298,6 +344,19 @@ mod tests {
             assert_eq!(Backend::from_name(backend.name()), Some(backend));
         }
         assert_eq!(Backend::from_name("asio"), None);
+    }
+
+    #[test]
+    fn stream_rate_takes_a_usable_device_rate() {
+        assert_eq!(stream_rate(Ok(Some(44_100))), 44_100);
+        assert_eq!(stream_rate(Ok(Some(384_000))), 384_000);
+        assert_eq!(stream_rate(Ok(Some(768_000))), DEFAULT_SAMPLE_RATE);
+        assert_eq!(stream_rate(Ok(Some(0))), DEFAULT_SAMPLE_RATE);
+        assert_eq!(stream_rate(Ok(None)), DEFAULT_SAMPLE_RATE);
+        assert_eq!(
+            stream_rate(Err(AudioError::Unavailable("gone".to_owned()))),
+            DEFAULT_SAMPLE_RATE
+        );
     }
 
     #[test]

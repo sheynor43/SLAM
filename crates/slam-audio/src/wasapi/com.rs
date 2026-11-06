@@ -436,16 +436,51 @@ struct Session {
 }
 
 /// Opens the device and initialises the first mode of the fallback chain that works.
-fn open_session(mode: WasapiMode, config: &StreamConfig) -> Result<Session, AudioError> {
-    let enumerator = enumerator().map_err(unavailable)?;
+/// The endpoint with `id`, or the default render endpoint.
+fn endpoint(id: Option<&str>) -> windows::core::Result<IMMDevice> {
+    let enumerator = enumerator()?;
     // SAFETY: COM calls on a valid enumerator; the id string outlives the call.
-    let device = unsafe {
-        match &config.device {
-            Some(id) => enumerator.GetDevice(&HSTRING::from(id.as_str())),
+    unsafe {
+        match id {
+            Some(id) => enumerator.GetDevice(&HSTRING::from(id)),
             None => enumerator.GetDefaultAudioEndpoint(eRender, eConsole),
         }
     }
-    .map_err(unavailable)?;
+}
+
+/// Rate of the engine's mix format on `device` (ADR-0102): what Shared and LowLatency
+/// run at and the rate Exclusive is tried with. Runs COM on a short-lived thread like
+/// [`devices`].
+pub(crate) fn device_rate(device: Option<&str>) -> Result<Option<u32>, AudioError> {
+    thread::scope(|scope| {
+        scope
+            .spawn(|| {
+                let _com = Com::init().map_err(unavailable)?;
+                mix_rate(device).map(Some).map_err(unavailable)
+            })
+            .join()
+            .unwrap_or_else(|_| {
+                Err(AudioError::Unavailable(
+                    "WASAPI: reading the mix format panicked".to_owned(),
+                ))
+            })
+    })
+}
+
+fn mix_rate(device: Option<&str>) -> windows::core::Result<u32> {
+    let device = endpoint(device)?;
+    // SAFETY: COM calls on a valid device; the mix format is read once and freed once.
+    unsafe {
+        let client: IAudioClient = device.Activate(CLSCTX_ALL, None)?;
+        let mix = client.GetMixFormat()?;
+        let rate = mix.read_unaligned().nSamplesPerSec;
+        CoTaskMemFree(Some(mix as *const _));
+        Ok(rate)
+    }
+}
+
+fn open_session(mode: WasapiMode, config: &StreamConfig) -> Result<Session, AudioError> {
+    let device = endpoint(config.device.as_deref()).map_err(unavailable)?;
 
     let mut failures = Vec::new();
     for &candidate in fallback_chain(mode) {

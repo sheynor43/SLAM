@@ -6,6 +6,9 @@ use slam_ui::screen::TRANSITION_NS;
 
 use super::*;
 
+/// The rate of the test mixers and outputs.
+const SAMPLE_RATE: u32 = slam_audio::DEFAULT_SAMPLE_RATE;
+
 fn state() -> ShellState {
     ShellState::new(Theme::default(), 1280.0, 720.0, 1.0)
 }
@@ -558,6 +561,7 @@ fn detached_audio() -> (Audio, slam_audio::Mixer) {
         previews,
         mixer: mixer_handle,
         volumes: AppliedVolumes::new(Volumes::of(&Settings::default().audio)),
+        sample_rate: SAMPLE_RATE,
     };
     (audio, mixer)
 }
@@ -1176,6 +1180,7 @@ fn a_new_output_plays_the_track_on_from_where_the_old_one_left_it() {
         if let Some((left, true)) = output::resume_point(
             fixture.host.audio.output.read(),
             fixture.host.audio.music.read(),
+            SAMPLE_RATE,
         ) && left > 0
         {
             break left;
@@ -1220,6 +1225,33 @@ fn a_new_output_plays_the_track_on_from_where_the_old_one_left_it() {
             break;
         }
     }
+}
+
+#[test]
+fn the_output_switches_only_after_a_play_in_preparation() {
+    let mut fixture = host("output-prepare", true);
+    let (link, mut ends) = output::test_link();
+    fixture.host.output = Some(link);
+    fixture.host.switching = true;
+    // Its samples are being prepared at the old output's rate (ADR-0102).
+    fixture.host.pending = Pending::Preparing(1);
+    let (mut new, _new_mixer) = detached_audio();
+    new.sample_rate = 44_100;
+    assert!(
+        ends.opened
+            .push(output::Opened::Asked(Box::new(new)))
+            .is_ok()
+    );
+    let mut s = state();
+    fixture.host.switch_output();
+    assert!(fixture.host.switching);
+    assert_eq!(fixture.host.audio.sample_rate, SAMPLE_RATE);
+    // The preparation failed or was dropped: the switch goes ahead.
+    fixture.host.pending = Pending::Idle;
+    fixture.host.advance(1, &mut s);
+    assert!(!fixture.host.switching);
+    assert_eq!(fixture.host.audio.sample_rate, 44_100);
+    assert!(matches!(ends.requests.pop(), Ok(Request::Retire(_))));
 }
 
 #[test]

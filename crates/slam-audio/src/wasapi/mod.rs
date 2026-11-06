@@ -11,7 +11,7 @@
 mod com;
 
 #[cfg(windows)]
-pub(crate) use com::{devices, open_output};
+pub(crate) use com::{device_rate, devices, open_output};
 
 use crate::hal::WasapiMode;
 
