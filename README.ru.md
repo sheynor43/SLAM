@@ -12,7 +12,7 @@
 
 **Системные требования**
 - Windows 10+ x64 или Linux x64 (X11 или Wayland, glibc не старше Ubuntu 24.04).
-- Видеокарта с OpenGL 3.3. На Windows вместо него в настройках можно выбрать Direct3D 11.
+- Видеокарта с OpenGL 3.3. На Windows вместо него в настройках можно выбрать Direct3D 11; на него же SLAM переключается, если OpenGL не запустился.
 - Linux: PipeWire (звук), для выбора папки — xdg-desktop-portal или zenity.
 
 **Запуск**

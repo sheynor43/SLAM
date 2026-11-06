@@ -1,6 +1,6 @@
 # ADR-0104: Рендер на Windows — OpenGL по умолчанию, Direct3D 11 по выбору в настройках
 
-- Статус: Принято
+- Статус: Принято, уточнён ADR-0105
 - Дата: 2026-11-06
 - Заменяет [ADR-0024](0024-render-backend-per-platform.md) в части Windows и уточняет [ADR-0080](0080-hlsl-and-backend-selection.md) (порядок выбора бэкенда). Закрывает вопрос [#29](https://github.com/sheynor43/SLAM/issues/29).
 
