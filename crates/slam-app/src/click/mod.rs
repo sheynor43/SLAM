@@ -270,6 +270,8 @@ fn measure<B: render::Backend>(
     let counters = stream.counters();
     let missed = counters.missed_buffers.load(Ordering::Relaxed);
     let failed = counters.failed.load(Ordering::Relaxed);
+    // The backend the stream opened with: WASAPI may have fallen back to another mode.
+    let opened = stream.backend();
     drop(stream);
     clicker.finish();
     let lost = clicker
@@ -286,7 +288,8 @@ fn measure<B: render::Backend>(
         |p| p.display().to_string(),
     );
     println!(
-        "PipeWire, {} Hz, {} frames requested, device {}, {source}, video: {}",
+        "{}, {} Hz, {} frames requested, device {}, {source}, video: {}",
+        opened.name(),
         SAMPLE_RATE,
         options.buffer_frames,
         options.device.as_deref().unwrap_or("default"),
