@@ -19,7 +19,8 @@ use std::sync::Arc;
 use super::keybinds;
 use crate::displays::{DisplayLists, DisplayViews};
 use crate::settings::{
-    DrawRate, FpsScreens, HitsoundDelay, InputSettings, KeySlot, Settings, Timing, skins,
+    DrawRate, FpsScreens, HitsoundDelay, InputSettings, KeySlot, RendererChoice, Settings, Timing,
+    skins,
 };
 
 /// Sections, in order; the keys of their names are in [`SECTION_KEYS`].
@@ -168,6 +169,8 @@ const WIN_KEY_LABEL: &str = if cfg!(windows) {
 };
 /// The video driver row shows on Linux only: other platforms have one driver (ADR-0097).
 const VIDEO_DRIVER_ROW: bool = cfg!(target_os = "linux");
+/// The renderer row shows on Windows only: elsewhere OpenGL is the only renderer (ADR-0104).
+const RENDERER_ROW: bool = cfg!(windows);
 /// Whether the platform has known issues with the high precision mouse (ADR-0069): lazer
 /// switches it off by default and warns on Linux and macOS.
 const PLATFORM_WARNING: bool = cfg!(any(target_os = "linux", target_os = "macos"));
@@ -212,6 +215,8 @@ pub enum Row {
     MinimiseOnFocusLoss,
     /// The video driver SDL starts with on Linux, applied after a restart (ADR-0097).
     VideoDriver,
+    /// The renderer on Windows, applied after a restart (ADR-0104).
+    Renderer,
     UpdateHz,
     DrawHz,
     MenuDrawHz,
@@ -240,7 +245,7 @@ pub enum Row {
 const _: () = assert!(Row::ALL.len() <= slam_ui::settings_screen::MAX_ROWS);
 
 impl Row {
-    pub const ALL: [Row; 54] = [
+    pub const ALL: [Row; 55] = [
         Row::MasterVolume,
         Row::MusicVolume,
         Row::MenuMusic,
@@ -273,6 +278,7 @@ impl Row {
         Row::WindowedSize,
         Row::MinimiseOnFocusLoss,
         Row::VideoDriver,
+        Row::Renderer,
         Row::UpdateHz,
         Row::DrawHz,
         Row::MenuDrawHz,
@@ -350,7 +356,8 @@ impl Row {
             | Row::FullscreenSize
             | Row::WindowedSize
             | Row::MinimiseOnFocusLoss
-            | Row::VideoDriver => 3,
+            | Row::VideoDriver
+            | Row::Renderer => 3,
             Row::UpdateHz
             | Row::DrawHz
             | Row::MenuDrawHz
@@ -409,6 +416,7 @@ impl Row {
             Row::FullscreenSize | Row::WindowedSize => "settings-layout-resolution",
             Row::MinimiseOnFocusLoss => "settings-layout-minimise-on-focus-loss",
             Row::VideoDriver => "settings-layout-video-driver",
+            Row::Renderer => "settings-layout-renderer",
             Row::UpdateHz => "settings-frame-update-rate",
             Row::DrawHz => "settings-frame-draw-rate",
             Row::MenuDrawHz => "settings-frame-menu-draw-rate",
@@ -435,11 +443,12 @@ impl Row {
     }
 
     /// Whether a change only takes effect after a restart: the video driver does, SDL
-    /// reads it once at startup (ADR-0097). Other rows apply when the screen closes, the
+    /// reads it once at startup (ADR-0097), and so does the renderer, chosen when the window
+    /// is made (ADR-0104). Other rows apply when the screen closes, the
     /// output reopened (ADR-0089), the language as it is picked (ADR-0091); the offset,
     /// mouse buttons and background from the next play (ADR-0048).
     pub fn restart_required(self) -> bool {
-        self == Row::VideoDriver
+        matches!(self, Row::VideoDriver | Row::Renderer)
     }
 }
 
@@ -565,6 +574,14 @@ fn video_driver_key(driver: VideoDriver) -> &'static str {
         VideoDriver::Auto => "settings-option-auto",
         VideoDriver::Wayland => "settings-option-wayland",
         VideoDriver::X11 => "settings-option-x11",
+    }
+}
+
+/// The Fluent key of a renderer option.
+fn renderer_key(renderer: RendererChoice) -> &'static str {
+    match renderer {
+        RendererChoice::OpenGl => "settings-option-opengl",
+        RendererChoice::D3d11 => "settings-option-direct3d11",
     }
 }
 
@@ -880,6 +897,12 @@ impl Rows {
                     .iter()
                     .position(|d| *d == s.window.video_driver),
             ),
+            Row::Renderer => choice(
+                RendererChoice::ALL.len(),
+                RendererChoice::ALL
+                    .iter()
+                    .position(|r| *r == s.window.renderer),
+            ),
             Row::Display | Row::FullscreenSize | Row::WindowedSize => {
                 let (options, selected) = self.display_choice(row, s);
                 choice(options, Some(selected))
@@ -1022,6 +1045,11 @@ impl Rows {
                     settings.window.video_driver = *driver;
                 }
             }
+            (Row::Renderer, RowValue::Choice(i)) => {
+                if let Some(renderer) = RendererChoice::ALL.get(i) {
+                    settings.window.renderer = *renderer;
+                }
+            }
             (Row::Display, RowValue::Choice(i)) => {
                 if i < self.displays.displays.len() {
                     settings.window.display = u8::try_from(i).unwrap_or(u8::MAX);
@@ -1075,6 +1103,7 @@ impl Rows {
                 // Ported from osu!lazer 2026.1005.0-lazer: osu.Game/Overlays/Settings/Sections/Gameplay/InputSettings.cs
                 Row::DisableWinKey => screen.set_hidden(i, !WIN_KEY_ROW),
                 Row::VideoDriver => screen.set_hidden(i, !VIDEO_DRIVER_ROW),
+                Row::Renderer => screen.set_hidden(i, !RENDERER_ROW),
                 Row::Display | Row::FullscreenSize | Row::WindowedSize => {
                     let (options, selected) = self.display_choice(*row, settings);
                     if let Some(RowWidget::Dropdown(dropdown)) = screen.widget(i)
@@ -1190,6 +1219,10 @@ impl Rows {
                     Row::VideoDriver => VideoDriver::ALL
                         .iter()
                         .map(|driver| text(video_driver_key(*driver)))
+                        .collect(),
+                    Row::Renderer => RendererChoice::ALL
+                        .iter()
+                        .map(|renderer| text(renderer_key(*renderer)))
                         .collect(),
                     _ => Vec::new(),
                 };
@@ -1588,12 +1621,14 @@ mod tests {
     }
 
     #[test]
-    fn only_the_video_driver_row_waits_for_a_restart() {
+    fn only_the_video_driver_and_renderer_rows_wait_for_a_restart() {
         for row in Row::ALL {
-            assert_eq!(row.restart_required(), row == Row::VideoDriver, "{row:?}");
+            let waits = matches!(row, Row::VideoDriver | Row::Renderer);
+            assert_eq!(row.restart_required(), waits, "{row:?}");
         }
         let (rows, s) = rows();
         assert!(rows.specs(&s)[index(Row::VideoDriver)].restart_required);
+        assert!(rows.specs(&s)[index(Row::Renderer)].restart_required);
     }
 
     #[test]
@@ -1621,6 +1656,30 @@ mod tests {
         let row = &labels.rows[index(Row::VideoDriver)];
         assert_eq!(row.label, "Video driver (Linux)");
         assert_eq!(row.options, ["Auto", "Wayland", "X11"]);
+    }
+
+    #[test]
+    fn the_renderer_row_shows_on_windows_only() {
+        let (rows, s) = rows();
+        let screen = opened(&rows, &s);
+        assert_eq!(screen.is_hidden(index(Row::Renderer)), !cfg!(windows));
+        assert_eq!(Row::Renderer.section(), Row::ScreenMode.section());
+    }
+
+    #[test]
+    fn picking_a_renderer_updates_the_settings_and_labels_the_options() {
+        let (rows, mut s) = rows();
+        assert_eq!(dropdown(&opened(&rows, &s), Row::Renderer), (2, 0));
+        for (i, renderer) in RendererChoice::ALL.iter().enumerate() {
+            rows.apply(&mut s, index(Row::Renderer), RowValue::Choice(i));
+            assert_eq!(s.window.renderer, *renderer);
+            assert_eq!(dropdown(&opened(&rows, &s), Row::Renderer), (2, i));
+        }
+        let localizer = Localizer::builtin().unwrap();
+        let labels = rows.labels(&localizer);
+        let row = &labels.rows[index(Row::Renderer)];
+        assert_eq!(row.label, "Renderer (Windows)");
+        assert_eq!(row.options, ["OpenGL", "Direct3D 11"]);
     }
 
     #[test]

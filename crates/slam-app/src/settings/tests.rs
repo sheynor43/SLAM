@@ -14,8 +14,8 @@ use super::dirs::{Os, resolve};
 use super::file::{self, LoadStatus};
 use super::keys;
 use super::model::{
-    Combo, DrawRate, FpsScreens, Frame, HitsoundDelay, InputSettings, KeySlot, Mods, Settings,
-    Window,
+    Combo, DrawRate, FpsScreens, Frame, HitsoundDelay, InputSettings, KeySlot, Mods,
+    RendererChoice, Settings, Window,
 };
 
 fn temp_dir(tag: &str) -> PathBuf {
@@ -80,6 +80,7 @@ fn round_trip_non_default() {
     s.gameplay.always_play_first_combo_break = false;
     s.gameplay.disable_win_key = false;
     s.window.video_driver = VideoDriver::Wayland;
+    s.window.renderer = RendererChoice::D3d11;
     s.gameplay.mouse_buttons = false;
     s.gameplay.snaking_in = true;
     s.gameplay.snaking_out = true;
@@ -982,6 +983,7 @@ fn window_defaults_are_lazer_first_start() {
     assert_eq!(window.windowed_position, [0.5, 0.5]);
     assert!(window.minimise_on_focus_loss);
     assert_eq!(window.video_driver, VideoDriver::Auto);
+    assert_eq!(window.renderer, RendererChoice::OpenGl);
 }
 
 #[test]
@@ -1012,6 +1014,39 @@ fn video_driver_is_read_and_an_invalid_one_falls_back_to_auto() {
 }
 
 #[test]
+fn renderer_is_read_and_an_invalid_one_falls_back_to_opengl() {
+    for (name, renderer) in [
+        ("opengl", RendererChoice::OpenGl),
+        ("d3d11", RendererChoice::D3d11),
+    ] {
+        let loaded = file::from_toml_str(&format!("[window]\nrenderer = \"{name}\"\n"));
+        assert_eq!(loaded.status, LoadStatus::Ok, "{:?}", loaded.warnings);
+        assert_eq!(loaded.settings.window.renderer, renderer);
+        let text = file::to_toml_string(&loaded.settings).unwrap();
+        assert!(text.contains(&format!("renderer = \"{name}\"")), "{text}");
+    }
+    for name in ["vulkan", "auto"] {
+        let loaded = file::from_toml_str(&format!("[window]\nrenderer = \"{name}\"\n"));
+        assert_eq!(loaded.status, LoadStatus::Recovered);
+        assert_eq!(loaded.settings.window.renderer, RendererChoice::OpenGl);
+        assert!(
+            loaded
+                .warnings
+                .iter()
+                .any(|w| w.contains("window.renderer"))
+        );
+    }
+}
+
+#[test]
+fn the_renderer_choice_maps_to_a_backend() {
+    use crate::backend::Renderer;
+    assert_eq!(RendererChoice::OpenGl.to_backend(), Renderer::OpenGl);
+    assert_eq!(RendererChoice::D3d11.to_backend(), Renderer::PreferD3d11);
+    assert_eq!(RendererChoice::default(), RendererChoice::OpenGl);
+}
+
+#[test]
 fn window_section_is_read_and_written() {
     let loaded = file::from_toml_str(
         "[window]\nmode = \"borderless\"\nfullscreen_size = \"1920x1080\"\n\
@@ -1030,6 +1065,7 @@ fn window_section_is_read_and_written() {
             windowed_position: [0.3, -0.5],
             minimise_on_focus_loss: false,
             video_driver: VideoDriver::Auto,
+            renderer: RendererChoice::OpenGl,
         }
     );
     let text = file::to_toml_string(&loaded.settings).unwrap();

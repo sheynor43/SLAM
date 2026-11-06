@@ -15,6 +15,7 @@ use slam_play::input::{Binding, Bindings, Input, MAX_BINDINGS};
 use slam_play::{BackgroundSettings, FpsCorner};
 
 use super::keys;
+use crate::backend::Renderer;
 
 /// The draw frame rate: unlimited or a fixed rate.
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -227,6 +228,10 @@ pub struct Window {
     /// a restart (ADR-0097).
     #[serde(serialize_with = "serialize_video_driver")]
     pub video_driver: VideoDriver,
+    /// The renderer on Windows; read when the window is made, so a change applies after a
+    /// restart. Ignored elsewhere, where OpenGL runs (ADR-0104).
+    #[serde(serialize_with = "serialize_renderer")]
+    pub renderer: RendererChoice,
 }
 
 impl Window {
@@ -264,6 +269,7 @@ impl Default for Window {
             windowed_position: DEFAULT_POSITION,
             minimise_on_focus_loss: true,
             video_driver: VideoDriver::Auto,
+            renderer: RendererChoice::OpenGl,
         }
     }
 }
@@ -291,6 +297,46 @@ pub fn window_mode_from_name(name: &str) -> Option<WindowMode> {
 pub fn parse_size(text: &str) -> Option<[u16; 2]> {
     let (w, h) = text.split_once('x')?;
     Some([w.parse().ok()?, h.parse().ok()?])
+}
+
+/// The renderer the settings offer (ADR-0104); there is no "auto", it would be OpenGL.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum RendererChoice {
+    #[default]
+    OpenGl,
+    D3d11,
+}
+
+impl RendererChoice {
+    pub const ALL: [RendererChoice; 2] = [RendererChoice::OpenGl, RendererChoice::D3d11];
+
+    /// The name in the settings file.
+    pub fn as_str(self) -> &'static str {
+        match self {
+            RendererChoice::OpenGl => "opengl",
+            RendererChoice::D3d11 => "d3d11",
+        }
+    }
+
+    /// The value called `name`.
+    pub fn from_name(name: &str) -> Option<RendererChoice> {
+        RendererChoice::ALL.into_iter().find(|r| r.as_str() == name)
+    }
+
+    /// The backend to ask for: Direct3D 11 falls back to OpenGL when it cannot start.
+    pub fn to_backend(self) -> Renderer {
+        match self {
+            RendererChoice::OpenGl => Renderer::OpenGl,
+            RendererChoice::D3d11 => Renderer::PreferD3d11,
+        }
+    }
+}
+
+fn serialize_renderer<S: Serializer>(
+    renderer: &RendererChoice,
+    serializer: S,
+) -> Result<S::Ok, S::Error> {
+    serializer.serialize_str(renderer.as_str())
 }
 
 fn serialize_video_driver<S: Serializer>(

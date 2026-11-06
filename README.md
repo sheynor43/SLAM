@@ -12,7 +12,7 @@ Builds are published under [Releases](https://github.com/sheynor43/SLAM/releases
 
 **System requirements**
 - Windows 10+ x64 or Linux x64 (X11 or Wayland, glibc as new as Ubuntu 24.04 or newer).
-- A graphics card with OpenGL 3.3.
+- A graphics card with OpenGL 3.3. On Windows, Direct3D 11 can be chosen in the settings instead.
 - Linux: PipeWire for sound; xdg-desktop-portal or zenity for the folder picker.
 
 **Running**

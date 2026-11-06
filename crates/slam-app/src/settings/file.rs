@@ -13,8 +13,8 @@ use toml::{Table, Value};
 
 use super::keys;
 use super::model::{
-    BindingEntry, Combo, DrawRate, FpsScreens, HitsoundDelay, InputSettings, KeySlot, Settings,
-    Timing, Window, corner_from_name, parse_size, window_mode_from_name,
+    BindingEntry, Combo, DrawRate, FpsScreens, HitsoundDelay, InputSettings, KeySlot,
+    RendererChoice, Settings, Timing, Window, corner_from_name, parse_size, window_mode_from_name,
 };
 
 /// The schema version this build writes.
@@ -702,6 +702,16 @@ fn read_window(cx: &mut Ctx, table: &mut Table, window: &mut Window) {
             Some(driver) => window.video_driver = driver,
             None => cx.warn(format!(
                 "window.video_driver: unknown driver \"{name}\", using the default"
+            )),
+        }
+    }
+    let mut renderer: Option<String> = None;
+    cx.opt(&mut section, "window", "renderer", &mut renderer);
+    if let Some(name) = renderer {
+        match RendererChoice::from_name(&name) {
+            Some(renderer) => window.renderer = renderer,
+            None => cx.warn(format!(
+                "window.renderer: unknown renderer \"{name}\", using the default"
             )),
         }
     }

@@ -59,7 +59,7 @@ use slam_ui::song_select::{
 use slam_ui::theme::Theme;
 use slam_ui::widgets::DropdownView;
 
-use crate::backend::{self as render, Opened, Renderer, WindowKind, WithBackend};
+use crate::backend::{self as render, Opened, WindowKind, WithBackend};
 use crate::backgrounds::{
     BackgroundFade, BackgroundPicker, BackgroundTarget, MAX_BACKGROUNDS, SELECTION_DEBOUNCE_NS,
 };
@@ -3446,7 +3446,7 @@ pub fn run(settings: Settings) -> Result<(), String> {
         .map_err(|e| e.to_string())
     };
     render::run(
-        Renderer::Auto,
+        settings.window.renderer.to_backend(),
         slam_input::PriorityRequest::High,
         window,
         App(settings),
