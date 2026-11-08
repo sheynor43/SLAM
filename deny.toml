@@ -88,7 +88,8 @@ ignore = [
 # List of explicitly allowed licenses
 # See https://spdx.org/licenses/ for list of possible licenses
 # [possible values: any SPDX 3.11 short identifier (+ optional exception)].
-# Anything not listed here is denied. GPL, LGPL and AGPL must never be added.
+# Anything not listed here is denied. SLAM is GPL-3.0-or-later (ADR-0107): only
+# GPL-3.0-compatible licenses are allowed. AGPL and GPL-2.0-only must never be added.
 allow = [
     "MIT",
     "Apache-2.0",
@@ -103,6 +104,13 @@ allow = [
     # File-level copyleft: applies only to modified files of the dependency itself
     # (symphonia, audio decoding).
     "MPL-2.0",
+    # Copyleft licenses compatible with GPL-3.0-or-later.
+    "LGPL-2.1-or-later",
+    "LGPL-3.0-only",
+    "LGPL-3.0-or-later",
+    "GPL-2.0-or-later",
+    "GPL-3.0-only",
+    "GPL-3.0-or-later",
 ]
 # The confidence threshold for detecting a license from license text.
 # The higher the value, the more closely the license text must be to the

@@ -41,11 +41,11 @@ Issue можно писать на русском или английском.
 - [Текущие задачи](https://github.com/sheynor43/SLAM/milestones)
 
 ## Лицензия
-Код распространяется по лицензии MIT или Apache-2.0 на выбор.
+SLAM — свободная программа под лицензией GNU General Public License версии 3 или любой более поздней (`GPL-3.0-or-later`), см. [`LICENSE`](LICENSE). Выпуски до `v0.1.0-alpha` включительно выходили под MIT или Apache-2.0.
 
-Дефолтный скин в `assets/default-skin/` взят из [osu-resources](https://github.com/ppy/osu-resources) и распространяется по лицензии CC-BY-NC 4.0, а не MIT/Apache-2.0, — его нельзя использовать в коммерческих целях. Коммерческим форкам нужно заменить скин. Атрибуция — в [`assets/default-skin/README.md`](assets/default-skin/README.md).
+Дефолтный скин в `assets/default-skin/` взят из [osu-resources](https://github.com/ppy/osu-resources) и распространяется по лицензии CC-BY-NC 4.0, а не GPL, — его нельзя использовать в коммерческих целях. Коммерческим форкам нужно заменить скин. Атрибуция — в [`assets/default-skin/README.md`](assets/default-skin/README.md).
 
-Часть логики геймплея портирована из [osu!lazer](https://github.com/ppy/osu) (MIT), см. `THIRD_PARTY_NOTICES`.
+Часть логики геймплея портирована из [osu!lazer](https://github.com/ppy/osu) (MIT), см. `THIRD_PARTY_NOTICES`. Поведение osu!stable, которого нет в лазере, берётся из [McOsu](https://github.com/McKay42/McOsu) (GPL-3.0).
 
 ## Разработка
 

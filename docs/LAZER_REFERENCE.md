@@ -35,6 +35,9 @@ git clone --depth 1 --branch 2026.918.0 https://github.com/ppy/osu-resources ../
 | Репозиторий | Тег | Коммит | Путь | Для чего |
 |---|---|---|---|---|
 | [Chlumsky/msdfgen](https://github.com/Chlumsky/msdfgen) (MIT) | `v1.13` | `1874bcf7d9624ccc85b4bc9a85d78116f690f35b` | `../slam-refs/msdfgen` | генератор MSDF в `slam-text` ([ADR-0062](adr/0062-own-msdf-generator.md)) |
+| [McKay42/McOsu](https://github.com/McKay42/McOsu) (GPL-3.0) | — (тегов нет, `master` от 2026-02-20) | `db2add20ea291f6f3b6d022fcd4eba100a5bd161` | `../slam-refs/McOsu` | поведение stable, которого нет в лазере, прежде всего скины ([ADR-0107](adr/0107-license-gpl3-and-mcosu.md)) |
 
-- Метка в портированном коде: `// Ported from msdfgen v1.13: <path>`.
+- msdfgen: метка в портированном коде `// Ported from msdfgen v1.13: <path>`.
 - Восстановление: `git clone --depth 1 --branch v1.13 https://github.com/Chlumsky/msdfgen ../slam-refs/msdfgen`.
+- McOsu: метка `// Ported from McOsu db2add2: <path>`, строку `Copyright (c) <год>, PG` из заголовка исходного файла сохраняем. При расхождении с лазером в правилах геймплея прав лазер.
+- Восстановление McOsu: `git clone https://github.com/McKay42/McOsu ../slam-refs/McOsu && git -C ../slam-refs/McOsu checkout db2add20ea291f6f3b6d022fcd4eba100a5bd161`.
