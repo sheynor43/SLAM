@@ -135,20 +135,116 @@ fn broken_colour_lines_are_dropped() {
 }
 
 #[test]
-fn unknown_section_falls_back_to_general() {
+fn unknown_section_is_skipped() {
     let d = decode_str(
-        "[Bogus]\nName: n\nFoo: bar\n[Colours]\nCombo1: 1,2,3\n[colours]\nCombo2: 4,5,6\n",
+        "[Fonts]\n[Bogus]\nName: n\nFoo: bar\n[Colours]\nCombo1: 1,2,3\n[colours]\nCombo2: 4,5,6\nX: y\n[General]\nAuthor: a\n",
     );
+    // One warning per unknown header, none for the skipped lines (ADR-0108).
     assert_eq!(
         kinds(&d),
         [WarningKind::UnknownSection, WarningKind::UnknownSection]
     );
-    assert_eq!(d.warnings[0].line, 1);
-    assert_eq!(d.skin.name, "n");
-    assert_eq!(d.skin.settings.get("Foo"), Some("bar"));
-    // After the second unknown section the colour line is read as a General key.
+    assert_eq!(d.warnings[0].line, 2);
+    assert_eq!(d.warnings[1].line, 7);
+    assert_eq!(d.skin.name, "");
+    assert_eq!(d.skin.author, "a");
+    assert!(d.skin.settings.is_empty());
     assert_eq!(d.skin.combo_colours, [Rgba::rgb(1, 2, 3)]);
-    assert_eq!(d.skin.settings.get("Combo2"), Some("4,5,6"));
+}
+
+#[test]
+fn misspelt_first_header_keeps_general() {
+    let d = decode_str(
+        "[general]\nName: n\nVersion: 2.5\n[Bogus]\nAuthor: x\n[Colours]\nCombo1: 1,2,3\n[Genral]\nAuthor: y\n",
+    );
+    assert_eq!(
+        kinds(&d),
+        [
+            WarningKind::UnknownSection,
+            WarningKind::UnknownSection,
+            WarningKind::UnknownSection
+        ]
+    );
+    // Before the first known header, unknown headers do not end [General].
+    assert_eq!(d.skin.name, "n");
+    assert_eq!(d.skin.version, SkinVersion::new(25, 1));
+    assert_eq!(d.skin.author, "x");
+    // After it, they are skipped.
+    assert_eq!(d.skin.combo_colours, [Rgba::rgb(1, 2, 3)]);
+}
+
+#[test]
+fn mania_first_then_unknown_header_is_skipped() {
+    let d = decode_str("[Mania]\nKeys: 4\n[general]\nName: n\n");
+    assert_eq!(kinds(&d), [WarningKind::UnknownSection]);
+    assert_eq!(d.skin.name, "");
+    assert!(d.skin.settings.is_empty());
+}
+
+#[test]
+fn comma_joined_sections() {
+    // `Enum.TryParse` ORs comma-joined names: General,Colours = 6 (Colours),
+    // Colours,Fonts = 15 (outside the enum), CatchTheBeat,Fonts = 11 (Mania).
+    let d = decode_str(
+        "[Fonts]\nScorePrefix: s\n[General,Colours]\nCombo1: 1,2,3\n[Colours,Fonts]\nA: b\n[CatchTheBeat,Fonts]\nB: c\n[11]\nC: d\n[10]\nD: e\n[-1]\nE: f\n",
+    );
+    // Only the out-of-enum headers warn; [11] and [10] are Mania and CatchTheBeat.
+    let lines: Vec<usize> = d.warnings.iter().map(|w| w.line).collect();
+    assert_eq!(lines, [5, 13]);
+    assert!(
+        d.warnings
+            .iter()
+            .all(|w| w.kind == WarningKind::UnknownSection)
+    );
+    assert_eq!(d.skin.combo_colours, [Rgba::rgb(1, 2, 3)]);
+    let keys: Vec<_> = d.skin.settings.iter().map(|(k, _)| k).collect();
+    assert_eq!(keys, ["ScorePrefix"]);
+}
+
+#[test]
+fn numeric_section_outside_the_enum_is_unknown() {
+    // `Enum.TryParse` accepts `[6]` (Colours) and `[99]`; only defined values are sections.
+    let d = decode_str("[6]\nCombo1: 1,2,3\n[99]\nName: n\nK: v\n");
+    assert_eq!(kinds(&d), [WarningKind::UnknownSection]);
+    assert_eq!(d.skin.combo_colours, [Rgba::rgb(1, 2, 3)]);
+    assert_eq!(d.skin.name, "");
+    assert!(d.skin.settings.is_empty());
+}
+
+#[test]
+fn lines_before_first_header_are_general() {
+    let d = decode_str("Name: early\nCursorRotate: 0\n[Colours]\nCombo1: 1,2,3\n");
+    assert!(d.warnings.is_empty());
+    assert_eq!(d.skin.name, "early");
+    assert_eq!(d.skin.settings.get("CursorRotate"), Some("0"));
+}
+
+#[test]
+fn mania_between_general_and_colours() {
+    let d = decode_str(
+        "[General]\nName: std\nCursorRotate: 1\n[Mania]\nKeys: 4\nName: mania\nCursorRotate: 0\nColour1: 0,0,0,255\n[Colours]\nCombo1: 1,2,3\nSliderBall: 4,5,6\n",
+    );
+    assert!(d.warnings.is_empty(), "{:?}", d.warnings);
+    assert_eq!(d.skin.name, "std");
+    assert_eq!(d.skin.settings.get("CursorRotate"), Some("1"));
+    assert_eq!(d.skin.settings.get("Keys"), None);
+    assert_eq!(d.skin.settings.len(), 1);
+    assert_eq!(d.skin.combo_colours, [Rgba::rgb(1, 2, 3)]);
+    assert_eq!(d.skin.custom_colour("SliderBall"), Some(Rgba::rgb(4, 5, 6)));
+    assert_eq!(d.skin.custom_colour("Colour1"), None);
+}
+
+#[test]
+fn several_mania_sections() {
+    let d = decode_str(
+        "[Mania]\nKeys: 4\nHitPosition: 400\n[Mania]\nKeys: 7\n[Fonts]\nScorePrefix: num\n[Mania]\nKeys: 9\nVersion: 1.0\n[General]\nVersion: 2.5\n",
+    );
+    assert!(d.warnings.is_empty(), "{:?}", d.warnings);
+    assert_eq!(d.skin.settings.get("ScorePrefix"), Some("num"));
+    assert_eq!(d.skin.settings.get("Keys"), None);
+    assert_eq!(d.skin.settings.get("HitPosition"), None);
+    assert_eq!(d.skin.settings.len(), 1);
+    assert_eq!(d.skin.version, SkinVersion::new(25, 1));
 }
 
 #[test]
@@ -209,32 +305,13 @@ fn custom_colours_replace_in_place() {
 }
 
 #[test]
-fn catch_the_beat_keeps_alpha() {
+fn catch_the_beat_is_skipped() {
     let d = decode_str(CATCH);
     assert!(d.warnings.is_empty());
-    // [Colours] drops alpha; [CatchTheBeat] keeps it, and its Combo keys share the list.
-    assert_eq!(
-        d.skin.combo_colours,
-        [
-            Rgba::rgb(1, 2, 3),
-            Rgba {
-                r: 10,
-                g: 20,
-                b: 30,
-                a: 40
-            }
-        ]
-    );
+    // [Colours] drops alpha; [CatchTheBeat] is skipped entirely (ADR-0108).
+    assert_eq!(d.skin.combo_colours, [Rgba::rgb(1, 2, 3)]);
     assert_eq!(d.skin.custom_colour("Custom"), Some(Rgba::rgb(5, 6, 7)));
-    assert_eq!(
-        d.skin.custom_colour("Fruit"),
-        Some(Rgba {
-            r: 50,
-            g: 60,
-            b: 70,
-            a: 80
-        })
-    );
+    assert_eq!(d.skin.custom_colour("Fruit"), None);
     // Colour sections never feed the settings dictionary.
     assert!(d.skin.settings.is_empty());
 }
@@ -276,8 +353,9 @@ fn realistic_skin() {
         Some(Rgba::rgb(10, 10, 10))
     );
     assert_eq!(s.settings.get("HitCirclePrefix"), Some("fonts\\default"));
-    assert_eq!(s.settings.get("Keys"), Some("4"));
-    assert_eq!(s.settings.get("ColumnWidth"), Some("30,30,30,30"));
+    // [Mania] is skipped (ADR-0108).
+    assert_eq!(s.settings.get("Keys"), None);
+    assert_eq!(s.settings.get("ColumnWidth"), None);
 }
 
 #[test]

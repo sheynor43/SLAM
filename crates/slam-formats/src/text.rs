@@ -33,6 +33,7 @@ pub(crate) const SECTION_COLOURS: i32 = 6;
 pub(crate) const SECTION_HIT_OBJECTS: i32 = 7;
 
 pub(crate) const SECTION_CATCH_THE_BEAT: i32 = 10;
+pub(crate) const SECTION_MANIA: i32 = 11;
 
 /// Decodes bytes to text according to the BOM; returns whether anything was replaced.
 pub(crate) fn decode_encoding(bytes: &[u8]) -> (Cow<'_, str>, bool) {
