@@ -4,6 +4,11 @@
 //! BOM detection, comment stripping and `Enum.TryParse` section semantics as the `.osu`
 //! decoder. The decoder is infallible; malformed lines are dropped with a [`Warning`].
 //!
+//! Unlike lazer, only osu!standard data is kept (ADR-0108): `[Mania]`, `[CatchTheBeat]` and
+//! unknown sections (including `Enum.TryParse` values outside the enum, such as `[99]` or
+//! `[Colours,Fonts]`) are skipped up to the next header. An unknown header before the first
+//! known one does not end `[General]`, as in lazer and stable.
+//!
 //! The result is what the file says: fallbacks such as the default combo colours or the
 //! "no `skin.ini` means latest version" rule belong to the skin loader, not here.
 //!
@@ -19,8 +24,8 @@ use std::fmt;
 
 use crate::osu::parsing;
 use crate::text::{
-    Lines, SECTION_CATCH_THE_BEAT, SECTION_COLOURS, SECTION_GENERAL, SECTION_METADATA, SECTIONS,
-    decode_encoding, enum_try_parse, excerpt, split_key_val,
+    Lines, SECTION_CATCH_THE_BEAT, SECTION_COLOURS, SECTION_GENERAL, SECTION_MANIA,
+    SECTION_METADATA, SECTIONS, decode_encoding, enum_try_parse, excerpt, split_key_val,
 };
 
 // Ported from osu!lazer 2026.1005.0-lazer: osu.Game/Beatmaps/Formats/LegacyDecoder.cs
@@ -274,8 +279,9 @@ impl SkinIni {
 pub enum WarningKind {
     /// The input had sequences invalid for its encoding; they were replaced (line 0).
     InvalidEncoding,
-    /// A `[Section]` header with an unknown name. Like lazer, following lines are read as if
-    /// they belonged to `[General]`.
+    /// A `[Section]` header that is not a value of lazer's `Section` enum. Reported once per
+    /// header. Unlike lazer, the section is skipped (ADR-0108); only before the first known
+    /// header the following lines are still read as `[General]`, as in lazer.
     UnknownSection,
     /// A colour is not `R,G,B[,A]` with 8-bit components.
     InvalidColour,
@@ -341,7 +347,10 @@ pub fn decode_str(text: &str) -> Decoded {
 fn decode_text(text: &str) -> Decoded {
     let mut skin = SkinIni::default();
     let mut warnings = Vec::new();
-    let mut section = SECTION_GENERAL;
+    // Lines before the first header belong to `[General]`, as in lazer and stable.
+    // `None` while skipping a section that holds no osu!standard data (ADR-0108).
+    let mut section = Some(SECTION_GENERAL);
+    let mut seen_known_header = false;
 
     for (index, raw) in Lines(text).enumerate() {
         let line_number = index + 1;
@@ -349,7 +358,7 @@ fn decode_text(text: &str) -> Decoded {
             continue;
         }
         let mut line = raw;
-        if section != SECTION_METADATA
+        if section != Some(SECTION_METADATA)
             && let Some(i) = line.find("//")
             && i > 0
         {
@@ -358,16 +367,35 @@ fn decode_text(text: &str) -> Decoded {
         let line = line.trim_end();
 
         if line.starts_with('[') && line.ends_with(']') && line.len() >= 2 {
-            match enum_try_parse(&line[1..line.len() - 1], SECTIONS) {
-                Some(s) => section = s,
-                None => {
-                    section = SECTION_GENERAL;
-                    warnings.push(warning(line_number, WarningKind::UnknownSection, line));
+            section = match enum_try_parse(&line[1..line.len() - 1], SECTIONS) {
+                // Sections of other rulesets: known, nothing to report.
+                Some(SECTION_MANIA | SECTION_CATCH_THE_BEAT) => {
+                    seen_known_header = true;
+                    None
                 }
-            }
+                // `Enum.TryParse` also accepts numbers and comma-joined names outside the enum;
+                // treat those as unknown.
+                Some(s) if SECTIONS.iter().any(|&(_, v)| v == s) => {
+                    seen_known_header = true;
+                    Some(s)
+                }
+                _ => {
+                    warnings.push(warning(line_number, WarningKind::UnknownSection, line));
+                    // A misspelt first header (`[general]`) keeps `[General]`, like lazer's
+                    // `default(Section)` and stable.
+                    if seen_known_header {
+                        None
+                    } else {
+                        Some(SECTION_GENERAL)
+                    }
+                }
+            };
             continue;
         }
 
+        let Some(section) = section else {
+            continue;
+        };
         if let Some(kind) = parse_line(&mut skin, section, line) {
             warnings.push(warning(line_number, kind, line));
         }
@@ -386,11 +414,11 @@ fn warning(line: usize, kind: WarningKind, text: &str) -> Warning {
 // Ported from osu!lazer 2026.1005.0-lazer: osu.Game/Skinning/LegacySkinDecoder.cs
 fn parse_line(skin: &mut SkinIni, section: i32, line: &str) -> Option<WarningKind> {
     if section == SECTION_COLOURS {
-        return handle_colours(skin, line, false);
+        return handle_colours(skin, line);
     }
     let (key, value) = split_key_val(line);
-    match section {
-        SECTION_GENERAL => match key {
+    if section == SECTION_GENERAL {
+        match key {
             "Name" => {
                 skin.name = value.to_owned();
                 return None;
@@ -412,10 +440,7 @@ fn parse_line(skin: &mut SkinIni, section: i32, line: &str) -> Option<WarningKin
                 return None;
             }
             _ => {}
-        },
-        // osu!catch section only has colour settings.
-        SECTION_CATCH_THE_BEAT => return handle_colours(skin, line, true),
-        _ => {}
+        }
     }
     if !key.is_empty() {
         skin.settings.set(key, value);
@@ -424,23 +449,19 @@ fn parse_line(skin: &mut SkinIni, section: i32, line: &str) -> Option<WarningKin
 }
 
 // Ported from osu!lazer 2026.1005.0-lazer: osu.Game/Beatmaps/Formats/LegacyDecoder.cs
-fn handle_colours(skin: &mut SkinIni, line: &str, allow_alpha: bool) -> Option<WarningKind> {
+// `allowAlpha` is always false: only `[CatchTheBeat]` passed true, and it is skipped (ADR-0108).
+fn handle_colours(skin: &mut SkinIni, line: &str) -> Option<WarningKind> {
     let (key, value) = split_key_val(line);
     let split: Vec<&str> = value.split(',').collect();
     if split.len() != 3 && split.len() != 4 {
         return Some(WarningKind::InvalidColour);
     }
     let component = |i: usize| parsing::net_parse_u8(split[i]).ok();
-    let alpha = if allow_alpha && split.len() == 4 {
-        component(3)
-    } else {
-        Some(255)
-    };
-    let (Some(r), Some(g), Some(b), Some(a)) = (component(0), component(1), component(2), alpha)
-    else {
+    // A fourth component is ignored without being validated.
+    let (Some(r), Some(g), Some(b)) = (component(0), component(1), component(2)) else {
         return Some(WarningKind::InvalidColour);
     };
-    let colour = Rgba { r, g, b, a };
+    let colour = Rgba { r, g, b, a: 255 };
 
     let is_combo = key.starts_with("Combo")
         && parsing::net_parse_i32(&key[5..])

@@ -654,3 +654,33 @@ fn beatmap_skin_reads_configuration_from_the_osu_file() {
     let plain = Skin::load_beatmap(&dir.0, b"osu file format v14\n").unwrap();
     assert!(plain.layered_hit_sounds());
 }
+
+#[test]
+fn font_overlaps_negative_and_invalid() {
+    let skin = TempSkin::new()
+        .ini("[Fonts]\nHitCircleOverlap: -5\nScoreOverlap: -1.5\nComboOverlap: abc\n")
+        .load();
+    assert_eq!(skin.hit_circle_overlap(), -5.0);
+    assert_eq!(skin.score_overlap(), -1.5);
+    // Unparsable values fall back to the default, like lazer's `genericLookup`.
+    assert_eq!(skin.combo_overlap(), 0.0);
+    assert_eq!(skin.combo_prefix(), "score");
+
+    let skin = TempSkin::new().ini("[Fonts]\nHitCircleOverlap: x\n").load();
+    assert_eq!(skin.hit_circle_overlap(), -2.0);
+}
+
+#[test]
+fn font_keys_in_other_ruleset_sections_are_ignored() {
+    // ADR-0108: [Mania] and [CatchTheBeat] are skipped, so their keys never reach the skin.
+    let skin = TempSkin::new()
+        .ini(
+            "[Fonts]\nComboPrefix: cb\nComboOverlap: 3\n\
+             [Mania]\nComboPrefix: mania\nComboOverlap: -7\n\
+             [CatchTheBeat]\nHitCirclePrefix: catch\n",
+        )
+        .load();
+    assert_eq!(skin.combo_prefix(), "cb");
+    assert_eq!(skin.combo_overlap(), 3.0);
+    assert_eq!(skin.hit_circle_prefix(), "default");
+}
