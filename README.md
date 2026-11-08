@@ -42,11 +42,11 @@ The design documents are written in Russian.
 - [Current work](https://github.com/sheynor43/SLAM/milestones)
 
 ## License
-The code is licensed under MIT or Apache-2.0, at your option.
+SLAM is free software, licensed under the GNU General Public License v3.0 or later (`GPL-3.0-or-later`), see [`LICENSE`](LICENSE). Releases up to and including `v0.1.0-alpha` were published under MIT or Apache-2.0.
 
-The default skin in `assets/default-skin/` comes from [osu-resources](https://github.com/ppy/osu-resources) and is licensed under CC-BY-NC 4.0, not MIT/Apache-2.0, so it may not be used commercially. Commercial forks need to replace it. Attribution is in [`assets/default-skin/README.md`](assets/default-skin/README.md).
+The default skin in `assets/default-skin/` comes from [osu-resources](https://github.com/ppy/osu-resources) and is licensed under CC-BY-NC 4.0, not the GPL, so it may not be used commercially. Commercial forks need to replace it. Attribution is in [`assets/default-skin/README.md`](assets/default-skin/README.md).
 
-Parts of the gameplay logic are ported from [osu!lazer](https://github.com/ppy/osu) (MIT), see `THIRD_PARTY_NOTICES`.
+Parts of the gameplay logic are ported from [osu!lazer](https://github.com/ppy/osu) (MIT), see `THIRD_PARTY_NOTICES`. Behaviour of osu!stable that lazer does not reproduce is taken from [McOsu](https://github.com/McKay42/McOsu) (GPL-3.0).
 
 ## Development
 
