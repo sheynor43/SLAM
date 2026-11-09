@@ -1,0 +1,71 @@
+{
+  "version": 1,
+  "name": "lazer",
+  "gameplay": [
+    {
+      "component": "health",
+      "anchor": "top_left",
+      "origin": "top_left",
+      "position": [
+        0,
+        0
+      ]
+    },
+    {
+      "component": "score",
+      "anchor": "top_centre",
+      "origin": "top_centre",
+      "position": [
+        0,
+        5
+      ]
+    },
+    {
+      "component": "accuracy",
+      "anchor": "top_centre",
+      "origin": "top_centre",
+      "position": [
+        0,
+        40
+      ]
+    },
+    {
+      "component": "combo",
+      "anchor": "bottom_left",
+      "origin": "bottom_left",
+      "position": [
+        10,
+        -10
+      ]
+    },
+    {
+      "component": "hit_error_meter",
+      "anchor": "centre_left",
+      "origin": "centre_left",
+      "position": [
+        10,
+        0
+      ]
+    },
+    {
+      "component": "hit_error_meter",
+      "anchor": "centre_right",
+      "origin": "centre_right",
+      "position": [
+        -10,
+        0
+      ]
+    },
+    {
+      "component": "skip_button",
+      "anchor": "bottom_right",
+      "origin": "bottom_right",
+      "position": [
+        -10,
+        -10
+      ]
+    }
+  ],
+  "pause": [],
+  "results": []
+}

@@ -112,6 +112,7 @@
 | [0106](0106-version-per-milestone.md) | Нумерация версий: minor растёт с каждым закрытым этапом (M2 → `0.1.0-alpha`), patch — релизы внутри этапа, тег `v<версия>` | Принято |
 | [0107](0107-license-gpl3-and-mcosu.md) | Лицензия GPL-3.0-or-later, McOsu как справочник по stable | Принято |
 | [0108](0108-skin-ini-standard-sections-only.md) | skin.ini: пропуск неизвестных секций, `[Mania]` и `[CatchTheBeat]` | Принято |
+| [0109](0109-hud-layout-scope-and-format.md) | Раскладки HUD: охват (игра, пауза, результаты), пресет SLAM, хранение, экспорт `.slamhud` | Принято |
 
 ## Шаблон
 

@@ -1,0 +1,62 @@
+{
+  "version": 1,
+  "name": "stable",
+  "gameplay": [
+    {
+      "component": "health",
+      "anchor": "top_left",
+      "origin": "top_left",
+      "position": [
+        0,
+        0
+      ]
+    },
+    {
+      "component": "score",
+      "anchor": "top_right",
+      "origin": "top_right",
+      "position": [
+        -5,
+        0
+      ]
+    },
+    {
+      "component": "accuracy",
+      "anchor": "top_right",
+      "origin": "top_right",
+      "position": [
+        -5,
+        30
+      ]
+    },
+    {
+      "component": "combo",
+      "anchor": "bottom_left",
+      "origin": "bottom_left",
+      "position": [
+        5,
+        -5
+      ]
+    },
+    {
+      "component": "hit_error_meter",
+      "anchor": "bottom_centre",
+      "origin": "bottom_centre",
+      "position": [
+        0,
+        -5
+      ]
+    },
+    {
+      "component": "skip_button",
+      "anchor": "bottom_right",
+      "origin": "bottom_right",
+      "position": [
+        0,
+        0
+      ]
+    }
+  ],
+  "pause": [],
+  "results": []
+}

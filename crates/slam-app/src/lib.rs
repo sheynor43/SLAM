@@ -8,6 +8,7 @@ pub mod default_skin;
 pub mod details;
 pub mod displays;
 pub mod gpu;
+pub mod hud_layouts;
 pub mod i18n;
 pub mod loader;
 pub mod play;
