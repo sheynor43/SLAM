@@ -126,7 +126,7 @@ fn list_skips_broken_and_badly_named_folders() {
     let bad = store.dir(&id("broken"));
     std::fs::create_dir_all(&bad).unwrap();
     std::fs::write(bad.join(LAYOUT_FILE), "{ not json").unwrap();
-    std::fs::create_dir_all(store.root.join("Bad:Id")).unwrap();
+    std::fs::create_dir_all(store.root.join("Bad Id")).unwrap();
     std::fs::create_dir_all(store.root.join("empty")).unwrap();
     let list = store.list();
     assert_eq!(list.len(), 4);
