@@ -2,10 +2,11 @@
 
 use std::fs;
 use std::path::{Path, PathBuf};
+use std::sync::Arc;
 use std::sync::atomic::{AtomicUsize, Ordering};
 
 use slam_formats::skin_ini::{Rgba, SkinVersion};
-use slam_skin::{AnimationOptions, Skin, SkinChain, SkinSource, registry};
+use slam_skin::{AnimationOptions, ImageCheck, Skin, SkinChain, SkinSource, registry};
 
 /// A temporary skin folder, removed on drop.
 struct TempSkin(PathBuf);
@@ -600,6 +601,146 @@ fn zero_length_files_are_skipped() {
         chain.texture("only-empty").unwrap().source,
         SkinSource::Default
     );
+}
+
+/// Contents the test image check rejects, standing in for an image that does not decode.
+const BROKEN: &[u8] = b"broken";
+
+/// An image check that fails files containing [`BROKEN`] and counts its calls.
+fn broken_check() -> (ImageCheck, Arc<AtomicUsize>) {
+    let calls = Arc::new(AtomicUsize::new(0));
+    let counter = Arc::clone(&calls);
+    let check = ImageCheck::new(move |path| {
+        counter.fetch_add(1, Ordering::Relaxed);
+        fs::read(path).is_ok_and(|bytes| bytes != BROKEN)
+    });
+    (check, calls)
+}
+
+#[test]
+fn broken_2x_falls_back_to_1x_once() {
+    let dir = TempSkin::new().with(&["hitcircle.png"]);
+    dir.write("hitcircle@2x.png", BROKEN);
+    let (check, calls) = broken_check();
+    let skin = dir.load().with_image_check(check);
+    for _ in 0..3 {
+        let t = skin.texture("hitcircle").unwrap();
+        assert_eq!(
+            (file_name(&t.path).as_str(), t.scale),
+            ("hitcircle.png", 1.0)
+        );
+    }
+    // Each file is checked once, however many lookups ask.
+    assert_eq!(calls.load(Ordering::Relaxed), 2);
+    // A clone keeps what is already known.
+    assert!(skin.clone().texture("hitcircle").is_some());
+    assert_eq!(calls.load(Ordering::Relaxed), 2);
+}
+
+#[test]
+fn without_check_broken_files_are_found() {
+    let dir = TempSkin::new();
+    dir.write("hitcircle@2x.png", BROKEN);
+    assert_eq!(dir.load().texture("hitcircle").unwrap().scale, 2.0);
+}
+
+#[test]
+fn broken_file_hides_other_extensions_of_its_name() {
+    // `TextureLoaderStore` decodes the first stream found and does not try `.jpg` after it.
+    let dir = TempSkin::new().with(&["hitcircle.jpg", "approachcircle.png"]);
+    dir.write("hitcircle.png", BROKEN);
+    dir.write("approachcircle@2x.png", BROKEN);
+    dir.write("approachcircle@2x.jpg", b"x");
+    let (check, _) = broken_check();
+    let skin = dir.load().with_image_check(check);
+    assert!(skin.texture("hitcircle").is_none());
+    let t = skin.texture("approachcircle").unwrap();
+    assert_eq!(
+        (file_name(&t.path).as_str(), t.scale),
+        ("approachcircle.png", 1.0)
+    );
+}
+
+#[test]
+fn broken_user_file_falls_back_to_default() {
+    let user = TempSkin::new().with(&["hitcircleoverlay.png"]);
+    user.write("hitcircle.png", BROKEN);
+    user.write("cursor@2x.png", BROKEN);
+    user.write("cursor.png", BROKEN);
+    let beatmap = TempSkin::new();
+    beatmap.write("hitcircleoverlay.png", BROKEN);
+    let default = TempSkin::new().with(&["hitcircle.png", "cursor.png", "hitcircleoverlay.png"]);
+    let mut chain = SkinChain::new(Some(user.load()), default.load()).with_beatmap(Some(
+        Skin::load_beatmap(&beatmap.0, b"osu file format v14\n").unwrap(),
+    ));
+    let (check, _) = broken_check();
+    chain.set_image_check(check.clone());
+    assert_eq!(
+        chain.texture("hitcircle").unwrap().source,
+        SkinSource::Default
+    );
+    // The beatmap's broken file passes the lookup on to the user skin.
+    assert_eq!(
+        chain.texture("hitcircleoverlay").unwrap().source,
+        SkinSource::User
+    );
+    // Providers are picked the same way.
+    assert_eq!(
+        chain.find_provider(|s| s.texture("cursor").is_some()),
+        Some(SkinSource::Default)
+    );
+}
+
+#[test]
+fn chain_check_reaches_skins_added_later() {
+    let user = TempSkin::new();
+    user.write("hitcircle.png", BROKEN);
+    let default = TempSkin::new().with(&["hitcircle.png"]);
+    let (check, calls) = broken_check();
+    let mut chain = SkinChain::new(None, default.load());
+    chain.set_image_check(check);
+    chain.set_user(Some(user.load()));
+    assert_eq!(
+        chain.texture("hitcircle").unwrap().source,
+        SkinSource::Default
+    );
+    assert_eq!(calls.load(Ordering::Relaxed), 2);
+    // A new check starts over.
+    let (check, calls) = broken_check();
+    chain.set_image_check(check);
+    assert!(chain.texture("hitcircle").is_some());
+    assert_eq!(calls.load(Ordering::Relaxed), 2);
+}
+
+#[test]
+fn broken_animation_frame_ends_the_animation() {
+    let user = TempSkin::new().with(&["hit300-0.png", "hit300-2.png"]);
+    user.write("hit300-1.png", BROKEN);
+    let default = TempSkin::new().with(&["hit300-0.png", "hit300-1.png", "hit300-2.png"]);
+    let (check, _) = broken_check();
+    let mut chain = SkinChain::new(Some(user.load()), default.load());
+    chain.set_image_check(check.clone());
+    let a = chain.animation("hit300", anim_opts("-")).unwrap();
+    assert_eq!(a.source, SkinSource::User);
+    assert_eq!(a.value.frames.len(), 1);
+
+    // A broken first frame falls back to the static texture of the same skin...
+    let user = TempSkin::new().with(&["hit300.png", "hit300-1.png"]);
+    user.write("hit300-0.png", BROKEN);
+    let mut chain = SkinChain::new(Some(user.load()), default.load());
+    chain.set_image_check(check.clone());
+    let a = chain.animation("hit300", anim_opts("-")).unwrap();
+    assert_eq!(a.source, SkinSource::User);
+    assert!(a.value.is_static());
+
+    // ...and with nothing else, the provider is the next skin.
+    let user = TempSkin::new();
+    user.write("hit300-0.png", BROKEN);
+    let mut chain = SkinChain::new(Some(user.load()), default.load());
+    chain.set_image_check(check.clone());
+    let a = chain.animation("hit300", anim_opts("-")).unwrap();
+    assert_eq!(a.source, SkinSource::Default);
+    assert_eq!(a.value.frames.len(), 3);
 }
 
 #[cfg(unix)]

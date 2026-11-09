@@ -15,6 +15,7 @@ use slam_play::circles::{
     HitCircles, LiveCircles, PieceTextures, SkinSprite,
 };
 use slam_play::fail::FailFrame;
+use slam_play::session::skin_image_check;
 use slam_play::shake::ObjectShakes;
 use slam_play::slider_body::Snaking;
 use slam_play::sliders::{
@@ -25,6 +26,7 @@ use slam_play::sliders::{
 };
 use slam_render::Limits;
 use slam_render::atlas::UvRect;
+use slam_render::image::ImageLimits;
 use slam_render::sprite::{Affine, SpriteBatch};
 use slam_render::textures::TextureId;
 use slam_render::upload::{TextureLoaderConfig, texture_loader};
@@ -905,19 +907,47 @@ const LIMITS: Limits = Limits {
 /// The number of skin textures requested from a user skin and a default skin with files
 /// `user` and `default`.
 fn found(user: &[&str], default: &[&str]) -> usize {
+    found_with(user, default, None)
+}
+
+/// A 1×1 white PNG.
+const PNG: [u8; 70] = [
+    0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a, 0x00, 0x00, 0x00, 0x0d, 0x49, 0x48, 0x44, 0x52,
+    0x00, 0x00, 0x00, 0x01, 0x00, 0x00, 0x00, 0x01, 0x08, 0x06, 0x00, 0x00, 0x00, 0x1f, 0x15, 0xc4,
+    0x89, 0x00, 0x00, 0x00, 0x0d, 0x49, 0x44, 0x41, 0x54, 0x78, 0x9c, 0x63, 0xf8, 0xff, 0xff, 0xff,
+    0x7f, 0x00, 0x09, 0xfb, 0x03, 0xfd, 0x2a, 0x86, 0xe3, 0x8a, 0x00, 0x00, 0x00, 0x00, 0x49, 0x45,
+    0x4e, 0x44, 0xae, 0x42, 0x60, 0x82,
+];
+
+/// [`found`] with the play's image check: the user's files do not decode, the default's do.
+fn found_checked(user: &[&str], default: &[&str]) -> usize {
+    found_with(
+        user,
+        default,
+        Some(TextureLoaderConfig::new(LIMITS).image_limits()),
+    )
+}
+
+fn found_with(user: &[&str], default: &[&str], check: Option<ImageLimits>) -> usize {
     let (user_dir, default_dir) = (
         common::skin::SampleDir::new(&[]),
         common::skin::SampleDir::new(&[]),
     );
-    for (dir, names) in [(&user_dir, user), (&default_dir, default)] {
+    for (dir, names, bytes) in [
+        (&user_dir, user, &b"not a png"[..]),
+        (&default_dir, default, &PNG[..]),
+    ] {
         for name in names {
-            fs::write(dir.0.join(format!("{name}.png")), b"not checked here").unwrap();
+            fs::write(dir.0.join(format!("{name}.png")), bytes).unwrap();
         }
     }
-    let chain = SkinChain::new(
+    let mut chain = SkinChain::new(
         Some(Skin::load(&user_dir.0).unwrap()),
         Skin::load(&default_dir.0).unwrap(),
     );
+    if let Some(limits) = check {
+        chain.set_image_check(skin_image_check(limits));
+    }
     // Room for every request at once: whether the loader thread drained some before the
     // queue filled would otherwise decide the test.
     let config = TextureLoaderConfig {
@@ -928,6 +958,45 @@ fn found(user: &[&str], default: &[&str]) -> usize {
     PlayTextures::request(&chain, &mut requests)
         .unwrap()
         .found()
+}
+
+#[test]
+fn undecodable_skin_images_are_not_requested() {
+    // Unchecked, the user's broken frames hide the default's texture; checked, they are
+    // missing and the default's texture is requested in their place (ADR-0110).
+    let user = ["followpoint-0", "followpoint-1", "hitcircle"];
+    assert_eq!(found(&user, &["followpoint"]), 3);
+    assert_eq!(found_checked(&user, &["followpoint"]), 1);
+    assert_eq!(found_checked(&user, &["followpoint", "hitcircle"]), 2);
+}
+
+#[test]
+fn skin_image_check_decodes_with_the_loader_limits() {
+    let dir = common::skin::SampleDir::new(&[]);
+    let (png, garbage) = (dir.0.join("a.png"), dir.0.join("b.png"));
+    fs::write(&png, PNG).unwrap();
+    fs::write(&garbage, b"not a png").unwrap();
+    let limits = TextureLoaderConfig::new(LIMITS).image_limits();
+    let check = |path: &std::path::Path, limits| {
+        Skin::load(&dir.0)
+            .unwrap()
+            .with_image_check(skin_image_check(limits))
+            .texture(&path.file_stem().unwrap().to_string_lossy())
+            .is_some()
+    };
+    assert!(check(&png, limits));
+    assert!(!check(&garbage, limits));
+    // A valid signature and header with the pixel data cut off still fails.
+    let truncated = dir.0.join("c.png");
+    fs::write(&truncated, &PNG[..45]).unwrap();
+    assert!(!check(&truncated, limits));
+    let small = |max_side, max_bytes| ImageLimits {
+        max_side,
+        max_bytes,
+    };
+    assert!(!check(&png, small(1, 3)));
+    assert!(!check(&png, small(0, 1024)));
+    assert!(check(&png, small(1, 4)));
 }
 
 #[test]

@@ -113,6 +113,7 @@
 | [0107](0107-license-gpl3-and-mcosu.md) | Лицензия GPL-3.0-or-later, McOsu как справочник по stable | Принято |
 | [0108](0108-skin-ini-standard-sections-only.md) | skin.ini: пропуск неизвестных секций, `[Mania]` и `[CatchTheBeat]` | Принято |
 | [0109](0109-hud-layout-scope-and-format.md) | Раскладки HUD: охват (игра, пауза, результаты), пресет SLAM, хранение, экспорт `.slamhud` | Принято |
+| [0110](0110-undecodable-skin-image-is-missing.md) | Битое изображение скина считается отсутствующим | Принято |
 
 ## Шаблон
 

@@ -2,7 +2,7 @@
 
 use std::path::PathBuf;
 
-use crate::skin::Skin;
+use crate::skin::{IndexedFile, Skin};
 
 /// The frame length of legacy animations at 60 frames per second, in milliseconds.
 // Ported from osu!lazer 2026.1005.0-lazer: osu.Game/Skinning/LegacySkinExtensions.cs
@@ -92,9 +92,9 @@ impl Skin {
     /// tried as given and with `.png` and `.jpg` appended. `@2x` inside `name` is removed
     /// first, like stable does.
     ///
-    /// Zero-length files are not indexed. Images are not decoded here: a file that fails to
-    /// decode must be treated by the consumer as missing (lazer then continues with the 1x
-    /// file and the next skin). [`crate::SkinChain`] cannot fall through for that case yet.
+    /// Zero-length files are not indexed. With an [`crate::ImageCheck`] set, a file that fails
+    /// it counts as missing, so the lookup continues with the 1x file here and with the next
+    /// skin in [`crate::SkinChain`] (ADR-0110); without one, images are not decoded here.
     ///
     /// A beatmap's skin ([`Skin::load_beatmap`]) has no high-resolution sprites: only `name`
     /// is tried, unchanged, at scale 1 (`LegacyBeatmapSkin.AllowHighResolutionSprites`).
@@ -105,12 +105,10 @@ impl Skin {
             if name.is_empty() {
                 return None;
             }
-            return self
-                .find_with_extensions(name, &TEXTURE_EXTENSIONS)
-                .map(|path| TextureFile {
-                    path: path.to_path_buf(),
-                    scale: 1.0,
-                });
+            return self.find_image(name).map(|path| TextureFile {
+                path: path.to_path_buf(),
+                scale: 1.0,
+            });
         }
         let name = name.replace("@2x", "");
         if name.is_empty() {
@@ -118,7 +116,7 @@ impl Skin {
         }
         let high = two_times_name(&name);
         for (candidate, scale) in [(&high, 2.0), (&name, 1.0)] {
-            if let Some(path) = self.find_with_extensions(candidate, &TEXTURE_EXTENSIONS) {
+            if let Some(path) = self.find_image(candidate) {
                 return Some(TextureFile {
                     path: path.to_path_buf(),
                     scale,
@@ -194,19 +192,30 @@ impl Skin {
         [name, last]
             .into_iter()
             .find_map(|n| self.find_with_extensions(n, &SAMPLE_EXTENSIONS))
-            .map(PathBuf::from)
+            .map(|f| f.path.clone())
     }
 
     /// Tries `name` as given, then with each extension appended
     /// (`ResourceStore.GetFilenames`).
     // Ported from osu-framework 2026.921.1: osu.Framework/IO/Stores/ResourceStore.cs
-    fn find_with_extensions(&self, name: &str, extensions: &[&str]) -> Option<&std::path::Path> {
-        if let Some(p) = self.file(name) {
-            return Some(p);
+    fn find_with_extensions(&self, name: &str, extensions: &[&str]) -> Option<&IndexedFile> {
+        if let Some(f) = self.indexed(name) {
+            return Some(f);
         }
         extensions
             .iter()
-            .find_map(|ext| self.file(&format!("{name}{ext}")))
+            .find_map(|ext| self.indexed(&format!("{name}{ext}")))
+    }
+
+    /// The first file [`Skin::find_with_extensions`] finds for an image `name`, if it
+    /// decodes. A file that does not decode hides the other extensions: lazer's
+    /// `TextureLoaderStore.Get` decodes the first stream `ResourceStore.GetStream` returns and
+    /// gives `null` when that fails (ADR-0110).
+    // Ported from osu-framework 2026.921.1: osu.Framework/Graphics/Textures/TextureLoaderStore.cs
+    fn find_image(&self, name: &str) -> Option<&std::path::Path> {
+        self.find_with_extensions(name, &TEXTURE_EXTENSIONS)
+            .filter(|f| self.decodes(f))
+            .map(|f| f.path.as_path())
     }
 }
 

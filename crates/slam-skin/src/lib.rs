@@ -6,7 +6,8 @@
 //! default skin and falls back per texture and per sample.
 //!
 //! Lookups return paths of files, not decoded data: decoding and upload belong to the
-//! renderer and the audio engine.
+//! renderer and the audio engine. An [`ImageCheck`] from the caller makes texture lookups
+//! treat images that do not decode as missing (ADR-0110).
 
 #![warn(missing_docs)]
 
@@ -17,5 +18,5 @@ mod skin;
 
 pub use chain::{Found, SkinChain, SkinSource};
 pub use lookup::{Animation, AnimationOptions, SIXTY_FRAME_TIME, TextureFile};
-pub use skin::{LoadError, Skin};
+pub use skin::{ImageCheck, LoadError, Skin};
 pub use slam_formats::skin_ini::{Rgba, SkinVersion};

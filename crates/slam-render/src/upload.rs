@@ -59,6 +59,15 @@ impl TextureLoaderConfig {
             job_capacity: 16,
         }
     }
+
+    /// The limits the loader decodes images with: an image over them fails with
+    /// [`LoadError::TooLarge`].
+    pub fn image_limits(&self) -> ImageLimits {
+        ImageLimits {
+            max_side: self.limits.max_texture_size,
+            max_bytes: self.max_image_bytes,
+        }
+    }
 }
 
 /// A requested texture: index and generation, so a reused index is not mistaken
@@ -230,10 +239,7 @@ fn parts(config: &TextureLoaderConfig) -> (TextureRequests, TextureUploads, Load
         outbox: VecDeque::new(),
         in_flight: 0,
         spent_capacity,
-        image_limits: ImageLimits {
-            max_side,
-            max_bytes: config.max_image_bytes,
-        },
+        image_limits: config.image_limits(),
         page_size,
         max_pages: config.max_pages as usize,
         pages: Vec::new(),
