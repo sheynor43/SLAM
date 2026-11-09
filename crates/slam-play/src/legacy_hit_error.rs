@@ -14,7 +14,7 @@ use slam_render::sprite::{Sprite, SpriteBatch};
 use slam_render::{Blend, Color};
 
 use crate::circles::{Easing, value_at};
-use crate::hit_error::{HitErrorRing, MeterTextures, TARGET_SIZE, colour_for};
+use crate::hit_error::{HitErrorRing, MeterTextures, colour_for};
 
 // Ported from osu!lazer 2026.1005.0-lazer: osu.Game/Skinning/LegacySkin.cs (STABLE_MAGIC_SCALE_FACTOR)
 const STABLE_MAGIC_SCALE_FACTOR: f32 = 1.6;
@@ -122,8 +122,6 @@ pub struct LegacyHitErrorView {
     /// The colour bars from the widest: Meh, Ok, Great with their windows.
     windows: [(HitResult, f64); 3],
     max_window: f64,
-    /// Multiplier of the meter's size (ADR-0050).
-    size: f32,
     /// Alive ticks, oldest first.
     ticks: [Tick; MAX_TICKS],
     len: usize,
@@ -147,7 +145,6 @@ impl LegacyHitErrorView {
         LegacyHitErrorView {
             windows,
             max_window,
-            size: 1.0,
             ticks: [Tick::EMPTY; MAX_TICKS],
             len: 0,
             seen: 0,
@@ -158,10 +155,14 @@ impl LegacyHitErrorView {
         }
     }
 
-    /// The meter `size` times as large (1 is lazer's).
-    pub fn sized(self, size: f32) -> Self {
-        debug_assert!(size.is_finite() && size > 0.0, "meter size {size}");
-        LegacyHitErrorView { size, ..self }
+    /// The meter's box in window pixels at `scale` window pixels per lazer HUD pixel: as
+    /// wide as the widest window, the background's height.
+    pub fn size(&self, scale: f32) -> [f32; 2] {
+        [self.meter_width() * scale, METER_HEIGHT * scale]
+    }
+
+    fn meter_width(&self) -> f32 {
+        self.max_window as f32 * STABLE_MAGIC_SCALE_FACTOR
     }
 
     /// Takes the new judgements of `ring` and drops the ticks expired by game `time`. A
@@ -240,22 +241,14 @@ impl LegacyHitErrorView {
         self.arrow.at(time)
     }
 
-    /// Writes the meter at game `time` on a window of `width` × `height` pixels.
+    /// Writes the meter at game `time` in its box ([`LegacyHitErrorView::size`]) with the
+    /// top-left corner at (0, 0), at `scale` window pixels per lazer HUD pixel.
     /// Allocation-free once `batch` has room for [`MAX_LEGACY_METER_SPRITES`].
     // Ported from osu!lazer 2026.1005.0-lazer: osu.Game/Screens/Play/HUD/HitErrorMeters/LegacyBarHitErrorMeter.cs (load)
     // Ported from osu!lazer 2026.1005.0-lazer: osu.Game.Rulesets.Osu/Skinning/Legacy/OsuLegacySkinTransformer.cs (MainHUDComponents)
-    pub fn push(
-        &self,
-        batch: &mut SpriteBatch,
-        width: f32,
-        height: f32,
-        time: f64,
-        textures: &MeterTextures,
-    ) {
-        // Anchored and originated at the bottom centre of the HUD, scaled around that point.
-        let scale = (width / TARGET_SIZE[0]).min(height / TARGET_SIZE[1]) * self.size;
-        let meter_width = self.max_window as f32 * STABLE_MAGIC_SCALE_FACTOR;
-        let centre = [width / 2.0, height - METER_HEIGHT / 2.0 * scale];
+    pub fn push(&self, batch: &mut SpriteBatch, scale: f32, time: f64, textures: &MeterTextures) {
+        let meter_width = self.meter_width();
+        let centre = [meter_width / 2.0 * scale, METER_HEIGHT / 2.0 * scale];
         let white = textures.white;
         let mut rect = |x: f32, size: [f32; 2], colour: Color, blend: Blend| {
             let size = [size[0] * scale, size[1] * scale];
@@ -319,7 +312,7 @@ impl LegacyHitErrorView {
         // originated at its bottom centre on the top edge and flipped vertically.
         let size = [ARROW_SIZE[0] * scale, ARROW_SIZE[1] * scale];
         let x = centre[0] + self.arrow.at(time) * meter_width * scale;
-        let top = height - METER_HEIGHT * scale;
+        let top = 0.0;
         let triangle = textures.triangle;
         let mut sprite = Sprite::new(
             triangle.texture,

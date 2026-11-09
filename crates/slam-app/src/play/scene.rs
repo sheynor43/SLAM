@@ -23,7 +23,7 @@ use slam_play::sliders::{
 use slam_play::spinners::{HitSpinners, SpinnerStyle, SpinnerVisuals};
 use slam_play::{
     BackgroundSettings, BackgroundView, FpsLabels, FpsView, GameplaySounds, Hitsounds, HudLabels,
-    HudView, MenuLabels, MenuView, PlaySnapshot, PlayTextures, PlayView, PlayfieldLayout,
+    HudSetup, HudView, MenuLabels, MenuView, PlaySnapshot, PlayTextures, PlayView, PlayfieldLayout,
     SampleCache, SampleSkins, SoundSettings,
 };
 use slam_render::slider::{SliderBuffer, SliderDraw, SliderMesh, SliderRenderer};
@@ -38,6 +38,7 @@ use slam_render::upload::{
 use slam_render::{Color, Device, Extent, Limits, shaders};
 use slam_skin::{Skin, SkinChain};
 use slam_text::{FontRegistry, GlyphAtlasConfig, GlyphCache, glyph_atlas};
+use slam_ui::hud_layout::{Builtin, LayoutElement};
 use slam_ui::i18n::{FluentArgs, Localizer};
 
 use super::find_beatmap_file;
@@ -51,6 +52,7 @@ pub(crate) const CHANNELS: u16 = 2;
 /// popups: up to `MAX_POPUPS`, of 150 particles and three sprites each. The worst case is
 /// about 28k with the rings; past the capacity the batch would allocate in the frame.
 const MAX_SPRITES: usize = 40960;
+const _: () = assert!(slam_play::hud::MAX_HUD_SHAPES < MAX_SPRITES / 4);
 /// Room in the texture loader's queue for every texture of a play at once: a skin with
 /// nearly every element requests about 260, and a full queue fails the preparation if the
 /// loader thread has not drained some yet.
@@ -81,8 +83,8 @@ pub struct PlaySettings {
     pub mods: ModSet,
     /// How dark the background is, 0 ..= 1 (lazer's `DimLevel`).
     pub dim: f64,
-    /// Size multiplier of the hit error meter (ADR-0050).
-    pub hit_error_scale: f64,
+    /// The gameplay elements of the active HUD layout (ADR-0109).
+    pub hud_layout: Vec<LayoutElement>,
     /// Snaking of slider bodies (ADR-0085), off by default unlike lazer.
     pub snaking: Snaking,
     /// Lazer's `HitLighting`.
@@ -109,7 +111,7 @@ impl Default for PlaySettings {
             always_play_first_combo_break: true,
             mods: ModSet::default(),
             dim: BackgroundSettings::default().dim_level,
-            hit_error_scale: 1.0,
+            hud_layout: Builtin::Stable.layout().gameplay,
             snaking: Snaking::default(),
             hit_lighting: true,
             cursor_trail: true,
@@ -323,12 +325,6 @@ pub fn prepare(
             &loaded.skins,
             settings.hit_lighting,
         ),
-        hit_error: slam_play::hit_error::HitErrorMeter::new(
-            slam_play::hit_error::HitErrorStyle::default(),
-            &windows,
-            settings.hit_error_scale as f32,
-        ),
-        hit_error_hiding: slam_play::hit_error::SpinnerHiding::new(beatmap),
         cursor: CursorView::new(settings.cursor_trail, cursor_scale),
         resume: slam_play::resume::ResumeView::new(settings.cursor_trail, cursor_scale),
     };
@@ -357,7 +353,17 @@ pub fn prepare(
     let glyphs = glyph_atlas(Arc::clone(&registry), &GlyphAtlasConfig::new(limits))
         .map_err(|e| e.to_string())?;
     let menu = MenuView::new(Arc::clone(&registry), &labels.menu);
-    let hud = HudView::new(registry, labels);
+    let hud = HudView::new(
+        registry,
+        labels,
+        HudSetup {
+            layout: &settings.hud_layout,
+            windows: &windows,
+            meter_hiding: &slam_play::hit_error::SpinnerHiding::new(beatmap),
+        },
+    );
+    // The layout decides how much text the HUD draws.
+    let text = SpriteBatch::with_capacity(MAX_GLYPH_SPRITES.max(hud.max_glyphs()));
     let scene = PlayScene {
         _requests: requests,
         uploads,
@@ -375,7 +381,7 @@ pub fn prepare(
         bodies: SliderBodies::new(),
         meshes: SliderVisuals::meshes(beatmap),
         objects: beatmap.hit_objects.len(),
-        text: SpriteBatch::with_capacity(MAX_GLYPH_SPRITES),
+        text,
         cursor: SpriteBatch::with_capacity(MAX_CURSOR_SPRITES + MAX_TARGET_SPRITES),
         menu,
         menu_shapes: SpriteBatch::with_capacity(MAX_MENU_SPRITES),
@@ -531,6 +537,7 @@ impl PlayScene {
             &snapshot.hud,
             snapshot.offset_panel.offset_ms,
         );
+        self.hud.update_meters(snapshot, now_ns);
         self.menu.update(width, height, &snapshot.menu);
         self.batch.clear();
         self.text.clear();
@@ -572,12 +579,13 @@ impl PlayScene {
             now_ns,
             &textures,
         );
-        if let Some(white) = textures.white {
-            self.hud
-                .push_shapes(&mut self.batch, snapshot, now_ns, white);
-        }
-        self.view
-            .push_hit_error(&mut self.batch, width, height, snapshot, now_ns, &textures);
+        self.hud.push_shapes(
+            &mut self.batch,
+            snapshot,
+            now_ns,
+            textures.white,
+            textures.meter.as_ref(),
+        );
         self.hud
             .push_text(&mut self.text, snapshot, now_ns, &mut self.glyphs);
         self.view

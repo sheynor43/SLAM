@@ -131,3 +131,79 @@ fn defaults_are_applied() {
     assert!(!out.contains("sprite") && !out.contains("properties"));
     assert!(out.ends_with("}\n"));
 }
+
+fn close(a: [f32; 2], b: [f32; 2]) -> bool {
+    (a[0] - b[0]).abs() < 1e-3 && (a[1] - b[1]).abs() < 1e-3
+}
+
+#[test]
+fn unit_scale_fits_the_screen_in_the_window() {
+    assert_eq!(unit_scale(640.0, 480.0), 1.0);
+    assert_eq!(unit_scale(1920.0, 1080.0), 2.25);
+    assert_eq!(unit_scale(1280.0, 1024.0), 2.0);
+}
+
+#[test]
+fn origin_lands_on_anchor_plus_offset() {
+    let size = [100.0, 20.0];
+    for anchor in [
+        Anchor::TopLeft,
+        Anchor::TopCentre,
+        Anchor::TopRight,
+        Anchor::CentreLeft,
+        Anchor::Centre,
+        Anchor::CentreRight,
+        Anchor::BottomLeft,
+        Anchor::BottomCentre,
+        Anchor::BottomRight,
+    ] {
+        for (width, height) in [(1920.0, 1080.0), (800.0, 600.0), (1080.0, 1920.0)] {
+            let element = LayoutElement::new(ComponentKind::Score, anchor, [10.0, -4.0]);
+            let map = element.transform(width, height, size);
+            let unit = unit_scale(width, height);
+            let f = anchor.fraction();
+            let expected = [f[0] * width + 10.0 * unit, f[1] * height - 4.0 * unit];
+            let origin = [f[0] * size[0], f[1] * size[1]];
+            assert!(
+                close(map.apply(origin), expected),
+                "{anchor:?} {width}x{height}"
+            );
+        }
+    }
+}
+
+#[test]
+fn top_right_element_ends_at_the_right_edge() {
+    let element = LayoutElement::new(ComponentKind::Score, Anchor::TopRight, [0.0, 0.0]);
+    let map = element.transform(1280.0, 720.0, [200.0, 40.0]);
+    assert!(close(map.apply([0.0, 0.0]), [1080.0, 0.0]));
+    assert!(close(map.apply([200.0, 40.0]), [1280.0, 40.0]));
+}
+
+#[test]
+fn scale_and_rotation_turn_about_the_origin() {
+    let mut element = LayoutElement::new(ComponentKind::Health, Anchor::Centre, [0.0, 0.0]);
+    element.origin = Anchor::TopLeft;
+    element.scale = [2.0, 3.0];
+    element.rotation = 90.0;
+    let map = element.transform(640.0, 480.0, [10.0, 10.0]);
+    // The origin stays at the centre of the window.
+    assert!(close(map.apply([0.0, 0.0]), [320.0, 240.0]));
+    // Clockwise: the element's right (x) points down, its down (y) points left.
+    assert!(close(map.apply([1.0, 0.0]), [320.0, 242.0]));
+    assert!(close(map.apply([0.0, 1.0]), [317.0, 240.0]));
+}
+
+#[test]
+fn negative_scale_mirrors_about_the_origin() {
+    let mut element = LayoutElement::new(
+        ComponentKind::HitErrorMeter,
+        Anchor::CentreRight,
+        [0.0, 0.0],
+    );
+    element.origin = Anchor::CentreLeft;
+    element.scale = [-1.0, 1.0];
+    let map = element.transform(640.0, 480.0, [20.0, 100.0]);
+    assert!(close(map.apply([0.0, 50.0]), [640.0, 240.0]));
+    assert!(close(map.apply([20.0, 50.0]), [620.0, 240.0]));
+}

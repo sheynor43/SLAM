@@ -13,7 +13,7 @@ use slam_play::hit_error::{
     MeterTextures, SPINNER_HIDE_DURATION, SpinnerHiding, colour_for, relative_position,
 };
 use slam_render::atlas::{AtlasRegion, UvRect};
-use slam_render::sprite::SpriteBatch;
+use slam_render::sprite::{Affine, SpriteBatch};
 use slam_render::textures::TextureId;
 use slam_render::{Blend, Color, Extent, Origin};
 
@@ -372,6 +372,73 @@ fn same_colour(quad: &Quad, colour: Color) -> bool {
         && close(quad.colour[2], colour.b)
 }
 
+/// Pushes `view` at `scale` window pixels per lazer pixel and lays it down as a horizontal
+/// bar centred at the bottom of a window `width` wide and `height` tall, 10 lazer pixels
+/// above the edge: the stand-up undone and the box moved.
+fn push_at_bottom(
+    view: &HitErrorView,
+    batch: &mut SpriteBatch,
+    [width, height]: [f32; 2],
+    scale: f32,
+    time: f64,
+    textures: &MeterTextures,
+) {
+    view.push(batch, scale, time, textures);
+    let [across, along] = HitErrorView::size(scale);
+    let lay_down = Affine {
+        a: 0.0,
+        b: 1.0,
+        c: 1.0,
+        d: 0.0,
+        // The margin is inside the box, so the content sits where the old meter's did.
+        tx: width / 2.0 - along / 2.0,
+        ty: height - 10.0 * scale - across,
+    };
+    batch.transform_from(0, &lay_down, [1.0; 4]);
+}
+
+#[test]
+fn the_meter_box_is_lazers_vertical_meter() {
+    let view = view();
+    // Lazer's 22 × 200 with a margin of 2 around.
+    assert_eq!(HitErrorView::size(1.0), [26.0, 204.0]);
+    let mut batch = SpriteBatch::with_capacity(MAX_METER_SPRITES);
+    view.push(&mut batch, 2.0, 0.0, &textures());
+    let quads = quads(&batch);
+    let min = quads.iter().fold([f32::MAX; 2], |m, q| {
+        [m[0].min(q.min[0]), m[1].min(q.min[1])]
+    });
+    let max = quads.iter().fold([f32::MIN; 2], |m, q| {
+        [m[0].max(q.max[0]), m[1].max(q.max[1])]
+    });
+    // Inside the margin: the arrow on the left, the bars along y.
+    assert!(min[0] >= 3.99 && min[1] >= 3.99, "{min:?}");
+    assert!(max[0] <= 48.01 && max[1] <= 404.01, "{max:?}");
+    assert_close!(max[1] - min[1], 400.0);
+}
+
+#[test]
+fn early_hits_show_in_the_top_half_with_the_arrow_on_the_left() {
+    let mut view = view();
+    let mut ring = HitErrorRing::default();
+    ring.push(hit(1000.0, -100.0, HitResult::Ok));
+    view.update(&ring, 0, 1100.0);
+    let mut batch = SpriteBatch::with_capacity(MAX_METER_SPRITES);
+    view.push(&mut batch, 1.0, 1100.0, &textures());
+    let quads = quads(&batch);
+    let line: Vec<_> = quads
+        .iter()
+        .filter(|q| q.blend == Blend::Additive)
+        .collect();
+    assert!(!line.is_empty());
+    // The box is 204 tall: the line of an early hit is above its middle.
+    assert!(line.iter().all(|q| q.max[1] < 102.0), "{line:?}");
+    // The arrow's strokes are the last sprites, left of the colour axis (x = 2 + 15).
+    for stroke in &quads[quads.len() - 2..] {
+        assert!(stroke.max[0] < 17.0, "{stroke:?}");
+    }
+}
+
 #[test]
 fn the_meter_is_a_bar_at_the_bottom_centre_with_zones_lines_and_arrow() {
     let mut view = view();
@@ -380,7 +447,7 @@ fn the_meter_is_a_bar_at_the_bottom_centre_with_zones_lines_and_arrow() {
     view.update(&ring, 0, 1100.0);
     let mut batch = SpriteBatch::with_capacity(MAX_METER_SPRITES);
     // 1024 × 768: one virtual unit per pixel.
-    view.push(&mut batch, 1024.0, 768.0, 1100.0, &textures());
+    push_at_bottom(&view, &mut batch, [1024.0, 768.0], 1.0, 1100.0, &textures());
     let quads = quads(&batch);
     // The centre marker behind, two Meh parts, Ok and Great each side, a line (two caps and
     // the straight part), the marker in front and the chevron's two strokes.
@@ -433,12 +500,12 @@ fn the_meter_is_a_bar_at_the_bottom_centre_with_zones_lines_and_arrow() {
 }
 
 #[test]
-fn the_meter_scales_with_the_window_by_its_smaller_ratio() {
+fn the_meter_scales_with_its_scale() {
     let view = view();
     let mut batch = SpriteBatch::with_capacity(MAX_METER_SPRITES);
-    view.push(&mut batch, 3840.0, 1080.0, 0.0, &textures());
-    let quads = quads(&batch);
     let scale = 1080.0 / 768.0;
+    push_at_bottom(&view, &mut batch, [3840.0, 1080.0], scale, 0.0, &textures());
+    let quads = quads(&batch);
     let bars = &quads[1..9];
     let min = bars.iter().map(|q| q.min[0]).fold(f32::MAX, f32::min);
     let max = bars.iter().map(|q| q.max[0]).fold(f32::MIN, f32::max);
@@ -458,23 +525,10 @@ fn drawing_the_most_lines_does_not_allocate() {
     let mut batch = SpriteBatch::with_capacity(MAX_METER_SPRITES);
     slam_testkit::assert_no_alloc(|| {
         view.update(&ring, 0, 1050.0);
-        view.push(&mut batch, 1920.0, 1080.0, 1050.0, &textures);
+        view.push(&mut batch, 1080.0 / 768.0, 1050.0, &textures);
     });
     assert_eq!(view.lines().len(), MAX_LINES);
     assert!(batch.len() <= MAX_METER_SPRITES);
-}
-
-#[test]
-fn the_meter_size_multiplies_the_window_scale() {
-    let view = view().sized(1.5);
-    let mut batch = SpriteBatch::with_capacity(MAX_METER_SPRITES);
-    view.push(&mut batch, 1024.0, 768.0, 0.0, &textures());
-    let quads = quads(&batch);
-    let bars = &quads[1..9];
-    let min = bars.iter().map(|q| q.min[0]).fold(f32::MAX, f32::min);
-    let max = bars.iter().map(|q| q.max[0]).fold(f32::MIN, f32::max);
-    assert_close!(min, 512.0 - 100.0 * 1.5);
-    assert_close!(max, 512.0 + 100.0 * 1.5);
 }
 
 // ---- Hiding during spinners ----

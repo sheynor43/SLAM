@@ -1,32 +1,42 @@
-//! A stand-in HUD until the HUD components exist (M5): score, accuracy and combo as plain
-//! numbers, health as a bar, the skip button and the beatmap offset panel.
+//! A stand-in HUD until the skinned HUD components exist (#332): score, accuracy and combo
+//! as plain numbers, health as a bar, the hit error meters, the skip button and the beatmap
+//! offset panel.
+//!
+//! The elements are placed by the gameplay section of the active HUD layout (ADR-0061,
+//! ADR-0109): each draws in its own box with the top-left corner at (0, 0) and
+//! [`LayoutElement::transform`] moves the box into place. A layout may hold several elements
+//! of a kind; kinds the HUD cannot draw yet are left out.
 //!
 //! Draw side only. Numbers are formatted into fixed buffers and laid out again only when
 //! they change; once warm ([`HudView::new`]), nothing here allocates.
 //!
 //! Only the numbers follow lazer. Unlike its counters, values show at once (no rolling),
-//! sizes and places are this module's own. The click-to-resume target is drawn with the
+//! the counters' sizes are this module's own. The click-to-resume target is drawn with the
 //! cursor ([`crate::resume`]).
 
 use std::fmt::{self, Write as _};
 use std::sync::Arc;
 
+use slam_osu::hit_windows::HitWindows;
 use slam_render::Color;
 use slam_render::atlas::AtlasRegion;
-use slam_render::sprite::{Sprite, SpriteBatch};
+use slam_render::sprite::{Affine, Sprite, SpriteBatch};
 use slam_text::{
     FamilyId, FontRegistry, GlyphCache, GlyphKey, Layout, LayoutContext, TextStats, TextStyle,
     UI_FAMILY, push_layout,
 };
+use slam_ui::hud_layout::{ComponentKind, LayoutElement, unit_scale};
 
 use crate::fps_counter::FpsLabels;
+use crate::hit_error::{
+    HitErrorMeter, HitErrorStyle, LAZER_PIXELS_PER_UNIT, MAX_HIT_ERROR_SPRITES, MeterTextures,
+    SpinnerHiding,
+};
 use crate::menu_overlay::MenuLabels;
 use crate::offset::{OffsetPanel, OffsetWording, format_offset};
 use crate::session::{HudValues, PlaySnapshot};
 
-/// Window height the HUD's sizes are given at; it scales with the window.
-const REFERENCE_HEIGHT: f32 = 768.0;
-const MARGIN: f32 = 10.0;
+// The sizes are in lazer's HUD pixels (1024x768, [`LAZER_PIXELS_PER_UNIT`]).
 const WEIGHT: u16 = 700;
 const SCORE_SIZE: f32 = 40.0;
 const ACCURACY_SIZE: f32 = 24.0;
@@ -41,6 +51,21 @@ const OFFSET_SIZE: f32 = 20.0;
 const OFFSET_PADDING: f32 = 8.0;
 const HEALTH_BAR: [f32; 2] = [300.0, 8.0];
 const SKIP_BUTTON: [f32; 2] = [180.0, 48.0];
+
+/// The most elements of a layout's gameplay section the HUD keeps; the rest are left out.
+pub const MAX_HUD_ELEMENTS: usize = 32;
+/// The most text elements (counters and skip buttons) the HUD draws; further ones are left
+/// out, so that the text stays within [`HudView::max_glyphs`].
+pub const MAX_HUD_TEXT_ELEMENTS: usize = 8;
+/// The most hit error meters the HUD draws; further ones are left out.
+pub const MAX_HIT_ERROR_METERS: usize = 4;
+/// The most shape sprites [`HudView::push_shapes`] writes.
+pub const MAX_HUD_SHAPES: usize =
+    MAX_HUD_ELEMENTS * 2 + 1 + MAX_HIT_ERROR_METERS * MAX_HIT_ERROR_SPRITES;
+
+/// The property of a hit error meter element with its style: `"legacy"` (the default) or
+/// `"bar"` (ADR-0050).
+pub const METER_STYLE_PROPERTY: &str = "style";
 
 const TEXT: Color = Color::WHITE;
 const SHADE: Color = Color {
@@ -217,7 +242,50 @@ impl Counter {
 struct Frame {
     width: f32,
     height: f32,
+    /// Window pixels per lazer HUD pixel: the sizes' unit.
     scale: f32,
+}
+
+/// What a layout element draws.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Part {
+    Score,
+    Accuracy,
+    Combo,
+    Health,
+    SkipButton,
+    /// The meter at this index of [`HudView::meters`].
+    Meter(usize),
+}
+
+/// A layout element the HUD draws.
+#[derive(Debug, Clone)]
+struct Placed {
+    part: Part,
+    element: LayoutElement,
+}
+
+/// The style a hit error meter element asks for; unknown values give the default.
+fn meter_style(element: &LayoutElement) -> HitErrorStyle {
+    match element
+        .properties
+        .get(METER_STYLE_PROPERTY)
+        .and_then(|v| v.as_str())
+    {
+        Some("bar") => HitErrorStyle::Bar,
+        _ => HitErrorStyle::Legacy,
+    }
+}
+
+/// What [`HudView::new`] needs of the play beside the texts.
+#[derive(Debug, Clone, Copy)]
+pub struct HudSetup<'a> {
+    /// The gameplay section of the active HUD layout.
+    pub layout: &'a [LayoutElement],
+    /// The hit windows of the beatmap with the mods applied, for the hit error meters.
+    pub windows: &'a HitWindows,
+    /// When the hit error meters hide for spinners.
+    pub meter_hiding: &'a SpinnerHiding,
 }
 
 /// The draw side of the stand-in HUD.
@@ -226,6 +294,10 @@ pub struct HudView {
     family: FamilyId,
     context: LayoutContext,
     frame: Frame,
+    /// The layout's elements the HUD draws, in the layout's order (later on top).
+    elements: Vec<Placed>,
+    meters: Vec<HitErrorMeter>,
+    meter_hiding: SpinnerHiding,
     score: Counter,
     accuracy: Counter,
     combo: Counter,
@@ -248,6 +320,7 @@ impl std::fmt::Debug for HudView {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.debug_struct("HudView")
             .field("frame", &self.frame)
+            .field("elements", &self.elements)
             .field("score", &self.score.text)
             .field("accuracy", &self.accuracy.text)
             .field("combo", &self.combo.text)
@@ -257,10 +330,58 @@ impl std::fmt::Debug for HudView {
 }
 
 impl HudView {
-    /// A HUD with fonts from `registry` and the localised `labels`. Lays out every
-    /// character it will show, so that later layouts do not allocate: call it off the hot
-    /// paths.
-    pub fn new(registry: Arc<FontRegistry>, labels: &HudLabels) -> HudView {
+    /// A HUD with fonts from `registry`, the localised `labels` and the elements of
+    /// `setup`'s layout. Lays out every character it will show, so that later layouts do
+    /// not allocate: call it off the hot paths.
+    pub fn new(registry: Arc<FontRegistry>, labels: &HudLabels, setup: HudSetup<'_>) -> HudView {
+        let mut elements = Vec::new();
+        let mut meters = Vec::new();
+        let mut texts = 0;
+        for element in setup.layout {
+            if elements.len() == MAX_HUD_ELEMENTS {
+                tracing::warn!(
+                    "HUD layout has more than {MAX_HUD_ELEMENTS} elements; the rest are left out"
+                );
+                break;
+            }
+            let text = matches!(
+                element.component,
+                ComponentKind::Score
+                    | ComponentKind::Accuracy
+                    | ComponentKind::Combo
+                    | ComponentKind::SkipButton
+            );
+            if text && texts == MAX_HUD_TEXT_ELEMENTS {
+                tracing::warn!(
+                    "HUD layout has more than {MAX_HUD_TEXT_ELEMENTS} text elements; the rest are left out"
+                );
+                continue;
+            }
+            texts += usize::from(text);
+            let part = match element.component {
+                ComponentKind::Score => Part::Score,
+                ComponentKind::Accuracy => Part::Accuracy,
+                ComponentKind::Combo => Part::Combo,
+                ComponentKind::Health => Part::Health,
+                ComponentKind::SkipButton => Part::SkipButton,
+                ComponentKind::HitErrorMeter if meters.len() < MAX_HIT_ERROR_METERS => {
+                    meters.push(HitErrorMeter::new(meter_style(element), setup.windows));
+                    Part::Meter(meters.len() - 1)
+                }
+                ComponentKind::HitErrorMeter => {
+                    tracing::warn!(
+                        "HUD layout has more than {MAX_HIT_ERROR_METERS} hit error meters; the rest are left out"
+                    );
+                    continue;
+                }
+                // Not drawn yet.
+                _ => continue,
+            };
+            elements.push(Placed {
+                part,
+                element: element.clone(),
+            });
+        }
         let offset_templates = [
             Template::new(&labels.offset_zero),
             Template::new(&labels.offset_earlier),
@@ -282,6 +403,9 @@ impl HudView {
                 height: 0.0,
                 scale: 0.0,
             },
+            elements,
+            meters,
+            meter_hiding: setup.meter_hiding.clone(),
             score: Counter::new(SCORE_SIZE),
             accuracy: Counter::new(ACCURACY_SIZE),
             combo: Counter::new(COMBO_SIZE),
@@ -341,7 +465,7 @@ impl HudView {
         let frame = Frame {
             width,
             height,
-            scale: height / REFERENCE_HEIGHT,
+            scale: unit_scale(width, height) / LAZER_PIXELS_PER_UNIT,
         };
         if frame != self.frame {
             self.frame = frame;
@@ -401,6 +525,79 @@ impl HudView {
         }
     }
 
+    /// Takes the hit error meters' new judgements of `snapshot` at engine time `now_ns` and
+    /// drops what expired. Call once a frame. Allocation-free.
+    pub fn update_meters(&mut self, snapshot: &PlaySnapshot, now_ns: u64) {
+        let time = snapshot.time_at(now_ns);
+        for meter in &mut self.meters {
+            meter.update(&snapshot.hit_errors, snapshot.restarts, time);
+        }
+    }
+
+    /// The most glyph sprites [`HudView::push_text`] writes: each text element's longest text
+    /// and the offset panel's. A text batch with this room does not allocate.
+    pub fn max_glyphs(&self) -> usize {
+        let counter = self
+            .warm
+            .iter()
+            .map(|l| l.glyphs().len())
+            .max()
+            .unwrap_or(0);
+        let offset = self
+            .warm_offset
+            .iter()
+            .map(|l| l.glyphs().len())
+            .max()
+            .unwrap_or(0);
+        let elements: usize = self
+            .elements
+            .iter()
+            .map(|placed| match placed.part {
+                Part::Score | Part::Accuracy | Part::Combo => counter,
+                Part::SkipButton => self.skip.glyphs().len(),
+                Part::Health | Part::Meter(_) => 0,
+            })
+            .sum();
+        elements + offset
+    }
+
+    /// The hit error meters, in the layout's order.
+    pub fn meters(&self) -> &[HitErrorMeter] {
+        &self.meters
+    }
+
+    /// The box of `part` in window pixels as last laid out.
+    fn part_size(&self, part: Part) -> [f32; 2] {
+        let scale = self.frame.scale;
+        let text = |layout: &Layout| [layout.width(), layout.height()];
+        match part {
+            Part::Score => text(&self.score.layout),
+            Part::Accuracy => text(&self.accuracy.layout),
+            Part::Combo => text(&self.combo.layout),
+            Part::Health => [HEALTH_BAR[0] * scale, HEALTH_BAR[1] * scale],
+            Part::SkipButton => [SKIP_BUTTON[0] * scale, SKIP_BUTTON[1] * scale],
+            Part::Meter(i) => self.meters[i].size(scale),
+        }
+    }
+
+    /// The elements to draw for `snapshot`, with their map into the window and alpha.
+    fn placed<'a>(
+        &'a self,
+        snapshot: &'a PlaySnapshot,
+    ) -> impl Iterator<Item = (Part, Affine, f32)> + 'a {
+        let Frame { width, height, .. } = self.frame;
+        self.elements.iter().filter_map(move |placed| {
+            let element = &placed.element;
+            let shown = element.visible
+                && element.alpha > 0.0
+                && (placed.part != Part::SkipButton || snapshot.skip_available);
+            shown.then(|| {
+                let map = element.transform(width, height, self.part_size(placed.part));
+                (placed.part, map, element.alpha.min(1.0))
+            })
+        })
+    }
+
     /// The offset panel's text as last laid out.
     pub fn offset_text(&self) -> &str {
         &self.offset_text
@@ -437,46 +634,59 @@ impl HudView {
         ]
     }
 
-    /// Writes the HUD's rectangles for `snapshot` at engine time `now_ns`, tinting `white`
-    /// (an opaque white image): the health bar, the skip button and the offset panel.
-    /// Allocation-free once `batch` has room.
+    /// Writes the HUD's shapes for `snapshot` at engine time `now_ns`: the health bars, the
+    /// skip buttons and the offset panel tinting `white` (an opaque white image), the hit
+    /// error meters with `meter`'s images, faded during spinners. Allocation-free once
+    /// `batch` has room for [`MAX_HUD_SHAPES`].
     pub fn push_shapes(
         &self,
         batch: &mut SpriteBatch,
         snapshot: &PlaySnapshot,
         now_ns: u64,
-        white: AtlasRegion,
+        white: Option<AtlasRegion>,
+        meter: Option<&MeterTextures>,
     ) {
-        let Frame {
-            width,
-            height,
-            scale,
-        } = self.frame;
-        let mut rect = |position: [f32; 2], size: [f32; 2], colour: Color| {
+        let scale = self.frame.scale;
+        let time = snapshot.time_at(now_ns);
+        let meter_alpha = self.meter_hiding.alpha(time);
+        let rect = |batch: &mut SpriteBatch, white: AtlasRegion, position, size, colour| {
             let mut sprite = Sprite::new(white.texture, white.uv, position, size);
             sprite.colour = colour;
             batch.push(&sprite);
         };
-        let margin = MARGIN * scale;
-        let bar = [HEALTH_BAR[0] * scale, HEALTH_BAR[1] * scale];
-        rect([margin, margin], bar, SHADE);
-        let health = snapshot.health.clamp(0.0, 1.0) as f32;
-        rect([margin, margin], [bar[0] * health, bar[1]], TEXT);
-
-        if snapshot.skip_available {
-            let (centre, size) = self.skip_button(width, height, scale);
-            rect(
-                [centre[0] - size[0] / 2.0, centre[1] - size[1] / 2.0],
-                size,
-                SHADE,
-            );
+        for (part, map, alpha) in self.placed(snapshot) {
+            let first = batch.len();
+            let mut alpha = alpha;
+            match (part, white) {
+                (Part::Health, Some(white)) => {
+                    let bar = self.part_size(part);
+                    rect(batch, white, [0.0, 0.0], bar, SHADE);
+                    let health = snapshot.health.clamp(0.0, 1.0) as f32;
+                    rect(batch, white, [0.0, 0.0], [bar[0] * health, bar[1]], TEXT);
+                }
+                (Part::SkipButton, Some(white)) => {
+                    rect(batch, white, [0.0, 0.0], self.part_size(part), SHADE);
+                }
+                (Part::Meter(i), _) => {
+                    let Some(textures) = meter else { continue };
+                    alpha *= meter_alpha;
+                    if alpha <= 0.0 {
+                        continue;
+                    }
+                    self.meters[i].push(batch, scale, time, textures);
+                }
+                _ => continue,
+            }
+            batch.transform_from(first, &map, [1.0, 1.0, 1.0, alpha]);
         }
-        if let Some((position, size, alpha)) = self.offset_box(&snapshot.offset_panel, now_ns) {
+        if let Some(white) = white
+            && let Some((position, size, alpha)) = self.offset_box(&snapshot.offset_panel, now_ns)
+        {
             let shade = Color {
                 a: SHADE.a * alpha,
                 ..SHADE
             };
-            rect(position, size, shade);
+            rect(batch, white, position, size, shade);
         }
     }
 
@@ -490,43 +700,33 @@ impl HudView {
         now_ns: u64,
         glyphs: &mut GlyphCache,
     ) -> TextStats {
-        let Frame {
-            width,
-            height,
-            scale,
-        } = self.frame;
-        let margin = MARGIN * scale;
+        let scale = self.frame.scale;
         let mut stats = TextStats::default();
-        let mut text = |layout: &Layout, position: [f32; 2], colour: Color| {
+        let mut text = |batch: &mut SpriteBatch, layout: &Layout, position: [f32; 2], colour| {
             let s = push_layout(batch, layout, position, colour, glyphs);
             stats.drawn += s.drawn;
             stats.pending += s.pending;
         };
-        let score = &self.score.layout;
-        text(score, [width - margin - score.width(), margin], TEXT);
-        let accuracy = &self.accuracy.layout;
-        text(
-            accuracy,
-            [width - margin - accuracy.width(), margin + score.height()],
-            TEXT,
-        );
-        let combo = &self.combo.layout;
-        text(combo, [margin, height - margin - combo.height()], TEXT);
-        if snapshot.skip_available {
-            let (centre, _) = self.skip_button(width, height, scale);
-            let skip = &self.skip;
-            text(
-                skip,
-                [
-                    centre[0] - skip.width() / 2.0,
-                    centre[1] - skip.height() / 2.0,
-                ],
-                TEXT,
-            );
+        for (part, map, alpha) in self.placed(snapshot) {
+            let first = batch.len();
+            match part {
+                Part::Score => text(batch, &self.score.layout, [0.0, 0.0], TEXT),
+                Part::Accuracy => text(batch, &self.accuracy.layout, [0.0, 0.0], TEXT),
+                Part::Combo => text(batch, &self.combo.layout, [0.0, 0.0], TEXT),
+                Part::SkipButton => {
+                    let [w, h] = self.part_size(part);
+                    let skip = &self.skip;
+                    let at = [(w - skip.width()) / 2.0, (h - skip.height()) / 2.0];
+                    text(batch, skip, at, TEXT);
+                }
+                Part::Health | Part::Meter(_) => continue,
+            }
+            batch.transform_from(first, &map, [1.0, 1.0, 1.0, alpha]);
         }
         if let Some((position, _, alpha)) = self.offset_box(&snapshot.offset_panel, now_ns) {
             let padding = OFFSET_PADDING * scale;
             text(
+                batch,
                 &self.offset,
                 [position[0] + padding, position[1] + padding],
                 Color { a: alpha, ..TEXT },
@@ -534,20 +734,12 @@ impl HudView {
         }
         stats
     }
-
-    // Ported from osu!lazer 2026.1005.0-lazer: osu.Game/Screens/Play/SkipOverlay.cs (Position)
-    /// Centre and size of the skip button: at 70 % of the height, as lazer's overlay.
-    fn skip_button(&self, width: f32, height: f32, scale: f32) -> ([f32; 2], [f32; 2]) {
-        (
-            [width / 2.0, height * 0.7],
-            [SKIP_BUTTON[0] * scale, SKIP_BUTTON[1] * scale],
-        )
-    }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use slam_ui::hud_layout::Anchor;
 
     #[test]
     fn score_has_six_digits_at_least() {
@@ -586,17 +778,73 @@ mod tests {
         assert_eq!(format_combo(u32::MAX).as_str(), "4294967295x");
     }
 
-    #[test]
-    fn counters_lay_out_their_values() {
-        let labels = HudLabels {
+    fn labels() -> HudLabels {
+        HudLabels {
             skip: "Skip".to_owned(),
             offset_zero: format!("{OFFSET_PLACEHOLDER} ms"),
             offset_earlier: format!("{OFFSET_PLACEHOLDER} ms (hit objects appear earlier)"),
             offset_later: format!("{OFFSET_PLACEHOLDER} ms (hit objects appear later)"),
             menu: crate::menu_overlay::tests::labels(),
             fps: crate::fps_counter::tests::labels(),
-        };
-        let mut hud = HudView::new(Arc::new(FontRegistry::with_builtin()), &labels);
+        }
+    }
+
+    fn hud(layout: &[LayoutElement]) -> HudView {
+        HudView::new(
+            Arc::new(FontRegistry::with_builtin()),
+            &labels(),
+            HudSetup {
+                layout,
+                windows: &HitWindows::new(5.0),
+                meter_hiding: &SpinnerHiding::default(),
+            },
+        )
+    }
+
+    fn element(component: ComponentKind, anchor: Anchor, position: [f32; 2]) -> LayoutElement {
+        LayoutElement::new(component, anchor, position)
+    }
+
+    fn white() -> AtlasRegion {
+        AtlasRegion {
+            texture: slam_render::textures::TextureId(1),
+            origin: slam_render::Origin { x: 0, y: 0 },
+            size: slam_render::Extent {
+                width: 4,
+                height: 4,
+            },
+            uv: slam_render::atlas::UvRect::FULL,
+        }
+    }
+
+    fn meter_textures() -> MeterTextures {
+        MeterTextures {
+            white: white(),
+            disc: white(),
+            gradient: white(),
+            triangle: white(),
+        }
+    }
+
+    /// The bounds of the sprites `from..to` of `batch`.
+    fn bounds(batch: &SpriteBatch, from: usize, to: usize) -> ([f32; 2], [f32; 2]) {
+        let vertices = &batch.vertices()[from * 4..to * 4];
+        let min = vertices.iter().fold([f32::MAX; 2], |m, v| {
+            [m[0].min(v.position[0]), m[1].min(v.position[1])]
+        });
+        let max = vertices.iter().fold([f32::MIN; 2], |m, v| {
+            [m[0].max(v.position[0]), m[1].max(v.position[1])]
+        });
+        (min, max)
+    }
+
+    fn close(a: f32, b: f32) -> bool {
+        (a - b).abs() < 1e-2
+    }
+
+    #[test]
+    fn counters_lay_out_their_values() {
+        let mut hud = hud(&[]);
         hud.update(
             1280.0,
             720.0,
@@ -611,12 +859,205 @@ mod tests {
         assert_eq!(hud.offset_text(), "-1 ms (hit objects appear later)");
         assert_eq!(hud.score.layout.glyphs().len(), 6);
         assert_eq!(hud.combo.layout.glyphs().len(), 3);
-        // Text scales with the window height.
+        // Text scales with the window: 1.5 screen units per pixel at 720 tall, a lazer
+        // pixel is 1 / 1.6 of a unit.
         let font_size = hud.score.layout.font_size();
-        assert!((font_size - SCORE_SIZE * 720.0 / REFERENCE_HEIGHT).abs() < 1e-4);
+        assert!((font_size - SCORE_SIZE * 1.5 / 1.6).abs() < 1e-4);
         hud.update(1280.0, 1536.0, &HudValues::default(), 0.0);
         assert_eq!(hud.offset_text(), "0 ms");
         assert_eq!(hud.texts(), ["000000", "100.00%", "0x"]);
-        assert!((hud.score.layout.font_size() - SCORE_SIZE * 2.0).abs() < 1e-4);
+        // 1280 wide fits 2 units per pixel.
+        assert!((hud.score.layout.font_size() - SCORE_SIZE * 2.0 / 1.6).abs() < 1e-4);
+    }
+
+    #[test]
+    fn health_lands_where_the_layout_puts_it_at_any_window_size() {
+        let layout = [element(
+            ComponentKind::Health,
+            Anchor::BottomRight,
+            [-10.0, -20.0],
+        )];
+        let mut hud = hud(&layout);
+        let snapshot = PlaySnapshot::default();
+        for (width, height) in [(1920.0, 1080.0), (800.0, 600.0), (1080.0, 1920.0)] {
+            hud.update(width, height, &HudValues::default(), 0.0);
+            let mut batch = SpriteBatch::with_capacity(MAX_HUD_SHAPES);
+            hud.push_shapes(&mut batch, &snapshot, 0, Some(white()), None);
+            // The background and the fill.
+            assert_eq!(batch.len(), 2);
+            let unit = unit_scale(width, height);
+            let size = [HEALTH_BAR[0] * unit / 1.6, HEALTH_BAR[1] * unit / 1.6];
+            let (min, max) = bounds(&batch, 0, 1);
+            assert!(
+                close(max[0], width - 10.0 * unit),
+                "{width}x{height}: {max:?}"
+            );
+            assert!(
+                close(max[1], height - 20.0 * unit),
+                "{width}x{height}: {max:?}"
+            );
+            assert!(close(max[0] - min[0], size[0]) && close(max[1] - min[1], size[1]));
+        }
+    }
+
+    #[test]
+    fn scale_rotation_and_alpha_apply_to_shapes() {
+        let mut health = element(ComponentKind::Health, Anchor::Centre, [0.0, 0.0]);
+        health.origin = Anchor::TopLeft;
+        health.scale = [2.0, 2.0];
+        health.rotation = 90.0;
+        health.alpha = 0.5;
+        let mut hud = hud(&[health]);
+        hud.update(640.0, 480.0, &HudValues::default(), 0.0);
+        let mut batch = SpriteBatch::with_capacity(MAX_HUD_SHAPES);
+        hud.push_shapes(&mut batch, &PlaySnapshot::default(), 0, Some(white()), None);
+        let (min, max) = bounds(&batch, 0, 1);
+        // Turned clockwise about its top-left corner at the centre: the bar runs down, to
+        // the left of x = 320, twice as large.
+        let [length, thickness] = [HEALTH_BAR[0] / 1.6 * 2.0, HEALTH_BAR[1] / 1.6 * 2.0];
+        assert!(
+            close(max[0], 320.0) && close(min[0], 320.0 - thickness),
+            "{min:?}"
+        );
+        assert!(
+            close(min[1], 240.0) && close(max[1], 240.0 + length),
+            "{max:?}"
+        );
+        assert!(
+            batch.vertices()[..4]
+                .iter()
+                .all(|v| close(v.colour[3], SHADE.a * 0.5))
+        );
+    }
+
+    #[test]
+    fn counters_take_their_box_from_their_text() {
+        let layout = [element(ComponentKind::Score, Anchor::TopRight, [-5.0, 2.0])];
+        let mut hud = hud(&layout);
+        hud.update(1920.0, 1080.0, &HudValues::default(), 0.0);
+        let snapshot = PlaySnapshot::default();
+        let (part, map, alpha) = hud.placed(&snapshot).next().unwrap();
+        assert_eq!((part, alpha), (Part::Score, 1.0));
+        let [w, _] = hud.part_size(Part::Score);
+        assert!(w > 0.0);
+        let corner = map.apply([w, 0.0]);
+        assert!(close(corner[0], 1920.0 - 5.0 * 2.25) && close(corner[1], 2.0 * 2.25));
+    }
+
+    #[test]
+    fn hidden_elements_and_unknown_kinds_draw_nothing() {
+        let mut hidden = element(ComponentKind::Health, Anchor::TopLeft, [0.0, 0.0]);
+        hidden.visible = false;
+        let mut clear = element(ComponentKind::SkipButton, Anchor::TopLeft, [0.0, 0.0]);
+        clear.alpha = 0.0;
+        let layout = [
+            hidden,
+            clear,
+            element(
+                ComponentKind::Unknown("future".into()),
+                Anchor::TopLeft,
+                [0.0, 0.0],
+            ),
+            element(ComponentKind::PpCounter, Anchor::TopLeft, [0.0, 0.0]),
+        ];
+        let mut hud = hud(&layout);
+        assert_eq!(hud.elements.len(), 2);
+        hud.update(1280.0, 720.0, &HudValues::default(), 0.0);
+        let snapshot = PlaySnapshot {
+            skip_available: true,
+            ..PlaySnapshot::default()
+        };
+        let mut batch = SpriteBatch::with_capacity(MAX_HUD_SHAPES);
+        hud.push_shapes(
+            &mut batch,
+            &snapshot,
+            0,
+            Some(white()),
+            Some(&meter_textures()),
+        );
+        assert_eq!(batch.len(), 0);
+    }
+
+    #[test]
+    fn the_skip_button_shows_only_while_skipping_is_possible() {
+        let layout = [element(
+            ComponentKind::SkipButton,
+            Anchor::BottomRight,
+            [0.0, 0.0],
+        )];
+        let mut hud = hud(&layout);
+        hud.update(1280.0, 720.0, &HudValues::default(), 0.0);
+        let mut snapshot = PlaySnapshot::default();
+        let mut batch = SpriteBatch::with_capacity(MAX_HUD_SHAPES);
+        hud.push_shapes(&mut batch, &snapshot, 0, Some(white()), None);
+        assert_eq!(batch.len(), 0);
+        snapshot.skip_available = true;
+        hud.push_shapes(&mut batch, &snapshot, 0, Some(white()), None);
+        let (_, max) = bounds(&batch, 0, 1);
+        assert!(close(max[0], 1280.0) && close(max[1], 720.0), "{max:?}");
+    }
+
+    #[test]
+    fn every_hit_error_meter_of_the_layout_draws_in_its_style() {
+        let mut bar = element(ComponentKind::HitErrorMeter, Anchor::CentreLeft, [0.0, 0.0]);
+        bar.properties
+            .insert(METER_STYLE_PROPERTY.into(), "bar".into());
+        let mut mirrored = bar.clone();
+        mirrored.anchor = Anchor::CentreRight;
+        mirrored.scale = [-1.0, 1.0];
+        let legacy = element(
+            ComponentKind::HitErrorMeter,
+            Anchor::BottomCentre,
+            [0.0, 0.0],
+        );
+        let mut hud = hud(&[bar, mirrored, legacy]);
+        let styles: Vec<_> = hud.meters().iter().map(HitErrorMeter::style).collect();
+        assert_eq!(
+            styles,
+            [
+                HitErrorStyle::Bar,
+                HitErrorStyle::Bar,
+                HitErrorStyle::Legacy
+            ]
+        );
+        hud.update(1280.0, 720.0, &HudValues::default(), 0.0);
+        let mut batch = SpriteBatch::with_capacity(MAX_HUD_SHAPES);
+        let snapshot = PlaySnapshot::default();
+        let textures = meter_textures();
+        hud.push_shapes(&mut batch, &snapshot, 0, None, Some(&textures));
+        let mut one = SpriteBatch::with_capacity(MAX_HIT_ERROR_SPRITES);
+        hud.meters()[0].push(&mut one, hud.frame.scale, 0.0, &textures);
+        let per_bar = one.len();
+        assert!(batch.len() > 2 * per_bar);
+        let (left_min, left_max) = bounds(&batch, 0, per_bar);
+        let (right_min, right_max) = bounds(&batch, per_bar, 2 * per_bar);
+        let (_, legacy_max) = bounds(&batch, 2 * per_bar, batch.len());
+        // The left meter at the left edge, the mirrored one at the right, both centred.
+        assert!(left_min[0] >= -0.01 && left_max[0] < 640.0, "{left_min:?}");
+        assert!(
+            right_max[0] <= 1280.01 && right_min[0] > 640.0,
+            "{right_max:?}"
+        );
+        assert!(close(right_max[0], 1280.0 - left_min[0]));
+        assert!(close((left_min[1] + left_max[1]) / 2.0, 360.0));
+        assert!(close(legacy_max[1], 720.0));
+    }
+
+    #[test]
+    fn text_elements_are_capped_and_bound_the_glyphs() {
+        let layout: Vec<_> = (0..40)
+            .map(|_| element(ComponentKind::Score, Anchor::TopLeft, [0.0, 0.0]))
+            .collect();
+        let hud = hud(&layout);
+        assert_eq!(hud.elements.len(), MAX_HUD_TEXT_ELEMENTS);
+        assert!(hud.max_glyphs() >= MAX_HUD_TEXT_ELEMENTS * NUMBER_TEXT_LEN);
+        assert_eq!(
+            super::tests::hud(&[]).max_glyphs(),
+            hud.warm_offset
+                .iter()
+                .map(|l| l.glyphs().len())
+                .max()
+                .unwrap()
+        );
     }
 }

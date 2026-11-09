@@ -38,7 +38,7 @@ fn defaults_match_hardcoded_values() {
     assert_eq!(s.frame.update_hz, 1000.0);
     assert_eq!(s.audio.buffer_frames, StreamConfig::default().buffer_frames);
     assert_eq!(s.gameplay.dim, BackgroundSettings::default().dim_level);
-    assert_eq!(s.gameplay.hit_error_scale, 1.0);
+    assert_eq!(s.hud.layout, "builtin:stable");
     assert_eq!(s.skin.name, None);
     assert_eq!(s.audio.master_volume, 1.0);
     assert_eq!(s.audio.hitsound_volume, 1.0);
@@ -88,7 +88,7 @@ fn round_trip_non_default() {
     s.gameplay.cursor_trail = false;
     s.gameplay.cursor_size = 0.65;
     s.gameplay.auto_cursor_size = true;
-    s.gameplay.hit_error_scale = 1.5;
+    s.hud.layout = "my-hud".into();
     s.input.bindings = Bindings::new(&[
         Binding {
             input: keys::input_from_name("F").unwrap(),
@@ -216,27 +216,47 @@ fn view_settings_default_to_no_snaking_with_lighting_and_trail() {
 }
 
 #[test]
-fn hit_error_scale_missing_defaults_and_round_trips() {
+fn hud_layout_defaults_to_stable_and_round_trips() {
     let missing = file::from_toml_str("[gameplay]\ndim = 0.2\n");
     assert_eq!(missing.status, LoadStatus::Ok, "{:?}", missing.warnings);
-    assert_eq!(missing.settings.gameplay.hit_error_scale, 1.0);
-    let int = file::from_toml_str("[gameplay]\nhit_error_scale = 2\n");
-    assert_eq!(int.settings.gameplay.hit_error_scale, 2.0);
+    assert_eq!(missing.settings.hud.layout, "builtin:stable");
     let mut s = Settings::default();
-    s.gameplay.hit_error_scale = 0.73;
+    s.hud.layout = "my-hud".into();
     let text = file::to_toml_string(&s).unwrap();
-    assert!(text.contains("hit_error_scale = 0.73"), "{text}");
-    assert_eq!(file::from_toml_str(&text).settings, s);
+    assert!(text.contains("[hud]\nlayout = \"my-hud\""), "{text}");
+    let loaded = file::from_toml_str(&text);
+    assert_eq!(loaded.status, LoadStatus::Ok, "{:?}", loaded.warnings);
+    assert_eq!(loaded.settings, s);
+    let builtin = file::from_toml_str("[hud]\nlayout = \"builtin:lazer\"\n");
+    assert_eq!(builtin.settings.hud.layout, "builtin:lazer");
 }
 
 #[test]
-fn hit_error_scale_is_rounded_to_its_step_and_out_of_range_falls_back() {
+fn an_invalid_hud_layout_id_falls_back_with_a_warning() {
+    for bad in ["\"../x\"", "\"Has Space\"", "\"\"", "\"builtin:nope\"", "5"] {
+        let loaded = file::from_toml_str(&format!("[hud]\nlayout = {bad}\n"));
+        assert_eq!(loaded.status, LoadStatus::Recovered, "{bad}");
+        assert_eq!(loaded.settings.hud.layout, "builtin:stable", "{bad}");
+        assert!(
+            loaded.warnings.iter().any(|w| w.starts_with("hud.layout")),
+            "{bad}"
+        );
+    }
+}
+
+#[test]
+fn the_old_hit_error_scale_is_read_for_migration_and_never_written() {
+    let none = file::from_toml_str("[gameplay]\ndim = 0.2\n");
+    assert_eq!(none.legacy_hit_error_scale, None);
+    let int = file::from_toml_str("[gameplay]\nhit_error_scale = 2\n");
+    assert_eq!(int.status, LoadStatus::Ok, "{:?}", int.warnings);
+    assert_eq!(int.legacy_hit_error_scale, Some(2.0));
     let rounded = file::from_toml_str("[gameplay]\nhit_error_scale = 1.044\n");
-    assert_eq!(rounded.settings.gameplay.hit_error_scale, 1.04);
+    assert_eq!(rounded.legacy_hit_error_scale, Some(1.04));
     for bad in ["0.1", "5.0", "\"big\""] {
         let loaded = file::from_toml_str(&format!("[gameplay]\nhit_error_scale = {bad}\n"));
         assert_eq!(loaded.status, LoadStatus::Recovered, "{bad}");
-        assert_eq!(loaded.settings.gameplay.hit_error_scale, 1.0, "{bad}");
+        assert_eq!(loaded.legacy_hit_error_scale, None, "{bad}");
         assert!(
             loaded
                 .warnings
@@ -245,6 +265,8 @@ fn hit_error_scale_is_rounded_to_its_step_and_out_of_range_falls_back() {
             "{bad}"
         );
     }
+    let text = file::to_toml_string(&int.settings).unwrap();
+    assert!(!text.contains("hit_error_scale"), "{text}");
 }
 
 #[test]

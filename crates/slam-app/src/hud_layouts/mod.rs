@@ -4,6 +4,8 @@
 //! (ADR-0109). Everything here is cold-path file work. Not wired into the settings UI yet;
 //! layout selection is a follow-up.
 
+pub mod migrate;
+
 use std::fmt;
 use std::io::Write;
 use std::path::{Path, PathBuf};
@@ -42,7 +44,7 @@ impl LayoutId {
         &self.0
     }
 
-    fn builtin(&self) -> Option<Builtin> {
+    pub(crate) fn builtin(&self) -> Option<Builtin> {
         Builtin::from_id(&self.0)
     }
 }

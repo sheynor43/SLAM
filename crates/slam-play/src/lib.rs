@@ -32,7 +32,7 @@ pub use fps_counter::{FpsCorner, FpsCounter, FpsLabels, FpsTexts, FpsView};
 pub use gameplay_sounds::{GameplaySounds, SoundSettings, VoiceSink};
 pub use hitsounds::{Hitsound, Hitsounds, SampleCache, SampleSkins, Sound};
 pub use hotkeys::{GlobalAction, Hotkeys};
-pub use hud::{HudLabels, HudView};
+pub use hud::{HudLabels, HudSetup, HudView};
 pub use input::{Binding, Bindings, ClockTime, GameTime, Input, LiveInput};
 pub use menu_overlay::{MenuLabels, MenuView};
 pub use playfield::PlayfieldLayout;

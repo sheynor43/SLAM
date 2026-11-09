@@ -165,7 +165,7 @@ pub fn play_options(settings: &Settings) -> PlayOptions {
         cursor_size: settings.gameplay.cursor_size,
         auto_cursor_size: settings.gameplay.auto_cursor_size,
         positional_hitsounds_level: settings.audio.positional_hitsounds_level,
-        hit_error_scale: settings.gameplay.hit_error_scale,
+        hud_layout: settings.hud.layout.clone(),
         skin: skins::skin_path(
             settings.paths.songs.as_deref(),
             settings.skin.name.as_deref(),
@@ -341,7 +341,7 @@ mod tests {
         settings.gameplay.beatmap_colours = false;
         settings.gameplay.beatmap_hitsounds = false;
         settings.gameplay.always_play_first_combo_break = false;
-        settings.gameplay.hit_error_scale = 1.5;
+        settings.hud.layout = "my-hud".into();
         settings.gameplay.snaking_in = true;
         settings.gameplay.snaking_out = true;
         settings.gameplay.hit_lighting = false;
@@ -364,7 +364,7 @@ mod tests {
                 cursor_size: 0.65,
                 auto_cursor_size: true,
                 positional_hitsounds_level: 0.65,
-                hit_error_scale: 1.5,
+                hud_layout: "my-hud".into(),
                 skin: None,
                 mods: ModSet::default(),
             }

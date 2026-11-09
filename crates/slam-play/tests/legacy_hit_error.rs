@@ -11,7 +11,7 @@ use slam_play::hit_error::{
 };
 use slam_play::legacy_hit_error::{LegacyHitErrorView, MAX_LEGACY_METER_SPRITES, MAX_TICKS};
 use slam_render::atlas::{AtlasRegion, UvRect};
-use slam_render::sprite::SpriteBatch;
+use slam_render::sprite::{Affine, SpriteBatch};
 use slam_render::textures::TextureId;
 use slam_render::{Blend, Color, Extent, Origin};
 
@@ -126,13 +126,32 @@ fn same_rgb(quad: &Quad, colour: Color) -> bool {
 fn the_default_style_is_legacy() {
     let windows = HitWindows::new(5.0);
     assert_eq!(HitErrorStyle::default(), HitErrorStyle::Legacy);
-    let meter = HitErrorMeter::new(HitErrorStyle::default(), &windows, 1.0);
+    let meter = HitErrorMeter::new(HitErrorStyle::default(), &windows);
     assert_eq!(meter.style(), HitErrorStyle::Legacy);
     assert_eq!(
-        HitErrorMeter::new(HitErrorStyle::Bar, &windows, 1.0).style(),
+        HitErrorMeter::new(HitErrorStyle::Bar, &windows).style(),
         HitErrorStyle::Bar
     );
     const { assert!(MAX_HIT_ERROR_SPRITES >= MAX_LEGACY_METER_SPRITES) };
+}
+
+/// Pushes `view` at `scale` and moves its box to the bottom centre of a window `width` wide
+/// and `height` tall.
+fn push_at_bottom(
+    view: &LegacyHitErrorView,
+    batch: &mut SpriteBatch,
+    [width, height]: [f32; 2],
+    scale: f32,
+    time: f64,
+) {
+    view.push(batch, scale, time, &textures());
+    let [w, h] = view.size(scale);
+    let to = Affine {
+        tx: width / 2.0 - w / 2.0,
+        ty: height - h,
+        ..Affine::IDENTITY
+    };
+    batch.transform_from(0, &to, [1.0; 4]);
 }
 
 #[test]
@@ -142,8 +161,8 @@ fn the_meter_is_stables_bar_at_the_bottom_centre() {
     ring.push(hit(1000.0, -149.5, HitResult::Meh));
     view.update(&ring, 0, 1000.0);
     let mut batch = SpriteBatch::with_capacity(MAX_LEGACY_METER_SPRITES);
-    // 1024 × 768: one virtual unit per pixel.
-    view.push(&mut batch, 1024.0, 768.0, 1000.0, &textures());
+    // One lazer pixel per pixel, the box at the bottom centre of 1024 × 768.
+    push_at_bottom(&view, &mut batch, [1024.0, 768.0], 1.0, 1000.0);
     let quads = quads(&batch);
     // The background, Meh, Ok and Great bars, the centre line, a tick and the arrow.
     assert_eq!(quads.len(), 7);
@@ -199,12 +218,13 @@ fn the_meter_is_stables_bar_at_the_bottom_centre() {
 }
 
 #[test]
-fn the_meter_scales_with_the_window_and_its_size_around_the_bottom_centre() {
-    let view = view().sized(2.0);
+fn the_meter_scales_with_its_scale() {
+    let view = view();
     let mut batch = SpriteBatch::with_capacity(MAX_LEGACY_METER_SPRITES);
-    view.push(&mut batch, 1920.0, 1080.0, 0.0, &textures());
-    let quads = quads(&batch);
     let scale = 1080.0 / 768.0 * 2.0;
+    assert_eq!(view.size(scale), [149.5 * 1.6 * scale, 19.2 * scale]);
+    push_at_bottom(&view, &mut batch, [1920.0, 1080.0], scale, 0.0);
+    let quads = quads(&batch);
     let background = &quads[0];
     assert_close!(background.centre()[0], 960.0);
     assert_close!(background.max[1], 1080.0);
@@ -299,7 +319,7 @@ fn beyond_the_most_ticks_the_oldest_goes() {
 #[test]
 fn drawing_the_most_ticks_does_not_allocate() {
     let windows = HitWindows::new(5.0);
-    let mut meter = HitErrorMeter::new(HitErrorStyle::Legacy, &windows, 1.0);
+    let mut meter = HitErrorMeter::new(HitErrorStyle::Legacy, &windows);
     let mut ring = HitErrorRing::default();
     for i in 0..MAX_TICKS as u32 {
         ring.push(hit(1000.0, f64::from(i) - 128.0, HitResult::Great));
@@ -309,7 +329,7 @@ fn drawing_the_most_ticks_does_not_allocate() {
     let mut batch = SpriteBatch::with_capacity(MAX_HIT_ERROR_SPRITES);
     slam_testkit::assert_no_alloc(|| {
         meter.update(&ring, 0, 1050.0);
-        meter.push(&mut batch, 1920.0, 1080.0, 1050.0, &textures);
+        meter.push(&mut batch, 1080.0 / 768.0, 1050.0, &textures);
     });
     assert_eq!(batch.len(), MAX_LEGACY_METER_SPRITES);
 }
@@ -320,11 +340,11 @@ fn a_clear_empties_either_style() {
     let mut ring = HitErrorRing::default();
     ring.push(hit(1000.0, 10.0, HitResult::Great));
     for style in [HitErrorStyle::Legacy, HitErrorStyle::Bar] {
-        let mut meter = HitErrorMeter::new(style, &windows, 1.0);
+        let mut meter = HitErrorMeter::new(style, &windows);
         meter.update(&ring, 0, 1000.0);
         meter.clear();
         let mut batch = SpriteBatch::with_capacity(MAX_HIT_ERROR_SPRITES);
-        meter.push(&mut batch, 1024.0, 768.0, 1000.0, &textures());
+        meter.push(&mut batch, 1.0, 1000.0, &textures());
         // No additive sprites: the ticks and lines are the only ones.
         assert!(
             quads(&batch).iter().all(|q| q.blend != Blend::Additive),

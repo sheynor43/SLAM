@@ -87,8 +87,6 @@ pub struct Options {
     /// Gain of the music and of all other sounds, 0 ..= 1; `--volume` takes it in whole
     /// percent. Full by default.
     pub volume: f32,
-    /// Size multiplier of the hit error meter.
-    pub hit_error_scale: f64,
 }
 
 impl Options {
@@ -102,7 +100,6 @@ impl Options {
             always_play_first_combo_break: self.always_play_first_combo_break,
             mods: self.mods.clone(),
             dim: self.dim,
-            hit_error_scale: self.hit_error_scale,
             ..PlaySettings::default()
         }
     }
@@ -130,7 +127,6 @@ impl Options {
             mods: ModSet::default(),
             dim: BackgroundSettings::default().dim_level,
             volume: 1.0,
-            hit_error_scale: 1.0,
         };
         let mut args = args.into_iter();
         while let Some(arg) = args.next() {

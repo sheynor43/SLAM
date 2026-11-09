@@ -599,6 +599,7 @@ fn host(name: &str, with_track: bool) -> HostFixture {
         registry: Arc::new(FontRegistry::with_builtin()),
         localizer: Arc::new(Localizer::builtin().unwrap()),
         replays: Some(dir.join("replays")),
+        hud_layouts: None,
     })
     .unwrap();
     let (audio, mixer) = detached_audio();
