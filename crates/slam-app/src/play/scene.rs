@@ -240,7 +240,16 @@ pub fn prepare(
     registry: Arc<FontRegistry>,
     labels: &HudLabels,
 ) -> Result<Prepared, String> {
-    let loaded = load(map, settings)?;
+    let config = TextureLoaderConfig {
+        request_capacity: TEXTURE_REQUEST_CAPACITY,
+        ..TextureLoaderConfig::new(limits)
+    };
+    let mut loaded = load(map, settings)?;
+    // Images that do not decode are missing to every lookup below (ADR-0110).
+    // `beatmap_skin` itself only gives combo colours and samples.
+    loaded
+        .skins
+        .set_image_check(slam_play::session::skin_image_check(config.image_limits()));
     let mods = &loaded.mods;
     let beatmap = &loaded.beatmap;
 
@@ -325,11 +334,7 @@ pub fn prepare(
     };
 
     let (mut requests, uploads): (TextureRequests, TextureUploads) =
-        texture_loader(&TextureLoaderConfig {
-            request_capacity: TEXTURE_REQUEST_CAPACITY,
-            ..TextureLoaderConfig::new(limits)
-        })
-        .map_err(|e| e.to_string())?;
+        texture_loader(&config).map_err(|e| e.to_string())?;
     let textures =
         PlayTextures::request(&loaded.skins, &mut requests).map_err(|e| e.to_string())?;
     let background_name = loaded.background.as_ref().map(|(name, _)| name.clone());

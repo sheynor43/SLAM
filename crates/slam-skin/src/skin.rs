@@ -1,9 +1,11 @@
 //! One skin folder: file index, `skin.ini` and configuration lookups.
 
 use std::collections::HashMap;
+use std::fmt;
 use std::fs;
 use std::io;
 use std::path::{Path, PathBuf};
+use std::sync::{Arc, OnceLock};
 
 use slam_formats::osu::parsing;
 use slam_formats::skin_ini::{self, DEFAULT_COMBO_COLOURS, Rgba, SkinIni, SkinVersion, Warning};
@@ -36,12 +38,40 @@ pub enum LoadError {
 #[derive(Debug, Clone)]
 pub struct Skin {
     root: PathBuf,
-    files: HashMap<String, PathBuf>,
+    files: HashMap<String, IndexedFile>,
+    /// Decides whether an image file decodes; `None` trusts every indexed file.
+    image_check: Option<ImageCheck>,
     ini: SkinIni,
     has_ini: bool,
     warnings: Vec<Warning>,
     /// Loaded by [`Skin::load_beatmap`]: lookups follow `LegacyBeatmapSkin`.
     beatmap: bool,
+}
+
+/// Whether an image file decodes (ADR-0110). The skin does not decode images itself; the
+/// caller passes a check, typically a full decode with the texture loader's limits, which
+/// also logs why a file failed. It runs at most once per file of a loaded skin.
+#[derive(Clone)]
+pub struct ImageCheck(Arc<dyn Fn(&Path) -> bool + Send + Sync>);
+
+impl ImageCheck {
+    /// Wraps `check`, which returns whether the image at the path decodes.
+    pub fn new(check: impl Fn(&Path) -> bool + Send + Sync + 'static) -> Self {
+        Self(Arc::new(check))
+    }
+}
+
+impl fmt::Debug for ImageCheck {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str("ImageCheck")
+    }
+}
+
+/// An indexed file and, once an image lookup asked, whether it decodes.
+#[derive(Debug, Clone)]
+pub(crate) struct IndexedFile {
+    pub(crate) path: PathBuf,
+    decodes: OnceLock<bool>,
 }
 
 /// `ToStandardisedPath().ToLowerInvariant()`.
@@ -59,7 +89,7 @@ fn io_error(path: &Path) -> impl FnOnce(io::Error) -> LoadError {
 fn index_dir(
     root: &Path,
     dir: &Path,
-    files: &mut HashMap<String, PathBuf>,
+    files: &mut HashMap<String, IndexedFile>,
 ) -> Result<(), LoadError> {
     let mut entries = fs::read_dir(dir)
         .map_err(io_error(dir))?
@@ -85,7 +115,13 @@ fn index_dir(
         // for them and the lookup continues, so they are left out of the index.
         let non_empty = is_file && fs::metadata(&path).is_ok_and(|m| m.len() > 0);
         if non_empty && let Ok(rel) = path.strip_prefix(root) {
-            files.insert(index_key(&rel.to_string_lossy()), path);
+            files.insert(
+                index_key(&rel.to_string_lossy()),
+                IndexedFile {
+                    path,
+                    decodes: OnceLock::new(),
+                },
+            );
         }
     }
     Ok(())
@@ -135,7 +171,7 @@ impl Skin {
                 let decoded = skin_ini::decode(bytes);
                 (decoded.skin, true, decoded.warnings)
             }
-            None => match files.get("skin.ini") {
+            None => match files.get("skin.ini").map(|f| &f.path) {
                 Some(path) => match fs::read(path) {
                     Ok(bytes) => {
                         let decoded = skin_ini::decode(&bytes);
@@ -158,6 +194,7 @@ impl Skin {
         let skin = Self {
             root: root.to_path_buf(),
             files,
+            image_check: None,
             ini,
             has_ini,
             warnings,
@@ -216,7 +253,36 @@ impl Skin {
 
     /// The file at a relative path, case-insensitively and with either slash.
     pub fn file(&self, relative: &str) -> Option<&Path> {
-        self.files.get(&index_key(relative)).map(PathBuf::as_path)
+        self.indexed(relative).map(|f| f.path.as_path())
+    }
+
+    /// Sets the check that decides whether image files decode (ADR-0110): texture lookups
+    /// then treat a file that fails it as missing. Results of an earlier check are forgotten.
+    pub fn set_image_check(&mut self, check: ImageCheck) {
+        for file in self.files.values_mut() {
+            file.decodes = OnceLock::new();
+        }
+        self.image_check = Some(check);
+    }
+
+    /// [`Skin::set_image_check`] by value.
+    #[must_use]
+    pub fn with_image_check(mut self, check: ImageCheck) -> Self {
+        self.set_image_check(check);
+        self
+    }
+
+    /// The indexed file at a relative path, case-insensitively and with either slash.
+    pub(crate) fn indexed(&self, relative: &str) -> Option<&IndexedFile> {
+        self.files.get(&index_key(relative))
+    }
+
+    /// Whether `file` passes the image check, running it on the first call. Without a check
+    /// every indexed file passes.
+    pub(crate) fn decodes(&self, file: &IndexedFile) -> bool {
+        self.image_check
+            .as_ref()
+            .is_none_or(|check| *file.decodes.get_or_init(|| (check.0)(&file.path)))
     }
 
     /// Indexed files (lowercased relative paths) that are neither `skin.ini` nor matched by
