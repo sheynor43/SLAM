@@ -19,12 +19,12 @@ use slam_osu::scoring::{ScoreProcessor, ScoreRank};
 use slam_osu::{Beatmap, HealthProcessor, ModSet, Vec2};
 use slam_render::Extent;
 use slam_render::atlas::AtlasRegion;
-use slam_render::image::Image;
+use slam_render::image::{Image, ImageLimits, decode_image};
 use slam_render::sprite::{Affine, SpriteBatch};
 use slam_render::upload::{
     TextureHandle, TextureKind, TextureRequests, TextureState, TextureUploads,
 };
-use slam_skin::{AnimationOptions, SIXTY_FRAME_TIME, SkinChain, TextureFile};
+use slam_skin::{AnimationOptions, ImageCheck, SIXTY_FRAME_TIME, SkinChain, TextureFile};
 
 use crate::circles::{
     CircleTextures, HitCircles, LiveCircles, OBJECT_SIZE, PieceTextures, SkinSprite,
@@ -1579,6 +1579,25 @@ pub enum RequestError {
     Rejected(#[from] slam_render::upload::Rejected),
     #[error("white texture request rejected: {0}")]
     PixelsRejected(#[from] slam_render::upload::Rejected<Image>),
+}
+
+/// The skin image check of a play (ADR-0110): an image decodes when it reads and decodes
+/// within `limits`, the texture loader's ([`TextureLoaderConfig::image_limits`]). A file that
+/// fails is logged here, once, and skin lookups then treat it as missing.
+///
+/// [`TextureLoaderConfig::image_limits`]: slam_render::upload::TextureLoaderConfig::image_limits
+pub fn skin_image_check(limits: ImageLimits) -> ImageCheck {
+    // Ported from osu-framework 2026.921.1: osu.Framework/Graphics/Textures/TextureLoaderStore.cs
+    ImageCheck::new(move |path| {
+        let decoded = std::fs::read(path)
+            .map_err(|e| e.to_string())
+            .and_then(|bytes| decode_image(&bytes, limits).map_err(|e| e.to_string()));
+        decoded
+            .inspect_err(|e| {
+                tracing::warn!(path = %path.display(), "skin image treated as missing: {e}");
+            })
+            .is_ok()
+    })
 }
 
 /// Reads `file` and queues it for upload.

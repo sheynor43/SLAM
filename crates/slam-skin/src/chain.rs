@@ -4,7 +4,7 @@
 use std::path::PathBuf;
 
 use crate::lookup::{Animation, AnimationOptions, TextureFile};
-use crate::skin::Skin;
+use crate::skin::{ImageCheck, Skin};
 
 /// Which skin of a [`SkinChain`] provided a result.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -52,6 +52,8 @@ pub struct SkinChain {
     beatmap: Option<Skin>,
     user: Option<Skin>,
     default: Skin,
+    /// Set on every skin that joins the chain (ADR-0110).
+    image_check: Option<ImageCheck>,
 }
 
 impl SkinChain {
@@ -61,14 +63,33 @@ impl SkinChain {
             beatmap: None,
             user,
             default,
+            image_check: None,
         }
+    }
+
+    /// Gives `skin` the chain's image check, if it has one.
+    fn adopt(&self, mut skin: Skin) -> Skin {
+        if let Some(check) = &self.image_check {
+            skin.set_image_check(check.clone());
+        }
+        skin
     }
 
     /// The chain with `beatmap` ([`Skin::load_beatmap`]) as its first layer; `None` leaves the
     /// beatmap's elements out (`BeatmapSkins` off).
     pub fn with_beatmap(mut self, beatmap: Option<Skin>) -> Self {
-        self.beatmap = beatmap;
+        self.beatmap = beatmap.map(|s| self.adopt(s));
         self
+    }
+
+    /// Sets `check` on every skin of the chain and on skins that join it later
+    /// ([`Skin::set_image_check`], ADR-0110).
+    pub fn set_image_check(&mut self, check: ImageCheck) {
+        let skins = self.beatmap.iter_mut().chain(self.user.iter_mut());
+        for skin in skins.chain(std::iter::once(&mut self.default)) {
+            skin.set_image_check(check.clone());
+        }
+        self.image_check = Some(check);
     }
 
     /// The skin behind a source. `User` falls back to the default when the chain has no user
@@ -103,7 +124,7 @@ impl SkinChain {
 
     /// Replaces the user skin.
     pub fn set_user(&mut self, user: Option<Skin>) {
-        self.user = user;
+        self.user = user.map(|s| self.adopt(s));
     }
 
     /// The first skin for which `has` is true (`ISkinSource.FindProvider`).
