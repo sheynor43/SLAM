@@ -6,7 +6,7 @@
 
 use std::process::ExitCode;
 
-use slam_app::{bench, click, i18n, play, replay_stats, shell};
+use slam_app::{bench, click, i18n, play, replay_stats, screenshot, shell};
 
 fn main() -> ExitCode {
     attach_parent_console();
@@ -68,6 +68,17 @@ fn main() -> ExitCode {
                 }
             }
         }
+        Some("screenshot") => {
+            let result =
+                screenshot::Options::parse(args).and_then(|options| screenshot::run(&options));
+            match result {
+                Ok(()) => ExitCode::SUCCESS,
+                Err(e) => {
+                    eprintln!("{e}\n{}", screenshot::USAGE);
+                    ExitCode::FAILURE
+                }
+            }
+        }
         Some("replay-stats") => {
             let result =
                 replay_stats::Options::parse(args).and_then(|options| replay_stats::run(&options));
@@ -112,13 +123,14 @@ fn run_shell(args: Vec<String>) -> ExitCode {
 
 fn usage() -> String {
     format!(
-        "{}\n{}\n{}\n{}\n{}\n{}\n{}",
+        "{}\n{}\n{}\n{}\n{}\n{}\n{}\n{}",
         shell::USAGE,
         bench::USAGE,
         click::USAGE,
         click::analyze::USAGE,
         play::USAGE,
         replay_stats::USAGE,
+        screenshot::USAGE,
         i18n::USAGE
     )
 }

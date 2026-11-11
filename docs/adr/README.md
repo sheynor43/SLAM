@@ -114,6 +114,7 @@
 | [0108](0108-skin-ini-standard-sections-only.md) | skin.ini: пропуск неизвестных секций, `[Mania]` и `[CatchTheBeat]` | Принято |
 | [0109](0109-hud-layout-scope-and-format.md) | Раскладки HUD: охват (игра, пауза, результаты), пресет SLAM, хранение, экспорт `.slamhud` | Принято |
 | [0110](0110-undecodable-skin-image-is-missing.md) | Битое изображение скина считается отсутствующим | Принято |
+| [0111](0111-skin-screenshot-tests.md) | Скриншот-тесты скинов: безголовый OpenGL на Mesa llvmpipe, игра без реального времени с автоигроком, эталоны с допуском | Принято |
 
 ## Шаблон
 

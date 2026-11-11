@@ -13,8 +13,8 @@ use sdl3_sys::events::{
     SDL_WaitEvent,
 };
 use sdl3_sys::hints::{
-    SDL_HINT_INVALID_PARAM_CHECKS, SDL_HINT_MOUSE_AUTO_CAPTURE,
-    SDL_HINT_VIDEO_MINIMIZE_ON_FOCUS_LOSS, SDL_SetHint,
+    SDL_HINT_INVALID_PARAM_CHECKS, SDL_HINT_MOUSE_AUTO_CAPTURE, SDL_HINT_OVERRIDE,
+    SDL_HINT_VIDEO_MINIMIZE_ON_FOCUS_LOSS, SDL_SetHint, SDL_SetHintWithPriority,
 };
 use sdl3_sys::init::{SDL_INIT_VIDEO, SDL_Init, SDL_Quit};
 use sdl3_sys::keyboard::{SDL_GetKeyboardState, SDL_StartTextInput, SDL_StopTextInput};
@@ -217,13 +217,21 @@ impl InputWindow {
     /// delivers it no input) until a frame is attached; use
     /// [`InputWindow::new_opengl`] for a window the renderer draws into.
     pub fn new(title: &str, width: i32, height: i32) -> Result<Self, WindowError> {
-        Self::create(title, width, height, SDL_WindowFlags(0))
+        Self::create(title, width, height, SDL_WindowFlags(0), false)
     }
 
     /// A window for the OpenGL 3.3 core renderer; create its context with
     /// [`InputWindow::create_gl_context`].
     pub fn new_opengl(title: &str, width: i32, height: i32) -> Result<Self, WindowError> {
-        Self::create(title, width, height, SDL_WINDOW_OPENGL)
+        Self::create(title, width, height, SDL_WINDOW_OPENGL, false)
+    }
+
+    /// A window for the OpenGL 3.3 core renderer that is never shown: SDL's offscreen
+    /// driver on Mesa's software EGL device (llvmpipe), so it needs neither a display nor a
+    /// GPU and draws the same pixels on every machine with the same Mesa. For screenshot
+    /// tests; create its context with [`InputWindow::create_gl_context`].
+    pub fn new_headless_opengl(title: &str, width: i32, height: i32) -> Result<Self, WindowError> {
+        Self::create(title, width, height, SDL_WINDOW_OPENGL, true)
     }
 
     /// Like [`InputWindow::new_opengl`], but in `state`, windowed at `position`
@@ -255,7 +263,7 @@ impl InputWindow {
         extra: SDL_WindowFlags,
     ) -> Result<Self, WindowError> {
         let [w, h] = state.windowed_size.map(i32::from);
-        let mut window = Self::create(title, w, h, extra | SDL_WINDOW_HIDDEN)?;
+        let mut window = Self::create(title, w, h, extra | SDL_WINDOW_HIDDEN, false)?;
         window.window_settings.set_position(position);
         window.window_settings.set(state);
         // Applied even when it matches the window as created, so a windowed start is
@@ -274,13 +282,42 @@ impl InputWindow {
         width: i32,
         height: i32,
         extra: SDL_WindowFlags,
+        headless: bool,
     ) -> Result<Self, WindowError> {
         let title = CString::new(title).map_err(|_| WindowError::InvalidTitle)?;
         if SDL_ACTIVE.swap(true, Ordering::AcqRel) {
             return Err(WindowError::AlreadyActive);
         }
-        let hint = choice::driver_hint(choice::preferred_video_driver(), choice::env_sets_driver());
-        if let Err(err) = choice::init_with_fallback(hint, init_video) {
+        let started = if headless {
+            // Over `SDL_VIDEO_DRIVER` in the environment too: a headless window must not open
+            // on the desktop.
+            // SAFETY: valid C strings; SDL_Init reads the hint, so set it first.
+            unsafe {
+                SDL_SetHintWithPriority(
+                    sdl3_sys::hints::SDL_HINT_VIDEO_DRIVER,
+                    c"offscreen".as_ptr(),
+                    SDL_HINT_OVERRIDE,
+                )
+            };
+            init_video(None).and_then(|()| {
+                let driver = video_driver();
+                let picked = if driver == "offscreen" {
+                    gl::use_software_egl_device()
+                } else {
+                    Err(format!("video driver {driver}, not offscreen"))
+                };
+                picked.map_err(|err| {
+                    // SAFETY: no window exists; shuts SDL down (and resets the hints).
+                    unsafe { SDL_Quit() };
+                    WindowError::Init(err)
+                })
+            })
+        } else {
+            let hint =
+                choice::driver_hint(choice::preferred_video_driver(), choice::env_sets_driver());
+            choice::init_with_fallback(hint, init_video)
+        };
+        if let Err(err) = started {
             SDL_ACTIVE.store(false, Ordering::Release);
             return Err(err);
         }

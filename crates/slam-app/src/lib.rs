@@ -14,6 +14,7 @@ pub mod loader;
 pub mod play;
 pub mod replay_stats;
 pub mod replays;
+pub mod screenshot;
 pub mod settings;
 pub mod shell;
 pub mod songs;

@@ -1641,6 +1641,7 @@ dependencies = [
  "embed-resource",
  "libc",
  "md-5",
+ "png",
  "rtrb",
  "serde",
  "serde_json",

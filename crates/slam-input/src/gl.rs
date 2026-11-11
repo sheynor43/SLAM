@@ -12,8 +12,9 @@ use sdl3_sys::video::{
     SDL_EGLConfig, SDL_EGLDisplay, SDL_EGLint, SDL_GL_CONTEXT_DEBUG_FLAG, SDL_GL_CONTEXT_FLAGS,
     SDL_GL_CONTEXT_MAJOR_VERSION, SDL_GL_CONTEXT_MINOR_VERSION, SDL_GL_CONTEXT_PROFILE_CORE,
     SDL_GL_CONTEXT_PROFILE_MASK, SDL_GL_CreateContext, SDL_GL_DEPTH_SIZE, SDL_GL_DOUBLEBUFFER,
-    SDL_GL_DestroyContext, SDL_GL_GetProcAddress, SDL_GL_MakeCurrent, SDL_GL_SetAttribute,
-    SDL_GL_SetSwapInterval, SDL_GL_SwapWindow, SDL_GLContext, SDL_Window,
+    SDL_GL_DestroyContext, SDL_GL_GetProcAddress, SDL_GL_LoadLibrary, SDL_GL_MakeCurrent,
+    SDL_GL_SetAttribute, SDL_GL_SetSwapInterval, SDL_GL_SwapWindow, SDL_GL_UnloadLibrary,
+    SDL_GLContext, SDL_Window,
 };
 
 use crate::window::sdl_error;
@@ -56,6 +57,97 @@ pub(crate) fn set_attributes() {
         // shows up as a failure in SDL_GL_CreateContext.
         unsafe { SDL_GL_SetAttribute(attr, value) };
     }
+}
+
+/// The most EGL devices looked at for the software one: SDL takes no index past its own
+/// `SDL_EGL_MAX_DEVICES`.
+const MAX_EGL_DEVICES: usize = 8;
+/// Extension of Mesa's software EGL device (llvmpipe).
+const SOFTWARE_DEVICE_EXTENSION: &[u8] = b"EGL_MESA_device_software";
+
+/// Makes SDL's offscreen driver create its windows on Mesa's software EGL device, so the
+/// pixels do not depend on the GPU. Call after `SDL_Init` with the offscreen driver and
+/// before the first OpenGL window.
+///
+/// SDL takes the first EGL device that initialises, a GPU where there is one; it reads the
+/// device index from the hint `SDL_HINT_EGL_DEVICE` (that literal name) when it loads the
+/// library, so the library is loaded once to enumerate the devices, then unloaded with the
+/// hint set to the software one.
+pub(crate) fn use_software_egl_device() -> Result<(), String> {
+    type QueryDevices = unsafe extern "C" fn(SDL_EGLint, *mut *mut c_void, *mut SDL_EGLint) -> u32;
+    type QueryDeviceString = unsafe extern "C" fn(*mut c_void, SDL_EGLint) -> *const c_char;
+
+    // SAFETY: SDL video is initialised with the offscreen driver and no window exists; NULL
+    // loads the default EGL library.
+    if !unsafe { SDL_GL_LoadLibrary(std::ptr::null()) } {
+        return Err(format!("loading EGL: {}", crate::window::sdl_error()));
+    }
+    let found = (|| {
+        // SAFETY: the EGL library is loaded; valid C strings.
+        let (query_devices, query_string) = unsafe {
+            (
+                SDL_EGL_GetProcAddress(c"eglQueryDevicesEXT".as_ptr()),
+                SDL_EGL_GetProcAddress(c"eglQueryDeviceStringEXT".as_ptr()),
+            )
+        };
+        let (Some(query_devices), Some(query_string)) = (query_devices, query_string) else {
+            return Err("EGL has no device enumeration (EGL_EXT_device_enumeration)".to_owned());
+        };
+        // SAFETY: the signatures of `eglQueryDevicesEXT` and `eglQueryDeviceStringEXT`
+        // (EGL_EXT_device_enumeration, EGL_EXT_device_query).
+        let (query_devices, query_string): (QueryDevices, QueryDeviceString) = unsafe {
+            (
+                std::mem::transmute::<unsafe extern "C" fn(), QueryDevices>(query_devices),
+                std::mem::transmute::<unsafe extern "C" fn(), QueryDeviceString>(query_string),
+            )
+        };
+        let mut devices = [std::ptr::null_mut(); MAX_EGL_DEVICES];
+        let mut count: SDL_EGLint = 0;
+        // SAFETY: `devices` holds `MAX_EGL_DEVICES` entries; `count` is a valid out pointer.
+        if unsafe {
+            query_devices(
+                MAX_EGL_DEVICES as SDL_EGLint,
+                devices.as_mut_ptr(),
+                &mut count,
+            )
+        } == 0
+        {
+            return Err("eglQueryDevicesEXT failed".to_owned());
+        }
+        let count = usize::try_from(count).unwrap_or(0).min(MAX_EGL_DEVICES);
+        devices[..count]
+            .iter()
+            .position(|&device| {
+                // SAFETY: `device` came from eglQueryDevicesEXT; the string is static or NULL.
+                let extensions = unsafe { query_string(device, EGL_EXTENSIONS) };
+                // SAFETY: a non-null result is a NUL-terminated string owned by EGL.
+                !extensions.is_null()
+                    && unsafe { CStr::from_ptr(extensions) }
+                        .to_bytes()
+                        .split(|&b| b == b' ')
+                        .any(|name| name == SOFTWARE_DEVICE_EXTENSION)
+            })
+            .ok_or_else(|| format!("no software EGL device among {count} (Mesa llvmpipe)"))
+    })();
+    // SAFETY: loaded above; no window or context uses it.
+    unsafe { SDL_GL_UnloadLibrary() };
+    let index = std::ffi::CString::new(found?.to_string()).expect("digits have no NUL");
+    // SAFETY: valid C strings; SDL reads the hint when the next window loads the library.
+    // Over an `SDL_HINT_EGL_DEVICE` environment variable too.
+    let set = unsafe {
+        sdl3_sys::hints::SDL_SetHintWithPriority(
+            c"SDL_HINT_EGL_DEVICE".as_ptr(),
+            index.as_ptr(),
+            sdl3_sys::hints::SDL_HINT_OVERRIDE,
+        )
+    };
+    if !set {
+        return Err(format!(
+            "selecting EGL device {index:?}: {}",
+            crate::window::sdl_error()
+        ));
+    }
+    Ok(())
 }
 
 // EGL_IMG_context_priority.

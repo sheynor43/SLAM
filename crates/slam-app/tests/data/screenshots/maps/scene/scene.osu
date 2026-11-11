@@ -1,0 +1,34 @@
+osu file format v14
+
+[General]
+AudioFilename: audio.mp3
+AudioLeadIn: 0
+Mode: 0
+
+[Metadata]
+Title:SLAM screenshot scene
+Artist:SLAM
+Creator:SLAM
+Version:Scene
+
+[Difficulty]
+HPDrainRate:5
+CircleSize:4
+OverallDifficulty:8
+ApproachRate:9
+SliderMultiplier:1.4
+SliderTickRate:2
+
+[Events]
+
+[TimingPoints]
+0,300,4,2,0,100,1,0
+
+[HitObjects]
+100,100,1000,5,0
+120,120,1300,2,0,P|200:60|300:120,2,250
+300,200,2400,1,0
+300,200,2600,2,0,L|100:200,1,150
+256,192,3200,12,0,4700
+256,192,5000,6,0,B|300:100|400:300,3,120
+400,300,6400,5,0

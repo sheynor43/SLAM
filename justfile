@@ -43,6 +43,14 @@ tone *ARGS:
 hitsound *ARGS:
     cargo run -p slam-audio --release --example hitsound -- {{ARGS}}
 
+# Скриншот-тесты скинов на программном рендере Mesa llvmpipe (ADR-0111); при расхождении кадры и разница - в target/tmp/screenshots
+screenshots:
+    cargo test -p slam-app --test screenshots -- --ignored
+
+# Перезаписать эталоны скриншотов; каждый изменённый эталон просмотреть перед коммитом
+screenshots-update:
+    SLAM_UPDATE_SCREENSHOTS=1 cargo test -p slam-app --test screenshots -- --ignored
+
 # Корпусы реплеев; FILTER - подстрока пути реплея (путь к корпусу: SLAM_CORPUS, по умолчанию ../slam-corpus)
 corpus FILTER="":
     SLAM_CORPUS_FILTER={{quote(FILTER)}} cargo test -p slam-osu --release --test corpus -- --ignored --nocapture

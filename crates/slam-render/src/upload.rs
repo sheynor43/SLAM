@@ -338,6 +338,24 @@ impl TextureRequests {
         &self.stats
     }
 
+    /// Whether every handle not released yet is uploaded or failed in `uploads`: all the
+    /// images asked for are there. For screenshots, which wait for them; walks every
+    /// handle.
+    pub fn all_finished(&self, uploads: &TextureUploads) -> bool {
+        self.alive
+            .iter()
+            .zip(&self.generations)
+            .enumerate()
+            .filter(|(_, (alive, _))| **alive)
+            .all(|(index, (_, &generation))| {
+                let handle = TextureHandle {
+                    index: index as u32,
+                    generation,
+                };
+                !matches!(uploads.get(handle), TextureState::Pending)
+            })
+    }
+
     fn wake(&self) {
         if let Some(thread) = &self.loader {
             thread.unpark();
@@ -1421,6 +1439,25 @@ mod tests {
         rig.ready(good);
         assert_eq!(rig.requests.stats().failed.load(Ordering::Relaxed), 2);
         assert_eq!(rig.requests.stats().decoded.load(Ordering::Relaxed), 1);
+    }
+
+    #[test]
+    fn all_finished_waits_for_every_live_handle_ready_or_failed() {
+        let mut rig = Rig::new(config(1 << 20));
+        assert!(rig.requests.all_finished(&rig.uploads), "nothing asked for");
+        let good = rig.requests.load(png(3, 3, 3), TextureKind::Atlas).unwrap();
+        rig.requests
+            .load(b"garbage".to_vec(), TextureKind::Atlas)
+            .unwrap();
+        assert!(!rig.requests.all_finished(&rig.uploads));
+        rig.settle();
+        assert!(rig.requests.all_finished(&rig.uploads));
+        // A released handle is not waited for; a new one is.
+        rig.requests.release(good).unwrap();
+        rig.requests.load(png(4, 4, 5), TextureKind::Atlas).unwrap();
+        assert!(!rig.requests.all_finished(&rig.uploads));
+        rig.settle();
+        assert!(rig.requests.all_finished(&rig.uploads));
     }
 
     #[test]
