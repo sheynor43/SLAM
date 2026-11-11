@@ -34,7 +34,7 @@ use slam_play::slider_body::Snaking;
 use slam_play::sliders::{AnimationSprites, HitSliders, SliderBodies, SliderVisuals};
 use slam_play::{
     BackgroundSettings, BackgroundView, FpsCorner, FpsCounter, FpsLabels, FpsView, HudLabels,
-    HudValues, HudView, MenuLabels,
+    HudSetup, HudValues, HudView, MenuLabels,
 };
 use slam_play::{
     Bindings, FrameTextures, GameTime, GameplaySounds, LiveInput, Offsets, PlaySession,
@@ -49,6 +49,7 @@ use slam_render::textures::TextureId;
 use slam_skin::SIXTY_FRAME_TIME;
 use slam_testkit::assert_no_alloc;
 use slam_text::{FontRegistry, GlyphAtlasConfig, glyph_atlas};
+use slam_ui::hud_layout::{Anchor, Builtin, ComponentKind, LayoutElement};
 
 slam_testkit::install_counting_allocator!();
 
@@ -678,7 +679,8 @@ fn ticks_and_frames_do_not_allocate() {
     // The HUD's glyphs are only requested here: without a device they stay pending.
     let registry = Arc::new(FontRegistry::with_builtin());
     let mut glyphs = glyph_atlas(Arc::clone(&registry), &GlyphAtlasConfig::new(LIMITS)).unwrap();
-    let mut hud = HudView::new(registry, &labels());
+    let lazer = Builtin::Lazer.layout();
+    let mut hud = hud_view(registry, &map, &lazer.gameplay);
     hud.request_glyphs(&mut glyphs);
     let mut text = SpriteBatch::with_capacity(256);
     let mut pending = 0;
@@ -728,14 +730,13 @@ fn ticks_and_frames_do_not_allocate() {
                 &snapshot.hud,
                 snapshot.offset_panel.offset_ms,
             );
-            hud.push_shapes(&mut batch, &snapshot, now, white);
-            view.push_hit_error(
+            hud.update_meters(&snapshot, now + MS / 2);
+            hud.push_shapes(
                 &mut batch,
-                1280.0,
-                720.0,
                 &snapshot,
                 now + MS / 2,
-                &textures,
+                Some(white),
+                textures.meter.as_ref(),
             );
             pending += hud
                 .push_text(&mut text, &snapshot, now, &mut glyphs)
@@ -844,6 +845,20 @@ fn the_hud_shows_the_score_of_the_play() {
     assert_eq!(last.combo, session.log().statistics().combo);
 }
 
+/// A HUD of `layout` for a play of `map`.
+fn hud_view(registry: Arc<FontRegistry>, map: &Beatmap, layout: &[LayoutElement]) -> HudView {
+    let windows = slam_osu::hit_windows::HitWindows::new(map.difficulty.overall_difficulty);
+    HudView::new(
+        registry,
+        &labels(),
+        HudSetup {
+            layout,
+            windows: &windows,
+            meter_hiding: &slam_play::hit_error::SpinnerHiding::new(map),
+        },
+    )
+}
+
 fn view(map: &Beatmap) -> PlayView {
     let dir = common::skin::SampleDir::new(&[]);
     let chain = slam_skin::SkinChain::new(None, slam_skin::Skin::load(&dir.0).unwrap());
@@ -873,12 +888,6 @@ fn view(map: &Beatmap) -> PlayView {
             &chain,
             true,
         ),
-        hit_error: slam_play::hit_error::HitErrorMeter::new(
-            slam_play::hit_error::HitErrorStyle::Bar,
-            &windows,
-            1.0,
-        ),
-        hit_error_hiding: slam_play::hit_error::SpinnerHiding::new(map),
         cursor: CursorView::default(),
         resume: slam_play::resume::ResumeView::default(),
     }
@@ -2387,7 +2396,8 @@ fn failing_comes_before_a_pause_in_the_same_tick() {
 fn hud_updates_and_frames_do_not_allocate() {
     let registry = Arc::new(FontRegistry::with_builtin());
     let mut glyphs = glyph_atlas(Arc::clone(&registry), &GlyphAtlasConfig::new(LIMITS)).unwrap();
-    let mut hud = HudView::new(registry, &labels());
+    let stable = Builtin::Stable.layout();
+    let mut hud = hud_view(registry, &beatmap(), &stable.gameplay);
     hud.request_glyphs(&mut glyphs);
     let mut text = SpriteBatch::with_capacity(256);
     let mut batch = SpriteBatch::with_capacity(256);
@@ -2425,7 +2435,7 @@ fn hud_updates_and_frames_do_not_allocate() {
             snapshot.offset_panel.changed(offset, 0);
             batch.clear();
             text.clear();
-            hud.push_shapes(&mut batch, &snapshot, 100 * MS, WHITE);
+            hud.push_shapes(&mut batch, &snapshot, 100 * MS, Some(WHITE), None);
             hud.push_text(&mut text, &snapshot, 100 * MS, &mut glyphs);
         }
     });
@@ -3263,7 +3273,13 @@ fn the_global_offset_scales_with_the_rate() {
 fn the_hit_error_meter_hides_during_a_spinner_and_keeps_its_lines() {
     // The shared map's spinner runs from 3200 to 4700.
     let map = beatmap();
-    let mut view = view(&map);
+    let layout = [LayoutElement::new(
+        ComponentKind::HitErrorMeter,
+        Anchor::BottomCentre,
+        [0.0, 0.0],
+    )];
+    let mut hud = hud_view(Arc::new(FontRegistry::with_builtin()), &map, &layout);
+    hud.update(1280.0, 720.0, &HudValues::default(), 0.0);
     let textures = FrameTextures {
         meter: Some(slam_play::hit_error::MeterTextures {
             white: WHITE,
@@ -3283,7 +3299,8 @@ fn the_hit_error_meter_hides_during_a_spinner_and_keeps_its_lines() {
     let mut draw = |time: f64| {
         snapshot.time = time;
         batch.clear();
-        view.push_hit_error(&mut batch, 1280.0, 720.0, &snapshot, 0, &textures);
+        hud.update_meters(&snapshot, 0);
+        hud.push_shapes(&mut batch, &snapshot, 0, None, textures.meter.as_ref());
         let alpha = batch
             .vertices()
             .iter()
@@ -3298,6 +3315,50 @@ fn the_hit_error_meter_hides_during_a_spinner_and_keeps_its_lines() {
     assert_eq!(fading, before, "the same sprites, the line included");
     assert!((fading_alpha - before_alpha / 2.0).abs() < 1e-3);
     assert_eq!(draw(5000.0), (before, before_alpha));
+}
+
+#[test]
+fn a_layout_with_two_meters_draws_without_allocating() {
+    let registry = Arc::new(FontRegistry::with_builtin());
+    let mut glyphs = glyph_atlas(Arc::clone(&registry), &GlyphAtlasConfig::new(LIMITS)).unwrap();
+    let map = beatmap();
+    let lazer = Builtin::Lazer.layout();
+    let mut hud = hud_view(registry, &map, &lazer.gameplay);
+    assert_eq!(hud.meters().len(), 2);
+    hud.request_glyphs(&mut glyphs);
+    let meter = slam_play::hit_error::MeterTextures {
+        white: WHITE,
+        disc: WHITE,
+        gradient: WHITE,
+        triangle: WHITE,
+    };
+    let mut snapshot = PlaySnapshot {
+        skip_available: true,
+        ..PlaySnapshot::default()
+    };
+    let mut shapes = SpriteBatch::with_capacity(slam_play::hud::MAX_HUD_SHAPES);
+    let mut text = SpriteBatch::with_capacity(256);
+    assert_no_alloc(|| {
+        for (i, height) in [720.0, 1080.0, 1.0, 0.0]
+            .into_iter()
+            .cycle()
+            .take(8)
+            .enumerate()
+        {
+            snapshot.hit_errors.push(slam_play::hit_error::HitError {
+                time: i as f64 * 10.0,
+                offset: 5.0,
+                result: HitResult::Great,
+            });
+            hud.update(1920.0, height, &snapshot.hud, 0.0);
+            hud.update_meters(&snapshot, 0);
+            shapes.clear();
+            text.clear();
+            hud.push_shapes(&mut shapes, &snapshot, 0, Some(WHITE), Some(&meter));
+            hud.push_text(&mut text, &snapshot, 0, &mut glyphs);
+        }
+    });
+    assert!(shapes.len() <= slam_play::hud::MAX_HUD_SHAPES);
 }
 
 // ---- Replay recording ----

@@ -14,6 +14,8 @@ use slam_render::Limits;
 use slam_text::FontRegistry;
 use slam_ui::i18n::Localizer;
 
+use crate::hud_layouts::LayoutStore;
+use crate::hud_layouts::migrate::resolve;
 use crate::play::scene::{PlayScene, PlaySettings, Prepared, prepare};
 use crate::replays::ReplayJob;
 
@@ -57,8 +59,8 @@ pub struct PlayOptions {
     pub auto_cursor_size: bool,
     /// How far hitsounds pan with the object's position (ADR-0087).
     pub positional_hitsounds_level: f32,
-    /// Size multiplier of the hit error meter (ADR-0050).
-    pub hit_error_scale: f64,
+    /// Id of the active HUD layout (ADR-0109); resolved on the loader thread.
+    pub hud_layout: String,
     /// The chosen skin's folder (ADR-0051); `None` plays on the default skin.
     pub skin: Option<PathBuf>,
     /// The mods the player selected; the settings' fixed field is replaced by this.
@@ -127,6 +129,8 @@ pub struct LoaderConfig {
     pub localizer: Arc<Localizer>,
     /// Where replays of finished plays are saved; `None` saves none.
     pub replays: Option<PathBuf>,
+    /// Where user HUD layouts live; `None` knows only the built-in ones.
+    pub hud_layouts: Option<LayoutStore>,
 }
 
 /// The update thread's end.
@@ -234,7 +238,8 @@ pub fn spawn(mut config: LoaderConfig) -> std::io::Result<(LoaderLink, SceneTras
                     config.settings.beatmap_hitsounds = options.beatmap_hitsounds;
                     config.settings.always_play_first_combo_break =
                         options.always_play_first_combo_break;
-                    config.settings.hit_error_scale = options.hit_error_scale;
+                    config.settings.hud_layout =
+                        resolve(config.hud_layouts.as_ref(), &options.hud_layout).gameplay;
                     config.settings.snaking = options.snaking();
                     config.settings.hit_lighting = options.hit_lighting;
                     config.settings.cursor_trail = options.cursor_trail;
@@ -308,7 +313,7 @@ mod tests {
             cursor_size: 1.0,
             auto_cursor_size: false,
             positional_hitsounds_level: 0.2,
-            hit_error_scale: 1.0,
+            hud_layout: "builtin:stable".into(),
             skin: None,
             mods: ModSet::default(),
         }
@@ -326,6 +331,7 @@ mod tests {
             registry: Arc::new(FontRegistry::with_builtin()),
             localizer: Arc::new(Localizer::builtin().unwrap()),
             replays: None,
+            hud_layouts: None,
         }
     }
 

@@ -9,15 +9,29 @@
 //! Unknown component kinds, element fields, properties and top-level fields are kept as they
 //! are, so a layout written by a newer SLAM survives an edit in an older one.
 //!
-//! The coordinates of the built-in presets are provisional: they will be verified against
-//! stable and lazer when drawing switches from constants to layouts. The `slam` preset is
-//! the `stable` one for now, because the extra components of ADR-0109 (unstable rate, key
-//! counter, pp counter) are not drawn yet.
+//! The built-in presets place the elements as the clients do:
+//! - `stable` after McOsu `db2add2`: `src/App/Osu/OsuHUD.cpp` (`drawScore`, `drawAccuracy`,
+//!   `drawCombo`, `drawScorebarBg`, `drawSkip`), offsets taken as screen units; the hit error
+//!   meter as lazer's `LegacySkin` places it (bottom centre). The accuracy's 44 units below
+//!   the top are the stand-in score text's height plus McOsu's 10: they move with the skinned
+//!   counters (#332).
+//! - `lazer` after osu!lazer 2026.1005.0-lazer: `osu.Game/Skinning/ArgonSkin.cs` (the default
+//!   skin's `MainHUDComponents`) and `osu.Game/Screens/Play/SkipOverlay.cs`, its 1024x768
+//!   pixels converted to screen units (x 0.625).
+//! - `slam` is `stable` for now, because the extra components of ADR-0109 (unstable rate,
+//!   key counter, pp counter) are not drawn yet.
+//!
+//! A hit error meter element takes its style from the `style` property: `legacy` (the
+//! default) or `bar` (ADR-0050).
 
 use std::fmt;
 
 use serde::{Deserialize, Deserializer, Serialize, Serializer};
 use serde_json::{Map, Value};
+
+mod place;
+
+pub use place::{SCREEN_UNITS, unit_scale};
 
 /// The layout format version this build reads and writes.
 pub const LAYOUT_VERSION: u32 = 1;

@@ -469,6 +469,21 @@ impl Default for Frame {
     }
 }
 
+/// HUD options (ADR-0109).
+#[derive(Clone, Debug, PartialEq, Eq, Serialize)]
+pub struct HudSettings {
+    /// Id of the active HUD layout: `builtin:*` or a user layout's folder name.
+    pub layout: String,
+}
+
+impl Default for HudSettings {
+    fn default() -> HudSettings {
+        HudSettings {
+            layout: "builtin:stable".to_owned(),
+        }
+    }
+}
+
 /// Song select options.
 #[derive(Clone, Debug, PartialEq, Serialize)]
 pub struct SongSelect {
@@ -518,9 +533,6 @@ pub struct Gameplay {
     /// Adjusts the cursor's size to the beatmap's circle size (lazer's
     /// `OsuSetting.AutoCursorSize`).
     pub auto_cursor_size: bool,
-    /// Size multiplier of the hit error meter, 0.5 ..= 2.0 in steps of 0.1. Temporary,
-    /// until the HUD layout editor takes it over (ADR-0050).
-    pub hit_error_scale: f64,
 }
 
 impl Default for Gameplay {
@@ -539,7 +551,6 @@ impl Default for Gameplay {
             cursor_trail: true,
             cursor_size: 1.0,
             auto_cursor_size: false,
-            hit_error_scale: 1.0,
         }
     }
 }
@@ -850,6 +861,7 @@ pub struct Settings {
     pub frame: Frame,
     pub window: Window,
     pub gameplay: Gameplay,
+    pub hud: HudSettings,
     pub song_select: SongSelect,
     pub input: InputSettings,
     pub hotkeys: Hotkeys,

@@ -197,7 +197,6 @@ settings-gameplay-hit-lighting = Hit lighting
 settings-gameplay-cursor-trail = Cursor trail
 settings-gameplay-cursor-size = Gameplay cursor size
 settings-gameplay-auto-cursor-size = Adjust gameplay cursor size based on current beatmap
-settings-gameplay-hit-error-scale = Hit error meter size
 settings-gameplay-skin = Skin
 settings-library-songs-folder = Songs folder
 settings-library-songs-folder-none = Not selected
@@ -252,3 +251,5 @@ key-mouse-x2 = Mouse button 5
 key-mod-ctrl = Ctrl+
 key-mod-shift = Shift+
 key-mod-alt = Alt+
+
+hud-layout-migrated-name = { $name } (hit error meter × { $scale })

@@ -40,6 +40,9 @@ pub struct Loaded {
     /// One line per problem, naming the field.
     pub warnings: Vec<String>,
     pub status: LoadStatus,
+    /// The retired `[gameplay] hit_error_scale`, for the one-time migration into a HUD
+    /// layout. Never part of [`Settings`] and never written back.
+    pub legacy_hit_error_scale: Option<f64>,
 }
 
 /// Upgrades a table from schema version `from_version` to [`CURRENT_VERSION`]. Version 1 is
@@ -55,6 +58,7 @@ pub fn load(path: &Path) -> Loaded {
                 settings: Settings::default(),
                 warnings: Vec::new(),
                 status: LoadStatus::Missing,
+                legacy_hit_error_scale: None,
             };
         }
         Err(e) => return broken(format!("cannot read {}: {e}", path.display())),
@@ -71,6 +75,7 @@ fn broken(warning: String) -> Loaded {
         settings: Settings::default(),
         warnings: vec![warning],
         status: LoadStatus::Broken,
+        legacy_hit_error_scale: None,
     }
 }
 
@@ -467,15 +472,31 @@ fn from_table(mut table: Table) -> Loaded {
         &mut settings.gameplay.auto_cursor_size,
         |_| Ok(()),
     );
+    // Retired in favour of the HUD layout (ADR-0109); read only to migrate it.
+    let mut legacy_scale = f64::NAN;
     cx.float(
         &mut gameplay,
         "gameplay",
         "hit_error_scale",
-        &mut settings.gameplay.hit_error_scale,
+        &mut legacy_scale,
         0.5..=2.0,
     );
-    settings.gameplay.hit_error_scale = (settings.gameplay.hit_error_scale * 100.0).round() / 100.0;
+    let legacy_hit_error_scale =
+        (!legacy_scale.is_nan()).then(|| (legacy_scale * 100.0).round() / 100.0);
     cx.unknown(&gameplay, "gameplay");
+
+    let mut hud = cx.section(&mut table, "hud");
+    cx.field(
+        &mut hud,
+        "hud",
+        "layout",
+        &mut settings.hud.layout,
+        |id: &String| match crate::hud_layouts::LayoutId::parse(id) {
+            Some(_) => Ok(()),
+            None => Err(format!("`{id}` is not a layout id")),
+        },
+    );
+    cx.unknown(&hud, "hud");
 
     let mut song_select = cx.section(&mut table, "song_select");
     cx.float(
@@ -629,6 +650,7 @@ fn from_table(mut table: Table) -> Loaded {
         settings,
         warnings: cx.warnings,
         status,
+        legacy_hit_error_scale,
     }
 }
 

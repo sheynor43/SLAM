@@ -201,7 +201,6 @@ settings-gameplay-hit-lighting = Подсветка попаданий
 settings-gameplay-cursor-trail = След курсора
 settings-gameplay-cursor-size = Размер курсора в игре
 settings-gameplay-auto-cursor-size = Подстраивать размер курсора под карту
-settings-gameplay-hit-error-scale = Размер шкалы ошибок
 settings-gameplay-skin = Скин
 settings-library-songs-folder = Папка с песнями
 settings-library-songs-folder-none = Не выбрана
@@ -256,3 +255,5 @@ key-mouse-x2 = Кнопка мыши 5
 key-mod-ctrl = Ctrl+
 key-mod-shift = Shift+
 key-mod-alt = Alt+
+
+hud-layout-migrated-name = { $name } (шкала ошибок × { $scale })

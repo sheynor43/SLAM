@@ -148,8 +148,6 @@ pub fn skin_options(localizer: &Localizer, skins: &[String]) -> Vec<String> {
 /// The number of sections.
 pub const SECTIONS: usize = SECTION_KEYS.len();
 
-/// The range of the hit error meter size slider (ADR-0050).
-const HIT_ERROR_SCALE_RANGE: (f64, f64) = (0.5, 2.0);
 /// The range of the cursor size slider (lazer's `GameplayCursorSize`, ADR-0086).
 const CURSOR_SIZE_RANGE: (f64, f64) = (0.1, 2.0);
 
@@ -236,7 +234,6 @@ pub enum Row {
     CursorTrail,
     CursorSize,
     AutoCursorSize,
-    HitErrorScale,
     Skin,
     SongsFolder,
 }
@@ -245,7 +242,7 @@ pub enum Row {
 const _: () = assert!(Row::ALL.len() <= slam_ui::settings_screen::MAX_ROWS);
 
 impl Row {
-    pub const ALL: [Row; 55] = [
+    pub const ALL: [Row; 54] = [
         Row::MasterVolume,
         Row::MusicVolume,
         Row::MenuMusic,
@@ -298,7 +295,6 @@ impl Row {
         Row::CursorTrail,
         Row::CursorSize,
         Row::AutoCursorSize,
-        Row::HitErrorScale,
         Row::Skin,
         Row::SongsFolder,
     ];
@@ -377,7 +373,6 @@ impl Row {
             | Row::CursorTrail
             | Row::CursorSize
             | Row::AutoCursorSize
-            | Row::HitErrorScale
             | Row::Skin => 5,
             Row::SongsFolder => 6,
         }
@@ -436,7 +431,6 @@ impl Row {
             Row::CursorTrail => "settings-gameplay-cursor-trail",
             Row::CursorSize => "settings-gameplay-cursor-size",
             Row::AutoCursorSize => "settings-gameplay-auto-cursor-size",
-            Row::HitErrorScale => "settings-gameplay-hit-error-scale",
             Row::Skin => "settings-gameplay-skin",
             Row::SongsFolder => "settings-library-songs-folder",
         }
@@ -775,12 +769,6 @@ impl Rows {
                 step: 0.01,
                 value: round_to(s.gameplay.cursor_size, 2),
             },
-            Row::HitErrorScale => RowKind::Slider {
-                min: HIT_ERROR_SCALE_RANGE.0,
-                max: HIT_ERROR_SCALE_RANGE.1,
-                step: 0.01,
-                value: round_to(s.gameplay.hit_error_scale, 2),
-            },
             Row::Language => choice(
                 BUILTIN_LANGUAGES.len(),
                 BUILTIN_LANGUAGES.iter().position(|l| {
@@ -949,10 +937,6 @@ impl Rows {
             (Row::CursorSize, RowValue::Slider(v)) => {
                 settings.gameplay.cursor_size =
                     round_to(v, 2).clamp(CURSOR_SIZE_RANGE.0, CURSOR_SIZE_RANGE.1);
-            }
-            (Row::HitErrorScale, RowValue::Slider(v)) => {
-                settings.gameplay.hit_error_scale =
-                    round_to(v, 2).clamp(HIT_ERROR_SCALE_RANGE.0, HIT_ERROR_SCALE_RANGE.1);
             }
             (Row::GlobalOffset, RowValue::Slider(v)) => {
                 settings.timing.global_offset_ms = v.round();
@@ -1236,9 +1220,7 @@ impl Rows {
                     | Row::Dim
                     | Row::SongSelectDim
                     | Row::PositionalHitsoundsLevel => text("settings-unit-percent"),
-                    Row::HitErrorScale | Row::Sensitivity | Row::CursorSize => {
-                        text("settings-unit-times")
-                    }
+                    Row::Sensitivity | Row::CursorSize => text("settings-unit-times"),
                     _ => String::new(),
                 };
                 let button = match row {
@@ -1303,7 +1285,6 @@ pub fn round_for_save(settings: &mut Settings) {
     ] {
         *volume = round_to(*volume, 2);
     }
-    settings.gameplay.hit_error_scale = round_to(settings.gameplay.hit_error_scale, 2);
     settings.audio.positional_hitsounds_level =
         round_to(f64::from(settings.audio.positional_hitsounds_level), 2) as f32;
     settings.input.sensitivity = InputSettings::clean_sensitivity(settings.input.sensitivity);
@@ -1803,14 +1784,6 @@ mod tests {
         rows.apply(&mut s, index(Row::DisableWinKey), RowValue::Toggle(false));
         rows.apply(
             &mut s,
-            index(Row::HitErrorScale),
-            RowValue::Slider(1.2300000000000002),
-        );
-        assert_eq!(s.gameplay.hit_error_scale, 1.23);
-        rows.apply(&mut s, index(Row::HitErrorScale), RowValue::Slider(9.0));
-        assert_eq!(s.gameplay.hit_error_scale, 2.0);
-        rows.apply(
-            &mut s,
             index(Row::CursorSize),
             RowValue::Slider(0.7000000000000001),
         );
@@ -2016,13 +1989,11 @@ mod tests {
         s.audio.master_volume = 0.1 + 0.2;
         s.audio.music_volume = 0.555;
         s.gameplay.dim = 0.30000000000000004;
-        s.gameplay.hit_error_scale = 1.12 + 0.005;
         s.timing.global_offset_ms = 12.4;
         round_for_save(&mut s);
         assert_eq!(s.audio.master_volume, 0.3);
         assert_eq!(s.audio.music_volume, 0.56);
         assert_eq!(s.gameplay.dim, 0.3);
-        assert_eq!(s.gameplay.hit_error_scale, 1.13);
         assert_eq!(s.timing.global_offset_ms, 12.0);
     }
 
@@ -2074,7 +2045,6 @@ mod tests {
         assert_eq!(draw[0], "Unlimited");
         assert!(draw.contains(&"240 Hz".to_owned()), "{draw:?}");
         assert_eq!(labels.rows[index(Row::GlobalOffset)].unit, " ms");
-        assert_eq!(labels.rows[index(Row::HitErrorScale)].unit, "×");
         assert_eq!(labels.rows[index(Row::CursorSize)].unit, "×");
         assert!(labels.rows[index(Row::CursorSize)].trim_zeros);
         let level = &labels.rows[index(Row::PositionalHitsoundsLevel)];

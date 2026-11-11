@@ -3416,7 +3416,14 @@ pub fn parse_songs<I: IntoIterator<Item = String>>(args: I) -> Result<Option<Pat
 pub fn load_settings(songs: Option<PathBuf>) -> Settings {
     let dirs = Dirs::detect();
     let settings = match &dirs {
-        Some(dirs) => crate::settings::load_or_create(&dirs.settings_file()).settings,
+        Some(dirs) => {
+            let loaded = crate::settings::load_or_create(&dirs.settings_file());
+            let mut settings = loaded.settings;
+            if let Some(scale) = loaded.legacy_hit_error_scale {
+                migrate_hit_error_scale(dirs, &mut settings, scale);
+            }
+            settings
+        }
         None => {
             tracing::warn!("settings: no settings folder, using the defaults");
             Settings::default()
@@ -3435,6 +3442,25 @@ pub fn load_settings(songs: Option<PathBuf>) -> Settings {
         settings.paths.songs = Some(found);
     }
     settings
+}
+
+/// Moves the retired `gameplay.hit_error_scale` into a HUD layout and rewrites the settings
+/// file without the key (ADR-0109). Failures are warnings: the play goes on with the layout
+/// as it is.
+fn migrate_hit_error_scale(dirs: &Dirs, settings: &mut Settings, scale: f64) {
+    let localizer = match interface_localizer(settings) {
+        Ok(localizer) => localizer,
+        Err(e) => {
+            tracing::warn!("hud: cannot migrate the hit error meter size: {e}");
+            return;
+        }
+    };
+    let store = crate::hud_layouts::LayoutStore::in_data_dir(dirs);
+    if crate::hud_layouts::migrate::migrate_on_startup(&store, settings, scale, &localizer)
+        && let Err(e) = crate::settings::saver::write(&dirs.settings_file(), settings.clone())
+    {
+        tracing::warn!("settings: {e}");
+    }
 }
 
 /// `settings` with the songs folder of the command line, if given.
@@ -3666,7 +3692,6 @@ fn run_with<B: render::Backend>(
                 beatmap_hitsounds: options.beatmap_hitsounds,
                 always_play_first_combo_break: options.always_play_first_combo_break,
                 dim: options.dim,
-                hit_error_scale: options.hit_error_scale,
                 snaking: options.snaking(),
                 hit_lighting: options.hit_lighting,
                 cursor_trail: options.cursor_trail,
@@ -3681,6 +3706,7 @@ fn run_with<B: render::Backend>(
         registry: Arc::clone(&registry),
         localizer: Arc::clone(&localizer),
         replays: Dirs::detect().map(|dirs| dirs.replays()),
+        hud_layouts: Dirs::detect().map(|dirs| crate::hud_layouts::LayoutStore::in_data_dir(&dirs)),
     })
     .map_err(|e| e.to_string())?;
     let (scene_tx, scene_rx) = rtrb::RingBuffer::<(u64, PlayScene)>::new(2);

@@ -9,9 +9,9 @@
 //! [`HitErrorMeter`] picks this meter or the legacy one ([`crate::legacy_hit_error`]) by
 //! [`HitErrorStyle`] (ADR-0050).
 //!
-//! Lazer's default layouts put two vertical meters at the sides; this one is a single
-//! horizontal bar at the bottom centre: the vertical meter turned so that early hits are on
-//! the left and the average arrow is above the bar.
+//! The meters draw in their own box with its top-left corner at (0, 0), at a size given in
+//! window pixels per lazer HUD pixel; the HUD layout places them (ADR-0109). The bar meter's
+//! box is lazer's vertical one: the average arrow on the left, early hits at the top.
 
 use slam_osu::Beatmap;
 use slam_osu::hit_events::HitEventTargets;
@@ -22,7 +22,7 @@ use slam_osu::objects::OsuHitObjectKind;
 use slam_render::atlas::{AtlasRegion, UvRect};
 use slam_render::hal::Extent;
 use slam_render::image::Image;
-use slam_render::sprite::{Sprite, SpriteBatch};
+use slam_render::sprite::{Affine, Sprite, SpriteBatch};
 use slam_render::{Blend, Color};
 
 use crate::circles::{Easing, value_at};
@@ -103,16 +103,21 @@ pub enum HitErrorMeter {
 }
 
 impl HitErrorMeter {
-    /// The meter in `style` of a play with the hit `windows` of its beatmap (mods applied),
-    /// `size` times as large as lazer's.
-    pub fn new(style: HitErrorStyle, windows: &HitWindows, size: f32) -> Self {
+    /// The meter in `style` of a play with the hit `windows` of its beatmap (mods applied).
+    pub fn new(style: HitErrorStyle, windows: &HitWindows) -> Self {
         match style {
             HitErrorStyle::Legacy => {
-                HitErrorMeter::Legacy(Box::new(LegacyHitErrorView::new(windows).sized(size)))
+                HitErrorMeter::Legacy(Box::new(LegacyHitErrorView::new(windows)))
             }
-            HitErrorStyle::Bar => {
-                HitErrorMeter::Bar(Box::new(HitErrorView::new(windows).sized(size)))
-            }
+            HitErrorStyle::Bar => HitErrorMeter::Bar(Box::new(HitErrorView::new(windows))),
+        }
+    }
+
+    /// The meter's box in window pixels at `scale` window pixels per lazer HUD pixel.
+    pub fn size(&self, scale: f32) -> [f32; 2] {
+        match self {
+            HitErrorMeter::Legacy(view) => view.size(scale),
+            HitErrorMeter::Bar(_) => HitErrorView::size(scale),
         }
     }
 
@@ -139,19 +144,13 @@ impl HitErrorMeter {
         }
     }
 
-    /// Writes the meter at game `time` on a window of `width` × `height` pixels.
-    /// Allocation-free once `batch` has room for [`MAX_HIT_ERROR_SPRITES`].
-    pub fn push(
-        &self,
-        batch: &mut SpriteBatch,
-        width: f32,
-        height: f32,
-        time: f64,
-        textures: &MeterTextures,
-    ) {
+    /// Writes the meter at game `time` in its box ([`HitErrorMeter::size`]) with the top-left
+    /// corner at (0, 0), at `scale` window pixels per lazer HUD pixel. Allocation-free once
+    /// `batch` has room for [`MAX_HIT_ERROR_SPRITES`].
+    pub fn push(&self, batch: &mut SpriteBatch, scale: f32, time: f64, textures: &MeterTextures) {
         match self {
-            HitErrorMeter::Legacy(view) => view.push(batch, width, height, time, textures),
-            HitErrorMeter::Bar(view) => view.push(batch, width, height, time, textures),
+            HitErrorMeter::Legacy(view) => view.push(batch, scale, time, textures),
+            HitErrorMeter::Bar(view) => view.push(batch, scale, time, textures),
         }
     }
 }
@@ -257,11 +256,9 @@ const JUDGEMENT_LINE_ALPHA: f32 = 0.6;
 /// Width of the meter across the bar, in lazer's units: the chevron, then the colour axis.
 const METER_WIDTH: f32 = CHEVRON_SIZE + JUDGEMENT_LINE_WIDTH;
 
-// Ported from osu!lazer 2026.1005.0-lazer: osu.Game/Graphics/Containers/ScalingContainer.cs
-/// The HUD's virtual size, fitted into the window by its smaller ratio.
-pub(crate) const TARGET_SIZE: [f32; 2] = [1024.0, 768.0];
-/// Space between the meter and the bottom of the window, in virtual units.
-const BOTTOM_MARGIN: f32 = 10.0;
+// Ported from osu!lazer 2026.1005.0-lazer: osu.Game/OsuGame.cs (ScalingContainerTargetDrawSize)
+/// Lazer's HUD pixels per 640x480 screen unit: lazer lays its HUD out in 1024x768.
+pub const LAZER_PIXELS_PER_UNIT: f32 = 1024.0 / 640.0;
 
 const fn hex(rgb: u32) -> Color {
     Color::rgb(
@@ -454,8 +451,6 @@ pub struct HitErrorView {
     /// The colour zones from the outside in: Meh, Ok, Great with their windows.
     windows: [(HitResult, f64); 3],
     max_window: f64,
-    /// Multiplier of the meter's size (ADR-0050).
-    size: f32,
     /// Alive lines, oldest first.
     lines: [JudgementLine; MAX_LINES],
     len: usize,
@@ -478,7 +473,6 @@ impl HitErrorView {
         HitErrorView {
             windows,
             max_window: windows[0].1.max(1.0),
-            size: 1.0,
             lines: [JudgementLine::EMPTY; MAX_LINES],
             len: 0,
             seen: 0,
@@ -489,10 +483,14 @@ impl HitErrorView {
         }
     }
 
-    /// The meter `size` times as large (1 is lazer's).
-    pub fn sized(self, size: f32) -> Self {
-        debug_assert!(size.is_finite() && size > 0.0, "meter size {size}");
-        HitErrorView { size, ..self }
+    /// The meter's box in window pixels at `scale` window pixels per lazer HUD pixel:
+    /// lazer's vertical meter, the arrow and the colour axis across, the bar along, with the
+    /// margin around them.
+    pub fn size(scale: f32) -> [f32; 2] {
+        [
+            (METER_WIDTH + 2.0 * METER_MARGIN) * scale,
+            (BAR_HEIGHT + 2.0 * METER_MARGIN) * scale,
+        ]
     }
 
     /// Lazer's `Clear` on a seek: the lines go, the average and the arrow stay.
@@ -582,18 +580,33 @@ impl HitErrorView {
         self.arrow.at(time)
     }
 
-    /// Writes the meter at game `time` on a window of `width` × `height` pixels.
-    /// Allocation-free once `batch` has room for [`MAX_METER_SPRITES`].
+    /// Writes the meter at game `time` in its box ([`HitErrorView::size`]) with the top-left
+    /// corner at (0, 0), at `scale` window pixels per lazer HUD pixel. Allocation-free once
+    /// `batch` has room for [`MAX_METER_SPRITES`].
     // Ported from osu!lazer 2026.1005.0-lazer: osu.Game/Screens/Play/HUD/HitErrorMeters/BarHitErrorMeter.cs (load, createColourBars, recreateCentreMarker)
-    pub fn push(
+    pub fn push(&self, batch: &mut SpriteBatch, scale: f32, time: f64, textures: &MeterTextures) {
+        let first = batch.len();
+        self.push_turned(batch, Placement { scale }, time, textures);
+        // Drawn with the bar running left to right (the gradient image fades along u);
+        // swapping the axes stands it up as lazer's.
+        let transpose = Affine {
+            a: 0.0,
+            b: 1.0,
+            c: 1.0,
+            d: 0.0,
+            tx: 0.0,
+            ty: 0.0,
+        };
+        batch.transform_from(first, &transpose, [1.0; 4]);
+    }
+
+    fn push_turned(
         &self,
         batch: &mut SpriteBatch,
-        width: f32,
-        height: f32,
+        place: Placement,
         time: f64,
         textures: &MeterTextures,
     ) {
-        let place = Placement::new(width, height, self.size);
         let mut draw = Draw {
             batch,
             place,
@@ -659,33 +672,19 @@ impl HitErrorView {
 pub const MAX_METER_SPRITES: usize = 2 + 2 * 4 + 3 * MAX_LINES + 2;
 
 /// How the meter's own units (lazer's vertical meter: x across, y along the bar from the
-/// early end) land in the window: turned so that y runs left to right and x top to bottom.
+/// early end) land in pixels before [`HitErrorView::push`] stands them up: turned so that y
+/// runs left to right and x top to bottom.
 #[derive(Debug, Clone, Copy, PartialEq)]
 struct Placement {
-    origin: [f32; 2],
     scale: f32,
 }
 
 impl Placement {
-    /// The meter `size` times as large; the margin below it stays (a drawable's scale does
-    /// not move it).
-    fn new(width: f32, height: f32, size: f32) -> Self {
-        let hud = (width / TARGET_SIZE[0]).min(height / TARGET_SIZE[1]);
-        let scale = hud * size;
-        let across = METER_WIDTH + METER_MARGIN;
-        Placement {
-            origin: [
-                width / 2.0 - BAR_HEIGHT / 2.0 * scale,
-                height - BOTTOM_MARGIN * hud - across * scale,
-            ],
-            scale,
-        }
-    }
-
+    /// Inside lazer's margin (`MarginPadding(2)` of the meter's container).
     fn point(&self, [x, y]: [f32; 2]) -> [f32; 2] {
         [
-            self.origin[0] + y * self.scale,
-            self.origin[1] + x * self.scale,
+            (y + METER_MARGIN) * self.scale,
+            (x + METER_MARGIN) * self.scale,
         ]
     }
 
