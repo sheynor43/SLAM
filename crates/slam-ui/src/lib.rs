@@ -2,6 +2,7 @@
 
 pub mod anim;
 pub mod curtain;
+pub mod hud_layout;
 pub mod i18n;
 pub mod menu;
 pub mod results;

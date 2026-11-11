@@ -1643,6 +1643,7 @@ dependencies = [
  "md-5",
  "rtrb",
  "serde",
+ "serde_json",
  "slam-audio",
  "slam-engine",
  "slam-formats",
@@ -1832,6 +1833,8 @@ version = "0.1.0-alpha"
 dependencies = [
  "fluent-bundle",
  "fluent-syntax",
+ "serde",
+ "serde_json",
  "slam-render",
  "slam-skin",
  "slam-testkit",
