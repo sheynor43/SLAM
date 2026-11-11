@@ -11,7 +11,7 @@ use slam_osu::{Beatmap, ModSet, Vec2};
 
 use slam_render::sprite::{Sprite, SpriteBatch};
 use slam_render::{Blend, Color};
-use slam_skin::{AnimationOptions, SIXTY_FRAME_TIME, Skin, SkinChain, SkinVersion, TextureFile};
+use slam_skin::{AnimationOptions, SIXTY_FRAME_TIME, Skin, SkinChain, TextureFile, VersionRules};
 
 use crate::circles::{
     CircleSettings, Easing, Kind, SkinSprite, Track, centred, combo_colour, tint,
@@ -580,11 +580,11 @@ impl JudgementView {
             .iter()
             .map(|o| combo_colour(&o.combo, beatmap_colours, skins))
             .collect();
-        // The version the skin source gives: the first skin that has one (not the beatmap's).
-        let version = skins.config(Skin::config_version).map(|f| f.value);
         JudgementView {
             style: JudgementStyle {
-                miss_falls: version.is_some_and(|v| v > SkinVersion::V1),
+                // The version the skin source gives: the first skin that has one (not the
+                // beatmap's).
+                miss_falls: VersionRules::of_chain(skins).miss_falls,
                 hit_lighting,
             },
             colours,
@@ -819,10 +819,7 @@ fn piece_source(skin: &Skin, result: HitResult) -> Option<PieceSource> {
     // Skins older than version 2 draw slider ticks and ends with stable's score points. The
     // beatmap's skin has no version, so it never does.
     let slider_point = |result| {
-        if !skin
-            .config_version()
-            .is_some_and(|v| v < SkinVersion::new(2, 0))
-        {
+        if !VersionRules::of_skin(skin).slider_points {
             return None;
         }
         skin.texture(if result == HitResult::LargeTickHit {

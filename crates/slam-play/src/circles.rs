@@ -26,7 +26,7 @@ use slam_render::atlas::{AtlasRegion, UvRect};
 use slam_render::sprite::{Sprite, SpriteBatch};
 use slam_render::textures::TextureId;
 use slam_render::{Blend, Color};
-use slam_skin::{Rgba, Skin, SkinChain, SkinSource, SkinVersion};
+use slam_skin::{Rgba, Skin, SkinChain, SkinSource, VersionRules};
 
 use crate::legacy_text::{Digits, LegacyFont};
 use crate::playfield::PlayfieldLayout;
@@ -217,12 +217,11 @@ impl CircleStyle {
     /// The style for a play with `mods` and `windows`, drawn with `skins`.
     pub fn new(mods: CircleMods, windows: &HitWindows, skins: &SkinChain) -> Self {
         // Ported from osu!lazer 2026.1005.0-lazer: osu.Game.Rulesets.Osu/Skinning/Legacy/LegacyMainCirclePiece.cs (updateStateTransforms)
-        let version = skins.config(Skin::config_version).map(|f| f.value);
         CircleStyle {
             mods,
             ok_window: windows.window_for(HitResult::Ok),
             meh_window: windows.window_for(HitResult::Meh),
-            number_short_fade: version.is_some_and(|v| v > SkinVersion::V1),
+            number_short_fade: VersionRules::of_chain(skins).number_short_fade,
         }
     }
 }

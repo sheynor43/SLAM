@@ -10,21 +10,8 @@
 //! # Version-dependent rules
 //!
 //! Which variant of an element is drawn can depend on the version of the skin that provides
-//! it. The drawing code implements these rules; the places in lazer are:
-//!
-//! - Reverse arrow rotates only for `Version <= 1`:
-//!   `osu.Game.Rulesets.Osu/Skinning/Legacy/LegacyReverseArrow.cs` (also checks whether the
-//!   texture comes from the default skin).
-//! - Hit circle number: for `Version > 1.0` only a very short fade-out is applied on hit,
-//!   older skins scale and fade it with the other pieces:
-//!   `osu.Game.Rulesets.Osu/Skinning/Legacy/LegacyMainCirclePiece.cs`.
-//! - Missed judgement: for `Version > 1.0` the miss text also moves down:
-//!   `osu.Game/Skinning/LegacyJudgementPieceOld.cs`.
-//! - `sliderpoint10` / `sliderpoint30` are used for slider ticks and ends only when
-//!   `Version < 2`: `OsuLegacySkinTransformer.cs` (`getSliderPointTexture`).
-//! - Old versus new style spinner is chosen by which textures exist: `spinner-background`
-//!   selects the old style, `spinner-top` without it the new style
-//!   (`OsuLegacySkinTransformer.cs`, `SpinnerBody`).
+//! it. Those rules, and the elements that look version-dependent but are not, are in
+//! [`VersionRules`](crate::VersionRules).
 
 use std::collections::{HashMap, HashSet};
 

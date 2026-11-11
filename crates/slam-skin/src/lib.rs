@@ -15,8 +15,10 @@ mod chain;
 mod lookup;
 pub mod registry;
 mod skin;
+mod version_rules;
 
 pub use chain::{Found, SkinChain, SkinSource};
 pub use lookup::{Animation, AnimationOptions, SIXTY_FRAME_TIME, TextureFile};
 pub use skin::{ImageCheck, LoadError, Skin};
 pub use slam_formats::skin_ini::{Rgba, SkinVersion};
+pub use version_rules::VersionRules;
