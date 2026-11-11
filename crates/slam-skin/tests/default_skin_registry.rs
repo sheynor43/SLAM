@@ -15,7 +15,7 @@ fn registry_elements_exist_in_default_skin() {
     let mut missing = Vec::new();
     for element in registry::ELEMENTS {
         for tex in element.textures.iter().filter(|t| t.in_default_skin) {
-            for name in tex.expand(skin.hit_circle_prefix()) {
+            for name in tex.expand(&skin.font_prefixes()) {
                 let options = AnimationOptions {
                     animatable: tex.animation.is_some(),
                     separator: tex.animation.unwrap_or("-"),
@@ -26,9 +26,9 @@ fn registry_elements_exist_in_default_skin() {
                 }
             }
         }
-        for sample in element.samples {
-            if skin.sample(sample).is_none() {
-                missing.push((*sample).to_owned());
+        for sample in element.samples.iter().filter(|s| s.in_default_skin) {
+            if skin.sample(sample.name).is_none() {
+                missing.push(sample.name.to_owned());
             }
         }
     }
@@ -43,7 +43,19 @@ fn registry_marks_absent_textures() {
     let skin = Skin::load_default(default_skin_dir()).unwrap();
     for element in registry::ELEMENTS {
         for tex in element.textures.iter().filter(|t| !t.in_default_skin) {
-            assert!(skin.texture(tex.name).is_none(), "{} exists", tex.name);
+            let options = AnimationOptions {
+                animatable: tex.animation.is_some(),
+                separator: tex.animation.unwrap_or("-"),
+                ..AnimationOptions::default()
+            };
+            assert!(
+                skin.animation(tex.name, options).is_none(),
+                "{} exists",
+                tex.name
+            );
+        }
+        for sample in element.samples.iter().filter(|s| !s.in_default_skin) {
+            assert!(skin.sample(sample.name).is_none(), "{} exists", sample.name);
         }
     }
 }
@@ -73,14 +85,7 @@ fn default_skin_configuration() {
 }
 
 #[test]
-fn default_skin_unknown_files_are_menu_assets() {
+fn default_skin_has_no_unknown_files() {
     let skin = Skin::load_default(default_skin_dir()).unwrap();
-    let unknown = skin.unknown_files();
-    assert!(unknown.contains(&"ranking-s@2x.png"));
-    assert!(!unknown.contains(&"hitcircle@2x.png"));
-    assert!(!unknown.contains(&"default-5@2x.png"));
-    assert!(!unknown.contains(&"normal-hitnormal.wav"));
-    assert!(!unknown.contains(&"combobreak.mp3"));
-    assert!(!unknown.contains(&"sliderb3@2x.png"));
-    assert!(!unknown.contains(&"skin.ini"));
+    assert_eq!(skin.unknown_files(), Vec::<&str>::new());
 }

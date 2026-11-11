@@ -200,12 +200,22 @@ impl Skin {
             warnings,
             beatmap: config.is_some(),
         };
-        tracing::debug!(
-            skin = %root.display(),
-            files = skin.files.len(),
-            unknown = skin.unknown_files().len(),
-            "skin loaded"
-        );
+        tracing::debug!(skin = %root.display(), files = skin.files.len(), "skin loaded");
+        let unknown = skin.unknown_files();
+        if !unknown.is_empty() {
+            let sample = unknown
+                .iter()
+                .take(10)
+                .copied()
+                .collect::<Vec<_>>()
+                .join(", ");
+            tracing::info!(
+                skin = %root.display(),
+                unknown = unknown.len(),
+                sample = %sample,
+                "skin has files the element registry does not know"
+            );
+        }
         Ok(skin)
     }
 
@@ -285,15 +295,21 @@ impl Skin {
             .is_none_or(|check| *file.decodes.get_or_init(|| (check.0)(&file.path)))
     }
 
-    /// Indexed files (lowercased relative paths) that are neither `skin.ini` nor matched by
-    /// the element [`registry`], sorted. Most menu and ranking files are unknown in M2.
+    /// Indexed files (lowercased relative paths) that are not matched by the element
+    /// [`registry`], sorted. `skin.ini` and the `.md` / `.txt` files skins ship as readmes and
+    /// licences are not counted.
     pub fn unknown_files(&self) -> Vec<&str> {
-        let prefix = self.hit_circle_prefix();
+        let known = registry::KnownFiles::new(&self.font_prefixes());
         let mut unknown: Vec<&str> = self
             .files
             .keys()
             .map(String::as_str)
-            .filter(|k| *k != "skin.ini" && !registry::is_known_file(k, prefix))
+            .filter(|k| {
+                *k != "skin.ini"
+                    && !k.ends_with(".md")
+                    && !k.ends_with(".txt")
+                    && !known.contains(k)
+            })
             .collect();
         unknown.sort_unstable();
         unknown
@@ -377,6 +393,15 @@ impl Skin {
     /// `HitCircleOverlap`, default -2. Positive values bring digits closer together.
     pub fn hit_circle_overlap(&self) -> f32 {
         self.setting_f32("HitCircleOverlap").unwrap_or(-2.0)
+    }
+
+    /// The three font prefixes of `[Fonts]` with their defaults.
+    pub fn font_prefixes(&self) -> registry::FontPrefixes {
+        registry::FontPrefixes::new(
+            self.hit_circle_prefix(),
+            self.score_prefix(),
+            self.combo_prefix(),
+        )
     }
 
     /// `ScorePrefix`, default `score`.
