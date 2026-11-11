@@ -6,6 +6,7 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicUsize, Ordering};
 
 use slam_formats::skin_ini::{Rgba, SkinVersion};
+use slam_skin::registry::FontPrefixes;
 use slam_skin::{AnimationOptions, ImageCheck, Skin, SkinChain, SkinSource, registry};
 
 /// A temporary skin folder, removed on drop.
@@ -377,15 +378,7 @@ fn unknown_files_listing() {
         "sub/extra.png",
     ]);
     let skin = dir.load();
-    assert_eq!(
-        skin.unknown_files(),
-        [
-            "menu-background.jpg",
-            "ranking-s.png",
-            "readme.txt",
-            "sub/extra.png"
-        ]
-    );
+    assert_eq!(skin.unknown_files(), ["sub/extra.png"]);
 }
 
 #[test]
@@ -565,7 +558,65 @@ fn registry_basics() {
     ids.dedup();
     assert_eq!(ids.len(), registry::ELEMENTS.len(), "ids are unique");
     let numbers = registry::element("combo-numbers").unwrap().textures[0];
-    assert_eq!(numbers.expand("fonts\\hc")[3], "fonts/hc-3");
+    assert_eq!(
+        numbers.expand(&FontPrefixes::new("fonts\\hc", "score", "score"))[3],
+        "fonts/hc-3"
+    );
+}
+
+#[test]
+fn registry_dependencies_resolve() {
+    for e in registry::ELEMENTS {
+        for dep in e.depends_on {
+            assert_ne!(*dep, e.id, "{} depends on itself", e.id);
+            assert!(registry::element(dep).is_some(), "{}: unknown {dep}", e.id);
+        }
+    }
+}
+
+#[test]
+fn known_files_follow_font_prefixes() {
+    let custom = FontPrefixes::new("fonts\\hc", "fonts\\sc", "fonts\\cc");
+    let known = |k: &str| registry::is_known_file(k, &custom);
+    assert!(known("fonts/sc-percent@2x.png"));
+    assert!(known("fonts/cc-7.png"));
+    assert!(known("fonts/hc-3.png"));
+    // The default prefixes stay known as fallbacks.
+    assert!(known("score-pp.png"));
+    assert!(known("default-1@2x.png"));
+    assert!(!known("fonts/sc-nope.png"));
+    let default = FontPrefixes::default();
+    assert!(!registry::is_known_file("fonts/sc-percent.png", &default));
+}
+
+#[test]
+fn known_and_unknown_menu_files() {
+    let p = FontPrefixes::default();
+    for k in [
+        "scoreentry-x.png",
+        "selection-mod-easy@2x.png",
+        "selection-mod-easy-0.png",
+        "pause-overlay.jpg",
+        "scorebar-colour-3.png",
+        "ranking-s-small-1.png",
+        "menuhit.wav",
+        "count3s.ogg",
+    ] {
+        assert!(registry::is_known_file(k, &p), "{k}");
+    }
+    assert!(!registry::is_known_file("random-thing.png", &p));
+}
+
+#[test]
+fn unknown_files_skip_readmes() {
+    let dir = TempSkin::new().with(&[
+        "readme.txt",
+        "LICENCE.md",
+        "random-thing.png",
+        "hitcircle.png",
+    ]);
+    let skin = dir.load();
+    assert_eq!(skin.unknown_files(), ["random-thing.png"]);
 }
 
 #[test]
