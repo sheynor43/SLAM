@@ -397,6 +397,21 @@ impl GlyphCache {
         }
     }
 
+    /// Whether every glyph looked up so far is answered and, if it has a bitmap, uploaded:
+    /// text drawn now is complete. Glyphs refused because the table was full never show
+    /// and are not waited for ([`GlyphStats::table_full`]). For screenshots, which wait for
+    /// it; walks the table.
+    pub fn all_ready(&self) -> bool {
+        self.outstanding == 0
+            && self.table.iter().all(|slot| match slot.entry {
+                Entry::Requested => false,
+                Entry::Ready { handle, .. } => {
+                    !matches!(self.uploads.get(handle), TextureState::Pending)
+                }
+                Entry::Vacant | Entry::Empty => true,
+            })
+    }
+
     /// Ids of the glyph atlas pages; the caller destroys them with the rest of its
     /// textures.
     pub fn pages(&self) -> impl Iterator<Item = TextureId> + '_ {
@@ -459,6 +474,19 @@ mod tests {
         );
         // `c` is asked for now.
         assert!(matches!(rig.settle(c), Glyph::Ready { .. }));
+    }
+
+    #[test]
+    fn all_ready_waits_for_answers_and_uploads() {
+        let mut rig = Rig::new(16, 8);
+        assert!(rig.cache.all_ready(), "nothing looked up");
+        let [a, space] = ['A', ' '].map(|ch| key_of(&rig.registry, 400, ch));
+        assert_eq!(rig.cache.glyph(a), Glyph::Pending);
+        assert_eq!(rig.cache.glyph(space), Glyph::Pending);
+        assert!(!rig.cache.all_ready());
+        assert!(matches!(rig.settle(a), Glyph::Ready { .. }));
+        assert_eq!(rig.settle(space), Glyph::Empty);
+        assert!(rig.cache.all_ready());
     }
 
     #[test]

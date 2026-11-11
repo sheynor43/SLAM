@@ -67,6 +67,40 @@ jobs:
           RUSTFLAGS: -D warnings -C target-feature=+fma
           CARGO_TARGET_DIR: target/fma
 
+  screenshots:
+    name: skin screenshots
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      # The build dependencies of the check job, and Mesa's EGL and llvmpipe to draw on
+      # without a display or GPU (ADR-0111).
+      - name: Install dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            libx11-dev libxext-dev libxrandr-dev libxcursor-dev libxfixes-dev \
+            libxi-dev libxss-dev libxtst-dev libxkbcommon-dev \
+            libwayland-dev wayland-protocols libdecor-0-dev \
+            libegl1-mesa-dev libgl1-mesa-dev libgles2-mesa-dev libdrm-dev libgbm-dev \
+            libdbus-1-dev libpipewire-0.3-dev libclang-dev \
+            libegl-mesa0 libgl1-mesa-dri
+      - name: Install toolchain
+        run: rustup toolchain install
+      - uses: Swatinem/rust-cache@v2
+      - name: Mesa version
+        run: dpkg-query -W libgl1-mesa-dri
+      - name: Headless OpenGL
+        run: cargo test -p slam-engine --test gl_headless -- --ignored
+      - name: Screenshots
+        run: cargo test -p slam-app --test screenshots -- --ignored
+      - name: Upload differing screenshots
+        if: failure()
+        uses: actions/upload-artifact@v7
+        with:
+          name: screenshots
+          path: target/tmp/screenshots
+          if-no-files-found: ignore
+
   windows:
     name: clippy, test (Windows)
     runs-on: windows-latest

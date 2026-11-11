@@ -365,7 +365,7 @@ pub fn prepare(
     // The layout decides how much text the HUD draws.
     let text = SpriteBatch::with_capacity(MAX_GLYPH_SPRITES.max(hud.max_glyphs()));
     let scene = PlayScene {
-        _requests: requests,
+        requests,
         uploads,
         textures,
         glyphs,
@@ -416,7 +416,7 @@ pub struct SceneGpu<D: Device> {
 /// The draw side of a play: its textures, glyphs, views and sprite batches.
 pub struct PlayScene {
     /// Kept while the loader may still load the play's images.
-    _requests: TextureRequests,
+    requests: TextureRequests,
     uploads: TextureUploads,
     textures: PlayTextures,
     glyphs: GlyphCache,
@@ -677,6 +677,13 @@ impl PlayScene {
                 .text_renderer
                 .draw(device, &self.menu_text, &projection, texture);
         }
+    }
+
+    /// Whether every image of the play is uploaded (or failed) and every glyph drawn so far
+    /// is ready: the next frame draws everything the scene has. For screenshots; walks the
+    /// handles and glyphs.
+    pub fn loaded(&self) -> bool {
+        self.requests.all_finished(&self.uploads) && self.glyphs.all_ready()
     }
 
     /// What the last [`PlayScene::draw`] drew of the playfield batch.

@@ -509,6 +509,7 @@ logs/
 - Тест «ноль аллокаций» для update-тика, отрисовки и аудиоколбэка: `slam-testkit::assert_no_alloc`, подсчёт по потоку ([ADR-0016](adr/0016-testkit-alloc-counter.md)).
 - `cargo clippy -D warnings`, `cargo fmt --check`, `cargo deny` (лицензии: только совместимые с GPL-3.0, запрет AGPL и GPL-2.0-only — [ADR-0107](adr/0107-license-gpl3-and-mcosu.md); уязвимости).
 - Бенчмарки (`criterion`) с порогами регрессий.
+- Скриншот-тесты скинов: кадр игры в заданный момент карты рисуется без дисплея на программном рендере Mesa (llvmpipe), игра идёт без реального времени с автоигроком, кадр сравнивается с эталоном с допуском; `just screenshots`, отдельный job CI ([ADR-0111](adr/0111-skin-screenshot-tests.md)).
 
 ### Бюджеты (стартовые, уточняются после M0)
 

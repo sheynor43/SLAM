@@ -246,6 +246,41 @@ impl<S: GlSurface> GlDevice<S> {
         format!("{renderer}, OpenGL {version}")
     }
 
+    /// Reads the frame's `size` pixels from the window's back buffer before
+    /// [`Device::present`]: `Rgba8`, tight rows, top row first. For screenshots; stalls on
+    /// the GPU and allocates.
+    pub fn read_frame(&mut self, size: Extent) -> Vec<u8> {
+        let row = size.width as usize * 4;
+        let mut pixels = vec![0u8; row * size.height as usize];
+        // SAFETY: the context is current on this thread; `pixels` holds `size` RGBA8
+        // pixels and the pack alignment of 1 needs no row padding.
+        unsafe {
+            self.gl.bind_framebuffer(glow::READ_FRAMEBUFFER, None);
+            self.gl.read_buffer(glow::BACK);
+            self.gl.pixel_store_i32(glow::PACK_ALIGNMENT, 1);
+            self.gl.read_pixels(
+                0,
+                0,
+                size.width as i32,
+                size.height as i32,
+                glow::RGBA,
+                glow::UNSIGNED_BYTE,
+                glow::PixelPackData::Slice(Some(&mut pixels)),
+            );
+            self.gl
+                .bind_framebuffer(glow::READ_FRAMEBUFFER, self.state.target);
+        }
+        // OpenGL reads the bottom row first.
+        let mut flipped = vec![0u8; pixels.len()];
+        for (to, from) in flipped
+            .chunks_exact_mut(row)
+            .zip(pixels.chunks_exact(row).rev())
+        {
+            to.copy_from_slice(from);
+        }
+        flipped
+    }
+
     /// Blocks until the GPU has finished all submitted commands (`glFinish`).
     /// Diagnostics only: separates waiting for the GPU from the cost of `present`.
     pub fn finish(&mut self) {
