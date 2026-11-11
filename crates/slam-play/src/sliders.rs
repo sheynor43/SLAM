@@ -38,7 +38,7 @@ use crate::slider_body::{
 use slam_osu::mods::HIDDEN_FADE_OUT_MULTIPLIER;
 use slam_render::{Blend, Color};
 
-use slam_skin::{SkinSource, SkinVersion};
+use slam_skin::{SkinSource, VersionRules};
 
 /// The most sliders a [`LiveSliders`] snapshot holds and a frame draws; later ones are left out.
 pub const MAX_LIVE_SLIDERS: usize = 128;
@@ -668,9 +668,8 @@ impl ArrowStyle {
     /// The style of the reverse arrows drawn with `skins`.
     // Ported from osu!lazer 2026.1005.0-lazer: osu.Game.Rulesets.Osu/Skinning/Legacy/LegacyReverseArrow.cs (load)
     pub fn new(skins: &SkinChain) -> Self {
-        let version = skins.config(Skin::config_version).map(|f| f.value);
         ArrowStyle {
-            rotate: version.is_some_and(|v| v <= SkinVersion::V1),
+            rotate: VersionRules::of_chain(skins).reverse_arrow_rotates,
             default_texture: skins
                 .texture("reversearrow")
                 .is_some_and(|f| f.source == SkinSource::Default),

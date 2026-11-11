@@ -346,7 +346,8 @@ impl Skin {
         parsing::net_parse_i32(self.setting(key)?).ok()
     }
 
-    /// The skin version (`GetConfig<LegacySetting, decimal>(Version)`).
+    /// The skin version (`GetConfig<LegacySetting, decimal>(Version)`). Element behaviour
+    /// that depends on it goes through [`VersionRules`](crate::VersionRules).
     pub fn version(&self) -> SkinVersion {
         self.ini.version
     }
