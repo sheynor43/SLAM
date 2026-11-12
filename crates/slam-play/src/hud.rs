@@ -29,6 +29,7 @@ use slam_text::{
 };
 use slam_ui::hud_layout::{ComponentKind, LayoutElement, unit_scale};
 
+use crate::circles::SkinSprite;
 use crate::combo_counter::ComboCounter;
 use crate::fps_counter::FpsLabels;
 use crate::health_bar::{HealthBar, HealthTextures};
@@ -36,6 +37,7 @@ use crate::hit_error::{
     HitErrorMeter, HitErrorStyle, LAZER_PIXELS_PER_UNIT, MAX_HIT_ERROR_SPRITES, MeterTextures,
     SpinnerHiding,
 };
+use crate::key_overlay::{self, KEYS, KeyAnimation, KeyOverlay, KeyOverlayTextures, LABELS};
 use crate::legacy_text::{FontSprites, LegacyFont};
 use crate::menu_overlay::MenuLabels;
 use crate::offset::{OffsetPanel, OffsetWording, format_offset};
@@ -103,6 +105,10 @@ const WARM_TEXT: &str = "0123456789.%x-0123456789";
 /// The numbers without a letter: a shape plan is made per script, and digits alone have
 /// none (the combo's `x` is Latin).
 const WARM_DIGITS: &str = "0123456789.%-";
+/// The key overlay's captions and counts.
+const WARM_KEYS: &str = "K1K2M1M2 4294967295";
+/// The key overlay's text size in lazer's HUD pixels: McOsu's 0.3 of the key's height (46).
+const KEY_TEXT_SIZE: f32 = 13.8;
 
 /// Stands for the number in the localised texts around one: the offset panel's
 /// ([`HudLabels`]) and the menus' ([`crate::menu_overlay::MenuLabels`]).
@@ -276,6 +282,7 @@ enum Part {
     Combo,
     Health,
     SongProgress,
+    KeyCounter,
     SkipButton,
     /// The meter at this index of [`HudView::meters`].
     Meter(usize),
@@ -313,6 +320,48 @@ pub struct HudTextures {
     /// A white disc and the song progress's ring ([`crate::song_progress::ring_image`]).
     pub disc: Option<AtlasRegion>,
     pub ring: Option<AtlasRegion>,
+    /// The key overlay's textures and text colour (`InputOverlayText`; black without).
+    pub keys: KeyOverlayTextures,
+    pub key_text: Option<Color>,
+    /// The skip button's frames (`play-skip`).
+    pub skip: SkipTextures,
+}
+
+/// The most frames of the skip button drawn.
+pub const MAX_SKIP_FRAMES: usize = 32;
+
+/// The skip button's frames, drawn once all are uploaded; none: the plain button.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct SkipTextures {
+    pub frames: [Option<SkinSprite>; MAX_SKIP_FRAMES],
+    pub count: usize,
+    /// How long each frame shows, in milliseconds.
+    pub frame_length: f64,
+}
+
+impl Default for SkipTextures {
+    fn default() -> Self {
+        SkipTextures {
+            frames: [None; MAX_SKIP_FRAMES],
+            count: 0,
+            frame_length: 1000.0 / 60.0,
+        }
+    }
+}
+
+impl SkipTextures {
+    /// The frame at `time` (milliseconds from any fixed point), if there are frames.
+    fn frame(&self, time: f64) -> Option<SkinSprite> {
+        if self.count == 0 {
+            return None;
+        }
+        let index = if self.frame_length > 0.0 {
+            (time.max(0.0) / self.frame_length) as usize % self.count
+        } else {
+            0
+        };
+        self.frames[index]
+    }
 }
 
 impl HudTextures {
@@ -338,6 +387,9 @@ pub struct HudSetup<'a> {
     pub meter_hiding: &'a SpinnerHiding,
     /// The times of the song progress.
     pub song_progress: SongProgress,
+    /// The key overlay's animation; `None`: the overlay is off and its elements are left
+    /// out (ADR-0113).
+    pub key_overlay: Option<KeyAnimation>,
 }
 
 /// The draw side of the stand-in HUD.
@@ -351,6 +403,9 @@ pub struct HudView {
     meters: Vec<HitErrorMeter>,
     meter_hiding: SpinnerHiding,
     song_progress: SongProgress,
+    key_overlay: KeyOverlay,
+    /// The keys' captions or counts, laid out when they change.
+    key_texts: [Counter; KEYS],
     /// The combo counter's animation; `None` until the first frame.
     combo_counter: Option<ComboCounter>,
     health_bar: HealthBar,
@@ -371,7 +426,7 @@ pub struct HudView {
     offset: Layout,
     /// [`WARM_TEXT`] and [`WARM_DIGITS`] laid out: the glyphs to warm (each script may
     /// shape to other glyphs).
-    warm: [Layout; 2],
+    warm: [Layout; 3],
     /// The offset panel's texts laid out with [`WARM_OFFSET`].
     warm_offset: [Layout; 3],
 }
@@ -404,11 +459,15 @@ impl HudView {
                 );
                 break;
             }
+            if element.component == ComponentKind::KeyCounter && setup.key_overlay.is_none() {
+                continue;
+            }
             let text = matches!(
                 element.component,
                 ComponentKind::Score
                     | ComponentKind::Accuracy
                     | ComponentKind::Combo
+                    | ComponentKind::KeyCounter
                     | ComponentKind::SkipButton
             );
             if text && texts == MAX_HUD_TEXT_ELEMENTS {
@@ -424,6 +483,7 @@ impl HudView {
                 ComponentKind::Combo => Part::Combo,
                 ComponentKind::Health => Part::Health,
                 ComponentKind::SongProgress => Part::SongProgress,
+                ComponentKind::KeyCounter => Part::KeyCounter,
                 ComponentKind::SkipButton => Part::SkipButton,
                 ComponentKind::HitErrorMeter if meters.len() < MAX_HIT_ERROR_METERS => {
                     meters.push(HitErrorMeter::new(meter_style(element), setup.windows));
@@ -475,6 +535,8 @@ impl HudView {
             meters,
             meter_hiding: setup.meter_hiding.clone(),
             song_progress: setup.song_progress,
+            key_overlay: KeyOverlay::new(setup.key_overlay.unwrap_or_default()),
+            key_texts: std::array::from_fn(|_| Counter::new(KEY_TEXT_SIZE)),
             combo_counter: None,
             health_bar: HealthBar::new(),
             restarts: 0,
@@ -488,7 +550,7 @@ impl HudView {
             offset_shown: None,
             offset_text: String::with_capacity(longest + NUMBER_TEXT_LEN),
             offset: Layout::new(),
-            warm: [Layout::new(), Layout::new()],
+            warm: [Layout::new(), Layout::new(), Layout::new()],
             warm_offset: [Layout::new(), Layout::new(), Layout::new()],
         };
         let style = hud.style(1.0);
@@ -498,7 +560,13 @@ impl HudView {
             hud.context
                 .layout_into(&hud.registry, WARM_TEXT, &style, &mut counter.layout);
         }
-        let [text, digits] = &mut hud.warm;
+        for counter in &mut hud.key_texts {
+            hud.context
+                .layout_into(&hud.registry, WARM_KEYS, &style, &mut counter.layout);
+        }
+        let [text, digits, keys] = &mut hud.warm;
+        hud.context
+            .layout_into(&hud.registry, WARM_KEYS, &style, keys);
         hud.context
             .layout_into(&hud.registry, WARM_TEXT, &style, text);
         hud.context
@@ -542,7 +610,10 @@ impl HudView {
         };
         if frame != self.frame {
             self.frame = frame;
-            for counter in [&mut self.score, &mut self.accuracy, &mut self.combo] {
+            for counter in [&mut self.score, &mut self.accuracy, &mut self.combo]
+                .into_iter()
+                .chain(&mut self.key_texts)
+            {
                 counter.shown = None;
             }
             self.offset_shown = None;
@@ -620,6 +691,33 @@ impl HudView {
         }
         self.health_bar
             .update(snapshot.health, snapshot.hud.hits, self.time);
+        self.key_overlay.update(&snapshot.keys, self.time);
+        // Captions until the first press, then the counts (McOsu `drawInputOverlay`).
+        let size = KEY_TEXT_SIZE * self.frame.scale;
+        for (i, (counter, &count)) in self
+            .key_texts
+            .iter_mut()
+            .zip(&self.key_overlay.counts())
+            .enumerate()
+        {
+            let key = u64::from(count);
+            if counter.shown == Some(key) {
+                continue;
+            }
+            counter.shown = Some(key);
+            counter.text = if count == 0 {
+                number_text(format_args!("{}", LABELS[i]))
+            } else {
+                number_text(format_args!("{count}"))
+            };
+            let style = TextStyle::new(self.family, WEIGHT, size);
+            self.context.layout_into(
+                &self.registry,
+                counter.text.as_str(),
+                &style,
+                &mut counter.layout,
+            );
+        }
     }
 
     /// The most glyph sprites [`HudView::push_text`] writes: each text element's longest text
@@ -643,6 +741,7 @@ impl HudView {
             .map(|placed| match placed.part {
                 Part::Score | Part::Accuracy | Part::Combo => counter,
                 Part::SkipButton => self.skip.glyphs().len(),
+                Part::KeyCounter => KEYS * NUMBER_TEXT_LEN,
                 Part::Health | Part::SongProgress | Part::Meter(_) => 0,
             })
             .sum();
@@ -686,6 +785,11 @@ impl HudView {
             let s = counter_scale * scale;
             return [size.x * s, size.y * s];
         }
+        if part == Part::SkipButton
+            && let Some(frame) = textures.skip.frame(0.0)
+        {
+            return [frame.size.x * scale, frame.size.y * scale];
+        }
         if part == Part::Health && textures.health.is_drawn() {
             let [w, h] = textures.health.size();
             return [w * scale, h * scale];
@@ -698,6 +802,10 @@ impl HudView {
             Part::SongProgress => {
                 let side = crate::song_progress::SIZE * scale;
                 [side, side]
+            }
+            Part::KeyCounter => {
+                let [w, h] = key_overlay::size(&textures.keys);
+                [w * scale, h * scale]
             }
             Part::SkipButton => [SKIP_BUTTON[0] * scale, SKIP_BUTTON[1] * scale],
             Part::Meter(i) => self.meters[i].size(scale),
@@ -807,6 +915,21 @@ impl HudView {
                 continue;
             }
             match (part, white) {
+                (Part::KeyCounter, _) => {
+                    self.key_overlay
+                        .push(batch, &textures.keys, scale, self.time);
+                }
+                (Part::SkipButton, _) if textures.skip.count > 0 => {
+                    let Some(frame) = textures.skip.frame(self.time) else {
+                        continue;
+                    };
+                    batch.push(&Sprite::new(
+                        frame.texture,
+                        frame.uv,
+                        [0.0, 0.0],
+                        [frame.size.x * scale, frame.size.y * scale],
+                    ));
+                }
                 (Part::SongProgress, _) => {
                     let (Some(disc), Some(ring)) = (textures.disc, textures.ring) else {
                         continue;
@@ -961,6 +1084,30 @@ impl HudView {
                 Part::Score => text(batch, &self.score.layout, [0.0, 0.0], TEXT),
                 Part::Accuracy => text(batch, &self.accuracy.layout, [0.0, 0.0], TEXT),
                 Part::Combo => text(batch, &self.combo.layout, [0.0, 0.0], TEXT),
+                // No captions without the keys under them.
+                Part::KeyCounter if textures.keys.key.is_none() => continue,
+                Part::KeyCounter => {
+                    let [width, _] = key_overlay::size(&textures.keys);
+                    for (i, counter) in self.key_texts.iter().enumerate() {
+                        let key_first = batch.len();
+                        let [cx, cy] = key_overlay::key_centre(width, i);
+                        let centre = [cx * scale, cy * scale];
+                        let layout = &counter.layout;
+                        let at = [
+                            centre[0] - layout.width() / 2.0,
+                            centre[1] - layout.height() / 2.0,
+                        ];
+                        text(batch, layout, at, textures.key_text.unwrap_or(Color::BLACK));
+                        // The text shrinks with its key.
+                        let pose = self.key_overlay.pose(i, self.time);
+                        batch.transform_from(
+                            key_first,
+                            &Affine::about(centre, pose.scale, 0.0, [0.0, 0.0]),
+                            [1.0; 4],
+                        );
+                    }
+                }
+                Part::SkipButton if textures.skip.count > 0 => continue,
                 Part::SkipButton => {
                     let [w, h] = self.part_size(part, textures);
                     let skip = &self.skip;
@@ -1046,6 +1193,7 @@ mod tests {
                 windows: &HitWindows::new(5.0),
                 meter_hiding: &SpinnerHiding::default(),
                 song_progress: SongProgress::default(),
+                key_overlay: Some(KeyAnimation::Stable),
             },
         )
     }
@@ -1586,5 +1734,77 @@ mod tests {
         let score_height = hud.part_size(Part::Score, &textures)[1];
         let top_right = placed[0].1.apply([size[0], 0.0]);
         assert!(close(top_right[0], 1280.0) && close(top_right[1], 2.0 * score_height));
+    }
+
+    #[test]
+    fn the_key_overlay_shows_only_when_turned_on() {
+        let mut overlay = element(ComponentKind::KeyCounter, Anchor::CentreRight, [0.0, -40.0]);
+        overlay.origin = Anchor::TopRight;
+        let layout = [overlay];
+        let off = HudView::new(
+            Arc::new(FontRegistry::with_builtin()),
+            &labels(),
+            HudSetup {
+                layout: &layout,
+                windows: &HitWindows::new(5.0),
+                meter_hiding: &SpinnerHiding::default(),
+                song_progress: SongProgress::default(),
+                key_overlay: None,
+            },
+        );
+        assert!(off.elements.is_empty());
+
+        let mut hud = hud(&layout);
+        hud.update(1280.0, 960.0, &HudValues::default(), 0.0);
+        let mut snapshot = PlaySnapshot::default();
+        hud.animate(&snapshot, 0);
+        snapshot.keys.presses[0] = 1;
+        snapshot.keys.counts[0] = 1;
+        snapshot.keys.held[0] = true;
+        hud.animate(&snapshot, 10_000_000);
+        let mut textures = skin_textures();
+        textures.keys = KeyOverlayTextures {
+            background: skin_sprite(20, 193.0, 55.0),
+            key: skin_sprite(21, 43.0, 46.0),
+        };
+        let mut batch = SpriteBatch::with_capacity(MAX_HUD_SHAPES);
+        hud.push_shapes(&mut batch, &snapshot, 0, Some(white()), None, &textures);
+        // The background and four keys, the right edge on the window's, its top 40 units
+        // above the middle.
+        assert_eq!(batch.len(), 5);
+        let (min, max) = bounds(&batch, 0, 5);
+        assert!(close(max[0], 1280.0 + 0.5 * 1.25), "{max:?}");
+        assert!(close(min[1], 480.0 - 80.0), "{min:?}");
+        // K1 is pressed: yellow; K2 is not.
+        let colour = |i: usize| batch.vertices()[i * 4].colour;
+        assert!(colour(1)[2] < 0.5 && colour(2)[2] > 0.99);
+        // The captions turn into counts.
+        assert_eq!(hud.key_texts[0].text.as_str(), "1");
+        assert_eq!(hud.key_texts[1].text.as_str(), "K2");
+    }
+
+    #[test]
+    fn a_skinned_skip_button_is_its_image() {
+        let layout = [element(
+            ComponentKind::SkipButton,
+            Anchor::BottomRight,
+            [0.0, 0.0],
+        )];
+        let mut hud = hud(&layout);
+        hud.update(1280.0, 960.0, &HudValues::default(), 0.0);
+        let snapshot = PlaySnapshot {
+            skip_available: true,
+            ..PlaySnapshot::default()
+        };
+        let mut textures = skin_textures();
+        textures.skip.frames[0] = skin_sprite(30, 193.0, 147.0);
+        textures.skip.count = 1;
+        let mut batch = SpriteBatch::with_capacity(MAX_HUD_SHAPES);
+        hud.push_shapes(&mut batch, &snapshot, 0, Some(white()), None, &textures);
+        assert_eq!(batch.len(), 1);
+        let (min, max) = bounds(&batch, 0, 1);
+        assert!(close(max[0], 1280.0) && close(max[1], 960.0));
+        assert!(close(max[0] - min[0], 193.0 * 1.25));
+        assert!(textures.skip.frame(0.0).is_some());
     }
 }

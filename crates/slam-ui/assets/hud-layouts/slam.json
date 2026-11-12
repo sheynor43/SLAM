@@ -65,6 +65,15 @@
       ]
     },
     {
+      "component": "key_counter",
+      "anchor": "centre_right",
+      "origin": "top_right",
+      "position": [
+        0,
+        -40
+      ]
+    },
+    {
       "component": "skip_button",
       "anchor": "bottom_right",
       "origin": "bottom_right",

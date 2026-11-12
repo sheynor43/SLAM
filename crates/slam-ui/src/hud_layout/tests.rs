@@ -261,3 +261,14 @@ fn transform_from_places_the_origin_at_the_point_plus_the_offset() {
     let map = element.transform_from([500.0, 100.0], 1280.0, 960.0, [40.0, 40.0]);
     assert!(close(map.apply([40.0, 20.0]), [480.0, 100.0]));
 }
+
+/// Migrated copies of either preset are brought up to the stable one's gameplay section
+/// (`slam-app`'s `refresh_migrated_copies`): the two must stay the same until the slam
+/// preset gets its own components (ADR-0109).
+#[test]
+fn stable_and_slam_share_their_gameplay_section() {
+    assert_eq!(
+        Builtin::Stable.layout().gameplay,
+        Builtin::Slam.layout().gameplay
+    );
+}

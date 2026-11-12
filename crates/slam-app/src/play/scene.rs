@@ -99,6 +99,8 @@ pub struct PlaySettings {
     pub positional_hitsounds_level: f32,
     /// Rate of the mixer the samples are prepared for (ADR-0102).
     pub sample_rate: u32,
+    /// The key overlay's animation; `None`: no key overlay (ADR-0113).
+    pub key_overlay: Option<slam_play::key_overlay::KeyAnimation>,
 }
 
 impl Default for PlaySettings {
@@ -119,6 +121,7 @@ impl Default for PlaySettings {
             auto_cursor_size: false,
             positional_hitsounds_level: DEFAULT_POSITIONAL_LEVEL,
             sample_rate: slam_audio::DEFAULT_SAMPLE_RATE,
+            key_overlay: None,
         }
     }
 }
@@ -361,6 +364,7 @@ pub fn prepare(
             windows: &windows,
             meter_hiding: &slam_play::hit_error::SpinnerHiding::new(beatmap),
             song_progress: slam_play::song_progress::SongProgress::new(beatmap),
+            key_overlay: settings.key_overlay,
         },
     );
     // The layout decides how much text the HUD draws.

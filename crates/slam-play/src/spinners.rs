@@ -557,7 +557,7 @@ impl SpinnerStyle {
     }
 }
 
-fn rgba(colour: Rgba) -> Color {
+pub(crate) fn rgba(colour: Rgba) -> Color {
     Color {
         r: f32::from(colour.r) / 255.0,
         g: f32::from(colour.g) / 255.0,

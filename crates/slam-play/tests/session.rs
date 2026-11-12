@@ -26,7 +26,8 @@ use slam_play::cursor::{
     CursorSkinConfig, CursorTextures, CursorView, ExpandTimes, MAX_CURSOR_SPRITES,
 };
 use slam_play::health_bar::{HealthTextures, MarkerTextures};
-use slam_play::hud::{HudTextures, MAX_HUD_SHAPES, OFFSET_PLACEHOLDER};
+use slam_play::hud::{HudTextures, MAX_HUD_SHAPES, OFFSET_PLACEHOLDER, SkipTextures};
+use slam_play::key_overlay::KeyOverlayTextures;
 use slam_play::legacy_text::FontSprites;
 use slam_play::menu_overlay::{
     GameplayMenu, MenuInfo, MenuKind, MenuLayout, MenuView, ReplaySave, song_progress,
@@ -851,6 +852,7 @@ fn hud_view(registry: Arc<FontRegistry>, map: &Beatmap, layout: &[LayoutElement]
             windows: &windows,
             meter_hiding: &slam_play::hit_error::SpinnerHiding::new(map),
             song_progress: slam_play::song_progress::SongProgress::new(map),
+            key_overlay: Some(slam_play::key_overlay::KeyAnimation::Stable),
         },
     )
 }
@@ -2423,6 +2425,18 @@ fn skinned_hud() -> HudTextures {
         health,
         disc: Some(WHITE),
         ring: Some(WHITE),
+        keys: KeyOverlayTextures {
+            background: sprite(7, 193.0, 55.0),
+            key: sprite(8, 43.0, 46.0),
+        },
+        key_text: None,
+        skip: {
+            let mut skip = SkipTextures::default();
+            skip.frames[0] = sprite(9, 193.0, 147.0);
+            skip.frames[1] = sprite(10, 193.0, 147.0);
+            skip.count = 2;
+            skip
+        },
     }
 }
 
@@ -2430,9 +2444,12 @@ fn skinned_hud() -> HudTextures {
 fn a_skinned_hud_animates_and_draws_without_allocating() {
     let registry = Arc::new(FontRegistry::with_builtin());
     let stable = Builtin::Stable.layout();
+    let mut glyphs = glyph_atlas(Arc::clone(&registry), &GlyphAtlasConfig::new(LIMITS)).unwrap();
     let mut hud = hud_view(registry, &beatmap(), &stable.gameplay);
+    hud.request_glyphs(&mut glyphs);
     let textures = skinned_hud();
     let mut batch = SpriteBatch::with_capacity(MAX_HUD_SHAPES);
+    let mut text = SpriteBatch::with_capacity(hud.max_glyphs());
     let mut snapshot = PlaySnapshot::default();
     // Rising combos and hits with a break, health draining and recovering, a restart.
     let mut most = 0;
@@ -2451,6 +2468,10 @@ fn a_skinned_hud_animates_and_draws_without_allocating() {
                 hits: frame / 3,
             };
             snapshot.health = (f64::from(frame % 100) / 100.0).max(0.1);
+            snapshot.keys.presses[frame as usize % 4] += u32::from(frame % 3 == 0);
+            snapshot.keys.counts = snapshot.keys.presses;
+            snapshot.keys.held = [frame % 2 == 0, frame % 5 == 0, false, frame % 7 == 0];
+            snapshot.skip_available = frame < 50;
             if frame == 300 {
                 snapshot.restarts += 1;
             }
@@ -2459,6 +2480,8 @@ fn a_skinned_hud_animates_and_draws_without_allocating() {
             batch.clear();
             hud.push_shapes(&mut batch, &snapshot, now, Some(WHITE), None, &textures);
             most = most.max(batch.len());
+            text.clear();
+            hud.push_text(&mut text, &snapshot, now, &mut glyphs, &textures);
         }
     });
     assert!(most > 0 && most <= MAX_HUD_SHAPES, "{most}");
@@ -3919,4 +3942,25 @@ fn the_pause_menu_clicks_where_the_pointer_went_over_the_settings_panel() {
     d.tick(&click);
     // Continue, not quit; gameplay's cursor never moved, so no resume click is waited for.
     assert_eq!(d.state(), PlayState::Playing);
+}
+
+#[test]
+fn overlay_keys_count_while_playing_and_start_over_on_a_retry() {
+    let map = beatmap();
+    let mut d = Driver::new(&map, ModSet::default());
+    d.tap(Z);
+    assert_eq!(d.snapshot.keys.presses, [1, 0, 0, 0]);
+    assert_eq!(d.snapshot.keys.counts, [1, 0, 0, 0]);
+    let pressed = d.key(Z, true);
+    d.tick(&[pressed]);
+    assert_eq!(d.snapshot.keys.held, [true, false, false, false]);
+    let released = d.key(Z, false);
+    d.tick(&[released]);
+    assert_eq!(d.snapshot.keys.counts, [2, 0, 0, 0]);
+    d.hold(None, GRAVE, 300);
+    assert_eq!(d.snapshot.restarts, 1);
+    assert_eq!(
+        d.snapshot.keys,
+        slam_play::key_overlay::KeyValues::default()
+    );
 }

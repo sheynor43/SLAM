@@ -17,13 +17,13 @@ use slam_osu::replay::{Actions, InputFrame, ReplayRecorder, Rules};
 use slam_osu::rules::OsuRules;
 use slam_osu::scoring::{ScoreProcessor, ScoreRank};
 use slam_osu::{Beatmap, HealthProcessor, ModSet, Vec2};
-use slam_render::Extent;
 use slam_render::atlas::AtlasRegion;
 use slam_render::image::{Image, ImageLimits, decode_image};
 use slam_render::sprite::SpriteBatch;
 use slam_render::upload::{
     TextureHandle, TextureKind, TextureRequests, TextureState, TextureUploads,
 };
+use slam_render::{Color, Extent};
 use slam_skin::{AnimationOptions, ImageCheck, SIXTY_FRAME_TIME, SkinChain, TextureFile};
 
 use crate::circles::{
@@ -39,12 +39,13 @@ use crate::gameplay_sounds::{GameplaySounds, VoiceSink};
 use crate::health_bar::{HealthTextures, MAX_FILL_FRAMES, MarkerTextures};
 use crate::hit_error::{HitErrorRing, HitErrorTargets, MeterTextures, disc_image, gradient_image};
 use crate::hotkeys::{GlobalAction, Hotkeys};
-use crate::hud::HudTextures;
+use crate::hud::{HudTextures, MAX_SKIP_FRAMES, SkipTextures};
 use crate::input::{ClockTime, GameTime, LiveInput};
 use crate::judgements::{
     JudgementRing, JudgementTextures, JudgementView, MAX_JUDGEMENT_FRAMES, PIECE_SLOTS, PieceKind,
     PieceSprites, PopupTargets, piece_sources,
 };
+use crate::key_overlay::{KEYS, KeyOverlayTextures, KeyValues};
 use crate::legacy_hit_error::triangle_image;
 use crate::legacy_text::{self, FontSprites};
 use crate::menu_overlay::{
@@ -281,6 +282,8 @@ pub struct PlaySnapshot {
     /// Health, 0..=1.
     pub health: f64,
     pub hud: HudValues,
+    /// The key overlay's keys (ADR-0113).
+    pub keys: KeyValues,
     /// Where to click to resume, in osu!pixels ([`PlayState::Resuming`]).
     pub resume_target: Vec2,
     /// The cursor the window has while gameplay's stands still, in osu!pixels: the resume
@@ -325,6 +328,7 @@ impl Default for PlaySnapshot {
             is_break_time: true,
             health: 1.0,
             hud: HudValues::default(),
+            keys: KeyValues::default(),
             resume_target: Vec2::ZERO,
             resume_cursor: Vec2::ZERO,
             resume_cursor_path: CursorPath::default(),
@@ -439,6 +443,9 @@ pub struct PlaySession {
     /// Every judgement is in without failing (lazer's `HasPassed`); stays after quitting.
     passed: bool,
     restarts: u32,
+    /// The overlay keys' presses counted this attempt, and the presses of the input seen.
+    key_counts: [u32; KEYS],
+    key_presses_seen: [u32; KEYS],
     /// The pause or fail menu.
     menu: GameplayMenu,
     /// The menu's retry was pressed: the play restarts at the end of the tick.
@@ -586,6 +593,8 @@ impl PlaySession {
             restart_on_fail: false,
             passed: false,
             restarts: 0,
+            key_counts: [0; KEYS],
+            key_presses_seen: [0; KEYS],
             menu: GameplayMenu::default(),
             menu_restart: false,
             playable,
@@ -1013,6 +1022,27 @@ impl PlaySession {
             }
         }
         self.popups_seen = self.log.events().len();
+        // Ported from McOsu db2add2: src/App/Osu/OsuBeatmap.cpp (keyPressed1, keyPressed2)
+        // Ported from osu!lazer 2026.1005.0-lazer: osu.Game/Screens/Play/Player.cs (onBreakTimeChanged)
+        // Presses count while playing, outside breaks (lazer's `IsBreakTime`, the intro
+        // before the first object included) and the skippable intro (McOsu's
+        // `m_bIsInSkippableSection`), to the tick: a step's presses go by the state at the
+        // previous step's time, the one the break tracker was last asked about (ADR-0113).
+        let (presses, _) = self.input.keys();
+        let counting = self.phase == Phase::Playing
+            && !self.skip.is_available(self.last_time)
+            && !self.is_break_time(self.last_time);
+        if counting {
+            for ((count, &now), seen) in self
+                .key_counts
+                .iter_mut()
+                .zip(&presses)
+                .zip(&self.key_presses_seen)
+            {
+                *count = count.wrapping_add(now.wrapping_sub(*seen));
+            }
+        }
+        self.key_presses_seen = presses;
         // Ported from osu!lazer 2026.1005.0-lazer: osu.Game/Screens/Play/Player.cs (LoadComponents)
         // Each judgement goes to the health processor, then to the score processor.
         for (index, judgement) in self.log.events().iter().enumerate().skip(self.applied) {
@@ -1328,6 +1358,8 @@ impl PlaySession {
         self.passed = false;
         self.failed_replay_saved = false;
         self.restarts += 1;
+        self.key_counts = [0; KEYS];
+        self.key_presses_seen = [0; KEYS];
         // A new player shows no panel and no menu.
         self.offset_panel.reset();
         self.menu.reset();
@@ -1387,6 +1419,12 @@ impl PlaySession {
         snapshot.skip_available = false;
         snapshot.health = self.health.health();
         snapshot.hud = HudValues::of(&self.score);
+        let (presses, held) = self.input.keys();
+        snapshot.keys = KeyValues {
+            presses,
+            counts: self.key_counts,
+            held,
+        };
         snapshot.resume_target = Vec2::ZERO;
         snapshot.resume_cursor = self.input.window_cursor();
         snapshot
@@ -1411,6 +1449,12 @@ impl PlaySession {
     fn fill(&self, snapshot: &mut PlaySnapshot, now_ns: u64) {
         snapshot.health = self.health.health();
         snapshot.hud = HudValues::of(&self.score);
+        let (presses, held) = self.input.keys();
+        snapshot.keys = KeyValues {
+            presses,
+            counts: self.key_counts,
+            held,
+        };
         snapshot.resume_target = self.resume_target;
         snapshot.resume_cursor = self.input.window_cursor();
         snapshot
@@ -2209,6 +2253,13 @@ impl HealthRequests {
 /// The requested textures of the HUD.
 #[derive(Debug, Clone, Default)]
 struct HudRequests {
+    /// `inputoverlay-background`, `inputoverlay-key`, and `InputOverlayText`.
+    key_background: Option<Requested>,
+    key: Option<Requested>,
+    key_text: Option<Color>,
+    /// The frames of `play-skip` and their length.
+    skip: Vec<Requested>,
+    skip_frame_length: f64,
     score: FontRequests,
     /// `None` when the combo font is the score font.
     combo: Option<FontRequests>,
@@ -2246,7 +2297,42 @@ impl HudRequests {
                 combo_overlap,
             )?)
         };
+        // Ported from osu!lazer 2026.1005.0-lazer: osu.Game/Skinning/LegacyKeyCounterDisplay.cs (load)
+        // Ported from osu!lazer 2026.1005.0-lazer: osu.Game/Skinning/LegacySkin.cs (InputOverlayText)
+        let texture = |requests: &mut TextureRequests, name: &str| {
+            skins
+                .texture(name)
+                .map(|f| request_file(requests, &f.value))
+                .transpose()
+        };
+        let key_background = texture(requests, "inputoverlay-background")?;
+        let key = texture(requests, "inputoverlay-key")?;
+        let key_text = skins
+            .config(|s| s.custom_colour("InputOverlayText"))
+            .map(|f| crate::spinners::rgba(f.value));
+        // Ported from McOsu db2add2: src/App/Osu/OsuSkin.cpp (play-skip, animatable)
+        let skip_options = AnimationOptions {
+            animatable: true,
+            looping: true,
+            apply_config_frame_rate: true,
+            separator: "-",
+        };
+        let skip_animation = skins.animation("play-skip", skip_options);
+        let skip_frame_length = skip_animation
+            .as_ref()
+            .map_or(SIXTY_FRAME_TIME, |a| a.value.frame_length_ms);
+        let skip = skip_animation
+            .map_or_else(Vec::new, |a| a.value.frames)
+            .iter()
+            .take(MAX_SKIP_FRAMES)
+            .map(|f| request_file(requests, f))
+            .collect::<Result<Vec<_>, _>>()?;
         Ok(HudRequests {
+            key_background,
+            key,
+            key_text,
+            skip,
+            skip_frame_length,
             score,
             combo,
             combo_overlap,
@@ -2263,16 +2349,43 @@ impl HudRequests {
                 ..score
             },
         };
+        let sprite = |r: &Option<Requested>| {
+            let r = r.as_ref()?;
+            match uploads.get(r.handle) {
+                TextureState::Ready(region) => Some(SkinSprite::new(region, r.scale, f32::MAX)),
+                _ => None,
+            }
+        };
+        let mut skip = SkipTextures {
+            frame_length: self.skip_frame_length,
+            ..SkipTextures::default()
+        };
+        // An animation is drawn once all its frames are uploaded.
+        let mut ready = !self.skip.is_empty();
+        for (out, r) in skip.frames.iter_mut().zip(&self.skip) {
+            *out = sprite(&Some(*r));
+            ready &= out.is_some();
+        }
+        skip.count = if ready { self.skip.len() } else { 0 };
         HudTextures {
             score,
             combo,
             health: self.health.resolve(uploads),
+            keys: KeyOverlayTextures {
+                background: sprite(&self.key_background),
+                key: sprite(&self.key),
+            },
+            key_text: self.key_text,
+            skip,
             ..HudTextures::default()
         }
     }
 
     fn found(&self) -> usize {
-        self.score.found()
+        usize::from(self.key_background.is_some())
+            + usize::from(self.key.is_some())
+            + self.skip.len()
+            + self.score.found()
             + self.combo.as_ref().map_or(0, FontRequests::found)
             + self.health.found()
     }

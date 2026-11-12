@@ -163,3 +163,39 @@ fn a_second_start_after_a_failed_settings_save_does_not_migrate_again() {
     assert_eq!(meter_scales(&store.load(&id).unwrap()), vec![[2.0, 2.0]]);
     let _ = std::fs::remove_dir_all(&root);
 }
+
+/// A copy of the old preset as the migration made it, scaled by `scale`.
+fn old_copy(store: &LayoutStore, scale: f64) -> LayoutId {
+    let id = store
+        .duplicate(&LayoutId::parse("builtin:stable").unwrap(), "old copy")
+        .unwrap();
+    let mut layout = store.load(&id).unwrap();
+    layout.gameplay = serde_json::from_str(PRESET_GAMEPLAY_V1).unwrap();
+    scale_hit_error_meters(&mut layout, scale);
+    mark_migrated(&mut layout, scale);
+    store.save(&id, &layout).unwrap();
+    id
+}
+
+#[test]
+fn untouched_copies_of_the_old_preset_take_the_current_one() {
+    let (store, root) = temp_store("refresh");
+    let id = old_copy(&store, 1.3);
+    // One the user moved something in is left alone.
+    let edited = old_copy(&store, 1.3);
+    let mut layout = store.load(&edited).unwrap();
+    layout.gameplay[1].position = [-20.0, 0.0];
+    store.save(&edited, &layout).unwrap();
+    let before_edited = store.load(&edited).unwrap();
+
+    assert_eq!(refresh_migrated_copies(&store), 1);
+    let refreshed = store.load(&id).unwrap();
+    let mut expected = Builtin::Stable.layout();
+    scale_hit_error_meters(&mut expected, 1.3);
+    assert_eq!(refreshed.gameplay, expected.gameplay);
+    assert!(refreshed.extra.contains_key(MIGRATED));
+    assert_eq!(store.load(&edited).unwrap(), before_edited);
+    // Done once.
+    assert_eq!(refresh_migrated_copies(&store), 0);
+    let _ = std::fs::remove_dir_all(root);
+}

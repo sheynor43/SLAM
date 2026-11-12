@@ -161,6 +161,10 @@ pub fn play_options(settings: &Settings) -> PlayOptions {
         snaking_in: settings.gameplay.snaking_in,
         snaking_out: settings.gameplay.snaking_out,
         hit_lighting: settings.gameplay.hit_lighting,
+        key_overlay: settings
+            .gameplay
+            .key_overlay
+            .then(|| settings.gameplay.key_overlay_animation.into()),
         cursor_trail: settings.gameplay.cursor_trail,
         cursor_size: settings.gameplay.cursor_size,
         auto_cursor_size: settings.gameplay.auto_cursor_size,
@@ -345,6 +349,8 @@ mod tests {
         settings.gameplay.snaking_in = true;
         settings.gameplay.snaking_out = true;
         settings.gameplay.hit_lighting = false;
+        settings.gameplay.key_overlay = true;
+        settings.gameplay.key_overlay_animation = crate::settings::KeyOverlayAnimation::Lazer;
         settings.gameplay.cursor_trail = false;
         settings.gameplay.cursor_size = 0.65;
         settings.gameplay.auto_cursor_size = true;
@@ -360,6 +366,7 @@ mod tests {
                 snaking_in: true,
                 snaking_out: true,
                 hit_lighting: false,
+                key_overlay: Some(slam_play::key_overlay::KeyAnimation::Lazer),
                 cursor_trail: false,
                 cursor_size: 0.65,
                 auto_cursor_size: true,
