@@ -233,6 +233,7 @@ pub enum Row {
     HitLighting,
     KeyOverlay,
     KeyOverlayAnimation,
+    HudAnimations,
     CursorTrail,
     CursorSize,
     AutoCursorSize,
@@ -244,7 +245,7 @@ pub enum Row {
 const _: () = assert!(Row::ALL.len() <= slam_ui::settings_screen::MAX_ROWS);
 
 impl Row {
-    pub const ALL: [Row; 56] = [
+    pub const ALL: [Row; 57] = [
         Row::MasterVolume,
         Row::MusicVolume,
         Row::MenuMusic,
@@ -296,6 +297,7 @@ impl Row {
         Row::HitLighting,
         Row::KeyOverlay,
         Row::KeyOverlayAnimation,
+        Row::HudAnimations,
         Row::CursorTrail,
         Row::CursorSize,
         Row::AutoCursorSize,
@@ -376,6 +378,7 @@ impl Row {
             | Row::HitLighting
             | Row::KeyOverlay
             | Row::KeyOverlayAnimation
+            | Row::HudAnimations
             | Row::CursorTrail
             | Row::CursorSize
             | Row::AutoCursorSize
@@ -436,6 +439,7 @@ impl Row {
             Row::HitLighting => "settings-gameplay-hit-lighting",
             Row::KeyOverlay => "settings-gameplay-key-overlay",
             Row::KeyOverlayAnimation => "settings-gameplay-key-overlay-animation",
+            Row::HudAnimations => "settings-gameplay-hud-animations",
             Row::CursorTrail => "settings-gameplay-cursor-trail",
             Row::CursorSize => "settings-gameplay-cursor-size",
             Row::AutoCursorSize => "settings-gameplay-auto-cursor-size",
@@ -890,6 +894,9 @@ impl Rows {
             Row::KeyOverlay => RowKind::Toggle {
                 value: s.gameplay.key_overlay,
             },
+            Row::HudAnimations => RowKind::Toggle {
+                value: s.gameplay.hud_animations,
+            },
             Row::CursorTrail => RowKind::Toggle {
                 value: s.gameplay.cursor_trail,
             },
@@ -988,6 +995,7 @@ impl Rows {
             (Row::SnakingOut, RowValue::Toggle(v)) => settings.gameplay.snaking_out = v,
             (Row::HitLighting, RowValue::Toggle(v)) => settings.gameplay.hit_lighting = v,
             (Row::KeyOverlay, RowValue::Toggle(v)) => settings.gameplay.key_overlay = v,
+            (Row::HudAnimations, RowValue::Toggle(v)) => settings.gameplay.hud_animations = v,
             (Row::KeyOverlayAnimation, RowValue::Choice(i)) => {
                 if let Some(animation) = KeyOverlayAnimation::ALL.get(i) {
                     settings.gameplay.key_overlay_animation = *animation;
@@ -1604,6 +1612,7 @@ mod tests {
             (Row::SnakingOut, false),
             (Row::HitLighting, true),
             (Row::KeyOverlay, false),
+            (Row::HudAnimations, true),
             (Row::AlwaysPlayFirstComboBreak, true),
             (Row::DisableWinKey, true),
             (Row::CursorTrail, true),
@@ -1808,6 +1817,7 @@ mod tests {
         rows.apply(&mut s, index(Row::HitLighting), RowValue::Toggle(false));
         rows.apply(&mut s, index(Row::KeyOverlay), RowValue::Toggle(true));
         rows.apply(&mut s, index(Row::KeyOverlayAnimation), RowValue::Choice(1));
+        rows.apply(&mut s, index(Row::HudAnimations), RowValue::Toggle(false));
         rows.apply(&mut s, index(Row::CursorTrail), RowValue::Toggle(false));
         rows.apply(
             &mut s,
@@ -1853,6 +1863,7 @@ mod tests {
         assert!(!s.gameplay.hit_lighting);
         assert!(s.gameplay.key_overlay);
         assert_eq!(s.gameplay.key_overlay_animation, KeyOverlayAnimation::Lazer);
+        assert!(!s.gameplay.hud_animations);
         assert!(!s.gameplay.cursor_trail);
         assert!(!s.gameplay.beatmap_hitsounds);
         assert!(!s.gameplay.always_play_first_combo_break);

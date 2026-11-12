@@ -476,6 +476,13 @@ fn from_table(mut table: Table) -> Loaded {
     cx.field(
         &mut gameplay,
         "gameplay",
+        "hud_animations",
+        &mut settings.gameplay.hud_animations,
+        |_| Ok(()),
+    );
+    cx.field(
+        &mut gameplay,
+        "gameplay",
         "cursor_trail",
         &mut settings.gameplay.cursor_trail,
         |_| Ok(()),

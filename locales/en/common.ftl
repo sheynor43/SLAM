@@ -198,6 +198,7 @@ settings-gameplay-snaking-out = Snaking out sliders
 settings-gameplay-hit-lighting = Hit lighting
 settings-gameplay-key-overlay = Key overlay
 settings-gameplay-key-overlay-animation = Key overlay animation
+settings-gameplay-hud-animations = HUD animations
 settings-gameplay-cursor-trail = Cursor trail
 settings-gameplay-cursor-size = Gameplay cursor size
 settings-gameplay-auto-cursor-size = Adjust gameplay cursor size based on current beatmap

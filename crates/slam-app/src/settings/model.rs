@@ -569,6 +569,11 @@ pub struct Gameplay {
     pub key_overlay: bool,
     /// How the key overlay's keys light up (ADR-0113).
     pub key_overlay_animation: KeyOverlayAnimation,
+    /// Animates the HUD counters and the health bar. When off, the score and accuracy counters
+    /// show new values at once instead of rolling, the combo counter shows its value without
+    /// pops, and the health bar shows the health at once without easing, bulge and flash. The
+    /// key overlay keeps its own animation setting.
+    pub hud_animations: bool,
     /// The cursor leaves a trail (lazer's `OsuRulesetSetting.ShowCursorTrail`).
     pub cursor_trail: bool,
     /// Size of the gameplay cursor and its trail, 0.1 ..= 2.0 in steps of 0.01 (lazer's
@@ -594,6 +599,7 @@ impl Default for Gameplay {
             hit_lighting: true,
             key_overlay: false,
             key_overlay_animation: KeyOverlayAnimation::default(),
+            hud_animations: true,
             cursor_trail: true,
             cursor_size: 1.0,
             auto_cursor_size: false,

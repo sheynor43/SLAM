@@ -165,6 +165,7 @@ pub fn play_options(settings: &Settings) -> PlayOptions {
             .gameplay
             .key_overlay
             .then(|| settings.gameplay.key_overlay_animation.into()),
+        hud_animations: settings.gameplay.hud_animations,
         cursor_trail: settings.gameplay.cursor_trail,
         cursor_size: settings.gameplay.cursor_size,
         auto_cursor_size: settings.gameplay.auto_cursor_size,
@@ -351,6 +352,7 @@ mod tests {
         settings.gameplay.hit_lighting = false;
         settings.gameplay.key_overlay = true;
         settings.gameplay.key_overlay_animation = crate::settings::KeyOverlayAnimation::Lazer;
+        settings.gameplay.hud_animations = false;
         settings.gameplay.cursor_trail = false;
         settings.gameplay.cursor_size = 0.65;
         settings.gameplay.auto_cursor_size = true;
@@ -367,6 +369,7 @@ mod tests {
                 snaking_out: true,
                 hit_lighting: false,
                 key_overlay: Some(slam_play::key_overlay::KeyAnimation::Lazer),
+                hud_animations: false,
                 cursor_trail: false,
                 cursor_size: 0.65,
                 auto_cursor_size: true,

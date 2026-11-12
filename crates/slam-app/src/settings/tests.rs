@@ -87,6 +87,7 @@ fn round_trip_non_default() {
     s.gameplay.hit_lighting = false;
     s.gameplay.key_overlay = true;
     s.gameplay.key_overlay_animation = KeyOverlayAnimation::Lazer;
+    s.gameplay.hud_animations = false;
     s.gameplay.cursor_trail = false;
     s.gameplay.cursor_size = 0.65;
     s.gameplay.auto_cursor_size = true;
@@ -216,6 +217,8 @@ fn view_settings_default_to_no_snaking_with_lighting_and_trail() {
     assert!(missing.settings.gameplay.hit_lighting);
     assert!(missing.settings.gameplay.cursor_trail);
     assert!(!s.gameplay.key_overlay);
+    assert!(s.gameplay.hud_animations);
+    assert!(missing.settings.gameplay.hud_animations);
     assert_eq!(
         s.gameplay.key_overlay_animation,
         KeyOverlayAnimation::Stable

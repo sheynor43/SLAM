@@ -215,17 +215,20 @@ pub struct HealthBar {
     rise: Option<Rise>,
     bulge: Option<f64>,
     flash: Option<Flash>,
+    /// Off: the bar shows the health at once, without the fill-up, the easing, the bulge
+    /// and the flash.
+    animated: bool,
 }
 
 impl Default for HealthBar {
     fn default() -> Self {
-        HealthBar::new()
+        HealthBar::new(true)
     }
 }
 
 impl HealthBar {
-    /// A bar with an empty fill, as loaded.
-    pub fn new() -> HealthBar {
+    /// A bar with an empty fill, as loaded; `animated` or showing the health at once.
+    pub fn new(animated: bool) -> HealthBar {
         HealthBar {
             current: 0.0,
             last_value: 0.0,
@@ -237,6 +240,7 @@ impl HealthBar {
             rise: None,
             bulge: None,
             flash: None,
+            animated,
         }
     }
 
@@ -252,6 +256,14 @@ impl HealthBar {
         } else {
             health.clamp(0.0, 1.0)
         };
+        if !self.animated {
+            self.last_time = Some(time);
+            self.current = health;
+            self.last_value = health;
+            self.fill = health;
+            self.hits = hits;
+            return;
+        }
         let Some(last_time) = self.last_time else {
             self.last_time = Some(time);
             self.start = time;
@@ -505,7 +517,7 @@ mod tests {
 
     /// A bar loaded empty (no increase) that took `health` at `time`.
     fn loaded(health: f64, time: f64) -> HealthBar {
-        let mut bar = HealthBar::new();
+        let mut bar = HealthBar::new(true);
         bar.update(0.0, 0, time);
         bar.update(health, 0, time);
         bar
@@ -561,7 +573,7 @@ mod tests {
 
     #[test]
     fn the_bar_fills_up_in_steps_when_loaded() {
-        let mut bar = HealthBar::new();
+        let mut bar = HealthBar::new(true);
         bar.update(0.2, 0, 0.0);
         assert_eq!(bar.current, 0.0);
         bar.update(0.2, 0, 150.0);
@@ -583,7 +595,7 @@ mod tests {
         assert_eq!(bar.flash.unwrap().start, 600.0);
 
         // A change of the health ends it: the step under way finishes first.
-        let mut bar = HealthBar::new();
+        let mut bar = HealthBar::new(true);
         bar.update(1.0, 0, 0.0);
         bar.update(1.0, 0, 150.0);
         bar.update(0.9, 0, 200.0);
@@ -624,6 +636,16 @@ mod tests {
         // A new attempt counts from zero again without a flash.
         bar.update(1.0, 0, 4000.0);
         assert_eq!(bar.flash.unwrap().start, 3000.0);
+    }
+
+    #[test]
+    fn without_animations_the_bar_shows_the_health_at_once() {
+        let mut bar = HealthBar::new(false);
+        bar.update(0.7, 0, 0.0);
+        assert_eq!((bar.current, bar.fill()), (0.7, 0.7));
+        bar.update(0.9, 1, 10.0);
+        assert_eq!(bar.fill(), 0.9);
+        assert_eq!((bar.bulge, bar.flash), (None, None));
     }
 
     #[test]

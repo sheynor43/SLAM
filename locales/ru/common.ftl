@@ -202,6 +202,7 @@ settings-gameplay-snaking-out = Змейка слайдеров при прох�
 settings-gameplay-hit-lighting = Подсветка попаданий
 settings-gameplay-key-overlay = Оверлей клавиш
 settings-gameplay-key-overlay-animation = Анимация оверлея клавиш
+settings-gameplay-hud-animations = Анимации HUD
 settings-gameplay-cursor-trail = След курсора
 settings-gameplay-cursor-size = Размер курсора в игре
 settings-gameplay-auto-cursor-size = Подстраивать размер курсора под карту

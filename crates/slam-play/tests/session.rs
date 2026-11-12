@@ -853,6 +853,7 @@ fn hud_view(registry: Arc<FontRegistry>, map: &Beatmap, layout: &[LayoutElement]
             meter_hiding: &slam_play::hit_error::SpinnerHiding::new(map),
             song_progress: slam_play::song_progress::SongProgress::new(map),
             key_overlay: Some(slam_play::key_overlay::KeyAnimation::Stable),
+            animations: true,
         },
     )
 }

@@ -101,6 +101,8 @@ pub struct PlaySettings {
     pub sample_rate: u32,
     /// The key overlay's animation; `None`: no key overlay (ADR-0113).
     pub key_overlay: Option<slam_play::key_overlay::KeyAnimation>,
+    /// Rolling counters, the combo's pops and the health bar's easing (on by default).
+    pub hud_animations: bool,
 }
 
 impl Default for PlaySettings {
@@ -122,6 +124,7 @@ impl Default for PlaySettings {
             positional_hitsounds_level: DEFAULT_POSITIONAL_LEVEL,
             sample_rate: slam_audio::DEFAULT_SAMPLE_RATE,
             key_overlay: None,
+            hud_animations: true,
         }
     }
 }
@@ -365,6 +368,7 @@ pub fn prepare(
             meter_hiding: &slam_play::hit_error::SpinnerHiding::new(beatmap),
             song_progress: slam_play::song_progress::SongProgress::new(beatmap),
             key_overlay: settings.key_overlay,
+            animations: settings.hud_animations,
         },
     );
     // The layout decides how much text the HUD draws.

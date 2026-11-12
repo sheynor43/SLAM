@@ -11,7 +11,8 @@
 //!
 //! The counters and the health bar are lazer's legacy ones (`LegacyScoreCounter`,
 //! `LegacyAccuracyCounter`, `LegacyDefaultComboCounter`, `LegacyHealthDisplay`) at their
-//! sizes; score and accuracy show at once (no rolling). Until a skin font's digits are
+//! sizes, score and accuracy rolling to new values (`RollingCounter`). With the animations
+//! off ([`HudSetup::animations`]) every value shows at once. Until a skin font's digits are
 //! uploaded, a counter is plain text in the UI font at this module's own size, and the health
 //! a plain bar. The click-to-resume target is drawn with the cursor ([`crate::resume`]).
 
@@ -244,6 +245,57 @@ pub fn format_combo(combo: u32) -> NumberText {
     number_text(format_args!("{combo}x"))
 }
 
+// Ported from osu!lazer 2026.1005.0-lazer: osu.Game/Skinning/LegacyScoreCounter.cs (RollingDuration, RollingEasing)
+const SCORE_ROLLING_DURATION: f64 = 1000.0;
+// Ported from osu!lazer 2026.1005.0-lazer: osu.Game/Graphics/UserInterface/PercentageCounter.cs (RollingDuration)
+const ACCURACY_ROLLING_DURATION: f64 = 375.0;
+
+/// A counter's shown value rolling to the latest one (`RollingCounter.TransformCount`): from
+/// what it shows, over a fixed time, `Easing.Out` (quadratic).
+// Ported from osu!lazer 2026.1005.0-lazer: osu.Game/Graphics/UserInterface/RollingCounter.cs (TransformCount)
+#[derive(Debug, Clone, Copy, PartialEq)]
+struct Roll {
+    from: f64,
+    to: f64,
+    start: f64,
+    duration: f64,
+}
+
+impl Roll {
+    /// Showing `value` already: a new counter, as lazer's rolls from its own value to it
+    /// on load without moving.
+    fn at_rest(value: f64) -> Roll {
+        Roll {
+            from: value,
+            to: value,
+            start: f64::NEG_INFINITY,
+            duration: 0.0,
+        }
+    }
+
+    fn at(&self, time: f64) -> f64 {
+        if self.duration <= 0.0 || time >= self.start + self.duration {
+            return self.to;
+        }
+        let t = ((time - self.start) / self.duration).max(0.0);
+        self.from + (self.to - self.from) * (t * (2.0 - t))
+    }
+
+    /// Rolls to `value` from `start` on, if it is a new one, from what showed at `shown`
+    /// (the frame before: lazer's `DisplayedCount`, a whole number for the score).
+    fn set(&mut self, value: f64, shown: f64, start: f64, duration: f64, whole: bool) {
+        if value != self.to {
+            let from = self.at(shown);
+            *self = Roll {
+                from: if whole { from.round_ties_even() } else { from },
+                to: value,
+                start,
+                duration,
+            };
+        }
+    }
+}
+
 /// A number laid out again when it changes.
 #[derive(Debug, Clone)]
 struct Counter {
@@ -390,6 +442,9 @@ pub struct HudSetup<'a> {
     /// The key overlay's animation; `None`: the overlay is off and its elements are left
     /// out (ADR-0113).
     pub key_overlay: Option<KeyAnimation>,
+    /// Whether the counters roll, the combo pops and the health bar eases, bulges and
+    /// flashes; off, they show their values at once.
+    pub animations: bool,
 }
 
 /// The draw side of the stand-in HUD.
@@ -403,6 +458,12 @@ pub struct HudView {
     meters: Vec<HitErrorMeter>,
     meter_hiding: SpinnerHiding,
     song_progress: SongProgress,
+    animations: bool,
+    /// The values last taken, and the score and accuracy as they roll to them.
+    values: HudValues,
+    /// `None` until the first values: the counters start at them.
+    score_roll: Option<Roll>,
+    accuracy_roll: Option<Roll>,
     key_overlay: KeyOverlay,
     /// The keys' captions or counts, laid out when they change.
     key_texts: [Counter; KEYS],
@@ -535,10 +596,14 @@ impl HudView {
             meters,
             meter_hiding: setup.meter_hiding.clone(),
             song_progress: setup.song_progress,
+            animations: setup.animations,
+            values: HudValues::default(),
+            score_roll: None,
+            accuracy_roll: None,
             key_overlay: KeyOverlay::new(setup.key_overlay.unwrap_or_default()),
             key_texts: std::array::from_fn(|_| Counter::new(KEY_TEXT_SIZE)),
             combo_counter: None,
-            health_bar: HealthBar::new(),
+            health_bar: HealthBar::new(setup.animations),
             restarts: 0,
             time: 0.0,
             score: Counter::new(SCORE_SIZE),
@@ -621,10 +686,48 @@ impl HudView {
             self.context
                 .layout_into(&self.registry, &self.skip_label, &style, &mut self.skip);
         }
-        let score = values.score.max(0) as u64;
+        self.values = *values;
+        self.lay_out_counters();
+        let scale = self.frame.scale;
+        if self.offset_shown != Some(offset_ms.to_bits()) {
+            self.offset_shown = Some(offset_ms.to_bits());
+            let mut digits = NumberText::new();
+            // The digits of an offset in range always fit.
+            let wording = format_offset(offset_ms, &mut digits).unwrap_or(OffsetWording::Zero);
+            let template = &self.offset_templates[match wording {
+                OffsetWording::Zero => 0,
+                OffsetWording::Earlier => 1,
+                OffsetWording::Later => 2,
+            }];
+            template.write(digits.as_str(), &mut self.offset_text);
+            let style = self.style(OFFSET_SIZE * scale);
+            self.context
+                .layout_into(&self.registry, &self.offset_text, &style, &mut self.offset);
+        }
+    }
+
+    /// The score and accuracy shown now: rolling, or the values themselves.
+    fn shown_values(&self) -> (i64, f64) {
+        if !self.animations {
+            return (self.values.score, self.values.accuracy);
+        }
+        // `Interpolation.ValueAt` of a `long`: `Math.Round`, halves to even.
+        let score = self.score_roll.map_or(self.values.score, |r| {
+            r.at(self.time).round_ties_even() as i64
+        });
+        let accuracy = self
+            .accuracy_roll
+            .map_or(self.values.accuracy, |r| r.at(self.time));
+        (score, accuracy)
+    }
+
+    /// Lays out the counters' texts that changed. Allocation-free.
+    fn lay_out_counters(&mut self) {
+        let (score, accuracy) = self.shown_values();
+        let combo = self.values.combo;
         // Hundredths of a percent as shown, so that a change of a smaller digit does not
         // lay out the same text again.
-        let accuracy = format_accuracy(values.accuracy);
+        let accuracy = format_accuracy(accuracy);
         let accuracy_key = accuracy
             .as_str()
             .bytes()
@@ -645,28 +748,9 @@ impl HudView {
                 &mut counter.layout,
             );
         };
-        set(&mut self.score, score, format_score(values.score));
+        set(&mut self.score, score.max(0) as u64, format_score(score));
         set(&mut self.accuracy, accuracy_key, accuracy);
-        set(
-            &mut self.combo,
-            u64::from(values.combo),
-            format_combo(values.combo),
-        );
-        if self.offset_shown != Some(offset_ms.to_bits()) {
-            self.offset_shown = Some(offset_ms.to_bits());
-            let mut digits = NumberText::new();
-            // The digits of an offset in range always fit.
-            let wording = format_offset(offset_ms, &mut digits).unwrap_or(OffsetWording::Zero);
-            let template = &self.offset_templates[match wording {
-                OffsetWording::Zero => 0,
-                OffsetWording::Earlier => 1,
-                OffsetWording::Later => 2,
-            }];
-            template.write(digits.as_str(), &mut self.offset_text);
-            let style = self.style(OFFSET_SIZE * scale);
-            self.context
-                .layout_into(&self.registry, &self.offset_text, &style, &mut self.offset);
-        }
+        set(&mut self.combo, u64::from(combo), format_combo(combo));
     }
 
     /// Moves the animations to engine time `now_ns`: the hit error meters take the new
@@ -678,11 +762,15 @@ impl HudView {
             meter.update(&snapshot.hit_errors, snapshot.restarts, time);
         }
         // The HUD is not on the gameplay clock.
+        let shown = self.time;
         self.time = now_ns as f64 / 1e6;
         if snapshot.restarts != self.restarts {
             self.restarts = snapshot.restarts;
             self.combo_counter = None;
-            self.health_bar = HealthBar::new();
+            self.health_bar = HealthBar::new(self.animations);
+            // A new attempt's counters start at its values.
+            self.score_roll = None;
+            self.accuracy_roll = None;
         }
         let combo = snapshot.hud.combo;
         match &mut self.combo_counter {
@@ -692,6 +780,25 @@ impl HudView {
         self.health_bar
             .update(snapshot.health, snapshot.hud.hits, self.time);
         self.key_overlay.update(&snapshot.keys, self.time);
+        // `TransformCount` at the frame's time, from what the last frame showed.
+        let time = self.time;
+        let roll = |roll: &mut Option<Roll>, value: f64, duration: f64, whole: bool| match roll {
+            Some(roll) => roll.set(value, shown, time, duration, whole),
+            None => *roll = Some(Roll::at_rest(value)),
+        };
+        roll(
+            &mut self.score_roll,
+            snapshot.hud.score as f64,
+            SCORE_ROLLING_DURATION,
+            true,
+        );
+        roll(
+            &mut self.accuracy_roll,
+            snapshot.hud.accuracy,
+            ACCURACY_ROLLING_DURATION,
+            false,
+        );
+        self.lay_out_counters();
         // Captions until the first press, then the counts (McOsu `drawInputOverlay`).
         let size = KEY_TEXT_SIZE * self.frame.scale;
         for (i, (counter, &count)) in self
@@ -756,6 +863,14 @@ impl HudView {
     /// The combo counter's texts at the last [`HudView::animate`]: its own and the popped-out
     /// one, with the pose.
     fn combo_pose(&self) -> Option<crate::combo_counter::ComboPose> {
+        if !self.animations {
+            return Some(crate::combo_counter::ComboPose {
+                shown: self.values.combo,
+                shown_alpha: 1.0,
+                shown_scale: 1.0,
+                pop_out: None,
+            });
+        }
         self.combo_counter.as_ref().map(|c| c.pose(self.time))
     }
 
@@ -1185,6 +1300,10 @@ mod tests {
     }
 
     fn hud(layout: &[LayoutElement]) -> HudView {
+        hud_with(layout, true)
+    }
+
+    fn hud_with(layout: &[LayoutElement], animations: bool) -> HudView {
         HudView::new(
             Arc::new(FontRegistry::with_builtin()),
             &labels(),
@@ -1194,6 +1313,7 @@ mod tests {
                 meter_hiding: &SpinnerHiding::default(),
                 song_progress: SongProgress::default(),
                 key_overlay: Some(KeyAnimation::Stable),
+                animations,
             },
         )
     }
@@ -1241,7 +1361,7 @@ mod tests {
 
     #[test]
     fn counters_lay_out_their_values() {
-        let mut hud = hud(&[]);
+        let mut hud = hud_with(&[], false);
         hud.update(
             1280.0,
             720.0,
@@ -1750,6 +1870,7 @@ mod tests {
                 meter_hiding: &SpinnerHiding::default(),
                 song_progress: SongProgress::default(),
                 key_overlay: None,
+                animations: true,
             },
         );
         assert!(off.elements.is_empty());
@@ -1806,5 +1927,56 @@ mod tests {
         assert!(close(max[0], 1280.0) && close(max[1], 960.0));
         assert!(close(max[0] - min[0], 193.0 * 1.25));
         assert!(textures.skip.frame(0.0).is_some());
+    }
+
+    #[test]
+    fn score_and_accuracy_roll_to_new_values_unless_animations_are_off() {
+        let mut hud = hud(&[]);
+        let values = |score, accuracy| HudValues {
+            score,
+            accuracy,
+            ..HudValues::default()
+        };
+        let mut snapshot = PlaySnapshot {
+            hud: values(1000, 1.0),
+            ..PlaySnapshot::default()
+        };
+        // A frame: the values, then the animations.
+        let frame = |hud: &mut HudView, snapshot: &PlaySnapshot, ms: u64| {
+            hud.update(1280.0, 720.0, &snapshot.hud, 0.0);
+            hud.animate(snapshot, ms * 1_000_000);
+        };
+        frame(&mut hud, &snapshot, 0);
+        assert_eq!(hud.texts()[..2], ["001000", "100.00%"]);
+        // The frame a new value comes in still shows the old one.
+        snapshot.hud = values(3000, 0.5);
+        frame(&mut hud, &snapshot, 100);
+        assert_eq!(hud.texts()[..2], ["001000", "100.00%"]);
+        // Half of the score's 1000 ms, Easing.Out: three quarters of the way; the accuracy's
+        // 375 ms are over.
+        frame(&mut hud, &snapshot, 600);
+        assert_eq!(hud.texts()[..2], ["002500", "50.00%"]);
+        // A new value mid-roll goes on from what showed.
+        snapshot.hud = values(5000, 0.5);
+        frame(&mut hud, &snapshot, 700);
+        assert_eq!(hud.texts()[0], "002500");
+        frame(&mut hud, &snapshot, 1700);
+        assert_eq!(hud.texts()[0], "005000");
+        // A new attempt starts at its values.
+        snapshot.restarts = 1;
+        snapshot.hud = values(0, 1.0);
+        frame(&mut hud, &snapshot, 1710);
+        assert_eq!(hud.texts()[..2], ["000000", "100.00%"]);
+
+        let mut instant = hud_with(&[], false);
+        instant.update(1280.0, 720.0, &values(1000, 1.0), 0.0);
+        instant.update(1280.0, 720.0, &values(3000, 0.5), 0.0);
+        assert_eq!(instant.texts()[..2], ["003000", "50.00%"]);
+        // The combo shows at once too.
+        snapshot.hud.combo = 7;
+        instant.update(1280.0, 720.0, &snapshot.hud, 0.0);
+        instant.animate(&snapshot, 0);
+        let pose = instant.combo_pose().unwrap();
+        assert_eq!((pose.shown, pose.shown_alpha, pose.pop_out), (7, 1.0, None));
     }
 }
