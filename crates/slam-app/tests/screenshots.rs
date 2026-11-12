@@ -10,8 +10,8 @@
 use std::path::{Path, PathBuf};
 
 use slam_app::play::scene::PlaySettings;
-use slam_app::screenshot::compare::{Mismatch, Tolerance, compare};
-use slam_app::screenshot::{DEFAULT_SIZE, Frame, Shots, render};
+use slam_app::screenshot::check::{self, Checker};
+use slam_app::screenshot::{DEFAULT_SIZE, Shots, render};
 
 /// One beatmap and skin, shot at several times.
 struct Case {
@@ -49,11 +49,11 @@ fn beatmap(folder: &str) -> PathBuf {
 #[test]
 #[ignore = "needs Mesa with llvmpipe"]
 fn skins_draw_as_the_references() {
-    let update = std::env::var_os("SLAM_UPDATE_SCREENSHOTS").is_some_and(|v| v == "1");
-    let references = data().join("reference");
-    let failures_dir = Path::new(env!("CARGO_TARGET_TMPDIR")).join("screenshots");
-    let _ = std::fs::remove_dir_all(&failures_dir);
-    let mut failures = Vec::new();
+    let mut checker = Checker::new(
+        data().join("reference"),
+        Path::new(env!("CARGO_TARGET_TMPDIR")).join("screenshots"),
+        check::update_requested(),
+    );
     for case in CASES {
         let shots = Shots {
             map: beatmap(case.map),
@@ -65,48 +65,8 @@ fn skins_draw_as_the_references() {
         };
         let frames = render(&shots).unwrap_or_else(|e| panic!("{}: {e}", case.name));
         for (frame, time) in frames.iter().zip(case.times) {
-            let name = format!("{}-{time}", case.name);
-            let reference = references.join(format!("{name}.png"));
-            if update {
-                frame.write_png(&reference).unwrap();
-                continue;
-            }
-            let expected = match Frame::read_png(&reference) {
-                Ok(expected) => expected,
-                Err(e) => {
-                    failures.push(format!("{name}: {e}"));
-                    save(&failures_dir, &name, frame, None);
-                    continue;
-                }
-            };
-            match compare(&expected, frame, Tolerance::default()) {
-                Ok(_) => {}
-                Err(mismatch) => {
-                    failures.push(format!("{name}: {mismatch}"));
-                    let diff = match &mismatch {
-                        Mismatch::Pixels(d) => Some(&d.image),
-                        Mismatch::Size { .. } => None,
-                    };
-                    save(&failures_dir, &name, frame, diff);
-                }
-            }
+            checker.check(&format!("{}-{time}", case.name), frame);
         }
     }
-    assert!(
-        failures.is_empty(),
-        "screenshots differ from the references (frames and differences in {}):\n{}",
-        failures_dir.display(),
-        failures.join("\n")
-    );
-}
-
-fn save(dir: &Path, name: &str, actual: &Frame, diff: Option<&Frame>) {
-    std::fs::create_dir_all(dir).unwrap();
-    actual
-        .write_png(&dir.join(format!("{name}.actual.png")))
-        .unwrap();
-    if let Some(diff) = diff {
-        diff.write_png(&dir.join(format!("{name}.diff.png")))
-            .unwrap();
-    }
+    checker.assert_no_failures();
 }
