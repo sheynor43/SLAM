@@ -360,6 +360,7 @@ pub fn prepare(
             layout: &settings.hud_layout,
             windows: &windows,
             meter_hiding: &slam_play::hit_error::SpinnerHiding::new(beatmap),
+            song_progress: slam_play::song_progress::SongProgress::new(beatmap),
         },
     );
     // The layout decides how much text the HUD draws.

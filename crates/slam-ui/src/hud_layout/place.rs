@@ -42,12 +42,24 @@ impl LayoutElement {
     /// the rotation (degrees, clockwise on screen) turn the element about its origin, as a
     /// drawable's in osu-framework.
     pub fn transform(&self, width: f32, height: f32, size: [f32; 2]) -> Affine {
-        let unit = unit_scale(width, height);
         let anchor = self.anchor.fraction();
+        self.transform_from([anchor[0] * width, anchor[1] * height], width, height, size)
+    }
+
+    /// [`Self::transform`] with the origin placed from `point` (window pixels) instead of
+    /// the screen's anchor point: for an element attached to another one (ADR-0112).
+    pub fn transform_from(
+        &self,
+        point: [f32; 2],
+        width: f32,
+        height: f32,
+        size: [f32; 2],
+    ) -> Affine {
+        let unit = unit_scale(width, height);
         let origin = self.origin.fraction();
         let at = [
-            anchor[0] * width + self.position[0] * unit,
-            anchor[1] * height + self.position[1] * unit,
+            point[0] + self.position[0] * unit,
+            point[1] + self.position[1] * unit,
         ];
         let pivot = [origin[0] * size[0], origin[1] * size[1]];
         let (sin, cos) = self.rotation.to_radians().sin_cos();

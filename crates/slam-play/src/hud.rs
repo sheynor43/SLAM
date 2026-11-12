@@ -40,6 +40,7 @@ use crate::legacy_text::{FontSprites, LegacyFont};
 use crate::menu_overlay::MenuLabels;
 use crate::offset::{OffsetPanel, OffsetWording, format_offset};
 use crate::session::{HudValues, PlaySnapshot};
+use crate::song_progress::{MAX_SONG_PROGRESS_SPRITES, SongProgress};
 
 // The sizes are in lazer's HUD pixels (1024x768, [`LAZER_PIXELS_PER_UNIT`]).
 const WEIGHT: u16 = 700;
@@ -76,10 +77,10 @@ pub const MAX_HUD_ELEMENTS: usize = 32;
 pub const MAX_HUD_TEXT_ELEMENTS: usize = 8;
 /// The most hit error meters the HUD draws; further ones are left out.
 pub const MAX_HIT_ERROR_METERS: usize = 4;
-/// The most shape sprites [`HudView::push_shapes`] writes: four per element (the health bar's
-/// most), the offset panel, the meters and the counters in skin fonts (two texts each for the
+/// The most shape sprites [`HudView::push_shapes`] writes: per element the song progress's
+/// most, the offset panel, the meters and the counters in skin fonts (two texts each for the
 /// combo).
-pub const MAX_HUD_SHAPES: usize = MAX_HUD_ELEMENTS * 4
+pub const MAX_HUD_SHAPES: usize = MAX_HUD_ELEMENTS * MAX_SONG_PROGRESS_SPRITES
     + 1
     + MAX_HIT_ERROR_METERS * MAX_HIT_ERROR_SPRITES
     + MAX_HUD_TEXT_ELEMENTS * 2 * NUMBER_TEXT_LEN;
@@ -274,6 +275,7 @@ enum Part {
     Accuracy,
     Combo,
     Health,
+    SongProgress,
     SkipButton,
     /// The meter at this index of [`HudView::meters`].
     Meter(usize),
@@ -284,6 +286,8 @@ enum Part {
 struct Placed {
     part: Part,
     element: LayoutElement,
+    /// The index in [`HudView::elements`] of the element it is attached to (ADR-0112).
+    attached_to: Option<usize>,
 }
 
 /// The style a hit error meter element asks for; unknown values give the default.
@@ -306,17 +310,20 @@ pub struct HudTextures {
     /// The combo font (`ComboPrefix`).
     pub combo: FontSprites,
     pub health: HealthTextures,
+    /// A white disc and the song progress's ring ([`crate::song_progress::ring_image`]).
+    pub disc: Option<AtlasRegion>,
+    pub ring: Option<AtlasRegion>,
 }
 
 impl HudTextures {
-    /// The font `part` draws in, if it is a counter in a skin font with its digits there.
+    /// The font `part` draws in, if it is a counter and the font's textures are loaded.
     fn font(&self, part: Part) -> Option<LegacyFont<'_>> {
         let (sprites, fixed) = match part {
             Part::Score | Part::Accuracy => (&self.score, true),
             Part::Combo => (&self.combo, false),
             _ => return None,
         };
-        sprites.has_digits().then(|| sprites.font(fixed))
+        sprites.loaded.then(|| sprites.font(fixed))
     }
 }
 
@@ -329,6 +336,8 @@ pub struct HudSetup<'a> {
     pub windows: &'a HitWindows,
     /// When the hit error meters hide for spinners.
     pub meter_hiding: &'a SpinnerHiding,
+    /// The times of the song progress.
+    pub song_progress: SongProgress,
 }
 
 /// The draw side of the stand-in HUD.
@@ -341,6 +350,7 @@ pub struct HudView {
     elements: Vec<Placed>,
     meters: Vec<HitErrorMeter>,
     meter_hiding: SpinnerHiding,
+    song_progress: SongProgress,
     /// The combo counter's animation; `None` until the first frame.
     combo_counter: Option<ComboCounter>,
     health_bar: HealthBar,
@@ -413,6 +423,7 @@ impl HudView {
                 ComponentKind::Accuracy => Part::Accuracy,
                 ComponentKind::Combo => Part::Combo,
                 ComponentKind::Health => Part::Health,
+                ComponentKind::SongProgress => Part::SongProgress,
                 ComponentKind::SkipButton => Part::SkipButton,
                 ComponentKind::HitErrorMeter if meters.len() < MAX_HIT_ERROR_METERS => {
                     meters.push(HitErrorMeter::new(meter_style(element), setup.windows));
@@ -427,9 +438,16 @@ impl HudView {
                 // Not drawn yet.
                 _ => continue,
             };
+            // The first element of the kind before it (ADR-0112); none: the screen.
+            let attached_to = element.attach.as_ref().and_then(|attach| {
+                elements
+                    .iter()
+                    .position(|p: &Placed| p.element.component == attach.to)
+            });
             elements.push(Placed {
                 part,
                 element: element.clone(),
+                attached_to,
             });
         }
         let offset_templates = [
@@ -456,6 +474,7 @@ impl HudView {
             elements,
             meters,
             meter_hiding: setup.meter_hiding.clone(),
+            song_progress: setup.song_progress,
             combo_counter: None,
             health_bar: HealthBar::new(),
             restarts: 0,
@@ -624,7 +643,7 @@ impl HudView {
             .map(|placed| match placed.part {
                 Part::Score | Part::Accuracy | Part::Combo => counter,
                 Part::SkipButton => self.skip.glyphs().len(),
-                Part::Health | Part::Meter(_) => 0,
+                Part::Health | Part::SongProgress | Part::Meter(_) => 0,
             })
             .sum();
         elements + offset
@@ -676,29 +695,49 @@ impl HudView {
             Part::Accuracy => text(&self.accuracy.layout),
             Part::Combo => text(&self.combo.layout),
             Part::Health => [HEALTH_BAR[0] * scale, HEALTH_BAR[1] * scale],
+            Part::SongProgress => {
+                let side = crate::song_progress::SIZE * scale;
+                [side, side]
+            }
             Part::SkipButton => [SKIP_BUTTON[0] * scale, SKIP_BUTTON[1] * scale],
             Part::Meter(i) => self.meters[i].size(scale),
         }
     }
 
     /// The elements to draw for `snapshot` with `textures`, with their map into the window
-    /// and alpha.
+    /// and alpha. An attached element is placed from its target's box (ADR-0112), hidden
+    /// or not.
     fn placed<'a>(
         &'a self,
         snapshot: &'a PlaySnapshot,
         textures: &'a HudTextures,
     ) -> impl Iterator<Item = (Part, Affine, f32)> + 'a {
         let Frame { width, height, .. } = self.frame;
-        self.elements.iter().filter_map(move |placed| {
+        let mut boxes = [(Affine::IDENTITY, [0.0f32; 2]); MAX_HUD_ELEMENTS];
+        for (i, placed) in self.elements.iter().enumerate() {
             let element = &placed.element;
-            let shown = element.visible
-                && element.alpha > 0.0
-                && (placed.part != Part::SkipButton || snapshot.skip_available);
-            shown.then(|| {
-                let map = element.transform(width, height, self.part_size(placed.part, textures));
-                (placed.part, map, element.alpha.min(1.0))
+            let size = self.part_size(placed.part, textures);
+            let map = match (placed.attached_to, &element.attach) {
+                (Some(target), Some(attach)) => {
+                    let (target_map, target_size) = boxes[target];
+                    let [fx, fy] = attach.point.fraction();
+                    let point = target_map.apply([fx * target_size[0], fy * target_size[1]]);
+                    element.transform_from(point, width, height, size)
+                }
+                _ => element.transform(width, height, size),
+            };
+            boxes[i] = (map, size);
+        }
+        self.elements
+            .iter()
+            .zip(boxes)
+            .filter_map(move |(placed, (map, _))| {
+                let element = &placed.element;
+                let shown = element.visible
+                    && element.alpha > 0.0
+                    && (placed.part != Part::SkipButton || snapshot.skip_available);
+                shown.then_some((placed.part, map, element.alpha.min(1.0)))
             })
-        })
     }
 
     /// The offset panel's text as last laid out.
@@ -768,6 +807,12 @@ impl HudView {
                 continue;
             }
             match (part, white) {
+                (Part::SongProgress, _) => {
+                    let (Some(disc), Some(ring)) = (textures.disc, textures.ring) else {
+                        continue;
+                    };
+                    self.song_progress.push(batch, time, scale, disc, ring);
+                }
                 (Part::Health, _) if textures.health.is_drawn() => {
                     self.health_bar
                         .push(batch, &textures.health, scale, self.time);
@@ -922,7 +967,7 @@ impl HudView {
                     let at = [(w - skip.width()) / 2.0, (h - skip.height()) / 2.0];
                     text(batch, skip, at, TEXT);
                 }
-                Part::Health | Part::Meter(_) => continue,
+                Part::Health | Part::SongProgress | Part::Meter(_) => continue,
             }
             batch.transform_from(first, &map, [1.0, 1.0, 1.0, alpha]);
         }
@@ -1000,6 +1045,7 @@ mod tests {
                 layout,
                 windows: &HitWindows::new(5.0),
                 meter_hiding: &SpinnerHiding::default(),
+                song_progress: SongProgress::default(),
             },
         )
     }
@@ -1327,6 +1373,7 @@ mod tests {
                 skin_sprite(113, 24.0, 40.0),
             ],
             overlap: 0.0,
+            loaded: true,
         };
         let mut health = HealthTextures {
             background: skin_sprite(1, 600.0, 40.0),
@@ -1339,6 +1386,7 @@ mod tests {
             score: font,
             combo: font,
             health,
+            ..HudTextures::default()
         }
     }
 
@@ -1427,5 +1475,116 @@ mod tests {
             "{pop_min:?} {min:?}"
         );
         assert!(close(max[1] - min[1], 40.0 * unit));
+    }
+
+    #[test]
+    fn attached_elements_follow_their_target_whatever_its_size() {
+        use slam_ui::hud_layout::Attach;
+        let mut accuracy = element(ComponentKind::Accuracy, Anchor::TopRight, [-4.0, 2.0]);
+        accuracy.attach = Some(Attach {
+            to: ComponentKind::Score,
+            point: Anchor::BottomRight,
+        });
+        let mut progress = element(ComponentKind::SongProgress, Anchor::TopRight, [-10.0, 0.0]);
+        progress.origin = Anchor::CentreRight;
+        progress.attach = Some(Attach {
+            to: ComponentKind::Accuracy,
+            point: Anchor::CentreLeft,
+        });
+        let layout = [
+            element(ComponentKind::Score, Anchor::TopRight, [0.0, 0.0]),
+            accuracy,
+            progress,
+        ];
+        let mut hud = hud(&layout);
+        // 1280 × 960: 2 window pixels per unit.
+        hud.update(1280.0, 960.0, &HudValues::default(), 0.0);
+        let snapshot = PlaySnapshot::default();
+        for digit_height in [40.0, 80.0] {
+            let mut textures = skin_textures();
+            for d in textures.score.digits.iter_mut().flatten() {
+                d.size.y = digit_height;
+            }
+            let boxes: Vec<_> = hud.placed(&snapshot, &textures).collect();
+            let score_size = hud.part_size(Part::Score, &textures);
+            let accuracy_size = hud.part_size(Part::Accuracy, &textures);
+            let score_bottom = boxes[0].1.apply([score_size[0], score_size[1]]);
+            assert!(close(score_bottom[1], digit_height * 0.96 * 2.0 / 1.6));
+            // The accuracy's top right: the score's bottom right plus its offset.
+            let top_right = boxes[1].1.apply([accuracy_size[0], 0.0]);
+            assert!(close(top_right[0], 1280.0 - 8.0), "{top_right:?}");
+            assert!(close(top_right[1], score_bottom[1] + 4.0), "{top_right:?}");
+            // The progress's centre right: 20 pixels left of the accuracy's centre left.
+            let side = crate::song_progress::SIZE * 2.0 / 1.6;
+            let centre_right = boxes[2].1.apply([side, side / 2.0]);
+            let centre_left = boxes[1].1.apply([0.0, accuracy_size[1] / 2.0]);
+            assert!(close(centre_right[0], centre_left[0] - 20.0));
+            assert!(close(centre_right[1], centre_left[1]));
+        }
+    }
+
+    #[test]
+    fn a_font_without_images_hides_its_counter() {
+        let layout = [element(
+            ComponentKind::Combo,
+            Anchor::BottomLeft,
+            [0.0, 0.0],
+        )];
+        let mut hud = hud(&layout);
+        hud.update(1280.0, 720.0, &HudValues::default(), 0.0);
+        let mut snapshot = PlaySnapshot::default();
+        snapshot.hud.combo = 5;
+        hud.animate(&snapshot, 0);
+        let mut textures = skin_textures();
+        textures.combo = FontSprites {
+            loaded: true,
+            ..FontSprites::default()
+        };
+        let mut batch = SpriteBatch::with_capacity(MAX_HUD_SHAPES);
+        hud.push_shapes(&mut batch, &snapshot, 0, Some(white()), None, &textures);
+        assert_eq!(batch.len(), 0);
+        // Not text either.
+        assert!(textures.font(Part::Combo).is_some());
+        // Until the font is loaded, the counter is text.
+        textures.combo.loaded = false;
+        assert!(textures.font(Part::Combo).is_none());
+    }
+
+    #[test]
+    fn an_element_attached_to_a_missing_target_takes_the_screen_and_a_hidden_one_counts() {
+        use slam_ui::hud_layout::Attach;
+        let mut accuracy = element(ComponentKind::Accuracy, Anchor::TopRight, [0.0, 0.0]);
+        accuracy.attach = Some(Attach {
+            to: ComponentKind::Score,
+            point: Anchor::BottomRight,
+        });
+        // No score before it: from the screen's top right.
+        let mut hud = hud(std::slice::from_ref(&accuracy));
+        hud.update(1280.0, 960.0, &HudValues::default(), 0.0);
+        let snapshot = PlaySnapshot::default();
+        let textures = skin_textures();
+        let (_, map, _) = hud.placed(&snapshot, &textures).next().unwrap();
+        let size = hud.part_size(Part::Accuracy, &textures);
+        assert!(close(map.apply([size[0], 0.0])[1], 0.0));
+        // A score after it does not count either.
+        let later = [
+            accuracy.clone(),
+            element(ComponentKind::Score, Anchor::TopRight, [0.0, 0.0]),
+        ];
+        let mut hud = self::hud(&later);
+        hud.update(1280.0, 960.0, &HudValues::default(), 0.0);
+        let (_, map, _) = hud.placed(&snapshot, &textures).next().unwrap();
+        assert!(close(map.apply([size[0], 0.0])[1], 0.0));
+        // A hidden, scaled score still places it: its bottom right, at twice the size.
+        let mut score = element(ComponentKind::Score, Anchor::TopRight, [0.0, 0.0]);
+        score.visible = false;
+        score.scale = [2.0, 2.0];
+        let mut hud = self::hud(&[score, accuracy]);
+        hud.update(1280.0, 960.0, &HudValues::default(), 0.0);
+        let placed: Vec<_> = hud.placed(&snapshot, &textures).collect();
+        assert_eq!(placed.len(), 1);
+        let score_height = hud.part_size(Part::Score, &textures)[1];
+        let top_right = placed[0].1.apply([size[0], 0.0]);
+        assert!(close(top_right[0], 1280.0) && close(top_right[1], 2.0 * score_height));
     }
 }

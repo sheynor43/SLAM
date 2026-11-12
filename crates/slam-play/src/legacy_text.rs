@@ -69,14 +69,13 @@ pub struct FontSprites {
     pub symbols: [Option<SkinSprite>; 4],
     /// The font's overlap (`ScoreOverlap`, `ComboOverlap`).
     pub overlap: f32,
+    /// Whether every texture the skins have for the font is uploaded (or failed): a
+    /// counter draws in the font then, with the characters there are, even none (a skin
+    /// that hides the combo with a prefix that has no images).
+    pub loaded: bool,
 }
 
 impl FontSprites {
-    /// Whether every digit is there: a counter draws in the font only then.
-    pub fn has_digits(&self) -> bool {
-        self.digits.iter().all(Option::is_some)
-    }
-
     /// The font, with digits at a fixed width or not.
     pub fn font(&self, fixed_width: bool) -> LegacyFont<'_> {
         LegacyFont {
@@ -341,6 +340,7 @@ mod tests {
             digits,
             symbols,
             overlap: 1.0,
+            loaded: true,
         };
         let fixed = sprites.font(true);
         // 10 + 10 + 3 + 10 + 12 less four overlaps of 1; "," has no glyph.
@@ -369,7 +369,5 @@ mod tests {
                 ([29.0, 0.0], [41.0, 20.0]),
             ]
         );
-        assert!(sprites.has_digits());
-        assert!(!FontSprites::default().has_digits());
     }
 }

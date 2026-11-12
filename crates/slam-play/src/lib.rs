@@ -26,6 +26,7 @@ pub mod session;
 pub mod shake;
 pub mod slider_body;
 pub mod sliders;
+pub mod song_progress;
 pub mod spinners;
 pub mod time;
 

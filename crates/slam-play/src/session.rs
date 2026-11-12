@@ -59,6 +59,7 @@ use crate::sliders::{
     MAX_FOLLOW_CIRCLE_AREA_SIZE, ObjectTextures, SliderBodies, SliderTextures, push_approaches,
     push_objects,
 };
+use crate::song_progress::ring_image;
 use crate::spinners::{HitSpinners, LiveSpinners, SpinnerSpm, SpinnerTextures};
 use crate::time::Offsets;
 
@@ -1651,6 +1652,8 @@ pub struct PlayTextures {
     lighting: Option<Requested>,
     /// The score and combo fonts and the health bar.
     hud: HudRequests,
+    /// The song progress's ring.
+    ring: TextureHandle,
 }
 
 /// The requested textures of one result's popup.
@@ -1820,6 +1823,7 @@ impl PlayTextures {
         let disc = requests.load_pixels(disc_image(), TextureKind::Atlas)?;
         let gradient = requests.load_pixels(gradient_image(), TextureKind::Atlas)?;
         let triangle = requests.load_pixels(triangle_image(), TextureKind::Atlas)?;
+        let ring = requests.load_pixels(ring_image(), TextureKind::Atlas)?;
         let hud = HudRequests::request(skins, requests)?;
         Ok(PlayTextures {
             requested,
@@ -1838,6 +1842,7 @@ impl PlayTextures {
             judgements,
             lighting,
             hud,
+            ring,
         })
     }
 
@@ -1967,6 +1972,10 @@ impl PlayTextures {
         }
         self.resolve_judgements(uploads, &mut frame.judgements);
         frame.hud = self.hud.resolve(uploads);
+        frame.hud.disc = frame.disc;
+        if let TextureState::Ready(ring) = uploads.get(self.ring) {
+            frame.hud.ring = Some(ring);
+        }
         // The spinners' counters are in the score font too.
         frame.spinners.score_digits = frame.hud.score.digits;
         frame
@@ -2049,11 +2058,10 @@ impl FontRequests {
     }
 
     fn resolve(&self, uploads: &TextureUploads) -> FontSprites {
-        let sprite = |r: &Option<Requested>| match r.map(|r| (uploads.get(r.handle), r.scale)) {
-            Some((TextureState::Ready(region), scale)) => {
-                Some(SkinSprite::new(region, scale, f32::MAX))
-            }
-            _ => None,
+        let mut loaded = true;
+        let mut sprite = |r: &Option<Requested>| {
+            let r = r.as_ref()?;
+            glyph_sprite(uploads.get(r.handle), r.scale, &mut loaded)
         };
         let mut font = FontSprites {
             overlap: self.overlap,
@@ -2065,11 +2073,25 @@ impl FontRequests {
         for (out, r) in font.symbols.iter_mut().zip(&self.glyphs[10..]) {
             *out = sprite(r);
         }
+        font.loaded = loaded;
         font
     }
 
     fn found(&self) -> usize {
         self.glyphs.iter().flatten().count()
+    }
+}
+
+/// The sprite of a requested glyph in `state`: a failed one is missing, a pending one
+/// clears `loaded` (the font is not drawn yet).
+fn glyph_sprite(state: TextureState, scale: f32, loaded: &mut bool) -> Option<SkinSprite> {
+    match state {
+        TextureState::Ready(region) => Some(SkinSprite::new(region, scale, f32::MAX)),
+        TextureState::Failed(_) => None,
+        TextureState::Pending => {
+            *loaded = false;
+            None
+        }
     }
 }
 
@@ -2245,6 +2267,7 @@ impl HudRequests {
             score,
             combo,
             health: self.health.resolve(uploads),
+            ..HudTextures::default()
         }
     }
 
@@ -2384,5 +2407,42 @@ impl PlayView {
             textures.disc,
             &textures.cursor,
         );
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use slam_render::upload::LoadError;
+
+    #[test]
+    fn a_font_is_loaded_once_no_glyph_is_pending() {
+        let region = AtlasRegion {
+            texture: slam_render::textures::TextureId(1),
+            origin: slam_render::Origin { x: 0, y: 0 },
+            size: Extent::new(20, 40),
+            uv: slam_render::atlas::UvRect::FULL,
+        };
+        let mut loaded = true;
+        // Ready: a sprite at the file's density.
+        let sprite = glyph_sprite(TextureState::Ready(region), 2.0, &mut loaded).unwrap();
+        assert_eq!(sprite.size, Vec2::new(10.0, 20.0));
+        // Failed: missing, but loaded.
+        assert_eq!(
+            glyph_sprite(TextureState::Failed(LoadError::Decode), 1.0, &mut loaded),
+            None
+        );
+        assert!(loaded);
+        // Pending: not loaded yet.
+        assert_eq!(glyph_sprite(TextureState::Pending, 1.0, &mut loaded), None);
+        assert!(!loaded);
+        // A font none of whose glyphs the skins have is loaded and empty.
+        let empty = FontRequests::default();
+        let mut loaded = true;
+        for r in &empty.glyphs {
+            assert!(r.is_none());
+            let _ = r.map(|r| glyph_sprite(TextureState::Pending, r.scale, &mut loaded));
+        }
+        assert!(loaded);
     }
 }

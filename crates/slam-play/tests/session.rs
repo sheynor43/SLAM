@@ -850,6 +850,7 @@ fn hud_view(registry: Arc<FontRegistry>, map: &Beatmap, layout: &[LayoutElement]
             layout,
             windows: &windows,
             meter_hiding: &slam_play::hit_error::SpinnerHiding::new(map),
+            song_progress: slam_play::song_progress::SongProgress::new(map),
         },
     )
 }
@@ -2401,6 +2402,7 @@ fn skinned_hud() -> HudTextures {
         digits: std::array::from_fn(|d| sprite(100 + d as u32, 20.0, 40.0)),
         symbols: std::array::from_fn(|i| sprite(110 + i as u32, 10.0, 40.0)),
         overlap: 1.0,
+        loaded: true,
     };
     let mut health = HealthTextures {
         background: sprite(1, 600.0, 40.0),
@@ -2419,6 +2421,8 @@ fn skinned_hud() -> HudTextures {
         score: font,
         combo: font,
         health,
+        disc: Some(WHITE),
+        ring: Some(WHITE),
     }
 }
 

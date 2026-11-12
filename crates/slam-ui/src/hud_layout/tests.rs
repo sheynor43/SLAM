@@ -207,3 +207,57 @@ fn negative_scale_mirrors_about_the_origin() {
     assert!(close(map.apply([0.0, 50.0]), [640.0, 240.0]));
     assert!(close(map.apply([20.0, 50.0]), [620.0, 240.0]));
 }
+
+#[test]
+fn attach_is_read_and_written() {
+    let json = r#"{"version": 1, "name": "x", "gameplay": [
+        {"component": "score", "anchor": "top_right", "origin": "top_right", "position": [0, 0]},
+        {"component": "accuracy", "anchor": "top_right", "origin": "top_right", "position": [-1, 2],
+         "attach": {"to": "score", "point": "bottom_right"}}
+    ]}"#;
+    let layout = from_json(json).unwrap();
+    assert_eq!(layout.gameplay[0].attach, None);
+    assert_eq!(
+        layout.gameplay[1].attach,
+        Some(Attach {
+            to: ComponentKind::Score,
+            point: Anchor::BottomRight,
+        })
+    );
+    assert!(layout.gameplay[1].extra.is_empty());
+    assert_eq!(from_json(&to_json(&layout)).unwrap(), layout);
+    // Elements without it do not write it.
+    assert!(!to_json(&layout).contains("\"attach\": null"));
+}
+
+#[test]
+fn stable_hangs_the_accuracy_and_the_progress_off_the_score() {
+    for b in [Builtin::Stable, Builtin::Slam] {
+        let layout = b.layout();
+        let attach = |kind: ComponentKind| {
+            layout
+                .gameplay
+                .iter()
+                .find(|e| e.component == kind)
+                .and_then(|e| e.attach.clone())
+        };
+        assert_eq!(
+            attach(ComponentKind::Accuracy).map(|a| (a.to, a.point)),
+            Some((ComponentKind::Score, Anchor::BottomRight))
+        );
+        assert_eq!(
+            attach(ComponentKind::SongProgress).map(|a| (a.to, a.point)),
+            Some((ComponentKind::Accuracy, Anchor::CentreLeft))
+        );
+    }
+}
+
+#[test]
+fn transform_from_places_the_origin_at_the_point_plus_the_offset() {
+    let mut element =
+        LayoutElement::new(ComponentKind::SongProgress, Anchor::TopRight, [-10.0, 0.0]);
+    element.origin = Anchor::CentreRight;
+    // 1280 × 960: 2 pixels per unit.
+    let map = element.transform_from([500.0, 100.0], 1280.0, 960.0, [40.0, 40.0]);
+    assert!(close(map.apply([40.0, 20.0]), [480.0, 100.0]));
+}
