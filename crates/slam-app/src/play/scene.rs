@@ -537,7 +537,7 @@ impl PlayScene {
             &snapshot.hud,
             snapshot.offset_panel.offset_ms,
         );
-        self.hud.update_meters(snapshot, now_ns);
+        self.hud.animate(snapshot, now_ns);
         self.menu.update(width, height, &snapshot.menu);
         self.batch.clear();
         self.text.clear();
@@ -585,9 +585,15 @@ impl PlayScene {
             now_ns,
             textures.white,
             textures.meter.as_ref(),
+            &textures.hud,
         );
-        self.hud
-            .push_text(&mut self.text, snapshot, now_ns, &mut self.glyphs);
+        self.hud.push_text(
+            &mut self.text,
+            snapshot,
+            now_ns,
+            &mut self.glyphs,
+            &textures.hud,
+        );
         self.view
             .push_cursor(&mut self.cursor, &layout, snapshot, now_ns, &textures);
         let layer = fail.map_or(Affine::IDENTITY, |fail| fail.layer);

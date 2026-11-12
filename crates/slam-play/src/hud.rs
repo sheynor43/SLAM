@@ -1,6 +1,5 @@
-//! A stand-in HUD until the skinned HUD components exist (#332): score, accuracy and combo
-//! as plain numbers, health as a bar, the hit error meters, the skip button and the beatmap
-//! offset panel.
+//! The in-game HUD: score, accuracy and combo in the skin's fonts, the skin's health bar, the
+//! hit error meters, the skip button and the beatmap offset panel.
 //!
 //! The elements are placed by the gameplay section of the active HUD layout (ADR-0061,
 //! ADR-0109): each draws in its own box with the top-left corner at (0, 0) and
@@ -10,28 +9,34 @@
 //! Draw side only. Numbers are formatted into fixed buffers and laid out again only when
 //! they change; once warm ([`HudView::new`]), nothing here allocates.
 //!
-//! Only the numbers follow lazer. Unlike its counters, values show at once (no rolling),
-//! the counters' sizes are this module's own. The click-to-resume target is drawn with the
-//! cursor ([`crate::resume`]).
+//! The counters and the health bar are lazer's legacy ones (`LegacyScoreCounter`,
+//! `LegacyAccuracyCounter`, `LegacyDefaultComboCounter`, `LegacyHealthDisplay`) at their
+//! sizes; score and accuracy show at once (no rolling). Until a skin font's digits are
+//! uploaded, a counter is plain text in the UI font at this module's own size, and the health
+//! a plain bar. The click-to-resume target is drawn with the cursor ([`crate::resume`]).
 
 use std::fmt::{self, Write as _};
 use std::sync::Arc;
 
+use slam_osu::Vec2;
 use slam_osu::hit_windows::HitWindows;
-use slam_render::Color;
 use slam_render::atlas::AtlasRegion;
 use slam_render::sprite::{Affine, Sprite, SpriteBatch};
+use slam_render::{Blend, Color};
 use slam_text::{
     FamilyId, FontRegistry, GlyphCache, GlyphKey, Layout, LayoutContext, TextStats, TextStyle,
     UI_FAMILY, push_layout,
 };
 use slam_ui::hud_layout::{ComponentKind, LayoutElement, unit_scale};
 
+use crate::combo_counter::ComboCounter;
 use crate::fps_counter::FpsLabels;
+use crate::health_bar::{HealthBar, HealthTextures};
 use crate::hit_error::{
     HitErrorMeter, HitErrorStyle, LAZER_PIXELS_PER_UNIT, MAX_HIT_ERROR_SPRITES, MeterTextures,
     SpinnerHiding,
 };
+use crate::legacy_text::{FontSprites, LegacyFont};
 use crate::menu_overlay::MenuLabels;
 use crate::offset::{OffsetPanel, OffsetWording, format_offset};
 use crate::session::{HudValues, PlaySnapshot};
@@ -50,6 +55,18 @@ const OFFSET_MARGIN: f32 = 20.0;
 const OFFSET_SIZE: f32 = 20.0;
 const OFFSET_PADDING: f32 = 8.0;
 const HEALTH_BAR: [f32; 2] = [300.0, 8.0];
+// Ported from osu!lazer 2026.1005.0-lazer: osu.Game/Skinning/LegacyScoreCounter.cs
+const SKIN_SCORE_SCALE: f32 = 0.96;
+// Ported from osu!lazer 2026.1005.0-lazer: osu.Game/Skinning/LegacyAccuracyCounter.cs
+const SKIN_ACCURACY_SCALE: f32 = 0.6 * 0.96;
+// Ported from osu!lazer 2026.1005.0-lazer: osu.Game/Skinning/LegacyDefaultComboCounter.cs
+const SKIN_COMBO_SCALE: f32 = 1.28;
+/// `font_height_ratio` and `vertical_offset` of the combo's layout: its texts scale about a
+/// point this far down them.
+const COMBO_FONT_HEIGHT_RATIO: f32 = 0.625;
+const COMBO_VERTICAL_OFFSET: f32 = 9.0;
+/// The big pop out scales a bit to the left, as in stable.
+const COMBO_POP_OUT_X: f32 = 3.0;
 const SKIP_BUTTON: [f32; 2] = [180.0, 48.0];
 
 /// The most elements of a layout's gameplay section the HUD keeps; the rest are left out.
@@ -59,9 +76,13 @@ pub const MAX_HUD_ELEMENTS: usize = 32;
 pub const MAX_HUD_TEXT_ELEMENTS: usize = 8;
 /// The most hit error meters the HUD draws; further ones are left out.
 pub const MAX_HIT_ERROR_METERS: usize = 4;
-/// The most shape sprites [`HudView::push_shapes`] writes.
-pub const MAX_HUD_SHAPES: usize =
-    MAX_HUD_ELEMENTS * 2 + 1 + MAX_HIT_ERROR_METERS * MAX_HIT_ERROR_SPRITES;
+/// The most shape sprites [`HudView::push_shapes`] writes: four per element (the health bar's
+/// most), the offset panel, the meters and the counters in skin fonts (two texts each for the
+/// combo).
+pub const MAX_HUD_SHAPES: usize = MAX_HUD_ELEMENTS * 4
+    + 1
+    + MAX_HIT_ERROR_METERS * MAX_HIT_ERROR_SPRITES
+    + MAX_HUD_TEXT_ELEMENTS * 2 * NUMBER_TEXT_LEN;
 
 /// The property of a hit error meter element with its style: `"legacy"` (the default) or
 /// `"bar"` (ADR-0050).
@@ -277,6 +298,28 @@ fn meter_style(element: &LayoutElement) -> HitErrorStyle {
     }
 }
 
+/// The HUD's skin textures for one frame.
+#[derive(Debug, Clone, Copy, PartialEq, Default)]
+pub struct HudTextures {
+    /// The score font (`ScorePrefix`), for score and accuracy.
+    pub score: FontSprites,
+    /// The combo font (`ComboPrefix`).
+    pub combo: FontSprites,
+    pub health: HealthTextures,
+}
+
+impl HudTextures {
+    /// The font `part` draws in, if it is a counter in a skin font with its digits there.
+    fn font(&self, part: Part) -> Option<LegacyFont<'_>> {
+        let (sprites, fixed) = match part {
+            Part::Score | Part::Accuracy => (&self.score, true),
+            Part::Combo => (&self.combo, false),
+            _ => return None,
+        };
+        sprites.has_digits().then(|| sprites.font(fixed))
+    }
+}
+
 /// What [`HudView::new`] needs of the play beside the texts.
 #[derive(Debug, Clone, Copy)]
 pub struct HudSetup<'a> {
@@ -298,6 +341,13 @@ pub struct HudView {
     elements: Vec<Placed>,
     meters: Vec<HitErrorMeter>,
     meter_hiding: SpinnerHiding,
+    /// The combo counter's animation; `None` until the first frame.
+    combo_counter: Option<ComboCounter>,
+    health_bar: HealthBar,
+    /// The attempt the animations are of ([`PlaySnapshot::restarts`]).
+    restarts: u32,
+    /// The HUD's clock at the last [`HudView::animate`], in milliseconds.
+    time: f64,
     score: Counter,
     accuracy: Counter,
     combo: Counter,
@@ -406,6 +456,10 @@ impl HudView {
             elements,
             meters,
             meter_hiding: setup.meter_hiding.clone(),
+            combo_counter: None,
+            health_bar: HealthBar::new(),
+            restarts: 0,
+            time: 0.0,
             score: Counter::new(SCORE_SIZE),
             accuracy: Counter::new(ACCURACY_SIZE),
             combo: Counter::new(COMBO_SIZE),
@@ -525,13 +579,28 @@ impl HudView {
         }
     }
 
-    /// Takes the hit error meters' new judgements of `snapshot` at engine time `now_ns` and
-    /// drops what expired. Call once a frame. Allocation-free.
-    pub fn update_meters(&mut self, snapshot: &PlaySnapshot, now_ns: u64) {
+    /// Moves the animations to engine time `now_ns`: the hit error meters take the new
+    /// judgements of `snapshot` and drop what expired, the combo counter and the health bar
+    /// take its values. A restart starts them over. Call once a frame. Allocation-free.
+    pub fn animate(&mut self, snapshot: &PlaySnapshot, now_ns: u64) {
         let time = snapshot.time_at(now_ns);
         for meter in &mut self.meters {
             meter.update(&snapshot.hit_errors, snapshot.restarts, time);
         }
+        // The HUD is not on the gameplay clock.
+        self.time = now_ns as f64 / 1e6;
+        if snapshot.restarts != self.restarts {
+            self.restarts = snapshot.restarts;
+            self.combo_counter = None;
+            self.health_bar = HealthBar::new();
+        }
+        let combo = snapshot.hud.combo;
+        match &mut self.combo_counter {
+            Some(counter) => counter.update(combo, self.time),
+            None => self.combo_counter = Some(ComboCounter::new(combo, self.time)),
+        }
+        self.health_bar
+            .update(snapshot.health, snapshot.hud.hits, self.time);
     }
 
     /// The most glyph sprites [`HudView::push_text`] writes: each text element's longest text
@@ -566,10 +635,42 @@ impl HudView {
         &self.meters
     }
 
-    /// The box of `part` in window pixels as last laid out.
-    fn part_size(&self, part: Part) -> [f32; 2] {
+    /// The combo counter's texts at the last [`HudView::animate`]: its own and the popped-out
+    /// one, with the pose.
+    fn combo_pose(&self) -> Option<crate::combo_counter::ComboPose> {
+        self.combo_counter.as_ref().map(|c| c.pose(self.time))
+    }
+
+    /// The box of `part` in window pixels as last laid out, drawn with `textures`.
+    fn part_size(&self, part: Part, textures: &HudTextures) -> [f32; 2] {
         let scale = self.frame.scale;
         let text = |layout: &Layout| [layout.width(), layout.height()];
+        if let Some(font) = textures.font(part) {
+            let (size, counter_scale) = match part {
+                Part::Score => (
+                    font.measure(self.score.text.as_str().as_bytes()),
+                    SKIN_SCORE_SCALE,
+                ),
+                Part::Accuracy => (
+                    font.measure(self.accuracy.text.as_str().as_bytes()),
+                    SKIN_ACCURACY_SCALE,
+                ),
+                // The counter is as big as its own text (`counterContainer.Size`).
+                _ => {
+                    let shown = self.combo_pose().map_or(0, |p| p.shown);
+                    (
+                        font.measure(format_combo(shown).as_str().as_bytes()),
+                        SKIN_COMBO_SCALE,
+                    )
+                }
+            };
+            let s = counter_scale * scale;
+            return [size.x * s, size.y * s];
+        }
+        if part == Part::Health && textures.health.is_drawn() {
+            let [w, h] = textures.health.size();
+            return [w * scale, h * scale];
+        }
         match part {
             Part::Score => text(&self.score.layout),
             Part::Accuracy => text(&self.accuracy.layout),
@@ -580,10 +681,12 @@ impl HudView {
         }
     }
 
-    /// The elements to draw for `snapshot`, with their map into the window and alpha.
+    /// The elements to draw for `snapshot` with `textures`, with their map into the window
+    /// and alpha.
     fn placed<'a>(
         &'a self,
         snapshot: &'a PlaySnapshot,
+        textures: &'a HudTextures,
     ) -> impl Iterator<Item = (Part, Affine, f32)> + 'a {
         let Frame { width, height, .. } = self.frame;
         self.elements.iter().filter_map(move |placed| {
@@ -592,7 +695,7 @@ impl HudView {
                 && element.alpha > 0.0
                 && (placed.part != Part::SkipButton || snapshot.skip_available);
             shown.then(|| {
-                let map = element.transform(width, height, self.part_size(placed.part));
+                let map = element.transform(width, height, self.part_size(placed.part, textures));
                 (placed.part, map, element.alpha.min(1.0))
             })
         })
@@ -634,10 +737,11 @@ impl HudView {
         ]
     }
 
-    /// Writes the HUD's shapes for `snapshot` at engine time `now_ns`: the health bars, the
-    /// skip buttons and the offset panel tinting `white` (an opaque white image), the hit
-    /// error meters with `meter`'s images, faded during spinners. Allocation-free once
-    /// `batch` has room for [`MAX_HUD_SHAPES`].
+    /// Writes the HUD's shapes for `snapshot` at engine time `now_ns`: the counters in skin
+    /// fonts and the health bar with `textures`, plain health bars, the skip buttons and the
+    /// offset panel tinting `white` (an opaque white image), the hit error meters with
+    /// `meter`'s images, faded during spinners. Allocation-free once `batch` has room for
+    /// [`MAX_HUD_SHAPES`].
     pub fn push_shapes(
         &self,
         batch: &mut SpriteBatch,
@@ -645,6 +749,7 @@ impl HudView {
         now_ns: u64,
         white: Option<AtlasRegion>,
         meter: Option<&MeterTextures>,
+        textures: &HudTextures,
     ) {
         let scale = self.frame.scale;
         let time = snapshot.time_at(now_ns);
@@ -654,18 +759,33 @@ impl HudView {
             sprite.colour = colour;
             batch.push(&sprite);
         };
-        for (part, map, alpha) in self.placed(snapshot) {
+        for (part, map, alpha) in self.placed(snapshot, textures) {
             let first = batch.len();
             let mut alpha = alpha;
+            if let Some(font) = textures.font(part) {
+                self.push_counter(batch, part, &font);
+                batch.transform_from(first, &map, [1.0, 1.0, 1.0, alpha]);
+                continue;
+            }
             match (part, white) {
+                (Part::Health, _) if textures.health.is_drawn() => {
+                    self.health_bar
+                        .push(batch, &textures.health, scale, self.time);
+                }
                 (Part::Health, Some(white)) => {
-                    let bar = self.part_size(part);
+                    let bar = self.part_size(part, textures);
                     rect(batch, white, [0.0, 0.0], bar, SHADE);
                     let health = snapshot.health.clamp(0.0, 1.0) as f32;
                     rect(batch, white, [0.0, 0.0], [bar[0] * health, bar[1]], TEXT);
                 }
                 (Part::SkipButton, Some(white)) => {
-                    rect(batch, white, [0.0, 0.0], self.part_size(part), SHADE);
+                    rect(
+                        batch,
+                        white,
+                        [0.0, 0.0],
+                        self.part_size(part, textures),
+                        SHADE,
+                    );
                 }
                 (Part::Meter(i), _) => {
                     let Some(textures) = meter else { continue };
@@ -690,7 +810,86 @@ impl HudView {
         }
     }
 
-    /// Writes the HUD's text for `snapshot` into a batch drawn with the MSDF shader.
+    /// Writes the counter `part` in `font` in its box, top left at (0, 0).
+    fn push_counter(&self, batch: &mut SpriteBatch, part: Part, font: &LegacyFont<'_>) {
+        let scale = self.frame.scale;
+        let top_left = Vec2::ZERO;
+        let at_top_left =
+            |batch: &mut SpriteBatch, text: &str, at: Vec2, size: f32, colour, blend| {
+                font.push(batch, text.as_bytes(), at, top_left, size, colour, blend);
+            };
+        match part {
+            Part::Score => at_top_left(
+                batch,
+                self.score.text.as_str(),
+                top_left,
+                SKIN_SCORE_SCALE * scale,
+                TEXT,
+                Blend::Alpha,
+            ),
+            Part::Accuracy => at_top_left(
+                batch,
+                self.accuracy.text.as_str(),
+                top_left,
+                SKIN_ACCURACY_SCALE * scale,
+                TEXT,
+                Blend::Alpha,
+            ),
+            Part::Combo => {
+                let Some(pose) = self.combo_pose() else {
+                    return;
+                };
+                // Ported from osu!lazer 2026.1005.0-lazer: osu.Game/Skinning/LegacyDefaultComboCounter.cs (updateLayout)
+                // In the counter's own units: each text scales about a point
+                // `COMBO_FONT_HEIGHT_RATIO` down it (plus the offset), placed so that at a
+                // scale of 1 the counter's text fills the box and the pop out's bottom meets
+                // it, 3 to the left.
+                let unit = SKIN_COMBO_SCALE * scale;
+                let shown = format_combo(pose.shown);
+                let height = font.measure(shown.as_str().as_bytes()).y;
+                let pivot = |h: f32| COMBO_FONT_HEIGHT_RATIO * h + COMBO_VERTICAL_OFFSET;
+                if let Some((value, pop_scale, pop_alpha)) = pose.pop_out {
+                    let text = format_combo(value);
+                    let h = font.measure(text.as_str().as_bytes()).y;
+                    let anchor = Vec2::new(
+                        0.0,
+                        height - (1.0 - COMBO_FONT_HEIGHT_RATIO) * h + COMBO_VERTICAL_OFFSET,
+                    );
+                    let corner = Vec2::new(
+                        anchor.x - COMBO_POP_OUT_X * pop_scale,
+                        anchor.y - pivot(h) * pop_scale,
+                    );
+                    at_top_left(
+                        batch,
+                        text.as_str(),
+                        Vec2::new(corner.x * unit, corner.y * unit),
+                        pop_scale * unit,
+                        Color {
+                            a: pop_alpha,
+                            ..TEXT
+                        },
+                        Blend::Additive,
+                    );
+                }
+                let corner_y = pivot(height) * (1.0 - pose.shown_scale);
+                at_top_left(
+                    batch,
+                    shown.as_str(),
+                    Vec2::new(0.0, corner_y * unit),
+                    pose.shown_scale * unit,
+                    Color {
+                        a: pose.shown_alpha,
+                        ..TEXT
+                    },
+                    Blend::Alpha,
+                );
+            }
+            _ => {}
+        }
+    }
+
+    /// Writes the HUD's text for `snapshot` into a batch drawn with the MSDF shader: what is not
+    /// in a skin font with `textures`.
     /// Glyphs not ready yet are skipped and counted. Allocation-free once `batch` has
     /// room.
     pub fn push_text(
@@ -699,6 +898,7 @@ impl HudView {
         snapshot: &PlaySnapshot,
         now_ns: u64,
         glyphs: &mut GlyphCache,
+        textures: &HudTextures,
     ) -> TextStats {
         let scale = self.frame.scale;
         let mut stats = TextStats::default();
@@ -707,14 +907,17 @@ impl HudView {
             stats.drawn += s.drawn;
             stats.pending += s.pending;
         };
-        for (part, map, alpha) in self.placed(snapshot) {
+        for (part, map, alpha) in self.placed(snapshot, textures) {
+            if textures.font(part).is_some() {
+                continue;
+            }
             let first = batch.len();
             match part {
                 Part::Score => text(batch, &self.score.layout, [0.0, 0.0], TEXT),
                 Part::Accuracy => text(batch, &self.accuracy.layout, [0.0, 0.0], TEXT),
                 Part::Combo => text(batch, &self.combo.layout, [0.0, 0.0], TEXT),
                 Part::SkipButton => {
-                    let [w, h] = self.part_size(part);
+                    let [w, h] = self.part_size(part, textures);
                     let skip = &self.skip;
                     let at = [(w - skip.width()) / 2.0, (h - skip.height()) / 2.0];
                     text(batch, skip, at, TEXT);
@@ -852,6 +1055,7 @@ mod tests {
                 score: 12_345,
                 accuracy: 0.98765,
                 combo: 42,
+                hits: 0,
             },
             -1.0,
         );
@@ -882,7 +1086,14 @@ mod tests {
         for (width, height) in [(1920.0, 1080.0), (800.0, 600.0), (1080.0, 1920.0)] {
             hud.update(width, height, &HudValues::default(), 0.0);
             let mut batch = SpriteBatch::with_capacity(MAX_HUD_SHAPES);
-            hud.push_shapes(&mut batch, &snapshot, 0, Some(white()), None);
+            hud.push_shapes(
+                &mut batch,
+                &snapshot,
+                0,
+                Some(white()),
+                None,
+                &HudTextures::default(),
+            );
             // The background and the fill.
             assert_eq!(batch.len(), 2);
             let unit = unit_scale(width, height);
@@ -910,7 +1121,14 @@ mod tests {
         let mut hud = hud(&[health]);
         hud.update(640.0, 480.0, &HudValues::default(), 0.0);
         let mut batch = SpriteBatch::with_capacity(MAX_HUD_SHAPES);
-        hud.push_shapes(&mut batch, &PlaySnapshot::default(), 0, Some(white()), None);
+        hud.push_shapes(
+            &mut batch,
+            &PlaySnapshot::default(),
+            0,
+            Some(white()),
+            None,
+            &HudTextures::default(),
+        );
         let (min, max) = bounds(&batch, 0, 1);
         // Turned clockwise about its top-left corner at the centre: the bar runs down, to
         // the left of x = 320, twice as large.
@@ -936,9 +1154,12 @@ mod tests {
         let mut hud = hud(&layout);
         hud.update(1920.0, 1080.0, &HudValues::default(), 0.0);
         let snapshot = PlaySnapshot::default();
-        let (part, map, alpha) = hud.placed(&snapshot).next().unwrap();
+        let (part, map, alpha) = hud
+            .placed(&snapshot, &HudTextures::default())
+            .next()
+            .unwrap();
         assert_eq!((part, alpha), (Part::Score, 1.0));
-        let [w, _] = hud.part_size(Part::Score);
+        let [w, _] = hud.part_size(Part::Score, &HudTextures::default());
         assert!(w > 0.0);
         let corner = map.apply([w, 0.0]);
         assert!(close(corner[0], 1920.0 - 5.0 * 2.25) && close(corner[1], 2.0 * 2.25));
@@ -974,6 +1195,7 @@ mod tests {
             0,
             Some(white()),
             Some(&meter_textures()),
+            &HudTextures::default(),
         );
         assert_eq!(batch.len(), 0);
     }
@@ -989,10 +1211,24 @@ mod tests {
         hud.update(1280.0, 720.0, &HudValues::default(), 0.0);
         let mut snapshot = PlaySnapshot::default();
         let mut batch = SpriteBatch::with_capacity(MAX_HUD_SHAPES);
-        hud.push_shapes(&mut batch, &snapshot, 0, Some(white()), None);
+        hud.push_shapes(
+            &mut batch,
+            &snapshot,
+            0,
+            Some(white()),
+            None,
+            &HudTextures::default(),
+        );
         assert_eq!(batch.len(), 0);
         snapshot.skip_available = true;
-        hud.push_shapes(&mut batch, &snapshot, 0, Some(white()), None);
+        hud.push_shapes(
+            &mut batch,
+            &snapshot,
+            0,
+            Some(white()),
+            None,
+            &HudTextures::default(),
+        );
         let (_, max) = bounds(&batch, 0, 1);
         assert!(close(max[0], 1280.0) && close(max[1], 720.0), "{max:?}");
     }
@@ -1024,7 +1260,14 @@ mod tests {
         let mut batch = SpriteBatch::with_capacity(MAX_HUD_SHAPES);
         let snapshot = PlaySnapshot::default();
         let textures = meter_textures();
-        hud.push_shapes(&mut batch, &snapshot, 0, None, Some(&textures));
+        hud.push_shapes(
+            &mut batch,
+            &snapshot,
+            0,
+            None,
+            Some(&textures),
+            &HudTextures::default(),
+        );
         let mut one = SpriteBatch::with_capacity(MAX_HIT_ERROR_SPRITES);
         hud.meters()[0].push(&mut one, hud.frame.scale, 0.0, &textures);
         let per_bar = one.len();
@@ -1059,5 +1302,130 @@ mod tests {
                 .max()
                 .unwrap()
         );
+    }
+
+    fn skin_sprite(id: u32, w: f32, h: f32) -> Option<crate::circles::SkinSprite> {
+        Some(crate::circles::SkinSprite {
+            texture: slam_render::textures::TextureId(id),
+            uv: slam_render::atlas::UvRect::FULL,
+            size: Vec2::new(w, h),
+        })
+    }
+
+    /// A score font of 20×40 digits (the "1" 10 wide) and symbols, a health bar of a 600×40
+    /// background with the new style.
+    fn skin_textures() -> HudTextures {
+        let mut digits: [Option<crate::circles::SkinSprite>; 10] =
+            std::array::from_fn(|d| skin_sprite(100 + d as u32, 20.0, 40.0));
+        digits[1] = skin_sprite(101, 10.0, 40.0);
+        let font = FontSprites {
+            digits,
+            symbols: [
+                skin_sprite(110, 8.0, 40.0),
+                skin_sprite(111, 8.0, 40.0),
+                skin_sprite(112, 30.0, 40.0),
+                skin_sprite(113, 24.0, 40.0),
+            ],
+            overlap: 0.0,
+        };
+        let mut health = HealthTextures {
+            background: skin_sprite(1, 600.0, 40.0),
+            marker: crate::health_bar::MarkerTextures::New(skin_sprite(3, 20.0, 20.0)),
+            fill_frames: 1,
+            ..HealthTextures::default()
+        };
+        health.fill[0] = skin_sprite(2, 500.0, 10.0);
+        HudTextures {
+            score: font,
+            combo: font,
+            health,
+        }
+    }
+
+    #[test]
+    fn counters_and_health_draw_with_the_skin_when_it_has_them() {
+        let layout = [
+            element(ComponentKind::Score, Anchor::TopRight, [0.0, 0.0]),
+            element(ComponentKind::Combo, Anchor::BottomLeft, [0.0, 0.0]),
+            element(ComponentKind::Health, Anchor::TopLeft, [0.0, 0.0]),
+        ];
+        let mut hud = hud(&layout);
+        let textures = skin_textures();
+        // 1600 × 1200: 2.5 window pixels per unit, a lazer pixel is 1.5625.
+        let (width, height) = (1600.0, 1200.0);
+        let values = HudValues {
+            score: 1_000,
+            combo: 12,
+            ..HudValues::default()
+        };
+        hud.update(width, height, &values, 0.0);
+        let mut snapshot = PlaySnapshot {
+            hud: values,
+            health: 1.0,
+            ..PlaySnapshot::default()
+        };
+        hud.animate(&snapshot, 0);
+        snapshot.hud.hits = 1;
+        hud.animate(&snapshot, 100_000_000);
+        let mut batch = SpriteBatch::with_capacity(MAX_HUD_SHAPES);
+        hud.push_shapes(&mut batch, &snapshot, 0, Some(white()), None, &textures);
+        // The counters in the skin font are not text.
+        assert!(textures.font(Part::Score).is_some() && textures.font(Part::Combo).is_some());
+
+        let pixel = 2.5 / 1.6;
+        // "001000" at a fixed width of 20, scaled by 0.96, its right edge on the window's.
+        let (min, max) = bounds(&batch, 0, 6);
+        assert!(close(max[0], width), "{max:?}");
+        assert!(
+            close(max[0] - min[0], 120.0 * 0.96 * pixel),
+            "{min:?} {max:?}"
+        );
+        assert!(close(min[1], 0.0) && close(max[1], 40.0 * 0.96 * pixel));
+        // The combo shows "12x" (it was loaded at 12): 20 + 10 + 24 wide at 1.28, bottom
+        // left, no pop out.
+        let (min, max) = bounds(&batch, 6, 9);
+        assert!(
+            close(min[0], 0.0) && close(max[1], height),
+            "{min:?} {max:?}"
+        );
+        assert!(close(max[0] - min[0], 54.0 * 1.28 * pixel));
+        // The health bar: the background at the top left, the marker and its flash; the fill
+        // is still empty, filling up from the start.
+        let (min, max) = bounds(&batch, 9, 10);
+        assert!(close(min[0], 0.0) && close(min[1], 0.0));
+        assert!(close(max[0], 600.0 * pixel) && close(max[1], 40.0 * pixel));
+        assert_eq!(batch.len(), 12);
+    }
+
+    #[test]
+    fn the_combo_pops_out_on_increase() {
+        let layout = [element(
+            ComponentKind::Combo,
+            Anchor::BottomLeft,
+            [0.0, 0.0],
+        )];
+        let mut hud = hud(&layout);
+        let textures = skin_textures();
+        hud.update(1600.0, 1200.0, &HudValues::default(), 0.0);
+        let mut snapshot = PlaySnapshot::default();
+        hud.animate(&snapshot, 0);
+        snapshot.hud.combo = 1;
+        hud.animate(&snapshot, 1_000_000);
+        let mut batch = SpriteBatch::with_capacity(MAX_HUD_SHAPES);
+        hud.push_shapes(&mut batch, &snapshot, 0, None, None, &textures);
+        // The pop out "1x" (additive, drawn first), then the counter's "0x".
+        assert_eq!(batch.len(), 4);
+        assert_eq!(batch.batches()[0].blend, Blend::Additive);
+        // The pop out starts 1.56 times as big and reaches 3 units of the counter to the
+        // left of it.
+        let unit = 1.28 * 2.5 / 1.6;
+        let (pop_min, pop_max) = bounds(&batch, 0, 2);
+        let (min, max) = bounds(&batch, 2, 4);
+        assert!(close(pop_max[0] - pop_min[0], (10.0 + 24.0) * 1.56 * unit));
+        assert!(
+            close(pop_min[0], min[0] - 3.0 * 1.56 * unit),
+            "{pop_min:?} {min:?}"
+        );
+        assert!(close(max[1] - min[1], 40.0 * unit));
     }
 }

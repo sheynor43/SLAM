@@ -2,11 +2,13 @@
 
 pub mod background;
 pub mod circles;
+pub mod combo_counter;
 pub mod cursor;
 pub mod fail;
 pub mod follow_points;
 pub mod fps_counter;
 pub mod gameplay_sounds;
+pub mod health_bar;
 pub mod hit_error;
 pub mod hitsounds;
 pub mod hotkeys;

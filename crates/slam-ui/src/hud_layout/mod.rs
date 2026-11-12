@@ -12,9 +12,10 @@
 //! The built-in presets place the elements as the clients do:
 //! - `stable` after McOsu `db2add2`: `src/App/Osu/OsuHUD.cpp` (`drawScore`, `drawAccuracy`,
 //!   `drawCombo`, `drawScorebarBg`, `drawSkip`), offsets taken as screen units; the hit error
-//!   meter as lazer's `LegacySkin` places it (bottom centre). The accuracy's 44 units below
-//!   the top are the stand-in score text's height plus McOsu's 10: they move with the skinned
-//!   counters (#332).
+//!   meter as lazer's `LegacySkin` places it (bottom centre). The accuracy's 33 units below
+//!   the top are the default skin's score digits at lazer's `LegacyScoreCounter` scale
+//!   (46 × 0.96 lazer pixels) plus `LegacyAccuracyCounter`'s top margin of 9, as lazer's
+//!   `LegacySkin` puts the accuracy below the score; a skin with taller digits overlaps.
 //! - `lazer` after osu!lazer 2026.1005.0-lazer: `osu.Game/Skinning/ArgonSkin.cs` (the default
 //!   skin's `MainHUDComponents`) and `osu.Game/Screens/Play/SkipOverlay.cs`, its 1024x768
 //!   pixels converted to screen units (x 0.625).

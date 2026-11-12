@@ -25,7 +25,9 @@ use slam_play::circles::{
 use slam_play::cursor::{
     CursorSkinConfig, CursorTextures, CursorView, ExpandTimes, MAX_CURSOR_SPRITES,
 };
-use slam_play::hud::OFFSET_PLACEHOLDER;
+use slam_play::health_bar::{HealthTextures, MarkerTextures};
+use slam_play::hud::{HudTextures, MAX_HUD_SHAPES, OFFSET_PLACEHOLDER};
+use slam_play::legacy_text::FontSprites;
 use slam_play::menu_overlay::{
     GameplayMenu, MenuInfo, MenuKind, MenuLayout, MenuView, ReplaySave, song_progress,
 };
@@ -730,16 +732,17 @@ fn ticks_and_frames_do_not_allocate() {
                 &snapshot.hud,
                 snapshot.offset_panel.offset_ms,
             );
-            hud.update_meters(&snapshot, now + MS / 2);
+            hud.animate(&snapshot, now + MS / 2);
             hud.push_shapes(
                 &mut batch,
                 &snapshot,
                 now + MS / 2,
                 Some(white),
                 textures.meter.as_ref(),
+                &textures.hud,
             );
             pending += hud
-                .push_text(&mut text, &snapshot, now, &mut glyphs)
+                .push_text(&mut text, &snapshot, now, &mut glyphs, &textures.hud)
                 .pending;
             view.push_cursor(&mut batch, &layout(), &snapshot, now + MS / 2, &textures);
             drawn += snapshot.circles.as_slice().len();
@@ -810,11 +813,7 @@ fn scored(map: &Beatmap, log: &[slam_osu::judgement::Judgement]) -> HudValues {
     for judgement in log {
         score.apply(judgement, false);
     }
-    HudValues {
-        score: score.total_score(),
-        accuracy: score.accuracy(),
-        combo: score.statistics().combo,
-    }
+    HudValues::of(&score)
 }
 
 #[test]
@@ -835,11 +834,7 @@ fn the_hud_shows_the_score_of_the_play() {
     assert!(!events.is_empty());
     let first = first_judged.expect("the play scores");
     assert_eq!(first, scored(&map, &events[..1]));
-    let last = HudValues {
-        score: session.score().total_score(),
-        accuracy: session.score().accuracy(),
-        combo: session.score().statistics().combo,
-    };
+    let last = HudValues::of(session.score());
     assert_eq!(last, scored(&map, events));
     assert!(last.score > 0);
     assert_eq!(last.combo, session.log().statistics().combo);
@@ -2392,6 +2387,79 @@ fn failing_comes_before_a_pause_in_the_same_tick() {
     assert_eq!(d.state(), PlayState::Exited);
 }
 
+/// A skin's HUD textures: a score font with every character, a health bar with two fill
+/// frames and the old-style ki.
+fn skinned_hud() -> HudTextures {
+    let sprite = |id: u32, w: f32, h: f32| {
+        Some(SkinSprite {
+            texture: TextureId(id),
+            uv: UvRect::FULL,
+            size: Vec2::new(w, h),
+        })
+    };
+    let font = FontSprites {
+        digits: std::array::from_fn(|d| sprite(100 + d as u32, 20.0, 40.0)),
+        symbols: std::array::from_fn(|i| sprite(110 + i as u32, 10.0, 40.0)),
+        overlap: 1.0,
+    };
+    let mut health = HealthTextures {
+        background: sprite(1, 600.0, 40.0),
+        fill_frames: 2,
+        frame_length: 50.0,
+        marker: MarkerTextures::Old([
+            sprite(3, 50.0, 50.0),
+            sprite(4, 50.0, 50.0),
+            sprite(5, 50.0, 50.0),
+        ]),
+        ..HealthTextures::default()
+    };
+    health.fill[0] = sprite(2, 500.0, 10.0);
+    health.fill[1] = sprite(6, 500.0, 10.0);
+    HudTextures {
+        score: font,
+        combo: font,
+        health,
+    }
+}
+
+#[test]
+fn a_skinned_hud_animates_and_draws_without_allocating() {
+    let registry = Arc::new(FontRegistry::with_builtin());
+    let stable = Builtin::Stable.layout();
+    let mut hud = hud_view(registry, &beatmap(), &stable.gameplay);
+    let textures = skinned_hud();
+    let mut batch = SpriteBatch::with_capacity(MAX_HUD_SHAPES);
+    let mut snapshot = PlaySnapshot::default();
+    // Rising combos and hits with a break, health draining and recovering, a restart.
+    let mut most = 0;
+    assert_no_alloc(|| {
+        for frame in 0..400u32 {
+            let now = u64::from(frame) * 8 * MS;
+            let combo = if (150..170).contains(&frame) {
+                0
+            } else {
+                frame / 3
+            };
+            snapshot.hud = HudValues {
+                score: i64::from(frame) * 1234,
+                accuracy: 1.0 - f64::from(frame) / 1000.0,
+                combo,
+                hits: frame / 3,
+            };
+            snapshot.health = (f64::from(frame % 100) / 100.0).max(0.1);
+            if frame == 300 {
+                snapshot.restarts += 1;
+            }
+            hud.update(1280.0, 720.0, &snapshot.hud, 0.0);
+            hud.animate(&snapshot, now);
+            batch.clear();
+            hud.push_shapes(&mut batch, &snapshot, now, Some(WHITE), None, &textures);
+            most = most.max(batch.len());
+        }
+    });
+    assert!(most > 0 && most <= MAX_HUD_SHAPES, "{most}");
+}
+
 #[test]
 fn hud_updates_and_frames_do_not_allocate() {
     let registry = Arc::new(FontRegistry::with_builtin());
@@ -2412,16 +2480,19 @@ fn hud_updates_and_frames_do_not_allocate() {
             score: 1_234_567,
             accuracy: 0.987_65,
             combo: 1234,
+            hits: 5,
         },
         HudValues {
             score: i64::MAX,
             accuracy: f64::NAN,
             combo: u32::MAX,
+            hits: 2,
         },
         HudValues {
             score: -1,
             accuracy: 0.0,
             combo: 0,
+            hits: 0,
         },
     ];
     let offsets = [0.0, -1.0, 12.5, 50.0, -50.0];
@@ -2435,8 +2506,21 @@ fn hud_updates_and_frames_do_not_allocate() {
             snapshot.offset_panel.changed(offset, 0);
             batch.clear();
             text.clear();
-            hud.push_shapes(&mut batch, &snapshot, 100 * MS, Some(WHITE), None);
-            hud.push_text(&mut text, &snapshot, 100 * MS, &mut glyphs);
+            hud.push_shapes(
+                &mut batch,
+                &snapshot,
+                100 * MS,
+                Some(WHITE),
+                None,
+                &HudTextures::default(),
+            );
+            hud.push_text(
+                &mut text,
+                &snapshot,
+                100 * MS,
+                &mut glyphs,
+                &HudTextures::default(),
+            );
         }
     });
     // Health bar (two), skip button and offset panel; the resume target goes with the
@@ -3299,8 +3383,15 @@ fn the_hit_error_meter_hides_during_a_spinner_and_keeps_its_lines() {
     let mut draw = |time: f64| {
         snapshot.time = time;
         batch.clear();
-        hud.update_meters(&snapshot, 0);
-        hud.push_shapes(&mut batch, &snapshot, 0, None, textures.meter.as_ref());
+        hud.animate(&snapshot, 0);
+        hud.push_shapes(
+            &mut batch,
+            &snapshot,
+            0,
+            None,
+            textures.meter.as_ref(),
+            &textures.hud,
+        );
         let alpha = batch
             .vertices()
             .iter()
@@ -3351,11 +3442,24 @@ fn a_layout_with_two_meters_draws_without_allocating() {
                 result: HitResult::Great,
             });
             hud.update(1920.0, height, &snapshot.hud, 0.0);
-            hud.update_meters(&snapshot, 0);
+            hud.animate(&snapshot, 0);
             shapes.clear();
             text.clear();
-            hud.push_shapes(&mut shapes, &snapshot, 0, Some(WHITE), Some(&meter));
-            hud.push_text(&mut text, &snapshot, 0, &mut glyphs);
+            hud.push_shapes(
+                &mut shapes,
+                &snapshot,
+                0,
+                Some(WHITE),
+                Some(&meter),
+                &HudTextures::default(),
+            );
+            hud.push_text(
+                &mut text,
+                &snapshot,
+                0,
+                &mut glyphs,
+                &HudTextures::default(),
+            );
         }
     });
     assert!(shapes.len() <= slam_play::hud::MAX_HUD_SHAPES);

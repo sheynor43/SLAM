@@ -33,7 +33,7 @@ use slam_skin::{Rgba, SkinChain, SkinSource};
 
 use crate::circles::{CircleMods, Easing, Kind, SkinSprite, Track, centred, to_linear, to_srgb};
 use crate::fail::FailFrame;
-use crate::legacy_text::{Digits, LegacyFont};
+use crate::legacy_text::{Digits, LegacyFont, NO_SYMBOLS};
 use crate::playfield::PlayfieldLayout;
 
 /// The most spinners a [`LiveSpinners`] snapshot holds and a frame draws; later ones are left
@@ -1075,16 +1075,19 @@ impl HitSpinners {
         // Ported from osu!lazer 2026.1005.0-lazer: osu.Game.Rulesets.Osu/Skinning/Legacy/LegacySpinner.cs (load, LoadComplete, UpdateStateTransforms)
         let font = LegacyFont {
             digits: &textures.score_digits,
+            symbols: &NO_SYMBOLS,
             overlap: self.style.score_overlap,
+            fixed_width: false,
         };
         let centred = Vec2::new(0.5, 0.5);
         font.push(
             batch,
-            &Digits::new(entry.live.bonus_score as u64),
+            Digits::new(entry.live.bonus_score as u64).as_bytes(),
             at(BONUS_Y),
             centred,
             pose.bonus_scale * window_scale,
             white(alpha * pose.bonus_alpha),
+            Blend::Alpha,
         );
         if let Some(t) = &textures.rpm {
             let corner = layout.to_window(Vec2::new(
@@ -1107,11 +1110,12 @@ impl HitSpinners {
         ));
         font.push(
             batch,
-            &spm_digits(entry.spm),
+            spm_digits(entry.spm).as_bytes(),
             top_right,
             Vec2::new(1.0, 0.0),
             SPRITE_SCALE * 0.9 * window_scale,
             white(alpha),
+            Blend::Alpha,
         );
         let spin = white(alpha * pose.spin_alpha);
         sprite(
