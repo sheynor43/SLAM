@@ -3422,6 +3422,8 @@ pub fn load_settings(songs: Option<PathBuf>) -> Settings {
             if let Some(scale) = loaded.legacy_hit_error_scale {
                 migrate_hit_error_scale(dirs, &mut settings, scale);
             }
+            let store = crate::hud_layouts::LayoutStore::in_data_dir(dirs);
+            crate::hud_layouts::migrate::refresh_migrated_copies(&store);
             settings
         }
         None => {
@@ -3694,6 +3696,8 @@ fn run_with<B: render::Backend>(
                 dim: options.dim,
                 snaking: options.snaking(),
                 hit_lighting: options.hit_lighting,
+                key_overlay: options.key_overlay,
+                hud_animations: options.hud_animations,
                 cursor_trail: options.cursor_trail,
                 cursor_size: options.cursor_size as f32,
                 auto_cursor_size: options.auto_cursor_size,

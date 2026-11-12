@@ -173,6 +173,46 @@ impl HitsoundDelay {
     }
 }
 
+/// How the key overlay's keys animate (ADR-0113).
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum KeyOverlayAnimation {
+    /// As in stable.
+    #[default]
+    Stable,
+    /// As in lazer.
+    Lazer,
+}
+
+impl KeyOverlayAnimation {
+    pub const ALL: [KeyOverlayAnimation; 2] =
+        [KeyOverlayAnimation::Stable, KeyOverlayAnimation::Lazer];
+
+    /// The name in the settings file.
+    pub fn name(self) -> &'static str {
+        match self {
+            KeyOverlayAnimation::Stable => "stable",
+            KeyOverlayAnimation::Lazer => "lazer",
+        }
+    }
+
+    /// The value called `name`.
+    pub fn from_name(name: &str) -> Option<KeyOverlayAnimation> {
+        KeyOverlayAnimation::ALL
+            .into_iter()
+            .find(|a| a.name() == name)
+    }
+}
+
+impl From<KeyOverlayAnimation> for slam_play::key_overlay::KeyAnimation {
+    fn from(animation: KeyOverlayAnimation) -> Self {
+        match animation {
+            KeyOverlayAnimation::Stable => slam_play::key_overlay::KeyAnimation::Stable,
+            KeyOverlayAnimation::Lazer => slam_play::key_overlay::KeyAnimation::Lazer,
+        }
+    }
+}
+
 impl Default for Audio {
     fn default() -> Audio {
         Audio {
@@ -525,6 +565,15 @@ pub struct Gameplay {
     pub snaking_out: bool,
     /// Hit lighting on hit circles and slider ends (lazer's `OsuSetting.HitLighting`).
     pub hit_lighting: bool,
+    /// Shows the key overlay during play (lazer's `OsuSetting.KeyOverlay`, ADR-0113).
+    pub key_overlay: bool,
+    /// How the key overlay's keys light up (ADR-0113).
+    pub key_overlay_animation: KeyOverlayAnimation,
+    /// Animates the HUD counters and the health bar. When off, the score and accuracy counters
+    /// show new values at once instead of rolling, the combo counter shows its value without
+    /// pops, and the health bar shows the health at once without easing, bulge and flash. The
+    /// key overlay keeps its own animation setting.
+    pub hud_animations: bool,
     /// The cursor leaves a trail (lazer's `OsuRulesetSetting.ShowCursorTrail`).
     pub cursor_trail: bool,
     /// Size of the gameplay cursor and its trail, 0.1 ..= 2.0 in steps of 0.01 (lazer's
@@ -548,6 +597,9 @@ impl Default for Gameplay {
             snaking_in: false,
             snaking_out: false,
             hit_lighting: true,
+            key_overlay: false,
+            key_overlay_animation: KeyOverlayAnimation::default(),
+            hud_animations: true,
             cursor_trail: true,
             cursor_size: 1.0,
             auto_cursor_size: false,

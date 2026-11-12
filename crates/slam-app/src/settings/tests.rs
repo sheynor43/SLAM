@@ -14,8 +14,8 @@ use super::dirs::{Os, resolve};
 use super::file::{self, LoadStatus};
 use super::keys;
 use super::model::{
-    Combo, DrawRate, FpsScreens, Frame, HitsoundDelay, InputSettings, KeySlot, Mods,
-    RendererChoice, Settings, Window,
+    Combo, DrawRate, FpsScreens, Frame, HitsoundDelay, InputSettings, KeyOverlayAnimation, KeySlot,
+    Mods, RendererChoice, Settings, Window,
 };
 
 fn temp_dir(tag: &str) -> PathBuf {
@@ -85,6 +85,9 @@ fn round_trip_non_default() {
     s.gameplay.snaking_in = true;
     s.gameplay.snaking_out = true;
     s.gameplay.hit_lighting = false;
+    s.gameplay.key_overlay = true;
+    s.gameplay.key_overlay_animation = KeyOverlayAnimation::Lazer;
+    s.gameplay.hud_animations = false;
     s.gameplay.cursor_trail = false;
     s.gameplay.cursor_size = 0.65;
     s.gameplay.auto_cursor_size = true;
@@ -213,6 +216,34 @@ fn view_settings_default_to_no_snaking_with_lighting_and_trail() {
     assert!(!missing.settings.gameplay.snaking_out);
     assert!(missing.settings.gameplay.hit_lighting);
     assert!(missing.settings.gameplay.cursor_trail);
+    assert!(!s.gameplay.key_overlay);
+    assert!(s.gameplay.hud_animations);
+    assert!(missing.settings.gameplay.hud_animations);
+    assert_eq!(
+        s.gameplay.key_overlay_animation,
+        KeyOverlayAnimation::Stable
+    );
+    assert!(!missing.settings.gameplay.key_overlay);
+    assert_eq!(
+        missing.settings.gameplay.key_overlay_animation,
+        KeyOverlayAnimation::Stable
+    );
+}
+
+#[test]
+fn the_key_overlay_animation_is_read_by_name() {
+    let loaded = file::from_toml_str("[gameplay]\nkey_overlay_animation = \"lazer\"\n");
+    assert_eq!(loaded.status, LoadStatus::Ok, "{:?}", loaded.warnings);
+    assert_eq!(
+        loaded.settings.gameplay.key_overlay_animation,
+        KeyOverlayAnimation::Lazer
+    );
+    let loaded = file::from_toml_str("[gameplay]\nkey_overlay_animation = \"bass\"\n");
+    assert_ne!(loaded.status, LoadStatus::Ok);
+    assert_eq!(
+        loaded.settings.gameplay.key_overlay_animation,
+        KeyOverlayAnimation::Stable
+    );
 }
 
 #[test]

@@ -11,19 +11,19 @@ use slam_audio::{ClockError, GameClock, MusicSnapshot, PositionSnapshot, TrackCo
 use slam_input::InputEvent;
 use slam_osu::breaks::BreakTracker;
 use slam_osu::hit_events::{HitErrorSummary, HitEvents};
-use slam_osu::judgement::{JudgementLog, Statistics};
+use slam_osu::judgement::{HitResult, JudgementLog, Statistics};
 use slam_osu::lead_in::{IntroSkip, earliest_start_time, gameplay_start_time};
 use slam_osu::replay::{Actions, InputFrame, ReplayRecorder, Rules};
 use slam_osu::rules::OsuRules;
 use slam_osu::scoring::{ScoreProcessor, ScoreRank};
 use slam_osu::{Beatmap, HealthProcessor, ModSet, Vec2};
-use slam_render::Extent;
 use slam_render::atlas::AtlasRegion;
 use slam_render::image::{Image, ImageLimits, decode_image};
 use slam_render::sprite::SpriteBatch;
 use slam_render::upload::{
     TextureHandle, TextureKind, TextureRequests, TextureState, TextureUploads,
 };
+use slam_render::{Color, Extent};
 use slam_skin::{AnimationOptions, ImageCheck, SIXTY_FRAME_TIME, SkinChain, TextureFile};
 
 use crate::circles::{
@@ -36,14 +36,18 @@ use crate::cursor::{
 use crate::fail::{FailFrame, FailView, TrackEffects};
 use crate::follow_points::{FollowPoints, MAX_FOLLOW_POINT_SIZE};
 use crate::gameplay_sounds::{GameplaySounds, VoiceSink};
+use crate::health_bar::{HealthTextures, MAX_FILL_FRAMES, MarkerTextures};
 use crate::hit_error::{HitErrorRing, HitErrorTargets, MeterTextures, disc_image, gradient_image};
 use crate::hotkeys::{GlobalAction, Hotkeys};
+use crate::hud::{HudTextures, MAX_SKIP_FRAMES, SkipTextures};
 use crate::input::{ClockTime, GameTime, LiveInput};
 use crate::judgements::{
     JudgementRing, JudgementTextures, JudgementView, MAX_JUDGEMENT_FRAMES, PIECE_SLOTS, PieceKind,
     PieceSprites, PopupTargets, piece_sources,
 };
+use crate::key_overlay::{KEYS, KeyOverlayTextures, KeyValues};
 use crate::legacy_hit_error::triangle_image;
+use crate::legacy_text::{self, FontSprites};
 use crate::menu_overlay::{
     GameplayMenu, MenuButton, MenuInfo, MenuKind, MenuSnapshot, ReplaySave, song_progress,
 };
@@ -56,6 +60,7 @@ use crate::sliders::{
     MAX_FOLLOW_CIRCLE_AREA_SIZE, ObjectTextures, SliderBodies, SliderTextures, push_approaches,
     push_objects,
 };
+use crate::song_progress::ring_image;
 use crate::spinners::{HitSpinners, LiveSpinners, SpinnerSpm, SpinnerTextures};
 use crate::time::Offsets;
 
@@ -131,6 +136,9 @@ pub struct HudValues {
     pub accuracy: f64,
     /// Current combo (`Combo`).
     pub combo: u32,
+    /// Judgements that are hits, ignored hits aside: each flashes the health bar's marker
+    /// (`HealthDisplay.onNewJudgement`).
+    pub hits: u32,
 }
 
 impl Default for HudValues {
@@ -139,18 +147,31 @@ impl Default for HudValues {
             score: 0,
             accuracy: 1.0,
             combo: 0,
+            hits: 0,
         }
     }
 }
 
 impl HudValues {
-    fn of(score: &ScoreProcessor) -> HudValues {
+    /// The values of `score` now.
+    pub fn of(score: &ScoreProcessor) -> HudValues {
         HudValues {
             score: score.total_score(),
             accuracy: score.accuracy(),
             combo: score.statistics().combo,
+            hits: hits(score.statistics()),
         }
     }
+}
+
+/// The judgements of `statistics` that are hits, ignored hits aside.
+// Ported from osu!lazer 2026.1005.0-lazer: osu.Game/Screens/Play/HUD/HealthDisplay.cs (onNewJudgement)
+fn hits(statistics: &Statistics) -> u32 {
+    HitResult::ALL
+        .iter()
+        .filter(|r| r.is_hit() && **r != HitResult::IgnoreHit)
+        .map(|r| statistics.count(*r))
+        .sum()
 }
 
 /// What a finished attempt's replay is made of: its input frames and final score. A passed
@@ -261,6 +282,8 @@ pub struct PlaySnapshot {
     /// Health, 0..=1.
     pub health: f64,
     pub hud: HudValues,
+    /// The key overlay's keys (ADR-0113).
+    pub keys: KeyValues,
     /// Where to click to resume, in osu!pixels ([`PlayState::Resuming`]).
     pub resume_target: Vec2,
     /// The cursor the window has while gameplay's stands still, in osu!pixels: the resume
@@ -305,6 +328,7 @@ impl Default for PlaySnapshot {
             is_break_time: true,
             health: 1.0,
             hud: HudValues::default(),
+            keys: KeyValues::default(),
             resume_target: Vec2::ZERO,
             resume_cursor: Vec2::ZERO,
             resume_cursor_path: CursorPath::default(),
@@ -419,6 +443,9 @@ pub struct PlaySession {
     /// Every judgement is in without failing (lazer's `HasPassed`); stays after quitting.
     passed: bool,
     restarts: u32,
+    /// The overlay keys' presses counted this attempt, and the presses of the input seen.
+    key_counts: [u32; KEYS],
+    key_presses_seen: [u32; KEYS],
     /// The pause or fail menu.
     menu: GameplayMenu,
     /// The menu's retry was pressed: the play restarts at the end of the tick.
@@ -566,6 +593,8 @@ impl PlaySession {
             restart_on_fail: false,
             passed: false,
             restarts: 0,
+            key_counts: [0; KEYS],
+            key_presses_seen: [0; KEYS],
             menu: GameplayMenu::default(),
             menu_restart: false,
             playable,
@@ -993,6 +1022,27 @@ impl PlaySession {
             }
         }
         self.popups_seen = self.log.events().len();
+        // Ported from McOsu db2add2: src/App/Osu/OsuBeatmap.cpp (keyPressed1, keyPressed2)
+        // Ported from osu!lazer 2026.1005.0-lazer: osu.Game/Screens/Play/Player.cs (onBreakTimeChanged)
+        // Presses count while playing, outside breaks (lazer's `IsBreakTime`, the intro
+        // before the first object included) and the skippable intro (McOsu's
+        // `m_bIsInSkippableSection`), to the tick: a step's presses go by the state at the
+        // previous step's time, the one the break tracker was last asked about (ADR-0113).
+        let (presses, _) = self.input.keys();
+        let counting = self.phase == Phase::Playing
+            && !self.skip.is_available(self.last_time)
+            && !self.is_break_time(self.last_time);
+        if counting {
+            for ((count, &now), seen) in self
+                .key_counts
+                .iter_mut()
+                .zip(&presses)
+                .zip(&self.key_presses_seen)
+            {
+                *count = count.wrapping_add(now.wrapping_sub(*seen));
+            }
+        }
+        self.key_presses_seen = presses;
         // Ported from osu!lazer 2026.1005.0-lazer: osu.Game/Screens/Play/Player.cs (LoadComponents)
         // Each judgement goes to the health processor, then to the score processor.
         for (index, judgement) in self.log.events().iter().enumerate().skip(self.applied) {
@@ -1308,6 +1358,8 @@ impl PlaySession {
         self.passed = false;
         self.failed_replay_saved = false;
         self.restarts += 1;
+        self.key_counts = [0; KEYS];
+        self.key_presses_seen = [0; KEYS];
         // A new player shows no panel and no menu.
         self.offset_panel.reset();
         self.menu.reset();
@@ -1367,6 +1419,12 @@ impl PlaySession {
         snapshot.skip_available = false;
         snapshot.health = self.health.health();
         snapshot.hud = HudValues::of(&self.score);
+        let (presses, held) = self.input.keys();
+        snapshot.keys = KeyValues {
+            presses,
+            counts: self.key_counts,
+            held,
+        };
         snapshot.resume_target = Vec2::ZERO;
         snapshot.resume_cursor = self.input.window_cursor();
         snapshot
@@ -1391,6 +1449,12 @@ impl PlaySession {
     fn fill(&self, snapshot: &mut PlaySnapshot, now_ns: u64) {
         snapshot.health = self.health.health();
         snapshot.hud = HudValues::of(&self.score);
+        let (presses, held) = self.input.keys();
+        snapshot.keys = KeyValues {
+            presses,
+            counts: self.key_counts,
+            held,
+        };
         snapshot.resume_target = self.resume_target;
         snapshot.resume_cursor = self.input.window_cursor();
         snapshot
@@ -1449,8 +1513,6 @@ enum Element {
     CursorMiddle,
     CursorTrail,
     Digit(u8),
-    /// A digit of the score font (`ScorePrefix`).
-    ScoreDigit(u8),
     /// A legacy spinner texture.
     Spinner(SpinnerPart),
 }
@@ -1508,7 +1570,7 @@ impl SpinnerPart {
     }
 }
 
-const ELEMENTS: [Element; 46] = [
+const ELEMENTS: [Element; 36] = [
     Element::Circle,
     Element::Overlay,
     Element::Approach,
@@ -1545,16 +1607,6 @@ const ELEMENTS: [Element; 46] = [
     Element::Spinner(SpinnerPart::Spin),
     Element::Spinner(SpinnerPart::Clear),
     Element::Spinner(SpinnerPart::Rpm),
-    Element::ScoreDigit(0),
-    Element::ScoreDigit(1),
-    Element::ScoreDigit(2),
-    Element::ScoreDigit(3),
-    Element::ScoreDigit(4),
-    Element::ScoreDigit(5),
-    Element::ScoreDigit(6),
-    Element::ScoreDigit(7),
-    Element::ScoreDigit(8),
-    Element::ScoreDigit(9),
 ];
 
 /// A requested skin texture with the pixel density of its file.
@@ -1642,6 +1694,10 @@ pub struct PlayTextures {
     /// The judgement popups' frames and particles, by `judgements::slot`.
     judgements: [RequestedPiece; PIECE_SLOTS],
     lighting: Option<Requested>,
+    /// The score and combo fonts and the health bar.
+    hud: HudRequests,
+    /// The song progress's ring.
+    ring: TextureHandle,
 }
 
 /// The requested textures of one result's popup.
@@ -1676,9 +1732,6 @@ impl PlayTextures {
         let prefix = skins
             .config(|s| s.setting("HitCirclePrefix").map(str::to_owned))
             .map_or_else(|| "default".to_owned(), |f| f.value);
-        let score_prefix = skins
-            .config(|s| s.setting("ScorePrefix").map(str::to_owned))
-            .map_or_else(|| "score".to_owned(), |f| f.value);
         let head_prefix = uses_prefix(skins, "sliderstartcircle");
         let tail_prefix = uses_prefix(skins, "sliderendcircle");
         let ball_skin = BallStyle::provider(skins).map(|p| skins.skin(p));
@@ -1728,7 +1781,6 @@ impl PlayTextures {
                 | Element::CursorMiddle
                 | Element::CursorTrail => continue,
                 Element::Digit(d) => format!("{prefix}-{d}"),
-                Element::ScoreDigit(d) => format!("{score_prefix}-{d}"),
                 Element::Spinner(part) => part.name().to_owned(),
             };
             let Some(found) = skins.texture(&name) else {
@@ -1815,6 +1867,8 @@ impl PlayTextures {
         let disc = requests.load_pixels(disc_image(), TextureKind::Atlas)?;
         let gradient = requests.load_pixels(gradient_image(), TextureKind::Atlas)?;
         let triangle = requests.load_pixels(triangle_image(), TextureKind::Atlas)?;
+        let ring = requests.load_pixels(ring_image(), TextureKind::Atlas)?;
+        let hud = HudRequests::request(skins, requests)?;
         Ok(PlayTextures {
             requested,
             white,
@@ -1831,6 +1885,8 @@ impl PlayTextures {
             cursor: CursorSkinConfig::new(skins),
             judgements,
             lighting,
+            hud,
+            ring,
         })
     }
 
@@ -1924,10 +1980,6 @@ impl PlayTextures {
                 Element::Digit(d) => {
                     frame.circles.digits[usize::from(d)] = Some(SkinSprite::digit(region, r.scale))
                 }
-                Element::ScoreDigit(d) => {
-                    frame.spinners.score_digits[usize::from(d)] =
-                        Some(SkinSprite::new(region, r.scale, f32::MAX))
-                }
                 // Legacy spinner sprites are not cropped.
                 Element::Spinner(part) => {
                     *part.slot(&mut frame.spinners) =
@@ -1963,6 +2015,13 @@ impl PlayTextures {
             frame.sliders.tail = PieceTextures::from(&frame.circles);
         }
         self.resolve_judgements(uploads, &mut frame.judgements);
+        frame.hud = self.hud.resolve(uploads);
+        frame.hud.disc = frame.disc;
+        if let TextureState::Ready(ring) = uploads.get(self.ring) {
+            frame.hud.ring = Some(ring);
+        }
+        // The spinners' counters are in the score font too.
+        frame.spinners.score_digits = frame.hud.score.digits;
         frame
     }
 
@@ -2011,6 +2070,324 @@ impl PlayTextures {
             + self.follow_points.len()
             + judgements
             + usize::from(self.lighting.is_some())
+            + self.hud.found()
+    }
+}
+
+/// The requested textures of a legacy font and its overlap.
+#[derive(Debug, Clone, Default)]
+struct FontRequests {
+    /// The digits, then the characters of [`legacy_text::SYMBOLS`].
+    glyphs: [Option<Requested>; 14],
+    overlap: f32,
+}
+
+impl FontRequests {
+    /// The font with `prefix` (`{prefix}-0`, ...): each character is looked up through the
+    /// whole chain (`LegacyGlyphStore`).
+    // Ported from osu!lazer 2026.1005.0-lazer: osu.Game/Skinning/LegacySpriteText.cs (LegacyGlyphStore.Get)
+    fn request(
+        skins: &SkinChain,
+        requests: &mut TextureRequests,
+        prefix: &str,
+        overlap: f32,
+    ) -> Result<FontRequests, RequestError> {
+        let mut glyphs = [None; 14];
+        for (slot, name) in glyphs.iter_mut().zip(legacy_text::glyph_names(prefix)) {
+            if let Some(found) = skins.texture(&name) {
+                *slot = Some(request_file(requests, &found.value)?);
+            }
+        }
+        Ok(FontRequests { glyphs, overlap })
+    }
+
+    fn resolve(&self, uploads: &TextureUploads) -> FontSprites {
+        let mut loaded = true;
+        let mut sprite = |r: &Option<Requested>| {
+            let r = r.as_ref()?;
+            glyph_sprite(uploads.get(r.handle), r.scale, &mut loaded)
+        };
+        let mut font = FontSprites {
+            overlap: self.overlap,
+            ..FontSprites::default()
+        };
+        for (out, r) in font.digits.iter_mut().zip(&self.glyphs[..10]) {
+            *out = sprite(r);
+        }
+        for (out, r) in font.symbols.iter_mut().zip(&self.glyphs[10..]) {
+            *out = sprite(r);
+        }
+        font.loaded = loaded;
+        font
+    }
+
+    fn found(&self) -> usize {
+        self.glyphs.iter().flatten().count()
+    }
+}
+
+/// The sprite of a requested glyph in `state`: a failed one is missing, a pending one
+/// clears `loaded` (the font is not drawn yet).
+fn glyph_sprite(state: TextureState, scale: f32, loaded: &mut bool) -> Option<SkinSprite> {
+    match state {
+        TextureState::Ready(region) => Some(SkinSprite::new(region, scale, f32::MAX)),
+        TextureState::Failed(_) => None,
+        TextureState::Pending => {
+            *loaded = false;
+            None
+        }
+    }
+}
+
+/// The requested textures of the health bar, all from the first skin with `scorebar-bg`.
+#[derive(Debug, Clone, Default)]
+struct HealthRequests {
+    background: Option<Requested>,
+    fill: Vec<Requested>,
+    frame_length: f64,
+    /// `None` without a skin; the new style's marker, or the old style's three.
+    marker: Option<HealthMarkerRequests>,
+}
+
+#[derive(Debug, Clone)]
+enum HealthMarkerRequests {
+    New(Option<Requested>),
+    Old([Option<Requested>; 3]),
+}
+
+impl HealthRequests {
+    // Ported from osu!lazer 2026.1005.0-lazer: osu.Game/Skinning/LegacyHealthDisplay.cs (load, LegacyFill, LegacyOldStyleMarker, LegacyNewStyleMarker)
+    fn request(
+        skins: &SkinChain,
+        requests: &mut TextureRequests,
+    ) -> Result<HealthRequests, RequestError> {
+        let Some(provider) = skins.find_provider(|s| s.texture("scorebar-bg").is_some()) else {
+            return Ok(HealthRequests::default());
+        };
+        let skin = skins.skin(provider);
+        let mut request = |name: &str| {
+            skin.texture(name)
+                .map(|f| request_file(requests, &f))
+                .transpose()
+        };
+        let background = request("scorebar-bg")?;
+        // The marker decides the style.
+        let marker = if skin.texture("scorebar-marker").is_some() {
+            HealthMarkerRequests::New(request("scorebar-marker")?)
+        } else {
+            HealthMarkerRequests::Old([
+                request("scorebar-ki")?,
+                request("scorebar-kidanger")?,
+                request("scorebar-kidanger2")?,
+            ])
+        };
+        let options = AnimationOptions {
+            animatable: true,
+            looping: true,
+            apply_config_frame_rate: true,
+            separator: "-",
+        };
+        let animation = skin.animation("scorebar-colour", options);
+        let frame_length = animation
+            .as_ref()
+            .map_or(SIXTY_FRAME_TIME, |a| a.frame_length_ms);
+        let fill = animation
+            .map_or_else(Vec::new, |a| a.frames)
+            .iter()
+            .take(MAX_FILL_FRAMES)
+            .map(|f| request_file(requests, f))
+            .collect::<Result<Vec<_>, _>>()?;
+        Ok(HealthRequests {
+            background,
+            fill,
+            frame_length,
+            marker: Some(marker),
+        })
+    }
+
+    /// The textures once all of them are uploaded; none before.
+    fn resolve(&self, uploads: &TextureUploads) -> HealthTextures {
+        let mut ready = true;
+        let mut sprite = |r: &Requested| match uploads.get(r.handle) {
+            TextureState::Ready(region) => Some(SkinSprite::new(region, r.scale, f32::MAX)),
+            _ => {
+                ready = false;
+                None
+            }
+        };
+        let mut textures = HealthTextures {
+            background: self.background.as_ref().and_then(&mut sprite),
+            frame_length: self.frame_length,
+            fill_frames: self.fill.len(),
+            ..HealthTextures::default()
+        };
+        for (out, r) in textures.fill.iter_mut().zip(&self.fill) {
+            *out = sprite(r);
+        }
+        textures.marker = match &self.marker {
+            None => MarkerTextures::None,
+            Some(HealthMarkerRequests::New(marker)) => {
+                MarkerTextures::New(marker.as_ref().and_then(&mut sprite))
+            }
+            Some(HealthMarkerRequests::Old(ki)) => {
+                MarkerTextures::Old(ki.each_ref().map(|r| r.as_ref().and_then(&mut sprite)))
+            }
+        };
+        if ready {
+            textures
+        } else {
+            HealthTextures::default()
+        }
+    }
+
+    fn found(&self) -> usize {
+        let marker = match &self.marker {
+            None => 0,
+            Some(HealthMarkerRequests::New(m)) => usize::from(m.is_some()),
+            Some(HealthMarkerRequests::Old(ki)) => ki.iter().flatten().count(),
+        };
+        usize::from(self.background.is_some()) + self.fill.len() + marker
+    }
+}
+
+/// The requested textures of the HUD.
+#[derive(Debug, Clone, Default)]
+struct HudRequests {
+    /// `inputoverlay-background`, `inputoverlay-key`, and `InputOverlayText`.
+    key_background: Option<Requested>,
+    key: Option<Requested>,
+    key_text: Option<Color>,
+    /// The frames of `play-skip` and their length.
+    skip: Vec<Requested>,
+    skip_frame_length: f64,
+    score: FontRequests,
+    /// `None` when the combo font is the score font.
+    combo: Option<FontRequests>,
+    combo_overlap: f32,
+    health: HealthRequests,
+}
+
+impl HudRequests {
+    // Ported from osu!lazer 2026.1005.0-lazer: osu.Game/Skinning/LegacySkinExtensions.cs (GetFontPrefix, GetFontOverlap)
+    fn request(
+        skins: &SkinChain,
+        requests: &mut TextureRequests,
+    ) -> Result<HudRequests, RequestError> {
+        let setting = |key: &str, default: &str| {
+            skins
+                .config(|s| s.setting(key).map(str::to_owned))
+                .map_or_else(|| default.to_owned(), |f| f.value)
+        };
+        let overlap = |key: &str| {
+            skins
+                .config(|s| s.setting_f32(key))
+                .map_or(0.0, |f| f.value)
+        };
+        let score_prefix = setting("ScorePrefix", "score");
+        let combo_prefix = setting("ComboPrefix", "score");
+        let score = FontRequests::request(skins, requests, &score_prefix, overlap("ScoreOverlap"))?;
+        let combo_overlap = overlap("ComboOverlap");
+        let combo = if combo_prefix == score_prefix {
+            None
+        } else {
+            Some(FontRequests::request(
+                skins,
+                requests,
+                &combo_prefix,
+                combo_overlap,
+            )?)
+        };
+        // Ported from osu!lazer 2026.1005.0-lazer: osu.Game/Skinning/LegacyKeyCounterDisplay.cs (load)
+        // Ported from osu!lazer 2026.1005.0-lazer: osu.Game/Skinning/LegacySkin.cs (InputOverlayText)
+        let texture = |requests: &mut TextureRequests, name: &str| {
+            skins
+                .texture(name)
+                .map(|f| request_file(requests, &f.value))
+                .transpose()
+        };
+        let key_background = texture(requests, "inputoverlay-background")?;
+        let key = texture(requests, "inputoverlay-key")?;
+        let key_text = skins
+            .config(|s| s.custom_colour("InputOverlayText"))
+            .map(|f| crate::spinners::rgba(f.value));
+        // Ported from McOsu db2add2: src/App/Osu/OsuSkin.cpp (play-skip, animatable)
+        let skip_options = AnimationOptions {
+            animatable: true,
+            looping: true,
+            apply_config_frame_rate: true,
+            separator: "-",
+        };
+        let skip_animation = skins.animation("play-skip", skip_options);
+        let skip_frame_length = skip_animation
+            .as_ref()
+            .map_or(SIXTY_FRAME_TIME, |a| a.value.frame_length_ms);
+        let skip = skip_animation
+            .map_or_else(Vec::new, |a| a.value.frames)
+            .iter()
+            .take(MAX_SKIP_FRAMES)
+            .map(|f| request_file(requests, f))
+            .collect::<Result<Vec<_>, _>>()?;
+        Ok(HudRequests {
+            key_background,
+            key,
+            key_text,
+            skip,
+            skip_frame_length,
+            score,
+            combo,
+            combo_overlap,
+            health: HealthRequests::request(skins, requests)?,
+        })
+    }
+
+    fn resolve(&self, uploads: &TextureUploads) -> HudTextures {
+        let score = self.score.resolve(uploads);
+        let combo = match &self.combo {
+            Some(combo) => combo.resolve(uploads),
+            None => FontSprites {
+                overlap: self.combo_overlap,
+                ..score
+            },
+        };
+        let sprite = |r: &Option<Requested>| {
+            let r = r.as_ref()?;
+            match uploads.get(r.handle) {
+                TextureState::Ready(region) => Some(SkinSprite::new(region, r.scale, f32::MAX)),
+                _ => None,
+            }
+        };
+        let mut skip = SkipTextures {
+            frame_length: self.skip_frame_length,
+            ..SkipTextures::default()
+        };
+        // An animation is drawn once all its frames are uploaded.
+        let mut ready = !self.skip.is_empty();
+        for (out, r) in skip.frames.iter_mut().zip(&self.skip) {
+            *out = sprite(&Some(*r));
+            ready &= out.is_some();
+        }
+        skip.count = if ready { self.skip.len() } else { 0 };
+        HudTextures {
+            score,
+            combo,
+            health: self.health.resolve(uploads),
+            keys: KeyOverlayTextures {
+                background: sprite(&self.key_background),
+                key: sprite(&self.key),
+            },
+            key_text: self.key_text,
+            skip,
+            ..HudTextures::default()
+        }
+    }
+
+    fn found(&self) -> usize {
+        usize::from(self.key_background.is_some())
+            + usize::from(self.key.is_some())
+            + self.skip.len()
+            + self.score.found()
+            + self.combo.as_ref().map_or(0, FontRequests::found)
+            + self.health.found()
     }
 }
 
@@ -2030,6 +2407,8 @@ pub struct FrameTextures {
     pub meter: Option<MeterTextures>,
     /// A white disc on transparent.
     pub disc: Option<AtlasRegion>,
+    /// The HUD's skin textures.
+    pub hud: HudTextures,
 }
 
 /// The draw side of a play.
@@ -2141,5 +2520,42 @@ impl PlayView {
             textures.disc,
             &textures.cursor,
         );
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use slam_render::upload::LoadError;
+
+    #[test]
+    fn a_font_is_loaded_once_no_glyph_is_pending() {
+        let region = AtlasRegion {
+            texture: slam_render::textures::TextureId(1),
+            origin: slam_render::Origin { x: 0, y: 0 },
+            size: Extent::new(20, 40),
+            uv: slam_render::atlas::UvRect::FULL,
+        };
+        let mut loaded = true;
+        // Ready: a sprite at the file's density.
+        let sprite = glyph_sprite(TextureState::Ready(region), 2.0, &mut loaded).unwrap();
+        assert_eq!(sprite.size, Vec2::new(10.0, 20.0));
+        // Failed: missing, but loaded.
+        assert_eq!(
+            glyph_sprite(TextureState::Failed(LoadError::Decode), 1.0, &mut loaded),
+            None
+        );
+        assert!(loaded);
+        // Pending: not loaded yet.
+        assert_eq!(glyph_sprite(TextureState::Pending, 1.0, &mut loaded), None);
+        assert!(!loaded);
+        // A font none of whose glyphs the skins have is loaded and empty.
+        let empty = FontRequests::default();
+        let mut loaded = true;
+        for r in &empty.glyphs {
+            assert!(r.is_none());
+            let _ = r.map(|r| glyph_sprite(TextureState::Pending, r.scale, &mut loaded));
+        }
+        assert!(loaded);
     }
 }

@@ -12,9 +12,11 @@
 //! The built-in presets place the elements as the clients do:
 //! - `stable` after McOsu `db2add2`: `src/App/Osu/OsuHUD.cpp` (`drawScore`, `drawAccuracy`,
 //!   `drawCombo`, `drawScorebarBg`, `drawSkip`), offsets taken as screen units; the hit error
-//!   meter as lazer's `LegacySkin` places it (bottom centre). The accuracy's 44 units below
-//!   the top are the stand-in score text's height plus McOsu's 10: they move with the skinned
-//!   counters (#332).
+//!   meter as lazer's `LegacySkin` places it (bottom centre). As there, the accuracy hangs
+//!   below the score and the song progress left of the accuracy (`attach`, ADR-0112), at
+//!   the gaps lazer's `LegacySkin` leaves; the combo keeps `LegacyDefaultComboCounter`'s
+//!   margin. Lazer scales a margin with its drawable: the accuracy's 17 and 9 at 0.576, the
+//!   score's 10 at 0.96, the combo's 10 at 1.28 (lazer pixels × 0.625 to units).
 //! - `lazer` after osu!lazer 2026.1005.0-lazer: `osu.Game/Skinning/ArgonSkin.cs` (the default
 //!   skin's `MainHUDComponents`) and `osu.Game/Screens/Play/SkipOverlay.cs`, its 1024x768
 //!   pixels converted to screen units (x 0.625).
@@ -160,6 +162,10 @@ pub struct LayoutElement {
     /// File name inside the layout's `sprites/` folder.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub sprite: Option<String>,
+    /// Placed from a point of an earlier element instead of the screen's `anchor`
+    /// (ADR-0112).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub attach: Option<Attach>,
     /// Component-specific settings.
     #[serde(default, skip_serializing_if = "is_empty_map")]
     pub properties: Map<String, Value>,
@@ -182,10 +188,19 @@ impl LayoutElement {
             visible: true,
             perspective: zero_pair(),
             sprite: None,
+            attach: None,
             properties: Map::new(),
             extra: Map::new(),
         }
     }
+}
+
+/// Where an element is placed from instead of the screen (ADR-0112): a point of the box of
+/// the first element of kind `to` before it in the same section.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct Attach {
+    pub to: ComponentKind,
+    pub point: Anchor,
 }
 
 /// A whole layout.

@@ -214,17 +214,43 @@ impl SpriteBatch {
         }
     }
 
+    /// Records a quad of `texture` with corners `corners` (window pixels) and texture
+    /// coordinates `uv`, in order around it, all tinted `colour`. Repeating a corner makes
+    /// a triangle (a pie's slice).
+    pub fn push_quad(
+        &mut self,
+        texture: TextureId,
+        blend: Blend,
+        corners: [[f32; 2]; 4],
+        uv: [[f32; 2]; 4],
+        colour: Color,
+    ) {
+        self.extend(texture, blend, 1);
+        let Color { r, g, b, a } = colour;
+        for (position, uv) in corners.into_iter().zip(uv) {
+            self.vertices.push(SpriteVertex {
+                position,
+                colour: [r, g, b, a],
+                uv,
+            });
+        }
+    }
+
     /// Accounts for `quads` quads of `sprite`'s texture and blend.
     fn extend_batch(&mut self, sprite: &Sprite, quads: u32) {
+        self.extend(sprite.texture, sprite.blend, quads);
+    }
+
+    fn extend(&mut self, texture: TextureId, blend: Blend, quads: u32) {
         // A u32 quad index overflows only past 2^32 sprites (128 GiB of vertices).
         let quad = self.len() as u32;
         match self.batches.last_mut() {
-            Some(last) if last.texture == sprite.texture && last.blend == sprite.blend => {
+            Some(last) if last.texture == texture && last.blend == blend => {
                 last.quads += quads;
             }
             _ => self.batches.push(Batch {
-                texture: sprite.texture,
-                blend: sprite.blend,
+                texture,
+                blend,
                 first_quad: quad,
                 quads,
             }),
@@ -841,6 +867,23 @@ mod tests {
 
     fn positions(batch: &SpriteBatch) -> Vec<[f32; 2]> {
         batch.vertices().iter().map(|v| v.position).collect()
+    }
+
+    #[test]
+    fn a_quad_takes_its_own_corners_and_joins_the_batch() {
+        let mut batch = SpriteBatch::new();
+        batch.push(&sprite(3, Blend::Alpha));
+        let corners = [[0.0, 0.0], [4.0, 0.0], [4.0, 2.0], [0.0, 0.0]];
+        let uv = [[0.5, 0.5], [1.0, 0.5], [1.0, 1.0], [0.5, 0.5]];
+        batch.push_quad(TextureId(3), Blend::Alpha, corners, uv, RED);
+        assert_eq!(batch.len(), 2);
+        assert_eq!(batch.batches().len(), 1);
+        assert_eq!(&positions(&batch)[4..], &corners);
+        let v = &batch.vertices()[4..];
+        assert!(v.iter().zip(uv).all(|(v, uv)| v.uv == uv));
+        assert!(v.iter().all(|v| v.colour == [1.0, 0.0, 0.0, 1.0]));
+        batch.push_quad(TextureId(4), Blend::Additive, corners, uv, RED);
+        assert_eq!(batch.batches().len(), 2);
     }
 
     fn assert_close(actual: &[[f32; 2]], expected: &[[f32; 2]]) {

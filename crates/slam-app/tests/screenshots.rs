@@ -57,8 +57,12 @@ fn skins_draw_as_the_references() {
     for case in CASES {
         let shots = Shots {
             map: beatmap(case.map),
-            // The defaults of the settings, with the background as the play shows it.
-            settings: PlaySettings::default(),
+            // The defaults of the settings, with the background as the play shows it, and
+            // the key overlay on to see it.
+            settings: PlaySettings {
+                key_overlay: Some(slam_play::key_overlay::KeyAnimation::Stable),
+                ..PlaySettings::default()
+            },
             times: case.times.to_vec(),
             size: DEFAULT_SIZE,
             any_renderer: false,

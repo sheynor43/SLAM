@@ -160,6 +160,8 @@ pub struct LiveInput {
     held_len: usize,
     /// Actions held: the union of `held_inputs`.
     held: Actions,
+    /// Presses per key of the overlay (ADR-0113).
+    key_presses: [u32; crate::key_overlay::KEYS],
     /// Time of the previous step: no event of a later step is earlier.
     last_time: f64,
     /// Events not delivered yet because a step was full, oldest first (a ring).
@@ -210,6 +212,7 @@ impl LiveInput {
             }; MAX_HELD_INPUTS],
             held_len: 0,
             held: Actions::NONE,
+            key_presses: [0; crate::key_overlay::KEYS],
             last_time: f64::NEG_INFINITY,
             pending: [no_event; MAX_PENDING_EVENTS],
             pending_start: 0,
@@ -269,6 +272,22 @@ impl LiveInput {
     /// Actions held.
     pub fn held(&self) -> Actions {
         self.held
+    }
+
+    /// The overlay keys' presses so far and whether each is held (ADR-0113).
+    pub fn keys(
+        &self,
+    ) -> (
+        [u32; crate::key_overlay::KEYS],
+        [bool; crate::key_overlay::KEYS],
+    ) {
+        let mut held = [false; crate::key_overlay::KEYS];
+        for h in &self.held_inputs[..self.held_len] {
+            if let Some(i) = crate::key_overlay::slot(h.input, h.actions) {
+                held[i] = true;
+            }
+        }
+        (self.key_presses, held)
     }
 
     /// Events dropped because too many waited for a later step (consecutive waiting mouse
@@ -428,6 +447,7 @@ impl LiveInput {
         }
         self.held_len = 0;
         self.held = Actions::NONE;
+        self.key_presses = [0; crate::key_overlay::KEYS];
         self.last_time = f64::NEG_INFINITY;
         self.pending_start = 0;
         self.pending_len = 0;
@@ -631,6 +651,9 @@ impl LiveInput {
                 actions: bound,
             };
             self.held_len += 1;
+            if let Some(i) = crate::key_overlay::slot(input, bound) {
+                self.key_presses[i] = self.key_presses[i].wrapping_add(1);
+            }
         } else if let Some(index) = held_index {
             self.held_inputs
                 .copy_within(index + 1..self.held_len, index);
@@ -739,6 +762,38 @@ mod tests {
         );
         assert_eq!(step.events[0].position, Vec2::new(100.0, 100.0));
         assert_eq!(step.events[1].position, Vec2::new(200.0, 200.0));
+    }
+
+    #[test]
+    fn overlay_keys_count_each_input_in_its_own_slot() {
+        let mut input = live();
+        let _ = input.step(
+            &[
+                key(1.0, SCANCODE_Z, true),
+                // The left action is held already: still M1's press.
+                mouse(2.0, MouseButton::Left, true),
+                key(3.0, SCANCODE_X, true),
+                key(3.5, SCANCODE_X, false),
+                // Smoke and an unbound key count nothing.
+                key(4.0, SCANCODE_C, true),
+                key(4.5, 4, true),
+            ],
+            ms(5.0),
+            &Linear,
+        );
+        assert_eq!(input.keys(), ([1, 1, 1, 0], [true, false, true, false]));
+        let _ = input.step(
+            &[key(6.0, SCANCODE_Z, false), key(7.0, SCANCODE_Z, true)],
+            ms(8.0),
+            &Linear,
+        );
+        assert_eq!(input.keys(), ([2, 1, 1, 0], [true, false, true, false]));
+        // Disabled mouse buttons press nothing.
+        input.set_mouse_buttons_disabled(true);
+        let _ = input.step(&[mouse(9.0, MouseButton::Right, true)], ms(10.0), &Linear);
+        assert_eq!(input.keys().0[3], 0);
+        input.reset();
+        assert_eq!(input.keys(), ([0; 4], [false; 4]));
     }
 
     #[test]

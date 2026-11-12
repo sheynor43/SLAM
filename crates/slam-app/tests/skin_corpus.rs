@@ -53,6 +53,7 @@ fn shoot(entry: &Entry, root: &Path, map: &Path, checker: &mut Checker) -> &'sta
             skin: Some(dir),
             // The skin under test is the one shown, not the scene beatmap's own.
             beatmap_skins: false,
+            key_overlay: Some(slam_play::key_overlay::KeyAnimation::Stable),
             ..PlaySettings::default()
         },
         times: TIMES.to_vec(),

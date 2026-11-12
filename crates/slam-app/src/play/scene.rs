@@ -99,6 +99,10 @@ pub struct PlaySettings {
     pub positional_hitsounds_level: f32,
     /// Rate of the mixer the samples are prepared for (ADR-0102).
     pub sample_rate: u32,
+    /// The key overlay's animation; `None`: no key overlay (ADR-0113).
+    pub key_overlay: Option<slam_play::key_overlay::KeyAnimation>,
+    /// Rolling counters, the combo's pops and the health bar's easing (on by default).
+    pub hud_animations: bool,
 }
 
 impl Default for PlaySettings {
@@ -119,6 +123,8 @@ impl Default for PlaySettings {
             auto_cursor_size: false,
             positional_hitsounds_level: DEFAULT_POSITIONAL_LEVEL,
             sample_rate: slam_audio::DEFAULT_SAMPLE_RATE,
+            key_overlay: None,
+            hud_animations: true,
         }
     }
 }
@@ -360,6 +366,9 @@ pub fn prepare(
             layout: &settings.hud_layout,
             windows: &windows,
             meter_hiding: &slam_play::hit_error::SpinnerHiding::new(beatmap),
+            song_progress: slam_play::song_progress::SongProgress::new(beatmap),
+            key_overlay: settings.key_overlay,
+            animations: settings.hud_animations,
         },
     );
     // The layout decides how much text the HUD draws.
@@ -537,7 +546,7 @@ impl PlayScene {
             &snapshot.hud,
             snapshot.offset_panel.offset_ms,
         );
-        self.hud.update_meters(snapshot, now_ns);
+        self.hud.animate(snapshot, now_ns);
         self.menu.update(width, height, &snapshot.menu);
         self.batch.clear();
         self.text.clear();
@@ -585,9 +594,15 @@ impl PlayScene {
             now_ns,
             textures.white,
             textures.meter.as_ref(),
+            &textures.hud,
         );
-        self.hud
-            .push_text(&mut self.text, snapshot, now_ns, &mut self.glyphs);
+        self.hud.push_text(
+            &mut self.text,
+            snapshot,
+            now_ns,
+            &mut self.glyphs,
+            &textures.hud,
+        );
         self.view
             .push_cursor(&mut self.cursor, &layout, snapshot, now_ns, &textures);
         let layer = fail.map_or(Affine::IDENTITY, |fail| fail.layer);

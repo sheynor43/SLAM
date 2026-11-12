@@ -98,6 +98,61 @@ pub fn migrate_hit_error_scale(
     }
 }
 
+/// The gameplay section of the stable and slam presets before the attached elements of
+/// ADR-0112: copies made from them by [`migrate_hit_error_scale`] still have it.
+const PRESET_GAMEPLAY_V1: &str = r#"[
+    {"component": "health", "anchor": "top_left", "origin": "top_left", "position": [0, 0]},
+    {"component": "score", "anchor": "top_right", "origin": "top_right", "position": [0, 0]},
+    {"component": "accuracy", "anchor": "top_right", "origin": "top_right", "position": [-5, 44]},
+    {"component": "combo", "anchor": "bottom_left", "origin": "bottom_left", "position": [5, 0]},
+    {"component": "hit_error_meter", "anchor": "bottom_centre", "origin": "bottom_centre", "position": [0, 0]},
+    {"component": "skip_button", "anchor": "bottom_right", "origin": "bottom_right", "position": [0, 0]}
+]"#;
+
+/// Brings the copies [`migrate_hit_error_scale`] made of a preset up to the preset's current
+/// gameplay section, meters scaled again, as long as their gameplay section is still the old
+/// preset's: a copy the user edited is left alone. Returns how many were updated. Cold path:
+/// runs at start.
+pub fn refresh_migrated_copies(store: &LayoutStore) -> usize {
+    let Ok(old) =
+        serde_json::from_str::<Vec<slam_ui::hud_layout::LayoutElement>>(PRESET_GAMEPLAY_V1)
+    else {
+        return 0;
+    };
+    let mut updated = 0;
+    for entry in store.list().into_iter().filter(|e| !e.builtin) {
+        let Ok(mut layout) = store.load(&entry.id) else {
+            continue;
+        };
+        let Some(scale) = layout.extra.get(MIGRATED).and_then(|v| v.as_f64()) else {
+            continue;
+        };
+        let mut untouched = HudLayout {
+            gameplay: old.clone(),
+            ..layout.clone()
+        };
+        scale_hit_error_meters(&mut untouched, scale);
+        if untouched.gameplay != layout.gameplay {
+            continue;
+        }
+        // The slam preset's gameplay section is the stable one's (a test in `slam-ui` keeps
+        // them the same), so a copy of either takes it.
+        layout.gameplay = Builtin::Stable.layout().gameplay;
+        scale_hit_error_meters(&mut layout, scale);
+        match store.save(&entry.id, &layout) {
+            Ok(()) => {
+                tracing::info!(
+                    "hud: updated layout `{}` to the current preset",
+                    entry.id.as_str()
+                );
+                updated += 1;
+            }
+            Err(e) => tracing::warn!("hud: cannot update layout `{}`: {e}", entry.id.as_str()),
+        }
+    }
+    updated
+}
+
 /// The name of the layout a built-in one is copied into, in the interface language.
 pub fn migrated_name(localizer: &Localizer, preset: &str, scale: f64) -> String {
     let mut args = FluentArgs::new();

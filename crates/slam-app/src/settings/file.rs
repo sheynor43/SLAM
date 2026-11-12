@@ -13,8 +13,9 @@ use toml::{Table, Value};
 
 use super::keys;
 use super::model::{
-    BindingEntry, Combo, DrawRate, FpsScreens, HitsoundDelay, InputSettings, KeySlot,
-    RendererChoice, Settings, Timing, Window, corner_from_name, parse_size, window_mode_from_name,
+    BindingEntry, Combo, DrawRate, FpsScreens, HitsoundDelay, InputSettings, KeyOverlayAnimation,
+    KeySlot, RendererChoice, Settings, Timing, Window, corner_from_name, parse_size,
+    window_mode_from_name,
 };
 
 /// The schema version this build writes.
@@ -448,6 +449,35 @@ fn from_table(mut table: Table) -> Loaded {
         "gameplay",
         "hit_lighting",
         &mut settings.gameplay.hit_lighting,
+        |_| Ok(()),
+    );
+    cx.field(
+        &mut gameplay,
+        "gameplay",
+        "key_overlay",
+        &mut settings.gameplay.key_overlay,
+        |_| Ok(()),
+    );
+    let mut animation: Option<String> = None;
+    cx.opt(
+        &mut gameplay,
+        "gameplay",
+        "key_overlay_animation",
+        &mut animation,
+    );
+    if let Some(name) = animation {
+        match KeyOverlayAnimation::from_name(&name) {
+            Some(animation) => settings.gameplay.key_overlay_animation = animation,
+            None => cx.warn(format!(
+                "gameplay.key_overlay_animation: unknown value \"{name}\", using the default"
+            )),
+        }
+    }
+    cx.field(
+        &mut gameplay,
+        "gameplay",
+        "hud_animations",
+        &mut settings.gameplay.hud_animations,
         |_| Ok(()),
     );
     cx.field(

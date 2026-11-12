@@ -2,17 +2,20 @@
 
 pub mod background;
 pub mod circles;
+pub mod combo_counter;
 pub mod cursor;
 pub mod fail;
 pub mod follow_points;
 pub mod fps_counter;
 pub mod gameplay_sounds;
+pub mod health_bar;
 pub mod hit_error;
 pub mod hitsounds;
 pub mod hotkeys;
 pub mod hud;
 pub mod input;
 pub mod judgements;
+pub mod key_overlay;
 pub mod legacy_hit_error;
 pub mod legacy_text;
 pub mod menu_overlay;
@@ -24,6 +27,7 @@ pub mod session;
 pub mod shake;
 pub mod slider_body;
 pub mod sliders;
+pub mod song_progress;
 pub mod spinners;
 pub mod time;
 

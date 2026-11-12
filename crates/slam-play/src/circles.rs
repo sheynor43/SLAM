@@ -28,7 +28,7 @@ use slam_render::textures::TextureId;
 use slam_render::{Blend, Color};
 use slam_skin::{Rgba, Skin, SkinChain, SkinSource, VersionRules};
 
-use crate::legacy_text::{Digits, LegacyFont};
+use crate::legacy_text::{Digits, LegacyFont, NO_SYMBOLS};
 use crate::playfield::PlayfieldLayout;
 
 /// The most circles a [`LiveCircles`] snapshot holds; later ones are left out.
@@ -812,16 +812,19 @@ fn push_number(
     }
     let font = LegacyFont {
         digits: &textures.digits,
+        symbols: &NO_SYMBOLS,
         overlap: config.overlap,
+        fixed_width: false,
     };
     let centred = Vec2::new(0.5, 0.5);
     font.push(
         batch,
-        &Digits::new(u64::from(number)),
+        Digits::new(u64::from(number)).as_bytes(),
         centre,
         centred,
         scale,
         colour,
+        Blend::Alpha,
     );
 }
 

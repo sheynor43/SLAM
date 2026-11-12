@@ -51,6 +51,10 @@ pub struct PlayOptions {
     pub snaking_out: bool,
     /// Hit lighting on hits.
     pub hit_lighting: bool,
+    /// The key overlay and its animation; `None` is off (ADR-0113).
+    pub key_overlay: Option<slam_play::key_overlay::KeyAnimation>,
+    /// Animates the HUD counters and the health bar.
+    pub hud_animations: bool,
     /// The cursor leaves a trail.
     pub cursor_trail: bool,
     /// Size of the cursor (ADR-0086).
@@ -242,6 +246,8 @@ pub fn spawn(mut config: LoaderConfig) -> std::io::Result<(LoaderLink, SceneTras
                         resolve(config.hud_layouts.as_ref(), &options.hud_layout).gameplay;
                     config.settings.snaking = options.snaking();
                     config.settings.hit_lighting = options.hit_lighting;
+                    config.settings.key_overlay = options.key_overlay;
+                    config.settings.hud_animations = options.hud_animations;
                     config.settings.cursor_trail = options.cursor_trail;
                     config.settings.cursor_size = options.cursor_size as f32;
                     config.settings.auto_cursor_size = options.auto_cursor_size;
@@ -309,6 +315,8 @@ mod tests {
             snaking_in: false,
             snaking_out: false,
             hit_lighting: true,
+            key_overlay: None,
+            hud_animations: true,
             cursor_trail: true,
             cursor_size: 1.0,
             auto_cursor_size: false,
@@ -470,6 +478,7 @@ mod tests {
                 snaking_in: on,
                 snaking_out: !on,
                 hit_lighting: on,
+                key_overlay: on.then_some(slam_play::key_overlay::KeyAnimation::Lazer),
                 cursor_trail: on,
                 ..options()
             };
