@@ -4,7 +4,9 @@
 //! pixels. The skin screenshot tests compare them with references ([`compare`]).
 //! Developer command: its console output is not localised.
 
+pub mod check;
 pub mod compare;
+pub mod corpus;
 mod offline;
 
 use std::path::{Path, PathBuf};
