@@ -176,6 +176,7 @@ settings-input-high-precision-warning =
     меняйте чувствительность вне игры, а эту настройку пока не включайте.
 settings-input-sensitivity-hint = Включите высокоточную мышь, чтобы менять чувствительность
 settings-layout-language = Язык
+settings-general-intro = Заставка при запуске
 settings-layout-screen-mode = Режим экрана
 settings-layout-display = Монитор
 settings-layout-resolution = Разрешение

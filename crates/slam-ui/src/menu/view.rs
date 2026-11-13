@@ -94,6 +94,8 @@ pub struct MenuView {
     layout: MenuLayout,
     title: Line,
     buttons: [Line; MenuItem::ALL.len()],
+    /// The startup intro draws the title meanwhile (ADR-0114).
+    title_hidden: bool,
 }
 
 impl std::fmt::Debug for MenuView {
@@ -115,6 +117,7 @@ impl MenuView {
             layout: MenuLayout::new(width, height, &theme),
             title: Line::new(&labels.title),
             buttons: labels.buttons.each_ref().map(|text| Line::new(text)),
+            title_hidden: false,
             theme,
         };
         view.lay_out();
@@ -142,6 +145,12 @@ impl MenuView {
             self.type_setter
                 .lay_out(button, self.theme.button_text_size * scale);
         }
+    }
+
+    /// Leaves the title out of [`MenuView::push`] while the startup intro draws it
+    /// (ADR-0114).
+    pub fn set_title_hidden(&mut self, hidden: bool) {
+        self.title_hidden = hidden;
     }
 
     /// Asks `glyphs` for every glyph the menu shows. Returns how many are not ready yet;
@@ -196,14 +205,16 @@ impl MenuView {
             rect(&self.layout.buttons[i], fill);
         }
         let shifted = |centre: [f32; 2]| [centre[0] + shift, centre[1]];
-        let title = faded(theme.text, pose.opacity);
-        push_centred(
-            text,
-            &self.title,
-            shifted(self.layout.title.centre()),
-            title,
-            glyphs,
-        );
+        if !self.title_hidden {
+            let title = faded(theme.text, pose.opacity);
+            push_centred(
+                text,
+                &self.title,
+                shifted(self.layout.title.centre()),
+                title,
+                glyphs,
+            );
+        }
         for (i, item) in MenuItem::ALL.into_iter().enumerate() {
             let colour = if item.enabled() {
                 theme.text

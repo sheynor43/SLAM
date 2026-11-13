@@ -10,7 +10,7 @@ use std::time::{Duration, Instant, SystemTime};
 
 use slam_audio::{
     AudioPosition, Backend, MixerConfig, MixerHandle, MusicConfig, MusicEvent, MusicPlayer,
-    MusicPosition, StreamConfig, TrackSource, VoiceGroup,
+    MusicPosition, Sample, StreamConfig, TrackSource, VoiceGroup, VoiceId, VoiceParams,
 };
 use slam_engine::clock::now_ns;
 use slam_engine::{
@@ -38,6 +38,7 @@ use slam_render::upload::{TextureLoaderConfig, TextureState, TextureUploads, tex
 use slam_render::{Color, Device, Extent, TextureFormat, shaders};
 use slam_text::{FontRegistry, GlyphAtlasConfig, GlyphCache, glyph_atlas};
 use slam_ui::i18n::Localizer;
+use slam_ui::intro::{Intro, IntroSnapshot, IntroView};
 use slam_ui::menu::{MainMenu, MenuAction, MenuInput, MenuLayout, MenuSnapshot, MenuView};
 use slam_ui::results::{
     Results, ResultsAction, ResultsData, ResultsInput, ResultsLayout, ResultsMods, ResultsSnapshot,
@@ -75,6 +76,7 @@ use crate::settings::{Combo, Dirs, InputSettings, KeySlot, Mods, Settings};
 use crate::songs::{FolderChange, SkinViews, SongFiles, SongsLink};
 
 mod draw_rate;
+mod intro_sound;
 mod live;
 
 use language::{LanguageSwap, LanguageViews};
@@ -102,8 +104,11 @@ pub const USAGE: &str = "usage: slam-app [--songs DIR]\n\
 /// backgrounds.
 const MAX_TEXTURES: usize = 16 + MAX_BACKGROUNDS as usize;
 /// Rectangles of one frame: the buttons or rows of up to two layers, the FPS counter's
-/// box, two backgrounds of each layer and the language curtain (ADR-0091).
-const MAX_SHAPES: usize = 256 + 1 + 2 * MAX_LAYERS + slam_ui::curtain::MAX_SPRITES;
+/// box, two backgrounds of each layer, the language curtain (ADR-0091) and the intro's
+/// black (ADR-0114).
+const MAX_SHAPES: usize = 256 + 1 + 2 * MAX_LAYERS + slam_ui::curtain::MAX_SPRITES + 1;
+/// Outlined glyphs of the startup intro's title (ADR-0114).
+const MAX_INTRO_OUTLINES: usize = 64;
 /// Glyph sprites of one frame: the texts of up to two layers and the FPS counter.
 const MAX_GLYPH_SPRITES: usize = 8192 + MAX_FPS_GLYPHS;
 /// How long the draw thread waits for the glyphs before the first frame.
@@ -252,6 +257,8 @@ pub struct ShellSnapshot {
     pub language_switch: u64,
     /// The settings panel over the screens, while it shows.
     pub panel: Option<PanelView>,
+    /// The startup intro over everything, while it shows (ADR-0114).
+    pub intro: Option<IntroSnapshot>,
 }
 
 /// The update logic without the window: input to navigation to snapshot.
@@ -342,6 +349,21 @@ pub struct ShellState {
     backgrounds: Option<BackgroundPicker>,
     /// Asks for the selected difficulty's statistics; without a library thread `None`.
     details: Option<DetailsPicker>,
+    /// The startup intro until it is over; `None` when off (ADR-0114).
+    intro: Option<Intro>,
+    /// Set by the draw thread once it has shown a frame: the intro's clock starts then,
+    /// not while the draw thread still prepares its device and glyphs.
+    intro_gate: Arc<AtomicBool>,
+    /// The intro started or was skipped since the play host last asked: it plays or fades
+    /// out the intro's sound.
+    intro_events: IntroEvents,
+}
+
+/// What happened to the intro since the play host last asked.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct IntroEvents {
+    pub started: bool,
+    pub skipped: bool,
 }
 
 impl ShellState {
@@ -400,7 +422,53 @@ impl ShellState {
             pixels_per_point,
             backgrounds: None,
             details: None,
+            intro: None,
+            intro_gate: Arc::new(AtomicBool::new(false)),
+            intro_events: IntroEvents::default(),
         }
+    }
+
+    /// A shell that opens with the startup intro over the menu (ADR-0114); its clock
+    /// starts on the first tick after `gate` is set, by the draw thread once it has shown
+    /// a frame.
+    pub fn with_intro(mut self, gate: Arc<AtomicBool>) -> ShellState {
+        self.intro = Some(Intro::new());
+        self.intro_gate = gate;
+        self
+    }
+
+    /// The intro started or was skipped since the last call.
+    pub fn take_intro_events(&mut self) -> IntroEvents {
+        std::mem::take(&mut self.intro_events)
+    }
+
+    /// Whether the intro holds the menu's music back: until its impact (ADR-0114).
+    pub fn intro_holds_music(&self, now_ns: u64) -> bool {
+        self.intro.is_some_and(|intro| !intro.music_due(now_ns))
+    }
+
+    /// Whether the intro takes `kind`: while it plays, a press skips it and nothing else
+    /// reaches the screens. Once skipped, the menu shows and takes input again.
+    fn intro_input(&mut self, kind: InputKind, now_ns: u64) -> bool {
+        let Some(intro) = &mut self.intro else {
+            return false;
+        };
+        // The rest of the skipping tick's events go too: the text of the key that
+        // skipped, say.
+        if intro.skipped_at().is_some_and(|at| at != now_ns) {
+            return false;
+        }
+        if let InputKind::Key { down: true, .. } | InputKind::MouseButton { down: true, .. } = kind
+        {
+            intro.skip(now_ns);
+            self.intro_events.skipped |= intro.is_skipped();
+        }
+        // The modifiers and the pointer stay known for the menu after the intro.
+        self.track_modifiers(kind);
+        if let InputKind::MouseMove { x, y } = kind {
+            self.cursor = [x * self.pixels_per_point, y * self.pixels_per_point];
+        }
+        true
     }
 
     /// A shell whose song select shows the selected difficulty's length, BPM and objects
@@ -1353,6 +1421,9 @@ impl ShellState {
             if let InputKind::WindowMode(_) = event.kind {
                 continue;
             }
+            if self.intro_input(event.kind, now_ns) {
+                continue;
+            }
             if let InputKind::Text(text) = event.kind {
                 self.type_text(text.as_str());
                 continue;
@@ -1487,9 +1558,20 @@ impl ShellState {
         snapshot: &mut ShellSnapshot,
     ) -> Navigated {
         self.stack.tick(now_ns);
+        if let Some(intro) = &mut self.intro
+            && !intro.is_started()
+            && self.intro_gate.load(Ordering::Acquire)
+        {
+            intro.start(now_ns);
+            self.intro_events.started = true;
+        }
         self.receive_songs();
         self.receive_displays();
         let navigated = self.handle(events, now_ns);
+        if self.intro.is_some_and(|intro| intro.is_done(now_ns)) {
+            self.intro = None;
+        }
+        snapshot.intro = self.intro.and_then(|intro| intro.snapshot(now_ns));
         self.song_select.tick(now_ns, &self.song_layout);
         if self.setting_rows_for != Some(self.rows_key()) {
             self.rebuild_setting_rows();
@@ -1889,6 +1971,11 @@ struct PlayHost {
     beatmap_offsets: HashMap<PathBuf, f64>,
     /// Formats the texts of a play's results, which hold numbers.
     localizer: Arc<Localizer>,
+    /// The startup intro's sound (ADR-0114); `None` with the intro off. Kept for good, so
+    /// that the audio thread never drops the last reference.
+    intro_sound: Option<Arc<Sample>>,
+    /// The voice playing `intro_sound`, or [`VoiceId::NONE`].
+    intro_voice: VoiceId,
 }
 
 /// What a play takes from the settings on the update thread.
@@ -2034,6 +2121,7 @@ impl PlayHost {
         if !self.no_output {
             state.set_no_audio(false);
         }
+        self.intro_sound(state);
         self.menu_music(now_ns, state);
         if let Some(link) = &mut self.output {
             if let Some(settings) = state.take_device_list_request() {
@@ -2430,10 +2518,41 @@ impl PlayHost {
             }
         }
         std::mem::swap(&mut self.audio, &mut new);
+        // Voice ids count anew in the new mixer.
+        self.intro_voice = VoiceId::NONE;
         // The new decks start from nothing: the menu music starts over.
         self.menu_music = MenuMusic::default();
         if let Err(Request::Retire(old)) = link.request(Request::Retire(new)) {
             self.retired = Some(old);
+        }
+    }
+
+    /// Plays the startup intro's sound when it starts and fades it out with a skip
+    /// (ADR-0114). A full queue loses the sound: the intro goes on silent.
+    fn intro_sound(&mut self, state: &mut ShellState) {
+        let events = state.take_intro_events();
+        if self.no_output {
+            return;
+        }
+        if events.started
+            && let Some(sample) = &self.intro_sound
+        {
+            let params = VoiceParams {
+                group: VoiceGroup::Effects,
+                ..VoiceParams::default()
+            };
+            self.intro_voice = self
+                .audio
+                .mixer
+                .play_voice(sample, params)
+                .unwrap_or(VoiceId::NONE);
+        }
+        if events.skipped && self.intro_voice != VoiceId::NONE {
+            let ramp_ms = slam_ui::intro::SKIP_NS as f64 / 1e6;
+            let _ = self
+                .audio
+                .mixer
+                .set_voice_gain(self.intro_voice, 0.0, ramp_ms);
         }
     }
 
@@ -2466,24 +2585,25 @@ impl PlayHost {
         let settled = now_ns.saturating_sub(self.selection.1) >= SELECTION_DEBOUNCE_NS;
         let gameplay =
             self.game.is_some() || !matches!(self.pending, Pending::Idle) || state.is_loading();
-        let want = if !state.settings().audio.menu_music || gameplay {
-            Want::Silence
-        } else {
-            match state.stack().top() {
-                AppScreen::Play(_) | AppScreen::Results(_) => Want::Silence,
-                AppScreen::SongSelect => selected
-                    .filter(|_| settled)
-                    .and_then(|(set, difficulty)| state.files().get(set)?.get(difficulty))
-                    .and_then(|file| {
-                        Some(Want::Preview {
-                            path: file.audio.as_deref()?,
-                            preview_ms: file.preview_ms,
+        let want =
+            if !state.settings().audio.menu_music || gameplay || state.intro_holds_music(now_ns) {
+                Want::Silence
+            } else {
+                match state.stack().top() {
+                    AppScreen::Play(_) | AppScreen::Results(_) => Want::Silence,
+                    AppScreen::SongSelect => selected
+                        .filter(|_| settled)
+                        .and_then(|(set, difficulty)| state.files().get(set)?.get(difficulty))
+                        .and_then(|file| {
+                            Some(Want::Preview {
+                                path: file.audio.as_deref()?,
+                                preview_ms: file.preview_ms,
+                            })
                         })
-                    })
-                    .unwrap_or(Want::Keep),
-                AppScreen::Menu(_) => Want::Menu,
-            }
-        };
+                        .unwrap_or(Want::Keep),
+                    AppScreen::Menu(_) => Want::Menu,
+                }
+            };
         let rng = &mut self.rng;
         self.menu_music
             .tick(now_ns, want, &mut self.audio.previews, || {
@@ -2770,6 +2890,8 @@ struct Resources<D: Device> {
     renderer: SpriteRenderer<D>,
     /// Draws MSDF glyphs.
     text_renderer: SpriteRenderer<D>,
+    /// Draws outlined MSDF glyphs (ADR-0114).
+    outline_renderer: SpriteRenderer<D>,
     white: AtlasRegion,
 }
 
@@ -2791,6 +2913,13 @@ struct View<B: render::Backend> {
     device_views: Option<DeviceViews>,
     shapes: SpriteBatch,
     text: SpriteBatch,
+    /// The startup intro's view, with the intro on (ADR-0114). Kept after the intro: it is
+    /// small, and freeing it would allocate in a frame.
+    intro: Option<IntroView>,
+    /// Outlined glyphs, drawn last with the MSDF outline shader (ADR-0114).
+    outlines: SpriteBatch,
+    /// Set once a frame is shown: the intro starts then (ADR-0114).
+    shown: Arc<AtomicBool>,
     /// Scenes of plays the update thread starts, and the one shown with its GPU resources.
     scenes: Option<rtrb::Consumer<(u64, PlayScene)>>,
     scene: Option<(u64, PlayScene, SceneGpu<B::Device>)>,
@@ -2844,6 +2973,9 @@ impl<B: render::Backend> Draw<ShellSnapshot> for View<B> {
         let renderer = SpriteRenderer::new(&mut device, DEFAULT_SLOTS).expect("renderer");
         let text_renderer = SpriteRenderer::with_shader(&mut device, DEFAULT_SLOTS, &shaders::MSDF)
             .expect("text renderer");
+        let outline_renderer =
+            SpriteRenderer::with_shader(&mut device, DEFAULT_SLOTS, &shaders::MSDF_OUTLINE)
+                .expect("outline renderer");
         let mut textures = Textures::with_capacity(MAX_TEXTURES);
         let mut atlas = Atlas::new(Extent::new(64, 64), TextureFormat::Rgba8);
         let white = atlas
@@ -2865,6 +2997,7 @@ impl<B: render::Backend> Draw<ShellSnapshot> for View<B> {
             textures,
             renderer,
             text_renderer,
+            outline_renderer,
             white,
         });
     }
@@ -2971,6 +3104,9 @@ impl<B: render::Backend> Draw<ShellSnapshot> for View<B> {
             .frame(info.wait.woke_ns, width, height, snapshot.fps, gameplay);
         self.shapes.clear();
         self.text.clear();
+        self.outlines.clear();
+        self.menu
+            .set_title_hidden(snapshot.intro.is_some_and(|i| i.hides_menu_title()));
         // Where each layer's sprites end: layers are drawn one after another, shapes then
         // text, so a screen coming in covers the text of the one leaving.
         // The screens' layers and the settings panel's.
@@ -3067,6 +3203,20 @@ impl<B: render::Backend> Draw<ShellSnapshot> for View<B> {
         }
         // Last, over every screen and the play (ADR-0060).
         let overlay_from = (self.shapes.len() as u32, self.text.len() as u32);
+        // Over every screen and the panel, under the curtain and the FPS counter; its
+        // outlines are drawn last, over them, while the letters are outlined.
+        if let (Some(view), Some(intro)) = (&mut self.intro, &snapshot.intro) {
+            view.push(
+                &mut self.shapes,
+                &mut self.text,
+                &mut self.outlines,
+                &mut self.glyphs,
+                width,
+                height,
+                intro,
+                r.white,
+            );
+        }
         // Over every screen, under the FPS counter.
         self.swap.curtain().push(
             &mut self.shapes,
@@ -3080,6 +3230,7 @@ impl<B: render::Backend> Draw<ShellSnapshot> for View<B> {
             .push(&mut self.shapes, &mut self.text, &mut self.glyphs, r.white);
         r.renderer.begin_frame();
         r.text_renderer.begin_frame();
+        r.outline_renderer.begin_frame();
         let gpu_textures = &r.textures;
         let projection = Projection::pixels(size);
         let texture = |id| gpu_textures.get(id);
@@ -3151,7 +3302,21 @@ impl<B: render::Backend> Draw<ShellSnapshot> for View<B> {
                 texture,
             );
         }
+        if !self.outlines.is_empty()
+            && let Ok(uploaded) =
+                r.outline_renderer
+                    .upload(&mut r.device, &self.outlines, &projection, texture)
+        {
+            let _ = r.outline_renderer.draw_range(
+                &mut r.device,
+                &uploaded,
+                &self.outlines,
+                0..self.outlines.len() as u32,
+                texture,
+            );
+        }
         let _ = r.device.present();
+        self.shown.store(true, Ordering::Release);
     }
 
     fn stop(&mut self) {
@@ -3160,11 +3325,13 @@ impl<B: render::Backend> Draw<ShellSnapshot> for View<B> {
             mut textures,
             renderer,
             text_renderer,
+            outline_renderer,
             ..
         } = self.resources.take().expect("started");
         retire(&mut self.scene, &mut self.scene_trash, &mut device);
         renderer.destroy(&mut device);
         text_renderer.destroy(&mut device);
+        outline_renderer.destroy(&mut device);
         for texture in textures.drain() {
             device.destroy_texture(texture);
         }
@@ -3540,6 +3707,18 @@ fn run_with<B: render::Backend>(
         .with_settings(settings.clone())
         .with_devices(output_devices(&settings.audio));
     state.set_localizer(Arc::clone(&localizer));
+    // The intro flies into the menu's title, in the language the menu opens in (ADR-0114).
+    let intro_title = settings
+        .general
+        .intro
+        .then(|| localizer.format("menu-title", None).into_owned());
+    let shown = Arc::new(AtomicBool::new(false));
+    if intro_title.is_some() {
+        state = state.with_intro(Arc::clone(&shown));
+    }
+    let intro_view = intro_title
+        .as_deref()
+        .map(|title| IntroView::new(Arc::clone(&registry), theme, title));
     // Laid out again in another language by the `slam-language` thread (ADR-0091).
     let language::InterfaceViews {
         menu,
@@ -3737,37 +3916,48 @@ fn run_with<B: render::Backend>(
             (None, None, None, None)
         }
     };
-    let host = audio.map(|audio| PlayHost {
-        audio,
-        output,
-        requested: settings.audio.clone(),
-        switching: false,
-        no_output: false,
-        retired: None,
-        track: None,
-        menu_music: MenuMusic::default(),
-        selection: (None, 0),
-        // Any non-zero seed; the clock makes each run's first track differ.
-        rng: now_ns() | 1,
-        loader,
-        scenes: scene_tx,
-        os_cursor: window.cursor_visibility(),
-        win_key: window.win_key_block(),
-        menu_shown: false,
-        pending: Pending::Idle,
-        game: None,
-        retiring: None,
-        track_reset: false,
-        next_request: 0,
-        play_requested: None,
-        reskin: Reskin::Idle,
-        points: [
-            pixels_w as f32 / pixels_per_point,
-            pixels_h as f32 / pixels_per_point,
-        ],
-        input: PlayInput::new(&settings),
-        beatmap_offsets: HashMap::new(),
-        localizer: Arc::clone(&localizer),
+    let host = audio.map(|audio| {
+        let audio_rate = audio.sample_rate;
+        PlayHost {
+            audio,
+            output,
+            requested: settings.audio.clone(),
+            switching: false,
+            no_output: false,
+            retired: None,
+            track: None,
+            menu_music: MenuMusic::default(),
+            selection: (None, 0),
+            // Any non-zero seed; the clock makes each run's first track differ.
+            rng: now_ns() | 1,
+            loader,
+            scenes: scene_tx,
+            os_cursor: window.cursor_visibility(),
+            win_key: window.win_key_block(),
+            menu_shown: false,
+            pending: Pending::Idle,
+            game: None,
+            retiring: None,
+            track_reset: false,
+            next_request: 0,
+            play_requested: None,
+            reskin: Reskin::Idle,
+            points: [
+                pixels_w as f32 / pixels_per_point,
+                pixels_h as f32 / pixels_per_point,
+            ],
+            input: PlayInput::new(&settings),
+            beatmap_offsets: HashMap::new(),
+            localizer: Arc::clone(&localizer),
+            intro_sound: intro_view.as_ref().and_then(|view| {
+                let data = intro_sound::render(view.letters(), audio_rate);
+                Sample::from_interleaved(data, audio_rate, CHANNELS)
+                    .inspect_err(|e| tracing::warn!("intro: no sound: {e}"))
+                    .ok()
+                    .map(Arc::new)
+            }),
+            intro_voice: VoiceId::NONE,
+        }
     });
 
     let exited = Arc::new(AtomicBool::new(false));
@@ -3823,6 +4013,9 @@ fn run_with<B: render::Backend>(
         device_views,
         shapes: SpriteBatch::with_capacity(MAX_SHAPES),
         text: SpriteBatch::with_capacity(MAX_GLYPH_SPRITES),
+        intro: intro_view,
+        outlines: SpriteBatch::with_capacity(MAX_INTRO_OUTLINES),
+        shown,
         scenes: Some(scene_rx),
         scene: None,
         scene_shown: false,

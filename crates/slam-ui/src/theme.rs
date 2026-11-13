@@ -124,6 +124,8 @@ pub struct Theme {
     pub curtain_fill: Color,
     /// Height of the accent edge leading each slat.
     pub curtain_edge: f32,
+    /// The black behind the startup intro (ADR-0114).
+    pub intro_backdrop: Color,
 }
 
 impl Default for Theme {
@@ -253,6 +255,7 @@ impl Default for Theme {
             settings_panel_ms: 250.0,
             curtain_fill: Color::rgb(0.11, 0.11, 0.15),
             curtain_edge: 4.0,
+            intro_backdrop: Color::rgb(0.0, 0.0, 0.0),
         }
     }
 }
