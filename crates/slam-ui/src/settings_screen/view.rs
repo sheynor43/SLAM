@@ -233,6 +233,8 @@ pub struct SettingsView {
     search_seen: SearchQuery,
     tabs: Vec<Line>,
     labels: Vec<Line>,
+    /// The rows' whole names: `labels` holds them as fitted to the label column.
+    label_texts: Vec<String>,
     marker: Line,
     /// Per row: its section, its position in it and whether it needs a restart.
     meta: Vec<(usize, usize, bool)>,
@@ -356,7 +358,15 @@ impl SettingsView {
             search_seen: SearchQuery::default(),
             tabs: labels.sections.iter().map(|s| Line::new(s)).collect(),
             labels: (0..rows.len())
-                .map(|i| Line::new(labels.rows.get(i).map_or("", |r| &r.label)))
+                .map(|i| {
+                    let mut line = Line::new(labels.rows.get(i).map_or("", |r| &r.label));
+                    // Room for the ellipsis a cut name ends with.
+                    line.text.reserve(ELLIPSIS.len_utf8());
+                    line
+                })
+                .collect(),
+            label_texts: (0..rows.len())
+                .map(|i| labels.rows.get(i).map_or("", |r| &r.label).to_owned())
                 .collect(),
             marker: Line::new(&labels.restart),
             keys: KeyLines::new(&labels.keys),
@@ -399,16 +409,32 @@ impl SettingsView {
         self.lay_out_for(panel, height);
     }
 
+    /// Row `row`'s name as shown (cut to its column) and its width, if the row exists.
+    pub fn shown_label(&self, row: usize) -> Option<(&str, f32)> {
+        self.labels
+            .get(row)
+            .map(|line| (line.text.as_str(), line.layout.width()))
+    }
+
     fn lay_out(&mut self) {
         let Frame { width, height } = self.frame;
         self.layout = SettingsLayout::new(width, height, &self.theme);
         let scale = self.layout.scale;
         let text = self.theme.widget_text_size * scale;
         let pad = 2.0 * self.theme.widget_pad * scale;
-        // In the panel a long name may not fit its column: it shrinks, down to a floor.
+        // In the panel a long name may not fit its column: it shrinks, down to a floor, and
+        // past that ends with an ellipsis.
         let label = self.layout.label(0).width - pad;
-        for line in &mut self.labels {
+        let mut probe = Line::new(&ELLIPSIS.to_string());
+        self.type_setter.lay_out(&mut probe, text * MIN_FIT);
+        let ellipsis = probe.layout.width();
+        for (line, whole) in self.labels.iter_mut().zip(&self.label_texts) {
+            line.text.clone_from(whole);
             lay_out_fitted(&mut self.type_setter, line, text, label);
+            if line.layout.width() > label {
+                let size = text * MIN_FIT;
+                crate::song_select::view::fit(&mut self.type_setter, line, size, label, ellipsis);
+            }
         }
         let tab = self.layout.tabs[0].width - pad;
         for line in &mut self.tabs {
@@ -809,6 +835,7 @@ impl SettingsView {
                         continue;
                     }
                     let bounds = layout.dropdown_at(slot, dropdown.count());
+                    view.set_theme(&self.theme);
                     view.push(shapes, text, glyphs, dropdown, &bounds, opacity, white);
                 }
                 _ => {}
@@ -851,6 +878,7 @@ impl SettingsView {
                 (&mut self.views[i], &snapshot.widgets[i])
         {
             let bounds = layout.dropdown_at(usize::from(snapshot.slots[i]), dropdown.count());
+            view.set_theme(&self.theme);
             view.push(shapes, text, glyphs, dropdown, &bounds, opacity, white);
         }
     }

@@ -30,6 +30,8 @@ use crate::widgets::Look;
 use crate::widgets::ToggleLayout;
 
 const ELLIPSIS: char = '\u{2026}';
+/// The ellipsis as text.
+pub(crate) const ELLIPSIS_STR: &str = "\u{2026}";
 /// Bytes reserved up front in every text buffer.
 const TEXT_CAPACITY: usize = 256;
 /// How much of its colour a dimmed element keeps: the mod tiles under the expanded settings

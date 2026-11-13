@@ -420,10 +420,11 @@ pub enum MenuStyle {
 /// Width of SLAM's buttons, in interface units.
 const SLAM_BUTTON_WIDTH: f32 = 420.0;
 
-// Ported from McOsu db2add2: src/App/Osu/OsuPauseMenu.cpp (osu_pause_dim_alpha, updateLayout)
-/// Stable's dim behind the menu, its grey, and the button slots it lays out.
-const STABLE_DIM_ALPHA: f32 = 0.58;
-const STABLE_DIM_GREY: f32 = 0.078;
+// Ported from McOsu db2add2: src/App/Osu/OsuPauseMenu.cpp (updateLayout)
+/// Stable's dim behind the menu and the button slots it lays out. Stable darkens the play
+/// almost to black; McOsu's lighter grey dim (0.078 at 0.58) leaves it showing grey through.
+const STABLE_DIM_ALPHA: f32 = 0.85;
+const STABLE_DIM_GREY: f32 = 0.0;
 const STABLE_SLOTS: usize = 3;
 /// A stable button's pixels per image pixel: `getUIScale(256) / 411`, where `getUIScale` is
 /// the height of the 4:3 area in units of 480.

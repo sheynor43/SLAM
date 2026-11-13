@@ -335,7 +335,13 @@ pub struct DropdownView {
     theme: Theme,
     type_setter: Typesetter,
     scale: f32,
+    /// The box's width the options are fitted to (cut with an ellipsis when wider).
+    width: f32,
+    /// The options' whole texts; `options` holds them as fitted.
+    labels: Vec<String>,
     options: Vec<Line>,
+    /// The ellipsis cut options end with, laid out at the text size.
+    ellipsis: Line,
 }
 
 impl std::fmt::Debug for DropdownView {
@@ -357,7 +363,19 @@ impl DropdownView {
         let mut view = DropdownView {
             type_setter: Typesetter::new(registry, theme.font_weight),
             scale: 1.0,
-            options: options.iter().map(|o| Line::new(o.as_ref())).collect(),
+            width: f32::INFINITY,
+            labels: options.iter().map(|o| o.as_ref().to_owned()).collect(),
+            // Room for the ellipsis, so cutting does not grow the text.
+            options: options
+                .iter()
+                .map(|o| {
+                    let mut line = Line::new(o.as_ref());
+                    line.text
+                        .reserve(crate::song_select::view::ELLIPSIS_STR.len());
+                    line
+                })
+                .collect(),
+            ellipsis: Line::new(crate::song_select::view::ELLIPSIS_STR),
             theme,
         };
         view.lay_out();
@@ -369,10 +387,23 @@ impl DropdownView {
         self.options.len()
     }
 
+    /// Draws with `theme`'s colours from now on: the settings screen's, which follows the
+    /// colour scheme, whichever thread made this view.
+    pub fn set_theme(&mut self, theme: &Theme) {
+        self.theme = *theme;
+    }
+
+    /// Lays the options out, each cut with an ellipsis to fit the box. Allocates only when
+    /// an option is cut again.
     fn lay_out(&mut self) {
         let size = self.theme.widget_text_size * self.scale;
-        for option in &mut self.options {
-            self.type_setter.lay_out(option, size);
+        let pad = self.theme.widget_pad * self.scale;
+        self.type_setter.lay_out(&mut self.ellipsis, size);
+        let ellipsis = self.ellipsis.layout.width();
+        let avail = (self.width - 2.0 * pad).max(0.0);
+        for (option, label) in self.options.iter_mut().zip(&self.labels) {
+            option.text.clone_from(label);
+            crate::song_select::view::fit(&mut self.type_setter, option, size, avail, ellipsis);
         }
     }
 
@@ -398,8 +429,9 @@ impl DropdownView {
         opacity: f32,
         white: AtlasRegion,
     ) {
-        if layout.scale != self.scale {
+        if layout.scale != self.scale || layout.bounds.width != self.width {
             self.scale = layout.scale;
+            self.width = layout.bounds.width;
             self.lay_out();
         }
         let layout = &layout.scrolled(state.scroll);
@@ -432,5 +464,37 @@ impl DropdownView {
             }
             push_left(text, line, &rect, pad, colour, glyphs);
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::theme::ColourScheme;
+
+    #[test]
+    fn options_wider_than_the_box_end_with_an_ellipsis_and_come_back_whole() {
+        let registry = Arc::new(FontRegistry::with_builtin());
+        let long = "0: Xiaomi Corporation - Mi Monitor - DP-2 (1920x1080)";
+        let mut view = DropdownView::new(registry, Theme::default(), &[long, "Default"]);
+        view.scale = 1.0;
+        view.width = 200.0;
+        view.lay_out();
+        let cut = &view.options[0];
+        assert!(cut.text.ends_with('\u{2026}'), "{}", cut.text);
+        let pad = view.theme.widget_pad;
+        assert!(cut.layout.width() <= 200.0 - 2.0 * pad + 0.5);
+        assert_eq!(view.options[1].text, "Default");
+        view.width = 2000.0;
+        view.lay_out();
+        assert_eq!(view.options[0].text, long);
+    }
+
+    #[test]
+    fn the_screen_gives_its_theme() {
+        let registry = Arc::new(FontRegistry::with_builtin());
+        let mut view = DropdownView::new(registry, Theme::default(), &["a"]);
+        view.set_theme(&Theme::new(ColourScheme::Orange, 1.0));
+        assert_eq!(view.theme.scheme, ColourScheme::Orange);
     }
 }

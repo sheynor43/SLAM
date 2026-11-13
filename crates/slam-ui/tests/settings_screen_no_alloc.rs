@@ -523,3 +523,23 @@ fn search_and_scroll_do_not_allocate() {
         }
     });
 }
+
+#[test]
+fn a_name_too_long_for_its_column_ends_with_an_ellipsis() {
+    let registry = Arc::new(FontRegistry::with_builtin());
+    let theme = Theme::default();
+    let specs = rows();
+    let mut texts = labels();
+    let long = "Minimise SLAM when switching to another app while it plays a beatmap";
+    texts.rows[0].label = long.into();
+    let mut view = SettingsView::new(Arc::clone(&registry), theme, &specs, &texts);
+    view.lay_out_for(640.0, 480.0);
+    let layout = SettingsLayout::new(640.0, 480.0, &theme);
+    let column = layout.label(0).width;
+    let (shown, width) = view.shown_label(0).unwrap();
+    assert!(shown.ends_with('\u{2026}'), "{shown}");
+    assert!(width <= column, "{width} > {column}");
+    // A wide window shows it whole again.
+    view.lay_out_for(3840.0, 2160.0);
+    assert_eq!(view.shown_label(0).unwrap().0, long);
+}
