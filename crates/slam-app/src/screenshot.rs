@@ -7,6 +7,7 @@
 pub mod check;
 pub mod compare;
 pub mod corpus;
+mod intro;
 mod offline;
 
 use std::path::{Path, PathBuf};
@@ -22,6 +23,7 @@ use slam_text::FontRegistry;
 use slam_ui::i18n::Localizer;
 
 use crate::play::scene::{self, PlaySettings, Prepared};
+pub use intro::render_intro;
 use offline::OfflinePlay;
 
 pub const USAGE: &str = "usage: slam-app screenshot MAP.osu --time MS [--time MS ...] \

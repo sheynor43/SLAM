@@ -62,6 +62,120 @@ fn enter_on_play_pushes_song_select_and_escape_returns() {
 }
 
 #[test]
+fn intro_shows_over_the_menu_from_the_first_tick_to_its_end() {
+    let mut s = state().with_intro(Arc::new(AtomicBool::new(true)));
+    let mut snap = ShellSnapshot::default();
+    s.tick(1_000, &[], &mut snap);
+    let intro = snap.intro.expect("intro shows");
+    assert_eq!(intro.elapsed_ns, 0);
+    assert!(intro.hides_menu_title());
+    assert!(matches!(
+        snap.layers[0].as_ref().unwrap().view,
+        ScreenView::Menu(_)
+    ));
+    assert_eq!(
+        s.take_intro_events(),
+        IntroEvents {
+            started: true,
+            skipped: false
+        }
+    );
+    assert_eq!(s.take_intro_events(), IntroEvents::default());
+    // The menu's music waits for the impact.
+    assert!(s.intro_holds_music(1_000 + slam_ui::intro::IMPACT_NS - 1));
+    assert!(!s.intro_holds_music(1_000 + slam_ui::intro::IMPACT_NS));
+    s.tick(1_000 + slam_ui::intro::LENGTH_NS - 1, &[], &mut snap);
+    assert!(snap.intro.is_some());
+    s.tick(1_000 + slam_ui::intro::LENGTH_NS, &[], &mut snap);
+    assert_eq!(snap.intro, None);
+    assert!(!s.intro_holds_music(1_000 + slam_ui::intro::LENGTH_NS));
+    // The menu takes keys again.
+    s.tick(5_000_000_000, &[key(KEY_ENTER)], &mut snap);
+    assert_eq!(*s.stack().top(), AppScreen::SongSelect);
+}
+
+#[test]
+fn intro_waits_for_the_first_shown_frame() {
+    let gate = Arc::new(AtomicBool::new(false));
+    let mut s = state().with_intro(Arc::clone(&gate));
+    let mut snap = ShellSnapshot::default();
+    s.tick(0, &[], &mut snap);
+    // Black meanwhile, the menu's title left to the intro, the music held.
+    assert_eq!(snap.intro.unwrap().elapsed_ns, 0);
+    assert!(snap.intro.unwrap().hides_menu_title());
+    assert_eq!(s.take_intro_events(), IntroEvents::default());
+    assert!(s.intro_holds_music(10 * slam_ui::intro::LENGTH_NS));
+    gate.store(true, Ordering::Release);
+    s.tick(500, &[], &mut snap);
+    assert!(s.take_intro_events().started);
+    s.tick(1_500, &[], &mut snap);
+    assert_eq!(snap.intro.unwrap().elapsed_ns, 1_000);
+}
+
+#[test]
+fn a_press_skips_the_intro_without_reaching_the_menu() {
+    let mut s = state().with_intro(Arc::new(AtomicBool::new(true)));
+    let mut snap = ShellSnapshot::default();
+    s.tick(0, &[], &mut snap);
+    s.take_intro_events();
+    // Moves and releases do not skip; Enter skips and does not open the song select.
+    let release = InputEvent {
+        time_ns: 0,
+        kind: InputKind::Key {
+            scancode: KEY_ENTER,
+            down: false,
+        },
+    };
+    s.tick(
+        100,
+        &[mouse(InputKind::MouseMove { x: 5.0, y: 6.0 }), release],
+        &mut snap,
+    );
+    assert!(!snap.intro.unwrap().skipped);
+    s.tick(200, &[key(KEY_ENTER)], &mut snap);
+    let intro = snap.intro.unwrap();
+    assert!(intro.skipped);
+    assert!(!intro.hides_menu_title());
+    assert!(matches!(s.stack().top(), AppScreen::Menu(_)));
+    assert_eq!(
+        s.take_intro_events(),
+        IntroEvents {
+            started: false,
+            skipped: true
+        }
+    );
+    assert!(!s.intro_holds_music(200));
+    // The pointer moved under the intro is known to the menu.
+    assert_eq!(s.cursor, [5.0, 6.0]);
+    // Fading out, the menu takes input again.
+    s.tick(300, &[key(KEY_ENTER)], &mut snap);
+    assert_eq!(*s.stack().top(), AppScreen::SongSelect);
+    s.tick(200 + slam_ui::intro::SKIP_NS, &[], &mut snap);
+    assert_eq!(snap.intro, None);
+}
+
+#[test]
+fn a_click_skips_the_intro_and_without_it_the_menu_shows_at_once() {
+    let mut s = state().with_intro(Arc::new(AtomicBool::new(true)));
+    let mut snap = ShellSnapshot::default();
+    s.tick(0, &[], &mut snap);
+    s.tick(
+        10,
+        &[mouse(InputKind::MouseButton {
+            button: MouseButton::Left,
+            down: true,
+        })],
+        &mut snap,
+    );
+    assert!(snap.intro.unwrap().skipped);
+    let mut plain = state();
+    plain.tick(0, &[], &mut snap);
+    assert_eq!(snap.intro, None);
+    assert_eq!(plain.take_intro_events(), IntroEvents::default());
+    assert!(!plain.intro_holds_music(0));
+}
+
+#[test]
 fn escape_at_the_root_exits() {
     let mut s = state();
     let mut snap = ShellSnapshot::default();
@@ -631,6 +745,8 @@ fn host(name: &str, with_track: bool) -> HostFixture {
         input: PlayInput::new(&Settings::default()),
         beatmap_offsets: HashMap::new(),
         localizer: Arc::new(Localizer::builtin().unwrap()),
+        intro_sound: None,
+        intro_voice: VoiceId::NONE,
     };
     HostFixture {
         host,
@@ -838,6 +954,39 @@ fn the_windows_key_is_blocked_only_while_playing() {
     ] {
         assert!(!blocks_win_key(state, false), "{state:?}");
     }
+}
+
+#[test]
+fn the_host_plays_the_intro_sound_when_the_intro_starts() {
+    let mut fixture = host("intro", false);
+    let data = intro_sound::render(4, SAMPLE_RATE);
+    fixture.host.intro_sound = Some(Arc::new(
+        Sample::from_interleaved(data, SAMPLE_RATE, CHANNELS).unwrap(),
+    ));
+    let mut s = state().with_intro(Arc::new(AtomicBool::new(true)));
+    let mut snap = ShellSnapshot::default();
+    let plays = fixture.host.audio.mixer.queued_plays();
+    s.tick(0, &[], &mut snap);
+    fixture.host.advance(1, &mut s);
+    assert_eq!(fixture.host.audio.mixer.queued_plays(), plays + 1);
+    assert_ne!(fixture.host.intro_voice, VoiceId::NONE);
+    // Once only.
+    fixture.host.advance(2, &mut s);
+    assert_eq!(fixture.host.audio.mixer.queued_plays(), plays + 1);
+}
+
+#[test]
+fn without_its_sound_the_intro_plays_nothing() {
+    let mut fixture = host("intro-silent", false);
+    let mut s = state().with_intro(Arc::new(AtomicBool::new(true)));
+    let mut snap = ShellSnapshot::default();
+    let plays = fixture.host.audio.mixer.queued_plays();
+    s.tick(0, &[], &mut snap);
+    fixture.host.advance(1, &mut s);
+    s.tick(2, &[key(KEY_ENTER)], &mut snap);
+    fixture.host.advance(3, &mut s);
+    assert_eq!(fixture.host.audio.mixer.queued_plays(), plays);
+    assert_eq!(fixture.host.intro_voice, VoiceId::NONE);
 }
 
 #[test]

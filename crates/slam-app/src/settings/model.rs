@@ -90,11 +90,22 @@ pub struct Paths {
 }
 
 /// Interface settings (ADR-0088).
-#[derive(Clone, Debug, Default, PartialEq, Serialize)]
+#[derive(Clone, Debug, PartialEq, Serialize)]
 pub struct General {
     /// Tag of a built-in interface language; `None` is English. Applied at start.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub language: Option<String>,
+    /// Whether the startup intro plays (ADR-0114). Read at start.
+    pub intro: bool,
+}
+
+impl Default for General {
+    fn default() -> Self {
+        General {
+            language: None,
+            intro: true,
+        }
+    }
 }
 
 /// Skin choice (ADR-0051).

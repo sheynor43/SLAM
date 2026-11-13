@@ -1218,6 +1218,25 @@ fn language_reads_built_in_tags_and_falls_back_to_english() {
 }
 
 #[test]
+fn intro_defaults_on_and_reads_a_bool() {
+    assert!(Settings::default().general.intro);
+    let missing = file::from_toml_str("[general]\nlanguage = \"en\"\n");
+    assert_eq!(missing.status, LoadStatus::Ok, "{:?}", missing.warnings);
+    assert!(missing.settings.general.intro);
+    let off = file::from_toml_str("[general]\nintro = false\n");
+    assert_eq!(off.status, LoadStatus::Ok, "{:?}", off.warnings);
+    assert!(!off.settings.general.intro);
+    let bad = file::from_toml_str("[general]\nintro = \"yes\"\n");
+    assert_eq!(bad.status, LoadStatus::Recovered);
+    assert!(bad.settings.general.intro);
+    assert!(bad.warnings.iter().any(|w| w.starts_with("general.intro")));
+    let mut settings = Settings::default();
+    settings.general.intro = false;
+    let text = file::to_toml_string(&settings).unwrap();
+    assert_eq!(file::from_toml_str(&text).settings, settings);
+}
+
+#[test]
 fn language_survives_a_write_and_read() {
     let mut settings = Settings::default();
     settings.general.language = Some("ru".to_owned());

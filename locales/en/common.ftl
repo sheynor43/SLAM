@@ -172,6 +172,7 @@ settings-input-high-precision-warning =
     adjust sensitivity externally and keep this disabled for now.
 settings-input-sensitivity-hint = Enable high precision mouse to adjust sensitivity
 settings-layout-language = Language
+settings-general-intro = Startup intro
 settings-layout-screen-mode = Screen mode
 settings-layout-display = Display
 settings-layout-resolution = Resolution

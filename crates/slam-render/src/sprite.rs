@@ -1553,7 +1553,7 @@ mod tests {
 
     #[test]
     fn sprite_shaders_fit_the_sprite_pipelines() {
-        for shader in [&shaders::SPRITE, &shaders::MSDF] {
+        for shader in [&shaders::SPRITE, &shaders::MSDF, &shaders::MSDF_OUTLINE] {
             let mut d = Fake::default();
             let r = SpriteRenderer::with_shader(&mut d, 1, shader).expect("renderer");
             assert!(r.pipelines.iter().all(|p| p.shader == shader.name));

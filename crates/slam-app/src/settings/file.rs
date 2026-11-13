@@ -228,6 +228,13 @@ fn from_table(mut table: Table) -> Loaded {
             ));
         }
     }
+    cx.field(
+        &mut general,
+        "general",
+        "intro",
+        &mut settings.general.intro,
+        |_| Ok(()),
+    );
     cx.unknown(&general, "general");
 
     let mut paths = cx.section(&mut table, "paths");

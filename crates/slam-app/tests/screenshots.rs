@@ -11,7 +11,7 @@ use std::path::{Path, PathBuf};
 
 use slam_app::play::scene::PlaySettings;
 use slam_app::screenshot::check::{self, Checker};
-use slam_app::screenshot::{DEFAULT_SIZE, Shots, render};
+use slam_app::screenshot::{DEFAULT_SIZE, Shots, render, render_intro};
 
 /// One beatmap and skin, shot at several times.
 struct Case {
@@ -31,6 +31,10 @@ const CASES: &[Case] = &[Case {
     map: "scene",
     times: &[900.0, 1700.0, 3900.0, 6450.0],
 }];
+
+/// The startup intro over the menu (ADR-0114), in milliseconds since its start: black,
+/// letters blinking in outline, drifting, gathered, on the impact, flying in, landed.
+const INTRO_TIMES: &[u64] = &[100, 700, 1_200, 1_800, 2_000, 2_300, 2_599];
 
 fn data() -> PathBuf {
     Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/data/screenshots")
@@ -71,6 +75,11 @@ fn skins_draw_as_the_references() {
         for (frame, time) in frames.iter().zip(case.times) {
             checker.check(&format!("{}-{time}", case.name), frame);
         }
+    }
+    let frames =
+        render_intro(INTRO_TIMES, DEFAULT_SIZE, false).unwrap_or_else(|e| panic!("intro: {e}"));
+    for (frame, ms) in frames.iter().zip(INTRO_TIMES) {
+        checker.check(&format!("intro-{ms}"), frame);
     }
     checker.assert_no_failures();
 }

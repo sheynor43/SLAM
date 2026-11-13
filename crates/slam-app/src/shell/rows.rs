@@ -215,6 +215,8 @@ pub enum Row {
     VideoDriver,
     /// The renderer on Windows, applied after a restart (ADR-0104).
     Renderer,
+    /// Whether the startup intro plays; read at start (ADR-0114).
+    Intro,
     UpdateHz,
     DrawHz,
     MenuDrawHz,
@@ -245,7 +247,7 @@ pub enum Row {
 const _: () = assert!(Row::ALL.len() <= slam_ui::settings_screen::MAX_ROWS);
 
 impl Row {
-    pub const ALL: [Row; 57] = [
+    pub const ALL: [Row; 58] = [
         Row::MasterVolume,
         Row::MusicVolume,
         Row::MenuMusic,
@@ -279,6 +281,7 @@ impl Row {
         Row::MinimiseOnFocusLoss,
         Row::VideoDriver,
         Row::Renderer,
+        Row::Intro,
         Row::UpdateHz,
         Row::DrawHz,
         Row::MenuDrawHz,
@@ -359,7 +362,8 @@ impl Row {
             | Row::WindowedSize
             | Row::MinimiseOnFocusLoss
             | Row::VideoDriver
-            | Row::Renderer => 3,
+            | Row::Renderer
+            | Row::Intro => 3,
             Row::UpdateHz
             | Row::DrawHz
             | Row::MenuDrawHz
@@ -414,6 +418,7 @@ impl Row {
             Row::ToggleSettingsKey => "settings-keys-toggle-settings",
             Row::ResetKeys => "settings-keys-reset",
             Row::Language => "settings-layout-language",
+            Row::Intro => "settings-general-intro",
             Row::ScreenMode => "settings-layout-screen-mode",
             Row::NotFullscreenNote => "settings-layout-not-fullscreen-note",
             Row::Display => "settings-layout-display",
@@ -449,12 +454,13 @@ impl Row {
     }
 
     /// Whether a change only takes effect after a restart: the video driver does, SDL
-    /// reads it once at startup (ADR-0097), and so does the renderer, chosen when the window
-    /// is made (ADR-0104). Other rows apply when the screen closes, the
+    /// reads it once at startup (ADR-0097), and so does the renderer, chosen when the
+    /// window is made (ADR-0104), and the startup intro, which only plays then (ADR-0114).
+    /// Other rows apply when the screen closes, the
     /// output reopened (ADR-0089), the language as it is picked (ADR-0091); the offset,
     /// mouse buttons and background from the next play (ADR-0048).
     pub fn restart_required(self) -> bool {
-        matches!(self, Row::VideoDriver | Row::Renderer)
+        matches!(self, Row::VideoDriver | Row::Renderer | Row::Intro)
     }
 }
 
@@ -795,6 +801,9 @@ impl Rows {
                     l.langid == s.general.language.as_deref().unwrap_or(FALLBACK_LANGUAGE)
                 }),
             ),
+            Row::Intro => RowKind::Toggle {
+                value: s.general.intro,
+            },
             Row::HitsoundDelay => choice(
                 HitsoundDelay::ALL.len(),
                 HitsoundDelay::ALL
@@ -1013,6 +1022,7 @@ impl Rows {
                     }
                 }
             },
+            (Row::Intro, RowValue::Toggle(v)) => settings.general.intro = v,
             (Row::Language, RowValue::Choice(i)) => {
                 if let Some(language) = BUILTIN_LANGUAGES.get(i) {
                     settings.general.language = Some(language.langid.to_owned());
@@ -1613,6 +1623,7 @@ mod tests {
             (Row::HitLighting, true),
             (Row::KeyOverlay, false),
             (Row::HudAnimations, true),
+            (Row::Intro, true),
             (Row::AlwaysPlayFirstComboBreak, true),
             (Row::DisableWinKey, true),
             (Row::CursorTrail, true),
@@ -1647,9 +1658,9 @@ mod tests {
     }
 
     #[test]
-    fn only_the_video_driver_and_renderer_rows_wait_for_a_restart() {
+    fn only_the_video_driver_renderer_and_intro_rows_wait_for_a_restart() {
         for row in Row::ALL {
-            let waits = matches!(row, Row::VideoDriver | Row::Renderer);
+            let waits = matches!(row, Row::VideoDriver | Row::Renderer | Row::Intro);
             assert_eq!(row.restart_required(), waits, "{row:?}");
         }
         let (rows, s) = rows();
@@ -1818,6 +1829,7 @@ mod tests {
         rows.apply(&mut s, index(Row::KeyOverlay), RowValue::Toggle(true));
         rows.apply(&mut s, index(Row::KeyOverlayAnimation), RowValue::Choice(1));
         rows.apply(&mut s, index(Row::HudAnimations), RowValue::Toggle(false));
+        rows.apply(&mut s, index(Row::Intro), RowValue::Toggle(false));
         rows.apply(&mut s, index(Row::CursorTrail), RowValue::Toggle(false));
         rows.apply(
             &mut s,
@@ -1864,6 +1876,7 @@ mod tests {
         assert!(s.gameplay.key_overlay);
         assert_eq!(s.gameplay.key_overlay_animation, KeyOverlayAnimation::Lazer);
         assert!(!s.gameplay.hud_animations);
+        assert!(!s.general.intro);
         assert!(!s.gameplay.cursor_trail);
         assert!(!s.gameplay.beatmap_hitsounds);
         assert!(!s.gameplay.always_play_first_combo_break);
