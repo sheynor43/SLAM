@@ -225,6 +225,9 @@ pub struct SongSelectLayout {
     pub indent: f32,
     /// Pixels per reference unit.
     pub scale: f32,
+    /// How far the list leans (`tan` of the buttons' skew): rows lower down sit further
+    /// left, along the skew of their edges (ADR-0121).
+    pub lean: f32,
 }
 
 impl SongSelectLayout {
@@ -283,7 +286,22 @@ impl SongSelectLayout {
             row_height,
             indent: theme.song_indent * scale,
             scale,
+            lean: theme.button_skew().tan(),
         }
+    }
+
+    /// Horizontal shift of the panel at height `y`: none at its middle, between the top
+    /// of the status line and the bottom of the hints (ADR-0121).
+    pub fn lean_x(&self, y: f32) -> f32 {
+        let middle = (self.header.y + self.hint.y + self.hint.height) / 2.0;
+        (middle - y) * self.lean
+    }
+
+    /// Whether the "choose folder" button, leaning with the panel, contains the point.
+    pub fn over_choose_folder(&self, x: f32, y: f32) -> bool {
+        let r = &self.choose_folder;
+        let shift = self.lean_x(r.y + r.height / 2.0);
+        r.contains_skewed(x - shift, y, self.lean.atan())
     }
 
     /// A row's height in theme reference pixels, the unit of the list's drag.
@@ -318,7 +336,7 @@ impl SongSelectLayout {
         filter: &SongFilter,
         selected_set: usize,
     ) -> Option<Row> {
-        if !self.list.contains(x, y) {
+        if !self.list.contains(x - self.lean_x(y), y) {
             return None;
         }
         let index = (y - self.list.y) / self.row_height + scroll;
@@ -326,6 +344,21 @@ impl SongSelectLayout {
             return None;
         }
         filter.row(selected_set, index.floor() as usize)
+    }
+}
+
+/// Time constant of the list's scroll easing (ADR-0121): about 95 % of the way in three.
+pub const SCROLL_EASE_NS: f64 = 70_000_000.0;
+
+/// The shown scroll `elapsed_ns` after `shown`, easing exponentially towards `target`;
+/// within a thousandth of a row it lands.
+pub fn ease_scroll(shown: f32, target: f32, elapsed_ns: u64) -> f32 {
+    let keep = (-(elapsed_ns as f64) / SCROLL_EASE_NS).exp() as f32;
+    let next = target + (shown - target) * keep;
+    if (next - target).abs() < 1e-3 {
+        target
+    } else {
+        next
     }
 }
 
@@ -349,8 +382,10 @@ pub struct SongSelectSnapshot {
     /// Flat index of the first of `rows`.
     pub first_row: usize,
     rows: [Row; MAX_VISIBLE_ROWS],
-    /// Rows scrolled off the top.
+    /// Rows scrolled off the top: where the list goes.
     pub scroll: f32,
+    /// Rows scrolled off the top as shown, easing towards `scroll` (ADR-0121).
+    pub shown_scroll: f32,
     pub hovered: Option<Row>,
     /// The pointer is over the "choose folder" button, which is shown.
     pub folder_hovered: bool,
@@ -412,6 +447,11 @@ pub struct SongSelect {
     set: usize,
     difficulty: usize,
     scroll: f32,
+    /// The scroll shown: eases towards `scroll` (ADR-0121), and the rows under the pointer
+    /// are those shown.
+    shown: f32,
+    /// When `shown` was last eased.
+    shown_ns: u64,
     pointer: Option<(f32, f32)>,
     hovered: Option<Row>,
     folder_hovered: bool,
@@ -455,6 +495,8 @@ impl SongSelect {
             set: 0,
             difficulty: 0,
             scroll: 0.0,
+            shown: 0.0,
+            shown_ns: 0,
             pointer: None,
             hovered: None,
             folder_hovered: false,
@@ -599,7 +641,7 @@ impl SongSelect {
             self.refilter();
             self.hovered = self
                 .pointer
-                .and_then(|(x, y)| layout.row_at(x, y, self.scroll, &self.filter, self.set));
+                .and_then(|(x, y)| layout.row_at(x, y, self.shown, &self.filter, self.set));
         }
     }
 
@@ -619,7 +661,7 @@ impl SongSelect {
 
     pub fn snapshot(&self) -> SongSelectSnapshot {
         let row_count = self.filter.row_count(self.set);
-        let first_row = (self.scroll.max(0.0).floor() as usize).min(row_count);
+        let first_row = (self.shown.max(0.0).floor() as usize).min(row_count);
         // Every slot `rows` returns is filled, however many rows the view shows.
         let mut rows = [Row::Set(0); MAX_VISIBLE_ROWS];
         for (slot, index) in rows.iter_mut().zip(first_row..row_count) {
@@ -635,6 +677,7 @@ impl SongSelect {
             first_row,
             rows,
             scroll: self.scroll,
+            shown_scroll: self.shown,
             hovered: self.hovered,
             folder_hovered: self.folder_hovered,
             status: self.status,
@@ -660,12 +703,19 @@ impl SongSelect {
             self.mods.tick(now_ns, &layout.mods);
         }
         let per_row = layout.reference_row_height();
+        let elapsed = now_ns.saturating_sub(self.shown_ns);
+        self.shown_ns = now_ns;
         if let Some(scroll) =
             self.drag
                 .tick(now_ns, self.scroll * per_row, self.max_scroll() * per_row)
         {
+            // Dragged and flung, the list follows the hand as it is.
             self.scroll = scroll / per_row;
             self.clamp_scroll();
+            self.shown = self.scroll;
+            self.update_hover(layout);
+        } else if self.shown != self.scroll {
+            self.shown = ease_scroll(self.shown, self.scroll, elapsed);
             self.update_hover(layout);
         }
     }
@@ -827,6 +877,9 @@ impl SongSelect {
                 let offset = self.drag.moved(x, y, layout.scale);
                 if offset != 0.0 {
                     self.scroll += offset / layout.reference_row_height();
+                    self.clamp_scroll();
+                    // Dragged, the list follows the hand as it is (ADR-0121).
+                    self.shown = self.scroll;
                 }
             }
             I::PointerPress { x, y } => {
@@ -859,20 +912,20 @@ impl SongSelect {
     fn update_hover(&mut self, layout: &SongSelectLayout) {
         self.hovered = self
             .pointer
-            .and_then(|(x, y)| layout.row_at(x, y, self.scroll, &self.filter, self.set));
+            .and_then(|(x, y)| layout.row_at(x, y, self.shown, &self.filter, self.set));
         self.folder_hovered = self.shows_choose_folder()
             && self
                 .pointer
-                .is_some_and(|(x, y)| layout.choose_folder.contains(x, y));
+                .is_some_and(|(x, y)| layout.over_choose_folder(x, y));
     }
 
     /// What is under `(x, y)` to click.
     fn pressed_at(&self, x: f32, y: f32, layout: &SongSelectLayout) -> Option<Pressed> {
-        if self.shows_choose_folder() && layout.choose_folder.contains(x, y) {
+        if self.shows_choose_folder() && layout.over_choose_folder(x, y) {
             return Some(Pressed::ChooseFolder);
         }
         layout
-            .row_at(x, y, self.scroll, &self.filter, self.set)
+            .row_at(x, y, self.shown, &self.filter, self.set)
             .map(Pressed::Row)
     }
 

@@ -20,7 +20,7 @@ use super::keybinds;
 use crate::displays::{DisplayLists, DisplayViews};
 use crate::settings::{
     DrawRate, FpsScreens, HitsoundDelay, InputSettings, KeyOverlayAnimation, KeySlot,
-    MenuBackground, MenuSounds, RendererChoice, Settings, Timing, skins,
+    MenuBackground, MenuSounds, PauseMenuStyle, RendererChoice, Settings, Timing, skins,
 };
 use slam_ui::theme::{ColourScheme, UI_SCALE_RANGE};
 
@@ -253,6 +253,8 @@ pub enum Row {
     CursorTrail,
     CursorSize,
     AutoCursorSize,
+    PauseMenuStyle,
+    PauseMenuScale,
     Skin,
     SongsFolder,
 }
@@ -261,7 +263,7 @@ pub enum Row {
 const _: () = assert!(Row::ALL.len() <= slam_ui::settings_screen::MAX_ROWS);
 
 impl Row {
-    pub const ALL: [Row; 63] = [
+    pub const ALL: [Row; 65] = [
         Row::MasterVolume,
         Row::MusicVolume,
         Row::MenuMusic,
@@ -323,6 +325,8 @@ impl Row {
         Row::CursorTrail,
         Row::CursorSize,
         Row::AutoCursorSize,
+        Row::PauseMenuStyle,
+        Row::PauseMenuScale,
         Row::Skin,
         Row::SongsFolder,
     ];
@@ -410,6 +414,8 @@ impl Row {
             | Row::CursorTrail
             | Row::CursorSize
             | Row::AutoCursorSize
+            | Row::PauseMenuStyle
+            | Row::PauseMenuScale
             | Row::Skin => 5,
             Row::SongsFolder => 6,
         }
@@ -477,6 +483,8 @@ impl Row {
             Row::CursorTrail => "settings-gameplay-cursor-trail",
             Row::CursorSize => "settings-gameplay-cursor-size",
             Row::AutoCursorSize => "settings-gameplay-auto-cursor-size",
+            Row::PauseMenuStyle => "settings-gameplay-pause-menu-style",
+            Row::PauseMenuScale => "settings-gameplay-pause-menu-scale",
             Row::Skin => "settings-gameplay-skin",
             Row::SongsFolder => "settings-library-songs-folder",
         }
@@ -584,6 +592,14 @@ fn corner_key(corner: FpsCorner) -> &'static str {
 }
 
 /// The Fluent key of a key overlay animation option.
+fn pause_menu_style_key(style: PauseMenuStyle) -> &'static str {
+    match style {
+        PauseMenuStyle::Slam => "settings-option-pause-menu-style-slam",
+        PauseMenuStyle::Lazer => "settings-option-pause-menu-style-lazer",
+        PauseMenuStyle::Stable => "settings-option-pause-menu-style-stable",
+    }
+}
+
 fn key_animation_key(animation: KeyOverlayAnimation) -> &'static str {
     match animation {
         KeyOverlayAnimation::Stable => "settings-option-key-overlay-animation-stable",
@@ -842,11 +858,11 @@ impl Rows {
                 step: 0.01,
                 value: round_to(s.gameplay.cursor_size, 2),
             },
-            Row::MenuScale | Row::GameScale => {
-                let scale = if row == Row::MenuScale {
-                    s.general.menu_scale
-                } else {
-                    s.general.game_scale
+            Row::MenuScale | Row::GameScale | Row::PauseMenuScale => {
+                let scale = match row {
+                    Row::MenuScale => s.general.menu_scale,
+                    Row::GameScale => s.general.game_scale,
+                    _ => s.gameplay.pause_menu_scale,
                 };
                 RowKind::Slider {
                     min: f64::from(UI_SCALE_RANGE.0) * 100.0,
@@ -887,6 +903,12 @@ impl Rows {
                 HitsoundDelay::ALL
                     .iter()
                     .position(|d| *d == s.audio.hitsound_delay),
+            ),
+            Row::PauseMenuStyle => choice(
+                PauseMenuStyle::ALL.len(),
+                PauseMenuStyle::ALL
+                    .iter()
+                    .position(|p| *p == s.gameplay.pause_menu_style),
             ),
             Row::KeyOverlayAnimation => choice(
                 KeyOverlayAnimation::ALL.len(),
@@ -1087,6 +1109,14 @@ impl Rows {
                 if let Some(animation) = KeyOverlayAnimation::ALL.get(i) {
                     settings.gameplay.key_overlay_animation = *animation;
                 }
+            }
+            (Row::PauseMenuStyle, RowValue::Choice(i)) => {
+                if let Some(style) = PauseMenuStyle::ALL.get(i) {
+                    settings.gameplay.pause_menu_style = *style;
+                }
+            }
+            (Row::PauseMenuScale, RowValue::Slider(v)) => {
+                settings.gameplay.pause_menu_scale = scale_from_percent(v);
             }
             (Row::CursorTrail, RowValue::Toggle(v)) => settings.gameplay.cursor_trail = v,
             (Row::AutoCursorSize, RowValue::Toggle(v)) => {
@@ -1330,6 +1360,10 @@ impl Rows {
                         .iter()
                         .map(|delay| text(delay_key(*delay)))
                         .collect(),
+                    Row::PauseMenuStyle => PauseMenuStyle::ALL
+                        .iter()
+                        .map(|style| text(pause_menu_style_key(*style)))
+                        .collect(),
                     Row::KeyOverlayAnimation => KeyOverlayAnimation::ALL
                         .iter()
                         .map(|animation| text(key_animation_key(*animation)))
@@ -1385,6 +1419,7 @@ impl Rows {
                     | Row::SongSelectDim
                     | Row::MenuScale
                     | Row::GameScale
+                    | Row::PauseMenuScale
                     | Row::PositionalHitsoundsLevel => text("settings-unit-percent"),
                     Row::Sensitivity | Row::CursorSize => text("settings-unit-times"),
                     _ => String::new(),
@@ -1965,6 +2000,10 @@ mod tests {
         rows.apply(&mut s, index(Row::GameScale), RowValue::Slider(10.0));
         assert_eq!(s.general.menu_scale, 1.25);
         assert_eq!(s.general.game_scale, 0.75);
+        rows.apply(&mut s, index(Row::PauseMenuStyle), RowValue::Choice(2));
+        assert_eq!(s.gameplay.pause_menu_style, PauseMenuStyle::Stable);
+        rows.apply(&mut s, index(Row::PauseMenuScale), RowValue::Slider(150.0));
+        assert_eq!(s.gameplay.pause_menu_scale, 1.5);
         rows.apply(&mut s, index(Row::MenuBackground), RowValue::Choice(2));
         assert_eq!(s.general.menu_background, MenuBackground::None);
         rows.apply(&mut s, index(Row::MenuSounds), RowValue::Choice(1));

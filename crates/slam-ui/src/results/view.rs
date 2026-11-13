@@ -381,6 +381,7 @@ impl ResultsView {
             let look = Look::Button {
                 highlighted: snapshot.hovered == Some(button),
                 seed: i as f32 * 0.37,
+                fade: opacity,
             };
             rect(&layout.buttons[i], fill, look);
         }

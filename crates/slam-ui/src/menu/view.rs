@@ -187,6 +187,28 @@ impl MenuView {
         let shift = pose.offset * width;
         let theme = &self.theme;
         let scale = self.layout.scale;
+        // One backing under the title and the buttons (ADR-0119).
+        let (first, last) = (
+            &self.layout.title,
+            &self.layout.buttons[MenuItem::ALL.len() - 1],
+        );
+        let pad = theme.menu_panel_pad * scale;
+        let skew = self.layout.button_skew_offset();
+        let backing = super::Rect {
+            x: first.x - pad - skew + shift,
+            y: first.y - pad,
+            width: first.width + 2.0 * (pad + skew),
+            height: last.y + last.height - first.y + 2.0 * pad,
+        };
+        crate::widgets::panel(
+            shapes,
+            white,
+            &backing,
+            theme,
+            scale,
+            theme.menu_panel_fill,
+            pose.opacity,
+        );
         for (i, item) in MenuItem::ALL.into_iter().enumerate() {
             let selected = item.enabled() && i == snapshot.selected;
             let fill = if selected {

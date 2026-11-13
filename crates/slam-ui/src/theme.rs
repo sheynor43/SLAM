@@ -247,6 +247,10 @@ pub struct Theme {
     pub pattern_speed: f32,
     /// Dim over the main menu's background (ADR-0119), 0 to 1.
     pub menu_background_dim: f32,
+    /// Backing of the main menu's title and buttons, so they read over the background.
+    pub menu_panel_fill: Color,
+    /// Margin of that backing around them.
+    pub menu_panel_pad: f32,
 }
 
 /// Largest skew [`Theme::button_skew_degrees`] takes.
@@ -273,12 +277,8 @@ impl Theme {
         };
         Theme {
             background: p.background,
-            button_fill: Color {
-                r: 1.0,
-                g: 1.0,
-                b: 1.0,
-                a: 0.08,
-            },
+            // Dense enough to read over a beatmap background (ADR-0119).
+            button_fill: alpha(p.raised, 0.78),
             button_hover_fill: alpha(p.accent, 0.55),
             text: Color::WHITE,
             disabled_text: Color {
@@ -379,10 +379,12 @@ impl Theme {
             panel_radius: 14.0,
             button_skew_degrees: 10.0,
             outline_width: 2.0,
-            button_pattern: 0.18,
-            panel_pattern: 0.06,
+            button_pattern: 0.1,
+            panel_pattern: 0.035,
             pattern_speed: 0.08,
             menu_background_dim: 0.5,
+            menu_panel_fill: alpha(p.panel, 0.62),
+            menu_panel_pad: 28.0,
         }
     }
 

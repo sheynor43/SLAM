@@ -749,7 +749,11 @@ fn host(name: &str, with_track: bool) -> HostFixture {
         localizer: Arc::new(Localizer::builtin().unwrap()),
         intro_sound: None,
         intro_voice: VoiceId::NONE,
-        game_scale: 1.0,
+        pause_menu: (
+            crate::settings::PauseMenuStyle::Slam,
+            1.0,
+            slam_ui::theme::ColourScheme::Pink,
+        ),
     };
     HostFixture {
         host,
@@ -2369,4 +2373,18 @@ fn the_menu_scale_waits_for_the_settings_to_be_kept_and_the_scheme_does_not() {
     assert_eq!(theme.scheme, slam_ui::theme::ColourScheme::Orange);
     assert_eq!(theme.ui_scale, 1.0);
     assert_eq!(interface_theme(&live, &live).ui_scale, 1.4);
+}
+
+#[test]
+fn stable_pause_menu_without_the_skins_buttons_is_slams() {
+    use crate::settings::PauseMenuStyle;
+    use slam_play::menu_overlay::MenuStyle;
+    for (setting, stable, shown) in [
+        (PauseMenuStyle::Stable, true, MenuStyle::Stable),
+        (PauseMenuStyle::Stable, false, MenuStyle::Slam),
+        (PauseMenuStyle::Lazer, false, MenuStyle::Lazer),
+        (PauseMenuStyle::Slam, true, MenuStyle::Slam),
+    ] {
+        assert_eq!(menu_style(setting, stable), shown);
+    }
 }

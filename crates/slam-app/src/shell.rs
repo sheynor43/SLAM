@@ -2039,6 +2039,40 @@ struct Game {
     beatmap: Arc<ReplayBeatmap>,
     /// What the play was prepared with; `None` when not known.
     options: Option<PlayOptions>,
+    /// The display sizes of the play's skin's stable pause buttons, if it has them all
+    /// (ADR-0122).
+    stable_pause: Option<[[f32; 2]; 3]>,
+}
+
+/// Lays the pause and fail menus of `session` out as `(style, scale, scheme)` say
+/// (ADR-0122): stable's style without the skin's buttons is SLAM's.
+fn style_menu(
+    session: &mut PlaySession,
+    (style, scale, scheme): (
+        crate::settings::PauseMenuStyle,
+        f32,
+        slam_ui::theme::ColourScheme,
+    ),
+    stable_pause: Option<[[f32; 2]; 3]>,
+) {
+    let sizes = stable_pause.unwrap_or_default();
+    session.set_menu_style(menu_style(style, stable_pause.is_some()), scheme, sizes);
+    session.set_menu_scale(scale);
+}
+
+/// The style the pause and fail menus show for the setting `style` (ADR-0122).
+fn menu_style(
+    style: crate::settings::PauseMenuStyle,
+    stable_pause: bool,
+) -> slam_play::menu_overlay::MenuStyle {
+    use crate::settings::PauseMenuStyle;
+    use slam_play::menu_overlay::MenuStyle;
+    match style {
+        PauseMenuStyle::Slam => MenuStyle::Slam,
+        PauseMenuStyle::Lazer => MenuStyle::Lazer,
+        PauseMenuStyle::Stable if stable_pause => MenuStyle::Stable,
+        PauseMenuStyle::Stable => MenuStyle::Slam,
+    }
 }
 
 /// The play prepared again with changed settings, to take its scene and samples (ADR-0096).
@@ -2127,8 +2161,12 @@ struct PlayHost {
     intro_sound: Option<Arc<Sample>>,
     /// The voice playing `intro_sound`, or [`VoiceId::NONE`].
     intro_voice: VoiceId,
-    /// The in-game interface scale (ADR-0118): the pause and fail menus' of every play.
-    game_scale: f32,
+    /// The pause and fail menus' style, scale and colour scheme (ADR-0122).
+    pause_menu: (
+        crate::settings::PauseMenuStyle,
+        f32,
+        slam_ui::theme::ColourScheme,
+    ),
 }
 
 /// What a play takes from the settings on the update thread.
@@ -2236,9 +2274,13 @@ impl PlayHost {
     /// Hands changed settings to the audio thread and to the next play (ADR-0048). Does
     /// not block; allocates only to ask for another output (ADR-0089).
     fn apply_settings(&mut self, settings: &Settings) {
-        self.game_scale = settings.general.game_scale;
+        self.pause_menu = (
+            settings.gameplay.pause_menu_style,
+            settings.gameplay.pause_menu_scale,
+            settings.general.colour_scheme,
+        );
         if let Some(game) = &mut self.game {
-            game.session.set_menu_scale(self.game_scale);
+            style_menu(&mut game.session, self.pause_menu, game.stable_pause);
         }
         let audio = &mut self.audio;
         audio.volumes.sync(
@@ -2554,6 +2596,8 @@ impl PlayHost {
         let _ = game
             .session
             .replace_samples(&mut sounds, &mut self.audio.mixer);
+        game.stable_pause = scene.stable_pause_sizes();
+        style_menu(&mut game.session, self.pause_menu, game.stable_pause);
         if let Err(rtrb::PushError::Full((_, scene))) = self.scenes.push((game.id, scene)) {
             // Room was checked above; the update thread is the only producer.
             self.loader.free(Trash::Other(Box::new(scene)));
@@ -2834,7 +2878,8 @@ impl PlayHost {
             },
         ));
         let mut session = session;
-        session.set_menu_scale(self.game_scale);
+        let stable_pause = scene.stable_pause_sizes();
+        style_menu(&mut session, self.pause_menu, stable_pause);
         self.loader.free(Trash::Other(Box::new((beatmap, mods))));
         // The caller checked for a free slot.
         let _ = self.scenes.push((id, scene));
@@ -2846,6 +2891,7 @@ impl PlayHost {
             mods: shown_mods,
             map,
             beatmap: replay_beatmap,
+            stable_pause,
             options: self
                 .play_requested
                 .take()
@@ -4200,7 +4246,11 @@ fn run_with<B: render::Backend>(
                     .map(Arc::new)
             }),
             intro_voice: VoiceId::NONE,
-            game_scale: settings.general.game_scale,
+            pause_menu: (
+                settings.gameplay.pause_menu_style,
+                settings.gameplay.pause_menu_scale,
+                settings.general.colour_scheme,
+            ),
         }
     });
 

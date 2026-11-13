@@ -614,9 +614,20 @@ impl PlaySession {
         }
     }
 
-    /// Lays the pause and fail menus out at the in-game interface scale (ADR-0118).
+    /// Lays the pause and fail menus out at the pause menu's scale (ADR-0122).
     pub fn set_menu_scale(&mut self, ui_scale: f32) {
         self.menu.set_ui_scale(ui_scale);
+    }
+
+    /// Draws the pause and fail menus in `style`, SLAM's in `scheme`'s colours, stable's
+    /// with buttons of the display sizes `stable` (ADR-0122).
+    pub fn set_menu_style(
+        &mut self,
+        style: crate::menu_overlay::MenuStyle,
+        scheme: slam_ui::theme::ColourScheme,
+        stable: [[f32; 2]; 3],
+    ) {
+        self.menu.set_style(style, scheme, stable);
     }
 
     /// Game time the clock starts at: 0, or earlier for the first object's fade-in and the
@@ -1654,16 +1665,36 @@ pub fn skin_image_check(limits: ImageLimits) -> ImageCheck {
     })
 }
 
-/// Reads `file` and queues it for upload.
+/// The display size of the image `file` (pixels over its density), read off the disk;
+/// `None` when it does not decode.
+fn image_size(file: &TextureFile) -> Option<[f32; 2]> {
+    let bytes = std::fs::read(&file.path).ok()?;
+    let image = decode_image(&bytes, ImageLimits::default()).ok()?;
+    Some([
+        image.size.width as f32 / file.scale,
+        image.size.height as f32 / file.scale,
+    ])
+}
+
+/// Reads `file` and queues it for upload into the atlas.
 fn request_file(
     requests: &mut TextureRequests,
     file: &TextureFile,
+) -> Result<Requested, RequestError> {
+    request_file_as(requests, file, TextureKind::Atlas)
+}
+
+/// Reads `file` and queues it for upload as `kind`.
+fn request_file_as(
+    requests: &mut TextureRequests,
+    file: &TextureFile,
+    kind: TextureKind,
 ) -> Result<Requested, RequestError> {
     let bytes = std::fs::read(&file.path).map_err(|source| RequestError::Read {
         path: file.path.clone(),
         source,
     })?;
-    let handle = requests.load(bytes, TextureKind::Atlas)?;
+    let handle = requests.load(bytes, kind)?;
     Ok(Requested {
         handle,
         scale: file.scale,
@@ -1703,7 +1734,23 @@ pub struct PlayTextures {
     hud: HudRequests,
     /// The song progress's ring.
     ring: TextureHandle,
+    /// The stable pause and fail menus' images, in [`PAUSE_IMAGES`] order (ADR-0122).
+    pause: [Option<Requested>; PAUSE_IMAGES.len()],
+    /// The display sizes of stable's three pause buttons, read when requested: the update
+    /// side lays them out without the uploads.
+    pause_sizes: [Option<[f32; 2]>; 3],
 }
+
+/// The skin images of stable's pause and fail menus (ADR-0122): the backgrounds, then the
+/// buttons in the order the pause menu shows them.
+// Ported from McOsu db2add2: src/App/Osu/OsuSkin.cpp (load)
+pub const PAUSE_IMAGES: [&str; 5] = [
+    "pause-overlay",
+    "fail-background",
+    "pause-continue",
+    "pause-retry",
+    "pause-back",
+];
 
 /// The requested textures of one result's popup.
 #[derive(Debug, Clone, Default)]
@@ -1874,6 +1921,22 @@ impl PlayTextures {
         let triangle = requests.load_pixels(triangle_image(), TextureKind::Atlas)?;
         let ring = requests.load_pixels(ring_image(), TextureKind::Atlas)?;
         let hud = HudRequests::request(skins, requests)?;
+        let mut pause = [None; PAUSE_IMAGES.len()];
+        let mut pause_sizes = [None; 3];
+        for (index, (slot, name)) in pause.iter_mut().zip(PAUSE_IMAGES).enumerate() {
+            if let Some(found) = skins.texture(name) {
+                if let Some(size) = index.checked_sub(2).and_then(|i| pause_sizes.get_mut(i)) {
+                    *size = image_size(&found.value);
+                }
+                // The backgrounds fill the screen: too large for the atlas.
+                let kind = if name.ends_with("overlay") || name.ends_with("background") {
+                    TextureKind::Standalone
+                } else {
+                    TextureKind::Atlas
+                };
+                *slot = Some(request_file_as(requests, &found.value, kind)?);
+            }
+        }
         Ok(PlayTextures {
             requested,
             white,
@@ -1892,7 +1955,16 @@ impl PlayTextures {
             lighting,
             hud,
             ring,
+            pause,
+            pause_sizes,
         })
+    }
+
+    /// The display sizes of stable's three pause buttons when the skins have them all:
+    /// without them stable's pause menu shows SLAM's (ADR-0122).
+    pub fn stable_pause_sizes(&self) -> Option<[[f32; 2]; 3]> {
+        let [a, b, c] = self.pause_sizes;
+        Some([a?, b?, c?])
     }
 
     /// The textures uploaded by this frame; pending and failed ones are `None`.
@@ -2025,6 +2097,12 @@ impl PlayTextures {
         if let TextureState::Ready(ring) = uploads.get(self.ring) {
             frame.hud.ring = Some(ring);
         }
+        for (sprite, requested) in frame.pause.images.iter_mut().zip(&self.pause) {
+            *sprite = requested.and_then(|r| match uploads.get(r.handle) {
+                TextureState::Ready(region) => Some(SkinSprite::new(region, r.scale, f32::MAX)),
+                _ => None,
+            });
+        }
         // The spinners' counters are in the score font too.
         frame.spinners.score_digits = frame.hud.score.digits;
         frame
@@ -2076,6 +2154,7 @@ impl PlayTextures {
             + judgements
             + usize::from(self.lighting.is_some())
             + self.hud.found()
+            + self.pause.iter().flatten().count()
     }
 }
 
@@ -2414,6 +2493,15 @@ pub struct FrameTextures {
     pub disc: Option<AtlasRegion>,
     /// The HUD's skin textures.
     pub hud: HudTextures,
+    /// Stable's pause and fail menus' images (ADR-0122).
+    pub pause: PauseTextures,
+}
+
+/// The images of stable's pause and fail menus, in [`PAUSE_IMAGES`] order; missing or not
+/// uploaded ones are `None`.
+#[derive(Debug, Clone, Copy, PartialEq, Default)]
+pub struct PauseTextures {
+    pub images: [Option<SkinSprite>; PAUSE_IMAGES.len()],
 }
 
 /// The draw side of a play.

@@ -15,7 +15,7 @@ use toml::{Table, Value};
 use super::keys;
 use super::model::{
     BindingEntry, Combo, DrawRate, FpsScreens, HitsoundDelay, InputSettings, KeyOverlayAnimation,
-    KeySlot, MenuBackground, MenuSounds, RendererChoice, Settings, Timing, Window,
+    KeySlot, MenuBackground, MenuSounds, PauseMenuStyle, RendererChoice, Settings, Timing, Window,
     corner_from_name, parse_size, window_mode_from_name,
 };
 
@@ -554,6 +554,25 @@ fn from_table(mut table: Table) -> Loaded {
         &mut settings.gameplay.auto_cursor_size,
         |_| Ok(()),
     );
+    let mut style: Option<String> = None;
+    cx.opt(&mut gameplay, "gameplay", "pause_menu_style", &mut style);
+    if let Some(name) = style {
+        match PauseMenuStyle::from_name(&name) {
+            Some(style) => settings.gameplay.pause_menu_style = style,
+            None => cx.warn(format!(
+                "gameplay.pause_menu_style: unknown value \"{name}\", using the default"
+            )),
+        }
+    }
+    let mut scale = f64::from(settings.gameplay.pause_menu_scale);
+    cx.float(
+        &mut gameplay,
+        "gameplay",
+        "pause_menu_scale",
+        &mut scale,
+        f64::from(UI_SCALE_RANGE.0)..=f64::from(UI_SCALE_RANGE.1),
+    );
+    settings.gameplay.pause_menu_scale = ((scale * 20.0).round() / 20.0) as f32;
     // Retired in favour of the HUD layout (ADR-0109); read only to migrate it.
     let mut legacy_scale = f64::NAN;
     cx.float(

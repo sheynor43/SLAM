@@ -104,7 +104,7 @@ pub struct General {
     /// Scale of the menus, in `slam_ui::theme::UI_SCALE_RANGE` in steps of 0.05 (ADR-0118).
     #[serde(serialize_with = "serialize_scale")]
     pub menu_scale: f32,
-    /// Scale of the HUD and the pause and fail menus, in `slam_ui::theme::UI_SCALE_RANGE` in steps of
+    /// Scale of the HUD, in `slam_ui::theme::UI_SCALE_RANGE` in steps of
     /// 0.05 (ADR-0118).
     #[serde(serialize_with = "serialize_scale")]
     pub game_scale: f32,
@@ -692,6 +692,12 @@ pub struct Gameplay {
     /// Adjusts the cursor's size to the beatmap's circle size (lazer's
     /// `OsuSetting.AutoCursorSize`).
     pub auto_cursor_size: bool,
+    /// The style of the pause and fail menus (ADR-0122).
+    pub pause_menu_style: PauseMenuStyle,
+    /// Scale of the pause and fail menus, in `slam_ui::theme::UI_SCALE_RANGE` in steps of 0.05
+    /// (ADR-0122).
+    #[serde(serialize_with = "serialize_scale")]
+    pub pause_menu_scale: f32,
 }
 
 impl Default for Gameplay {
@@ -713,7 +719,44 @@ impl Default for Gameplay {
             cursor_trail: true,
             cursor_size: 1.0,
             auto_cursor_size: false,
+            pause_menu_style: PauseMenuStyle::default(),
+            pause_menu_scale: 1.0,
         }
+    }
+}
+
+/// The style of the pause and fail menus (ADR-0122).
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum PauseMenuStyle {
+    /// SLAM's own look.
+    #[default]
+    Slam,
+    /// The menu of osu!lazer.
+    Lazer,
+    /// The images of the skin, laid out as in stable.
+    Stable,
+}
+
+impl PauseMenuStyle {
+    pub const ALL: [PauseMenuStyle; 3] = [
+        PauseMenuStyle::Slam,
+        PauseMenuStyle::Lazer,
+        PauseMenuStyle::Stable,
+    ];
+
+    /// The name in the settings file.
+    pub fn name(self) -> &'static str {
+        match self {
+            PauseMenuStyle::Slam => "slam",
+            PauseMenuStyle::Lazer => "lazer",
+            PauseMenuStyle::Stable => "stable",
+        }
+    }
+
+    /// The value called `name`.
+    pub fn from_name(name: &str) -> Option<PauseMenuStyle> {
+        PauseMenuStyle::ALL.into_iter().find(|s| s.name() == name)
     }
 }
 

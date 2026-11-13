@@ -94,6 +94,6 @@ fn views_push_without_allocating_once_warm() {
             frame(1280.0, 720.0, &mut glyphs);
         }
     });
-    // Three buttons and the outline of the selected one.
-    assert_eq!(shapes.len(), 4);
+    // The backing, three buttons and the outline of the selected one.
+    assert_eq!(shapes.len(), 5);
 }

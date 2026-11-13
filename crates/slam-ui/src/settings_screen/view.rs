@@ -638,6 +638,7 @@ impl SettingsView {
             let look = Look::Button {
                 highlighted: !snapshot.searching && i == snapshot.section,
                 seed: i as f32 * 0.41,
+                fade: opacity,
             };
             let colour = faded(fill_colour, opacity);
             draw(
@@ -782,6 +783,7 @@ impl SettingsView {
                     let look = Look::Button {
                         highlighted: i == snapshot.focus,
                         seed: i as f32 * 0.23,
+                        fade: opacity,
                     };
                     let colour = faded(colour, opacity);
                     draw(shapes, white, &widget, colour, look, &theme, layout.scale);
@@ -910,6 +912,7 @@ impl SettingsView {
             let look = Look::Button {
                 highlighted: chosen,
                 seed: rect.x * 0.01,
+                fade: opacity,
             };
             let fill_colour = faded(fill_colour, opacity);
             draw(shapes, white, &rect, fill_colour, look, theme, layout.scale);

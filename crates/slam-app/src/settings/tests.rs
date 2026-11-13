@@ -16,7 +16,7 @@ use super::file::{self, LoadStatus};
 use super::keys;
 use super::model::{
     Combo, DrawRate, FpsScreens, Frame, HitsoundDelay, InputSettings, KeyOverlayAnimation, KeySlot,
-    MenuBackground, MenuSounds, Mods, RendererChoice, Settings, Window,
+    MenuBackground, MenuSounds, Mods, PauseMenuStyle, RendererChoice, Settings, Window,
 };
 
 fn temp_dir(tag: &str) -> PathBuf {
@@ -96,6 +96,8 @@ fn round_trip_non_default() {
     s.general.menu_scale = 1.05;
     s.general.game_scale = 0.8;
     s.general.menu_background = MenuBackground::Skin;
+    s.gameplay.pause_menu_style = PauseMenuStyle::Stable;
+    s.gameplay.pause_menu_scale = 1.25;
     s.audio.menu_sounds = MenuSounds::Off;
     s.hud.layout = "my-hud".into();
     s.input.bindings = Bindings::new(&[
@@ -1463,4 +1465,44 @@ fn scales_snap_to_their_step_and_write_cleanly() {
     assert!(text.contains("menu_background = \"skin\""), "{text}");
     assert!(text.contains("menu_sounds = \"off\""), "{text}");
     assert_eq!(file::from_toml_str(&text).settings, settings);
+}
+
+#[test]
+fn the_pause_menu_settings_default_and_read_by_name() {
+    let d = Settings::default();
+    assert_eq!(d.gameplay.pause_menu_style, PauseMenuStyle::Slam);
+    assert_eq!(d.gameplay.pause_menu_scale, 1.0);
+    let loaded =
+        file::from_toml_str("[gameplay]\npause_menu_style = \"stable\"\npause_menu_scale = 1.07\n");
+    assert_eq!(loaded.status, LoadStatus::Ok, "{:?}", loaded.warnings);
+    assert_eq!(
+        loaded.settings.gameplay.pause_menu_style,
+        PauseMenuStyle::Stable
+    );
+    assert_eq!(loaded.settings.gameplay.pause_menu_scale, 1.05);
+    for style in PauseMenuStyle::ALL {
+        assert_eq!(PauseMenuStyle::from_name(style.name()), Some(style));
+    }
+    let mut settings = Settings::default();
+    settings.gameplay.pause_menu_style = PauseMenuStyle::Lazer;
+    settings.gameplay.pause_menu_scale = 0.75;
+    let text = file::to_toml_string(&settings).unwrap();
+    assert!(text.contains("pause_menu_style = \"lazer\""), "{text}");
+    assert!(text.contains("pause_menu_scale = 0.75\n"), "{text}");
+    assert_eq!(file::from_toml_str(&text).settings, settings);
+}
+
+#[test]
+fn bad_pause_menu_settings_fall_back_with_a_warning() {
+    let loaded =
+        file::from_toml_str("[gameplay]\npause_menu_style = \"fancy\"\npause_menu_scale = 9.0\n");
+    assert_eq!(loaded.status, LoadStatus::Recovered);
+    assert_eq!(loaded.settings.gameplay, Settings::default().gameplay);
+    for key in ["gameplay.pause_menu_style", "gameplay.pause_menu_scale"] {
+        assert!(
+            loaded.warnings.iter().any(|w| w.starts_with(key)),
+            "{key}: {:?}",
+            loaded.warnings
+        );
+    }
 }

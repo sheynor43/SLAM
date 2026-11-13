@@ -131,6 +131,11 @@ impl MenuLayout {
         }
     }
 
+    /// How far a button's skew reaches past its rectangle on each side.
+    pub fn button_skew_offset(&self) -> f32 {
+        self.buttons[0].height / 2.0 * self.skew.tan()
+    }
+
     /// The item whose button contains the point.
     pub fn item_at(&self, x: f32, y: f32) -> Option<MenuItem> {
         MenuItem::ALL

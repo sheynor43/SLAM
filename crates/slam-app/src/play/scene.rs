@@ -26,6 +26,7 @@ use slam_play::{
     HudSetup, HudView, MenuLabels, MenuView, PlaySnapshot, PlayTextures, PlayView, PlayfieldLayout,
     SampleCache, SampleSkins, SoundSettings,
 };
+use slam_render::shape::{SHAPE_LAYOUT, ShapeBatch};
 use slam_render::slider::{SliderBuffer, SliderDraw, SliderMesh, SliderRenderer};
 use slam_render::sprite::{
     Affine, DEFAULT_SLOTS, Projection, Sprite, SpriteBatch, SpriteRenderer, SpriteStats, tint_srgb,
@@ -64,7 +65,9 @@ const MAX_TEXTURES: usize = 64;
 const MAX_GLYPH_SPRITES: usize = 256;
 /// The menu's background and buttons, the fail menu's footer, save button and its hover,
 /// and the FPS counter's box.
-const MAX_MENU_SPRITES: usize = 5 + slam_play::menu_overlay::MAX_BUTTONS;
+/// Dim, backing, each button with its outline, the fail footer, the save button and its
+/// hover, and the FPS counter's box.
+const MAX_MENU_SPRITES: usize = 6 + 2 * slam_play::menu_overlay::MAX_BUTTONS + 3;
 
 /// What a play takes from the player's settings.
 #[derive(Clone, Debug, PartialEq)]
@@ -402,7 +405,7 @@ pub fn prepare(
         text,
         cursor: SpriteBatch::with_capacity(MAX_CURSOR_SPRITES + MAX_TARGET_SPRITES),
         menu,
-        menu_shapes: SpriteBatch::with_capacity(MAX_MENU_SPRITES),
+        menu_shapes: ShapeBatch::with_capacity(MAX_MENU_SPRITES),
         menu_text: SpriteBatch::with_capacity(MAX_GLYPH_SPRITES + MAX_FPS_GLYPHS),
         stats: PlayfieldStats::default(),
     };
@@ -426,6 +429,8 @@ pub struct SceneGpu<D: Device> {
     renderer: SpriteRenderer<D>,
     /// Draws MSDF glyphs.
     text_renderer: SpriteRenderer<D>,
+    /// Draws the menus' and the FPS counter's shapes (ADR-0116).
+    shape_renderer: SpriteRenderer<D>,
     sliders: SliderRenderer<D>,
     /// Slider body meshes on the GPU, by object index.
     slider_buffers: Vec<Option<SliderBuffer<D>>>,
@@ -459,7 +464,7 @@ pub struct PlayScene {
     cursor: SpriteBatch,
     /// The pause and fail menus, on top of everything (ADR-0052).
     menu: MenuView,
-    menu_shapes: SpriteBatch,
+    menu_shapes: ShapeBatch,
     menu_text: SpriteBatch,
     /// The playfield batch's figures of the last frame, for the console report.
     stats: PlayfieldStats,
@@ -502,6 +507,9 @@ impl PlayScene {
         let renderer = SpriteRenderer::new(device, 3 * DEFAULT_SLOTS).expect("renderer");
         let text_renderer =
             SpriteRenderer::with_shader(device, 2 * DEFAULT_SLOTS, &shaders::MSDF).expect("text");
+        let shape_renderer =
+            SpriteRenderer::with_layout(device, DEFAULT_SLOTS, &shaders::UI_SHAPE, SHAPE_LAYOUT)
+                .expect("shape renderer");
         let mut sliders = SliderRenderer::new(device, MAX_LIVE_SLIDERS).expect("slider renderer");
         let mut slider_buffers: Vec<_> = (0..self.objects).map(|_| None).collect();
         for (index, mesh) in &self.meshes {
@@ -526,6 +534,7 @@ impl PlayScene {
             textures,
             renderer,
             text_renderer,
+            shape_renderer,
             sliders,
             slider_buffers,
         }
@@ -622,8 +631,13 @@ impl PlayScene {
             self.cursor.transform_from(0, &layer, layer_tint);
         }
         if let Some(white) = textures.white {
-            self.menu
-                .push_shapes(&mut self.menu_shapes, &snapshot.menu, now_ns, white);
+            self.menu.push_shapes(
+                &mut self.menu_shapes,
+                &snapshot.menu,
+                now_ns,
+                white,
+                &textures.pause,
+            );
         }
         self.menu.push_text(
             &mut self.menu_text,
@@ -640,6 +654,7 @@ impl PlayScene {
         }
         r.renderer.begin_frame();
         r.text_renderer.begin_frame();
+        r.shape_renderer.begin_frame();
         let gpu_textures = &r.textures;
         let projection = Projection::pixels(size);
         // A failed draw loses one frame; the next one tries again.
@@ -695,12 +710,18 @@ impl PlayScene {
         let _ = r.renderer.draw(device, &self.cursor, &projection, texture);
         if !self.menu_shapes.is_empty() {
             let _ = r
-                .renderer
+                .shape_renderer
                 .draw(device, &self.menu_shapes, &projection, texture);
             let _ = r
                 .text_renderer
                 .draw(device, &self.menu_text, &projection, texture);
         }
+    }
+
+    /// The display sizes of the skin's stable pause buttons, if it has them all: stable's
+    /// pause menu needs them (ADR-0122).
+    pub fn stable_pause_sizes(&self) -> Option<[[f32; 2]; 3]> {
+        self.textures.stable_pause_sizes()
     }
 
     /// Whether every image of the play is uploaded (or failed) and every glyph drawn so far
@@ -723,6 +744,7 @@ impl<D: Device> SceneGpu<D> {
             mut textures,
             renderer,
             text_renderer,
+            shape_renderer,
             mut sliders,
             slider_buffers,
         } = self;
@@ -732,6 +754,7 @@ impl<D: Device> SceneGpu<D> {
         sliders.destroy(device);
         renderer.destroy(device);
         text_renderer.destroy(device);
+        shape_renderer.destroy(device);
         for texture in textures.drain() {
             device.destroy_texture(texture);
         }

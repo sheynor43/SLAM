@@ -1,5 +1,6 @@
 //! The pause and fail menus: lazer's `GameplayMenuOverlay` with its `PauseOverlay` and
-//! `FailOverlay` (ADR-0052).
+//! `FailOverlay` (ADR-0052), drawn in one of three styles (ADR-0122): SLAM's skewed shapes,
+//! lazer's, or stable's from the skin.
 //!
 //! The update side ([`GameplayMenu`]) belongs to the play session: which menu shows, which
 //! button is selected, and what the keys and the mouse do to them. It goes to the draw side
@@ -16,14 +17,18 @@ use slam_input::{InputEvent, InputKind, MouseButton};
 use slam_osu::Vec2;
 use slam_render::Color;
 use slam_render::atlas::AtlasRegion;
+use slam_render::shape::ShapeBatch;
 use slam_render::sprite::{Sprite, SpriteBatch};
 use slam_text::{
     FamilyId, FontRegistry, GlyphCache, GlyphKey, HEADING_FAMILY, Layout, LayoutContext, TextStats,
     TextStyle, UI_FAMILY, push_layout,
 };
+use slam_ui::theme::{ColourScheme, Theme};
+use slam_ui::widgets::{Look, draw};
 
 use crate::hotkeys::MenuKey;
 use crate::hud::{NumberText, Template, format_accuracy, number_text};
+use crate::session::PauseTextures;
 
 const NS_PER_MS: f64 = 1_000_000.0;
 
@@ -265,8 +270,12 @@ pub struct MenuLayout {
     /// Left edge and width of the buttons.
     button_x: f32,
     button_width: f32,
-    /// Top of the first button.
+    /// Top of the first button, a button's height and the distance between two tops.
     buttons_top: f32,
+    button_height: f32,
+    button_step: f32,
+    /// Skew of the buttons in radians, which hit tests follow (SLAM's style).
+    skew: f32,
     /// Top of the footer: the window's bottom when there is none.
     pub footer_top: f32,
 }
@@ -294,6 +303,9 @@ impl MenuLayout {
             button_x: padding,
             button_width: (width - 2.0 * padding).max(0.0),
             buttons_top: row,
+            button_height: BUTTON_HEIGHT * scale,
+            button_step: (BUTTON_HEIGHT + BUTTON_SPACING) * scale,
+            skew: 0.0,
             footer_top: height - footer,
         }
     }
@@ -306,10 +318,12 @@ impl MenuLayout {
 
     /// Top left and size of button `index`: its whole hit area.
     pub fn button(&self, index: usize) -> ([f32; 2], [f32; 2]) {
-        let step = (BUTTON_HEIGHT + BUTTON_SPACING) * self.scale;
         (
-            [self.button_x, self.buttons_top + index as f32 * step],
-            [self.button_width, BUTTON_HEIGHT * self.scale],
+            [
+                self.button_x,
+                self.buttons_top + index as f32 * self.button_step,
+            ],
+            [self.button_width, self.button_height],
         )
     }
 
@@ -324,9 +338,58 @@ impl MenuLayout {
         )
     }
 
+    /// The layout of `menu` on a window of `width` × `height` units in its style: SLAM's
+    /// buttons are narrower and centred, the rest as lazer's.
+    pub fn of(width: f32, height: f32, menu: &MenuSnapshot) -> MenuLayout {
+        let layout = MenuLayout::new(width, height, menu.kind, menu.ui_scale);
+        match menu.style {
+            MenuStyle::Slam => {
+                let w = (SLAM_BUTTON_WIDTH * layout.scale).min(layout.button_width);
+                MenuLayout {
+                    button_x: (width - w) / 2.0,
+                    button_width: w,
+                    skew: Theme::new(menu.scheme, 1.0).button_skew(),
+                    ..layout
+                }
+            }
+            // Stable's buttons, each in a box as large as the largest, stacked about the
+            // middle of the screen's thirds (McOsu `OsuPauseMenu::updateLayout`); the fail
+            // menu skips the first.
+            // Ported from McOsu db2add2: src/App/Osu/OsuPauseMenu.cpp (updateLayout)
+            MenuStyle::Stable => {
+                let unit = stable_unit(width, height, menu.ui_scale);
+                let max = menu.stable_sizes.iter().fold([0.0f32; 2], |m, s| {
+                    [m[0].max(s[0] * unit), m[1].max(s[1] * unit)]
+                });
+                let third = height / STABLE_SLOTS as f32;
+                let pinch = (third / 2.0 - max[1] / 2.0).max(0.0);
+                // Slot 0 is moved down by the pinch and slot 2 up: the step shrinks by it.
+                let top = |slot: f32| third * (slot + 0.5) - max[1] / 2.0 + pinch * (1.0 - slot);
+                let first = match menu.kind {
+                    MenuKind::Pause => 0.0,
+                    MenuKind::Fail => 1.0,
+                };
+                MenuLayout {
+                    button_x: (width - max[0]) / 2.0,
+                    button_width: max[0],
+                    buttons_top: top(first),
+                    button_height: max[1],
+                    button_step: third - pinch,
+                    ..layout
+                }
+            }
+            MenuStyle::Lazer => layout,
+        }
+    }
+
     /// The button of `buttons` under `at`, if any.
     pub fn button_at(&self, at: Vec2, buttons: usize) -> Option<usize> {
-        (0..buttons).find(|&index| contains(self.button(index), at))
+        (0..buttons).find(|&index| {
+            let ([x, y], [w, h]) = self.button(index);
+            // A skewed button's rows shift about its middle, top to the right.
+            let shift = (y + h / 2.0 - at.y) * self.skew.tan();
+            contains(([x + shift, y], [w, h]), at)
+        })
     }
 }
 
@@ -340,6 +403,41 @@ impl MenuLayout {
     pub fn over_save_button(&self, at: Vec2, width: f32) -> bool {
         contains(self.save_button(width), at)
     }
+}
+
+/// How the menus look (ADR-0122).
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash)]
+pub enum MenuStyle {
+    /// SLAM's: narrower skewed, rounded buttons in the colour scheme's colours.
+    Slam,
+    /// Lazer's `GameplayMenuOverlay` (ADR-0052).
+    #[default]
+    Lazer,
+    /// Stable's, from the skin's images.
+    Stable,
+}
+
+/// Width of SLAM's buttons, in interface units.
+const SLAM_BUTTON_WIDTH: f32 = 420.0;
+
+// Ported from McOsu db2add2: src/App/Osu/OsuPauseMenu.cpp (osu_pause_dim_alpha, updateLayout)
+/// Stable's dim behind the menu, its grey, and the button slots it lays out.
+const STABLE_DIM_ALPHA: f32 = 0.58;
+const STABLE_DIM_GREY: f32 = 0.078;
+const STABLE_SLOTS: usize = 3;
+/// A stable button's pixels per image pixel: `getUIScale(256) / 411`, where `getUIScale` is
+/// the height of the 4:3 area in units of 480.
+const STABLE_UI_RATIO: f32 = 256.0;
+const STABLE_BUTTON_DIVISOR: f32 = 411.0;
+/// How much a selected stable button grows.
+const STABLE_HOVER_SCALE: f32 = 1.1;
+
+/// A stable button's window pixels per display unit: `getUIScale(256) / 411` on the 4:3
+/// area inside a `width` × `height` window, times the pause menu's scale.
+// Ported from McOsu db2add2: src/App/Osu/Osu.cpp (getUIScale)
+fn stable_unit(width: f32, height: f32, ui_scale: f32) -> f32 {
+    let area = height.min(width * 3.0 / 4.0);
+    STABLE_UI_RATIO * area / 480.0 / STABLE_BUTTON_DIVISOR * ui_scale
 }
 
 /// What the draw side needs of the menu. Fixed size.
@@ -357,9 +455,16 @@ pub struct MenuSnapshot {
     pub replay_save: ReplaySave,
     /// The mouse is over the save button.
     pub save_hovered: bool,
-    /// Multiplies the scale the menu fits the window with: the in-game interface scale
-    /// setting (ADR-0118).
+    /// Multiplies the scale the menu fits the window with: the pause menu scale setting
+    /// (ADR-0122).
     pub ui_scale: f32,
+    /// How the menu looks (ADR-0122).
+    pub style: MenuStyle,
+    /// The colour scheme of SLAM's style (ADR-0117).
+    pub scheme: ColourScheme,
+    /// The display sizes of the skin's stable buttons (continue, retry, back) the stable
+    /// style lays out (ADR-0122).
+    pub stable_sizes: [[f32; 2]; 3],
 }
 
 impl Default for MenuSnapshot {
@@ -377,6 +482,9 @@ impl Default for MenuSnapshot {
             replay_save: ReplaySave::Available,
             save_hovered: false,
             ui_scale: 1.0,
+            style: MenuStyle::default(),
+            scheme: ColourScheme::default(),
+            stable_sizes: [[0.0; 2]; 3],
         }
     }
 }
@@ -408,6 +516,14 @@ impl GameplayMenu {
         self.state.ui_scale = ui_scale;
     }
 
+    /// Sets how the menu looks, the colour scheme of SLAM's style and the sizes of the
+    /// skin's buttons stable's style lays out (ADR-0122).
+    pub fn set_style(&mut self, style: MenuStyle, scheme: ColourScheme, stable: [[f32; 2]; 3]) {
+        self.state.style = style;
+        self.state.scheme = scheme;
+        self.state.stable_sizes = stable;
+    }
+
     pub fn is_visible(&self) -> bool {
         self.state.visible
     }
@@ -436,7 +552,7 @@ impl GameplayMenu {
         self.pressed = None;
         self.save_pressed = false;
         self.state.replay_save = ReplaySave::Available;
-        let layout = MenuLayout::new(size[0], size[1], kind, self.state.ui_scale);
+        let layout = MenuLayout::of(size[0], size[1], &self.state);
         self.hovered = self
             .pointer
             .and_then(|at| layout.button_at(at, kind.buttons().len()));
@@ -520,7 +636,7 @@ impl GameplayMenu {
             };
             return (clicked, true);
         }
-        let layout = MenuLayout::new(size[0], size[1], self.state.kind, self.state.ui_scale);
+        let layout = MenuLayout::of(size[0], size[1], &self.state);
         let fail = self.state.kind == MenuKind::Fail;
         match event.kind {
             InputKind::MouseMove { .. } => {
@@ -824,19 +940,45 @@ impl MenuView {
         }
     }
 
-    /// Writes the menu's rectangles at engine time `now_ns`, tinting `white`: the dark
-    /// background and the buttons. Allocation-free once `batch` has room.
+    /// Writes the menu's shapes at engine time `now_ns`, tinting `white`, in the menu's
+    /// style (ADR-0122); stable's style draws `pause`'s images. Allocation-free once `batch`
+    /// has room.
     pub fn push_shapes(
         &self,
-        batch: &mut SpriteBatch,
+        batch: &mut ShapeBatch,
         menu: &MenuSnapshot,
         now_ns: u64,
         white: AtlasRegion,
+        pause: &PauseTextures,
     ) {
         let alpha = menu.alpha.value_at(now_ns);
         if alpha <= 0.0 {
             return;
         }
+        let [width, height, _] = self.frame;
+        let layout = MenuLayout::of(width, height, menu);
+        match menu.style {
+            MenuStyle::Lazer => self.push_lazer(batch, menu, now_ns, white, alpha, &layout),
+            MenuStyle::Slam => push_slam(batch, menu, now_ns, white, alpha, &layout, width),
+            MenuStyle::Stable => {
+                push_stable(batch, menu, now_ns, white, alpha, pause, [width, height]);
+            }
+        }
+        if menu.kind == MenuKind::Fail && menu.style != MenuStyle::Lazer {
+            push_save_button(batch, menu, white, alpha, &layout, width, height, true);
+        }
+    }
+
+    /// Lazer's menu (ADR-0052): the dark background, the buttons and the fail footer.
+    fn push_lazer(
+        &self,
+        batch: &mut ShapeBatch,
+        menu: &MenuSnapshot,
+        now_ns: u64,
+        white: AtlasRegion,
+        alpha: f32,
+        layout: &MenuLayout,
+    ) {
         let [width, height, _] = self.frame;
         let mut rect = |position: [f32; 2], size: [f32; 2], colour: Color| {
             let mut sprite = Sprite::new(white.texture, white.uv, position, size);
@@ -852,7 +994,6 @@ impl MenuView {
             },
         );
         let buttons = menu.kind.buttons();
-        let layout = MenuLayout::new(width, height, menu.kind, menu.ui_scale);
         for (index, button) in buttons.iter().enumerate() {
             let ([x, y], [w, h]) = layout.button(index);
             let part = menu.widths[index].value_at(now_ns);
@@ -867,31 +1008,7 @@ impl MenuView {
             );
         }
         if menu.kind == MenuKind::Fail {
-            rect(
-                [0.0, layout.footer_top],
-                [width, height - layout.footer_top],
-                Color {
-                    a: alpha,
-                    ..FOOTER_COLOUR
-                },
-            );
-            // Ported from osu!lazer 2026.1005.0-lazer: osu.Game/Graphics/UserInterface/DownloadButton.cs (updateState)
-            let (position, size) = layout.save_button(width);
-            let colour = match menu.replay_save {
-                ReplaySave::Saved => GREEN,
-                ReplaySave::Available | ReplaySave::Unavailable => GRAY4,
-            };
-            rect(position, size, Color { a: alpha, ..colour });
-            if menu.save_hovered && menu.replay_save == ReplaySave::Available {
-                rect(
-                    position,
-                    size,
-                    Color {
-                        a: SAVE_HOVER_ALPHA * alpha,
-                        ..Color::WHITE
-                    },
-                );
-            }
+            push_save_button(batch, menu, white, alpha, layout, width, height, false);
         }
     }
 
@@ -920,20 +1037,31 @@ impl MenuView {
             ..Color::WHITE
         };
         let buttons = menu.kind.buttons();
-        let layout = MenuLayout::new(width, height, menu.kind, menu.ui_scale);
+        let layout = MenuLayout::of(width, height, menu);
+        // Stable's images carry their own words; only the save button is ours.
+        let stable = menu.style == MenuStyle::Stable;
         let title = match menu.kind {
             MenuKind::Pause => &self.titles[0].1,
             MenuKind::Fail => &self.titles[1].1,
         };
-        text(
-            title,
-            [
-                (width - title.width()) / 2.0,
-                layout.title_y - title.height() / 2.0,
-            ],
-            Color { a: alpha, ..YELLOW },
-        );
-        for (index, button) in buttons.iter().enumerate() {
+        let title_colour = match menu.style {
+            MenuStyle::Slam => Theme::new(menu.scheme, 1.0).accent,
+            MenuStyle::Lazer | MenuStyle::Stable => YELLOW,
+        };
+        if !stable {
+            text(
+                title,
+                [
+                    (width - title.width()) / 2.0,
+                    layout.title_y - title.height() / 2.0,
+                ],
+                Color {
+                    a: alpha,
+                    ..title_colour
+                },
+            );
+        }
+        for (index, button) in buttons.iter().enumerate().filter(|_| !stable) {
             let label = &self.buttons[*button as usize].1;
             let ([x, y], [w, h]) = layout.button(index);
             text(
@@ -962,6 +1090,9 @@ impl MenuView {
                 Color { a: alpha, ..colour },
             );
         }
+        if stable {
+            return stats;
+        }
         let total: f32 = self.info.iter().map(InfoLine::height).sum();
         let mut y = layout.info_y - total / 2.0;
         for line in &self.info {
@@ -973,6 +1104,223 @@ impl MenuView {
             y += line.height();
         }
         stats
+    }
+}
+
+/// How far button `index` is selected, 0 to 1, from its widening (ADR-0052).
+fn selection(menu: &MenuSnapshot, index: usize, now_ns: u64) -> f32 {
+    let part = menu.widths[index].value_at(now_ns);
+    ((part - IDLE_WIDTH) / (HOVER_WIDTH - IDLE_WIDTH)).clamp(0.0, 1.0)
+}
+
+/// `a` towards `b` by `t`.
+fn mix(a: Color, b: Color, t: f32) -> Color {
+    Color {
+        r: a.r + (b.r - a.r) * t,
+        g: a.g + (b.g - a.g) * t,
+        b: a.b + (b.b - a.b) * t,
+        a: a.a + (b.a - a.a) * t,
+    }
+}
+
+/// SLAM's menu (ADR-0122): a dim, a backing under the title, buttons and information, and
+/// skewed buttons in the colour scheme's colours, lit as they are selected.
+fn push_slam(
+    batch: &mut ShapeBatch,
+    menu: &MenuSnapshot,
+    now_ns: u64,
+    white: AtlasRegion,
+    alpha: f32,
+    layout: &MenuLayout,
+    width: f32,
+) {
+    let theme = Theme::new(menu.scheme, 1.0);
+    let full = slam_ui::menu::Rect {
+        x: 0.0,
+        y: 0.0,
+        width,
+        height: layout.footer_top,
+    };
+    let dim = Color {
+        a: BACKGROUND_ALPHA * alpha,
+        ..Color::BLACK
+    };
+    draw(batch, white, &full, dim, Look::Plain, &theme, layout.scale);
+    let scale = layout.scale;
+    let pad = 32.0 * scale;
+    let backing = slam_ui::menu::Rect {
+        x: layout.button_x - pad,
+        y: (layout.title_y - TITLE_SIZE * scale).max(0.0),
+        width: layout.button_width + 2.0 * pad,
+        height: (layout.info_y + 2.0 * INFO_SIZE * scale) - (layout.title_y - TITLE_SIZE * scale),
+    };
+    let panel = Color {
+        a: theme.menu_panel_fill.a * alpha,
+        ..theme.menu_panel_fill
+    };
+    draw(batch, white, &backing, panel, Look::Panel, &theme, scale);
+    for index in 0..menu.kind.buttons().len() {
+        let ([x, y], [w, h]) = layout.button(index);
+        let t = selection(menu, index, now_ns);
+        let fill = mix(theme.button_fill, theme.button_hover_fill, t);
+        let rect = slam_ui::menu::Rect {
+            x,
+            y,
+            width: w,
+            height: h,
+        };
+        let look = Look::Button {
+            highlighted: t > 0.5,
+            seed: index as f32 * 0.37,
+            fade: alpha,
+        };
+        let fill = Color {
+            a: fill.a * alpha,
+            ..fill
+        };
+        draw(batch, white, &rect, fill, look, &theme, scale);
+    }
+}
+
+/// Stable's menu from the skin's images (ADR-0122): the dim, the background image filling
+/// the screen and the buttons stacked about the middle, a selected one grown.
+// Ported from McOsu db2add2: src/App/Osu/OsuPauseMenu.cpp (draw, updateLayout)
+// Ported from McOsu db2add2: src/App/Osu/OsuUIPauseMenuButton.cpp (draw, onMouseInside)
+fn push_stable(
+    batch: &mut ShapeBatch,
+    menu: &MenuSnapshot,
+    now_ns: u64,
+    white: AtlasRegion,
+    alpha: f32,
+    pause: &PauseTextures,
+    [width, height]: [f32; 2],
+) {
+    let mut sprite = Sprite::new(white.texture, white.uv, [0.0, 0.0], [width, height]);
+    sprite.colour = Color {
+        a: STABLE_DIM_ALPHA * alpha,
+        ..Color::rgb(STABLE_DIM_GREY, STABLE_DIM_GREY, STABLE_DIM_GREY)
+    };
+    batch.push(&sprite);
+    let background = match menu.kind {
+        MenuKind::Pause => pause.images[0],
+        MenuKind::Fail => pause.images[1],
+    };
+    if let Some(image) = background {
+        let [w, h] = [image.size.x, image.size.y];
+        let fill = (width / w).max(height / h);
+        let size = [w * fill, h * fill];
+        let mut sprite = Sprite::new(
+            image.texture,
+            image.uv,
+            [(width - size[0]) / 2.0, (height - size[1]) / 2.0],
+            size,
+        );
+        sprite.colour = Color {
+            a: alpha,
+            ..Color::WHITE
+        };
+        batch.push(&sprite);
+    }
+    let unit = stable_unit(width, height, menu.ui_scale);
+    let layout = MenuLayout::of(width, height, menu);
+    let button_alpha = 1.0 - (1.0 - alpha).powi(3);
+    let first = match menu.kind {
+        MenuKind::Pause => 0,
+        MenuKind::Fail => 1,
+    };
+    for (index, image) in pause.images[2 + first..].iter().enumerate() {
+        // Not uploaded yet, or broken: its box still takes clicks.
+        let Some(image) = image else { continue };
+        let ([x, y], [w, h]) = layout.button(index);
+        let centre = [x + w / 2.0, y + h / 2.0];
+        // A button grows as it is selected, from lazer's tween (McOsu: 0.09 s linear).
+        let grown = 1.0 + (STABLE_HOVER_SCALE - 1.0) * selection(menu, index, now_ns);
+        let size = [image.size.x * unit * grown, image.size.y * unit * grown];
+        let mut sprite = Sprite::new(
+            image.texture,
+            image.uv,
+            [centre[0] - size[0] / 2.0, centre[1] - size[1] / 2.0],
+            size,
+        );
+        sprite.colour = Color {
+            a: button_alpha,
+            ..Color::WHITE
+        };
+        batch.push(&sprite);
+    }
+}
+
+/// The fail menu's footer and its button that saves the replay; `rounded` in SLAM's and
+/// stable's styles.
+#[allow(clippy::too_many_arguments)]
+fn push_save_button(
+    batch: &mut ShapeBatch,
+    menu: &MenuSnapshot,
+    white: AtlasRegion,
+    alpha: f32,
+    layout: &MenuLayout,
+    width: f32,
+    height: f32,
+    rounded: bool,
+) {
+    let theme = Theme::new(menu.scheme, 1.0);
+    let look = if rounded { Look::Round } else { Look::Plain };
+    let footer = slam_ui::menu::Rect {
+        x: 0.0,
+        y: layout.footer_top,
+        width,
+        height: height - layout.footer_top,
+    };
+    draw(
+        batch,
+        white,
+        &footer,
+        Color {
+            a: alpha,
+            ..FOOTER_COLOUR
+        },
+        Look::Plain,
+        &theme,
+        layout.scale,
+    );
+    // Ported from osu!lazer 2026.1005.0-lazer: osu.Game/Graphics/UserInterface/DownloadButton.cs (updateState)
+    let ([x, y], [w, h]) = layout.save_button(width);
+    let rect = slam_ui::menu::Rect {
+        x,
+        y,
+        width: w,
+        height: h,
+    };
+    let colour = match menu.replay_save {
+        ReplaySave::Saved => GREEN,
+        ReplaySave::Available | ReplaySave::Unavailable => GRAY4,
+    };
+    draw(
+        batch,
+        white,
+        &rect,
+        Color { a: alpha, ..colour },
+        look,
+        &theme,
+        layout.scale,
+    );
+    if menu.save_hovered && menu.replay_save == ReplaySave::Available {
+        let hover = Color {
+            a: SAVE_HOVER_ALPHA * alpha,
+            ..Color::WHITE
+        };
+        draw(batch, white, &rect, hover, look, &theme, layout.scale);
+    }
+}
+
+#[cfg(test)]
+impl MenuInfo {
+    fn default_for_tests() -> MenuInfo {
+        MenuInfo {
+            retries: 0,
+            progress: 0,
+            accuracy: 1.0,
+        }
     }
 }
 
@@ -1246,6 +1594,59 @@ pub(crate) mod tests {
         // Not one of the buttons the arrows cycle through.
         key(&mut menu, MenuKey::SelectPrevious, 6);
         assert_eq!(menu.selected(), Some(1));
+    }
+
+    #[test]
+    fn styles_lay_the_buttons_out_their_way() {
+        let mut menu = GameplayMenu::default();
+        let sizes = [[300.0, 100.0], [280.0, 90.0], [260.0, 80.0]];
+        menu.set_style(MenuStyle::Slam, ColourScheme::Pink, sizes);
+        menu.show(
+            MenuKind::Pause,
+            MenuInfo::default_for_tests(),
+            0,
+            [1024.0, 768.0],
+        );
+        let slam = MenuLayout::of(1024.0, 768.0, &menu.snapshot());
+        let ([x, y], [w, h]) = slam.button(0);
+        assert_eq!(w, SLAM_BUTTON_WIDTH);
+        assert_eq!(x, (1024.0 - SLAM_BUTTON_WIDTH) / 2.0);
+        // The skewed top edge: right of the box's left edge it hits, left of it not.
+        let tan = Theme::default().button_skew().tan();
+        let near_top = y + 1.0;
+        let shift = (h / 2.0 - 1.0) * tan;
+        assert_eq!(
+            slam.button_at(Vec2::new(x + shift + 0.5, near_top), 3),
+            Some(0)
+        );
+        assert_eq!(
+            slam.button_at(Vec2::new(x + shift - 0.5, near_top), 3),
+            None
+        );
+
+        // Stable at 1024x768: unit 256/411; boxes as large as the largest image, the
+        // first a third high less the box, the next a step down.
+        menu.set_style(MenuStyle::Stable, ColourScheme::Pink, sizes);
+        let unit = 256.0 * 768.0 / 480.0 / 411.0;
+        let (bw, bh) = (300.0 * unit, 100.0 * unit);
+        let pause = MenuLayout::of(1024.0, 768.0, &menu.snapshot());
+        let ([x0, y0], size) = pause.button(0);
+        assert!((x0 - (1024.0 - bw) / 2.0).abs() < 1e-3 && (size[0] - bw).abs() < 1e-3);
+        assert!((y0 - (256.0 - bh)).abs() < 1e-3, "{y0}");
+        let ([_, y2], _) = pause.button(2);
+        assert!((y2 - 512.0).abs() < 1e-3, "{y2}");
+        // Off to the side of the images nothing is hit.
+        assert_eq!(pause.button_at(Vec2::new(5.0, y0 + 1.0), 3), None);
+        // The fail menu's buttons are the second and third slots.
+        menu.show(
+            MenuKind::Fail,
+            MenuInfo::default_for_tests(),
+            0,
+            [1024.0, 768.0],
+        );
+        let fail = MenuLayout::of(1024.0, 768.0, &menu.snapshot());
+        let ([_, f0], _) = fail.button(0);
+        assert!((f0 - (384.0 - bh / 2.0)).abs() < 1e-3, "{f0}");
     }
 
     // Ported from osu!lazer 2026.1005.0-lazer: osu.Game/Screens/Play/GameplayMenuOverlay.cs (getSongProgress)

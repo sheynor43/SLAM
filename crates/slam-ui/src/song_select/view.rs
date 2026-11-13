@@ -580,6 +580,7 @@ impl SongSelectView {
                     let look = Look::Button {
                         highlighted: on,
                         seed: (column * 7 + index) as f32 * 0.31,
+                        fade: opacity,
                     };
                     rect(&area, faded(fill, dim), look);
                     let (x, y) = centred(line, &area);
@@ -758,8 +759,14 @@ impl SongSelectView {
                 height: layout.hint.y + layout.hint.height + 2.0 * inset - layout.header.y,
             },
             theme.song_panel_fill,
-            Look::Panel,
+            Look::LeaningPanel,
         );
+        // Everything on the panel leans with it (ADR-0121).
+        let lean = |x: f32, centre_y: f32| x + layout.lean_x(centre_y);
+        let leaned = |r: &Rect| Rect {
+            x: lean(r.x, r.y + r.height / 2.0),
+            ..*r
+        };
         let status_line = match snapshot.status {
             SongSelectStatus::NoFolder => Some(&self.no_folder),
             SongSelectStatus::Scanning { .. } => Some(&self.scanning),
@@ -770,7 +777,10 @@ impl SongSelectView {
         if let Some(line) = status_line {
             left(
                 line,
-                layout.header.x,
+                lean(
+                    layout.header.x,
+                    layout.header.y + layout.header.height / 2.0,
+                ),
                 layout.header.y + layout.header.height / 2.0,
                 theme.text,
             );
@@ -781,10 +791,11 @@ impl SongSelectView {
         let from = usize::from(status_line.is_some());
         for (i, line) in self.detail_lines.iter().enumerate().skip(from) {
             let centre = layout.details.y + line_height * (i as f32 + 0.5);
-            left(line, layout.details.x, centre, theme.text);
+            left(line, lean(layout.details.x, centre), centre, theme.text);
         }
         // The search line.
-        rect(&layout.search, theme.song_search_fill, Look::Round);
+        let search = leaned(&layout.search);
+        rect(&search, theme.song_search_fill, Look::Round);
         let line = if snapshot.query.is_empty() {
             (&self.search_placeholder, theme.disabled_text)
         } else {
@@ -792,21 +803,17 @@ impl SongSelectView {
         };
         left(
             line.0,
-            layout.search.x + pad,
-            layout.search.y + layout.search.height / 2.0,
+            search.x + pad,
+            search.y + search.height / 2.0,
             line.1,
         );
         if list.sets.is_empty() {
             if snapshot.status == SongSelectStatus::Ready {
-                left(
-                    &self.empty,
-                    layout.list.x,
-                    layout.list.y + layout.row_height / 2.0,
-                    theme.disabled_text,
-                );
+                let y = layout.list.y + layout.row_height / 2.0;
+                left(&self.empty, lean(layout.list.x, y), y, theme.disabled_text);
             }
             if can_choose_folder(list, snapshot.status) {
-                let button = &layout.choose_folder;
+                let button = &leaned(&layout.choose_folder);
                 let fill = if snapshot.folder_hovered {
                     theme.button_hover_fill
                 } else {
@@ -818,6 +825,7 @@ impl SongSelectView {
                     Look::Button {
                         highlighted: snapshot.folder_hovered,
                         seed: 0.0,
+                        fade: opacity,
                     },
                 );
                 left(
@@ -829,15 +837,16 @@ impl SongSelectView {
             }
         } else {
             if snapshot.row_count == 0 {
+                let y = layout.list.y + layout.row_height / 2.0;
                 left(
                     &self.search_no_matches,
-                    layout.list.x,
-                    layout.list.y + layout.row_height / 2.0,
+                    lean(layout.list.x, y),
+                    y,
                     theme.disabled_text,
                 );
             }
             let rows = snapshot.rows();
-            for index in layout.visible_rows(snapshot.scroll, snapshot.row_count) {
+            for index in layout.visible_rows(snapshot.shown_scroll, snapshot.row_count) {
                 let Some(row) = index
                     .checked_sub(snapshot.first_row)
                     .and_then(|i| rows.get(i))
@@ -864,9 +873,12 @@ impl SongSelectView {
                     Row::Set(_) => 0.0,
                     Row::Difficulty { .. } => layout.indent,
                 };
+                let y = layout.row_y(index, snapshot.shown_scroll);
+                // The list leans along the rows' skew (ADR-0121).
+                let lean = layout.lean_x(y + (layout.row_height - gap) / 2.0);
                 let area = Rect {
-                    x: layout.list.x + indent,
-                    y: layout.row_y(index, snapshot.scroll),
+                    x: layout.list.x + indent + lean,
+                    y,
                     width: layout.list.width - indent,
                     height: layout.row_height - gap,
                 };
@@ -903,6 +915,7 @@ impl SongSelectView {
                     Look::Button {
                         highlighted: selected,
                         seed: index as f32 * 0.29,
+                        fade: opacity,
                     },
                 );
                 let x = area.x + pad;
@@ -935,7 +948,7 @@ impl SongSelectView {
         };
         left(
             hint,
-            layout.hint.x,
+            lean(layout.hint.x, layout.hint.y + layout.hint.height / 2.0),
             layout.hint.y + layout.hint.height / 2.0,
             colour,
         );

@@ -92,7 +92,8 @@ fn fs_main(
     }
     var out = colour * textureSample(shape_texture, shape_sampler, uv);
     if (pattern > 0.0) {
-        let cell = max(half_size.y * 0.9, 6.0);
+        // About the height of a button, smaller on small shapes, never huge on panels.
+        let cell = clamp(half_size.y * 0.9, 6.0, 22.0);
         let light = triangles(local + half_size, cell, params.w) * pattern;
         out = vec4<f32>(mix(out.rgb, vec3<f32>(1.0, 1.0, 1.0), light), out.a);
     }

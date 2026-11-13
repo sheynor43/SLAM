@@ -239,7 +239,10 @@ fn hit_testing_follows_the_scroll() {
     let mut s = screen(&sets);
     let l = layout();
     press(&mut s, I::Scroll { lines: 10.5 });
-    let scroll = s.snapshot().scroll;
+    // The shown scroll eases there (ADR-0121); hit tests follow what is shown.
+    s.tick(1, &l);
+    s.tick(1_000_000_000, &l);
+    let scroll = s.snapshot().shown_scroll;
     assert_eq!(scroll, 10.5);
     assert_eq!(s.selected(), Some((0, 0)));
     let (x, y) = centre_of(&l, 20, scroll);
@@ -665,4 +668,50 @@ fn hover_follows_the_fling() {
     let (x, y) = s.pointer.unwrap();
     assert_eq!(s.snapshot().hovered, l.row_at(x, y, scroll, s.filter(), 0));
     assert_ne!(s.snapshot().hovered, before);
+}
+
+#[test]
+fn the_scroll_eases_towards_its_target_and_lands() {
+    use crate::song_select::{SCROLL_EASE_NS, ease_scroll};
+    let step = ease_scroll(0.0, 10.0, SCROLL_EASE_NS as u64);
+    assert!(
+        (step - 10.0 * (1.0 - (-1.0f32).exp())).abs() < 1e-3,
+        "{step}"
+    );
+    assert_eq!(ease_scroll(9.9995, 10.0, 1), 10.0);
+    assert_eq!(ease_scroll(3.0, 3.0, 1_000), 3.0);
+    // Going back up eases the same way.
+    assert!(ease_scroll(10.0, 0.0, 1_000_000) < 10.0);
+}
+
+#[test]
+fn the_list_leans_and_hit_tests_with_it() {
+    let layout = layout();
+    let middle = (layout.header.y + layout.hint.y + layout.hint.height) / 2.0;
+    assert_eq!(layout.lean_x(middle), 0.0);
+    assert!(
+        layout.lean_x(layout.list.y) > 0.0,
+        "the top sits further right"
+    );
+    assert!(layout.lean_x(layout.list.y + layout.list.height) < 0.0);
+    // Just inside the list's left edge at its top, shifted right: outside unless leaned.
+    let y = layout.list.y + 1.0;
+    let x = layout.list.x + layout.lean_x(y) + 1.0;
+    assert!(layout.list.contains(x - layout.lean_x(y), y));
+}
+
+#[test]
+fn a_dragged_list_follows_the_hand_without_easing() {
+    let sets: Vec<(u64, usize)> = (0..50).map(|k| (k, 1)).collect();
+    let mut s = screen(&sets);
+    let l = layout();
+    let (x, y) = centre_of(&l, 5, 0.0);
+    press(&mut s, I::PointerPress { x, y });
+    // The first move past the threshold starts the drag; the next one scrolls.
+    press(&mut s, I::PointerMove { x, y: y - 20.0 });
+    press(&mut s, I::PointerMove { x, y: y - 300.0 });
+    s.tick(1, &l);
+    let snap = s.snapshot();
+    assert!(snap.scroll > 0.0);
+    assert_eq!(snap.shown_scroll, snap.scroll);
 }

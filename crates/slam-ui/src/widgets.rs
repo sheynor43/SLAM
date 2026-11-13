@@ -120,10 +120,17 @@ pub(crate) fn rounded(
 pub enum Look {
     /// Square corners, no pattern.
     Plain,
-    /// [`button`]: highlighted or not, with a pattern seed.
-    Button { highlighted: bool, seed: f32 },
+    /// [`button`]: highlighted or not, with a pattern seed; `fade` is the layer's opacity,
+    /// which the highlight's outline takes too.
+    Button {
+        highlighted: bool,
+        seed: f32,
+        fade: f32,
+    },
     /// [`panel`].
     Panel,
+    /// [`panel`] skewed like the buttons: behind a leaning list (ADR-0121).
+    LeaningPanel,
     /// [`rounded`] with the button radius.
     Round,
     /// Ends fully rounded: tracks, knobs, switches.
@@ -143,18 +150,49 @@ pub fn draw(
 ) {
     match look {
         Look::Plain => fill(shapes, white, rect, colour),
-        Look::Button { highlighted, seed } => button(
-            shapes,
-            white,
-            rect,
-            theme,
-            scale,
-            colour,
+        Look::Button {
             highlighted,
             seed,
-            1.0,
-        ),
+            fade,
+        } => {
+            // `colour` is faded already; only the outline takes `fade` here.
+            let shape = Shape {
+                radius: theme.button_radius * scale,
+                skew: theme.button_skew(),
+                pattern: theme.button_pattern,
+                pattern_phase: seed,
+                ..Shape::new(
+                    white.texture,
+                    white.uv,
+                    [rect.x, rect.y],
+                    [rect.width, rect.height],
+                    colour,
+                )
+            };
+            shapes.push_shape(&shape);
+            if highlighted {
+                shapes.push_shape(&Shape {
+                    outline: theme.outline_width * scale,
+                    pattern: 0.0,
+                    colour: faded(theme.accent, fade),
+                    ..shape
+                });
+            }
+        }
         Look::Panel => panel(shapes, white, rect, theme, scale, colour, 1.0),
+        Look::LeaningPanel => shapes.push_shape(&Shape {
+            radius: theme.panel_radius * scale,
+            skew: theme.button_skew(),
+            pattern: theme.panel_pattern,
+            pattern_phase: rect.x * 0.013,
+            ..Shape::new(
+                white.texture,
+                white.uv,
+                [rect.x, rect.y],
+                [rect.width, rect.height],
+                colour,
+            )
+        }),
         Look::Round => rounded(shapes, white, rect, theme.button_radius * scale, colour),
         Look::Pill => rounded(
             shapes,
@@ -212,3 +250,39 @@ pub(crate) fn push_right(
 
 #[cfg(test)]
 mod tests;
+
+#[cfg(test)]
+mod look_tests {
+    use slam_render::atlas::UvRect;
+    use slam_render::hal::Origin;
+    use slam_render::textures::TextureId;
+
+    use super::*;
+
+    #[test]
+    fn a_highlight_fades_with_its_layer() {
+        let white = AtlasRegion {
+            texture: TextureId(0),
+            origin: Origin::new(0, 0),
+            size: slam_render::Extent::new(1, 1),
+            uv: UvRect::FULL,
+        };
+        let theme = Theme::default();
+        let mut shapes = ShapeBatch::new();
+        let rect = Rect {
+            x: 0.0,
+            y: 0.0,
+            width: 100.0,
+            height: 40.0,
+        };
+        let look = Look::Button {
+            highlighted: true,
+            seed: 0.0,
+            fade: 0.25,
+        };
+        draw(&mut shapes, white, &rect, Color::WHITE, look, &theme, 1.0);
+        assert_eq!(shapes.len(), 2);
+        let outline = shapes.vertices()[4].colour[3];
+        assert!((outline - theme.accent.a * 0.25).abs() < 1e-6, "{outline}");
+    }
+}
