@@ -9,13 +9,14 @@ use slam_input::{MouseButton, VideoDriver, WindowMode};
 use slam_osu::replay::Actions;
 use slam_play::input::{Binding, Bindings, Input, MAX_BINDINGS};
 use slam_play::{BackgroundSettings, FpsCorner};
+use slam_ui::theme::ColourScheme;
 
 use super::dirs::{Os, resolve};
 use super::file::{self, LoadStatus};
 use super::keys;
 use super::model::{
     Combo, DrawRate, FpsScreens, Frame, HitsoundDelay, InputSettings, KeyOverlayAnimation, KeySlot,
-    Mods, RendererChoice, Settings, Window,
+    MenuBackground, MenuSounds, Mods, RendererChoice, Settings, Window,
 };
 
 fn temp_dir(tag: &str) -> PathBuf {
@@ -91,6 +92,11 @@ fn round_trip_non_default() {
     s.gameplay.cursor_trail = false;
     s.gameplay.cursor_size = 0.65;
     s.gameplay.auto_cursor_size = true;
+    s.general.colour_scheme = ColourScheme::Mono;
+    s.general.menu_scale = 1.05;
+    s.general.game_scale = 0.8;
+    s.general.menu_background = MenuBackground::Skin;
+    s.audio.menu_sounds = MenuSounds::Off;
     s.hud.layout = "my-hud".into();
     s.input.bindings = Bindings::new(&[
         Binding {
@@ -1397,4 +1403,64 @@ fn song_select_dim_out_of_range_or_nan_falls_back() {
             loaded.warnings
         );
     }
+}
+
+#[test]
+fn the_interface_settings_default_and_read_by_name() {
+    let d = Settings::default();
+    assert_eq!(d.general.colour_scheme, ColourScheme::Pink);
+    assert_eq!((d.general.menu_scale, d.general.game_scale), (1.0, 1.0));
+    assert_eq!(d.general.menu_background, MenuBackground::Beatmap);
+    assert_eq!(d.audio.menu_sounds, MenuSounds::Slam);
+    let loaded = file::from_toml_str(
+        "[general]\ncolour_scheme = \"blue\"\nmenu_scale = 1.25\ngame_scale = 0.8\n\
+         menu_background = \"none\"\n[audio]\nmenu_sounds = \"skin\"\n",
+    );
+    assert_eq!(loaded.status, LoadStatus::Ok, "{:?}", loaded.warnings);
+    let g = &loaded.settings.general;
+    assert_eq!(g.colour_scheme, ColourScheme::Blue);
+    assert_eq!((g.menu_scale, g.game_scale), (1.25, 0.8));
+    assert_eq!(g.menu_background, MenuBackground::None);
+    assert_eq!(loaded.settings.audio.menu_sounds, MenuSounds::Skin);
+}
+
+#[test]
+fn bad_interface_settings_fall_back_with_a_warning() {
+    let loaded = file::from_toml_str(
+        "[general]\ncolour_scheme = \"teal\"\nmenu_scale = 3.0\ngame_scale = \"big\"\n\
+         menu_background = \"video\"\n[audio]\nmenu_sounds = \"loud\"\n",
+    );
+    assert_eq!(loaded.status, LoadStatus::Recovered);
+    assert_eq!(loaded.settings.general, Settings::default().general);
+    assert_eq!(loaded.settings.audio.menu_sounds, MenuSounds::Slam);
+    for key in [
+        "general.colour_scheme",
+        "general.menu_scale",
+        "general.game_scale",
+        "general.menu_background",
+        "audio.menu_sounds",
+    ] {
+        assert!(
+            loaded.warnings.iter().any(|w| w.starts_with(key)),
+            "{key}: {:?}",
+            loaded.warnings
+        );
+    }
+}
+
+#[test]
+fn scales_snap_to_their_step_and_write_cleanly() {
+    let loaded = file::from_toml_str("[general]\nmenu_scale = 1.07\n");
+    assert_eq!(loaded.settings.general.menu_scale, 1.05);
+    let mut settings = Settings::default();
+    settings.general.colour_scheme = ColourScheme::Orange;
+    settings.general.menu_scale = 1.05;
+    settings.general.menu_background = MenuBackground::Skin;
+    settings.audio.menu_sounds = MenuSounds::Off;
+    let text = file::to_toml_string(&settings).unwrap();
+    assert!(text.contains("colour_scheme = \"orange\""), "{text}");
+    assert!(text.contains("menu_scale = 1.05\n"), "{text}");
+    assert!(text.contains("menu_background = \"skin\""), "{text}");
+    assert!(text.contains("menu_sounds = \"off\""), "{text}");
+    assert_eq!(file::from_toml_str(&text).settings, settings);
 }

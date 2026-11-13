@@ -65,6 +65,8 @@ pub struct PlayOptions {
     pub positional_hitsounds_level: f32,
     /// Id of the active HUD layout (ADR-0109); resolved on the loader thread.
     pub hud_layout: String,
+    /// The in-game interface scale of the HUD (ADR-0118).
+    pub game_scale: f32,
     /// The chosen skin's folder (ADR-0051); `None` plays on the default skin.
     pub skin: Option<PathBuf>,
     /// The mods the player selected; the settings' fixed field is replaced by this.
@@ -244,6 +246,7 @@ pub fn spawn(mut config: LoaderConfig) -> std::io::Result<(LoaderLink, SceneTras
                         options.always_play_first_combo_break;
                     config.settings.hud_layout =
                         resolve(config.hud_layouts.as_ref(), &options.hud_layout).gameplay;
+                    config.settings.game_scale = options.game_scale;
                     config.settings.snaking = options.snaking();
                     config.settings.hit_lighting = options.hit_lighting;
                     config.settings.key_overlay = options.key_overlay;
@@ -322,6 +325,7 @@ mod tests {
             auto_cursor_size: false,
             positional_hitsounds_level: 0.2,
             hud_layout: "builtin:stable".into(),
+            game_scale: 1.0,
             skin: None,
             mods: ModSet::default(),
         }

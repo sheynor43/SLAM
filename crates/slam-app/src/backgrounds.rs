@@ -1,4 +1,5 @@
-//! The background of the selected beatmap behind the song select (ADR-0066).
+//! The background of the selected beatmap behind the song select (ADR-0066), and of the
+//! menu music's beatmap or the skin's `menu-background` behind the main menu (ADR-0119).
 //!
 //! Three ends: the update thread's [`BackgroundPicker`] waits for the selection to settle
 //! and asks for the background; the library thread's [`BackgroundLoader`] finds and reads
@@ -13,7 +14,7 @@ use std::sync::atomic::{AtomicU32, Ordering};
 
 use slam_render::atlas::AtlasRegion;
 use slam_render::hal::Color;
-use slam_render::sprite::{Sprite, SpriteBatch};
+use slam_render::sprite::{PushSprite, Sprite};
 use slam_render::upload::{TextureHandle, TextureKind, TextureRequests, TextureState};
 
 use crate::play::find_beatmap_file;
@@ -64,7 +65,25 @@ pub enum BackgroundCommand {
         set: usize,
         difficulty: usize,
     },
+    /// Load the menu background of the skin in folder `skin` (ADR-0119).
+    LoadSkin {
+        generation: u32,
+        skin: Arc<Path>,
+    },
     Release(TextureHandle),
+}
+
+/// Where the background to show comes from.
+#[derive(Clone, Copy)]
+pub enum BackgroundSource<'a> {
+    /// The background of `files[set][difficulty]`; `None`: the default background.
+    Beatmap {
+        files: &'a Arc<SongFiles>,
+        selected: Option<(usize, usize)>,
+    },
+    /// The `menu-background` of the skin in this folder; `None`, or a skin without one:
+    /// the default background.
+    Skin(Option<&'a Arc<Path>>),
 }
 
 /// The library thread's answer to a [`BackgroundCommand::Load`].
@@ -109,17 +128,57 @@ fn background_of(files: &SongFiles, set: usize, difficulty: usize) -> Option<(&P
     Some((file.path.parent()?, name))
 }
 
-/// A selection the picker remembers: the list it indexes, kept alive by the `Arc`.
+/// A selection the picker remembers: the list it indexes, kept alive by the `Arc`, or a
+/// file.
 #[derive(Clone)]
-struct Selected {
-    files: Arc<SongFiles>,
-    at: Option<(usize, usize)>,
+enum Selected {
+    Beatmap {
+        files: Arc<SongFiles>,
+        at: Option<(usize, usize)>,
+    },
+    Skin(Option<Arc<Path>>),
+}
+
+/// What tells two backgrounds apart.
+#[derive(Clone, Copy, PartialEq)]
+enum Key<'a> {
+    Beatmap(&'a Path, &'a str),
+    Skin(&'a Path),
 }
 
 impl Selected {
-    fn background(&self) -> Option<(&Path, &str)> {
-        let (set, difficulty) = self.at?;
-        background_of(&self.files, set, difficulty)
+    fn of(source: BackgroundSource<'_>) -> Selected {
+        match source {
+            BackgroundSource::Beatmap { files, selected } => Selected::Beatmap {
+                files: Arc::clone(files),
+                at: selected,
+            },
+            BackgroundSource::Skin(skin) => Selected::Skin(skin.cloned()),
+        }
+    }
+
+    fn background(&self) -> Option<Key<'_>> {
+        match self {
+            Selected::Beatmap { files, at } => {
+                let (set, difficulty) = (*at)?;
+                let (dir, name) = background_of(files, set, difficulty)?;
+                Some(Key::Beatmap(dir, name))
+            }
+            Selected::Skin(skin) => skin.as_deref().map(Key::Skin),
+        }
+    }
+}
+
+impl BackgroundSource<'_> {
+    fn background(&self) -> Option<Key<'_>> {
+        match *self {
+            BackgroundSource::Beatmap { files, selected } => {
+                let (set, difficulty) = selected?;
+                let (dir, name) = background_of(files, set, difficulty)?;
+                Some(Key::Beatmap(dir, name))
+            }
+            BackgroundSource::Skin(skin) => skin.map(|s| Key::Skin(s)),
+        }
     }
 }
 
@@ -172,6 +231,12 @@ impl BackgroundPicker {
         files: &Arc<SongFiles>,
         selected: Option<(usize, usize)>,
     ) -> BackgroundTarget {
+        self.tick_source(now_ns, BackgroundSource::Beatmap { files, selected })
+    }
+
+    /// [`BackgroundPicker::tick`] for any source (ADR-0119). Allocates nothing; a file
+    /// source's path is shared, not copied.
+    pub fn tick_source(&mut self, now_ns: u64, source: BackgroundSource<'_>) -> BackgroundTarget {
         while let Ok(reply) = self.replies.pop() {
             if reply.generation == self.generation {
                 self.replace_target(BackgroundTarget {
@@ -205,13 +270,10 @@ impl BackgroundPicker {
                 }
             }
         }
-        let now_at = selected.and_then(|(s, d)| background_of(files, s, d));
+        let now_at = source.background();
         let seen_at = self.seen.as_ref().and_then(Selected::background);
         if self.seen.is_none() || now_at != seen_at {
-            self.seen = Some(Selected {
-                files: Arc::clone(files),
-                at: selected,
-            });
+            self.seen = Some(Selected::of(source));
             self.seen_ns = now_ns;
         } else if now_ns.saturating_sub(self.seen_ns) >= SELECTION_DEBOUNCE_NS {
             self.ask(now_at.is_some());
@@ -234,14 +296,21 @@ impl BackgroundPicker {
         let Some(seen) = &self.seen else { return };
         let generation = self.generation.wrapping_add(1);
         if has_background {
-            let Some((set, difficulty)) = seen.at else {
-                return;
-            };
-            let command = BackgroundCommand::Load {
-                generation,
-                files: Arc::clone(&seen.files),
-                set,
-                difficulty,
+            let command = match seen {
+                Selected::Beatmap {
+                    files,
+                    at: Some((set, difficulty)),
+                } => BackgroundCommand::Load {
+                    generation,
+                    files: Arc::clone(files),
+                    set: *set,
+                    difficulty: *difficulty,
+                },
+                Selected::Skin(Some(skin)) => BackgroundCommand::LoadSkin {
+                    generation,
+                    skin: Arc::clone(skin),
+                },
+                _ => return,
             };
             if self.commands.push(command).is_err() {
                 return;
@@ -315,19 +384,30 @@ impl BackgroundLoader {
         while let Ok(command) = self.commands.pop() {
             match command {
                 BackgroundCommand::Release(handle) => self.release(handle),
-                BackgroundCommand::Load {
-                    generation,
-                    files,
-                    set,
-                    difficulty,
-                } => load = Some((generation, files, set, difficulty)),
+                BackgroundCommand::Load { generation, .. }
+                | BackgroundCommand::LoadSkin { generation, .. } => {
+                    load = Some((generation, command));
+                }
             }
         }
-        let Some((generation, files, set, difficulty)) = load else {
+        let Some((generation, command)) = load else {
             return;
         };
-        let handle = background_of(&files, set, difficulty).and_then(|(dir, name)| {
-            let bytes = find_beatmap_file(dir, name).and_then(|path| std::fs::read(path).ok());
+        let read = match &command {
+            BackgroundCommand::Load {
+                files,
+                set,
+                difficulty,
+                ..
+            } => background_of(files, *set, *difficulty).map(|(dir, name)| {
+                let bytes = find_beatmap_file(dir, name).and_then(|path| std::fs::read(path).ok());
+                (name.to_owned(), bytes)
+            }),
+            BackgroundCommand::LoadSkin { skin, .. } => skin_menu_background(skin)
+                .map(|path| (path.display().to_string(), std::fs::read(&path).ok())),
+            BackgroundCommand::Release(_) => None,
+        };
+        let handle = read.and_then(|(name, bytes)| {
             let Some(bytes) = bytes else {
                 tracing::warn!("background {name}: not found or unreadable");
                 return None;
@@ -348,6 +428,15 @@ impl BackgroundLoader {
             self.releases.push(handle);
         }
     }
+}
+
+/// The `menu-background` image of the skin in folder `skin` (as an interface image of
+/// the skin, ADR-0119); `None` when the skin cannot be read or has none.
+fn skin_menu_background(skin: &Path) -> Option<std::path::PathBuf> {
+    let loaded = slam_skin::Skin::load(skin)
+        .inspect_err(|e| tracing::warn!("skin {}: {e}", skin.display()))
+        .ok()?;
+    Some(loaded.texture("menu-background")?.path)
 }
 
 fn is_queue_full(e: slam_render::upload::ReleaseError) -> bool {
@@ -464,7 +553,7 @@ impl BackgroundFade {
     /// Nothing for handles not ready, nor without a default: the theme shows.
     pub fn push(
         &self,
-        batch: &mut SpriteBatch,
+        batch: &mut impl PushSprite,
         width: f32,
         height: f32,
         now_ns: u64,
@@ -487,7 +576,7 @@ impl BackgroundFade {
                 b: grey,
                 a: alpha * opacity,
             };
-            batch.push(&sprite);
+            batch.push_sprite(&sprite);
         }
     }
 }

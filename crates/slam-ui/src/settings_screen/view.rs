@@ -5,6 +5,7 @@ use std::sync::Arc;
 
 use slam_render::Color;
 use slam_render::atlas::AtlasRegion;
+use slam_render::shape::ShapeBatch;
 use slam_render::sprite::SpriteBatch;
 use slam_text::{FontRegistry, Glyph, GlyphCache, GlyphKey};
 
@@ -18,7 +19,8 @@ use crate::screen::Pose;
 use crate::song_select::{QUERY_CAPACITY, SearchQuery};
 use crate::theme::{Theme, faded};
 use crate::widgets::{
-    DropdownView, SliderLayout, SliderView, ToggleLayout, ToggleView, fill, push_left, push_right,
+    DropdownView, Look, SliderLayout, SliderView, ToggleLayout, ToggleView, draw, push_left,
+    push_right,
 };
 
 /// The texts of one row, already localised.
@@ -556,7 +558,7 @@ impl SettingsView {
     #[allow(clippy::too_many_arguments)]
     pub fn push(
         &mut self,
-        shapes: &mut SpriteBatch,
+        shapes: &mut ShapeBatch,
         text: &mut SpriteBatch,
         glyphs: &mut GlyphCache,
         width: f32,
@@ -598,7 +600,16 @@ impl SettingsView {
         let pad = theme.widget_pad * layout.scale;
 
         let search = layout.search();
-        fill(shapes, white, &search, faded(theme.button_fill, opacity));
+        let field = faded(theme.button_fill, opacity);
+        draw(
+            shapes,
+            white,
+            &search,
+            field,
+            Look::Round,
+            &theme,
+            layout.scale,
+        );
         if snapshot.search.is_empty() {
             push_left(
                 text,
@@ -624,7 +635,20 @@ impl SettingsView {
             } else {
                 theme.button_fill
             };
-            fill(shapes, white, &layout.tabs[i], faded(fill_colour, opacity));
+            let look = Look::Button {
+                highlighted: !snapshot.searching && i == snapshot.section,
+                seed: i as f32 * 0.41,
+            };
+            let colour = faded(fill_colour, opacity);
+            draw(
+                shapes,
+                white,
+                &layout.tabs[i],
+                colour,
+                look,
+                &theme,
+                layout.scale,
+            );
             push_left(
                 text,
                 tab,
@@ -680,11 +704,16 @@ impl SettingsView {
                 continue;
             }
             if i == snapshot.focus {
-                fill(
+                let focus = faded(theme.row_hover_fill, opacity);
+                let row = layout.row(slot);
+                draw(
                     shapes,
                     white,
-                    &layout.row(slot),
-                    faded(theme.row_hover_fill, opacity),
+                    &row,
+                    focus,
+                    Look::Round,
+                    &theme,
+                    layout.scale,
                 );
             }
             let disabled = snapshot.disabled[i];
@@ -726,7 +755,16 @@ impl SettingsView {
                     } else {
                         theme.button_fill
                     };
-                    fill(shapes, white, &widget, faded(colour, opacity));
+                    let colour = faded(colour, opacity);
+                    draw(
+                        shapes,
+                        white,
+                        &widget,
+                        colour,
+                        Look::Round,
+                        &theme,
+                        layout.scale,
+                    );
                     let text_colour = faded(theme.text, opacity);
                     if key.is_listening() {
                         push_left(text, &self.keys.prompt, &widget, pad, text_colour, glyphs);
@@ -741,7 +779,12 @@ impl SettingsView {
                     } else {
                         theme.button_fill
                     };
-                    fill(shapes, white, &widget, faded(colour, opacity));
+                    let look = Look::Button {
+                        highlighted: i == snapshot.focus,
+                        seed: i as f32 * 0.23,
+                    };
+                    let colour = faded(colour, opacity);
+                    draw(shapes, white, &widget, colour, look, &theme, layout.scale);
                     let line = match &self.value {
                         Some(value) if value.row == i && !value.seen.is_empty() => &value.line,
                         _ => &*line,
@@ -814,7 +857,7 @@ impl SettingsView {
     #[allow(clippy::too_many_arguments)]
     fn push_conflict(
         &self,
-        shapes: &mut SpriteBatch,
+        shapes: &mut ShapeBatch,
         text: &mut SpriteBatch,
         glyphs: &mut GlyphCache,
         layout: &SettingsLayout,
@@ -825,11 +868,15 @@ impl SettingsView {
         let theme = &self.theme;
         let pad = theme.widget_pad * layout.scale;
         let colour = faded(theme.text, opacity);
-        fill(
+        let popup = faded(theme.widget_popup_fill, opacity);
+        draw(
             shapes,
             white,
             &layout.dialog(),
-            faded(theme.widget_popup_fill, opacity),
+            popup,
+            Look::Panel,
+            theme,
+            layout.scale,
         );
         push_left(
             text,
@@ -860,7 +907,12 @@ impl SettingsView {
             } else {
                 theme.button_fill
             };
-            fill(shapes, white, &rect, faded(fill_colour, opacity));
+            let look = Look::Button {
+                highlighted: chosen,
+                seed: rect.x * 0.01,
+            };
+            let fill_colour = faded(fill_colour, opacity);
+            draw(shapes, white, &rect, fill_colour, look, theme, layout.scale);
             push_left(text, line, &rect, pad, colour, glyphs);
         }
     }

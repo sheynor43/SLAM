@@ -3,7 +3,7 @@
 //! output is not localised; UI text is.
 
 use std::collections::HashMap;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::time::{Duration, Instant, SystemTime};
@@ -32,6 +32,7 @@ use slam_play::{
     Bindings, LiveInput, Offsets, PlaySession, PlaySnapshot, PlayState, PlayfieldLayout,
 };
 use slam_render::atlas::{Atlas, AtlasRegion};
+use slam_render::shape::{SHAPE_LAYOUT, ShapeBatch};
 use slam_render::sprite::{DEFAULT_SLOTS, Projection, SpriteBatch, SpriteRenderer};
 use slam_render::textures::Textures;
 use slam_render::upload::{TextureLoaderConfig, TextureState, TextureUploads, texture_loader};
@@ -62,7 +63,8 @@ use slam_ui::widgets::DropdownView;
 
 use crate::backend::{self as render, Opened, WindowKind, WithBackend};
 use crate::backgrounds::{
-    BackgroundFade, BackgroundPicker, BackgroundTarget, MAX_BACKGROUNDS, SELECTION_DEBOUNCE_NS,
+    BackgroundFade, BackgroundPicker, BackgroundSource, BackgroundTarget, MAX_BACKGROUNDS,
+    SELECTION_DEBOUNCE_NS,
 };
 use crate::details::DetailsPicker;
 use crate::displays::{ListsLink, ShownViews};
@@ -72,7 +74,7 @@ use crate::play::pack_size;
 use crate::play::scene::{CHANNELS, PlayScene, PlaySettings, Prepared, SceneGpu};
 use crate::replays::{ReplayBeatmap, ReplayJob};
 use crate::settings::saver::SaveLink;
-use crate::settings::{Combo, Dirs, InputSettings, KeySlot, Mods, Settings};
+use crate::settings::{Combo, Dirs, InputSettings, KeySlot, MenuBackground, Mods, Settings};
 use crate::songs::{FolderChange, SkinViews, SongFiles, SongsLink};
 
 mod draw_rate;
@@ -86,6 +88,7 @@ mod keybinds;
 mod language;
 mod menu_music;
 mod mod_settings;
+mod ui_sounds;
 use menu_music::{MenuMusic, Picked, Want};
 mod output;
 mod results;
@@ -248,8 +251,11 @@ pub struct ShellSnapshot {
     pub fps: FpsDisplay,
     /// The song select's background (ADR-0066).
     pub background: BackgroundTarget,
-    /// Dim of the song select's background, 0 ..= 1 (ADR-0098).
+    /// Dim of the background, 0 ..= 1: the song select's (ADR-0098), or the theme's behind
+    /// the main menu (ADR-0119).
     pub background_dim: f32,
+    /// The main menu shows the background (ADR-0119).
+    pub menu_background: bool,
     /// The display lists the settings screen shows (ADR-0072).
     pub display_generation: u64,
     /// How many language switches asked for views so far: a new one closes the curtain
@@ -345,6 +351,25 @@ pub struct ShellState {
     cursor: [f32; 2],
     /// Input arrives in window points, layout is in pixels.
     pixels_per_point: f32,
+    /// The window in pixels the screens are laid out for.
+    size: [f32; 2],
+    /// The beatmap whose music plays in the menus (ADR-0119).
+    menu_track: Option<(usize, usize)>,
+    /// The chosen skin's folder, for its menu background, and the songs folder and skin
+    /// name it was made from (ADR-0119).
+    menu_skin: Option<Arc<Path>>,
+    menu_skin_of: (Option<PathBuf>, Option<String>),
+    /// Interface sounds noted this tick (ADR-0120).
+    ui_sounds: ui_sounds::UiSoundQueue,
+    /// What the sounds compare with: stack depth, menu item, song select selection,
+    /// settings panel open and its focus, as of the last tick.
+    ui_seen: (
+        usize,
+        slam_ui::menu::MenuItem,
+        Option<(usize, usize)>,
+        bool,
+        usize,
+    ),
     /// Asks for the song select's background; without a menu texture loader `None`.
     backgrounds: Option<BackgroundPicker>,
     /// Asks for the selected difficulty's statistics; without a library thread `None`.
@@ -420,6 +445,12 @@ impl ShellState {
             theme,
             cursor: [0.0, 0.0],
             pixels_per_point,
+            size: [width, height],
+            menu_track: None,
+            menu_skin: None,
+            menu_skin_of: (None, None),
+            ui_sounds: ui_sounds::UiSoundQueue::default(),
+            ui_seen: (1, slam_ui::menu::MenuItem::ALL[0], None, false, 0),
             backgrounds: None,
             details: None,
             intro: None,
@@ -1094,10 +1125,94 @@ impl ShellState {
 
     /// Lays the screens out for a window of `width` × `height` pixels.
     pub fn set_size(&mut self, width: f32, height: f32) {
+        self.size = [width, height];
         self.layout = MenuLayout::new(width, height, &self.theme);
         self.song_layout = SongSelectLayout::new(width, height, &self.theme);
         self.results_layout = ResultsLayout::new(width, height, &self.theme);
         self.settings_layout = panel_layout(width, height, &self.theme);
+    }
+
+    /// The beatmap whose music plays in the menus, as set and difficulty (ADR-0119).
+    pub fn set_menu_track(&mut self, at: Option<(usize, usize)>) {
+        self.menu_track = at;
+    }
+
+    /// The skin folder whose menu background the menu shows; made again only when the
+    /// songs folder or the skin changes (allocates then).
+    pub(crate) fn menu_skin(&mut self) -> Option<&Arc<Path>> {
+        let settings = self.editing.as_ref().unwrap_or(&self.settings);
+        let songs = settings.paths.songs.as_deref();
+        let name = settings.skin.name.as_deref();
+        if (
+            self.menu_skin_of.0.as_deref(),
+            self.menu_skin_of.1.as_deref(),
+        ) != (songs, name)
+        {
+            self.menu_skin_of = (songs.map(Path::to_path_buf), name.map(str::to_owned));
+            self.menu_skin = crate::settings::skins::skin_path(songs, name).map(Arc::from);
+        }
+        self.menu_skin.as_ref()
+    }
+
+    /// The interface sounds noted since the last call (ADR-0120).
+    pub fn take_ui_sounds(&mut self) -> [bool; crate::menu_sounds::MenuSound::ALL.len()] {
+        self.ui_sounds.take()
+    }
+
+    /// Notes the sounds of what changed since the last tick: screens in and out, the
+    /// hovered menu item, the selected beatmap, the settings panel and its focus.
+    fn note_ui_sounds(&mut self, events: &[InputEvent]) {
+        use crate::menu_sounds::MenuSound;
+        let depth = self.stack.depth();
+        let item = match self.stack.top() {
+            AppScreen::Menu(menu) => menu.selected(),
+            _ => self.ui_seen.1,
+        };
+        let selected = self.song_select.selected();
+        let open = self.settings_open();
+        let focus = self.settings_screen().map_or(0, |screen| screen.focus());
+        let (old_depth, old_item, old_selected, old_open, old_focus) = self.ui_seen;
+        let playing = matches!(self.stack.top(), AppScreen::Play(_));
+        if !playing {
+            if depth > old_depth || (open && !old_open) {
+                self.ui_sounds.push(MenuSound::Enter);
+            } else if depth < old_depth || (!open && old_open) {
+                self.ui_sounds.push(MenuSound::Back);
+            }
+            // A selection appearing with the library is not the player's move.
+            let moved = old_selected.is_some() && selected != old_selected;
+            if item != old_item || moved || (open && focus != old_focus) {
+                self.ui_sounds.push(MenuSound::Hover);
+            }
+            let clicked = events.iter().any(|e| {
+                matches!(
+                    e.kind,
+                    InputKind::MouseButton {
+                        button: MouseButton::Left,
+                        down: true
+                    }
+                )
+            });
+            if clicked {
+                self.ui_sounds.push(MenuSound::Click);
+            }
+        }
+        self.ui_seen = (depth, item, selected, open, focus);
+    }
+
+    /// The theme the screens are laid out with.
+    pub fn theme(&self) -> &Theme {
+        &self.theme
+    }
+
+    /// Lays the screens out with `theme` (another colour scheme or interface scale,
+    /// ADR-0117, ADR-0118) when it differs from the one in force. Allocates nothing.
+    pub fn set_theme(&mut self, theme: Theme) {
+        if theme != self.theme {
+            self.theme = theme;
+            let [width, height] = self.size;
+            self.set_size(width, height);
+        }
     }
 
     /// The input of the screens, as the song select (the larger set) understands it, and
@@ -1390,6 +1505,13 @@ impl ShellState {
         let screen = &mut panel.screen;
         match action {
             Some(SettingsAction::Changed { row, value }) => {
+                use crate::menu_sounds::MenuSound;
+                self.ui_sounds.push(match value {
+                    slam_ui::settings_screen::RowValue::Toggle(true) => MenuSound::ToggleOn,
+                    slam_ui::settings_screen::RowValue::Toggle(false) => MenuSound::ToggleOff,
+                    slam_ui::settings_screen::RowValue::Slider(_) => MenuSound::SliderStep,
+                    slam_ui::settings_screen::RowValue::Choice(_) => MenuSound::Click,
+                });
                 if let Some(editing) = &mut self.editing {
                     self.rows.apply(editing, row, value);
                     self.rows.refresh(screen, editing);
@@ -1568,6 +1690,7 @@ impl ShellState {
         self.receive_songs();
         self.receive_displays();
         let navigated = self.handle(events, now_ns);
+        self.note_ui_sounds(events);
         if self.intro.is_some_and(|intro| intro.is_done(now_ns)) {
             self.intro = None;
         }
@@ -1586,9 +1709,33 @@ impl ShellState {
             .background_dim as f32;
         let details = self.beatmap_details(now_ns);
         self.song_select.set_details(details);
+        // The main menu shows the menu music's beatmap or the skin's background
+        // (ADR-0119); the other screens the song select's selection.
+        let menu_background = self
+            .editing
+            .as_ref()
+            .unwrap_or(&self.settings)
+            .general
+            .menu_background;
+        let on_menu = matches!(self.stack.top(), AppScreen::Menu(_));
+        snapshot.menu_background = menu_background != MenuBackground::None;
+        if on_menu {
+            snapshot.background_dim = self.theme.menu_background_dim;
+        }
+        let skin = match menu_background {
+            MenuBackground::Skin if on_menu => Some(self.menu_skin().cloned()),
+            _ => None,
+        };
         if let Some(backgrounds) = &mut self.backgrounds {
-            snapshot.background =
-                backgrounds.tick(now_ns, &self.files, self.song_select.selected());
+            let source = background_source(
+                on_menu,
+                menu_background,
+                &self.files,
+                self.menu_track,
+                self.song_select.selected(),
+                skin.as_ref().and_then(Option::as_ref),
+            );
+            snapshot.background = backgrounds.tick_source(now_ns, source);
         }
         let top: *const AppScreen = self.stack.top();
         for (slot, layer) in snapshot.layers.iter_mut().zip(self.stack.layers(now_ns)) {
@@ -1942,6 +2089,10 @@ struct PlayHost {
     selection: (Option<(usize, usize)>, u64),
     /// Picks the menu's random tracks (xorshift).
     rng: u64,
+    /// The beatmap whose music plays in the menus, by set and difficulty (ADR-0119).
+    music_at: Option<(usize, usize)>,
+    /// Plays the menus' sounds (ADR-0120).
+    ui_sounds: ui_sounds::UiSoundPlayer,
     loader: LoaderLink,
     /// Scenes for the draw thread, one per play, named by the play's id.
     scenes: rtrb::Producer<(u64, PlayScene)>,
@@ -1976,6 +2127,8 @@ struct PlayHost {
     intro_sound: Option<Arc<Sample>>,
     /// The voice playing `intro_sound`, or [`VoiceId::NONE`].
     intro_voice: VoiceId,
+    /// The in-game interface scale (ADR-0118): the pause and fail menus' of every play.
+    game_scale: f32,
 }
 
 /// What a play takes from the settings on the update thread.
@@ -2083,6 +2236,10 @@ impl PlayHost {
     /// Hands changed settings to the audio thread and to the next play (ADR-0048). Does
     /// not block; allocates only to ask for another output (ADR-0089).
     fn apply_settings(&mut self, settings: &Settings) {
+        self.game_scale = settings.general.game_scale;
+        if let Some(game) = &mut self.game {
+            game.session.set_menu_scale(self.game_scale);
+        }
         let audio = &mut self.audio;
         audio.volumes.sync(
             Volumes::of(&settings.audio),
@@ -2123,6 +2280,13 @@ impl PlayHost {
         }
         self.intro_sound(state);
         self.menu_music(now_ns, state);
+        state.set_menu_track(self.music_at);
+        let noted = state.take_ui_sounds();
+        let mode = state.live_settings().audio.menu_sounds;
+        let skin = state.menu_skin().cloned();
+        self.ui_sounds.follow_skin(now_ns, mode, skin.as_ref());
+        self.ui_sounds
+            .play(now_ns, noted, mode, &mut self.audio.mixer);
         if let Some(link) = &mut self.output {
             if let Some(settings) = state.take_device_list_request() {
                 // A full ring drops it: the screen keeps the list it has.
@@ -2604,10 +2768,19 @@ impl PlayHost {
                     AppScreen::Menu(_) => Want::Menu,
                 }
             };
+        // The background behind the menu follows the music (ADR-0119).
+        if matches!(want, Want::Preview { .. }) {
+            self.music_at = selected;
+        }
         let rng = &mut self.rng;
+        let music_at = &mut self.music_at;
         self.menu_music
             .tick(now_ns, want, &mut self.audio.previews, || {
-                random_track(rng, state.files())
+                let picked = random_track(rng, state.files());
+                if let Some(picked) = &picked {
+                    *music_at = Some(picked.at);
+                }
+                picked
             });
     }
 
@@ -2660,6 +2833,8 @@ impl PlayHost {
                 ..self.input.offsets
             },
         ));
+        let mut session = session;
+        session.set_menu_scale(self.game_scale);
         self.loader.free(Trash::Other(Box::new((beatmap, mods))));
         // The caller checked for a free slot.
         let _ = self.scenes.push((id, scene));
@@ -2797,12 +2972,20 @@ impl Shell {
         if let Some(host) = &mut self.host {
             host.apply_settings(settings);
         }
+        let theme = interface_theme(self.state.live_settings(), self.state.settings());
         if self
             .language
-            .apply(self.state.live_settings(), self.state.rows())
+            .apply(self.state.live_settings(), self.state.rows(), theme)
         {
             // The open screen's device list in the new language too.
             self.state.relist_devices();
+        }
+        // Another colour scheme or menu scale: the update side lays out at once, the draw
+        // side swaps views laid out with it behind the curtain, as for a language. Without
+        // the thread laying them out the draw side never would: the theme stays.
+        if self.language.lays_out_views() {
+            let theme = interface_theme(self.state.live_settings(), self.state.settings());
+            self.state.set_theme(theme);
         }
         self.sync_window(now_ns);
         let gameplay = self.state.gameplay_visible(now_ns);
@@ -2911,7 +3094,7 @@ struct View<B: render::Backend> {
     display_views: Option<ShownViews>,
     /// Output device dropdowns listed when the settings screen opens (ADR-0089).
     device_views: Option<DeviceViews>,
-    shapes: SpriteBatch,
+    shapes: ShapeBatch,
     text: SpriteBatch,
     /// The startup intro's view, with the intro on (ADR-0114). Kept after the intro: it is
     /// small, and freeing it would allocate in a frame.
@@ -2970,7 +3153,13 @@ impl<B: render::Backend> Draw<ShellSnapshot> for View<B> {
         // failing now is a driver fault the shell does not recover from.
         let surface = self.surface.take().expect("surface is set before start");
         let mut device = surface.create_device().expect("render device");
-        let renderer = SpriteRenderer::new(&mut device, DEFAULT_SLOTS).expect("renderer");
+        let renderer = SpriteRenderer::with_layout(
+            &mut device,
+            DEFAULT_SLOTS,
+            &shaders::UI_SHAPE,
+            SHAPE_LAYOUT,
+        )
+        .expect("renderer");
         let text_renderer = SpriteRenderer::with_shader(&mut device, DEFAULT_SLOTS, &shaders::MSDF)
             .expect("text renderer");
         let outline_renderer =
@@ -3080,6 +3269,7 @@ impl<B: render::Backend> Draw<ShellSnapshot> for View<B> {
             std::mem::swap(&mut self.results, &mut views.results);
             std::mem::swap(&mut self.settings, &mut views.settings);
             self.fps.swap_view(&mut views.fps);
+            self.theme = views.theme;
             languages.give_back(views);
         }
         self.swap.advance(now, || {
@@ -3105,6 +3295,11 @@ impl<B: render::Backend> Draw<ShellSnapshot> for View<B> {
         self.shapes.clear();
         self.text.clear();
         self.outlines.clear();
+        // The interface's patterns drift with the frame's time (ADR-0116), wrapped in f64
+        // before it narrows to f32.
+        let rows = (info.wait.woke_ns as f64 / 1e9 * f64::from(self.theme.pattern_speed))
+            .rem_euclid(1024.0);
+        self.shapes.set_pattern_drift(rows as f32);
         self.menu
             .set_title_hidden(snapshot.intro.is_some_and(|i| i.hides_menu_title()));
         // Where each layer's sprites end: layers are drawn one after another, shapes then
@@ -3114,16 +3309,34 @@ impl<B: render::Backend> Draw<ShellSnapshot> for View<B> {
         let mut layers = 0;
         for layer in snapshot.layers.iter().flatten() {
             match &layer.view {
-                ScreenView::Menu(menu) => self.menu.push(
-                    &mut self.shapes,
-                    &mut self.text,
-                    &mut self.glyphs,
-                    width,
-                    height,
-                    menu,
-                    layer.pose,
-                    r.white,
-                ),
+                ScreenView::Menu(menu) => {
+                    // Under the menu and without its slide, as on the song select (ADR-0119).
+                    if snapshot.menu_background
+                        && let Some((uploads, fade)) = &self.backgrounds
+                    {
+                        fade.push(
+                            &mut self.shapes,
+                            width,
+                            height,
+                            info.wait.woke_ns,
+                            layer.pose.opacity,
+                            |h| match uploads.get(h) {
+                                TextureState::Ready(region) => Some(region),
+                                _ => None,
+                            },
+                        );
+                    }
+                    self.menu.push(
+                        &mut self.shapes,
+                        &mut self.text,
+                        &mut self.glyphs,
+                        width,
+                        height,
+                        menu,
+                        layer.pose,
+                        r.white,
+                    );
+                }
                 ScreenView::SongSelect(song_select) => {
                     // Under the screen and without its slide, as lazer's background stack.
                     if let Some((uploads, fade)) = &self.backgrounds {
@@ -3408,6 +3621,26 @@ fn output_devices(settings: &crate::settings::Audio) -> Vec<slam_audio::DeviceIn
     })
 }
 
+/// Where the background comes from (ADR-0119): on the main menu, the skin's folder or the
+/// beatmap whose music plays, as `setting` says; elsewhere the song select's selection.
+fn background_source<'a>(
+    on_menu: bool,
+    setting: MenuBackground,
+    files: &'a Arc<SongFiles>,
+    menu_track: Option<(usize, usize)>,
+    selected: Option<(usize, usize)>,
+    skin: Option<&'a Arc<Path>>,
+) -> BackgroundSource<'a> {
+    match (on_menu, setting) {
+        (true, MenuBackground::Skin) => BackgroundSource::Skin(skin),
+        (true, _) => BackgroundSource::Beatmap {
+            files,
+            selected: menu_track,
+        },
+        (false, _) => BackgroundSource::Beatmap { files, selected },
+    }
+}
+
 /// A random difficulty with an audio file in `files`, for the main menu (ADR-0090): a few
 /// tries, `None` for a library without one.
 fn random_track(rng: &mut u64, files: &SongFiles) -> Option<Picked> {
@@ -3416,11 +3649,13 @@ fn random_track(rng: &mut u64, files: &SongFiles) -> Option<Picked> {
         *rng ^= *rng << 13;
         *rng ^= *rng >> 7;
         *rng ^= *rng << 17;
-        let set = files.get((*rng % files.len().max(1) as u64) as usize)?;
-        if let Some(file) = set.iter().find(|f| f.audio.is_some()) {
+        let index = (*rng % files.len().max(1) as u64) as usize;
+        let set = files.get(index)?;
+        if let Some((difficulty, file)) = set.iter().enumerate().find(|(_, f)| f.audio.is_some()) {
             return Some(Picked {
                 path: file.audio.clone()?,
                 preview_ms: file.preview_ms,
+                at: (index, difficulty),
             });
         }
     }
@@ -3682,6 +3917,13 @@ fn interface_localizer(settings: &Settings) -> Result<Localizer, String> {
     Ok(localizer)
 }
 
+/// The interface theme the settings ask for (ADR-0117, ADR-0118): the colour scheme of
+/// `live` (with the settings screen's edits), the menu scale of `committed`: the menus'
+/// scale changes when the settings are kept, not under the slider dragging it.
+pub fn interface_theme(live: &Settings, committed: &Settings) -> Theme {
+    Theme::new(live.general.colour_scheme, committed.general.menu_scale)
+}
+
 fn run_with<B: render::Backend>(
     settings: Settings,
     mut window: InputWindow,
@@ -3694,7 +3936,7 @@ fn run_with<B: render::Backend>(
         priority,
     } = opened;
     crate::gpu::log_priority(&priority);
-    let theme = Theme::default();
+    let theme = interface_theme(&settings, &settings);
     let scale = window.window_scale();
     let pixels_per_point = scale.pixels_per_point();
     let initial_size = pack_size(pixels_w, pixels_h);
@@ -3730,7 +3972,6 @@ fn run_with<B: render::Backend>(
     } = language::interface_views(&registry, theme, &localizer, state.rows(), &settings);
     let (language_link, language_views, _language) = match language::spawn(
         Arc::clone(&registry),
-        theme,
         Arc::clone(&localizer),
         Arc::clone(&surface_size),
     ) {
@@ -3930,6 +4171,8 @@ fn run_with<B: render::Backend>(
             selection: (None, 0),
             // Any non-zero seed; the clock makes each run's first track differ.
             rng: now_ns() | 1,
+            music_at: None,
+            ui_sounds: ui_sounds::UiSoundPlayer::new(audio_rate),
             loader,
             scenes: scene_tx,
             os_cursor: window.cursor_visibility(),
@@ -3957,6 +4200,7 @@ fn run_with<B: render::Backend>(
                     .map(Arc::new)
             }),
             intro_voice: VoiceId::NONE,
+            game_scale: settings.general.game_scale,
         }
     });
 
@@ -3997,6 +4241,7 @@ fn run_with<B: render::Backend>(
             Arc::clone(&localizer),
             settings.general.language.clone(),
             language_link,
+            theme,
         ),
     };
     let draw = View {
@@ -4011,7 +4256,7 @@ fn run_with<B: render::Backend>(
         skin_views,
         display_views,
         device_views,
-        shapes: SpriteBatch::with_capacity(MAX_SHAPES),
+        shapes: ShapeBatch::with_capacity(MAX_SHAPES),
         text: SpriteBatch::with_capacity(MAX_GLYPH_SPRITES),
         intro: intro_view,
         outlines: SpriteBatch::with_capacity(MAX_INTRO_OUTLINES),

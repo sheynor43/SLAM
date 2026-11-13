@@ -11,7 +11,8 @@ use std::sync::Arc;
 
 use slam_render::Color;
 use slam_render::atlas::AtlasRegion;
-use slam_render::sprite::{Sprite, SpriteBatch};
+use slam_render::shape::ShapeBatch;
+use slam_render::sprite::SpriteBatch;
 use slam_text::{FontRegistry, Glyph, GlyphCache, GlyphKey, push_layout};
 
 use super::mod_select::{
@@ -25,6 +26,7 @@ use crate::menu::Rect;
 use crate::menu::view::{Frame, Line, Typesetter};
 use crate::screen::Pose;
 use crate::theme::{Theme, faded};
+use crate::widgets::Look;
 use crate::widgets::ToggleLayout;
 
 const ELLIPSIS: char = '\u{2026}';
@@ -491,7 +493,7 @@ impl SongSelectView {
     #[allow(clippy::too_many_arguments)]
     pub fn push(
         &mut self,
-        shapes: &mut SpriteBatch,
+        shapes: &mut ShapeBatch,
         text: &mut SpriteBatch,
         glyphs: &mut GlyphCache,
         width: f32,
@@ -526,15 +528,14 @@ impl SongSelectView {
         let gap = theme.song_row_gap * layout.scale;
         let list = &*snapshot.list;
 
-        let mut rect = |rect: &Rect, colour: Color| {
-            let mut sprite = Sprite::new(
-                white.texture,
-                white.uv,
-                [rect.x + shift, rect.y],
-                [rect.width, rect.height],
-            );
-            sprite.colour = faded(colour, opacity);
-            shapes.push(&sprite);
+        let scale = layout.scale;
+        let mut rect = |rect: &Rect, colour: Color, look: Look| {
+            let moved = Rect {
+                x: rect.x + shift,
+                ..*rect
+            };
+            let colour = faded(colour, opacity);
+            crate::widgets::draw(shapes, white, &moved, colour, look, theme, scale);
         };
         let mut left = |line: &Line, x: f32, centre_y: f32, colour: Color| {
             let position = [x + shift, centre_y - line.layout.height() / 2.0];
@@ -548,7 +549,7 @@ impl SongSelectView {
                 width,
                 height,
             };
-            rect(&full, theme.mod_backdrop_fill);
+            rect(&full, theme.mod_backdrop_fill, Look::Plain);
             let panel = &layout.mods;
             let centred = |line: &Line, area: &Rect| {
                 (
@@ -576,7 +577,11 @@ impl SongSelectView {
                     } else {
                         theme.button_fill
                     };
-                    rect(&area, faded(fill, dim));
+                    let look = Look::Button {
+                        highlighted: on,
+                        seed: (column * 7 + index) as f32 * 0.31,
+                    };
+                    rect(&area, faded(fill, dim), look);
                     let (x, y) = centred(line, &area);
                     left(line, x, y, faded(theme.text, dim));
                 }
@@ -590,7 +595,7 @@ impl SongSelectView {
                 theme.button_fill
             };
             let active = if enabled { 1.0 } else { DIMMED };
-            rect(&cl.header, faded(header_fill, active));
+            rect(&cl.header, faded(header_fill, active), Look::Round);
             left(
                 &self.customise_title,
                 cl.header.x + cl.pad,
@@ -598,7 +603,11 @@ impl SongSelectView {
                 faded(theme.text, active),
             );
             if expanded {
-                rect(&cl.content(custom.len), theme.widget_popup_fill);
+                rect(
+                    &cl.content(custom.len),
+                    theme.widget_popup_fill,
+                    Look::Panel,
+                );
                 let text_of = |key: &str| {
                     self.setting_lines
                         .iter()
@@ -612,7 +621,7 @@ impl SongSelectView {
                     let area = cl.row_rect(slot);
                     let label = text_of(row.label);
                     if matches!(row.kind, SettingRowKind::Header) {
-                        rect(&area, theme.button_fill);
+                        rect(&area, theme.button_fill, Look::Round);
                         if let Some(line) = label {
                             left(
                                 line,
@@ -624,9 +633,9 @@ impl SongSelectView {
                         continue;
                     }
                     if index == custom.selected {
-                        rect(&area, theme.button_hover_fill);
+                        rect(&area, theme.button_hover_fill, Look::Round);
                     } else if custom.hover == Some(index) {
-                        rect(&area, theme.row_hover_fill);
+                        rect(&area, theme.row_hover_fill, Look::Round);
                     }
                     let name = cl.label_rect(&area);
                     if let Some(line) = label {
@@ -650,12 +659,12 @@ impl SongSelectView {
                                 0.0
                             };
                             let tint = if unset { DIMMED } else { 1.0 };
-                            rect(&sl.track, theme.button_fill);
+                            rect(&sl.track, theme.button_fill, Look::Pill);
                             let filled = Rect {
                                 width: sl.track.width * fraction,
                                 ..sl.track
                             };
-                            rect(&filled, faded(theme.widget_accent_fill, tint));
+                            rect(&filled, faded(theme.widget_accent_fill, tint), Look::Pill);
                             let knob = (
                                 theme.widget_knob_width * cl.scale,
                                 theme.widget_knob_height * cl.scale,
@@ -668,6 +677,7 @@ impl SongSelectView {
                                     height: knob.1,
                                 },
                                 faded(theme.text, tint),
+                                Look::Pill,
                             );
                             let shown = &mut self.value_slots[slot];
                             let key = (value.to_bits(), decimals);
@@ -704,7 +714,7 @@ impl SongSelectView {
                             } else {
                                 theme.button_fill
                             };
-                            rect(&sw.track, fill);
+                            rect(&sw.track, fill, Look::Pill);
                             let pad = theme.widget_knob_pad * cl.scale;
                             let size = sw.track.height - 2.0 * pad;
                             let travel = sw.track.width - 2.0 * pad - size;
@@ -716,6 +726,7 @@ impl SongSelectView {
                                     height: size,
                                 },
                                 theme.text,
+                                Look::Pill,
                             );
                         }
                         SettingRowKind::Choice {
@@ -723,7 +734,7 @@ impl SongSelectView {
                             count,
                             values,
                         } => {
-                            rect(&control, theme.button_fill);
+                            rect(&control, theme.button_fill, Look::Round);
                             let name = chosen
                                 .filter(|&i| i < count.min(values.len()))
                                 .and_then(|i| text_of(values[i]));
@@ -747,6 +758,7 @@ impl SongSelectView {
                 height: layout.hint.y + layout.hint.height + 2.0 * inset - layout.header.y,
             },
             theme.song_panel_fill,
+            Look::Panel,
         );
         let status_line = match snapshot.status {
             SongSelectStatus::NoFolder => Some(&self.no_folder),
@@ -772,7 +784,7 @@ impl SongSelectView {
             left(line, layout.details.x, centre, theme.text);
         }
         // The search line.
-        rect(&layout.search, theme.song_search_fill);
+        rect(&layout.search, theme.song_search_fill, Look::Round);
         let line = if snapshot.query.is_empty() {
             (&self.search_placeholder, theme.disabled_text)
         } else {
@@ -800,7 +812,14 @@ impl SongSelectView {
                 } else {
                     theme.button_fill
                 };
-                rect(button, fill);
+                rect(
+                    button,
+                    fill,
+                    Look::Button {
+                        highlighted: snapshot.folder_hovered,
+                        seed: 0.0,
+                    },
+                );
                 left(
                     &self.choose_folder,
                     button.x + pad,
@@ -881,6 +900,10 @@ impl SongSelectView {
                         ..area
                     },
                     fill,
+                    Look::Button {
+                        highlighted: selected,
+                        seed: index as f32 * 0.29,
+                    },
                 );
                 let x = area.x + pad;
                 if matches!(row, Row::Set(_)) {

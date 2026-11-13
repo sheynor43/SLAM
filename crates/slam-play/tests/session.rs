@@ -1395,7 +1395,7 @@ impl Driver {
     /// Moves the mouse to the middle of button `index` of menu `kind`.
     fn menu_mouse(&self, kind: MenuKind, index: usize) -> InputEvent {
         let [width, height] = layout().window_size();
-        let ([x, y], [w, h]) = MenuLayout::new(width, height, kind).button(index);
+        let ([x, y], [w, h]) = MenuLayout::new(width, height, kind, 1.0).button(index);
         press(
             self.now,
             InputKind::MouseMove {
@@ -3223,7 +3223,7 @@ fn the_menu_is_hit_in_the_units_of_the_input() {
     // Input in points on a window twice the default size.
     d.session.set_layout(PlayfieldLayout::new(1280.0, 960.0));
     d.run_until(10_000, |s| s.state == PlayState::Failed);
-    let ([x, y], [w, h]) = MenuLayout::new(1280.0, 960.0, MenuKind::Fail).button(1);
+    let ([x, y], [w, h]) = MenuLayout::new(1280.0, 960.0, MenuKind::Fail, 1.0).button(1);
     let over = press(
         d.now,
         InputKind::MouseMove {
@@ -3598,7 +3598,7 @@ fn the_save_button_is_clicked_in_the_fail_menus_footer() {
     let mut d = Driver::new(&map, ModSet::default());
     d.run_until(10_000, |s| s.state == PlayState::Failed);
     let [width, height] = layout().window_size();
-    let ([x, y], [w, h]) = MenuLayout::new(width, height, MenuKind::Fail).save_button(width);
+    let ([x, y], [w, h]) = MenuLayout::new(width, height, MenuKind::Fail, 1.0).save_button(width);
     let over = press(
         d.now,
         InputKind::MouseMove {
@@ -3661,7 +3661,7 @@ fn a_press_on_the_save_button_released_elsewhere_saves_nothing() {
     let mut d = Driver::new(&map, ModSet::default());
     d.run_until(10_000, |s| s.state == PlayState::Failed);
     let [width, height] = layout().window_size();
-    let ([x, y], [w, h]) = MenuLayout::new(width, height, MenuKind::Fail).save_button(width);
+    let ([x, y], [w, h]) = MenuLayout::new(width, height, MenuKind::Fail, 1.0).save_button(width);
     let at = |d: &Driver, x: f32| press(d.now, InputKind::MouseMove { x, y: y + h / 2.0 });
     let left = |d: &Driver, down| {
         press(

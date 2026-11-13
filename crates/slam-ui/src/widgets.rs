@@ -8,11 +8,13 @@
 
 use slam_render::Color;
 use slam_render::atlas::AtlasRegion;
+use slam_render::shape::{Shape, ShapeBatch};
 use slam_render::sprite::{Sprite, SpriteBatch};
 use slam_text::{GlyphCache, push_layout};
 
 use crate::menu::Rect;
 use crate::menu::view::Line;
+use crate::theme::{Theme, faded};
 
 pub mod dropdown;
 pub mod keybind;
@@ -29,8 +31,143 @@ pub use toggle::{Toggle, ToggleAction, ToggleInput, ToggleLayout, ToggleView};
 /// Bytes reserved up front in every dynamic text buffer.
 pub(crate) const TEXT_CAPACITY: usize = 64;
 
+/// A button-like element (ADR-0116, ADR-0117): rounded, skewed by the theme, `fill` lit
+/// by the button pattern; highlighted, it also gets an outline of the accent. `seed`
+/// offsets the pattern so neighbours differ; `opacity` fades the whole.
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn button(
+    shapes: &mut ShapeBatch,
+    white: AtlasRegion,
+    rect: &Rect,
+    theme: &Theme,
+    scale: f32,
+    fill: Color,
+    highlighted: bool,
+    seed: f32,
+    opacity: f32,
+) {
+    let shape = Shape {
+        radius: theme.button_radius * scale,
+        skew: theme.button_skew(),
+        pattern: theme.button_pattern,
+        pattern_phase: seed,
+        ..Shape::new(
+            white.texture,
+            white.uv,
+            [rect.x, rect.y],
+            [rect.width, rect.height],
+            faded(fill, opacity),
+        )
+    };
+    shapes.push_shape(&shape);
+    if highlighted {
+        shapes.push_shape(&Shape {
+            outline: theme.outline_width * scale,
+            pattern: 0.0,
+            colour: faded(theme.accent, opacity),
+            ..shape
+        });
+    }
+}
+
+/// A panel (ADR-0116, ADR-0117): rounded, unskewed, `fill` lit faintly by the panel
+/// pattern.
+pub(crate) fn panel(
+    shapes: &mut ShapeBatch,
+    white: AtlasRegion,
+    rect: &Rect,
+    theme: &Theme,
+    scale: f32,
+    fill: Color,
+    opacity: f32,
+) {
+    shapes.push_shape(&Shape {
+        radius: theme.panel_radius * scale,
+        pattern: theme.panel_pattern,
+        pattern_phase: rect.x * 0.013,
+        ..Shape::new(
+            white.texture,
+            white.uv,
+            [rect.x, rect.y],
+            [rect.width, rect.height],
+            faded(fill, opacity),
+        )
+    });
+}
+
+/// A rounded rectangle of `colour` without skew or pattern: tracks, knobs, boxes.
+pub(crate) fn rounded(
+    shapes: &mut ShapeBatch,
+    white: AtlasRegion,
+    rect: &Rect,
+    radius: f32,
+    colour: Color,
+) {
+    shapes.push_shape(&Shape {
+        radius,
+        ..Shape::new(
+            white.texture,
+            white.uv,
+            [rect.x, rect.y],
+            [rect.width, rect.height],
+            colour,
+        )
+    });
+}
+
+/// How [`draw`] shapes a rectangle.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub enum Look {
+    /// Square corners, no pattern.
+    Plain,
+    /// [`button`]: highlighted or not, with a pattern seed.
+    Button { highlighted: bool, seed: f32 },
+    /// [`panel`].
+    Panel,
+    /// [`rounded`] with the button radius.
+    Round,
+    /// Ends fully rounded: tracks, knobs, switches.
+    Pill,
+}
+
+/// Draws `rect` of `colour` (already faded) the way `look` says, at `scale` pixels per
+/// reference unit.
+pub fn draw(
+    shapes: &mut ShapeBatch,
+    white: AtlasRegion,
+    rect: &Rect,
+    colour: Color,
+    look: Look,
+    theme: &Theme,
+    scale: f32,
+) {
+    match look {
+        Look::Plain => fill(shapes, white, rect, colour),
+        Look::Button { highlighted, seed } => button(
+            shapes,
+            white,
+            rect,
+            theme,
+            scale,
+            colour,
+            highlighted,
+            seed,
+            1.0,
+        ),
+        Look::Panel => panel(shapes, white, rect, theme, scale, colour, 1.0),
+        Look::Round => rounded(shapes, white, rect, theme.button_radius * scale, colour),
+        Look::Pill => rounded(
+            shapes,
+            white,
+            rect,
+            rect.width.min(rect.height) / 2.0,
+            colour,
+        ),
+    }
+}
+
 /// A rectangle of `colour` (tinting the opaque white image `white`).
-pub(crate) fn fill(shapes: &mut SpriteBatch, white: AtlasRegion, rect: &Rect, colour: Color) {
+pub(crate) fn fill(shapes: &mut ShapeBatch, white: AtlasRegion, rect: &Rect, colour: Color) {
     let mut sprite = Sprite::new(
         white.texture,
         white.uv,

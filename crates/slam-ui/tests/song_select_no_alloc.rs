@@ -4,6 +4,7 @@
 use std::sync::Arc;
 
 use slam_render::atlas::{AtlasRegion, UvRect};
+use slam_render::shape::{EDGE_MARGIN, ShapeBatch};
 use slam_render::sprite::SpriteBatch;
 use slam_render::textures::TextureId;
 use slam_render::{Extent, Limits, Origin};
@@ -143,7 +144,7 @@ fn labels() -> SongSelectLabels {
 struct Rig {
     view: SongSelectView,
     glyphs: slam_text::GlyphCache,
-    shapes: SpriteBatch,
+    shapes: ShapeBatch,
     text: SpriteBatch,
 }
 
@@ -154,7 +155,7 @@ impl Rig {
         Rig {
             view: SongSelectView::new(registry, Theme::default(), &labels()),
             glyphs,
-            shapes: SpriteBatch::with_capacity(256),
+            shapes: ShapeBatch::with_capacity(256),
             text: SpriteBatch::with_capacity(8192),
         }
     }
@@ -536,12 +537,16 @@ fn rows_scrolled_part_way_stay_inside_the_list() {
         assert_eq!(snapshot.scroll, lines);
         rig.frame(&snapshot);
         let mut counts = (0, 0);
-        for batch in [&rig.shapes, &rig.text] {
-            for vertex in batch.vertices() {
-                let y = vertex.position[1];
-                counts.0 += usize::from(y < top - 0.01);
-                counts.1 += usize::from(y > bottom + 0.01);
-            }
+        // Shapes reach their edge margin past their rectangles (ADR-0116).
+        let shapes = rig
+            .shapes
+            .vertices()
+            .iter()
+            .map(|v| (v.position[1], EDGE_MARGIN));
+        let text = rig.text.vertices().iter().map(|v| (v.position[1], 0.0));
+        for (y, margin) in shapes.chain(text) {
+            counts.0 += usize::from(y < top - margin - 0.01);
+            counts.1 += usize::from(y > bottom + margin + 0.01);
         }
         counts
     };

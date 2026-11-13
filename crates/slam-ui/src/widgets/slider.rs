@@ -4,10 +4,11 @@ use std::fmt::Write as _;
 use std::sync::Arc;
 
 use slam_render::atlas::AtlasRegion;
+use slam_render::shape::ShapeBatch;
 use slam_render::sprite::SpriteBatch;
 use slam_text::{FontRegistry, Glyph, GlyphCache, GlyphKey};
 
-use super::{TEXT_CAPACITY, fill, push_right};
+use super::{Look, TEXT_CAPACITY, draw, push_right};
 use crate::menu::Rect;
 use crate::menu::view::{Line, Typesetter};
 use crate::theme::{Theme, faded};
@@ -350,7 +351,7 @@ impl SliderView {
     #[allow(clippy::too_many_arguments)]
     pub fn push(
         &mut self,
-        shapes: &mut SpriteBatch,
+        shapes: &mut ShapeBatch,
         text: &mut SpriteBatch,
         glyphs: &mut GlyphCache,
         slider: &Slider,
@@ -365,22 +366,15 @@ impl SliderView {
         }
         self.update_text(slider.value);
         let theme = &self.theme;
-        fill(
-            shapes,
-            white,
-            &layout.track,
-            faded(theme.button_fill, opacity),
-        );
+        let s = layout.scale;
+        let track = faded(theme.button_fill, opacity);
+        draw(shapes, white, &layout.track, track, Look::Pill, theme, s);
         let filled = Rect {
             width: layout.track.width * slider.fraction(),
             ..layout.track
         };
-        fill(
-            shapes,
-            white,
-            &filled,
-            faded(theme.widget_accent_fill, opacity),
-        );
+        let accent = faded(theme.widget_accent_fill, opacity);
+        draw(shapes, white, &filled, accent, Look::Pill, theme, s);
         let knob = (
             theme.widget_knob_width * layout.scale,
             theme.widget_knob_height * layout.scale,
@@ -391,7 +385,15 @@ impl SliderView {
             width: knob.0,
             height: knob.1,
         };
-        fill(shapes, white, &knob, faded(theme.text, opacity));
+        draw(
+            shapes,
+            white,
+            &knob,
+            faded(theme.text, opacity),
+            Look::Pill,
+            theme,
+            s,
+        );
         push_right(
             text,
             &self.value_line,

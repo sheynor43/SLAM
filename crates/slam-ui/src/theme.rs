@@ -1,7 +1,106 @@
-//! Theme tokens: the colours and sizes the screens draw with. Only the built-in defaults
-//! for now; `theme.toml` loading comes with the settings (ARCHITECTURE §12).
+//! Theme tokens: the colours and sizes the screens draw with. The colours come from a
+//! built-in colour scheme, the shape tokens are shared (ADR-0117); `theme.toml` loading
+//! comes later (ARCHITECTURE §12).
 
 use slam_render::Color;
+
+/// A built-in set of interface colours (ADR-0117).
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash)]
+pub enum ColourScheme {
+    #[default]
+    Pink,
+    Blue,
+    Green,
+    Orange,
+    Mono,
+}
+
+impl ColourScheme {
+    pub const ALL: [ColourScheme; 5] = [
+        ColourScheme::Pink,
+        ColourScheme::Blue,
+        ColourScheme::Green,
+        ColourScheme::Orange,
+        ColourScheme::Mono,
+    ];
+
+    /// The name in settings files.
+    pub fn name(self) -> &'static str {
+        match self {
+            ColourScheme::Pink => "pink",
+            ColourScheme::Blue => "blue",
+            ColourScheme::Green => "green",
+            ColourScheme::Orange => "orange",
+            ColourScheme::Mono => "mono",
+        }
+    }
+
+    pub fn from_name(name: &str) -> Option<ColourScheme> {
+        ColourScheme::ALL.into_iter().find(|s| s.name() == name)
+    }
+
+    /// The localization key of the scheme's name.
+    pub fn label_key(self) -> &'static str {
+        match self {
+            ColourScheme::Pink => "settings-general-colour-scheme-pink",
+            ColourScheme::Blue => "settings-general-colour-scheme-blue",
+            ColourScheme::Green => "settings-general-colour-scheme-green",
+            ColourScheme::Orange => "settings-general-colour-scheme-orange",
+            ColourScheme::Mono => "settings-general-colour-scheme-mono",
+        }
+    }
+
+    /// The scheme's colours: background, accent, the panels' base tint.
+    fn palette(self) -> Palette {
+        let rgb = Color::rgb;
+        match self {
+            ColourScheme::Pink => Palette {
+                background: rgb(0.07, 0.07, 0.10),
+                accent: rgb(1.0, 0.4, 0.7),
+                panel: rgb(0.07, 0.07, 0.10),
+                raised: rgb(0.12, 0.12, 0.16),
+            },
+            ColourScheme::Blue => Palette {
+                background: rgb(0.05, 0.07, 0.11),
+                accent: rgb(0.30, 0.62, 1.0),
+                panel: rgb(0.06, 0.08, 0.13),
+                raised: rgb(0.10, 0.13, 0.20),
+            },
+            ColourScheme::Green => Palette {
+                background: rgb(0.05, 0.08, 0.07),
+                accent: rgb(0.35, 0.85, 0.55),
+                panel: rgb(0.06, 0.09, 0.08),
+                raised: rgb(0.10, 0.15, 0.13),
+            },
+            ColourScheme::Orange => Palette {
+                background: rgb(0.09, 0.07, 0.05),
+                accent: rgb(1.0, 0.58, 0.22),
+                panel: rgb(0.10, 0.08, 0.06),
+                raised: rgb(0.16, 0.12, 0.09),
+            },
+            ColourScheme::Mono => Palette {
+                background: rgb(0.06, 0.06, 0.06),
+                accent: rgb(0.85, 0.85, 0.85),
+                panel: rgb(0.07, 0.07, 0.07),
+                raised: rgb(0.13, 0.13, 0.13),
+            },
+        }
+    }
+}
+
+struct Palette {
+    background: Color,
+    accent: Color,
+    /// Base of the translucent panels.
+    panel: Color,
+    /// Base of popups and the curtain: a step lighter than the panels.
+    raised: Color,
+}
+
+/// `colour` at alpha `a`.
+const fn alpha(colour: Color, a: f32) -> Color {
+    Color { a, ..colour }
+}
 
 /// The tokens menus read. Sizes are given at [`Theme::reference_height`] and scale with the
 /// window height.
@@ -126,24 +225,61 @@ pub struct Theme {
     pub curtain_edge: f32,
     /// The black behind the startup intro (ADR-0114).
     pub intro_backdrop: Color,
+    /// The colour scheme the colours above come from (ADR-0117).
+    pub scheme: ColourScheme,
+    /// The scheme's accent, opaque: outlines of selected elements.
+    pub accent: Color,
+    /// Multiplies [`Theme::scale`]: the interface scale setting (ADR-0118).
+    pub ui_scale: f32,
+    /// Corner radius of buttons, rows and widgets (ADR-0117).
+    pub button_radius: f32,
+    /// Corner radius of panels.
+    pub panel_radius: f32,
+    /// Skew of buttons and rows in degrees, leaning right (`/`); adjustable, 0 to
+    /// [`MAX_SKEW_DEGREES`] (ADR-0117).
+    pub button_skew_degrees: f32,
+    /// Width of the outline of a hovered or selected element.
+    pub outline_width: f32,
+    /// Strength of the triangle pattern on buttons and rows, and on panels (0 to 1).
+    pub button_pattern: f32,
+    pub panel_pattern: f32,
+    /// Triangle rows the pattern drifts per second.
+    pub pattern_speed: f32,
+    /// Dim over the main menu's background (ADR-0119), 0 to 1.
+    pub menu_background_dim: f32,
 }
+
+/// Largest skew [`Theme::button_skew_degrees`] takes.
+pub const MAX_SKEW_DEGREES: f32 = 20.0;
+
+/// Range of the interface scale settings (ADR-0118).
+pub const UI_SCALE_RANGE: (f32, f32) = (0.75, 1.5);
 
 impl Default for Theme {
     fn default() -> Theme {
+        Theme::new(ColourScheme::default(), 1.0)
+    }
+}
+
+impl Theme {
+    /// The theme in `scheme`'s colours at interface scale `ui_scale` (clamped to
+    /// [`UI_SCALE_RANGE`]).
+    pub fn new(scheme: ColourScheme, ui_scale: f32) -> Theme {
+        let p = scheme.palette();
+        let ui_scale = if ui_scale.is_finite() {
+            ui_scale.clamp(UI_SCALE_RANGE.0, UI_SCALE_RANGE.1)
+        } else {
+            1.0
+        };
         Theme {
-            background: Color::rgb(0.07, 0.07, 0.10),
+            background: p.background,
             button_fill: Color {
                 r: 1.0,
                 g: 1.0,
                 b: 1.0,
                 a: 0.08,
             },
-            button_hover_fill: Color {
-                r: 1.0,
-                g: 0.4,
-                b: 0.7,
-                a: 0.55,
-            },
+            button_hover_fill: alpha(p.accent, 0.55),
             text: Color::WHITE,
             disabled_text: Color {
                 r: 1.0,
@@ -167,12 +303,7 @@ impl Default for Theme {
                 a: 0.18,
             },
             song_panel_ratio: 0.55,
-            song_panel_fill: Color {
-                r: 0.07,
-                g: 0.07,
-                b: 0.10,
-                a: 0.85,
-            },
+            song_panel_fill: alpha(p.panel, 0.78),
             song_search_fill: Color {
                 r: 1.0,
                 g: 1.0,
@@ -221,18 +352,8 @@ impl Default for Theme {
             widget_knob_height: 26.0,
             widget_value_width: 84.0,
             widget_value_gap: 16.0,
-            widget_accent_fill: Color {
-                r: 1.0,
-                g: 0.4,
-                b: 0.7,
-                a: 0.85,
-            },
-            widget_popup_fill: Color {
-                r: 0.12,
-                g: 0.12,
-                b: 0.16,
-                a: 0.98,
-            },
+            widget_accent_fill: alpha(p.accent, 0.85),
+            widget_popup_fill: alpha(p.raised, 0.97),
             settings_margin: 32.0,
             settings_title_size: 40.0,
             settings_tab_width: 170.0,
@@ -240,12 +361,7 @@ impl Default for Theme {
             settings_label_ratio: 0.45,
             settings_marker_size: 14.0,
             settings_panel_width: 880.0,
-            settings_panel_fill: Color {
-                r: 0.08,
-                g: 0.08,
-                b: 0.11,
-                a: 0.97,
-            },
+            settings_panel_fill: alpha(p.panel, 0.9),
             settings_dim_fill: Color {
                 r: 0.0,
                 g: 0.0,
@@ -253,17 +369,41 @@ impl Default for Theme {
                 a: 0.5,
             },
             settings_panel_ms: 250.0,
-            curtain_fill: Color::rgb(0.11, 0.11, 0.15),
+            curtain_fill: p.raised,
             curtain_edge: 4.0,
             intro_backdrop: Color::rgb(0.0, 0.0, 0.0),
+            scheme,
+            accent: p.accent,
+            ui_scale,
+            button_radius: 8.0,
+            panel_radius: 14.0,
+            button_skew_degrees: 10.0,
+            outline_width: 2.0,
+            button_pattern: 0.18,
+            panel_pattern: 0.06,
+            pattern_speed: 0.08,
+            menu_background_dim: 0.5,
         }
     }
-}
 
-impl Theme {
+    /// The same theme at another interface scale: the in-game overlays take the game's.
+    pub fn with_ui_scale(self, ui_scale: f32) -> Theme {
+        Theme {
+            ui_scale: Theme::new(self.scheme, ui_scale).ui_scale,
+            ..self
+        }
+    }
+
     /// Factor from reference sizes to pixels on a window `height` pixels high.
     pub fn scale(&self, height: f32) -> f32 {
-        height / self.reference_height
+        height / self.reference_height * self.ui_scale
+    }
+
+    /// The skew of buttons and rows in radians, within `[0, MAX_SKEW_DEGREES]`.
+    pub fn button_skew(&self) -> f32 {
+        self.button_skew_degrees
+            .clamp(0.0, MAX_SKEW_DEGREES)
+            .to_radians()
     }
 }
 
@@ -272,5 +412,63 @@ pub fn faded(colour: Color, opacity: f32) -> Color {
     Color {
         a: colour.a * opacity,
         ..colour
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn scheme_names_round_trip() {
+        for scheme in ColourScheme::ALL {
+            assert_eq!(ColourScheme::from_name(scheme.name()), Some(scheme));
+        }
+        assert_eq!(ColourScheme::from_name("purple"), None);
+    }
+
+    #[test]
+    fn the_default_keeps_the_pink_colours() {
+        let theme = Theme::default();
+        assert_eq!(theme.scheme, ColourScheme::Pink);
+        assert_eq!(
+            theme.button_hover_fill,
+            Color {
+                a: 0.55,
+                ..Color::rgb(1.0, 0.4, 0.7)
+            }
+        );
+        assert_eq!(theme.background, Color::rgb(0.07, 0.07, 0.10));
+    }
+
+    #[test]
+    fn schemes_differ_in_their_accent() {
+        let accents: Vec<_> = ColourScheme::ALL.map(|s| Theme::new(s, 1.0).accent).into();
+        for (i, a) in accents.iter().enumerate() {
+            assert!(accents[i + 1..].iter().all(|b| b != a));
+        }
+    }
+
+    #[test]
+    fn the_interface_scale_multiplies_the_scale_within_its_range() {
+        assert_eq!(Theme::new(ColourScheme::Pink, 1.25).scale(768.0), 1.25);
+        assert_eq!(
+            Theme::new(ColourScheme::Pink, 9.0).ui_scale,
+            UI_SCALE_RANGE.1
+        );
+        assert_eq!(Theme::new(ColourScheme::Pink, f32::NAN).ui_scale, 1.0);
+        let game = Theme::default().with_ui_scale(0.8);
+        assert_eq!(game.scale(768.0), 0.8);
+        assert_eq!(game.scheme, ColourScheme::Pink);
+    }
+
+    #[test]
+    fn the_skew_is_held_to_its_range() {
+        let mut theme = Theme::default();
+        assert!((theme.button_skew() - 10f32.to_radians()).abs() < 1e-6);
+        theme.button_skew_degrees = 45.0;
+        assert!((theme.button_skew() - MAX_SKEW_DEGREES.to_radians()).abs() < 1e-6);
+        theme.button_skew_degrees = -5.0;
+        assert_eq!(theme.button_skew(), 0.0);
     }
 }

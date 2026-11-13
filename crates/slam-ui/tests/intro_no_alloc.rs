@@ -7,6 +7,7 @@ use std::time::{Duration, Instant};
 
 use slam_render::Extent;
 use slam_render::atlas::{AtlasRegion, UvRect};
+use slam_render::shape::ShapeBatch;
 use slam_render::sprite::SpriteBatch;
 use slam_render::textures::TextureId;
 use slam_render::textures::Textures;
@@ -142,7 +143,7 @@ fn view_pushes_without_allocating_once_warm() {
         },
     };
     let (mut shapes, mut text, mut outlines) = (
-        SpriteBatch::with_capacity(16),
+        ShapeBatch::with_capacity(16),
         SpriteBatch::with_capacity(16),
         SpriteBatch::with_capacity(16),
     );

@@ -15,9 +15,9 @@ pub use dirs::{Dirs, Os};
 pub use file::{CURRENT_VERSION, LoadStatus, Loaded, load, load_or_create, save};
 pub use model::{
     Audio, BINDING_SLOTS, BindingEntry, Combo, DrawRate, FpsScreens, Frame, Gameplay,
-    HitsoundDelay, Hotkeys, HudSettings, InputSettings, KeyOverlayAnimation, KeySlot, Mods, Paths,
-    RendererChoice, STABLE_HITSOUND_DELAY_MS, Settings, SkinSettings, Timing, corner_from_name,
-    corner_name,
+    HitsoundDelay, Hotkeys, HudSettings, InputSettings, KeyOverlayAnimation, KeySlot,
+    MenuBackground, MenuSounds, Mods, Paths, RendererChoice, STABLE_HITSOUND_DELAY_MS, Settings,
+    SkinSettings, Timing, corner_from_name, corner_name,
 };
 
 /// File name of the settings file inside the config directory.

@@ -4,6 +4,7 @@
 use std::sync::Arc;
 
 use slam_render::atlas::{AtlasRegion, UvRect};
+use slam_render::shape::ShapeBatch;
 use slam_render::sprite::SpriteBatch;
 use slam_render::textures::TextureId;
 use slam_render::{Extent, Limits, Origin};
@@ -117,7 +118,7 @@ fn widget_views_push_without_allocating_once_warm() {
     dropdown_view.request_glyphs(&mut glyphs);
     keybind_view.request_glyphs(&mut glyphs);
     let (mut shapes, mut text) = (
-        SpriteBatch::with_capacity(256),
+        ShapeBatch::with_capacity(256),
         SpriteBatch::with_capacity(1024),
     );
 
@@ -162,7 +163,7 @@ fn a_slider_shows_its_zero_text_without_allocating_once_warm() {
     let mut slider = Slider::new(0.0, 100.0, 1.0, 20.0);
     view.request_glyphs(&mut glyphs);
     let (mut shapes, mut text) = (
-        SpriteBatch::with_capacity(256),
+        ShapeBatch::with_capacity(256),
         SpriteBatch::with_capacity(1024),
     );
     let mut frame = |slider: &Slider, glyphs: &mut _| {

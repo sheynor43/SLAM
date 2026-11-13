@@ -13,6 +13,7 @@ use slam_input::{
 use slam_osu::replay::Actions;
 use slam_play::input::{Binding, Bindings, Input, MAX_BINDINGS};
 use slam_play::{BackgroundSettings, FpsCorner};
+use slam_ui::theme::ColourScheme;
 
 use super::keys;
 use crate::backend::Renderer;
@@ -97,6 +98,18 @@ pub struct General {
     pub language: Option<String>,
     /// Whether the startup intro plays (ADR-0114). Read at start.
     pub intro: bool,
+    /// The interface colour scheme (ADR-0117).
+    #[serde(serialize_with = "serialize_colour_scheme")]
+    pub colour_scheme: ColourScheme,
+    /// Scale of the menus, in `slam_ui::theme::UI_SCALE_RANGE` in steps of 0.05 (ADR-0118).
+    #[serde(serialize_with = "serialize_scale")]
+    pub menu_scale: f32,
+    /// Scale of the HUD and the pause and fail menus, in `slam_ui::theme::UI_SCALE_RANGE` in steps of
+    /// 0.05 (ADR-0118).
+    #[serde(serialize_with = "serialize_scale")]
+    pub game_scale: f32,
+    /// What the main menu shows behind its content (ADR-0119).
+    pub menu_background: MenuBackground,
 }
 
 impl Default for General {
@@ -104,7 +117,90 @@ impl Default for General {
         General {
             language: None,
             intro: true,
+            colour_scheme: ColourScheme::default(),
+            menu_scale: 1.0,
+            game_scale: 1.0,
+            menu_background: MenuBackground::default(),
         }
+    }
+}
+
+fn serialize_colour_scheme<S: Serializer>(
+    scheme: &ColourScheme,
+    serializer: S,
+) -> Result<S::Ok, S::Error> {
+    serializer.serialize_str(scheme.name())
+}
+
+/// Writes a scale as a two-decimal number, so that the file holds `1.05` and not the
+/// `f32`'s widened `1.0499999523162842`.
+fn serialize_scale<S: Serializer>(scale: &f32, serializer: S) -> Result<S::Ok, S::Error> {
+    serializer.serialize_f64((f64::from(*scale) * 100.0).round() / 100.0)
+}
+
+/// What the main menu shows behind its content (ADR-0119).
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum MenuBackground {
+    /// The background of the beatmap whose music plays.
+    #[default]
+    Beatmap,
+    /// The skin's menu background.
+    Skin,
+    /// A plain background.
+    None,
+}
+
+impl MenuBackground {
+    pub const ALL: [MenuBackground; 3] = [
+        MenuBackground::Beatmap,
+        MenuBackground::Skin,
+        MenuBackground::None,
+    ];
+
+    /// The name in the settings file.
+    pub fn name(self) -> &'static str {
+        match self {
+            MenuBackground::Beatmap => "beatmap",
+            MenuBackground::Skin => "skin",
+            MenuBackground::None => "none",
+        }
+    }
+
+    /// The value called `name`.
+    pub fn from_name(name: &str) -> Option<MenuBackground> {
+        MenuBackground::ALL.into_iter().find(|b| b.name() == name)
+    }
+}
+
+/// Where the menu sounds come from (ADR-0120).
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum MenuSounds {
+    /// SLAM's own synthesized sounds.
+    #[default]
+    Slam,
+    /// The skin's sounds.
+    Skin,
+    /// No menu sounds.
+    Off,
+}
+
+impl MenuSounds {
+    pub const ALL: [MenuSounds; 3] = [MenuSounds::Slam, MenuSounds::Skin, MenuSounds::Off];
+
+    /// The name in the settings file.
+    pub fn name(self) -> &'static str {
+        match self {
+            MenuSounds::Slam => "slam",
+            MenuSounds::Skin => "skin",
+            MenuSounds::Off => "off",
+        }
+    }
+
+    /// The value called `name`.
+    pub fn from_name(name: &str) -> Option<MenuSounds> {
+        MenuSounds::ALL.into_iter().find(|s| s.name() == name)
     }
 }
 
@@ -142,6 +238,8 @@ pub struct Audio {
     /// How far hitsounds pan with the object's horizontal position, 0.0..=1.0 in steps of
     /// 0.01; 0 turns it off (lazer's `OsuSetting.PositionalHitsoundsLevel`, ADR-0087).
     pub positional_hitsounds_level: f32,
+    /// Where the menu sounds come from (ADR-0120).
+    pub menu_sounds: MenuSounds,
 }
 
 /// Extra delay of a stable hitsound over a SLAM one, click to sound, milliseconds
@@ -238,6 +336,7 @@ impl Default for Audio {
             menu_music_volume: 1.0,
             hitsound_delay: HitsoundDelay::default(),
             positional_hitsounds_level: slam_play::gameplay_sounds::DEFAULT_POSITIONAL_LEVEL,
+            menu_sounds: MenuSounds::default(),
         }
     }
 }

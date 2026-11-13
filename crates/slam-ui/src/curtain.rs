@@ -3,7 +3,8 @@
 //! swapped and their glyphs made, then slide on down and out the same way.
 
 use slam_render::atlas::AtlasRegion;
-use slam_render::sprite::{Sprite, SpriteBatch};
+use slam_render::shape::ShapeBatch;
+use slam_render::sprite::Sprite;
 
 use crate::anim::{ease_out_cubic, progress};
 use crate::theme::Theme;
@@ -103,7 +104,7 @@ impl Curtain {
     /// `white` (an opaque white image). Allocation-free once the batch has room.
     pub fn push(
         &self,
-        shapes: &mut SpriteBatch,
+        shapes: &mut ShapeBatch,
         theme: &Theme,
         width: f32,
         height: f32,

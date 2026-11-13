@@ -7,10 +7,11 @@
 use std::sync::Arc;
 
 use slam_render::atlas::AtlasRegion;
+use slam_render::shape::ShapeBatch;
 use slam_render::sprite::SpriteBatch;
 use slam_text::{FontRegistry, Glyph, GlyphCache, GlyphKey};
 
-use super::{fill, push_left};
+use super::{Look, draw, push_left};
 use crate::menu::Rect;
 use crate::menu::view::{Line, Typesetter};
 use crate::theme::{Theme, faded};
@@ -389,7 +390,7 @@ impl DropdownView {
     #[allow(clippy::too_many_arguments)]
     pub fn push(
         &mut self,
-        shapes: &mut SpriteBatch,
+        shapes: &mut ShapeBatch,
         text: &mut SpriteBatch,
         glyphs: &mut GlyphCache,
         state: &Dropdown,
@@ -409,7 +410,9 @@ impl DropdownView {
         } else {
             theme.button_fill
         };
-        fill(shapes, white, &layout.bounds, faded(box_fill, opacity));
+        let s = layout.scale;
+        let boxed = faded(box_fill, opacity);
+        draw(shapes, white, &layout.bounds, boxed, Look::Round, theme, s);
         let colour = faded(theme.text, opacity);
         if let Some(line) = self.options.get(state.selected) {
             push_left(text, line, &layout.bounds, pad, colour, glyphs);
@@ -417,23 +420,15 @@ impl DropdownView {
         if !state.open {
             return;
         }
-        fill(
-            shapes,
-            white,
-            &layout.list(),
-            faded(theme.widget_popup_fill, opacity),
-        );
+        let popup = faded(theme.widget_popup_fill, opacity);
+        draw(shapes, white, &layout.list(), popup, Look::Panel, theme, s);
         let first = layout.first();
         let shown = self.options.iter().enumerate().skip(first);
         for (i, line) in shown.take(layout.visible().min(layout.count)) {
             let rect = layout.option(i);
             if i == state.highlight {
-                fill(
-                    shapes,
-                    white,
-                    &rect,
-                    faded(theme.button_hover_fill, opacity),
-                );
+                let hover = faded(theme.button_hover_fill, opacity);
+                draw(shapes, white, &rect, hover, Look::Round, theme, s);
             }
             push_left(text, line, &rect, pad, colour, glyphs);
         }

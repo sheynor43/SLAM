@@ -1,5 +1,5 @@
 use slam_render::atlas::AtlasRegion;
-use slam_render::sprite::SpriteBatch;
+use slam_render::shape::ShapeBatch;
 
 use super::*;
 
@@ -21,7 +21,7 @@ fn white() -> AtlasRegion {
 
 /// The slats' sprites at `now_ns` on a 1000 × 500 window.
 fn sprites(curtain: &Curtain, now_ns: u64) -> usize {
-    let mut shapes = SpriteBatch::with_capacity(64);
+    let mut shapes = ShapeBatch::with_capacity(64);
     curtain.push(
         &mut shapes,
         &Theme::default(),

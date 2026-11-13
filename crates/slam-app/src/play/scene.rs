@@ -85,6 +85,8 @@ pub struct PlaySettings {
     pub dim: f64,
     /// The gameplay elements of the active HUD layout (ADR-0109).
     pub hud_layout: Vec<LayoutElement>,
+    /// The in-game interface scale the HUD's elements take (ADR-0118).
+    pub game_scale: f32,
     /// Snaking of slider bodies (ADR-0085), off by default unlike lazer.
     pub snaking: Snaking,
     /// Lazer's `HitLighting`.
@@ -116,6 +118,7 @@ impl Default for PlaySettings {
             mods: ModSet::default(),
             dim: BackgroundSettings::default().dim_level,
             hud_layout: Builtin::Stable.layout().gameplay,
+            game_scale: 1.0,
             snaking: Snaking::default(),
             hit_lighting: true,
             cursor_trail: true,
@@ -359,11 +362,17 @@ pub fn prepare(
     let glyphs = glyph_atlas(Arc::clone(&registry), &GlyphAtlasConfig::new(limits))
         .map_err(|e| e.to_string())?;
     let menu = MenuView::new(Arc::clone(&registry), &labels.menu);
+    // Each element grows about its anchor (ADR-0118).
+    let hud_layout: Vec<LayoutElement> = settings
+        .hud_layout
+        .iter()
+        .map(|element| element.scaled_by(settings.game_scale))
+        .collect();
     let hud = HudView::new(
         registry,
         labels,
         HudSetup {
-            layout: &settings.hud_layout,
+            layout: &hud_layout,
             windows: &windows,
             meter_hiding: &slam_play::hit_error::SpinnerHiding::new(beatmap),
             song_progress: slam_play::song_progress::SongProgress::new(beatmap),

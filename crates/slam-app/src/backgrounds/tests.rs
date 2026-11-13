@@ -97,6 +97,9 @@ impl Rig {
                     ..
                 } => loads.push((generation, set, difficulty)),
                 BackgroundCommand::Release(handle) => releases.push(handle),
+                BackgroundCommand::LoadSkin { generation, .. } => {
+                    loads.push((generation, usize::MAX, usize::MAX));
+                }
             }
         }
         (loads, releases)
@@ -337,6 +340,58 @@ fn the_loader_reads_only_the_newest_request_and_finds_the_file_without_case() {
     );
     // Its `Arc` was the loader's to drop.
     assert_eq!(Arc::strong_count(&files), 1);
+}
+
+#[test]
+fn a_skin_source_is_asked_once_settled_and_a_new_skin_asks_again() {
+    let mut rig = Rig::new();
+    let skin: Arc<Path> = Arc::from(Path::new("/skins/a"));
+    let source = BackgroundSource::Skin(Some(&skin));
+    rig.picker.tick_source(0, source);
+    assert!(rig.sent().0.is_empty(), "waits for the debounce");
+    rig.picker.tick_source(SELECTION_DEBOUNCE_NS, source);
+    assert_eq!(rig.sent().0, [(1, usize::MAX, usize::MAX)]);
+    // The same skin, even through another `Arc`, is not asked again.
+    let same: Arc<Path> = Arc::from(Path::new("/skins/a"));
+    rig.picker.tick_source(
+        2 * SELECTION_DEBOUNCE_NS,
+        BackgroundSource::Skin(Some(&same)),
+    );
+    assert!(rig.sent().0.is_empty());
+    // No file: the default background, without asking the loader.
+    rig.picker
+        .tick_source(3 * SELECTION_DEBOUNCE_NS, BackgroundSource::Skin(None));
+    let target = rig
+        .picker
+        .tick_source(4 * SELECTION_DEBOUNCE_NS, BackgroundSource::Skin(None));
+    assert!(rig.sent().0.is_empty());
+    assert_eq!(target.handle, None);
+    assert_eq!(target.generation, 2);
+}
+
+#[test]
+fn the_loader_finds_the_skins_menu_background() {
+    let t = TempDir::new("loader-skin");
+    std::fs::write(t.0.join("Menu-Background@2x.JPG"), b"not decoded here").unwrap();
+    let (mut loader, mut commands, mut replies) = loader();
+    let load = BackgroundCommand::LoadSkin {
+        generation: 4,
+        skin: Arc::from(t.0.as_path()),
+    };
+    assert!(commands.push(load).is_ok());
+    loader.poll();
+    let reply = replies.pop().unwrap();
+    assert_eq!(reply.generation, 4);
+    assert!(reply.handle.is_some());
+    // A skin without one: the default background.
+    std::fs::remove_file(t.0.join("Menu-Background@2x.JPG")).unwrap();
+    let missing = BackgroundCommand::LoadSkin {
+        generation: 5,
+        skin: Arc::from(t.0.as_path()),
+    };
+    assert!(commands.push(missing).is_ok());
+    loader.poll();
+    assert_eq!(replies.pop().unwrap().handle, None);
 }
 
 #[test]

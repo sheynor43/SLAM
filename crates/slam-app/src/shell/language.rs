@@ -33,6 +33,8 @@ pub struct InterfaceViews {
     pub results: ResultsView,
     pub settings: SettingsView,
     pub fps: FpsView,
+    /// The theme they were laid out with: the draw side's from the swap on.
+    pub theme: Theme,
     /// The switch ([`AppliedLanguage::switches`]) they were laid out for.
     pub switch: u64,
 }
@@ -116,6 +118,7 @@ pub fn interface_views(
             &rows.labels(localizer),
         ),
         fps: FpsView::new(Arc::clone(registry), &fps),
+        theme,
         switch: 0,
     }
 }
@@ -218,6 +221,8 @@ impl<V: Numbered> LanguageSwap<V> {
 pub struct Rebuild {
     pub rows: Rows,
     pub settings: Settings,
+    /// The theme to lay the views out with (ADR-0117, ADR-0118).
+    pub theme: Theme,
     /// Numbers the switch, from 1.
     pub switch: u64,
 }
@@ -308,7 +313,6 @@ fn rings() -> (
 /// as [`crate::play::pack_size`]).
 pub fn spawn(
     registry: Arc<FontRegistry>,
-    theme: Theme,
     localizer: Arc<Localizer>,
     surface: Arc<AtomicU64>,
 ) -> std::io::Result<(LanguageLink, LanguageViews, LanguageThread)> {
@@ -329,7 +333,7 @@ pub fn spawn(
                 {
                     let mut views = interface_views(
                         &registry,
-                        theme,
+                        rebuild.theme,
                         &localizer,
                         &rebuild.rows,
                         &rebuild.settings,
@@ -367,6 +371,8 @@ pub struct AppliedLanguage {
     pending: Option<Box<Rebuild>>,
     /// Switches that asked for views so far.
     switches: u64,
+    /// The interface theme (colour scheme, menu scale) the views were last asked with.
+    theme: Theme,
 }
 
 impl AppliedLanguage {
@@ -376,6 +382,7 @@ impl AppliedLanguage {
         localizer: Arc<Localizer>,
         applied: Option<String>,
         link: Option<LanguageLink>,
+        theme: Theme,
     ) -> AppliedLanguage {
         AppliedLanguage {
             localizer,
@@ -383,7 +390,14 @@ impl AppliedLanguage {
             link,
             pending: None,
             switches: 0,
+            theme,
         }
+    }
+
+    /// Whether a thread lays views out again: without one, nothing the draw side shows
+    /// changes with the language or theme.
+    pub fn lays_out_views(&self) -> bool {
+        self.link.is_some()
     }
 
     /// How many switches asked for views so far; the views carry the number of theirs.
@@ -392,11 +406,14 @@ impl AppliedLanguage {
     }
 
     /// Switches the localizer when `settings` (with the settings screen's edits) name another
-    /// language and asks for views laid out in it, with the settings screen showing `rows`.
-    /// Allocates only on a switch, which follows the player picking a language.
+    /// language and asks for views laid out in it, with the settings screen showing `rows`;
+    /// asks for views also when they name another colour scheme or menu scale (ADR-0117,
+    /// ADR-0118). Allocates only on a switch, which follows the player's pick.
     /// Returns whether the language switched.
-    pub fn apply(&mut self, settings: &Settings, rows: &Rows) -> bool {
+    pub fn apply(&mut self, settings: &Settings, rows: &Rows, theme: Theme) -> bool {
         let mut switched = false;
+        let restyled = theme != self.theme;
+        self.theme = theme;
         if settings.general.language != self.applied {
             self.applied.clone_from(&settings.general.language);
             let tag = self.applied.as_deref().unwrap_or(FALLBACK_LANGUAGE);
@@ -405,17 +422,18 @@ impl AppliedLanguage {
                 tracing::warn!("settings: general.language: {e}");
             } else {
                 switched = true;
-                if self.link.is_some() {
-                    self.switches += 1;
-                    // A request the full ring refused is freed here: a player's pick, as
-                    // a commit of the settings is.
-                    self.pending = Some(Box::new(Rebuild {
-                        rows: rows.clone(),
-                        settings: settings.clone(),
-                        switch: self.switches,
-                    }));
-                }
             }
+        }
+        if (switched || restyled) && self.link.is_some() {
+            self.switches += 1;
+            // A request the full ring refused is freed here: a player's pick, as a commit
+            // of the settings is.
+            self.pending = Some(Box::new(Rebuild {
+                rows: rows.clone(),
+                settings: settings.clone(),
+                theme,
+                switch: self.switches,
+            }));
         }
         if let Some(link) = &mut self.link
             && let Some(rebuild) = self.pending.take()

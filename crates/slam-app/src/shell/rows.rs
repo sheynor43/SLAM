@@ -20,8 +20,9 @@ use super::keybinds;
 use crate::displays::{DisplayLists, DisplayViews};
 use crate::settings::{
     DrawRate, FpsScreens, HitsoundDelay, InputSettings, KeyOverlayAnimation, KeySlot,
-    RendererChoice, Settings, Timing, skins,
+    MenuBackground, MenuSounds, RendererChoice, Settings, Timing, skins,
 };
+use slam_ui::theme::{ColourScheme, UI_SCALE_RANGE};
 
 /// Sections, in order; the keys of their names are in [`SECTION_KEYS`].
 const SECTION_KEYS: [&str; 7] = [
@@ -151,6 +152,9 @@ pub const SECTIONS: usize = SECTION_KEYS.len();
 /// The range of the cursor size slider (lazer's `GameplayCursorSize`, ADR-0086).
 const CURSOR_SIZE_RANGE: (f64, f64) = (0.1, 2.0);
 
+/// The interface scale sliders show percents: this is their step (ADR-0118).
+const UI_SCALE_STEP_PERCENT: f64 = 5.0;
+
 const BUFFER_PRESETS: [u32; 6] = [64, 128, 256, 512, 1024, 2048];
 const DRAW_PRESETS: [f64; 9] = [
     60.0, 120.0, 144.0, 240.0, 360.0, 1000.0, 2000.0, 4000.0, 8000.0,
@@ -180,6 +184,8 @@ pub enum Row {
     MusicVolume,
     MenuMusic,
     MenuMusicVolume,
+    /// Where the menu sounds come from (ADR-0120).
+    MenuSounds,
     HitsoundVolume,
     EffectsVolume,
     HitsoundDelay,
@@ -217,6 +223,14 @@ pub enum Row {
     Renderer,
     /// Whether the startup intro plays; read at start (ADR-0114).
     Intro,
+    /// The interface colour scheme (ADR-0117).
+    ColourScheme,
+    /// The scale of the menus (ADR-0118).
+    MenuScale,
+    /// The scale of the HUD and the pause and fail menus (ADR-0118).
+    GameScale,
+    /// What the main menu shows behind its content (ADR-0119).
+    MenuBackground,
     UpdateHz,
     DrawHz,
     MenuDrawHz,
@@ -247,11 +261,12 @@ pub enum Row {
 const _: () = assert!(Row::ALL.len() <= slam_ui::settings_screen::MAX_ROWS);
 
 impl Row {
-    pub const ALL: [Row; 58] = [
+    pub const ALL: [Row; 63] = [
         Row::MasterVolume,
         Row::MusicVolume,
         Row::MenuMusic,
         Row::MenuMusicVolume,
+        Row::MenuSounds,
         Row::HitsoundVolume,
         Row::EffectsVolume,
         Row::HitsoundDelay,
@@ -282,6 +297,10 @@ impl Row {
         Row::VideoDriver,
         Row::Renderer,
         Row::Intro,
+        Row::ColourScheme,
+        Row::MenuScale,
+        Row::GameScale,
+        Row::MenuBackground,
         Row::UpdateHz,
         Row::DrawHz,
         Row::MenuDrawHz,
@@ -334,6 +353,7 @@ impl Row {
             | Row::MusicVolume
             | Row::MenuMusic
             | Row::MenuMusicVolume
+            | Row::MenuSounds
             | Row::HitsoundVolume
             | Row::EffectsVolume
             | Row::HitsoundDelay
@@ -363,7 +383,11 @@ impl Row {
             | Row::MinimiseOnFocusLoss
             | Row::VideoDriver
             | Row::Renderer
-            | Row::Intro => 3,
+            | Row::Intro
+            | Row::ColourScheme
+            | Row::MenuScale
+            | Row::GameScale
+            | Row::MenuBackground => 3,
             Row::UpdateHz
             | Row::DrawHz
             | Row::MenuDrawHz
@@ -419,6 +443,11 @@ impl Row {
             Row::ResetKeys => "settings-keys-reset",
             Row::Language => "settings-layout-language",
             Row::Intro => "settings-general-intro",
+            Row::ColourScheme => "settings-general-colour-scheme",
+            Row::MenuScale => "settings-general-menu-scale",
+            Row::GameScale => "settings-general-game-scale",
+            Row::MenuBackground => "settings-general-menu-background",
+            Row::MenuSounds => "settings-audio-menu-sounds",
             Row::ScreenMode => "settings-layout-screen-mode",
             Row::NotFullscreenNote => "settings-layout-not-fullscreen-note",
             Row::Display => "settings-layout-display",
@@ -559,6 +588,24 @@ fn key_animation_key(animation: KeyOverlayAnimation) -> &'static str {
     match animation {
         KeyOverlayAnimation::Stable => "settings-option-key-overlay-animation-stable",
         KeyOverlayAnimation::Lazer => "settings-option-key-overlay-animation-lazer",
+    }
+}
+
+/// The Fluent key of a main menu background option.
+fn menu_background_key(background: MenuBackground) -> &'static str {
+    match background {
+        MenuBackground::Beatmap => "settings-option-menu-background-beatmap",
+        MenuBackground::Skin => "settings-option-menu-background-skin",
+        MenuBackground::None => "settings-option-menu-background-none",
+    }
+}
+
+/// The Fluent key of a menu sounds option.
+fn menu_sounds_key(sounds: MenuSounds) -> &'static str {
+    match sounds {
+        MenuSounds::Slam => "settings-option-menu-sounds-slam",
+        MenuSounds::Skin => "settings-option-menu-sounds-skin",
+        MenuSounds::Off => "settings-option-menu-sounds-off",
     }
 }
 
@@ -795,6 +842,37 @@ impl Rows {
                 step: 0.01,
                 value: round_to(s.gameplay.cursor_size, 2),
             },
+            Row::MenuScale | Row::GameScale => {
+                let scale = if row == Row::MenuScale {
+                    s.general.menu_scale
+                } else {
+                    s.general.game_scale
+                };
+                RowKind::Slider {
+                    min: f64::from(UI_SCALE_RANGE.0) * 100.0,
+                    max: f64::from(UI_SCALE_RANGE.1) * 100.0,
+                    step: UI_SCALE_STEP_PERCENT,
+                    value: (f64::from(scale) * 100.0).round(),
+                }
+            }
+            Row::ColourScheme => choice(
+                ColourScheme::ALL.len(),
+                ColourScheme::ALL
+                    .iter()
+                    .position(|c| *c == s.general.colour_scheme),
+            ),
+            Row::MenuBackground => choice(
+                MenuBackground::ALL.len(),
+                MenuBackground::ALL
+                    .iter()
+                    .position(|b| *b == s.general.menu_background),
+            ),
+            Row::MenuSounds => choice(
+                MenuSounds::ALL.len(),
+                MenuSounds::ALL
+                    .iter()
+                    .position(|m| *m == s.audio.menu_sounds),
+            ),
             Row::Language => choice(
                 BUILTIN_LANGUAGES.len(),
                 BUILTIN_LANGUAGES.iter().position(|l| {
@@ -1023,6 +1101,27 @@ impl Rows {
                 }
             },
             (Row::Intro, RowValue::Toggle(v)) => settings.general.intro = v,
+            (Row::MenuScale, RowValue::Slider(v)) => {
+                settings.general.menu_scale = scale_from_percent(v);
+            }
+            (Row::GameScale, RowValue::Slider(v)) => {
+                settings.general.game_scale = scale_from_percent(v);
+            }
+            (Row::ColourScheme, RowValue::Choice(i)) => {
+                if let Some(scheme) = ColourScheme::ALL.get(i) {
+                    settings.general.colour_scheme = *scheme;
+                }
+            }
+            (Row::MenuBackground, RowValue::Choice(i)) => {
+                if let Some(background) = MenuBackground::ALL.get(i) {
+                    settings.general.menu_background = *background;
+                }
+            }
+            (Row::MenuSounds, RowValue::Choice(i)) => {
+                if let Some(sounds) = MenuSounds::ALL.get(i) {
+                    settings.audio.menu_sounds = *sounds;
+                }
+            }
             (Row::Language, RowValue::Choice(i)) => {
                 if let Some(language) = BUILTIN_LANGUAGES.get(i) {
                     settings.general.language = Some(language.langid.to_owned());
@@ -1235,6 +1334,18 @@ impl Rows {
                         .iter()
                         .map(|animation| text(key_animation_key(*animation)))
                         .collect(),
+                    Row::ColourScheme => ColourScheme::ALL
+                        .iter()
+                        .map(|scheme| text(scheme.label_key()))
+                        .collect(),
+                    Row::MenuBackground => MenuBackground::ALL
+                        .iter()
+                        .map(|background| text(menu_background_key(*background)))
+                        .collect(),
+                    Row::MenuSounds => MenuSounds::ALL
+                        .iter()
+                        .map(|sounds| text(menu_sounds_key(*sounds)))
+                        .collect(),
                     Row::FpsScreens => FpsScreens::ALL
                         .iter()
                         .map(|screens| text(screens_key(*screens)))
@@ -1272,6 +1383,8 @@ impl Rows {
                     | Row::EffectsVolume
                     | Row::Dim
                     | Row::SongSelectDim
+                    | Row::MenuScale
+                    | Row::GameScale
                     | Row::PositionalHitsoundsLevel => text("settings-unit-percent"),
                     Row::Sensitivity | Row::CursorSize => text("settings-unit-times"),
                     _ => String::new(),
@@ -1316,6 +1429,13 @@ impl Rows {
             keys: keybinds::key_labels(localizer),
         }
     }
+}
+
+/// The interface scale a percent slider value stands for, in the allowed range and a
+/// multiple of the step.
+fn scale_from_percent(percent: f64) -> f32 {
+    let stepped = (percent / UI_SCALE_STEP_PERCENT).round() * UI_SCALE_STEP_PERCENT / 100.0;
+    (stepped as f32).clamp(UI_SCALE_RANGE.0, UI_SCALE_RANGE.1)
 }
 
 fn round_to(value: f64, decimals: i32) -> f64 {
@@ -1813,6 +1933,48 @@ mod tests {
             );
             localizer.set_language("ru").unwrap();
         }
+    }
+
+    #[test]
+    fn the_interface_rows_edit_their_settings() {
+        let (rows, mut s) = rows();
+        let specs = rows.specs(&s);
+        assert_eq!(Row::ColourScheme.section(), 3);
+        assert_eq!(Row::MenuSounds.section(), 0);
+        assert_eq!(
+            specs[index(Row::MenuScale)].kind,
+            RowKind::Slider {
+                min: 75.0,
+                max: 150.0,
+                step: 5.0,
+                value: 100.0
+            }
+        );
+        assert_eq!(
+            specs[index(Row::ColourScheme)].kind,
+            RowKind::Dropdown {
+                options: 5,
+                selected: 0
+            }
+        );
+        rows.apply(&mut s, index(Row::ColourScheme), RowValue::Choice(4));
+        assert_eq!(s.general.colour_scheme, ColourScheme::Mono);
+        rows.apply(&mut s, index(Row::ColourScheme), RowValue::Choice(9));
+        assert_eq!(s.general.colour_scheme, ColourScheme::Mono);
+        rows.apply(&mut s, index(Row::MenuScale), RowValue::Slider(125.0));
+        rows.apply(&mut s, index(Row::GameScale), RowValue::Slider(10.0));
+        assert_eq!(s.general.menu_scale, 1.25);
+        assert_eq!(s.general.game_scale, 0.75);
+        rows.apply(&mut s, index(Row::MenuBackground), RowValue::Choice(2));
+        assert_eq!(s.general.menu_background, MenuBackground::None);
+        rows.apply(&mut s, index(Row::MenuSounds), RowValue::Choice(1));
+        assert_eq!(s.audio.menu_sounds, MenuSounds::Skin);
+        let specs = rows.specs(&s);
+        assert!(!specs[index(Row::MenuScale)].restart_required);
+        assert!(matches!(
+            specs[index(Row::MenuScale)].kind,
+            RowKind::Slider { value, .. } if value == 125.0
+        ));
     }
 
     #[test]

@@ -9,13 +9,14 @@ use slam_engine::limiter::MIN_HZ;
 use slam_input::VideoDriver;
 use slam_play::input::{Bindings, MAX_BINDINGS};
 use slam_ui::i18n::BUILTIN_LANGUAGES;
+use slam_ui::theme::{ColourScheme, UI_SCALE_RANGE};
 use toml::{Table, Value};
 
 use super::keys;
 use super::model::{
     BindingEntry, Combo, DrawRate, FpsScreens, HitsoundDelay, InputSettings, KeyOverlayAnimation,
-    KeySlot, RendererChoice, Settings, Timing, Window, corner_from_name, parse_size,
-    window_mode_from_name,
+    KeySlot, MenuBackground, MenuSounds, RendererChoice, Settings, Timing, Window,
+    corner_from_name, parse_size, window_mode_from_name,
 };
 
 /// The schema version this build writes.
@@ -235,6 +236,40 @@ fn from_table(mut table: Table) -> Loaded {
         &mut settings.general.intro,
         |_| Ok(()),
     );
+    let mut scheme: Option<String> = None;
+    cx.opt(&mut general, "general", "colour_scheme", &mut scheme);
+    if let Some(name) = scheme {
+        match ColourScheme::from_name(&name) {
+            Some(scheme) => settings.general.colour_scheme = scheme,
+            None => cx.warn(format!(
+                "general.colour_scheme: unknown value \"{name}\", using the default"
+            )),
+        }
+    }
+    for (key, slot) in [
+        ("menu_scale", &mut settings.general.menu_scale),
+        ("game_scale", &mut settings.general.game_scale),
+    ] {
+        let mut scale = f64::from(*slot);
+        cx.float(
+            &mut general,
+            "general",
+            key,
+            &mut scale,
+            f64::from(UI_SCALE_RANGE.0)..=f64::from(UI_SCALE_RANGE.1),
+        );
+        *slot = ((scale * 20.0).round() / 20.0) as f32;
+    }
+    let mut background: Option<String> = None;
+    cx.opt(&mut general, "general", "menu_background", &mut background);
+    if let Some(name) = background {
+        match MenuBackground::from_name(&name) {
+            Some(background) => settings.general.menu_background = background,
+            None => cx.warn(format!(
+                "general.menu_background: unknown value \"{name}\", using the default"
+            )),
+        }
+    }
     cx.unknown(&general, "general");
 
     let mut paths = cx.section(&mut table, "paths");
@@ -326,6 +361,16 @@ fn from_table(mut table: Table) -> Loaded {
         0.0..=1.0,
     );
     settings.audio.positional_hitsounds_level = ((level * 100.0).round() / 100.0) as f32;
+    let mut sounds: Option<String> = None;
+    cx.opt(&mut audio, "audio", "menu_sounds", &mut sounds);
+    if let Some(name) = sounds {
+        match MenuSounds::from_name(&name) {
+            Some(sounds) => settings.audio.menu_sounds = sounds,
+            None => cx.warn(format!(
+                "audio.menu_sounds: unknown value \"{name}\", using the default"
+            )),
+        }
+    }
     cx.unknown(&audio, "audio");
 
     let mut timing = cx.section(&mut table, "timing");

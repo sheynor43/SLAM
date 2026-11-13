@@ -8,7 +8,7 @@ use slam_engine::limiter::LimiterMode;
 use slam_engine::{DrawRateControl, EngineCounters, UpdateRateControl};
 use slam_play::{FpsCorner, FpsCounter, FpsLabels, FpsView};
 use slam_render::atlas::AtlasRegion;
-use slam_render::sprite::SpriteBatch;
+use slam_render::sprite::{PushSprite, SpriteBatch};
 use slam_text::{FontRegistry, GlyphCache};
 
 use crate::settings::{FpsScreens, Frame};
@@ -172,7 +172,7 @@ impl FpsOverlay {
     /// have room.
     pub fn push(
         &self,
-        shapes: &mut SpriteBatch,
+        shapes: &mut impl PushSprite,
         text: &mut SpriteBatch,
         glyphs: &mut GlyphCache,
         white: AtlasRegion,

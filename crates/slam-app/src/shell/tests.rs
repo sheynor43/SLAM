@@ -729,6 +729,8 @@ fn host(name: &str, with_track: bool) -> HostFixture {
         menu_music: MenuMusic::default(),
         selection: (None, 0),
         rng: 1,
+        music_at: None,
+        ui_sounds: ui_sounds::UiSoundPlayer::new(SAMPLE_RATE),
         loader,
         scenes: scene_tx,
         os_cursor: CursorVisibility::default(),
@@ -747,6 +749,7 @@ fn host(name: &str, with_track: bool) -> HostFixture {
         localizer: Arc::new(Localizer::builtin().unwrap()),
         intro_sound: None,
         intro_voice: VoiceId::NONE,
+        game_scale: 1.0,
     };
     HostFixture {
         host,
@@ -2293,4 +2296,77 @@ fn the_interface_starts_in_the_settings_language() {
     // Not from the file reader: an unknown tag stays English.
     settings.general.language = Some("de".to_owned());
     assert_eq!(menu(&settings), "Language");
+}
+
+#[test]
+fn another_theme_lays_the_screens_out_again_at_the_same_size() {
+    let mut s = state();
+    let before = s.layout.buttons[0];
+    s.set_theme(Theme::new(slam_ui::theme::ColourScheme::Green, 1.25));
+    let after = s.layout.buttons[0];
+    assert!((after.width - before.width * 1.25).abs() < 1e-3);
+    assert_eq!(s.theme().scheme, slam_ui::theme::ColourScheme::Green);
+    // The window size is kept.
+    assert_eq!(s.size, [1280.0, 720.0]);
+    assert!(s.song_layout != SongSelectLayout::new(1280.0, 720.0, &Theme::default()));
+}
+
+#[test]
+fn the_menu_background_follows_the_music_or_the_skin() {
+    let files: Arc<SongFiles> = Arc::from(Vec::new());
+    let skin: Arc<Path> = Arc::from(Path::new("/skins/a"));
+    let beatmap = |source: BackgroundSource<'_>| match source {
+        BackgroundSource::Beatmap { selected, .. } => Some(selected),
+        BackgroundSource::Skin(_) => None,
+    };
+    let (track, selected) = (Some((3, 1)), Some((7, 0)));
+    let on_menu = |setting| background_source(true, setting, &files, track, selected, Some(&skin));
+    assert_eq!(beatmap(on_menu(MenuBackground::Beatmap)), Some(track));
+    assert!(matches!(
+        on_menu(MenuBackground::Skin),
+        BackgroundSource::Skin(Some(s)) if Arc::ptr_eq(s, &skin)
+    ));
+    // Off the menu, the song select's selection whatever the setting.
+    for setting in [
+        MenuBackground::Beatmap,
+        MenuBackground::Skin,
+        MenuBackground::None,
+    ] {
+        let source = background_source(false, setting, &files, track, selected, Some(&skin));
+        assert_eq!(beatmap(source), Some(selected));
+    }
+}
+
+#[test]
+fn going_in_and_out_of_screens_and_moving_the_selection_make_sounds() {
+    use crate::menu_sounds::MenuSound;
+    let at_ms = super::tests::at;
+    let at = |sound| {
+        MenuSound::ALL
+            .iter()
+            .position(|s| *s == sound)
+            .expect("listed")
+    };
+    let (mut s, mut snap, _producer) = in_song_select();
+    // Coming in from the menu was noted on the way.
+    assert_eq!(s.ui_seen.0, 2);
+    let _ = s.take_ui_sounds();
+    let t = at_ms(1);
+    s.tick(t, &[key(KEY_ESCAPE)], &mut snap);
+    let noted = s.take_ui_sounds();
+    assert!(noted[at(MenuSound::Back)], "{noted:?}");
+    s.tick(t + TRANSITION_NS, &[], &mut snap);
+    assert_eq!(s.take_ui_sounds(), [false; MenuSound::ALL.len()]);
+}
+
+#[test]
+fn the_menu_scale_waits_for_the_settings_to_be_kept_and_the_scheme_does_not() {
+    let committed = Settings::default();
+    let mut live = committed.clone();
+    live.general.menu_scale = 1.4;
+    live.general.colour_scheme = slam_ui::theme::ColourScheme::Orange;
+    let theme = interface_theme(&live, &committed);
+    assert_eq!(theme.scheme, slam_ui::theme::ColourScheme::Orange);
+    assert_eq!(theme.ui_scale, 1.0);
+    assert_eq!(interface_theme(&live, &live).ui_scale, 1.4);
 }

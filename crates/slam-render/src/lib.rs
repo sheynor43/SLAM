@@ -8,6 +8,7 @@ mod fake_device;
 pub mod gl;
 pub mod hal;
 pub mod image;
+pub mod shape;
 pub mod slider;
 pub mod sprite;
 pub mod textures;

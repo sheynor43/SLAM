@@ -11,6 +11,7 @@ pub mod gpu;
 pub mod hud_layouts;
 pub mod i18n;
 pub mod loader;
+pub mod menu_sounds;
 pub mod play;
 pub mod replay_stats;
 pub mod replays;

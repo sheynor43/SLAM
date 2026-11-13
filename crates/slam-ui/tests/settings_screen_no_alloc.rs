@@ -4,6 +4,7 @@
 use std::sync::Arc;
 
 use slam_render::atlas::{AtlasRegion, UvRect};
+use slam_render::shape::ShapeBatch;
 use slam_render::sprite::SpriteBatch;
 use slam_render::textures::TextureId;
 use slam_render::{Extent, Limits, Origin};
@@ -194,7 +195,7 @@ fn the_view_pushes_without_allocating_once_warm() {
         },
     };
     let (mut shapes, mut text) = (
-        SpriteBatch::with_capacity(256),
+        ShapeBatch::with_capacity(256),
         SpriteBatch::with_capacity(1024),
     );
     let pose = Pose {
@@ -327,7 +328,7 @@ fn a_swapped_in_dropdown_view_draws_without_allocating() {
         },
     };
     let (mut shapes, mut text) = (
-        SpriteBatch::with_capacity(256),
+        ShapeBatch::with_capacity(256),
         SpriteBatch::with_capacity(1024),
     );
     let pose = Pose {
@@ -431,7 +432,7 @@ fn hints_and_disabled_rows_draw_without_allocating() {
         },
     };
     let (mut shapes, mut text) = (
-        SpriteBatch::with_capacity(256),
+        ShapeBatch::with_capacity(256),
         SpriteBatch::with_capacity(1024),
     );
     let pose = Pose {

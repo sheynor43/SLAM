@@ -614,6 +614,11 @@ impl PlaySession {
         }
     }
 
+    /// Lays the pause and fail menus out at the in-game interface scale (ADR-0118).
+    pub fn set_menu_scale(&mut self, ui_scale: f32) {
+        self.menu.set_ui_scale(ui_scale);
+    }
+
     /// Game time the clock starts at: 0, or earlier for the first object's fade-in and the
     /// beatmap's lead-in ([`earliest_start_time`]).
     pub fn start_time(&self) -> f64 {

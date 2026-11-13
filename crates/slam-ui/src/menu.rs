@@ -73,6 +73,13 @@ impl Rect {
         x >= self.x && x < self.x + self.width && y >= self.y && y < self.y + self.height
     }
 
+    /// Whether the rectangle sheared by `skew` radians about its centre line (top to the
+    /// right, as interface shapes are drawn, ADR-0116) contains the point.
+    pub fn contains_skewed(&self, x: f32, y: f32, skew: f32) -> bool {
+        let shift = (self.y + self.height / 2.0 - y) * skew.tan();
+        self.contains(x - shift, y)
+    }
+
     pub fn centre(&self) -> [f32; 2] {
         [self.x + self.width / 2.0, self.y + self.height / 2.0]
     }
@@ -87,6 +94,8 @@ pub struct MenuLayout {
     pub buttons: [Rect; MenuItem::ALL.len()],
     /// Pixels per reference unit: text sizes scale with it.
     pub scale: f32,
+    /// Skew of the buttons in radians (ADR-0117): hit tests follow it.
+    pub skew: f32,
 }
 
 impl MenuLayout {
@@ -118,6 +127,7 @@ impl MenuLayout {
             },
             buttons,
             scale,
+            skew: theme.button_skew(),
         }
     }
 
@@ -126,7 +136,7 @@ impl MenuLayout {
         MenuItem::ALL
             .into_iter()
             .zip(&self.buttons)
-            .find(|(_, rect)| rect.contains(x, y))
+            .find(|(_, rect)| rect.contains_skewed(x, y, self.skew))
             .map(|(item, _)| item)
     }
 }

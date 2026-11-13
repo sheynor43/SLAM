@@ -277,8 +277,8 @@ impl MenuLayout {
     /// `DrawSizePreservingFillContainer` with the `Minimum` strategy scales). The rows around
     /// the buttons share the height left by them and the footer; the title and the
     /// information are centred in theirs.
-    pub fn new(width: f32, height: f32, kind: MenuKind) -> MenuLayout {
-        let scale = Self::scale(width, height);
+    pub fn new(width: f32, height: f32, kind: MenuKind, ui_scale: f32) -> MenuLayout {
+        let scale = Self::scale(width, height, ui_scale);
         let count = kind.buttons().len() as f32;
         let block = (count * BUTTON_HEIGHT + (count - 1.0).max(0.0) * BUTTON_SPACING) * scale;
         let footer = match kind {
@@ -298,9 +298,10 @@ impl MenuLayout {
         }
     }
 
-    /// Window units per interface unit on a window of `width` × `height` units.
-    pub fn scale(width: f32, height: f32) -> f32 {
-        (width / TARGET_SIZE[0]).min(height / TARGET_SIZE[1])
+    /// Window units per interface unit on a window of `width` × `height` units, times the
+    /// interface scale `ui_scale` (ADR-0118).
+    pub fn scale(width: f32, height: f32, ui_scale: f32) -> f32 {
+        (width / TARGET_SIZE[0]).min(height / TARGET_SIZE[1]) * ui_scale
     }
 
     /// Top left and size of button `index`: its whole hit area.
@@ -356,6 +357,9 @@ pub struct MenuSnapshot {
     pub replay_save: ReplaySave,
     /// The mouse is over the save button.
     pub save_hovered: bool,
+    /// Multiplies the scale the menu fits the window with: the in-game interface scale
+    /// setting (ADR-0118).
+    pub ui_scale: f32,
 }
 
 impl Default for MenuSnapshot {
@@ -372,6 +376,7 @@ impl Default for MenuSnapshot {
             },
             replay_save: ReplaySave::Available,
             save_hovered: false,
+            ui_scale: 1.0,
         }
     }
 }
@@ -396,6 +401,11 @@ impl GameplayMenu {
     /// What the draw side needs.
     pub fn snapshot(&self) -> MenuSnapshot {
         self.state
+    }
+
+    /// Sets the in-game interface scale the menu is laid out at (ADR-0118).
+    pub fn set_ui_scale(&mut self, ui_scale: f32) {
+        self.state.ui_scale = ui_scale;
     }
 
     pub fn is_visible(&self) -> bool {
@@ -426,7 +436,7 @@ impl GameplayMenu {
         self.pressed = None;
         self.save_pressed = false;
         self.state.replay_save = ReplaySave::Available;
-        let layout = MenuLayout::new(size[0], size[1], kind);
+        let layout = MenuLayout::new(size[0], size[1], kind, self.state.ui_scale);
         self.hovered = self
             .pointer
             .and_then(|at| layout.button_at(at, kind.buttons().len()));
@@ -510,7 +520,7 @@ impl GameplayMenu {
             };
             return (clicked, true);
         }
-        let layout = MenuLayout::new(size[0], size[1], self.state.kind);
+        let layout = MenuLayout::new(size[0], size[1], self.state.kind, self.state.ui_scale);
         let fail = self.state.kind == MenuKind::Fail;
         match event.kind {
             InputKind::MouseMove { .. } => {
@@ -670,7 +680,8 @@ pub struct MenuView {
     heading: FamilyId,
     context: LayoutContext,
     /// The window size the layouts are for.
-    frame: [f32; 2],
+    /// Window size and interface scale the texts are laid out for.
+    frame: [f32; 3],
     /// The information the number layouts show, the accuracy as bits (NaN equals itself);
     /// `None` lays them out on the next update.
     info_shown: Option<(u32, u8, u64)>,
@@ -705,7 +716,7 @@ impl MenuView {
             ui,
             heading,
             context: LayoutContext::new(),
-            frame: [0.0, 0.0],
+            frame: [0.0; 3],
             info_shown: None,
             titles: [text(&labels.paused), text(&labels.failed)],
             buttons: [
@@ -789,9 +800,9 @@ impl MenuView {
     /// Lays out what changed for `menu` on a window of `width` × `height` pixels.
     /// Allocation-free.
     pub fn update(&mut self, width: f32, height: f32, menu: &MenuSnapshot) {
-        let scale = MenuLayout::scale(width, height);
-        if self.frame != [width, height] {
-            self.frame = [width, height];
+        let scale = MenuLayout::scale(width, height, menu.ui_scale);
+        if self.frame != [width, height, menu.ui_scale] {
+            self.frame = [width, height, menu.ui_scale];
             self.info_shown = None;
             self.lay_out_texts(scale);
         }
@@ -826,7 +837,7 @@ impl MenuView {
         if alpha <= 0.0 {
             return;
         }
-        let [width, height] = self.frame;
+        let [width, height, _] = self.frame;
         let mut rect = |position: [f32; 2], size: [f32; 2], colour: Color| {
             let mut sprite = Sprite::new(white.texture, white.uv, position, size);
             sprite.colour = colour;
@@ -841,7 +852,7 @@ impl MenuView {
             },
         );
         let buttons = menu.kind.buttons();
-        let layout = MenuLayout::new(width, height, menu.kind);
+        let layout = MenuLayout::new(width, height, menu.kind, menu.ui_scale);
         for (index, button) in buttons.iter().enumerate() {
             let ([x, y], [w, h]) = layout.button(index);
             let part = menu.widths[index].value_at(now_ns);
@@ -898,7 +909,7 @@ impl MenuView {
         if alpha <= 0.0 {
             return stats;
         }
-        let [width, height] = self.frame;
+        let [width, height, _] = self.frame;
         let mut text = |layout: &Layout, position: [f32; 2], colour: Color| {
             let s = push_layout(batch, layout, position, colour, glyphs);
             stats.drawn += s.drawn;
@@ -909,7 +920,7 @@ impl MenuView {
             ..Color::WHITE
         };
         let buttons = menu.kind.buttons();
-        let layout = MenuLayout::new(width, height, menu.kind);
+        let layout = MenuLayout::new(width, height, menu.kind, menu.ui_scale);
         let title = match menu.kind {
             MenuKind::Pause => &self.titles[0].1,
             MenuKind::Fail => &self.titles[1].1,
@@ -1019,7 +1030,7 @@ pub(crate) mod tests {
     }
 
     fn centre(kind: MenuKind, index: usize) -> [f32; 2] {
-        let ([x, y], [w, h]) = MenuLayout::new(SIZE[0], SIZE[1], kind).button(index);
+        let ([x, y], [w, h]) = MenuLayout::new(SIZE[0], SIZE[1], kind, 1.0).button(index);
         [x + w / 2.0, y + h / 2.0]
     }
 
@@ -1163,7 +1174,7 @@ pub(crate) mod tests {
 
     #[test]
     fn layout_centres_the_buttons() {
-        let layout = MenuLayout::new(2048.0, 1536.0, MenuKind::Pause);
+        let layout = MenuLayout::new(2048.0, 1536.0, MenuKind::Pause, 1.0);
         assert_eq!(layout.scale, 2.0);
         let block = (3.0 * 80.0 + 2.0 * 2.0) * 2.0;
         let ([x, top], [w, h]) = layout.button(0);
@@ -1174,9 +1185,17 @@ pub(crate) mod tests {
         assert_eq!(layout.title_y, top / 2.0);
         assert_eq!(layout.info_y, top + block + top / 2.0);
         // Wide windows scale by the height.
-        assert_eq!(MenuLayout::new(4000.0, 768.0, MenuKind::Fail).scale, 1.0);
+        assert_eq!(
+            MenuLayout::new(4000.0, 768.0, MenuKind::Fail, 1.0).scale,
+            1.0
+        );
+        // The in-game interface scale multiplies it (ADR-0118).
+        assert_eq!(
+            MenuLayout::new(4000.0, 768.0, MenuKind::Fail, 1.25).scale,
+            1.25
+        );
         // The fail menu's footer takes its place below the information.
-        let fail = MenuLayout::new(2048.0, 1536.0, MenuKind::Fail);
+        let fail = MenuLayout::new(2048.0, 1536.0, MenuKind::Fail, 1.0);
         let fail_block = (2.0 * 80.0 + 2.0) * 2.0;
         let (fail_top, _) = fail.button(0);
         assert_eq!(fail_top[1], (1536.0 - fail_block - 100.0) / 2.0);
@@ -1192,7 +1211,7 @@ pub(crate) mod tests {
 
     #[test]
     fn the_save_button_is_centred_in_the_footer() {
-        let fail = MenuLayout::new(2048.0, 1536.0, MenuKind::Fail);
+        let fail = MenuLayout::new(2048.0, 1536.0, MenuKind::Fail, 1.0);
         assert_eq!(fail.footer_top, 1536.0 - 100.0);
         let ([x, y], [w, h]) = fail.save_button(2048.0);
         assert_eq!(
@@ -1202,7 +1221,7 @@ pub(crate) mod tests {
         assert!(fail.over_save_button(Vec2::new(x, y), 2048.0));
         assert!(!fail.over_save_button(Vec2::new(x - 1.0, y), 2048.0));
         assert_eq!(
-            MenuLayout::new(1024.0, 768.0, MenuKind::Pause).footer_top,
+            MenuLayout::new(1024.0, 768.0, MenuKind::Pause, 1.0).footer_top,
             768.0
         );
     }

@@ -171,6 +171,7 @@ pub fn play_options(settings: &Settings) -> PlayOptions {
         auto_cursor_size: settings.gameplay.auto_cursor_size,
         positional_hitsounds_level: settings.audio.positional_hitsounds_level,
         hud_layout: settings.hud.layout.clone(),
+        game_scale: settings.general.game_scale,
         skin: skins::skin_path(
             settings.paths.songs.as_deref(),
             settings.skin.name.as_deref(),
@@ -375,6 +376,7 @@ mod tests {
                 auto_cursor_size: true,
                 positional_hitsounds_level: 0.65,
                 hud_layout: "my-hud".into(),
+                game_scale: 1.0,
                 skin: None,
                 mods: ModSet::default(),
             }

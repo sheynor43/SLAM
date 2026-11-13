@@ -11,7 +11,7 @@ use std::sync::Arc;
 
 use slam_render::Color;
 use slam_render::atlas::AtlasRegion;
-use slam_render::sprite::{Sprite, SpriteBatch};
+use slam_render::sprite::{PushSprite, Sprite, SpriteBatch};
 use slam_text::{
     FamilyId, FontRegistry, GlyphCache, GlyphKey, Layout, LayoutContext, TextStats, TextStyle,
     UI_FAMILY, push_layout,
@@ -630,7 +630,7 @@ impl FpsView {
 
     /// Writes the counter's background, tinting `white` (an opaque white image).
     /// Allocation-free once `batch` has room.
-    pub fn push_shapes(&self, batch: &mut SpriteBatch, white: AtlasRegion) {
+    pub fn push_shapes(&self, batch: &mut impl PushSprite, white: AtlasRegion) {
         if self.alpha <= 0.0 {
             return;
         }
@@ -640,7 +640,7 @@ impl FpsView {
             a: BACKGROUND_ALPHA * self.alpha,
             ..BACKGROUND
         };
-        batch.push(&sprite);
+        batch.push_sprite(&sprite);
     }
 
     /// Writes the counter's text into a batch drawn with the MSDF shader. Glyphs not

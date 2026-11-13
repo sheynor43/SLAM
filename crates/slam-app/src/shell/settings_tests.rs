@@ -203,6 +203,7 @@ pub(super) fn shell_with(link: crate::settings::saver::SaveLink) -> Shell {
             Arc::new(slam_ui::i18n::Localizer::builtin().unwrap()),
             None,
             None,
+            Theme::default(),
         ),
     }
 }
@@ -1047,7 +1048,8 @@ fn committed_settings_in_another_language_switch_the_interface() {
     let (link, _taken) = crate::settings::saver::detached(1);
     let mut shell = shell_with(link);
     let localizer = Arc::new(slam_ui::i18n::Localizer::builtin().unwrap());
-    shell.language = super::language::AppliedLanguage::new(Arc::clone(&localizer), None, None);
+    shell.language =
+        super::language::AppliedLanguage::new(Arc::clone(&localizer), None, None, Theme::default());
     shell.apply_settings(0);
     assert_eq!(localizer.generation(), 0);
     let mut settings = shell.state.settings().clone();
@@ -1064,7 +1066,8 @@ fn a_language_picked_on_the_open_settings_screen_switches_at_once() {
     let (link, _taken) = crate::settings::saver::detached(1);
     let mut shell = shell_with(link);
     let localizer = Arc::new(slam_ui::i18n::Localizer::builtin().unwrap());
-    shell.language = super::language::AppliedLanguage::new(Arc::clone(&localizer), None, None);
+    shell.language =
+        super::language::AppliedLanguage::new(Arc::clone(&localizer), None, None, Theme::default());
     let mut snap = ShellSnapshot::default();
     opened(&mut shell.state, &mut snap);
     shell.apply_settings(0);
@@ -1388,12 +1391,19 @@ fn the_panel_opens_over_a_play_only_with_its_menu() {
 
 #[test]
 fn the_snapshot_carries_the_song_select_dim() {
+    // The main menu dims its background by the theme's token (ADR-0119).
     let mut s = state();
     let mut snap = ShellSnapshot::default();
     s.tick(LATER, &[], &mut snap);
+    assert_eq!(snap.background_dim, s.theme().menu_background_dim);
+    assert!(snap.menu_background);
+
+    let (mut s, mut snap, _producer) = super::tests::in_song_select();
+    let t = super::tests::at(1);
+    s.tick(t, &[], &mut snap);
     assert!((snap.background_dim - 0.7).abs() < 1e-6);
-    opened(&mut s, &mut snap);
+    s.editing = Some(s.settings.clone());
     s.editing.as_mut().unwrap().song_select.background_dim = 0.25;
-    s.tick(LATER, &[], &mut snap);
+    s.tick(t, &[], &mut snap);
     assert!((snap.background_dim - 0.25).abs() < 1e-6);
 }
