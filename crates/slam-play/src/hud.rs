@@ -63,6 +63,11 @@ const HEALTH_BAR: [f32; 2] = [300.0, 8.0];
 const SKIN_SCORE_SCALE: f32 = 0.96;
 // Ported from osu!lazer 2026.1005.0-lazer: osu.Game/Skinning/LegacyAccuracyCounter.cs
 const SKIN_ACCURACY_SCALE: f32 = 0.6 * 0.96;
+/// What the skinned accuracy counter shows when lazer places the song progress from it:
+/// 100% (`PercentageCounter`, `FormatAccuracy`).
+// Ported from osu!lazer 2026.1005.0-lazer: osu.Game/Skinning/LegacySkin.cs (MainHUDComponents defaults)
+// Ported from osu!lazer 2026.1005.0-lazer: osu.Game/Graphics/UserInterface/PercentageCounter.cs (DisplayedCount)
+const ATTACH_ACCURACY_TEXT: &[u8] = b"100.00%";
 // Ported from osu!lazer 2026.1005.0-lazer: osu.Game/Skinning/LegacyDefaultComboCounter.cs
 const SKIN_COMBO_SCALE: f32 = 1.28;
 /// `font_height_ratio` and `vertical_offset` of the combo's layout: its texts scale about a
@@ -927,34 +932,59 @@ impl HudView {
         }
     }
 
+    /// The box elements attached to `part` are placed from, given its own box `size`. The
+    /// skinned accuracy counter's is as wide as `100.00%`, whatever it shows: lazer places
+    /// the song progress once, when the counter loads at 100% (`LegacySkin`,
+    /// `DefaultSkinComponentsContainer`), so it stays put as the accuracy changes its
+    /// count of digits.
+    fn attach_size(&self, part: Part, textures: &HudTextures, size: [f32; 2]) -> [f32; 2] {
+        match (part, textures.font(part)) {
+            (Part::Accuracy, Some(font)) => {
+                let full = font.measure(ATTACH_ACCURACY_TEXT);
+                let s = SKIN_ACCURACY_SCALE * self.frame.scale;
+                [full.x * s, full.y * s]
+            }
+            _ => size,
+        }
+    }
+
     /// The elements to draw for `snapshot` with `textures`, with their map into the window
     /// and alpha. An attached element is placed from its target's box (ADR-0112), hidden
-    /// or not.
+    /// or not; around the target's origin, the box is [`Self::attach_size`].
     fn placed<'a>(
         &'a self,
         snapshot: &'a PlaySnapshot,
         textures: &'a HudTextures,
     ) -> impl Iterator<Item = (Part, Affine, f32)> + 'a {
         let Frame { width, height, .. } = self.frame;
-        let mut boxes = [(Affine::IDENTITY, [0.0f32; 2]); MAX_HUD_ELEMENTS];
+        // Each element's map, size, size to attach to and origin.
+        let mut boxes =
+            [(Affine::IDENTITY, [0.0f32; 2], [0.0f32; 2], [0.0f32; 2]); MAX_HUD_ELEMENTS];
         for (i, placed) in self.elements.iter().enumerate() {
             let element = &placed.element;
             let size = self.part_size(placed.part, textures);
             let map = match (placed.attached_to, &element.attach) {
                 (Some(target), Some(attach)) => {
-                    let (target_map, target_size) = boxes[target];
-                    let [fx, fy] = attach.point.fraction();
-                    let point = target_map.apply([fx * target_size[0], fy * target_size[1]]);
+                    let (target_map, target_size, attach_size, origin) = boxes[target];
+                    let f = attach.point.fraction();
+                    // The point of an `attach_size` box with the same origin; with
+                    // `attach_size == target_size`, just `f * target_size`.
+                    let local = |axis: usize| {
+                        origin[axis] * target_size[axis]
+                            + (f[axis] - origin[axis]) * attach_size[axis]
+                    };
+                    let point = target_map.apply([local(0), local(1)]);
                     element.transform_from(point, width, height, size)
                 }
                 _ => element.transform(width, height, size),
             };
-            boxes[i] = (map, size);
+            let attach_size = self.attach_size(placed.part, textures, size);
+            boxes[i] = (map, size, attach_size, element.origin.fraction());
         }
         self.elements
             .iter()
             .zip(boxes)
-            .filter_map(move |(placed, (map, _))| {
+            .filter_map(move |(placed, (map, ..))| {
                 let element = &placed.element;
                 let shown = element.visible
                     && element.alpha > 0.0
@@ -1789,6 +1819,72 @@ mod tests {
             assert!(close(centre_right[0], centre_left[0] - 20.0));
             assert!(close(centre_right[1], centre_left[1]));
         }
+    }
+
+    #[test]
+    fn song_progress_stays_put_as_the_accuracy_loses_a_digit() {
+        use slam_ui::hud_layout::Attach;
+        let mut accuracy = element(ComponentKind::Accuracy, Anchor::TopRight, [-4.0, 2.0]);
+        accuracy.origin = Anchor::TopRight;
+        let mut progress = element(ComponentKind::SongProgress, Anchor::TopRight, [-10.0, 0.0]);
+        progress.origin = Anchor::CentreRight;
+        progress.attach = Some(Attach {
+            to: ComponentKind::Accuracy,
+            point: Anchor::CentreLeft,
+        });
+        let layout = [accuracy, progress];
+        let mut hud = hud(&layout);
+        hud.animations = false;
+        let textures = skin_textures();
+        let snapshot = PlaySnapshot::default();
+        let side = crate::song_progress::SIZE * 2.0 / 1.6;
+        let mut placed = |accuracy: f64| {
+            let values = HudValues {
+                accuracy,
+                ..HudValues::default()
+            };
+            hud.update(1280.0, 960.0, &values, 0.0);
+            let boxes: Vec<_> = hud.placed(&snapshot, &textures).collect();
+            let width = hud.part_size(Part::Accuracy, &textures)[0];
+            (width, boxes[1].1.apply([side, side / 2.0]))
+        };
+        let (full, at_full) = placed(1.0);
+        let (less, at_less) = placed(0.985);
+        // "98.50%" is a digit narrower than "100.00%", the progress does not follow it.
+        assert!(less < full, "{less} {full}");
+        assert!(close(at_less[0], at_full[0]), "{at_less:?} {at_full:?}");
+        assert!(close(at_less[1], at_full[1]), "{at_less:?} {at_full:?}");
+    }
+
+    #[test]
+    fn any_point_of_the_accuracy_stays_put_whatever_its_origin_and_scale() {
+        use slam_ui::hud_layout::Attach;
+        let mut accuracy = element(ComponentKind::Accuracy, Anchor::Centre, [0.0, 0.0]);
+        accuracy.origin = Anchor::Centre;
+        accuracy.scale = [1.5, 0.75];
+        let mut progress = element(ComponentKind::SongProgress, Anchor::TopLeft, [3.0, 0.0]);
+        progress.origin = Anchor::CentreLeft;
+        progress.attach = Some(Attach {
+            to: ComponentKind::Accuracy,
+            point: Anchor::CentreRight,
+        });
+        let mut hud = hud(&[accuracy, progress]);
+        hud.animations = false;
+        let textures = skin_textures();
+        let snapshot = PlaySnapshot::default();
+        let mut placed = |accuracy: f64| {
+            let values = HudValues {
+                accuracy,
+                ..HudValues::default()
+            };
+            hud.update(1280.0, 960.0, &values, 0.0);
+            let boxes: Vec<_> = hud.placed(&snapshot, &textures).collect();
+            boxes[1].1.apply([0.0, 0.0])
+        };
+        let (full, less) = (placed(1.0), placed(0.985));
+        // The accuracy shrinks about its centre, the point to its right stays.
+        assert!(close(full[0], less[0]), "{full:?} {less:?}");
+        assert!(close(full[1], less[1]), "{full:?} {less:?}");
     }
 
     #[test]
