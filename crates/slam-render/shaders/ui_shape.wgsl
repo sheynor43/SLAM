@@ -59,8 +59,9 @@ fn hash(p: vec3<f32>) -> f32 {
 }
 
 // Brightening in [0, 1] of the triangle under `p` (pixels): rows of triangles a cell
-// high, every other row shifted half a cell, drifting up with `phase` (cells). Most
-// triangles stay dark, so the pattern reads as scattered shapes.
+// high, every other row shifted half a cell, drifting up with `phase` (cells). Few are lit
+// (about one in six, at different strengths), each drawn smaller than its cell, so the lit
+// ones stand apart instead of merging into a texture.
 fn triangles(p: vec2<f32>, cell: f32, phase: f32) -> f32 {
     let g = vec2<f32>(p.x / cell, p.y / cell + phase);
     let row = floor(g.y);
@@ -68,9 +69,21 @@ fn triangles(p: vec2<f32>, cell: f32, phase: f32) -> f32 {
     let q = g.x + 0.5 * row;
     let column = floor(q);
     let fx = fract(q);
-    let upper = select(0.0, 1.0, fx + fy > 1.0);
-    let h = hash(vec3<f32>(column, row, upper));
-    return max(h - 0.55, 0.0) / 0.45;
+    let upper = fx + fy > 1.0;
+    let h = hash(vec3<f32>(column, row, select(0.0, 1.0, upper)));
+    let lit = max(h - 0.83, 0.0) / 0.17;
+    if (lit <= 0.0) {
+        return 0.0;
+    }
+    // Inside the triangle shrunk by `inset` from each side of its half of the cell.
+    let inset = 0.14;
+    var inside: bool;
+    if (upper) {
+        inside = fx < 1.0 - inset && fy < 1.0 - inset && fx + fy > 1.0 + inset;
+    } else {
+        inside = fx > inset && fy > inset && fx + fy < 1.0 - inset;
+    }
+    return select(0.0, 0.35 + 0.65 * lit, inside);
 }
 
 @fragment
@@ -93,7 +106,7 @@ fn fs_main(
     var out = colour * textureSample(shape_texture, shape_sampler, uv);
     if (pattern > 0.0) {
         // About the height of a button, smaller on small shapes, never huge on panels.
-        let cell = clamp(half_size.y * 0.9, 6.0, 22.0);
+        let cell = clamp(half_size.y * 1.3, 10.0, 34.0);
         let light = triangles(local + half_size, cell, params.w) * pattern;
         out = vec4<f32>(mix(out.rgb, vec3<f32>(1.0, 1.0, 1.0), light), out.a);
     }

@@ -59,6 +59,7 @@ fn shoot(entry: &Entry, root: &Path, map: &Path, checker: &mut Checker) -> &'sta
         times: TIMES.to_vec(),
         size: DEFAULT_SIZE,
         any_renderer: false,
+        pause: None,
     };
     let frames = match render(&shots) {
         Ok(frames) => frames,

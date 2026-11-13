@@ -715,3 +715,19 @@ fn a_dragged_list_follows_the_hand_without_easing() {
     assert!(snap.scroll > 0.0);
     assert_eq!(snap.shown_scroll, snap.scroll);
 }
+
+#[test]
+fn the_leaning_backing_reaches_past_the_right_edge() {
+    let theme = Theme::default();
+    for (w, h) in [(1280.0, 720.0), (1920.0, 1080.0), (800.0, 1600.0)] {
+        let l = SongSelectLayout::new(w, h, &theme);
+        let b = l.backing(w, theme.song_margin * l.scale);
+        // The bottom right corner, sheared left by the lean about the middle.
+        let bottom = b.y + b.height;
+        let corner = b.x + b.width - (bottom - (b.y + b.height / 2.0)) * l.lean;
+        assert!(corner > w, "{w}x{h}: {corner}");
+        // The lean is half the buttons' skew.
+        let half = (theme.button_skew() * crate::song_select::LEAN_OF_SKEW).tan();
+        assert!((l.lean - half).abs() < 1e-6);
+    }
+}

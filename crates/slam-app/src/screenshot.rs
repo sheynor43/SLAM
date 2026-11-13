@@ -27,7 +27,7 @@ pub use intro::render_intro;
 use offline::OfflinePlay;
 
 pub const USAGE: &str = "usage: slam-app screenshot MAP.osu --time MS [--time MS ...] \
-                         [--skin DIR] [--size WxH] [--dim PERCENT] [--out DIR] [--any-renderer]";
+                         [--skin DIR] [--size WxH] [--dim PERCENT] [--pause slam|lazer|stable] [--out DIR] [--any-renderer]";
 
 /// The renderer the references are drawn with.
 pub const REFERENCE_RENDERER: &str = "llvmpipe";
@@ -105,6 +105,8 @@ pub struct Shots {
     /// Draw on whatever OpenGL the machine has instead of refusing anything but
     /// [`REFERENCE_RENDERER`]: for looking, not for comparing with references.
     pub any_renderer: bool,
+    /// Pause at each time and shoot the pause menu in this style (ADR-0122).
+    pub pause: Option<slam_play::menu_overlay::MenuStyle>,
 }
 
 /// Draws the play of `shots` at each of its times. Opens SDL video: one call at a time in
@@ -175,6 +177,17 @@ fn draw_on(device: &mut GlDevice<SdlGlSurface>, shots: &Shots) -> Result<Vec<Fra
     let layout = PlayfieldLayout::new(size.width as f32, size.height as f32);
     let mut play = OfflinePlay::new(&beatmap, &mods, sounds, layout);
     let mut gpu = scene.start(device, GLYPH_WARM_TIMEOUT, None);
+    if let Some(style) = shots.pause {
+        let stable = scene.stable_pause_sizes();
+        let style = match style {
+            slam_play::menu_overlay::MenuStyle::Stable if stable.is_none() => {
+                slam_play::menu_overlay::MenuStyle::Slam
+            }
+            style => style,
+        };
+        play.set_menu_style(style, stable.unwrap_or_default());
+        play.pause_at_each(&shots.times);
+    }
     let frames = shoot(device, &mut scene, &mut gpu, &mut play, &shots.times, size);
     gpu.destroy(device);
     frames
@@ -325,6 +338,7 @@ impl Options {
         let mut size = DEFAULT_SIZE;
         let mut out = PathBuf::from(".");
         let mut any_renderer = false;
+        let mut pause = None;
         let mut args = args.into_iter();
         while let Some(arg) = args.next() {
             let mut value = || args.next().ok_or_else(|| format!("{arg} needs a value"));
@@ -349,6 +363,15 @@ impl Options {
                 }
                 "--out" => out = value()?.into(),
                 "--any-renderer" => any_renderer = true,
+                "--pause" => {
+                    use slam_play::menu_overlay::MenuStyle;
+                    pause = Some(match value()?.as_str() {
+                        "slam" => MenuStyle::Slam,
+                        "lazer" => MenuStyle::Lazer,
+                        "stable" => MenuStyle::Stable,
+                        other => return Err(format!("bad --pause {other}")),
+                    });
+                }
                 other if other.starts_with("--") => return Err(format!("unknown option {other}")),
                 other if map.is_none() => map = Some(PathBuf::from(other)),
                 other => return Err(format!("unexpected argument {other}")),
@@ -358,12 +381,18 @@ impl Options {
         if times.is_empty() {
             return Err("no --time given".to_owned());
         }
+        // A second Escape would continue the first pause, and the play's time stands still
+        // while it is paused.
+        if pause.is_some() && times.len() > 1 {
+            return Err("--pause takes one --time".to_owned());
+        }
         let shots = Shots {
             map,
             settings,
             times,
             size,
             any_renderer,
+            pause,
         };
         check(&shots)?;
         Ok(Self { shots, out })
@@ -451,5 +480,14 @@ mod tests {
         frame.write_png(&path).unwrap();
         assert_eq!(Frame::read_png(&path).unwrap(), frame);
         std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn pause_takes_a_style_and_one_time() {
+        use slam_play::menu_overlay::MenuStyle;
+        let options = parse(&["map.osu", "--time", "10", "--pause", "stable"]).unwrap();
+        assert_eq!(options.shots.pause, Some(MenuStyle::Stable));
+        assert!(parse(&["map.osu", "--time", "10", "--pause", "fancy"]).is_err());
+        assert!(parse(&["map.osu", "--time", "1", "--time", "2", "--pause", "slam"]).is_err());
     }
 }

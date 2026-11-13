@@ -70,6 +70,7 @@ fn skins_draw_as_the_references() {
             times: case.times.to_vec(),
             size: DEFAULT_SIZE,
             any_renderer: false,
+            pause: None,
         };
         let frames = render(&shots).unwrap_or_else(|e| panic!("{}: {e}", case.name));
         for (frame, time) in frames.iter().zip(case.times) {

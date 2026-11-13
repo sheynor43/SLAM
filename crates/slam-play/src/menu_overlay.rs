@@ -432,6 +432,14 @@ const STABLE_BUTTON_DIVISOR: f32 = 411.0;
 /// How much a selected stable button grows.
 const STABLE_HOVER_SCALE: f32 = 1.1;
 
+/// Top left and size of stable's pause background of display size `image` on a window of
+/// `width` × `height`: stable's size (the window's height over 768), centred.
+pub fn stable_background([width, height]: [f32; 2], image: [f32; 2]) -> ([f32; 2], [f32; 2]) {
+    let fit = height / 768.0;
+    let size = [image[0] * fit, image[1] * fit];
+    ([(width - size[0]) / 2.0, (height - size[1]) / 2.0], size)
+}
+
 /// A stable button's window pixels per display unit: `getUIScale(256) / 411` on the 4:3
 /// area inside a `width` × `height` window, times the pause menu's scale.
 // Ported from McOsu db2add2: src/App/Osu/Osu.cpp (getUIScale)
@@ -1182,8 +1190,8 @@ fn push_slam(
     }
 }
 
-/// Stable's menu from the skin's images (ADR-0122): the dim, the background image filling
-/// the screen and the buttons stacked about the middle, a selected one grown.
+/// Stable's menu from the skin's images (ADR-0122): the dim, the background image at
+/// stable's size and the buttons stacked about the middle, a selected one grown.
 // Ported from McOsu db2add2: src/App/Osu/OsuPauseMenu.cpp (draw, updateLayout)
 // Ported from McOsu db2add2: src/App/Osu/OsuUIPauseMenuButton.cpp (draw, onMouseInside)
 fn push_stable(
@@ -1206,15 +1214,11 @@ fn push_stable(
         MenuKind::Fail => pause.images[1],
     };
     if let Some(image) = background {
-        let [w, h] = [image.size.x, image.size.y];
-        let fill = (width / w).max(height / h);
-        let size = [w * fill, h * fill];
-        let mut sprite = Sprite::new(
-            image.texture,
-            image.uv,
-            [(width - size[0]) / 2.0, (height - size[1]) / 2.0],
-            size,
-        );
+        // As stable sizes skin images, by the window's height over 768 and centred: a
+        // 1366×768 overlay fills a 16:9 window, a smaller one stays in the middle. McOsu
+        // stretches it to fill the window, which blows small overlays up past the edges.
+        let (position, size) = stable_background([width, height], [image.size.x, image.size.y]);
+        let mut sprite = Sprite::new(image.texture, image.uv, position, size);
         sprite.colour = Color {
             a: alpha,
             ..Color::WHITE
@@ -1594,6 +1598,19 @@ pub(crate) mod tests {
         // Not one of the buttons the arrows cycle through.
         key(&mut menu, MenuKey::SelectPrevious, 6);
         assert_eq!(menu.selected(), Some(1));
+    }
+
+    #[test]
+    fn stables_background_takes_stables_size_in_the_middle() {
+        // A 1366x768 overlay fills a 16:9 window.
+        assert_eq!(
+            stable_background([1920.0, 1080.0], [1366.0, 768.0]),
+            ([-0.46875, 0.0], [1920.9375, 1080.0])
+        );
+        // A smaller one stays in the middle at its size over 768.
+        let (at, size) = stable_background([1920.0, 1080.0], [950.0, 673.0]);
+        assert!((size[0] - 950.0 * 1.40625).abs() < 1e-3);
+        assert!((at[0] - (1920.0 - size[0]) / 2.0).abs() < 1e-3 && at[1] > 0.0);
     }
 
     #[test]

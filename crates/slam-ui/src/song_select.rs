@@ -225,8 +225,8 @@ pub struct SongSelectLayout {
     pub indent: f32,
     /// Pixels per reference unit.
     pub scale: f32,
-    /// How far the list leans (`tan` of the buttons' skew): rows lower down sit further
-    /// left, along the skew of their edges (ADR-0121).
+    /// How far the list leans (`tan` of half the buttons' skew): rows lower down sit
+    /// further left (ADR-0121).
     pub lean: f32,
 }
 
@@ -286,7 +286,7 @@ impl SongSelectLayout {
             row_height,
             indent: theme.song_indent * scale,
             scale,
-            lean: theme.button_skew().tan(),
+            lean: (theme.button_skew() * LEAN_OF_SKEW).tan(),
         }
     }
 
@@ -295,6 +295,21 @@ impl SongSelectLayout {
     pub fn lean_x(&self, y: f32) -> f32 {
         let middle = (self.header.y + self.hint.y + self.hint.height) / 2.0;
         (middle - y) * self.lean
+    }
+
+    /// The panel's backing on a window `width` wide, from the status line to the hints: its
+    /// right side reaches past the window's edge by more than the lean, so no empty wedge
+    /// shows at the bottom right (ADR-0121).
+    pub fn backing(&self, width: f32, margin: f32) -> Rect {
+        let inset = margin / 2.0;
+        let height = self.hint.y + self.hint.height + 2.0 * inset - self.header.y;
+        let overhang = height / 2.0 * self.lean + self.row_height;
+        Rect {
+            x: self.header.x - inset,
+            y: self.header.y - inset,
+            width: (width - self.header.x + inset) + overhang,
+            height,
+        }
     }
 
     /// Whether the "choose folder" button, leaning with the panel, contains the point.
@@ -346,6 +361,10 @@ impl SongSelectLayout {
         filter.row(selected_set, index.floor() as usize)
     }
 }
+
+/// The list leans by this part of the buttons' skew: the full angle leaves a wide empty
+/// wedge at the bottom right of the window (ADR-0121).
+pub const LEAN_OF_SKEW: f32 = 0.5;
 
 /// Time constant of the list's scroll easing (ADR-0121): about 95 % of the way in three.
 pub const SCROLL_EASE_NS: f64 = 70_000_000.0;

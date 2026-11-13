@@ -1666,10 +1666,10 @@ pub fn skin_image_check(limits: ImageLimits) -> ImageCheck {
 }
 
 /// The display size of the image `file` (pixels over its density), read off the disk;
-/// `None` when it does not decode.
-fn image_size(file: &TextureFile) -> Option<[f32; 2]> {
+/// `None` when it does not decode within the texture loader's `limits`.
+fn image_size(file: &TextureFile, limits: ImageLimits) -> Option<[f32; 2]> {
     let bytes = std::fs::read(&file.path).ok()?;
-    let image = decode_image(&bytes, ImageLimits::default()).ok()?;
+    let image = decode_image(&bytes, limits).ok()?;
     Some([
         image.size.width as f32 / file.scale,
         image.size.height as f32 / file.scale,
@@ -1779,6 +1779,7 @@ impl PlayTextures {
     pub fn request(
         skins: &SkinChain,
         requests: &mut TextureRequests,
+        limits: ImageLimits,
     ) -> Result<PlayTextures, RequestError> {
         // Ported from osu!lazer 2026.1005.0-lazer: osu.Game/Skinning/LegacySkinExtensions.cs (GetFontPrefix)
         let prefix = skins
@@ -1926,7 +1927,7 @@ impl PlayTextures {
         for (index, (slot, name)) in pause.iter_mut().zip(PAUSE_IMAGES).enumerate() {
             if let Some(found) = skins.texture(name) {
                 if let Some(size) = index.checked_sub(2).and_then(|i| pause_sizes.get_mut(i)) {
-                    *size = image_size(&found.value);
+                    *size = image_size(&found.value, limits);
                 }
                 // The backgrounds fill the screen: too large for the atlas.
                 let kind = if name.ends_with("overlay") || name.ends_with("background") {

@@ -129,8 +129,8 @@ pub enum Look {
     },
     /// [`panel`].
     Panel,
-    /// [`panel`] skewed like the buttons: behind a leaning list (ADR-0121).
-    LeaningPanel,
+    /// [`panel`] skewed by `lean` (`tan` of the angle): behind a leaning list (ADR-0121).
+    LeaningPanel { lean: f32 },
     /// [`rounded`] with the button radius.
     Round,
     /// Ends fully rounded: tracks, knobs, switches.
@@ -180,9 +180,9 @@ pub fn draw(
             }
         }
         Look::Panel => panel(shapes, white, rect, theme, scale, colour, 1.0),
-        Look::LeaningPanel => shapes.push_shape(&Shape {
+        Look::LeaningPanel { lean } => shapes.push_shape(&Shape {
             radius: theme.panel_radius * scale,
-            skew: theme.button_skew(),
+            skew: lean.atan(),
             pattern: theme.panel_pattern,
             pattern_phase: rect.x * 0.013,
             ..Shape::new(

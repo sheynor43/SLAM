@@ -750,16 +750,11 @@ impl SongSelectView {
             return;
         }
         // The panel's backing, from the status line to the hints.
-        let inset = theme.song_margin * layout.scale / 2.0;
+        // Its right side reaches past the window's edge (ADR-0121).
         rect(
-            &Rect {
-                x: layout.header.x - inset,
-                y: layout.header.y - inset,
-                width: layout.header.width + 2.0 * inset,
-                height: layout.hint.y + layout.hint.height + 2.0 * inset - layout.header.y,
-            },
+            &layout.backing(width, theme.song_margin * layout.scale),
             theme.song_panel_fill,
-            Look::LeaningPanel,
+            Look::LeaningPanel { lean: layout.lean },
         );
         // Everything on the panel leans with it (ADR-0121).
         let lean = |x: f32, centre_y: f32| x + layout.lean_x(centre_y);

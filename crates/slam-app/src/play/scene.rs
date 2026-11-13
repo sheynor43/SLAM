@@ -63,8 +63,6 @@ const TEXTURE_REQUEST_CAPACITY: usize = 1024;
 const MAX_TEXTURES: usize = 64;
 /// Glyph sprites of one frame: the HUD's numbers and the skip button.
 const MAX_GLYPH_SPRITES: usize = 256;
-/// The menu's background and buttons, the fail menu's footer, save button and its hover,
-/// and the FPS counter's box.
 /// Dim, backing, each button with its outline, the fail footer, the save button and its
 /// hover, and the FPS counter's box.
 const MAX_MENU_SPRITES: usize = 6 + 2 * slam_play::menu_overlay::MAX_BUTTONS + 3;
@@ -343,8 +341,8 @@ pub fn prepare(
 
     let (mut requests, uploads): (TextureRequests, TextureUploads) =
         texture_loader(&config).map_err(|e| e.to_string())?;
-    let textures =
-        PlayTextures::request(&loaded.skins, &mut requests).map_err(|e| e.to_string())?;
+    let textures = PlayTextures::request(&loaded.skins, &mut requests, config.image_limits())
+        .map_err(|e| e.to_string())?;
     let background_name = loaded.background.as_ref().map(|(name, _)| name.clone());
     // The background is optional: a refused request plays without it.
     let background = loaded.background.and_then(|(name, bytes)| {

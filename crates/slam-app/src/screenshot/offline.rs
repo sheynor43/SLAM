@@ -17,6 +17,9 @@ use slam_play::{
     VoiceSink,
 };
 
+/// The Escape key's scancode: pauses.
+const ESCAPE: u16 = 41;
+
 /// Stream rate of the pretend output.
 const RATE: u32 = 48_000;
 const MS: u64 = 1_000_000;
@@ -223,6 +226,36 @@ impl OfflinePlay {
         };
         play.tick();
         play
+    }
+
+    /// Draws the pause menu in `style`, stable's with buttons of `stable` sizes.
+    pub fn set_menu_style(
+        &mut self,
+        style: slam_play::menu_overlay::MenuStyle,
+        stable: [[f32; 2]; 3],
+    ) {
+        self.session
+            .set_menu_style(style, slam_ui::theme::ColourScheme::default(), stable);
+    }
+
+    /// Presses Escape a quarter of a second before each of `times` (milliseconds of the
+    /// beatmap), so each shot shows the pause menu in full.
+    pub fn pause_at_each(&mut self, times: &[f64]) {
+        let start = self.session.start_time();
+        for &time in times {
+            let at = engine_ns(time, start).saturating_sub(250 * MS);
+            for down in [true, false] {
+                let event = InputEvent {
+                    time_ns: at + u64::from(!down) * MS,
+                    kind: InputKind::Key {
+                        scancode: ESCAPE,
+                        down,
+                    },
+                };
+                let index = self.events.partition_point(|e| e.time_ns <= event.time_ns);
+                self.events.insert(index, event);
+            }
+        }
     }
 
     /// Engine time of the last tick.
