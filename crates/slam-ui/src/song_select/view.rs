@@ -1026,10 +1026,20 @@ impl SongSelectView {
                         fade: opacity,
                         tint: crate::star_colour::glow_for(stars, theme.accent),
                     },
-                    Row::Set(_) => Look::Button {
+                    // A set in the colour of its hardest difficulty (ADR-0136).
+                    Row::Set(set) => Look::TintedButton {
                         highlighted: selected,
                         seed,
                         fade: opacity,
+                        tint: crate::star_colour::glow_for(
+                            list.sets.get(set).and_then(|s| {
+                                s.difficulties
+                                    .iter()
+                                    .filter_map(|d| d.stars)
+                                    .reduce(f32::max)
+                            }),
+                            theme.accent,
+                        ),
                     },
                 };
                 rect(&clipped, fill, look);

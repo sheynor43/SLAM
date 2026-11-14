@@ -301,6 +301,8 @@ pub struct Theme {
     /// reduction, difficulty increase, conversion. An active mod's tile washes and is
     /// outlined in its column's colour.
     pub mod_column_tints: [Color; 3],
+    /// Colours of the settings' sections, in turn (ADR-0136).
+    pub section_tints: [Color; 8],
     /// How strong a difficulty row's glow in its star colour is, as a part of the accent
     /// glow's alpha (ADR-0131).
     pub difficulty_glow_scale: f32,
@@ -619,7 +621,7 @@ impl Theme {
             glow_alpha: 0.55,
             glow_pulse: 0.35,
             pattern_button: 0.35,
-            pattern_panel: 0.06,
+            pattern_panel: 0.04,
             pattern_hover: 0.55,
             pattern_selected: 0.8,
             button_shade: 0.8,
@@ -630,6 +632,16 @@ impl Theme {
                 p.accent,
                 Color::rgb(0.40, 0.80, 1.0),
                 Color::rgb(0.93, 0.27, 0.40),
+            ],
+            section_tints: [
+                p.accent,
+                Color::rgb(0.40, 0.80, 1.0),
+                Color::rgb(0.70, 1.0, 0.40),
+                Color::rgb(1.0, 0.80, 0.30),
+                Color::rgb(0.55, 0.40, 1.0),
+                Color::rgb(0.30, 0.95, 0.80),
+                Color::rgb(1.0, 0.50, 0.35),
+                Color::rgb(0.85, 0.45, 0.95),
             ],
             mod_column_tints: [
                 Color::rgb(0.70, 1.0, 0.40),

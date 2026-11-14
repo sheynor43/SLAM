@@ -665,15 +665,14 @@ impl SettingsView {
             );
         }
         for (i, tab) in self.tabs.iter().enumerate() {
-            let fill_colour = if i == snapshot.section {
-                theme.button_hover_fill
-            } else {
-                theme.button_fill
-            };
-            let look = Look::Button {
+            // Each section in its own colour; the current one washes and is outlined in it,
+            // not filled (ADR-0136).
+            let fill_colour = theme.button_fill;
+            let look = Look::TintedButton {
                 highlighted: i == snapshot.section,
                 seed: i as f32 * 0.41,
                 fade: opacity,
+                tint: theme.section_tints[i % theme.section_tints.len()],
             };
             let colour = faded(fill_colour, opacity);
             draw(

@@ -451,11 +451,7 @@ impl InfoPanel {
             width: layout.info.width + 2.0 * inset,
             height: parts.counts.y + parts.counts.height - layout.info.y + 2.0 * inset,
         };
-        rect(
-            &wedge,
-            theme.song_panel_fill,
-            Look::Wedge { lean: tan, outline },
-        );
+        let wedge_look = Look::Wedge { lean: tan, outline };
         // The scores' wedge, down to the last row shown.
         let shown = snapshot
             .details
@@ -474,28 +470,21 @@ impl InfoPanel {
             width: wedge.width,
             height: bottom - parts.scores_title.y + 2.0 * inset,
         };
-        if snapshot.details.is_some() {
-            rect(
-                &board,
-                theme.song_panel_fill,
-                Look::Wedge {
-                    lean: tan,
-                    outline: Color {
-                        a: 0.0,
-                        ..theme.accent
-                    },
-                },
-            );
-        }
-        // Everything on a wedge leans with it, about the wedge's middle.
-        let lean_of = |y: f32| {
-            let middle = if y < board.y {
-                wedge.y + wedge.height / 2.0
-            } else {
-                board.y + board.height / 2.0
-            };
-            (middle - y) * tan
+        let board_look = Look::Wedge {
+            lean: tan,
+            outline: Color {
+                a: 0.0,
+                ..theme.accent
+            },
         };
+        // Everything leans with the wedges along one line through their lowest bottom
+        // edge, which stays at the margin: nothing reaches past the window's left edge.
+        let anchor = if snapshot.details.is_some() {
+            board.y + board.height
+        } else {
+            wedge.y + wedge.height
+        };
+        let lean_of = |y: f32| (anchor - y) * tan;
         let mut rect = |r: &Rect, colour: Color, look: Look| {
             let moved = Rect {
                 x: r.x + lean_of(r.y + r.height / 2.0),
@@ -507,6 +496,10 @@ impl InfoPanel {
             left(line, x + lean_of(centre_y), centre_y, colour);
         };
         let (rect, left) = (&mut rect, &mut left);
+        rect(&wedge, theme.song_panel_fill, wedge_look);
+        if snapshot.details.is_some() {
+            rect(&board, theme.song_panel_fill, board_look);
+        }
         let centre = |r: &Rect| r.y + r.height / 2.0;
         left(&self.name, parts.name.x, centre(&parts.name), theme.text);
         if let Some(stars) = stars {
@@ -530,6 +523,11 @@ impl InfoPanel {
         let Some(details) = snapshot.details else {
             return;
         };
+        let bar_fill = if outline.a > 0.0 {
+            outline
+        } else {
+            theme.widget_accent_fill
+        };
         let values = [
             details.circle_size,
             details.approach_rate,
@@ -550,7 +548,8 @@ impl InfoPanel {
                     width: bar.track.width * fraction,
                     ..bar.track
                 },
-                theme.widget_accent_fill,
+                // In the difficulty's colour, as lazer's statistics (ADR-0136).
+                bar_fill,
                 Look::Pill,
             );
             let value = &self.values[i];

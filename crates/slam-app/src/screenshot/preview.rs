@@ -236,22 +236,35 @@ impl State {
                 );
             }
             Scene::Cursor => {
-                // At rest, pressed, and turned.
+                // At rest, pressed with a ring, turned, spun part-way, and with a trail.
+                let mut trailing = CursorMotion::REST;
+                for (i, slot) in trailing.trail.iter_mut().enumerate() {
+                    *slot = (
+                        [-(i as f32 + 1.0) * 18.0, -(i as f32 + 1.0) * 6.0],
+                        0.9 - 0.15 * i as f32,
+                    );
+                }
+                let mut pressed = CursorMotion {
+                    scale: 0.9,
+                    glow: 1.0,
+                    ..CursorMotion::REST
+                };
+                pressed.ripples[0] = ([0.0; 2], 0.35);
                 let motions = [
                     CursorMotion::REST,
+                    pressed,
                     CursorMotion {
-                        scale: 0.9,
-                        glow: 1.0,
-                        rotation: 0.0,
-                    },
-                    CursorMotion {
-                        scale: 1.0,
-                        glow: 0.0,
                         rotation: 40.0,
+                        ..CursorMotion::REST
                     },
+                    CursorMotion {
+                        spin: 1.1,
+                        ..CursorMotion::REST
+                    },
+                    trailing,
                 ];
                 for (i, motion) in motions.iter().enumerate() {
-                    let tip = [width * (i as f32 + 1.0) / 4.0, height * 0.35];
+                    let tip = [width * (i as f32 + 1.0) / 6.0, height * 0.35];
                     push_slam_cursor(
                         &mut self.shapes,
                         &self.views.theme,
