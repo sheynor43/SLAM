@@ -36,6 +36,17 @@ impl Anchor {
 }
 
 impl LayoutElement {
+    /// The element at the in-game interface scale `factor` (ADR-0118): bigger or smaller
+    /// about the screen point it is placed from, so an element at an edge stays there.
+    /// Its scale and offset are multiplied; an attached element follows the one it is
+    /// attached to (ADR-0112).
+    pub fn scaled_by(&self, factor: f32) -> LayoutElement {
+        let mut element = self.clone();
+        element.scale = self.scale.map(|s| s * factor);
+        element.position = self.position.map(|p| p * factor);
+        element
+    }
+
     /// The map from the element's own pixels (its box of `size` pixels with the top-left
     /// corner at (0, 0)) to a window of `width` × `height` pixels: the element's origin
     /// lands on the window's anchor point plus the offset; the scale (negative mirrors) and

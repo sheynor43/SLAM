@@ -17,6 +17,7 @@ use drag::{ListDrag, Release};
 
 pub mod drag;
 pub mod filter;
+pub mod info_panel;
 pub mod mod_select;
 pub mod query;
 pub mod view;
@@ -31,6 +32,34 @@ pub use mod_select::{
     SettingRowKind, SettingValue, TileDetail, TileDetails,
 };
 pub use view::{DetailLabels, SongSelectLabels, SongSelectView};
+
+/// A loaded thumbnail of a set row, as the draw side resolved it (ADR-0127).
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct RowThumb {
+    /// Tells thumbnails apart for the fade-in.
+    pub handle: slam_render::upload::TextureHandle,
+    pub region: slam_render::atlas::AtlasRegion,
+}
+
+/// The thumbnails of the rows in view, for [`SongSelectView::push`].
+#[derive(Clone, Copy, Debug)]
+pub struct Thumbs<'a> {
+    /// Whether the rows reserve room for thumbnails: when not, the old layout.
+    pub enabled: bool,
+    /// By snapshot row (`SongSelectSnapshot::rows`); `None` where not loaded (yet).
+    pub rows: &'a [Option<RowThumb>],
+    /// The frame's time, for the fade-in.
+    pub now_ns: u64,
+}
+
+impl Thumbs<'_> {
+    /// No thumbnails: rows as they were before ADR-0127.
+    pub const OFF: Thumbs<'static> = Thumbs {
+        enabled: false,
+        rows: &[],
+        now_ns: 0,
+    };
+}
 
 /// The sets to show, built by the application from the library. Immutable once built;
 /// shared as `Arc<SongList>` and replaced wholesale when the library changes.
@@ -65,6 +94,11 @@ pub struct DifficultyRow {
     pub beatmap_id: i32,
     /// `BeatmapSetID`, -1 for none.
     pub beatmap_set_id: i32,
+    /// Opaque identity chosen by the application; the selected difficulty follows it
+    /// across [`SongSelect::set_list`] when the order within a set changes (0: none).
+    pub key: u64,
+    /// The star rating without mods; `None` until calculated (ADR-0134).
+    pub stars: Option<f32>,
 }
 
 impl DifficultyRow {
@@ -80,6 +114,8 @@ impl DifficultyRow {
             drain_rate: 5.0,
             beatmap_id: -1,
             beatmap_set_id: -1,
+            key: 0,
+            stars: None,
         }
     }
 }
@@ -200,16 +236,26 @@ enum Pressed {
     ChooseFolder,
 }
 
-/// Where the list, status line and hint are: a panel on the right of the window. A pure
-/// function of the window size and theme, shared by hit testing (update) and drawing.
+/// [`Pressed`] by keys instead of indices, which a replaced list shuffles.
+#[derive(Clone, Copy)]
+enum PressedKeys {
+    Set(u64),
+    Difficulty(u64, u64),
+    ChooseFolder,
+}
+
+/// Where the list, status line and hint are (a panel on the right of the window) and the
+/// beatmap's info panel (on the left). A pure function of the window size and theme,
+/// shared by hit testing (update) and drawing.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct SongSelectLayout {
-    /// Status line at the top: the first line of `details`, shown instead of it until the
-    /// list is ready.
+    /// Status line at the top of the list panel.
     pub header: Rect,
-    /// Two lines of the selected beatmap's details at the top of the panel (ADR-0067).
-    pub details: Rect,
-    /// The search line between the details and the list.
+    /// The content of the info panel on the left: the selected difficulty's statistics
+    /// and local scores (ADR-0067, ADR-0125). Ends above the hint row, whose left end shows
+    /// the selected mods.
+    pub info: Rect,
+    /// The search line between the status line and the list.
     pub search: Rect,
     /// The rows' area; row 0 is at its top when not scrolled.
     pub list: Rect,
@@ -225,6 +271,9 @@ pub struct SongSelectLayout {
     pub indent: f32,
     /// Pixels per reference unit.
     pub scale: f32,
+    /// How far the list leans (`tan` of half the buttons' skew): rows lower down sit
+    /// further left (ADR-0121).
+    pub lean: f32,
 }
 
 impl SongSelectLayout {
@@ -247,19 +296,25 @@ impl SongSelectLayout {
             height: hint_height,
         };
         let row_height = theme.song_row_height * scale;
-        let details = Rect {
-            x,
+        let lean = (theme.button_skew() * LEAN_OF_SKEW).tan();
+        // The list's lowest and highest rows lean left of its edge by this much; the info
+        // panel keeps clear of them.
+        let lean_reach = (hint.y + hint.height - header.y) / 2.0 * lean;
+        // The two panels' backings are `margin / 2` larger on every side; keep them apart by
+        // as much.
+        let info = Rect {
+            x: margin,
             y: header.y,
-            width: panel,
-            height: 2.0 * hint_height,
+            width: (x - margin - 3.0 * margin / 2.0 - lean_reach).max(0.0),
+            height: (hint.y - margin / 2.0 - header.y).max(0.0),
         };
         let search = Rect {
             x,
-            y: details.y + details.height + margin / 2.0,
+            y: header.y + header.height + margin / 2.0,
             width: panel,
-            height: row_height - theme.song_row_gap * scale,
+            height: theme.song_search_height * scale,
         };
-        let top = search.y + row_height;
+        let top = search.y + search.height + margin / 2.0;
         let list = Rect {
             x,
             y: top,
@@ -274,7 +329,7 @@ impl SongSelectLayout {
         };
         SongSelectLayout {
             header,
-            details,
+            info,
             search,
             list,
             hint,
@@ -283,7 +338,34 @@ impl SongSelectLayout {
             row_height,
             indent: theme.song_indent * scale,
             scale,
+            lean,
         }
+    }
+
+    /// Horizontal shift of the panel at height `y`: none at its middle, between the top
+    /// of the status line and the bottom of the hints (ADR-0121).
+    pub fn lean_x(&self, y: f32) -> f32 {
+        let middle = (self.header.y + self.hint.y + self.hint.height) / 2.0;
+        (middle - y) * self.lean
+    }
+
+    /// The info panel's backing: its content and `margin / 2` around, down to the hint
+    /// row's top.
+    pub fn info_backing(&self, margin: f32) -> Rect {
+        let inset = margin / 2.0;
+        Rect {
+            x: self.info.x - inset,
+            y: self.info.y - inset,
+            width: self.info.width + 2.0 * inset,
+            height: self.info.height + 2.0 * inset,
+        }
+    }
+
+    /// Whether the "choose folder" button, leaning with the panel, contains the point.
+    pub fn over_choose_folder(&self, x: f32, y: f32) -> bool {
+        let r = &self.choose_folder;
+        let shift = self.lean_x(r.y + r.height / 2.0);
+        r.contains_skewed(x - shift, y, self.lean.atan())
     }
 
     /// A row's height in theme reference pixels, the unit of the list's drag.
@@ -318,7 +400,7 @@ impl SongSelectLayout {
         filter: &SongFilter,
         selected_set: usize,
     ) -> Option<Row> {
-        if !self.list.contains(x, y) {
+        if !self.list.contains(x - self.lean_x(y), y) {
             return None;
         }
         let index = (y - self.list.y) / self.row_height + scroll;
@@ -326,6 +408,25 @@ impl SongSelectLayout {
             return None;
         }
         filter.row(selected_set, index.floor() as usize)
+    }
+}
+
+/// The list leans by this part of the buttons' skew: the full angle leaves a wide empty
+/// wedge at the bottom right of the window (ADR-0121).
+pub const LEAN_OF_SKEW: f32 = 0.5;
+
+/// Time constant of the list's scroll easing (ADR-0121): about 95 % of the way in three.
+pub const SCROLL_EASE_NS: f64 = 70_000_000.0;
+
+/// The shown scroll `elapsed_ns` after `shown`, easing exponentially towards `target`;
+/// within a thousandth of a row it lands.
+pub fn ease_scroll(shown: f32, target: f32, elapsed_ns: u64) -> f32 {
+    let keep = (-(elapsed_ns as f64) / SCROLL_EASE_NS).exp() as f32;
+    let next = target + (shown - target) * keep;
+    if (next - target).abs() < 1e-3 {
+        target
+    } else {
+        next
     }
 }
 
@@ -349,8 +450,10 @@ pub struct SongSelectSnapshot {
     /// Flat index of the first of `rows`.
     pub first_row: usize,
     rows: [Row; MAX_VISIBLE_ROWS],
-    /// Rows scrolled off the top.
+    /// Rows scrolled off the top: where the list goes.
     pub scroll: f32,
+    /// Rows scrolled off the top as shown, easing towards `scroll` (ADR-0121).
+    pub shown_scroll: f32,
     pub hovered: Option<Row>,
     /// The pointer is over the "choose folder" button, which is shown.
     pub folder_hovered: bool,
@@ -369,6 +472,22 @@ pub struct SongSelectSnapshot {
     pub no_audio: bool,
 }
 
+/// Appends a star rating after a name: " ★5.43" (ADR-0134). Does not allocate once `text`
+/// has the room.
+pub(crate) fn push_stars(text: &mut String, stars: f32) {
+    use std::fmt::Write as _;
+    // Writing to a `String` cannot fail.
+    let _ = write!(text, " \u{2605}{stars:.2}");
+}
+
+impl SongSelectSnapshot {
+    /// The star rating of the selected difficulty, if calculated (ADR-0134).
+    pub fn selected_stars(&self) -> Option<f32> {
+        let (set, difficulty) = self.selected?;
+        self.list.sets.get(set)?.difficulties.get(difficulty)?.stars
+    }
+}
+
 /// What the song select shows of the selected difficulty (ADR-0067), computed by the
 /// application with the selected mods.
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -379,6 +498,68 @@ pub struct BeatmapDetails {
     pub drain_rate: f32,
     /// `None` until the file is read.
     pub stats: Option<DetailStats>,
+    /// The beatmap's best local scores; `None` until read, or when there is no data folder
+    /// (ADR-0125).
+    pub scores: Option<LocalScores>,
+}
+
+/// How many local scores the song select lists.
+pub const MAX_LOCAL_SCORES: usize = 10;
+
+/// How many mod acronyms a listed score shows.
+pub const MAX_SCORE_MODS: usize = 8;
+
+/// A listed score's mods: acronyms of up to three ASCII letters, in the order saved.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct ScoreMods {
+    acronyms: [[u8; 3]; MAX_SCORE_MODS],
+    len: u8,
+}
+
+impl ScoreMods {
+    /// Keeps the first [`MAX_SCORE_MODS`] acronyms; letters past the third of one and
+    /// non-ASCII characters are dropped.
+    pub fn from_acronyms<'a>(acronyms: impl IntoIterator<Item = &'a str>) -> ScoreMods {
+        let mut mods = ScoreMods::default();
+        for acronym in acronyms.into_iter().take(MAX_SCORE_MODS) {
+            let mut bytes = [0; 3];
+            for (slot, b) in bytes.iter_mut().zip(acronym.bytes().filter(u8::is_ascii)) {
+                *slot = b;
+            }
+            mods.acronyms[usize::from(mods.len)] = bytes;
+            mods.len += 1;
+        }
+        mods
+    }
+
+    /// The acronyms.
+    pub fn iter(&self) -> impl Iterator<Item = &str> {
+        self.acronyms[..usize::from(self.len)].iter().map(|a| {
+            let len = a.iter().position(|&b| b == 0).unwrap_or(3);
+            std::str::from_utf8(&a[..len]).unwrap_or("")
+        })
+    }
+}
+
+/// One listed local score, as the library thread reads it (ADR-0125).
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct ScoreRow {
+    pub total_score: u64,
+    /// 0..=1.
+    pub accuracy: f64,
+    pub max_combo: u32,
+    /// The rank's letters as lazer names them (`XH`, `X`, `SH`, `S`, `A`...), padded with
+    /// zeros.
+    pub rank: [u8; 2],
+    pub mods: ScoreMods,
+    /// Unix milliseconds.
+    pub date_ms: i64,
+}
+
+/// The best local scores of a beatmap, best first; `None` rows come last.
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+pub struct LocalScores {
+    pub rows: [Option<ScoreRow>; MAX_LOCAL_SCORES],
 }
 
 /// The read part of [`BeatmapDetails`], at the mods' rate.
@@ -412,8 +593,15 @@ pub struct SongSelect {
     set: usize,
     difficulty: usize,
     scroll: f32,
+    /// The scroll shown: eases towards `scroll` (ADR-0121), and the rows under the pointer
+    /// are those shown.
+    shown: f32,
+    /// When `shown` was last eased.
+    shown_ns: u64,
     pointer: Option<(f32, f32)>,
     hovered: Option<Row>,
+    /// The list was replaced under the pointer: find the row under it on the next tick.
+    rehover: bool,
     folder_hovered: bool,
     /// The list dragged with the primary button and flung (ADR-0093).
     drag: ListDrag,
@@ -455,8 +643,11 @@ impl SongSelect {
             set: 0,
             difficulty: 0,
             scroll: 0.0,
+            shown: 0.0,
+            shown_ns: 0,
             pointer: None,
             hovered: None,
+            rehover: false,
             folder_hovered: false,
             drag: ListDrag::default(),
             pressed: None,
@@ -510,10 +701,55 @@ impl SongSelect {
         &self.filter
     }
 
+    /// The flat index of the first row of the snapshot: the first one the shown scroll
+    /// touches.
+    pub fn first_row(&self) -> usize {
+        let row_count = self.filter.row_count(self.set);
+        (self.shown.max(0.0).floor() as usize).min(row_count)
+    }
+
+    /// The row at flat index `index` of the filtered column (ADR-0127: the rows around the view).
+    pub fn row_at_index(&self, index: usize) -> Option<Row> {
+        self.filter.row(self.set, index)
+    }
+
     /// The selected `(set, difficulty)` as indices into the list, if a set is visible.
     pub fn selected(&self) -> Option<(usize, usize)> {
         let set = self.filter.set_index(self.set)?;
         Some((set, self.filter.difficulty_index(self.set, self.difficulty)))
+    }
+
+    /// The selected set's key and difficulty's key, which stay with them when a published
+    /// list reorders them (ADR-0135); a difficulty without a key counts by position. Does
+    /// not allocate.
+    pub fn selected_keys(&self) -> Option<(u64, u64)> {
+        let (set, difficulty) = self.selected()?;
+        let set = self.list.sets.get(set)?;
+        let key = set.difficulties.get(difficulty)?.key;
+        Some((
+            set.key,
+            if key == 0 {
+                (1 << 63) | difficulty as u64
+            } else {
+                key
+            },
+        ))
+    }
+
+    /// The [`DifficultyRow::key`] of the selected difficulty.
+    fn selected_difficulty_key(&self) -> Option<u64> {
+        let (set, difficulty) = self.selected()?;
+        Some(self.list.sets.get(set)?.difficulties.get(difficulty)?.key)
+    }
+
+    /// Where the player is looking: the key of the first set in view and how many rows
+    /// the view holds, an upper bound of the sets in it. The star thread calculates these
+    /// sets first (ADR-0134). `None` without sets. Does not allocate.
+    pub fn view_focus(&self) -> Option<(u64, usize)> {
+        let row = self.filter.row(self.set, self.first_row())?;
+        let (Row::Set(set) | Row::Difficulty { set, .. }) = row;
+        let key = self.list.sets.get(set)?.key;
+        Some((key, self.viewport.ceil() as usize + 1))
     }
 
     /// Replaces the list, keeping the selected set by its key when it is still visible
@@ -522,10 +758,29 @@ impl SongSelect {
     /// made off the update thread. Returns the filter it replaces, for the caller to free
     /// off the update thread too.
     pub fn set_list(&mut self, list: Arc<SongList>, filter: SongFilter) -> SongFilter {
+        self.replace_list(list, filter, false)
+    }
+
+    /// Like [`SongSelect::set_list`] for the same library republished with new details
+    /// (star ratings reorder the difficulties, ADR-0135): the view stays where it is, with
+    /// no scroll to the selection, and the row under the pointer is found again on the next
+    /// tick instead of being forgotten.
+    pub fn refresh_list(&mut self, list: Arc<SongList>, filter: SongFilter) -> SongFilter {
+        self.replace_list(list, filter, true)
+    }
+
+    fn replace_list(
+        &mut self,
+        list: Arc<SongList>,
+        filter: SongFilter,
+        keep_view: bool,
+    ) -> SongFilter {
         let key = self
             .selected()
             .and_then(|(set, _)| self.list.sets.get(set))
             .map(|s| s.key);
+        let difficulty_key = self.selected_difficulty_key();
+        let pressed_keys = self.pressed_keys();
         let old = std::mem::replace(&mut self.filter, filter);
         self.list = list;
         self.filter.apply(&self.list, &self.query);
@@ -538,10 +793,70 @@ impl SongSelect {
         self.difficulty = self
             .difficulty
             .min(self.filter.difficulty_count(self.set).saturating_sub(1));
-        self.hovered = None;
-        self.clamp_scroll();
-        self.ensure_visible();
+        // The same set with its difficulties in another order (ADR-0134): the selection
+        // stays on its difficulty, not on its position.
+        if found.is_some()
+            && let Some(wanted) = difficulty_key.filter(|key| *key != 0)
+            && let Some(set) = self
+                .filter
+                .set_index(self.set)
+                .and_then(|s| self.list.sets.get(s))
+            && let Some(position) = set
+                .difficulties
+                .iter()
+                .position(|d| d.key == wanted)
+                .and_then(|index| self.filter.difficulty_position(self.set, index))
+        {
+            self.difficulty = position;
+        }
+        self.pressed = self.remap_pressed(pressed_keys);
+        if keep_view {
+            self.rehover = true;
+            self.clamp_scroll();
+        } else {
+            self.hovered = None;
+            self.clamp_scroll();
+            self.ensure_visible();
+        }
         old
+    }
+
+    /// The keys of the row being pressed, to find it again in a replaced list.
+    fn pressed_keys(&self) -> Option<PressedKeys> {
+        match self.pressed? {
+            Pressed::ChooseFolder => Some(PressedKeys::ChooseFolder),
+            Pressed::Row(Row::Set(set)) => Some(PressedKeys::Set(self.list.sets.get(set)?.key)),
+            Pressed::Row(Row::Difficulty { set, difficulty }) => {
+                let set = self.list.sets.get(set)?;
+                Some(PressedKeys::Difficulty(
+                    set.key,
+                    set.difficulties.get(difficulty)?.key,
+                ))
+            }
+        }
+    }
+
+    /// The pressed row in the (already replaced) list by its keys; `None` when it is gone
+    /// or has no key to find it by, so the release clicks nothing.
+    fn remap_pressed(&self, keys: Option<PressedKeys>) -> Option<Pressed> {
+        match keys? {
+            PressedKeys::ChooseFolder => self.pressed,
+            PressedKeys::Set(key) => {
+                let set = self.list.sets.iter().position(|s| s.key == key)?;
+                Some(Pressed::Row(Row::Set(set)))
+            }
+            PressedKeys::Difficulty(set_key, key) => {
+                if key == 0 {
+                    return None;
+                }
+                let set = self.list.sets.iter().position(|s| s.key == set_key)?;
+                let difficulty = self.list.sets[set]
+                    .difficulties
+                    .iter()
+                    .position(|d| d.key == key)?;
+                Some(Pressed::Row(Row::Difficulty { set, difficulty }))
+            }
+        }
     }
 
     /// Filters the list again after the query changed. The selection stays on its
@@ -599,7 +914,7 @@ impl SongSelect {
             self.refilter();
             self.hovered = self
                 .pointer
-                .and_then(|(x, y)| layout.row_at(x, y, self.scroll, &self.filter, self.set));
+                .and_then(|(x, y)| layout.row_at(x, y, self.shown, &self.filter, self.set));
         }
     }
 
@@ -619,7 +934,7 @@ impl SongSelect {
 
     pub fn snapshot(&self) -> SongSelectSnapshot {
         let row_count = self.filter.row_count(self.set);
-        let first_row = (self.scroll.max(0.0).floor() as usize).min(row_count);
+        let first_row = self.first_row();
         // Every slot `rows` returns is filled, however many rows the view shows.
         let mut rows = [Row::Set(0); MAX_VISIBLE_ROWS];
         for (slot, index) in rows.iter_mut().zip(first_row..row_count) {
@@ -635,6 +950,7 @@ impl SongSelect {
             first_row,
             rows,
             scroll: self.scroll,
+            shown_scroll: self.shown,
             hovered: self.hovered,
             folder_hovered: self.folder_hovered,
             status: self.status,
@@ -660,12 +976,22 @@ impl SongSelect {
             self.mods.tick(now_ns, &layout.mods);
         }
         let per_row = layout.reference_row_height();
+        let elapsed = now_ns.saturating_sub(self.shown_ns);
+        self.shown_ns = now_ns;
+        if std::mem::take(&mut self.rehover) {
+            self.update_hover(layout);
+        }
         if let Some(scroll) =
             self.drag
                 .tick(now_ns, self.scroll * per_row, self.max_scroll() * per_row)
         {
+            // Dragged and flung, the list follows the hand as it is.
             self.scroll = scroll / per_row;
             self.clamp_scroll();
+            self.shown = self.scroll;
+            self.update_hover(layout);
+        } else if self.shown != self.scroll {
+            self.shown = ease_scroll(self.shown, self.scroll, elapsed);
             self.update_hover(layout);
         }
     }
@@ -827,6 +1153,9 @@ impl SongSelect {
                 let offset = self.drag.moved(x, y, layout.scale);
                 if offset != 0.0 {
                     self.scroll += offset / layout.reference_row_height();
+                    self.clamp_scroll();
+                    // Dragged, the list follows the hand as it is (ADR-0121).
+                    self.shown = self.scroll;
                 }
             }
             I::PointerPress { x, y } => {
@@ -859,20 +1188,20 @@ impl SongSelect {
     fn update_hover(&mut self, layout: &SongSelectLayout) {
         self.hovered = self
             .pointer
-            .and_then(|(x, y)| layout.row_at(x, y, self.scroll, &self.filter, self.set));
+            .and_then(|(x, y)| layout.row_at(x, y, self.shown, &self.filter, self.set));
         self.folder_hovered = self.shows_choose_folder()
             && self
                 .pointer
-                .is_some_and(|(x, y)| layout.choose_folder.contains(x, y));
+                .is_some_and(|(x, y)| layout.over_choose_folder(x, y));
     }
 
     /// What is under `(x, y)` to click.
     fn pressed_at(&self, x: f32, y: f32, layout: &SongSelectLayout) -> Option<Pressed> {
-        if self.shows_choose_folder() && layout.choose_folder.contains(x, y) {
+        if self.shows_choose_folder() && layout.over_choose_folder(x, y) {
             return Some(Pressed::ChooseFolder);
         }
         layout
-            .row_at(x, y, self.scroll, &self.filter, self.set)
+            .row_at(x, y, self.shown, &self.filter, self.set)
             .map(Pressed::Row)
     }
 

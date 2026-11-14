@@ -30,9 +30,11 @@ use slam_play::hud::{HudTextures, MAX_HUD_SHAPES, OFFSET_PLACEHOLDER, SkipTextur
 use slam_play::key_overlay::KeyOverlayTextures;
 use slam_play::legacy_text::FontSprites;
 use slam_play::menu_overlay::{
-    GameplayMenu, MenuInfo, MenuKind, MenuLayout, MenuView, ReplaySave, song_progress,
+    GameplayMenu, MenuInfo, MenuKind, MenuLayout, MenuSnapshot, MenuStyle, MenuView, ReplaySave,
+    song_progress,
 };
 use slam_play::offset::OffsetPanel;
+use slam_play::session::{PAUSE_IMAGES, PauseTextures};
 use slam_play::slider_body::Snaking;
 use slam_play::sliders::{AnimationSprites, HitSliders, SliderBodies, SliderVisuals};
 use slam_play::{
@@ -47,6 +49,7 @@ use slam_render::Extent;
 use slam_render::Limits;
 use slam_render::Origin;
 use slam_render::atlas::{AtlasRegion, UvRect};
+use slam_render::shape::ShapeBatch;
 use slam_render::sprite::SpriteBatch;
 use slam_render::textures::TextureId;
 use slam_skin::SIXTY_FRAME_TIME;
@@ -1395,7 +1398,7 @@ impl Driver {
     /// Moves the mouse to the middle of button `index` of menu `kind`.
     fn menu_mouse(&self, kind: MenuKind, index: usize) -> InputEvent {
         let [width, height] = layout().window_size();
-        let ([x, y], [w, h]) = MenuLayout::new(width, height, kind).button(index);
+        let ([x, y], [w, h]) = MenuLayout::new(width, height, kind, 1.0).button(index);
         press(
             self.now,
             InputKind::MouseMove {
@@ -1478,6 +1481,45 @@ fn a_pause_stops_the_clock_and_a_click_on_the_cursor_resumes_it_where_it_was() {
         (time - (paused + 100.0)).abs() < 2.0,
         "{time} after {paused}"
     );
+}
+
+#[test]
+fn with_the_os_cursor_only_the_resume_target_is_drawn() {
+    const CURSOR: TextureId = TextureId(1);
+    const DISC: TextureId = TextureId(2);
+    let map = beatmap();
+    let mut d = Driver::new(&map, ModSet::default());
+    let mut view = view(&map);
+    let mut textures = FrameTextures::default();
+    textures.cursor.cursor = Some(SkinSprite::new(
+        AtlasRegion {
+            texture: CURSOR,
+            ..WHITE
+        },
+        1.0,
+        f32::MAX,
+    ));
+    textures.disc = Some(AtlasRegion {
+        texture: DISC,
+        ..WHITE
+    });
+    let mut batch = SpriteBatch::new();
+    let moved = d.mouse(Vec2::new(300.0, 300.0));
+    d.tick(&[moved]);
+    d.run_to(1500.0);
+    // Playing with the OS cursor: the scene calls `push_resume` alone, which draws nothing,
+    // while `push_cursor` would draw the skin's cursor.
+    view.push_resume(&mut batch, &layout(), &d.snapshot, d.now, &textures);
+    assert_eq!(batch.len(), 0);
+    view.push_cursor(&mut batch, &layout(), &d.snapshot, d.now, &textures);
+    assert!(batch.batches().iter().any(|b| b.texture == CURSOR));
+    batch.clear();
+    d.tap(ESCAPE);
+    d.tap(ESCAPE);
+    assert_eq!(d.state(), PlayState::Resuming);
+    view.push_resume(&mut batch, &layout(), &d.snapshot, d.now, &textures);
+    let drawn: Vec<TextureId> = batch.batches().iter().map(|b| b.texture).collect();
+    assert_eq!(drawn.first(), Some(&DISC), "the target is drawn: {drawn:?}");
 }
 
 #[test]
@@ -2605,37 +2647,57 @@ fn menu_frames_do_not_allocate() {
     let mut view = MenuView::new(registry, &labels().menu);
     assert!(view.request_glyphs(&mut glyphs) > 0);
     let mut text = SpriteBatch::with_capacity(256);
-    let mut batch = SpriteBatch::with_capacity(16);
+    let mut batch = ShapeBatch::with_capacity(16);
+    let image = Some(SkinSprite::new(WHITE, 1.0, f32::MAX));
+    let pause = PauseTextures {
+        images: [image; PAUSE_IMAGES.len()],
+    };
     let mut menus = Vec::new();
-    for (kind, retries, progress, accuracy) in [
-        (MenuKind::Pause, 0, 0, 1.0),
-        (MenuKind::Fail, 12_345, 100, 0.987_65),
-        (MenuKind::Pause, u32::MAX, 57, f64::NAN),
-    ] {
-        let mut menu = GameplayMenu::default();
-        let info = MenuInfo {
-            retries,
-            progress,
-            accuracy,
-        };
-        menu.show(kind, info, 0, [1280.0, 720.0]);
-        menus.push(menu.snapshot());
+    for style in [MenuStyle::Lazer, MenuStyle::Slam, MenuStyle::Stable] {
+        for (kind, retries, progress, accuracy) in [
+            (MenuKind::Pause, 0, 0, 1.0),
+            (MenuKind::Fail, 12_345, 100, 0.987_65),
+            (MenuKind::Pause, u32::MAX, 57, f64::NAN),
+        ] {
+            let mut menu = GameplayMenu::default();
+            menu.set_style(
+                style,
+                slam_ui::theme::ColourScheme::Blue,
+                [[100.0, 40.0]; 3],
+            );
+            let info = MenuInfo {
+                retries,
+                progress,
+                accuracy,
+            };
+            menu.show(kind, info, 0, [1280.0, 720.0]);
+            menus.push(menu.snapshot());
+        }
     }
     assert_no_alloc(|| {
-        for (index, menu) in menus.iter().cycle().take(12).enumerate() {
+        for (index, menu) in menus.iter().cycle().take(36).enumerate() {
             let height = [720.0, 1080.0, 1.0, 0.0][index % 4];
             view.update(1280.0, height, menu);
             batch.clear();
             text.clear();
-            view.push_shapes(&mut batch, menu, 100 * MS, WHITE);
+            view.push_shapes(&mut batch, menu, 100 * MS, WHITE, &pause);
             view.push_text(&mut text, menu, 100 * MS, &mut glyphs);
         }
     });
-    // The background and a rectangle per button.
-    view.update(1280.0, 720.0, &menus[0]);
-    batch.clear();
-    view.push_shapes(&mut batch, &menus[0], 300 * MS, WHITE);
-    assert_eq!(batch.len(), 4);
+    let shapes = |view: &mut MenuView, batch: &mut ShapeBatch, menu: &MenuSnapshot| {
+        view.update(1280.0, 720.0, menu);
+        batch.clear();
+        view.push_shapes(batch, menu, 300 * MS, WHITE, &pause);
+        batch.len()
+    };
+    // Lazer: the background and a rectangle per button.
+    assert_eq!(shapes(&mut view, &mut batch, &menus[0]), 4);
+    // SLAM: the dim, the backing and a button each, none selected.
+    assert_eq!(shapes(&mut view, &mut batch, &menus[3]), 5);
+    // Stable: the dim, the overlay and the three buttons.
+    assert_eq!(shapes(&mut view, &mut batch, &menus[6]), 5);
+    // Stable's fail menu: no continue button, and the save footer.
+    assert_eq!(shapes(&mut view, &mut batch, &menus[7]), 4 + 2);
 }
 
 #[test]
@@ -3223,7 +3285,7 @@ fn the_menu_is_hit_in_the_units_of_the_input() {
     // Input in points on a window twice the default size.
     d.session.set_layout(PlayfieldLayout::new(1280.0, 960.0));
     d.run_until(10_000, |s| s.state == PlayState::Failed);
-    let ([x, y], [w, h]) = MenuLayout::new(1280.0, 960.0, MenuKind::Fail).button(1);
+    let ([x, y], [w, h]) = MenuLayout::new(1280.0, 960.0, MenuKind::Fail, 1.0).button(1);
     let over = press(
         d.now,
         InputKind::MouseMove {
@@ -3598,7 +3660,7 @@ fn the_save_button_is_clicked_in_the_fail_menus_footer() {
     let mut d = Driver::new(&map, ModSet::default());
     d.run_until(10_000, |s| s.state == PlayState::Failed);
     let [width, height] = layout().window_size();
-    let ([x, y], [w, h]) = MenuLayout::new(width, height, MenuKind::Fail).save_button(width);
+    let ([x, y], [w, h]) = MenuLayout::new(width, height, MenuKind::Fail, 1.0).save_button(width);
     let over = press(
         d.now,
         InputKind::MouseMove {
@@ -3661,7 +3723,7 @@ fn a_press_on_the_save_button_released_elsewhere_saves_nothing() {
     let mut d = Driver::new(&map, ModSet::default());
     d.run_until(10_000, |s| s.state == PlayState::Failed);
     let [width, height] = layout().window_size();
-    let ([x, y], [w, h]) = MenuLayout::new(width, height, MenuKind::Fail).save_button(width);
+    let ([x, y], [w, h]) = MenuLayout::new(width, height, MenuKind::Fail, 1.0).save_button(width);
     let at = |d: &Driver, x: f32| press(d.now, InputKind::MouseMove { x, y: y + h / 2.0 });
     let left = |d: &Driver, down| {
         press(

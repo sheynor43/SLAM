@@ -9,13 +9,16 @@ use slam_input::{MouseButton, VideoDriver, WindowMode};
 use slam_osu::replay::Actions;
 use slam_play::input::{Binding, Bindings, Input, MAX_BINDINGS};
 use slam_play::{BackgroundSettings, FpsCorner};
+use slam_ui::cursor::CursorStyle;
+use slam_ui::screen::TransitionStyle;
+use slam_ui::theme::ColourScheme;
 
 use super::dirs::{Os, resolve};
 use super::file::{self, LoadStatus};
 use super::keys;
 use super::model::{
     Combo, DrawRate, FpsScreens, Frame, HitsoundDelay, InputSettings, KeyOverlayAnimation, KeySlot,
-    Mods, RendererChoice, Settings, Window,
+    MenuBackground, MenuSounds, Mods, PauseMenuStyle, RendererChoice, Settings, Window,
 };
 
 fn temp_dir(tag: &str) -> PathBuf {
@@ -91,6 +94,17 @@ fn round_trip_non_default() {
     s.gameplay.cursor_trail = false;
     s.gameplay.cursor_size = 0.65;
     s.gameplay.auto_cursor_size = true;
+    s.general.colour_scheme = ColourScheme::Mono;
+    s.general.menu_scale = 1.05;
+    s.general.game_scale = 0.8;
+    s.general.skew = 14.0;
+    s.general.menu_background = MenuBackground::Skin;
+    s.general.transitions = TransitionStyle::Iris;
+    s.gameplay.pause_menu_style = PauseMenuStyle::Stable;
+    s.gameplay.pause_menu_scale = 1.25;
+    s.general.menu_cursor = CursorStyle::System;
+    s.gameplay.cursor_style = CursorStyle::Slam;
+    s.audio.menu_sounds = MenuSounds::Off;
     s.hud.layout = "my-hud".into();
     s.input.bindings = Bindings::new(&[
         Binding {
@@ -1237,6 +1251,29 @@ fn intro_defaults_on_and_reads_a_bool() {
 }
 
 #[test]
+fn effects_defaults_on_and_reads_a_bool() {
+    assert!(Settings::default().general.effects);
+    let missing = file::from_toml_str("[general]\nlanguage = \"en\"\n");
+    assert_eq!(missing.status, LoadStatus::Ok, "{:?}", missing.warnings);
+    assert!(missing.settings.general.effects);
+    let off = file::from_toml_str("[general]\neffects = false\n");
+    assert_eq!(off.status, LoadStatus::Ok, "{:?}", off.warnings);
+    assert!(!off.settings.general.effects);
+    let bad = file::from_toml_str("[general]\neffects = \"yes\"\n");
+    assert_eq!(bad.status, LoadStatus::Recovered);
+    assert!(bad.settings.general.effects);
+    assert!(
+        bad.warnings
+            .iter()
+            .any(|w| w.starts_with("general.effects"))
+    );
+    let mut settings = Settings::default();
+    settings.general.effects = false;
+    let text = file::to_toml_string(&settings).unwrap();
+    assert_eq!(file::from_toml_str(&text).settings, settings);
+}
+
+#[test]
 fn language_survives_a_write_and_read() {
     let mut settings = Settings::default();
     settings.general.language = Some("ru".to_owned());
@@ -1373,6 +1410,25 @@ fn modifiers_let_a_hotkey_take_menu_keys_but_not_gameplay_slots() {
 }
 
 #[test]
+fn parallax_defaults_full_and_round_trips() {
+    assert_eq!(Settings::default().general.parallax, 1.0);
+    let loaded = file::from_toml_str("[general]\nparallax = 0.35\n");
+    assert_eq!(loaded.status, LoadStatus::Ok, "{:?}", loaded.warnings);
+    assert_eq!(loaded.settings.general.parallax, 0.35);
+    let missing = file::from_toml_str("[general]\neffects = true\n");
+    assert_eq!(missing.settings.general.parallax, 1.0);
+    for text in ["1.5", "-0.1", "nan"] {
+        let bad = file::from_toml_str(&format!("[general]\nparallax = {text}\n"));
+        assert_eq!(bad.status, LoadStatus::Recovered, "{text}");
+        assert_eq!(bad.settings.general.parallax, 1.0, "{text}");
+    }
+    let mut settings = Settings::default();
+    settings.general.parallax = 0.0;
+    let again = file::from_toml_str(&file::to_toml_string(&settings).unwrap());
+    assert_eq!(again.settings.general.parallax, 0.0);
+}
+
+#[test]
 fn song_select_dim_defaults_and_round_trips() {
     assert_eq!(Settings::default().song_select.background_dim, 0.7);
     let loaded = file::from_toml_str("[song_select]\nbackground_dim = 0.25\n");
@@ -1397,4 +1453,227 @@ fn song_select_dim_out_of_range_or_nan_falls_back() {
             loaded.warnings
         );
     }
+}
+
+#[test]
+fn the_interface_settings_default_and_read_by_name() {
+    let d = Settings::default();
+    assert_eq!(d.general.colour_scheme, ColourScheme::Pink);
+    assert_eq!((d.general.menu_scale, d.general.game_scale), (1.0, 1.0));
+    assert_eq!(d.general.menu_background, MenuBackground::Beatmap);
+    assert_eq!(d.audio.menu_sounds, MenuSounds::Slam);
+    let loaded = file::from_toml_str(
+        "[general]\ncolour_scheme = \"blue\"\nmenu_scale = 1.25\ngame_scale = 0.8\n\
+         menu_background = \"none\"\n[audio]\nmenu_sounds = \"skin\"\n",
+    );
+    assert_eq!(loaded.status, LoadStatus::Ok, "{:?}", loaded.warnings);
+    let g = &loaded.settings.general;
+    assert_eq!(g.colour_scheme, ColourScheme::Blue);
+    assert_eq!((g.menu_scale, g.game_scale), (1.25, 0.8));
+    assert_eq!(g.menu_background, MenuBackground::None);
+    assert_eq!(loaded.settings.audio.menu_sounds, MenuSounds::Skin);
+}
+
+#[test]
+fn bad_interface_settings_fall_back_with_a_warning() {
+    let loaded = file::from_toml_str(
+        "[general]\ncolour_scheme = \"teal\"\nmenu_scale = 3.0\ngame_scale = \"big\"\n\
+         menu_background = \"video\"\n[audio]\nmenu_sounds = \"loud\"\n",
+    );
+    assert_eq!(loaded.status, LoadStatus::Recovered);
+    assert_eq!(loaded.settings.general, Settings::default().general);
+    assert_eq!(loaded.settings.audio.menu_sounds, MenuSounds::Slam);
+    for key in [
+        "general.colour_scheme",
+        "general.menu_scale",
+        "general.game_scale",
+        "general.menu_background",
+        "audio.menu_sounds",
+    ] {
+        assert!(
+            loaded.warnings.iter().any(|w| w.starts_with(key)),
+            "{key}: {:?}",
+            loaded.warnings
+        );
+    }
+}
+
+#[test]
+fn scales_snap_to_their_step_and_write_cleanly() {
+    let loaded = file::from_toml_str("[general]\nmenu_scale = 1.07\n");
+    assert_eq!(loaded.settings.general.menu_scale, 1.05);
+    let mut settings = Settings::default();
+    settings.general.colour_scheme = ColourScheme::Orange;
+    settings.general.menu_scale = 1.05;
+    settings.general.menu_background = MenuBackground::Skin;
+    settings.audio.menu_sounds = MenuSounds::Off;
+    let text = file::to_toml_string(&settings).unwrap();
+    assert!(text.contains("colour_scheme = \"orange\""), "{text}");
+    assert!(text.contains("menu_scale = 1.05\n"), "{text}");
+    assert!(text.contains("menu_background = \"skin\""), "{text}");
+    assert!(text.contains("menu_sounds = \"off\""), "{text}");
+    assert_eq!(file::from_toml_str(&text).settings, settings);
+}
+
+#[test]
+fn the_pause_menu_settings_default_and_read_by_name() {
+    let d = Settings::default();
+    assert_eq!(d.gameplay.pause_menu_style, PauseMenuStyle::Slam);
+    assert_eq!(d.gameplay.pause_menu_scale, 1.0);
+    let loaded =
+        file::from_toml_str("[gameplay]\npause_menu_style = \"stable\"\npause_menu_scale = 1.07\n");
+    assert_eq!(loaded.status, LoadStatus::Ok, "{:?}", loaded.warnings);
+    assert_eq!(
+        loaded.settings.gameplay.pause_menu_style,
+        PauseMenuStyle::Stable
+    );
+    assert_eq!(loaded.settings.gameplay.pause_menu_scale, 1.05);
+    for style in PauseMenuStyle::ALL {
+        assert_eq!(PauseMenuStyle::from_name(style.name()), Some(style));
+    }
+    let mut settings = Settings::default();
+    settings.gameplay.pause_menu_style = PauseMenuStyle::Lazer;
+    settings.gameplay.pause_menu_scale = 0.75;
+    let text = file::to_toml_string(&settings).unwrap();
+    assert!(text.contains("pause_menu_style = \"lazer\""), "{text}");
+    assert!(text.contains("pause_menu_scale = 0.75\n"), "{text}");
+    assert_eq!(file::from_toml_str(&text).settings, settings);
+}
+
+#[test]
+fn bad_pause_menu_settings_fall_back_with_a_warning() {
+    let loaded =
+        file::from_toml_str("[gameplay]\npause_menu_style = \"fancy\"\npause_menu_scale = 9.0\n");
+    assert_eq!(loaded.status, LoadStatus::Recovered);
+    assert_eq!(loaded.settings.gameplay, Settings::default().gameplay);
+    for key in ["gameplay.pause_menu_style", "gameplay.pause_menu_scale"] {
+        assert!(
+            loaded.warnings.iter().any(|w| w.starts_with(key)),
+            "{key}: {:?}",
+            loaded.warnings
+        );
+    }
+}
+
+#[test]
+fn the_old_fancy_transition_reads_as_band_without_a_warning() {
+    let loaded = file::from_toml_str("[general]\ntransitions = \"fancy\"\n");
+    assert_eq!(loaded.status, LoadStatus::Ok, "{:?}", loaded.warnings);
+    assert_eq!(loaded.settings.general.transitions, TransitionStyle::Band);
+}
+
+#[test]
+fn transitions_default_to_random_and_read_by_name() {
+    assert_eq!(
+        Settings::default().general.transitions,
+        TransitionStyle::Random
+    );
+    for style in TransitionStyle::ALL {
+        let loaded =
+            file::from_toml_str(&format!("[general]\ntransitions = \"{}\"\n", style.name()));
+        assert_eq!(loaded.status, LoadStatus::Ok, "{:?}", loaded.warnings);
+        assert_eq!(loaded.settings.general.transitions, style);
+    }
+    let bad = file::from_toml_str("[general]\ntransitions = \"wild\"\n");
+    assert_eq!(bad.status, LoadStatus::Recovered);
+    assert_eq!(bad.settings.general.transitions, TransitionStyle::Random);
+    assert!(
+        bad.warnings
+            .iter()
+            .any(|w| w.starts_with("general.transitions"))
+    );
+}
+
+#[test]
+fn the_thumbnails_setting_defaults_to_128_and_round_trips() {
+    use super::Thumbnails;
+    assert_eq!(Settings::default().song_select.thumbnails, Thumbnails::H128);
+    for (name, value, height) in [
+        ("off", Thumbnails::Off, None),
+        ("64", Thumbnails::H64, Some(64)),
+        ("128", Thumbnails::H128, Some(128)),
+        ("256", Thumbnails::H256, Some(256)),
+    ] {
+        let loaded = file::from_toml_str(&format!("[song_select]\nthumbnails = \"{name}\"\n"));
+        assert_eq!(
+            loaded.status,
+            LoadStatus::Ok,
+            "{name}: {:?}",
+            loaded.warnings
+        );
+        assert_eq!(loaded.settings.song_select.thumbnails, value);
+        assert_eq!(value.height(), height);
+        let mut settings = Settings::default();
+        settings.song_select.thumbnails = value;
+        let text = file::to_toml_string(&settings).unwrap();
+        assert!(text.contains(&format!("thumbnails = \"{name}\"")), "{text}");
+        assert_eq!(file::from_toml_str(&text).settings, settings);
+    }
+}
+
+#[test]
+fn a_bad_thumbnails_value_falls_back_with_a_warning() {
+    for text in ["\"huge\"", "128", "true"] {
+        let loaded = file::from_toml_str(&format!("[song_select]\nthumbnails = {text}\n"));
+        assert_eq!(loaded.status, LoadStatus::Recovered, "{text}");
+        assert_eq!(
+            loaded.settings.song_select.thumbnails,
+            Settings::default().song_select.thumbnails
+        );
+        assert!(
+            loaded
+                .warnings
+                .iter()
+                .any(|w| w.starts_with("song_select.thumbnails")),
+            "{text}: {:?}",
+            loaded.warnings
+        );
+    }
+}
+
+#[test]
+fn the_cursor_styles_default_read_by_name_and_round_trip() {
+    let d = Settings::default();
+    assert_eq!(d.general.menu_cursor, CursorStyle::Slam);
+    assert_eq!(d.gameplay.cursor_style, CursorStyle::Skin);
+    let loaded = file::from_toml_str(
+        "[general]\nmenu_cursor = \"system\"\n[gameplay]\ncursor_style = \"slam\"\n",
+    );
+    assert_eq!(loaded.status, LoadStatus::Ok, "{:?}", loaded.warnings);
+    assert_eq!(loaded.settings.general.menu_cursor, CursorStyle::System);
+    assert_eq!(loaded.settings.gameplay.cursor_style, CursorStyle::Slam);
+    let text = file::to_toml_string(&loaded.settings).unwrap();
+    assert!(text.contains("menu_cursor = \"system\""), "{text}");
+    assert!(text.contains("cursor_style = \"slam\""), "{text}");
+    let bad =
+        file::from_toml_str("[general]\nmenu_cursor = \"big\"\n[gameplay]\ncursor_style = 3\n");
+    assert_eq!(bad.settings.general.menu_cursor, CursorStyle::Slam);
+    assert_eq!(bad.settings.gameplay.cursor_style, CursorStyle::Skin);
+    assert!(
+        bad.warnings
+            .iter()
+            .any(|w| w.starts_with("general.menu_cursor"))
+    );
+}
+
+#[test]
+fn the_skew_defaults_snaps_to_degrees_and_falls_back() {
+    assert_eq!(Settings::default().general.skew, 10.0);
+    let loaded = file::from_toml_str("[general]\nskew = 7.4\n");
+    assert_eq!(loaded.settings.general.skew, 7.0);
+    let loaded = file::from_toml_str("[general]\nskew = 20.0\n");
+    assert_eq!(loaded.settings.general.skew, 20.0);
+    let loaded = file::from_toml_str("[general]\nskew = 45.0\n");
+    assert_eq!(loaded.settings.general.skew, 10.0);
+    assert!(
+        loaded
+            .warnings
+            .iter()
+            .any(|w| w.starts_with("general.skew"))
+    );
+    let mut settings = Settings::default();
+    settings.general.skew = 0.0;
+    let text = file::to_toml_string(&settings).unwrap();
+    assert!(text.contains("skew = 0.0"), "{text}");
+    assert_eq!(file::from_toml_str(&text).settings, settings);
 }

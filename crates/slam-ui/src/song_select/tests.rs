@@ -238,14 +238,17 @@ fn hit_testing_follows_the_scroll() {
     let sets: Vec<(u64, usize)> = (0..50).map(|k| (k, 1)).collect();
     let mut s = screen(&sets);
     let l = layout();
-    press(&mut s, I::Scroll { lines: 10.5 });
-    let scroll = s.snapshot().scroll;
-    assert_eq!(scroll, 10.5);
+    press(&mut s, I::Scroll { lines: 3.5 });
+    // The shown scroll eases there (ADR-0121); hit tests follow what is shown.
+    s.tick(1, &l);
+    s.tick(1_000_000_000, &l);
+    let scroll = s.snapshot().shown_scroll;
+    assert_eq!(scroll, 3.5);
     assert_eq!(s.selected(), Some((0, 0)));
-    let (x, y) = centre_of(&l, 20, scroll);
-    assert_eq!(l.row_at(x, y, scroll, s.filter(), 0), Some(Row::Set(19)));
+    let (x, y) = centre_of(&l, 6, scroll);
+    assert_eq!(l.row_at(x, y, scroll, s.filter(), 0), Some(Row::Set(5)));
     click(&mut s, x, y);
-    assert_eq!(s.selected(), Some((19, 0)));
+    assert_eq!(s.selected(), Some((5, 0)));
 }
 
 #[test]
@@ -665,4 +668,362 @@ fn hover_follows_the_fling() {
     let (x, y) = s.pointer.unwrap();
     assert_eq!(s.snapshot().hovered, l.row_at(x, y, scroll, s.filter(), 0));
     assert_ne!(s.snapshot().hovered, before);
+}
+
+#[test]
+fn the_scroll_eases_towards_its_target_and_lands() {
+    use crate::song_select::{SCROLL_EASE_NS, ease_scroll};
+    let step = ease_scroll(0.0, 10.0, SCROLL_EASE_NS as u64);
+    assert!(
+        (step - 10.0 * (1.0 - (-1.0f32).exp())).abs() < 1e-3,
+        "{step}"
+    );
+    assert_eq!(ease_scroll(9.9995, 10.0, 1), 10.0);
+    assert_eq!(ease_scroll(3.0, 3.0, 1_000), 3.0);
+    // Going back up eases the same way.
+    assert!(ease_scroll(10.0, 0.0, 1_000_000) < 10.0);
+}
+
+#[test]
+fn the_list_leans_and_hit_tests_with_it() {
+    let layout = layout();
+    let middle = (layout.header.y + layout.hint.y + layout.hint.height) / 2.0;
+    assert_eq!(layout.lean_x(middle), 0.0);
+    assert!(
+        layout.lean_x(layout.list.y) > 0.0,
+        "the top sits further right"
+    );
+    assert!(layout.lean_x(layout.list.y + layout.list.height) < 0.0);
+    // Just inside the list's left edge at its top, shifted right: outside unless leaned.
+    let y = layout.list.y + 1.0;
+    let x = layout.list.x + layout.lean_x(y) + 1.0;
+    assert!(layout.list.contains(x - layout.lean_x(y), y));
+}
+
+#[test]
+fn a_dragged_list_follows_the_hand_without_easing() {
+    let sets: Vec<(u64, usize)> = (0..50).map(|k| (k, 1)).collect();
+    let mut s = screen(&sets);
+    let l = layout();
+    let (x, y) = centre_of(&l, 5, 0.0);
+    press(&mut s, I::PointerPress { x, y });
+    // The first move past the threshold starts the drag; the next one scrolls.
+    press(&mut s, I::PointerMove { x, y: y - 20.0 });
+    press(&mut s, I::PointerMove { x, y: y - 300.0 });
+    s.tick(1, &l);
+    let snap = s.snapshot();
+    assert!(snap.scroll > 0.0);
+    assert_eq!(snap.shown_scroll, snap.scroll);
+}
+
+#[test]
+fn the_lean_is_half_the_buttons_skew() {
+    let theme = Theme::default();
+    let l = SongSelectLayout::new(1280.0, 720.0, &theme);
+    let half = (theme.button_skew() * crate::song_select::LEAN_OF_SKEW).tan();
+    assert!((l.lean - half).abs() < 1e-6);
+}
+
+/// Sizes of lazer's song select at 1920x1080 (ADR-0130), in pixels.
+#[test]
+fn the_sizes_match_lazers_at_full_hd() {
+    let theme = Theme::default();
+    let l = SongSelectLayout::new(1920.0, 1080.0, &theme);
+    let near = |a: f32, b: f32| (a - b).abs() <= b * 0.06;
+    assert!(near(l.list.width, 720.0), "{}", l.list.width);
+    assert!(near(l.row_height, 92.0), "{}", l.row_height);
+    assert!(near(theme.song_title_size * l.scale, 28.0));
+    assert!(near(theme.song_detail_size * l.scale, 18.0));
+    assert!(near(theme.song_info_title_size * l.scale, 36.0));
+    assert!(near(theme.song_info_artist_size * l.scale, 20.0));
+    assert!(near(theme.song_info_detail_size * l.scale, 16.0));
+}
+
+/// The leaning list's reach, left of `list.x`, over all of its height.
+fn leftmost(l: &SongSelectLayout) -> f32 {
+    let top = l.header.y;
+    let bottom = l.hint.y + l.hint.height;
+    l.list.x + l.lean_x(top).min(l.lean_x(bottom))
+}
+
+#[test]
+fn the_panels_do_not_overlap_at_any_size_scale_or_skew() {
+    for (w, h) in [(1280.0, 720.0), (1920.0, 1080.0), (2560.0, 1440.0)] {
+        for ui_scale in [0.75, 1.0, 1.25, 1.5] {
+            for degrees in [0.0, 10.0, 20.0] {
+                let theme = Theme::new(Default::default(), ui_scale).with_skew(degrees);
+                let l = SongSelectLayout::new(w, h, &theme);
+                let at = format!("{w}x{h} scale {ui_scale} skew {degrees}");
+                assert!(l.header.y + l.header.height <= l.search.y, "{at}");
+                assert!(l.search.y + l.search.height <= l.list.y, "{at}");
+                assert!(l.list.y + l.list.height <= l.hint.y, "{at}");
+                assert!(
+                    l.list.height > l.row_height * 2.0,
+                    "{at}: {}",
+                    l.list.height
+                );
+                assert!(l.info.x + l.info.width <= leftmost(&l), "{at}");
+                assert!(l.list.x + l.list.width <= w, "{at}");
+            }
+        }
+    }
+}
+
+#[test]
+fn rows_hit_test_sanely_at_no_skew_and_at_the_largest() {
+    for degrees in [0.0, 20.0] {
+        let theme = Theme::default().with_skew(degrees);
+        let l = SongSelectLayout::new(1920.0, 1080.0, &theme);
+        let mut s = SongSelect::new();
+        put(&mut s, list(&[(1, 1), (2, 1), (3, 1)]));
+        let filter = SongFilter::for_list(&list(&[(1, 1), (2, 1), (3, 1)]));
+        for index in 0..3 {
+            let (cx, cy) = centre_of(&l, index, 0.0);
+            let x = cx + l.lean_x(cy);
+            assert_eq!(
+                l.row_at(x, cy, 0.0, &filter, 0).map(|r| match r {
+                    Row::Set(i) => i,
+                    Row::Difficulty { set, .. } => set,
+                }),
+                filter.row(0, index).map(|r| match r {
+                    Row::Set(i) => i,
+                    Row::Difficulty { set, .. } => set,
+                }),
+                "skew {degrees} row {index}"
+            );
+        }
+        // Left of the list at the row's height: no row.
+        let (_, cy) = centre_of(&l, 0, 0.0);
+        assert_eq!(
+            l.row_at(l.list.x - 10.0 + l.lean_x(cy), cy, 0.0, &filter, 0),
+            None
+        );
+        assert_eq!(l.lean == 0.0, degrees == 0.0);
+    }
+}
+
+mod thumbnails {
+    use slam_render::hal::Limits;
+    use slam_render::upload::{TextureHandle, TextureKind, TextureLoaderConfig, texture_loader};
+
+    use super::super::view::{FADES, ThumbGeometry, fade_alpha};
+    use super::*;
+
+    fn handles(n: usize) -> Vec<TextureHandle> {
+        let limits = Limits {
+            max_texture_size: 4096,
+            max_uniform_block_size: 16384,
+            max_uniform_buffer_slots: 12,
+            max_texture_slots: 16,
+        };
+        let (mut requests, _uploads) = texture_loader(&TextureLoaderConfig {
+            max_textures: 256,
+            ..TextureLoaderConfig::new(limits)
+        })
+        .unwrap();
+        (0..n)
+            .map(|_| requests.load(Vec::new(), TextureKind::Standalone).unwrap())
+            .collect()
+    }
+
+    const MS: u64 = 1_000_000;
+
+    #[test]
+    fn a_thumbnail_fades_in_from_its_first_frame_and_stays() {
+        let h = handles(2);
+        let mut fades = [None; FADES];
+        let mut next = 0;
+        assert_eq!(
+            fade_alpha(&mut fades, &mut next, h[0], 100 * MS, 200.0),
+            0.0
+        );
+        let half = fade_alpha(&mut fades, &mut next, h[0], 200 * MS, 200.0);
+        assert!((half - 0.5).abs() < 1e-6, "{half}");
+        assert_eq!(
+            fade_alpha(&mut fades, &mut next, h[0], 900 * MS, 200.0),
+            1.0
+        );
+        // Another thumbnail starts on its own.
+        assert_eq!(
+            fade_alpha(&mut fades, &mut next, h[1], 900 * MS, 200.0),
+            0.0
+        );
+        assert_eq!(
+            fade_alpha(&mut fades, &mut next, h[0], 901 * MS, 200.0),
+            1.0
+        );
+        // No fade time: whole at once.
+        let mut fades = [None; FADES];
+        assert_eq!(fade_alpha(&mut fades, &mut 0, h[0], 0, 0.0), 1.0);
+    }
+
+    #[test]
+    fn the_fade_table_replaces_the_oldest_when_full() {
+        let h = handles(FADES + 1);
+        let mut fades = [None; FADES];
+        let mut next = 0;
+        for handle in &h[..FADES] {
+            fade_alpha(&mut fades, &mut next, *handle, 0, 100.0);
+        }
+        // One more: the first is forgotten, so it starts over.
+        fade_alpha(&mut fades, &mut next, h[FADES], 500 * MS, 100.0);
+        assert_eq!(
+            fade_alpha(&mut fades, &mut next, h[0], 600 * MS, 100.0),
+            0.0
+        );
+        // The third is still known (it was shown at 0 and is whole).
+        assert_eq!(
+            fade_alpha(&mut fades, &mut next, h[2], 600 * MS, 100.0),
+            1.0
+        );
+    }
+
+    #[test]
+    fn the_thumbnail_sits_inside_the_row_and_the_text_makes_room() {
+        let theme = Theme::default();
+        let layout = SongSelectLayout::new(1280.0, 720.0, &theme);
+        let g = ThumbGeometry::new(&theme, &layout);
+        let row = layout.row_height - theme.song_row_gap * layout.scale;
+        assert!(g.height > 0.0 && g.height < row);
+        assert!((g.height + 2.0 * g.inset - row).abs() < 1e-3);
+        assert!((g.width / g.height - theme.song_thumbnail_aspect).abs() < 1e-3);
+        assert!((g.text_shift - (g.inset + g.width)).abs() < 1e-3);
+        // Cut at the list's edges; nothing outside gives none.
+        let area = Rect {
+            x: 0.0,
+            y: 100.0,
+            width: 300.0,
+            height: row,
+        };
+        let (top, bottom) = g.span(&area, 0.0, 1000.0).unwrap();
+        assert!((top - (100.0 + g.inset)).abs() < 1e-3 && (bottom - top - g.height).abs() < 1e-3);
+        let (top, _) = g.span(&area, 120.0, 1000.0).unwrap();
+        assert_eq!(top, 120.0);
+        assert!(g.span(&area, 0.0, 100.0).is_none());
+    }
+}
+
+/// A list of one set whose difficulties have the given keys, with star ratings in the
+/// order of `stars` (`None` for unknown).
+fn keyed_list(keys_and_stars: &[(u64, Option<f32>)]) -> Arc<SongList> {
+    let mut one = set(1, keys_and_stars.len());
+    for (row, &(key, stars)) in one.difficulties.iter_mut().zip(keys_and_stars) {
+        row.key = key;
+        row.stars = stars;
+        row.version = format!("key {key}");
+    }
+    Arc::new(SongList { sets: vec![one] })
+}
+
+#[test]
+fn reordering_a_set_keeps_the_selected_difficulty_and_scroll() {
+    let mut s = SongSelect::new();
+    put(&mut s, keyed_list(&[(10, None), (11, None), (12, None)]));
+    press(&mut s, I::Down);
+    press(&mut s, I::Down);
+    assert_eq!(s.selected(), Some((0, 2)));
+    let scroll = s.snapshot().scroll;
+    // Stars arrive and put key 12 first.
+    put(
+        &mut s,
+        keyed_list(&[(12, Some(1.0)), (10, Some(2.0)), (11, Some(3.0))]),
+    );
+    assert_eq!(s.selected(), Some((0, 0)));
+    assert_eq!(s.snapshot().scroll, scroll);
+    assert_eq!(s.snapshot().selected_stars(), Some(1.0));
+}
+
+#[test]
+fn zero_keys_fall_back_to_the_position() {
+    let mut s = screen(&[(1, 3)]);
+    press(&mut s, I::Down);
+    put(&mut s, list(&[(1, 3)]));
+    assert_eq!(s.selected(), Some((0, 1)));
+}
+
+#[test]
+fn view_focus_names_the_first_set_in_view() {
+    let mut s = screen(&[(7, 2), (8, 2)]);
+    assert_eq!(s.view_focus().map(|f| f.0), Some(7));
+    assert!(s.view_focus().is_some_and(|f| f.1 >= 2));
+    put(&mut s, Arc::default());
+    assert_eq!(s.view_focus(), None);
+}
+
+#[test]
+fn stars_are_written_as_two_decimals() {
+    let mut text = String::from("Insane");
+    push_stars(&mut text, 5.4321);
+    assert_eq!(text, "Insane \u{2605}5.43");
+}
+
+#[test]
+fn a_refreshed_list_keeps_the_scroll_and_the_hover() {
+    let sets: Vec<(u64, usize)> = (0..50).map(|k| (k, 1)).collect();
+    let mut s = screen(&sets);
+    let l = layout();
+    press(&mut s, I::Scroll { lines: 20.0 });
+    s.tick(1, &l);
+    s.tick(1_000_000_000, &l);
+    let scroll = s.snapshot().scroll;
+    assert_eq!(scroll, 20.0);
+    let (x, y) = centre_of(&l, 23, scroll);
+    press(&mut s, I::PointerMove { x, y });
+    let hovered = s.snapshot().hovered;
+    assert!(hovered.is_some());
+    // The same library arrives again, as it does when star ratings reorder it.
+    let again = list(&sets);
+    let filter = SongFilter::for_list(&again);
+    s.refresh_list(again, filter);
+    s.tick(1_000_000_001, &l);
+    assert_eq!(s.snapshot().scroll, scroll);
+    assert_eq!(s.snapshot().hovered, hovered);
+    // A new list scrolls to the selection again, as before.
+    put(&mut s, list(&sets));
+    assert_eq!(s.snapshot().scroll, 0.0);
+}
+
+fn put_refresh(s: &mut SongSelect, list: Arc<SongList>) {
+    let filter = SongFilter::for_list(&list);
+    s.refresh_list(list, filter);
+}
+
+#[test]
+fn a_refresh_reordering_the_pressed_row_does_not_click_another() {
+    let mut s = SongSelect::new();
+    put(&mut s, keyed_list(&[(10, None), (11, None), (12, None)]));
+    press(&mut s, I::Down);
+    press(&mut s, I::Down);
+    assert_eq!(s.selected(), Some((0, 2)));
+    let l = layout();
+    // Row 0 is the set, rows 1 to 3 its difficulties: press the middle one (key 11).
+    let (x, y) = centre_of(&l, 2, 0.0);
+    assert_eq!(press(&mut s, I::PointerMove { x, y }), None);
+    assert_eq!(press(&mut s, I::PointerPress { x, y }), None);
+    // Stars arrive: the selected key 12 now sits where key 11 was.
+    put_refresh(
+        &mut s,
+        keyed_list(&[(10, Some(1.0)), (12, Some(2.0)), (11, Some(3.0))]),
+    );
+    s.tick(1, &l);
+    assert_eq!(s.selected(), Some((0, 1)));
+    assert!(s.snapshot().hovered.is_some());
+    // The row under the pointer is the selected one, not the pressed one: no play.
+    assert_eq!(press(&mut s, I::PointerRelease), None);
+    assert_eq!(s.selected(), Some((0, 1)));
+}
+
+#[test]
+fn a_refresh_keeps_a_pressed_row_that_stays_put() {
+    let mut s = SongSelect::new();
+    put(&mut s, keyed_list(&[(10, None), (11, None), (12, None)]));
+    let l = layout();
+    let (x, y) = centre_of(&l, 2, 0.0);
+    assert_eq!(press(&mut s, I::PointerPress { x, y }), None);
+    put_refresh(
+        &mut s,
+        keyed_list(&[(10, Some(1.0)), (11, Some(2.0)), (12, Some(3.0))]),
+    );
+    assert_eq!(press(&mut s, I::PointerRelease), None);
+    assert_eq!(s.selected(), Some((0, 1)));
 }

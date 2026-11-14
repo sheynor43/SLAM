@@ -66,6 +66,17 @@ pub struct ResumeView {
 }
 
 impl ResumeView {
+    /// The overlay's cursor, for SLAM's cursor style (ADR-0124).
+    pub fn cursor(&self) -> &CursorView {
+        &self.cursor
+    }
+
+    /// Draws the overlay's cursor as SLAM's (ADR-0124).
+    pub fn with_slam(mut self, slam: bool) -> Self {
+        self.cursor = self.cursor.with_slam(slam);
+        self
+    }
+
     /// The overlay with its cursor's trail drawn or not and its cursor of `cursor_scale`, as
     /// the gameplay cursor's. The target is drawn no smaller than at scale 1.
     // Ported from osu!lazer 2026.1005.0-lazer: osu.Game.Rulesets.Osu/UI/OsuResumeOverlay.cs (OsuClickToResumeCursor.CalculateCursorScale)

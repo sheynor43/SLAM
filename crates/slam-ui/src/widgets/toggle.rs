@@ -1,9 +1,9 @@
 //! A boolean switch.
 
 use slam_render::atlas::AtlasRegion;
-use slam_render::sprite::SpriteBatch;
+use slam_render::shape::ShapeBatch;
 
-use super::fill;
+use super::{Look, draw};
 use crate::menu::Rect;
 use crate::theme::{Theme, faded};
 
@@ -98,7 +98,7 @@ impl ToggleView {
     /// Writes the switch into `shapes`. Does not allocate once the batch has room.
     pub fn push(
         &self,
-        shapes: &mut SpriteBatch,
+        shapes: &mut ShapeBatch,
         toggle: &Toggle,
         layout: &ToggleLayout,
         opacity: f32,
@@ -110,7 +110,16 @@ impl ToggleView {
         } else {
             theme.button_fill
         };
-        fill(shapes, white, &layout.track, faded(track_fill, opacity));
+        let s = layout.scale;
+        draw(
+            shapes,
+            white,
+            &layout.track,
+            faded(track_fill, opacity),
+            Look::Pill,
+            theme,
+            s,
+        );
         let pad = theme.widget_knob_pad * layout.scale;
         let size = layout.track.height - 2.0 * pad;
         let travel = layout.track.width - 2.0 * pad - size;
@@ -120,6 +129,14 @@ impl ToggleView {
             width: size,
             height: size,
         };
-        fill(shapes, white, &knob, faded(theme.text, opacity));
+        draw(
+            shapes,
+            white,
+            &knob,
+            faded(theme.text, opacity),
+            Look::Pill,
+            theme,
+            s,
+        );
     }
 }

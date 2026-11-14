@@ -4,7 +4,9 @@ use std::fs;
 use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
 
-use slam_library::scan::{BeatmapSetEntry, ScanEvent, ScanSummary, Scanner, scan_set, sort_sets};
+use slam_library::scan::{
+    BeatmapSetEntry, ScanEvent, ScanSummary, Scanner, scan_set, sort_difficulties, sort_sets,
+};
 
 struct Tmp(PathBuf);
 
@@ -232,4 +234,69 @@ fn each_difficulty_keeps_its_audio_file_and_preview_time() {
         .map(|d| (d.version.as_str(), d.audio.as_str(), d.preview_time))
         .collect();
     assert_eq!(audio, [("Easy", "audio.mp3", 45_000), ("Hard", "", -1)]);
+}
+
+fn set_with_ods(t: &Tmp, ods: &[(&str, &str)]) -> BeatmapSetEntry {
+    let d = t.0.join("set");
+    for (version, od) in ods {
+        let text = osu(0, "A", "S", version)
+            .replace("OverallDifficulty:8", &format!("OverallDifficulty:{od}"));
+        write(&d, &format!("{version}.osu"), &text);
+    }
+    scan_set(&d).unwrap().unwrap()
+}
+
+fn versions(entry: &BeatmapSetEntry) -> Vec<&str> {
+    entry
+        .difficulties
+        .iter()
+        .map(|d| d.version.as_str())
+        .collect()
+}
+
+#[test]
+fn difficulties_without_stars_are_ordered_by_od_then_name() {
+    let t = Tmp::new("od-order");
+    let e = set_with_ods(
+        &t,
+        &[("Zed", "3"), ("beta", "9"), ("Alpha", "9"), ("Mid", "5")],
+    );
+    assert_eq!(versions(&e), ["Zed", "Mid", "Alpha", "beta"]);
+}
+
+#[test]
+fn difficulties_with_stars_are_ordered_by_stars_then_name() {
+    let t = Tmp::new("star-order");
+    let mut e = set_with_ods(
+        &t,
+        &[("Easy", "2"), ("Hard", "8"), ("Insane", "9"), ("Twin", "9")],
+    );
+    // Stars disagree with OD: the star order wins once every difficulty has one.
+    let stars = |d: &slam_library::scan::DifficultyEntry| {
+        Some(match d.version.as_str() {
+            "Easy" => 4.0,
+            "Hard" => 1.5,
+            _ => 3.0,
+        })
+    };
+    sort_difficulties(&mut e.difficulties, stars);
+    assert_eq!(versions(&e), ["Hard", "Insane", "Twin", "Easy"]);
+}
+
+#[test]
+fn a_set_with_some_stars_unknown_puts_those_last_by_od_then_name() {
+    let t = Tmp::new("partial-order");
+    let mut e = set_with_ods(
+        &t,
+        &[
+            ("Easy", "2"),
+            ("Hard", "8"),
+            ("Insane", "9"),
+            ("Alpha", "9"),
+        ],
+    );
+    // Only the hardest by OD has a rating: it leads, the rest follow by OD and name.
+    let stars = |d: &slam_library::scan::DifficultyEntry| (d.version == "Insane").then_some(9.0);
+    sort_difficulties(&mut e.difficulties, stars);
+    assert_eq!(versions(&e), ["Insane", "Easy", "Hard", "Alpha"]);
 }

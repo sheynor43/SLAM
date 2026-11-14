@@ -1,6 +1,7 @@
 //! Screens, widgets, HUD and its editor, themes, transitions.
 
 pub mod anim;
+pub mod cursor;
 pub mod curtain;
 pub mod hud_layout;
 pub mod i18n;
@@ -10,5 +11,6 @@ pub mod results;
 pub mod screen;
 pub mod settings_screen;
 pub mod song_select;
+pub mod star_colour;
 pub mod theme;
 pub mod widgets;

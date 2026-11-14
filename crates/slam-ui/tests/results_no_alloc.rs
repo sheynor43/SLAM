@@ -4,6 +4,7 @@
 use std::sync::Arc;
 
 use slam_render::atlas::{AtlasRegion, UvRect};
+use slam_render::shape::ShapeBatch;
 use slam_render::sprite::SpriteBatch;
 use slam_render::textures::TextureId;
 use slam_render::{Extent, Limits, Origin};
@@ -98,13 +99,14 @@ fn view_pushes_without_allocating_once_warm() {
     let registry = Arc::new(FontRegistry::with_builtin());
     let mut glyphs = glyph_atlas(Arc::clone(&registry), &GlyphAtlasConfig::new(LIMITS)).unwrap();
     let mut view = ResultsView::new(registry, Theme::default(), &labels());
-    let mut shapes = SpriteBatch::with_capacity(256);
+    let mut shapes = ShapeBatch::with_capacity(256);
     let mut text = SpriteBatch::with_capacity(8192);
     let screen = Results::new(data(1));
     let snapshot = screen.snapshot();
     let pose = Pose {
         opacity: 0.5,
         offset: 0.05,
+        scale: 1.0,
     };
     let mut frame = |snapshot: &_| {
         shapes.clear();

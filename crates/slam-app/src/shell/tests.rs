@@ -9,8 +9,11 @@ use super::*;
 /// The rate of the test mixers and outputs.
 const SAMPLE_RATE: u32 = slam_audio::DEFAULT_SAMPLE_RATE;
 
+/// A shell whose transitions last `TRANSITION_NS`: the default style is random.
 fn state() -> ShellState {
-    ShellState::new(Theme::default(), 1280.0, 720.0, 1.0)
+    let mut settings = crate::settings::Settings::default();
+    settings.general.transitions = slam_ui::screen::TransitionStyle::Simple;
+    ShellState::new(Theme::default(), 1280.0, 720.0, 1.0).with_settings(settings)
 }
 
 fn key(scancode: u16) -> InputEvent {
@@ -713,6 +716,7 @@ fn host(name: &str, with_track: bool) -> HostFixture {
         registry: Arc::new(FontRegistry::with_builtin()),
         localizer: Arc::new(Localizer::builtin().unwrap()),
         replays: Some(dir.join("replays")),
+        scores: Some(dir.join("scores")),
         hud_layouts: None,
     })
     .unwrap();
@@ -729,9 +733,10 @@ fn host(name: &str, with_track: bool) -> HostFixture {
         menu_music: MenuMusic::default(),
         selection: (None, 0),
         rng: 1,
+        music_at: None,
+        ui_sounds: ui_sounds::UiSoundPlayer::new(SAMPLE_RATE),
         loader,
         scenes: scene_tx,
-        os_cursor: CursorVisibility::default(),
         win_key: WinKeyBlock::default(),
         menu_shown: false,
         pending: Pending::Idle,
@@ -747,6 +752,12 @@ fn host(name: &str, with_track: bool) -> HostFixture {
         localizer: Arc::new(Localizer::builtin().unwrap()),
         intro_sound: None,
         intro_voice: VoiceId::NONE,
+        pause_menu: (
+            crate::settings::PauseMenuStyle::Slam,
+            1.0,
+            slam_ui::theme::ColourScheme::Pink,
+        ),
+        effects: true,
     };
     HostFixture {
         host,
@@ -2276,6 +2287,25 @@ fn a_passed_play_saves_its_replay_before_the_results() {
         replay.beatmap_hash.as_deref(),
         Some(crate::replays::md5_hex(&map).as_str())
     );
+    // The passed attempt's score follows its replay into the beatmap's file (ADR-0125).
+    let scores = fixture
+        .dir
+        .join("scores")
+        .join(format!("{}.json", crate::replays::md5_hex(&map)));
+    let deadline = std::time::Instant::now() + Duration::from_secs(20);
+    while !scores.exists() {
+        assert!(std::time::Instant::now() < deadline, "no score saved");
+        std::thread::sleep(Duration::from_millis(1));
+    }
+    let top = crate::scores::load_top(
+        &fixture.dir.join("scores"),
+        &crate::replays::md5_hex(&map),
+        10,
+    );
+    assert_eq!(top.len(), 1);
+    assert_eq!(top[0].replay.as_deref(), Some(name.as_str()));
+    assert_eq!(top[0].player, crate::replays::PLAYER_NAME);
+    assert_ne!(top[0].rank, "F");
 }
 
 #[test]
@@ -2293,4 +2323,126 @@ fn the_interface_starts_in_the_settings_language() {
     // Not from the file reader: an unknown tag stays English.
     settings.general.language = Some("de".to_owned());
     assert_eq!(menu(&settings), "Language");
+}
+
+#[test]
+fn another_theme_lays_the_screens_out_again_at_the_same_size() {
+    let mut s = state();
+    let before = s.layout.buttons[0];
+    s.set_theme(Theme::new(slam_ui::theme::ColourScheme::Green, 1.25));
+    let after = s.layout.buttons[0];
+    assert!((after.width - before.width * 1.25).abs() < 1e-3);
+    assert_eq!(s.theme().scheme, slam_ui::theme::ColourScheme::Green);
+    // The window size is kept.
+    assert_eq!(s.size, [1280.0, 720.0]);
+    assert!(s.song_layout != SongSelectLayout::new(1280.0, 720.0, &Theme::default()));
+}
+
+#[test]
+fn the_menu_background_follows_the_music_or_the_skin() {
+    let files: Arc<SongFiles> = Arc::from(Vec::new());
+    let skin: Arc<Path> = Arc::from(Path::new("/skins/a"));
+    let beatmap = |source: BackgroundSource<'_>| match source {
+        BackgroundSource::Beatmap { selected, .. } => Some(selected),
+        BackgroundSource::Skin(_) => None,
+    };
+    let (track, selected) = (Some((3, 1)), Some((7, 0)));
+    let on_menu = |setting| background_source(true, setting, &files, track, selected, Some(&skin));
+    assert_eq!(beatmap(on_menu(MenuBackground::Beatmap)), Some(track));
+    assert!(matches!(
+        on_menu(MenuBackground::Skin),
+        BackgroundSource::Skin(Some(s)) if Arc::ptr_eq(s, &skin)
+    ));
+    // Off the menu, the song select's selection whatever the setting.
+    for setting in [
+        MenuBackground::Beatmap,
+        MenuBackground::Skin,
+        MenuBackground::None,
+    ] {
+        let source = background_source(false, setting, &files, track, selected, Some(&skin));
+        assert_eq!(beatmap(source), Some(selected));
+    }
+}
+
+#[test]
+fn going_in_and_out_of_screens_and_moving_the_selection_make_sounds() {
+    use crate::menu_sounds::MenuSound;
+    let at_ms = super::tests::at;
+    let at = |sound| {
+        MenuSound::ALL
+            .iter()
+            .position(|s| *s == sound)
+            .expect("listed")
+    };
+    let (mut s, mut snap, _producer) = in_song_select();
+    // Coming in from the menu was noted on the way.
+    assert_eq!(s.ui_seen.0, 2);
+    let _ = s.take_ui_sounds();
+    let t = at_ms(1);
+    s.tick(t, &[key(KEY_ESCAPE)], &mut snap);
+    let noted = s.take_ui_sounds();
+    assert!(noted[at(MenuSound::Back)], "{noted:?}");
+    s.tick(t + TRANSITION_NS, &[], &mut snap);
+    assert_eq!(s.take_ui_sounds(), [false; MenuSound::ALL.len()]);
+}
+
+#[test]
+fn the_menu_scale_waits_for_the_settings_to_be_kept_and_the_scheme_does_not() {
+    let committed = Settings::default();
+    let mut live = committed.clone();
+    live.general.menu_scale = 1.4;
+    live.general.colour_scheme = slam_ui::theme::ColourScheme::Orange;
+    let theme = interface_theme(&live, &committed);
+    assert_eq!(theme.scheme, slam_ui::theme::ColourScheme::Orange);
+    assert_eq!(theme.ui_scale, 1.0);
+    assert_eq!(interface_theme(&live, &live).ui_scale, 1.4);
+}
+
+#[test]
+fn the_skew_applies_live_like_the_scheme() {
+    let committed = Settings::default();
+    let mut live = committed.clone();
+    live.general.skew = 3.0;
+    let theme = interface_theme(&live, &committed);
+    assert!((theme.button_skew() - 3f32.to_radians()).abs() < 1e-6);
+    live.general.skew = 0.0;
+    assert_eq!(interface_theme(&live, &committed).button_skew(), 0.0);
+}
+
+#[test]
+fn stable_pause_menu_without_the_skins_buttons_is_slams() {
+    use crate::settings::PauseMenuStyle;
+    use slam_play::menu_overlay::MenuStyle;
+    for (setting, stable, shown) in [
+        (PauseMenuStyle::Stable, true, MenuStyle::Stable),
+        (PauseMenuStyle::Stable, false, MenuStyle::Slam),
+        (PauseMenuStyle::Lazer, false, MenuStyle::Lazer),
+        (PauseMenuStyle::Slam, true, MenuStyle::Slam),
+    ] {
+        assert_eq!(menu_style(setting, stable), shown);
+    }
+}
+
+#[test]
+fn a_reordering_republish_under_the_selection_makes_no_hover_sound() {
+    use crate::menu_sounds::MenuSound;
+    let hover = MenuSound::ALL
+        .iter()
+        .position(|s| *s == MenuSound::Hover)
+        .expect("listed");
+    let (mut s, mut snap, mut producer) = in_song_select();
+    let t = TRANSITION_NS;
+    // The player moves to the second difficulty of the first set.
+    s.tick(t + 1, &[key(KEY_DOWN)], &mut snap);
+    assert_eq!(s.song_select().selected(), Some((0, 1)));
+    let _ = s.take_ui_sounds();
+    // Ratings put the difficulties in the other order: the selection is the same one.
+    let mut sets = songs(&[("a", &["Easy", "Hard"]), ("b", &["Insane"])]);
+    sets[0].difficulties.reverse();
+    let mut published = crate::songs::publish(&sets, SongSelectStatus::Ready, Arc::from(""));
+    published.refresh = true;
+    producer.push(published).unwrap_or_else(|_| panic!("ring"));
+    s.tick(t + 2, &[], &mut snap);
+    assert_eq!(s.song_select().selected(), Some((0, 0)));
+    assert!(!s.take_ui_sounds()[hover]);
 }

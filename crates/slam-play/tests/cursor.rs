@@ -517,3 +517,105 @@ fn a_jump_leaves_no_trail_on_the_way_and_a_hidden_cursor_draws_nothing() {
     let leftmost = quads(&batch)[0][0];
     assert!(leftmost > layout().to_window(Vec2::new(400.0, 100.0)).x - 10.0 * scale);
 }
+
+#[test]
+fn slams_cursor_leaves_a_pose_instead_of_the_skins_sprites_and_keeps_the_trail() {
+    let mut path = CursorPath::default();
+    let at = Vec2::new(256.0, 192.0);
+    path.push(at);
+    let centre = layout().to_window(at);
+    let scale = CursorScale::new(1.5, false, 4.0);
+    let textures = textures(CursorSkinConfig::default());
+    let draw = |slam: bool, visible: bool| {
+        let mut view = CursorView::new(true, scale).with_slam(slam);
+        let mut batch = SpriteBatch::new();
+        let mut f = frame(&path, at, ExpandTimes::default(), 0.0);
+        f.visible = visible;
+        view.push(&mut batch, &layout(), &f, &textures);
+        (batch.len(), view.slam_pose())
+    };
+    let (skin_sprites, no_pose) = draw(false, true);
+    assert_eq!(no_pose, None);
+    let (slam_sprites, pose) = draw(true, true);
+    // The cursor and its middle are gone: two sprites fewer; the trail stays.
+    assert_eq!(slam_sprites + 2, skin_sprites);
+    let pose = pose.unwrap();
+    assert_eq!(pose.at, [centre.x, centre.y]);
+    assert!((pose.scale - layout().scale() * 1.5).abs() < 1e-5);
+    // Hidden (the resume overlay's turn): no pose.
+    assert_eq!(draw(true, false).1, None);
+}
+
+#[test]
+fn slams_cursor_needs_no_skin_textures_and_draws_shapes() {
+    use slam_render::shape::ShapeBatch;
+    use slam_render::{Origin, atlas::AtlasRegion, hal::Extent};
+    let mut path = CursorPath::default();
+    path.push(Vec2::new(100.0, 100.0));
+    // The skin has no cursor textures at all: SLAM's cursor does not need them.
+    let none = CursorTextures::default();
+    let mut view = CursorView::new(false, CursorScale::default()).with_slam(true);
+    let mut batch = SpriteBatch::new();
+    view.push(
+        &mut batch,
+        &layout(),
+        &frame(&path, Vec2::new(100.0, 100.0), ExpandTimes::default(), 0.0),
+        &none,
+    );
+    assert!(batch.is_empty());
+    let pose = view.slam_pose().expect("a pose without textures");
+    let white = AtlasRegion {
+        texture: TextureId(1),
+        origin: Origin { x: 0, y: 0 },
+        size: Extent::new(1, 1),
+        uv: UvRect::FULL,
+    };
+    let theme = slam_ui::theme::Theme::default();
+    let mut shapes = ShapeBatch::with_capacity(slam_ui::cursor::MAX_CURSOR_SHAPES);
+    slam_ui::cursor::push_gameplay_cursor(
+        &mut shapes,
+        &theme,
+        white,
+        pose.at,
+        theme.cursor_gameplay_size * pose.scale,
+        pose.expand,
+    );
+    assert!(!shapes.is_empty());
+}
+
+#[test]
+fn slams_cursor_expands_on_a_click_with_the_skins_times() {
+    let mut path = CursorPath::default();
+    let at = Vec2::new(256.0, 192.0);
+    path.push(at);
+    let expand_at = |expand: ExpandTimes, time: f64, config: CursorSkinConfig| {
+        let mut view = CursorView::new(false, CursorScale::default()).with_slam(true);
+        let mut batch = SpriteBatch::new();
+        view.push(
+            &mut batch,
+            &layout(),
+            &frame(&path, at, expand, time),
+            &textures(config),
+        );
+        view.slam_pose().unwrap().expand
+    };
+    let config = CursorSkinConfig::default();
+    assert_eq!(expand_at(ExpandTimes::default(), 0.0, config), 1.0);
+    let clicked = ExpandTimes {
+        expanded_at: 0.0,
+        contracted_at: f64::NEG_INFINITY,
+    };
+    let full = expand_at(clicked, 500.0, config);
+    assert!((full - 1.3).abs() < 1e-5, "{full}");
+    let released = ExpandTimes {
+        contracted_at: 500.0,
+        ..clicked
+    };
+    assert!((expand_at(released, 700.0, config) - 1.0).abs() < 1e-5);
+    // `CursorExpand` off in the skin: no expansion.
+    let off = CursorSkinConfig {
+        expand: false,
+        ..config
+    };
+    assert_eq!(expand_at(clicked, 500.0, off), 1.0);
+}

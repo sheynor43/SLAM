@@ -9,8 +9,15 @@ use slam_ui::settings_screen::{KeyValue, MouseKey, RowWidget};
 
 use super::*;
 
+/// A shell whose transitions last `TRANSITION_NS`: the default style is random.
 fn state() -> ShellState {
-    ShellState::new(Theme::default(), 1280.0, 720.0, 1.0)
+    ShellState::new(Theme::default(), 1280.0, 720.0, 1.0).with_settings(test_settings())
+}
+
+fn test_settings() -> Settings {
+    let mut settings = Settings::default();
+    settings.general.transitions = slam_ui::screen::TransitionStyle::Simple;
+    settings
 }
 
 fn key(scancode: u16) -> InputEvent {
@@ -60,7 +67,7 @@ fn closing_without_a_change_saves_nothing() {
     opened(&mut s, &mut snap);
     s.tick(LATER, &[key(KEY_ESCAPE)], &mut snap);
     assert!(s.take_save_request().is_none());
-    assert_eq!(*s.settings(), Settings::default());
+    assert_eq!(*s.settings(), test_settings());
 }
 
 #[test]
@@ -85,8 +92,8 @@ fn the_frame_section_changes_the_draw_rates() {
     let mut s = state();
     let mut snap = ShellSnapshot::default();
     opened(&mut s, &mut snap);
-    // Audio, offset, keys, layout, frame rates.
-    let tabs = [key(KEY_TAB); 4];
+    // Audio, offset, keys, layout, skin, frame rates.
+    let tabs = [key(KEY_TAB); 5];
     s.tick(LATER, &tabs, &mut snap);
     // Update rate, gameplay rate: the next option after 1000 Hz is 2000 Hz.
     s.tick(LATER, &[key(KEY_DOWN), key(KEY_RIGHT)], &mut snap);
@@ -122,7 +129,7 @@ fn a_released_primary_button_ends_a_slider_drag() {
     let mut snap = ShellSnapshot::default();
     opened(&mut s, &mut snap);
     let layout = s.settings_layout;
-    let widget = slam_ui::widgets::SliderLayout::new(layout.widget(0), &s.theme, layout.scale);
+    let widget = slam_ui::widgets::SliderLayout::new(layout.widget(1), &s.theme, layout.scale);
     let (y, x) = (
         widget.hit.y + 2.0,
         widget.track.x + widget.track.width * 0.5,
@@ -189,6 +196,7 @@ pub(super) fn shell_with(link: crate::settings::saver::SaveLink) -> Shell {
         scale: slam_input::WindowScale::default(),
         pixels_per_point: 1.0,
         exited: Arc::new(AtomicBool::new(false)),
+        os_cursor: slam_input::CursorVisibility::default(),
         draw_rate: DrawRateControl::new(),
         rate_switch: DrawRateSwitch::new(LimiterMode::Hz(1000.0)),
         update_rate: AppliedUpdateRate::new(UpdateRateControl::new(), 1000.0),
@@ -203,6 +211,7 @@ pub(super) fn shell_with(link: crate::settings::saver::SaveLink) -> Shell {
             Arc::new(slam_ui::i18n::Localizer::builtin().unwrap()),
             None,
             None,
+            Theme::default(),
         ),
     }
 }
@@ -389,8 +398,8 @@ fn a_committed_update_rate_reaches_the_engine() {
     shell.update_rate = AppliedUpdateRate::new(control.clone(), 1000.0);
     let mut snap = ShellSnapshot::default();
     opened(&mut shell.state, &mut snap);
-    // Audio, offset, keys, layout, frame rates; the update rate is the first row.
-    let tabs = [key(KEY_TAB); 4];
+    // Audio, offset, keys, layout, skin, frame rates; the update rate is the first row.
+    let tabs = [key(KEY_TAB); 5];
     shell.state.tick(LATER, &tabs, &mut snap);
     shell.state.tick(LATER, &[key(KEY_RIGHT)], &mut snap);
     // Not before the screen closes.
@@ -519,7 +528,7 @@ fn escape_while_listening_cancels_and_keeps_the_screen_open() {
     s.tick(LATER, &[key(KEY_ENTER), key(KEY_ESCAPE)], &mut snap);
     assert!(s.settings_open());
     assert!(!settings_screen(&s).is_listening());
-    assert_eq!(*edited(&s), Settings::default());
+    assert_eq!(*edited(&s), test_settings());
     // Now it closes.
     s.tick(LATER, &[key(KEY_ESCAPE)], &mut snap);
     assert!(!s.settings_open());
@@ -550,8 +559,9 @@ fn a_click_starts_listening_and_the_next_press_of_any_button_is_captured() {
     let mut s = state();
     let mut snap = ShellSnapshot::default();
     on_keys(&mut s, &mut snap);
-    let layout = s.settings_layout;
-    let widget = layout.widget(layout_slot(Row::LeftKey2));
+    let screen = settings_screen(&s);
+    let layout = s.settings_layout.scrolled(screen.shown_scroll());
+    let widget = layout.widget(screen.slot(Row::LeftKey2 as usize));
     let (x, y) = (widget.x + 4.0, widget.y + 4.0);
     s.tick(
         LATER,
@@ -564,7 +574,7 @@ fn a_click_starts_listening_and_the_next_press_of_any_button_is_captured() {
     );
     // The click itself was not taken as the binding.
     assert!(settings_screen(&s).is_listening());
-    assert_eq!(*edited(&s), Settings::default());
+    assert_eq!(*edited(&s), test_settings());
     s.tick(LATER, &[mouse(MouseButton::X1, true)], &mut snap);
     assert!(!settings_screen(&s).is_listening());
     assert!(s.settings_open());
@@ -581,12 +591,6 @@ fn a_click_starts_listening_and_the_next_press_of_any_button_is_captured() {
     );
 }
 
-/// The position of `row` in its section.
-fn layout_slot(row: Row) -> usize {
-    // The keys section starts with the mouse toggle.
-    row as usize - Row::MouseButtons as usize
-}
-
 #[test]
 fn a_taken_key_asks_and_keeping_changes_nothing() {
     let mut s = state();
@@ -597,12 +601,12 @@ fn a_taken_key_asks_and_keeping_changes_nothing() {
     assert_eq!(conflict.row, Row::LeftKey1 as usize);
     assert_eq!(conflict.key, KeyValue::Key(KEY_X));
     assert_eq!(conflict.other, Some(Row::RightKey1 as usize));
-    assert_eq!(*edited(&s), Settings::default());
+    assert_eq!(*edited(&s), test_settings());
     // Escape keeps and does not close.
     s.tick(LATER, &[key(KEY_ESCAPE)], &mut snap);
     assert!(s.settings_open());
     assert!(settings_screen(&s).conflict().is_none());
-    assert_eq!(*edited(&s), Settings::default());
+    assert_eq!(*edited(&s), test_settings());
     // Activate keeps by default.
     s.tick(
         LATER,
@@ -610,7 +614,7 @@ fn a_taken_key_asks_and_keeping_changes_nothing() {
         &mut snap,
     );
     assert!(settings_screen(&s).conflict().is_none());
-    assert_eq!(*edited(&s), Settings::default());
+    assert_eq!(*edited(&s), test_settings());
 }
 
 #[test]
@@ -1047,7 +1051,8 @@ fn committed_settings_in_another_language_switch_the_interface() {
     let (link, _taken) = crate::settings::saver::detached(1);
     let mut shell = shell_with(link);
     let localizer = Arc::new(slam_ui::i18n::Localizer::builtin().unwrap());
-    shell.language = super::language::AppliedLanguage::new(Arc::clone(&localizer), None, None);
+    shell.language =
+        super::language::AppliedLanguage::new(Arc::clone(&localizer), None, None, Theme::default());
     shell.apply_settings(0);
     assert_eq!(localizer.generation(), 0);
     let mut settings = shell.state.settings().clone();
@@ -1064,7 +1069,8 @@ fn a_language_picked_on_the_open_settings_screen_switches_at_once() {
     let (link, _taken) = crate::settings::saver::detached(1);
     let mut shell = shell_with(link);
     let localizer = Arc::new(slam_ui::i18n::Localizer::builtin().unwrap());
-    shell.language = super::language::AppliedLanguage::new(Arc::clone(&localizer), None, None);
+    shell.language =
+        super::language::AppliedLanguage::new(Arc::clone(&localizer), None, None, Theme::default());
     let mut snap = ShellSnapshot::default();
     opened(&mut shell.state, &mut snap);
     shell.apply_settings(0);
@@ -1388,12 +1394,42 @@ fn the_panel_opens_over_a_play_only_with_its_menu() {
 
 #[test]
 fn the_snapshot_carries_the_song_select_dim() {
+    // The main menu dims its background by the theme's token (ADR-0119).
     let mut s = state();
     let mut snap = ShellSnapshot::default();
     s.tick(LATER, &[], &mut snap);
+    assert_eq!(snap.background_dim, s.theme().menu_background_dim);
+    assert!(snap.menu_background);
+
+    let (mut s, mut snap, _producer) = super::tests::in_song_select();
+    let t = super::tests::at(1);
+    s.tick(t, &[], &mut snap);
     assert!((snap.background_dim - 0.7).abs() < 1e-6);
-    opened(&mut s, &mut snap);
+    s.editing = Some(s.settings.clone());
     s.editing.as_mut().unwrap().song_select.background_dim = 0.25;
-    s.tick(LATER, &[], &mut snap);
+    s.tick(t, &[], &mut snap);
     assert!((snap.background_dim - 0.25).abs() < 1e-6);
+}
+
+#[test]
+fn the_menu_cursor_style_hides_the_os_cursor_and_reaches_the_snapshot_live() {
+    use slam_ui::cursor::CursorStyle;
+    let (link, _taken) = crate::settings::saver::detached(1);
+    let mut shell = shell_with(link);
+    let info = slam_engine::TickInfo {
+        now_ns: LATER,
+        deadline_ns: LATER,
+        by_input: false,
+    };
+    let mut snap = ShellSnapshot::default();
+    for (style, hidden) in [
+        (CursorStyle::Slam, true),
+        (CursorStyle::Skin, true),
+        (CursorStyle::System, false),
+    ] {
+        shell.state.settings.general.menu_cursor = style;
+        slam_engine::Update::tick(&mut shell, &info, &[], &mut snap);
+        assert_eq!(snap.menu_cursor.style, style);
+        assert_eq!(shell.os_cursor.is_hidden(), hidden, "{style:?}");
+    }
 }

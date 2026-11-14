@@ -61,10 +61,17 @@ pub struct PlayOptions {
     pub cursor_size: f64,
     /// The cursor's size follows the beatmap's circle size.
     pub auto_cursor_size: bool,
+    /// Which cursor gameplay draws (ADR-0124); with relative mouse, `system` is `skin`.
+    pub cursor_style: slam_ui::cursor::CursorStyle,
+    /// The colour scheme of SLAM's cursor; the default one with another style, so that a
+    /// change of scheme does not prepare the play again for nothing.
+    pub cursor_scheme: slam_ui::theme::ColourScheme,
     /// How far hitsounds pan with the object's position (ADR-0087).
     pub positional_hitsounds_level: f32,
     /// Id of the active HUD layout (ADR-0109); resolved on the loader thread.
     pub hud_layout: String,
+    /// The in-game interface scale of the HUD (ADR-0118).
+    pub game_scale: f32,
     /// The chosen skin's folder (ADR-0051); `None` plays on the default skin.
     pub skin: Option<PathBuf>,
     /// The mods the player selected; the settings' fixed field is replaced by this.
@@ -104,13 +111,22 @@ pub enum Trash {
     TrackCommand(PlayError),
 }
 
-fn log(trash: Trash, replays: Option<&Path>) {
+fn log(trash: Trash, replays: Option<&Path>, scores: Option<&Path>) {
     match trash {
         Trash::Session(session) => log_hit_errors(&session),
-        Trash::Replay(job) => match replays {
-            Some(dir) => crate::replays::save(&job, dir),
-            None => tracing::warn!("replay not saved: no data folder"),
-        },
+        Trash::Replay(job) => {
+            let replay = match replays {
+                Some(dir) => crate::replays::save(&job, dir),
+                None => {
+                    tracing::warn!("replay not saved: no data folder");
+                    None
+                }
+            };
+            // The score of a passed attempt follows its replay (ADR-0125).
+            if let Some(dir) = scores {
+                crate::scores::save_passed(&job, replay, dir);
+            }
+        }
         Trash::Music(MusicEvent::Failed { error, .. }) => tracing::warn!("track: {error}"),
         Trash::TrackCommand(error) => tracing::warn!("track: {error}"),
         _ => {}
@@ -133,6 +149,8 @@ pub struct LoaderConfig {
     pub localizer: Arc<Localizer>,
     /// Where replays of finished plays are saved; `None` saves none.
     pub replays: Option<PathBuf>,
+    /// Where local scores of passed plays are saved (ADR-0125); `None` saves none.
+    pub scores: Option<PathBuf>,
     /// Where user HUD layouts live; `None` knows only the built-in ones.
     pub hud_layouts: Option<LayoutStore>,
 }
@@ -220,7 +238,7 @@ pub fn spawn(mut config: LoaderConfig) -> std::io::Result<(LoaderLink, SceneTras
             while !flag.load(Ordering::Relaxed) {
                 let mut idle = true;
                 while let Ok(trash) = trash_rx.pop() {
-                    log(trash, config.replays.as_deref());
+                    log(trash, config.replays.as_deref(), config.scores.as_deref());
                     idle = false;
                 }
                 while scene_rx.pop().is_ok() {
@@ -244,6 +262,7 @@ pub fn spawn(mut config: LoaderConfig) -> std::io::Result<(LoaderLink, SceneTras
                         options.always_play_first_combo_break;
                     config.settings.hud_layout =
                         resolve(config.hud_layouts.as_ref(), &options.hud_layout).gameplay;
+                    config.settings.game_scale = options.game_scale;
                     config.settings.snaking = options.snaking();
                     config.settings.hit_lighting = options.hit_lighting;
                     config.settings.key_overlay = options.key_overlay;
@@ -251,6 +270,8 @@ pub fn spawn(mut config: LoaderConfig) -> std::io::Result<(LoaderLink, SceneTras
                     config.settings.cursor_trail = options.cursor_trail;
                     config.settings.cursor_size = options.cursor_size as f32;
                     config.settings.auto_cursor_size = options.auto_cursor_size;
+                    config.settings.cursor_style = options.cursor_style;
+                    config.settings.cursor_scheme = options.cursor_scheme;
                     config.settings.positional_hitsounds_level = options.positional_hitsounds_level;
                     config.settings.skin = options.skin;
                     config.settings.mods = options.mods;
@@ -278,7 +299,7 @@ pub fn spawn(mut config: LoaderConfig) -> std::io::Result<(LoaderLink, SceneTras
             }
             // Replays of the last plays are still saved when the game closes.
             while let Ok(trash) = trash_rx.pop() {
-                log(trash, config.replays.as_deref());
+                log(trash, config.replays.as_deref(), config.scores.as_deref());
             }
         })?;
     Ok((
@@ -320,8 +341,11 @@ mod tests {
             cursor_trail: true,
             cursor_size: 1.0,
             auto_cursor_size: false,
+            cursor_style: slam_ui::cursor::CursorStyle::Skin,
+            cursor_scheme: slam_ui::theme::ColourScheme::default(),
             positional_hitsounds_level: 0.2,
             hud_layout: "builtin:stable".into(),
+            game_scale: 1.0,
             skin: None,
             mods: ModSet::default(),
         }
@@ -339,6 +363,7 @@ mod tests {
             registry: Arc::new(FontRegistry::with_builtin()),
             localizer: Arc::new(Localizer::builtin().unwrap()),
             replays: None,
+            scores: None,
             hud_layouts: None,
         }
     }

@@ -28,3 +28,47 @@ fn ticks_and_layers_do_not_allocate() {
         }
     });
 }
+
+#[test]
+fn every_transition_overlay_is_emitted_without_allocating() {
+    use slam_render::Extent;
+    use slam_render::atlas::{AtlasRegion, UvRect};
+    use slam_render::hal::Origin;
+    use slam_render::textures::TextureId;
+    use slam_ui::screen::{TransitionFx, TransitionStyle};
+    use slam_ui::theme::Theme;
+
+    let white = AtlasRegion {
+        texture: TextureId(0),
+        origin: Origin { x: 0, y: 0 },
+        size: Extent::new(8, 8),
+        uv: UvRect {
+            u0: 0.0,
+            v0: 0.0,
+            u1: 1.0,
+            v1: 1.0,
+        },
+    };
+    let theme = Theme::default();
+    let mut count = 0usize;
+    assert_no_alloc(|| {
+        for style in [
+            TransitionStyle::Band,
+            TransitionStyle::Slices,
+            TransitionStyle::Iris,
+            TransitionStyle::Shards,
+            TransitionStyle::Shutter,
+        ] {
+            for step in 0..=20 {
+                let fx = TransitionFx {
+                    style,
+                    forward: step % 2 == 0,
+                    linear: step as f32 / 20.0,
+                    origin: None,
+                };
+                fx.emit(&theme, white, 1280.0, 720.0, |_| count += 1);
+            }
+        }
+    });
+    assert!(count > 0);
+}

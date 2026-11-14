@@ -4,6 +4,7 @@
 use std::sync::Arc;
 
 use slam_render::atlas::{AtlasRegion, UvRect};
+use slam_render::shape::{EDGE_MARGIN, ShapeBatch};
 use slam_render::sprite::SpriteBatch;
 use slam_render::textures::TextureId;
 use slam_render::{Extent, Limits, Origin};
@@ -11,9 +12,9 @@ use slam_testkit::assert_no_alloc;
 use slam_text::{FontRegistry, GlyphAtlasConfig, glyph_atlas};
 use slam_ui::screen::Pose;
 use slam_ui::song_select::{
-    DifficultyRow, ModColumns, QUERY_CAPACITY, SearchSource, SetRow, SettingRow, SettingRowKind,
-    SongFilter, SongList, SongSelect, SongSelectInput, SongSelectLabels, SongSelectLayout,
-    SongSelectStatus, SongSelectView,
+    DifficultyRow, MAX_VISIBLE_ROWS, ModColumns, QUERY_CAPACITY, RowThumb, SearchSource, SetRow,
+    SettingRow, SettingRowKind, SongFilter, SongList, SongSelect, SongSelectInput,
+    SongSelectLabels, SongSelectLayout, SongSelectStatus, SongSelectView, Thumbs,
 };
 use slam_ui::theme::Theme;
 
@@ -35,13 +36,16 @@ fn list_of(count: u64) -> Arc<SongList> {
                 creator: "mapper".into(),
                 difficulties: (0..3)
                     .map(|d| {
-                        DifficultyRow::new(SearchSource {
+                        let mut row = DifficultyRow::new(SearchSource {
                             difficulty: &format!("diff {d}"),
                             creator: "mapper",
                             artist: &format!("artist {k}"),
                             title: &format!("title {k}"),
                             ..SearchSource::default()
-                        })
+                        });
+                        // Two rated, one not yet: pills, dots and the accent fallback.
+                        row.stars = (d < 2).then_some(1.5 + d as f32 * 2.7);
+                        row
                     })
                     .collect(),
             })
@@ -136,6 +140,8 @@ fn labels() -> SongSelectLabels {
             approach_rate: "AR".into(),
             overall_difficulty: "OD".into(),
             drain_rate: "HP".into(),
+            scores: "Локальные рекорды".into(),
+            no_scores: "Рекордов нет".into(),
         },
     }
 }
@@ -143,8 +149,11 @@ fn labels() -> SongSelectLabels {
 struct Rig {
     view: SongSelectView,
     glyphs: slam_text::GlyphCache,
-    shapes: SpriteBatch,
+    shapes: ShapeBatch,
     text: SpriteBatch,
+    thumbs: bool,
+    rows: [Option<RowThumb>; MAX_VISIBLE_ROWS],
+    now_ns: u64,
 }
 
 impl Rig {
@@ -154,8 +163,11 @@ impl Rig {
         Rig {
             view: SongSelectView::new(registry, Theme::default(), &labels()),
             glyphs,
-            shapes: SpriteBatch::with_capacity(256),
+            shapes: ShapeBatch::with_capacity(256),
             text: SpriteBatch::with_capacity(8192),
+            thumbs: false,
+            rows: [None; MAX_VISIBLE_ROWS],
+            now_ns: 0,
         }
     }
 
@@ -165,6 +177,7 @@ impl Rig {
         let pose = Pose {
             opacity: 0.5,
             offset: 0.05,
+            scale: 1.0,
         };
         self.view.push(
             &mut self.shapes,
@@ -175,6 +188,11 @@ impl Rig {
             snapshot,
             pose,
             white(),
+            Thumbs {
+                enabled: self.thumbs,
+                rows: &self.rows,
+                now_ns: self.now_ns,
+            },
         );
     }
 }
@@ -536,12 +554,16 @@ fn rows_scrolled_part_way_stay_inside_the_list() {
         assert_eq!(snapshot.scroll, lines);
         rig.frame(&snapshot);
         let mut counts = (0, 0);
-        for batch in [&rig.shapes, &rig.text] {
-            for vertex in batch.vertices() {
-                let y = vertex.position[1];
-                counts.0 += usize::from(y < top - 0.01);
-                counts.1 += usize::from(y > bottom + 0.01);
-            }
+        // Shapes reach their edge margin past their rectangles (ADR-0116).
+        let shapes = rig
+            .shapes
+            .vertices()
+            .iter()
+            .map(|v| (v.position[1], EDGE_MARGIN));
+        let text = rig.text.vertices().iter().map(|v| (v.position[1], 0.0));
+        for (y, margin) in shapes.chain(text) {
+            counts.0 += usize::from(y < top - margin - 0.01);
+            counts.1 += usize::from(y > bottom + margin + 0.01);
         }
         counts
     };
@@ -553,7 +575,23 @@ fn rows_scrolled_part_way_stay_inside_the_list() {
 
 #[test]
 fn changing_details_push_without_allocating_once_warm() {
-    use slam_ui::song_select::{BeatmapDetails, DetailStats};
+    use slam_ui::song_select::{
+        BeatmapDetails, DetailStats, LocalScores, MAX_LOCAL_SCORES, ScoreMods, ScoreRow,
+    };
+
+    let scores = |i: u32| LocalScores {
+        rows: std::array::from_fn(|n| {
+            (n < (i as usize % 4) * 4).then(|| ScoreRow {
+                total_score: 1_000_000 + u64::from(i) * 7919 + n as u64,
+                accuracy: 0.9 + n as f64 / 1000.0,
+                max_combo: 100 + n as u32,
+                rank: *b"SH",
+                mods: ScoreMods::from_acronyms(["HD", "DT"]),
+                date_ms: 1_700_000_000_000 + i64::from(i) * 86_400_000,
+            })
+        }),
+    };
+    assert_eq!(scores(0).rows.len(), MAX_LOCAL_SCORES);
 
     let mut rig = Rig::new();
     let mut screen = SongSelect::new();
@@ -572,6 +610,7 @@ fn changing_details_push_without_allocating_once_warm() {
             sliders: 300,
             spinners: 2,
         }),
+        scores: Some(scores(i)),
     };
     let snapshots: Vec<_> = (0..6)
         .map(|i| {
@@ -641,4 +680,50 @@ fn switching_to_the_no_audio_message_does_not_allocate() {
             rig.frame(&refused);
         }
     });
+}
+
+/// Handles of a texture loader: distinct, whatever the bytes.
+fn thumbnail_rows() -> [Option<RowThumb>; MAX_VISIBLE_ROWS] {
+    use slam_render::upload::{TextureKind, TextureLoaderConfig, texture_loader};
+    let (mut requests, _uploads) = texture_loader(&TextureLoaderConfig::new(LIMITS)).unwrap();
+    std::array::from_fn(|i| {
+        // Every other row has not arrived yet.
+        (i % 2 == 0).then(|| RowThumb {
+            handle: requests.load(Vec::new(), TextureKind::Standalone).unwrap(),
+            region: AtlasRegion {
+                texture: TextureId(3),
+                origin: Origin::new(0, 0),
+                size: Extent::new(8, 8),
+                uv: UvRect::FULL,
+            },
+        })
+    })
+}
+
+#[test]
+fn thumbnails_do_not_allocate_once_warm_and_add_shapes() {
+    let mut rig = Rig::new();
+    rig.thumbs = true;
+    rig.rows = thumbnail_rows();
+    let mut screen = SongSelect::new();
+    put(&mut screen, list_of(200));
+    screen.set_status(SongSelectStatus::Ready);
+    let layout = SongSelectLayout::new(1280.0, 720.0, &Theme::default());
+    let pass = |rig: &mut Rig, screen: &mut SongSelect| {
+        screen.input(SongSelectInput::Home, &layout);
+        for i in 0..400 {
+            screen.input(SongSelectInput::Scroll { lines: 0.5 }, &layout);
+            rig.now_ns = i * 8_000_000;
+            rig.frame(&screen.snapshot());
+        }
+    };
+    pass(&mut rig, &mut screen);
+    slam_testkit::assert_no_alloc(|| pass(&mut rig, &mut screen));
+    // Placeholders and images: more shapes than without thumbnails.
+    let snapshot = screen.snapshot();
+    rig.frame(&snapshot);
+    let with = rig.shapes.len();
+    rig.thumbs = false;
+    rig.frame(&snapshot);
+    assert!(with > rig.shapes.len(), "{with} vs {}", rig.shapes.len());
 }

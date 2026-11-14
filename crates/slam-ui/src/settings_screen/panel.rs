@@ -3,7 +3,7 @@
 //! thread; [`push_backdrop`] draws the dim and the panel's own fill under the screen.
 
 use slam_render::atlas::AtlasRegion;
-use slam_render::sprite::SpriteBatch;
+use slam_render::shape::ShapeBatch;
 
 use super::SettingsLayout;
 use crate::anim::{ease_out_cubic, progress};
@@ -97,13 +97,14 @@ pub fn panel_pose(openness: f32) -> Pose {
     Pose {
         opacity: 1.0,
         offset: -(1.0 - openness),
+        scale: 1.0,
     }
 }
 
 /// Draws the dim over a `width` × `height` window and the panel's fill, a panel `openness`
 /// in. The screen goes on top ([`super::SettingsView::push`] with [`panel_pose`]).
 pub fn push_backdrop(
-    shapes: &mut SpriteBatch,
+    shapes: &mut ShapeBatch,
     theme: &Theme,
     white: AtlasRegion,
     width: f32,
@@ -123,12 +124,23 @@ pub fn push_backdrop(
         faded(theme.settings_dim_fill, openness),
     );
     let panel = panel_width(width, height, theme);
+    // Rounded on the right only: the other corners lie past the window's edges.
+    let radius = theme.panel_radius * theme.scale(height);
     let rect = Rect {
-        x: -(1.0 - openness) * panel,
-        width: panel,
-        ..window
+        x: -(1.0 - openness) * panel - radius,
+        y: -radius,
+        width: panel + radius,
+        height: height + 2.0 * radius,
     };
-    fill(shapes, white, &rect, theme.settings_panel_fill);
+    crate::widgets::panel(
+        shapes,
+        white,
+        &rect,
+        theme,
+        theme.scale(height),
+        theme.settings_panel_fill,
+        1.0,
+    );
 }
 
 #[cfg(test)]

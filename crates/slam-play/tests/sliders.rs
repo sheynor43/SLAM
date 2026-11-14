@@ -955,7 +955,7 @@ fn found_with(user: &[&str], default: &[&str], check: Option<ImageLimits>) -> us
         ..TextureLoaderConfig::new(LIMITS)
     };
     let (mut requests, _uploads) = texture_loader(&config).unwrap();
-    PlayTextures::request(&chain, &mut requests)
+    PlayTextures::request(&chain, &mut requests, config.image_limits())
         .unwrap()
         .found()
 }

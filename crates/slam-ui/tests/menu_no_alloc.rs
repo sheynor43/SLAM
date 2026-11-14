@@ -5,6 +5,7 @@ use std::sync::Arc;
 
 use slam_render::Extent;
 use slam_render::atlas::{AtlasRegion, UvRect};
+use slam_render::shape::ShapeBatch;
 use slam_render::sprite::SpriteBatch;
 use slam_render::textures::TextureId;
 use slam_render::{Limits, Origin};
@@ -62,13 +63,14 @@ fn views_push_without_allocating_once_warm() {
         },
     };
     let (mut shapes, mut text) = (
-        SpriteBatch::with_capacity(64),
+        ShapeBatch::with_capacity(64),
         SpriteBatch::with_capacity(64),
     );
     let snapshot = MenuSnapshot { selected: 2 };
     let pose = Pose {
         opacity: 0.5,
         offset: 0.05,
+        scale: 1.0,
     };
     let mut frame = |width: f32, height: f32, glyphs: &mut _| {
         shapes.clear();
@@ -93,5 +95,6 @@ fn views_push_without_allocating_once_warm() {
             frame(1280.0, 720.0, &mut glyphs);
         }
     });
-    assert_eq!(shapes.len(), 3);
+    // The backing, three buttons, and the glow and outline of the selected one.
+    assert_eq!(shapes.len(), 6);
 }

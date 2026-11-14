@@ -91,6 +91,8 @@ jobs:
         run: dpkg-query -W libgl1-mesa-dri
       - name: Headless OpenGL
         run: cargo test -p slam-engine --test gl_headless -- --ignored
+      - name: Interface shapes
+        run: cargo test -p slam-engine --test gl_shapes -- --ignored
       - name: Screenshots
         run: cargo test -p slam-app --test screenshots -- --ignored
       - name: Upload differing screenshots

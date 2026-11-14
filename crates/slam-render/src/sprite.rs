@@ -93,6 +93,51 @@ pub struct Batch {
     pub quads: u32,
 }
 
+/// Quads recorded in draw order, as a [`SpriteRenderer`] uploads and draws them: four
+/// vertices per quad, of the layout the renderer was made with.
+pub trait QuadSource {
+    /// The vertices as bytes, four per quad.
+    fn vertex_bytes(&self) -> &[u8];
+    /// Runs of quads sharing a texture and blending, in quad order.
+    fn quad_batches(&self) -> &[Batch];
+    /// Number of quads recorded.
+    fn quad_count(&self) -> u32;
+}
+
+/// Records a [`Sprite`]: what code drawing into either a [`SpriteBatch`] or a
+/// [`ShapeBatch`](crate::shape::ShapeBatch) takes.
+pub trait PushSprite {
+    fn push_sprite(&mut self, sprite: &Sprite);
+}
+
+impl PushSprite for SpriteBatch {
+    fn push_sprite(&mut self, sprite: &Sprite) {
+        self.push(sprite);
+    }
+}
+
+impl QuadSource for SpriteBatch {
+    fn vertex_bytes(&self) -> &[u8] {
+        // SAFETY: `SpriteVertex` is `repr(C)` of `f32`s only, without padding (32
+        // bytes, asserted above), so its memory is fully initialised bytes; `u8` has
+        // no alignment requirement.
+        unsafe {
+            std::slice::from_raw_parts(
+                self.vertices.as_ptr().cast::<u8>(),
+                size_of_val(self.vertices.as_slice()),
+            )
+        }
+    }
+
+    fn quad_batches(&self) -> &[Batch] {
+        &self.batches
+    }
+
+    fn quad_count(&self) -> u32 {
+        self.len() as u32
+    }
+}
+
 /// A frame's sprites in draw order. Reuse it across frames with [`SpriteBatch::clear`].
 #[derive(Debug, Default)]
 pub struct SpriteBatch {
@@ -244,17 +289,29 @@ impl SpriteBatch {
     fn extend(&mut self, texture: TextureId, blend: Blend, quads: u32) {
         // A u32 quad index overflows only past 2^32 sprites (128 GiB of vertices).
         let quad = self.len() as u32;
-        match self.batches.last_mut() {
-            Some(last) if last.texture == texture && last.blend == blend => {
-                last.quads += quads;
-            }
-            _ => self.batches.push(Batch {
-                texture,
-                blend,
-                first_quad: quad,
-                quads,
-            }),
+        extend_batches(&mut self.batches, quad, texture, blend, quads);
+    }
+}
+
+/// Adds `quads` quads from `first_quad` on to the last batch if it has `texture` and
+/// `blend`, or starts a new batch.
+pub(crate) fn extend_batches(
+    batches: &mut Vec<Batch>,
+    first_quad: u32,
+    texture: TextureId,
+    blend: Blend,
+    quads: u32,
+) {
+    match batches.last_mut() {
+        Some(last) if last.texture == texture && last.blend == blend => {
+            last.quads += quads;
         }
+        _ => batches.push(Batch {
+            texture,
+            blend,
+            first_quad,
+            quads,
+        }),
     }
 }
 
@@ -392,14 +449,14 @@ pub fn tint_srgb(colour: [f32; 4], tint: [f32; 4]) -> [f32; 4] {
 }
 
 /// A tint with its colour in linear light, for many colours.
-struct Tint {
+pub(crate) struct Tint {
     srgb: [f32; 4],
     linear: [f32; 3],
     white: bool,
 }
 
 impl Tint {
-    fn new(srgb: [f32; 4]) -> Self {
+    pub(crate) fn new(srgb: [f32; 4]) -> Self {
         Self {
             srgb,
             linear: [0, 1, 2].map(|i| srgb_to_linear(srgb[i])),
@@ -409,7 +466,7 @@ impl Tint {
 
     // Ported from osu-framework 2026.921.1: osu.Framework/Graphics/Colour/SRGBColour.cs (operator *)
     /// A white side gives the other colour as it is.
-    fn apply(&self, colour: [f32; 4]) -> [f32; 4] {
+    pub(crate) fn apply(&self, colour: [f32; 4]) -> [f32; 4] {
         let alpha = colour[3] * self.srgb[3];
         if self.white {
             [colour[0], colour[1], colour[2], alpha]
@@ -517,6 +574,8 @@ impl std::ops::AddAssign for SpriteStats {
 pub enum SpriteError {
     #[error("texture {0:?} is not available")]
     MissingTexture(TextureId),
+    #[error("the batch's vertices are not of the renderer's layout")]
+    Layout,
     #[error("more than {slots} sprite draws this frame")]
     OutOfSlots { slots: usize },
     #[error(transparent)]
@@ -544,7 +603,8 @@ struct Slot<B> {
 }
 
 /// Draws [`SpriteBatch`]es with `shaders/sprite.wgsl`, or another shader with the same
-/// vertices and bindings (`shaders/msdf.wgsl` for text). Each draw uses the next of a
+/// vertices and bindings (`shaders/msdf.wgsl` for text), or any [`QuadSource`] with a
+/// shader of its vertex layout ([`SpriteRenderer::with_layout`]). Each draw uses the next of a
 /// ring of `slots` buffer sets, continuing across frames (ADR-0020). At most `slots`
 /// draws are allowed between [`SpriteRenderer::begin_frame`] calls, so no buffer is
 /// written twice in a frame (the `write_buffer` contract); spare slots space out
@@ -557,6 +617,8 @@ pub struct SpriteRenderer<D: Device> {
     next: usize,
     /// Draws since `begin_frame`.
     draws: usize,
+    /// Bytes per vertex.
+    stride: u64,
 }
 
 const BLEND_MODES: usize = 5;
@@ -592,9 +654,27 @@ impl<D: Device> SpriteRenderer<D> {
     /// Like [`SpriteRenderer::new`], drawing with `shader`, which takes
     /// [`SPRITE_LAYOUT`] vertices and the bindings of `shaders/sprite.wgsl`.
     pub fn with_shader(device: &mut D, slots: usize, shader: &Shader) -> Result<Self, DeviceError> {
+        Self::with_layout(device, slots, shader, SPRITE_LAYOUT)
+    }
+
+    /// Like [`SpriteRenderer::with_shader`] for vertices of `layout`: `shader` takes them
+    /// and the bindings of `shaders/sprite.wgsl` (projection, texture, sampler).
+    pub fn with_layout(
+        device: &mut D,
+        slots: usize,
+        shader: &Shader,
+        layout: VertexLayout<'static>,
+    ) -> Result<Self, DeviceError> {
         let mut pipelines = Vec::with_capacity(BLEND_MODES);
         let mut buffers = Vec::with_capacity(slots.max(1) + 1);
-        match Self::create(device, shader, slots.max(1), &mut pipelines, &mut buffers) {
+        match Self::create(
+            device,
+            shader,
+            layout,
+            slots.max(1),
+            &mut pipelines,
+            &mut buffers,
+        ) {
             Ok(()) => {}
             Err(e) => {
                 pipelines
@@ -621,6 +701,7 @@ impl<D: Device> SpriteRenderer<D> {
             slots,
             next: 0,
             draws: 0,
+            stride: u64::from(layout.stride),
         })
     }
 
@@ -629,6 +710,7 @@ impl<D: Device> SpriteRenderer<D> {
     fn create(
         device: &mut D,
         shader: &Shader,
+        layout: VertexLayout<'static>,
         slots: usize,
         pipelines: &mut Vec<D::Pipeline>,
         buffers: &mut Vec<D::Buffer>,
@@ -643,7 +725,7 @@ impl<D: Device> SpriteRenderer<D> {
             debug_assert_eq!(blend_index(blend), pipelines.len());
             pipelines.push(device.create_pipeline(&PipelineDesc {
                 shader,
-                layout: SPRITE_LAYOUT,
+                layout,
                 blend,
             })?);
         }
@@ -693,7 +775,7 @@ impl<D: Device> SpriteRenderer<D> {
     pub fn draw<'t>(
         &mut self,
         device: &mut D,
-        batch: &SpriteBatch,
+        batch: &impl QuadSource,
         projection: &Projection,
         texture: impl Fn(TextureId) -> Option<&'t D::Texture>,
     ) -> Result<SpriteStats, SpriteError>
@@ -701,7 +783,7 @@ impl<D: Device> SpriteRenderer<D> {
         D::Texture: 't,
     {
         let uploaded = self.upload(device, batch, projection, &texture)?;
-        self.draw_range(device, &uploaded, batch, 0..batch.len() as u32, texture)
+        self.draw_range(device, &uploaded, batch, 0..batch.quad_count(), texture)
     }
 
     /// Puts `batch` on the GPU for [`SpriteRenderer::draw_range`], taking one of the
@@ -711,20 +793,24 @@ impl<D: Device> SpriteRenderer<D> {
     pub fn upload<'t>(
         &mut self,
         device: &mut D,
-        batch: &SpriteBatch,
+        batch: &impl QuadSource,
         projection: &Projection,
         texture: impl Fn(TextureId) -> Option<&'t D::Texture>,
     ) -> Result<UploadedBatch, SpriteError>
     where
         D::Texture: 't,
     {
-        if batch.is_empty() {
+        if batch.quad_count() == 0 {
             return Ok(UploadedBatch {
                 slot: None,
                 quads: 0,
             });
         }
-        if let Some(b) = batch.batches.iter().find(|b| texture(b.texture).is_none()) {
+        if let Some(b) = batch
+            .quad_batches()
+            .iter()
+            .find(|b| texture(b.texture).is_none())
+        {
             return Err(SpriteError::MissingTexture(b.texture));
         }
         if self.draws == self.slots.len() {
@@ -736,15 +822,11 @@ impl<D: Device> SpriteRenderer<D> {
         self.next = (current + 1) % self.slots.len();
         let slot = &mut self.slots[current];
 
-        // SAFETY: `SpriteVertex` is `repr(C)` of `f32`s only, without padding (32
-        // bytes, asserted above), so its memory is fully initialised bytes; `u8` has
-        // no alignment requirement.
-        let bytes = unsafe {
-            std::slice::from_raw_parts(
-                batch.vertices.as_ptr().cast::<u8>(),
-                size_of_val(batch.vertices.as_slice()),
-            )
-        };
+        let bytes = batch.vertex_bytes();
+        if bytes.len() as u64 != u64::from(batch.quad_count()) * 4 * self.stride {
+            // Vertices of another layout would make the GPU read past the buffer.
+            return Err(SpriteError::Layout);
+        }
         let needed = bytes.len() as u64;
         if slot
             .vertices
@@ -767,14 +849,14 @@ impl<D: Device> SpriteRenderer<D> {
             unreachable!("created above")
         };
         device.write_buffer(vertices, 0, bytes)?;
-        // SAFETY: `Projection` is `repr(transparent)` over 16 `f32`s; see above.
+        // SAFETY: `Projection` is `repr(transparent)` over 16 `f32`s: initialised bytes.
         let globals = unsafe {
             std::slice::from_raw_parts(projection.0.as_ptr().cast::<u8>(), size_of::<Projection>())
         };
         device.write_buffer(&slot.globals, 0, globals)?;
         Ok(UploadedBatch {
             slot: Some(current),
-            quads: batch.len() as u32,
+            quads: batch.quad_count(),
         })
     }
 
@@ -786,7 +868,7 @@ impl<D: Device> SpriteRenderer<D> {
         &mut self,
         device: &mut D,
         uploaded: &UploadedBatch,
-        batch: &SpriteBatch,
+        batch: &impl QuadSource,
         quads: Range<u32>,
         texture: impl Fn(TextureId) -> Option<&'t D::Texture>,
     ) -> Result<SpriteStats, SpriteError>
@@ -795,7 +877,7 @@ impl<D: Device> SpriteRenderer<D> {
     {
         debug_assert_eq!(
             uploaded.quads,
-            batch.len() as u32,
+            batch.quad_count(),
             "batch changed after upload"
         );
         let quads = quads.start..quads.end.min(uploaded.quads);
@@ -814,12 +896,11 @@ impl<D: Device> SpriteRenderer<D> {
             batches: 0,
             draw_calls: 0,
         };
-        let stride = u64::from(SPRITE_LAYOUT.stride);
+        let stride = self.stride;
+        let batches = batch.quad_batches();
         // Batches are in quad order; skip those ending before the range.
-        let from = batch
-            .batches
-            .partition_point(|b| b.first_quad + b.quads <= quads.start);
-        for b in &batch.batches[from..] {
+        let from = batches.partition_point(|b| b.first_quad + b.quads <= quads.start);
+        for b in &batches[from..] {
             if b.first_quad >= quads.end {
                 break;
             }

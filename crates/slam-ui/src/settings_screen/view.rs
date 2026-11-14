@@ -5,6 +5,7 @@ use std::sync::Arc;
 
 use slam_render::Color;
 use slam_render::atlas::AtlasRegion;
+use slam_render::shape::ShapeBatch;
 use slam_render::sprite::SpriteBatch;
 use slam_text::{FontRegistry, Glyph, GlyphCache, GlyphKey};
 
@@ -18,7 +19,8 @@ use crate::screen::Pose;
 use crate::song_select::{QUERY_CAPACITY, SearchQuery};
 use crate::theme::{Theme, faded};
 use crate::widgets::{
-    DropdownView, SliderLayout, SliderView, ToggleLayout, ToggleView, fill, push_left, push_right,
+    DropdownView, Look, SliderLayout, SliderView, ToggleLayout, ToggleView, draw, push_left,
+    push_right,
 };
 
 /// The texts of one row, already localised.
@@ -218,6 +220,9 @@ enum RowView {
     Dropdown(DropdownView),
 }
 
+/// How much larger than a row's text a section header's is (ADR-0133).
+const HEADER_TEXT: f32 = 1.25;
+
 /// The draw side of [`SettingsScreen`].
 pub struct SettingsView {
     theme: Theme,
@@ -230,7 +235,11 @@ pub struct SettingsView {
     search: Line,
     search_seen: SearchQuery,
     tabs: Vec<Line>,
+    /// The section names as headers of the list, larger than the tabs'.
+    headers: Vec<Line>,
     labels: Vec<Line>,
+    /// The rows' whole names: `labels` holds them as fitted to the label column.
+    label_texts: Vec<String>,
     marker: Line,
     /// Per row: its section, its position in it and whether it needs a restart.
     meta: Vec<(usize, usize, bool)>,
@@ -353,8 +362,17 @@ impl SettingsView {
             },
             search_seen: SearchQuery::default(),
             tabs: labels.sections.iter().map(|s| Line::new(s)).collect(),
+            headers: labels.sections.iter().map(|s| Line::new(s)).collect(),
             labels: (0..rows.len())
-                .map(|i| Line::new(labels.rows.get(i).map_or("", |r| &r.label)))
+                .map(|i| {
+                    let mut line = Line::new(labels.rows.get(i).map_or("", |r| &r.label));
+                    // Room for the ellipsis a cut name ends with.
+                    line.text.reserve(ELLIPSIS.len_utf8());
+                    line
+                })
+                .collect(),
+            label_texts: (0..rows.len())
+                .map(|i| labels.rows.get(i).map_or("", |r| &r.label).to_owned())
                 .collect(),
             marker: Line::new(&labels.restart),
             keys: KeyLines::new(&labels.keys),
@@ -397,20 +415,39 @@ impl SettingsView {
         self.lay_out_for(panel, height);
     }
 
+    /// Row `row`'s name as shown (cut to its column) and its width, if the row exists.
+    pub fn shown_label(&self, row: usize) -> Option<(&str, f32)> {
+        self.labels
+            .get(row)
+            .map(|line| (line.text.as_str(), line.layout.width()))
+    }
+
     fn lay_out(&mut self) {
         let Frame { width, height } = self.frame;
         self.layout = SettingsLayout::new(width, height, &self.theme);
         let scale = self.layout.scale;
         let text = self.theme.widget_text_size * scale;
         let pad = 2.0 * self.theme.widget_pad * scale;
-        // In the panel a long name may not fit its column: it shrinks, down to a floor.
+        // In the panel a long name may not fit its column: it shrinks, down to a floor, and
+        // past that ends with an ellipsis.
         let label = self.layout.label(0).width - pad;
-        for line in &mut self.labels {
+        let mut probe = Line::new(&ELLIPSIS.to_string());
+        self.type_setter.lay_out(&mut probe, text * MIN_FIT);
+        let ellipsis = probe.layout.width();
+        for (line, whole) in self.labels.iter_mut().zip(&self.label_texts) {
+            line.text.clone_from(whole);
             lay_out_fitted(&mut self.type_setter, line, text, label);
+            if line.layout.width() > label {
+                let size = text * MIN_FIT;
+                crate::song_select::view::fit(&mut self.type_setter, line, size, label, ellipsis);
+            }
         }
         let tab = self.layout.tabs[0].width - pad;
         for line in &mut self.tabs {
             lay_out_fitted(&mut self.type_setter, line, text, tab);
+        }
+        for line in &mut self.headers {
+            self.type_setter.lay_out(line, text * HEADER_TEXT);
         }
         for line in [
             &mut self.placeholder,
@@ -556,7 +593,7 @@ impl SettingsView {
     #[allow(clippy::too_many_arguments)]
     pub fn push(
         &mut self,
-        shapes: &mut SpriteBatch,
+        shapes: &mut ShapeBatch,
         text: &mut SpriteBatch,
         glyphs: &mut GlyphCache,
         width: f32,
@@ -598,7 +635,16 @@ impl SettingsView {
         let pad = theme.widget_pad * layout.scale;
 
         let search = layout.search();
-        fill(shapes, white, &search, faded(theme.button_fill, opacity));
+        let field = faded(theme.button_fill, opacity);
+        draw(
+            shapes,
+            white,
+            &search,
+            field,
+            Look::Round,
+            &theme,
+            layout.scale,
+        );
         if snapshot.search.is_empty() {
             push_left(
                 text,
@@ -619,12 +665,26 @@ impl SettingsView {
             );
         }
         for (i, tab) in self.tabs.iter().enumerate() {
-            let fill_colour = if !snapshot.searching && i == snapshot.section {
+            let fill_colour = if i == snapshot.section {
                 theme.button_hover_fill
             } else {
                 theme.button_fill
             };
-            fill(shapes, white, &layout.tabs[i], faded(fill_colour, opacity));
+            let look = Look::Button {
+                highlighted: i == snapshot.section,
+                seed: i as f32 * 0.41,
+                fade: opacity,
+            };
+            let colour = faded(fill_colour, opacity);
+            draw(
+                shapes,
+                white,
+                &layout.tabs[i],
+                colour,
+                look,
+                &theme,
+                layout.scale,
+            );
             push_left(
                 text,
                 tab,
@@ -643,11 +703,7 @@ impl SettingsView {
         // An open list covers rows below or above it, whose texts would show through (all
         // texts are drawn over all rectangles): those rows are left out.
         let open_list = (0..snapshot.len).find_map(|i| match &snapshot.widgets[i] {
-            RowWidget::Dropdown(d)
-                if d.is_open()
-                    && (snapshot.searching || self.meta[i].0 == snapshot.section)
-                    && !snapshot.hidden[i] =>
-            {
+            RowWidget::Dropdown(d) if d.is_open() && !snapshot.hidden[i] => {
                 Some((usize::from(snapshot.slots[i]), d.count()))
             }
             _ => None,
@@ -655,18 +711,43 @@ impl SettingsView {
         // The open list is drawn last, over the other widgets' rectangles.
         let mut open_row = None;
         let mut any = false;
-        for i in 0..snapshot.len.min(self.meta.len()) {
-            let (section, _, restart) = self.meta[i];
-            let slot = usize::from(snapshot.slots[i]);
-            let in_view =
-                (snapshot.searching || section == snapshot.section) && !snapshot.hidden[i];
-            any |= in_view;
-            if !in_view
-                || !layout.shows(slot)
+        // Only the lines that touch the content area are laid out and drawn (ADR-0133).
+        let visible = layout.visible_slots();
+        for (section, header) in snapshot.headers.iter().enumerate().take(self.headers.len()) {
+            let Some(slot) = header.map(usize::from).filter(|s| visible.contains(s)) else {
+                continue;
+            };
+            let fraction = layout.fraction(slot);
+            if fraction <= 0.0
                 || open_list.is_some_and(|(open, count)| layout.covered_by_list(open, count, slot))
             {
                 continue;
             }
+            push_left(
+                text,
+                &self.headers[section],
+                &layout.row(slot),
+                pad,
+                faded(theme.text, opacity * fraction),
+                glyphs,
+            );
+        }
+        for i in 0..snapshot.len.min(self.meta.len()) {
+            let (_, _, restart) = self.meta[i];
+            let slot = usize::from(snapshot.slots[i]);
+            any |= !snapshot.hidden[i];
+            if snapshot.hidden[i]
+                || !visible.contains(&slot)
+                || open_list.is_some_and(|(open, count)| layout.covered_by_list(open, count, slot))
+            {
+                continue;
+            }
+            let fraction = layout.fraction(slot);
+            if fraction <= 0.0 {
+                continue;
+            }
+            // A row partly scrolled out fades by the part that is out: nothing clips it.
+            let opacity = opacity * fraction;
             if matches!(self.views[i], RowView::Note) {
                 // The whole row, left-aligned; there is no theme token for a warning.
                 push_left(
@@ -680,11 +761,16 @@ impl SettingsView {
                 continue;
             }
             if i == snapshot.focus {
-                fill(
+                let focus = faded(theme.row_hover_fill, opacity);
+                let row = layout.row(slot);
+                draw(
                     shapes,
                     white,
-                    &layout.row(slot),
-                    faded(theme.row_hover_fill, opacity),
+                    &row,
+                    focus,
+                    Look::Round,
+                    &theme,
+                    layout.scale,
                 );
             }
             let disabled = snapshot.disabled[i];
@@ -726,7 +812,16 @@ impl SettingsView {
                     } else {
                         theme.button_fill
                     };
-                    fill(shapes, white, &widget, faded(colour, opacity));
+                    let colour = faded(colour, opacity);
+                    draw(
+                        shapes,
+                        white,
+                        &widget,
+                        colour,
+                        Look::Round,
+                        &theme,
+                        layout.scale,
+                    );
                     let text_colour = faded(theme.text, opacity);
                     if key.is_listening() {
                         push_left(text, &self.keys.prompt, &widget, pad, text_colour, glyphs);
@@ -741,7 +836,13 @@ impl SettingsView {
                     } else {
                         theme.button_fill
                     };
-                    fill(shapes, white, &widget, faded(colour, opacity));
+                    let look = Look::Button {
+                        highlighted: i == snapshot.focus,
+                        seed: i as f32 * 0.23,
+                        fade: opacity,
+                    };
+                    let colour = faded(colour, opacity);
+                    draw(shapes, white, &widget, colour, look, &theme, layout.scale);
                     let line = match &self.value {
                         Some(value) if value.row == i && !value.seen.is_empty() => &value.line,
                         _ => &*line,
@@ -764,6 +865,7 @@ impl SettingsView {
                         continue;
                     }
                     let bounds = layout.dropdown_at(slot, dropdown.count());
+                    view.set_theme(&self.theme);
                     view.push(shapes, text, glyphs, dropdown, &bounds, opacity, white);
                 }
                 _ => {}
@@ -806,6 +908,7 @@ impl SettingsView {
                 (&mut self.views[i], &snapshot.widgets[i])
         {
             let bounds = layout.dropdown_at(usize::from(snapshot.slots[i]), dropdown.count());
+            view.set_theme(&self.theme);
             view.push(shapes, text, glyphs, dropdown, &bounds, opacity, white);
         }
     }
@@ -814,7 +917,7 @@ impl SettingsView {
     #[allow(clippy::too_many_arguments)]
     fn push_conflict(
         &self,
-        shapes: &mut SpriteBatch,
+        shapes: &mut ShapeBatch,
         text: &mut SpriteBatch,
         glyphs: &mut GlyphCache,
         layout: &SettingsLayout,
@@ -825,11 +928,15 @@ impl SettingsView {
         let theme = &self.theme;
         let pad = theme.widget_pad * layout.scale;
         let colour = faded(theme.text, opacity);
-        fill(
+        let popup = faded(theme.widget_popup_fill, opacity);
+        draw(
             shapes,
             white,
             &layout.dialog(),
-            faded(theme.widget_popup_fill, opacity),
+            popup,
+            Look::Panel,
+            theme,
+            layout.scale,
         );
         push_left(
             text,
@@ -860,7 +967,13 @@ impl SettingsView {
             } else {
                 theme.button_fill
             };
-            fill(shapes, white, &rect, faded(fill_colour, opacity));
+            let look = Look::Button {
+                highlighted: chosen,
+                seed: rect.x * 0.01,
+                fade: opacity,
+            };
+            let fill_colour = faded(fill_colour, opacity);
+            draw(shapes, white, &rect, fill_colour, look, theme, layout.scale);
             push_left(text, line, &rect, pad, colour, glyphs);
         }
     }

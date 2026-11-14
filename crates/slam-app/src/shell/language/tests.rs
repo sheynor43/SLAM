@@ -7,6 +7,10 @@ fn localizer() -> Arc<Localizer> {
     Arc::new(Localizer::builtin().unwrap())
 }
 
+fn theme_of(settings: &Settings) -> Theme {
+    super::super::interface_theme(settings, settings)
+}
+
 fn russian() -> Settings {
     let mut settings = Settings::default();
     settings.general.language = Some("ru".to_owned());
@@ -17,49 +21,79 @@ fn russian() -> Settings {
 fn a_new_language_switches_the_localizer_and_asks_for_views() {
     let (link, _views, (mut requests, _out, _old)) = rings();
     let localizer = localizer();
-    let mut applied = AppliedLanguage::new(Arc::clone(&localizer), None, Some(link));
+    let mut applied =
+        AppliedLanguage::new(Arc::clone(&localizer), None, Some(link), Theme::default());
     let settings = Settings::default();
     let rows = Rows::new(&settings);
-    applied.apply(&settings, &rows);
+    applied.apply(&settings, &rows, theme_of(&settings));
     // Nothing changed: no switch, no request.
     assert_eq!(localizer.generation(), 0);
     assert!(requests.pop().is_err());
     let settings = russian();
-    applied.apply(&settings, &rows);
+    applied.apply(&settings, &rows, theme_of(&settings));
     assert_eq!(localizer.format("settings-layout-language", None), "Язык");
     let rebuild = requests.pop().expect("views asked for");
     assert_eq!(rebuild.settings.general.language.as_deref(), Some("ru"));
     assert_eq!((rebuild.switch, applied.switches()), (1, 1));
     // Applied: the next ticks ask for nothing more.
-    applied.apply(&settings, &rows);
+    applied.apply(&settings, &rows, theme_of(&settings));
     assert!(requests.pop().is_err());
     assert_eq!(localizer.generation(), 1);
+}
+
+#[test]
+fn another_colour_scheme_or_menu_scale_asks_for_views() {
+    let (link, _views, (mut requests, _out, _old)) = rings();
+    let localizer = localizer();
+    let mut applied =
+        AppliedLanguage::new(Arc::clone(&localizer), None, Some(link), Theme::default());
+    let mut settings = Settings::default();
+    let rows = Rows::new(&settings);
+    settings.general.colour_scheme = slam_ui::theme::ColourScheme::Blue;
+    assert!(
+        !applied.apply(&settings, &rows, theme_of(&settings)),
+        "the language did not switch"
+    );
+    let rebuild = requests.pop().expect("views asked for");
+    assert_eq!(rebuild.theme.scheme, slam_ui::theme::ColourScheme::Blue);
+    applied.apply(&settings, &rows, theme_of(&settings));
+    assert!(requests.pop().is_err());
+    settings.general.menu_scale = 1.25;
+    applied.apply(&settings, &rows, theme_of(&settings));
+    let rebuild = requests.pop().expect("views asked for");
+    assert_eq!((rebuild.switch, applied.switches()), (2, 2));
+    assert_eq!(localizer.generation(), 0);
 }
 
 #[test]
 fn back_to_no_language_is_english() {
     let localizer = localizer();
     localizer.set_language("ru").unwrap();
-    let mut applied = AppliedLanguage::new(Arc::clone(&localizer), Some("ru".to_owned()), None);
+    let mut applied = AppliedLanguage::new(
+        Arc::clone(&localizer),
+        Some("ru".to_owned()),
+        None,
+        Theme::default(),
+    );
     let settings = Settings::default();
-    applied.apply(&settings, &Rows::new(&settings));
+    applied.apply(&settings, &Rows::new(&settings), theme_of(&settings));
     assert_eq!(localizer.language().to_string(), FALLBACK_LANGUAGE);
 }
 
 #[test]
 fn a_request_the_full_ring_refuses_goes_next_tick() {
     let (link, _views, (mut requests, _out, _old)) = rings();
-    let mut applied = AppliedLanguage::new(localizer(), None, Some(link));
+    let mut applied = AppliedLanguage::new(localizer(), None, Some(link), Theme::default());
     let rows = Rows::new(&Settings::default());
     // Two switches fill the ring; the third waits.
     let mut settings = russian();
     for language in ["ru", "en", "ru"] {
         settings.general.language = Some(language.to_owned());
-        applied.apply(&settings, &rows);
+        applied.apply(&settings, &rows, theme_of(&settings));
     }
     assert!(applied.pending.is_some());
     assert!(requests.pop().is_ok());
-    applied.apply(&settings, &rows);
+    applied.apply(&settings, &rows, theme_of(&settings));
     assert!(applied.pending.is_none());
     let languages: Vec<_> = std::iter::from_fn(|| requests.pop().ok())
         .map(|r| r.settings.general.language)
@@ -77,7 +111,6 @@ fn the_thread_lays_out_views_and_frees_the_ones_given_back() {
     let localizer = localizer();
     let (mut link, mut views, thread) = spawn(
         registry,
-        Theme::default(),
         Arc::clone(&localizer),
         Arc::new(AtomicU64::new(crate::play::pack_size(1920, 1080))),
     )
@@ -86,6 +119,7 @@ fn the_thread_lays_out_views_and_frees_the_ones_given_back() {
     localizer.set_language("ru").unwrap();
     let rebuild = Box::new(Rebuild {
         rows: Rows::new(&settings),
+        theme: theme_of(&settings),
         settings,
         switch: 7,
     });
@@ -140,10 +174,11 @@ fn take_keeps_the_newest_views_and_gives_the_older_back() {
 fn an_unknown_language_asks_for_no_views() {
     let (link, _views, (mut requests, _out, _old)) = rings();
     let localizer = localizer();
-    let mut applied = AppliedLanguage::new(Arc::clone(&localizer), None, Some(link));
+    let mut applied =
+        AppliedLanguage::new(Arc::clone(&localizer), None, Some(link), Theme::default());
     let mut settings = Settings::default();
     settings.general.language = Some("de".to_owned());
-    applied.apply(&settings, &Rows::new(&settings));
+    applied.apply(&settings, &Rows::new(&settings), theme_of(&settings));
     assert!(requests.pop().is_err());
     assert_eq!(localizer.generation(), 0);
 }

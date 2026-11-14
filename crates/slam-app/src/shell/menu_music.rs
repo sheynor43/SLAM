@@ -39,6 +39,8 @@ pub enum Want<'a> {
 pub struct Picked {
     pub path: PathBuf,
     pub preview_ms: i32,
+    /// Set and difficulty in the library: whose background the menu shows (ADR-0119).
+    pub at: (usize, usize),
 }
 
 /// One music player, as the menu uses it.

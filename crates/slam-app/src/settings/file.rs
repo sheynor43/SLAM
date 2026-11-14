@@ -8,14 +8,17 @@ use slam_engine::MAX_UPDATE_HZ;
 use slam_engine::limiter::MIN_HZ;
 use slam_input::VideoDriver;
 use slam_play::input::{Bindings, MAX_BINDINGS};
+use slam_ui::cursor::CursorStyle;
 use slam_ui::i18n::BUILTIN_LANGUAGES;
+use slam_ui::screen::TransitionStyle;
+use slam_ui::theme::{ColourScheme, UI_SCALE_RANGE};
 use toml::{Table, Value};
 
 use super::keys;
 use super::model::{
     BindingEntry, Combo, DrawRate, FpsScreens, HitsoundDelay, InputSettings, KeyOverlayAnimation,
-    KeySlot, RendererChoice, Settings, Timing, Window, corner_from_name, parse_size,
-    window_mode_from_name,
+    KeySlot, MenuBackground, MenuSounds, PauseMenuStyle, RendererChoice, Settings, Thumbnails,
+    Timing, Window, corner_from_name, parse_size, window_mode_from_name,
 };
 
 /// The schema version this build writes.
@@ -235,6 +238,83 @@ fn from_table(mut table: Table) -> Loaded {
         &mut settings.general.intro,
         |_| Ok(()),
     );
+    cx.field(
+        &mut general,
+        "general",
+        "effects",
+        &mut settings.general.effects,
+        |_| Ok(()),
+    );
+    cx.float(
+        &mut general,
+        "general",
+        "parallax",
+        &mut settings.general.parallax,
+        0.0..=1.0,
+    );
+    let mut scheme: Option<String> = None;
+    cx.opt(&mut general, "general", "colour_scheme", &mut scheme);
+    if let Some(name) = scheme {
+        match ColourScheme::from_name(&name) {
+            Some(scheme) => settings.general.colour_scheme = scheme,
+            None => cx.warn(format!(
+                "general.colour_scheme: unknown value \"{name}\", using the default"
+            )),
+        }
+    }
+    let mut menu_cursor: Option<String> = None;
+    cx.opt(&mut general, "general", "menu_cursor", &mut menu_cursor);
+    if let Some(name) = menu_cursor {
+        match CursorStyle::from_name(&name) {
+            Some(style) => settings.general.menu_cursor = style,
+            None => cx.warn(format!(
+                "general.menu_cursor: unknown value \"{name}\", using the default"
+            )),
+        }
+    }
+    for (key, slot) in [
+        ("menu_scale", &mut settings.general.menu_scale),
+        ("game_scale", &mut settings.general.game_scale),
+    ] {
+        let mut scale = f64::from(*slot);
+        cx.float(
+            &mut general,
+            "general",
+            key,
+            &mut scale,
+            f64::from(UI_SCALE_RANGE.0)..=f64::from(UI_SCALE_RANGE.1),
+        );
+        *slot = ((scale * 20.0).round() / 20.0) as f32;
+    }
+    let mut skew = f64::from(settings.general.skew);
+    cx.float(
+        &mut general,
+        "general",
+        "skew",
+        &mut skew,
+        0.0..=f64::from(slam_ui::theme::MAX_SKEW_DEGREES),
+    );
+    settings.general.skew = skew.round() as f32;
+    let mut transitions: Option<String> = None;
+    cx.opt(&mut general, "general", "transitions", &mut transitions);
+    if let Some(name) = transitions {
+        match TransitionStyle::from_name(&name) {
+            Some(style) => settings.general.transitions = style,
+            None => cx.warn(format!(
+                "general.transitions: unknown value \"{name}\", using the default"
+            )),
+        }
+    }
+    let mut background: Option<String> = None;
+    cx.opt(&mut general, "general", "menu_background", &mut background);
+    if let Some(name) = background {
+        match MenuBackground::from_name(&name) {
+            Some(background) => settings.general.menu_background = background,
+            None => cx.warn(format!(
+                "general.menu_background: unknown value \"{name}\", using the default"
+            )),
+        }
+    }
     cx.unknown(&general, "general");
 
     let mut paths = cx.section(&mut table, "paths");
@@ -326,6 +406,16 @@ fn from_table(mut table: Table) -> Loaded {
         0.0..=1.0,
     );
     settings.audio.positional_hitsounds_level = ((level * 100.0).round() / 100.0) as f32;
+    let mut sounds: Option<String> = None;
+    cx.opt(&mut audio, "audio", "menu_sounds", &mut sounds);
+    if let Some(name) = sounds {
+        match MenuSounds::from_name(&name) {
+            Some(sounds) => settings.audio.menu_sounds = sounds,
+            None => cx.warn(format!(
+                "audio.menu_sounds: unknown value \"{name}\", using the default"
+            )),
+        }
+    }
     cx.unknown(&audio, "audio");
 
     let mut timing = cx.section(&mut table, "timing");
@@ -509,6 +599,35 @@ fn from_table(mut table: Table) -> Loaded {
         &mut settings.gameplay.auto_cursor_size,
         |_| Ok(()),
     );
+    let mut cursor_style: Option<String> = None;
+    cx.opt(&mut gameplay, "gameplay", "cursor_style", &mut cursor_style);
+    if let Some(name) = cursor_style {
+        match CursorStyle::from_name(&name) {
+            Some(style) => settings.gameplay.cursor_style = style,
+            None => cx.warn(format!(
+                "gameplay.cursor_style: unknown value \"{name}\", using the default"
+            )),
+        }
+    }
+    let mut style: Option<String> = None;
+    cx.opt(&mut gameplay, "gameplay", "pause_menu_style", &mut style);
+    if let Some(name) = style {
+        match PauseMenuStyle::from_name(&name) {
+            Some(style) => settings.gameplay.pause_menu_style = style,
+            None => cx.warn(format!(
+                "gameplay.pause_menu_style: unknown value \"{name}\", using the default"
+            )),
+        }
+    }
+    let mut scale = f64::from(settings.gameplay.pause_menu_scale);
+    cx.float(
+        &mut gameplay,
+        "gameplay",
+        "pause_menu_scale",
+        &mut scale,
+        f64::from(UI_SCALE_RANGE.0)..=f64::from(UI_SCALE_RANGE.1),
+    );
+    settings.gameplay.pause_menu_scale = ((scale * 20.0).round() / 20.0) as f32;
     // Retired in favour of the HUD layout (ADR-0109); read only to migrate it.
     let mut legacy_scale = f64::NAN;
     cx.float(
@@ -543,6 +662,21 @@ fn from_table(mut table: Table) -> Loaded {
         &mut settings.song_select.background_dim,
         0.0..=1.0,
     );
+    let mut thumbnails: Option<String> = None;
+    cx.opt(
+        &mut song_select,
+        "song_select",
+        "thumbnails",
+        &mut thumbnails,
+    );
+    if let Some(name) = thumbnails {
+        match Thumbnails::from_name(&name) {
+            Some(thumbnails) => settings.song_select.thumbnails = thumbnails,
+            None => cx.warn(format!(
+                "song_select.thumbnails: unknown value \"{name}\", using the default"
+            )),
+        }
+    }
     cx.unknown(&song_select, "song_select");
 
     read_window(&mut cx, &mut table, &mut settings.window);

@@ -20,19 +20,38 @@ use super::keybinds;
 use crate::displays::{DisplayLists, DisplayViews};
 use crate::settings::{
     DrawRate, FpsScreens, HitsoundDelay, InputSettings, KeyOverlayAnimation, KeySlot,
-    RendererChoice, Settings, Timing, skins,
+    MenuBackground, MenuSounds, PauseMenuStyle, RendererChoice, Settings, Thumbnails, Timing,
+    skins,
 };
+use slam_ui::cursor::CursorStyle;
+use slam_ui::screen::TransitionStyle;
+use slam_ui::theme::{ColourScheme, MAX_SKEW_DEGREES, UI_SCALE_RANGE};
 
 /// Sections, in order; the keys of their names are in [`SECTION_KEYS`].
-const SECTION_KEYS: [&str; 7] = [
+const SECTION_KEYS: [&str; 8] = [
     "settings-section-audio",
     "settings-section-offset",
     "settings-section-keys",
     "settings-section-layout",
+    "settings-section-skin",
     "settings-section-frame",
     "settings-section-gameplay",
     "settings-section-library",
 ];
+/// The indices of the sections, in the order they show; [`SECTION_KEYS`] has their names in
+/// the same order. A new row goes to the section of its `Row::section` arm, and shows among
+/// its section's rows in the order of `Row::ALL`.
+mod section {
+    pub const AUDIO: usize = 0;
+    pub const OFFSET: usize = 1;
+    pub const KEYS: usize = 2;
+    pub const LAYOUT: usize = 3;
+    pub const SKIN: usize = 4;
+    pub const FRAME: usize = 5;
+    pub const GAMEPLAY: usize = 6;
+    pub const LIBRARY: usize = 7;
+}
+
 /// The index of the skin row.
 pub fn skin_row() -> usize {
     Row::ALL
@@ -151,6 +170,9 @@ pub const SECTIONS: usize = SECTION_KEYS.len();
 /// The range of the cursor size slider (lazer's `GameplayCursorSize`, ADR-0086).
 const CURSOR_SIZE_RANGE: (f64, f64) = (0.1, 2.0);
 
+/// The interface scale sliders show percents: this is their step (ADR-0118).
+const UI_SCALE_STEP_PERCENT: f64 = 5.0;
+
 const BUFFER_PRESETS: [u32; 6] = [64, 128, 256, 512, 1024, 2048];
 const DRAW_PRESETS: [f64; 9] = [
     60.0, 120.0, 144.0, 240.0, 360.0, 1000.0, 2000.0, 4000.0, 8000.0,
@@ -217,6 +239,37 @@ pub enum Row {
     Renderer,
     /// Whether the startup intro plays; read at start (ADR-0114).
     Intro,
+    /// The interface colour scheme (ADR-0117).
+    ColourScheme,
+    /// Whether the interface effects are on; applies live (ADR-0123).
+    Effects,
+    /// The strength of the menus' parallax; applies live (ADR-0132).
+    Parallax,
+    /// How screens change (ADR-0126).
+    Transitions,
+    /// The scale of the menus (ADR-0118).
+    MenuScale,
+    /// The scale of the HUD and the pause and fail menus (ADR-0118).
+    GameScale,
+    /// Skew of the buttons and rows; applies live (ADR-0130).
+    Skew,
+    Skin,
+    BeatmapSkins,
+    BeatmapColours,
+    BeatmapHitsounds,
+    /// The cursor of the menus; applies live (ADR-0124).
+    MenuCursor,
+    /// The gameplay cursor (ADR-0124).
+    CursorStyle,
+    CursorSize,
+    AutoCursorSize,
+    CursorTrail,
+    HitLighting,
+    /// Where the menu sounds come from (ADR-0120).
+    MenuSounds,
+    /// What the main menu shows behind its content (ADR-0119).
+    MenuBackground,
+    PauseMenuStyle,
     UpdateHz,
     DrawHz,
     MenuDrawHz,
@@ -225,21 +278,16 @@ pub enum Row {
     FpsScreens,
     Dim,
     SongSelectDim,
-    BeatmapSkins,
-    BeatmapColours,
-    BeatmapHitsounds,
+    /// Height of the song list's thumbnails (ADR-0127).
+    SongSelectThumbnails,
     AlwaysPlayFirstComboBreak,
     DisableWinKey,
     SnakingIn,
     SnakingOut,
-    HitLighting,
     KeyOverlay,
     KeyOverlayAnimation,
     HudAnimations,
-    CursorTrail,
-    CursorSize,
-    AutoCursorSize,
-    Skin,
+    PauseMenuScale,
     SongsFolder,
 }
 
@@ -247,7 +295,7 @@ pub enum Row {
 const _: () = assert!(Row::ALL.len() <= slam_ui::settings_screen::MAX_ROWS);
 
 impl Row {
-    pub const ALL: [Row; 58] = [
+    pub const ALL: [Row; 72] = [
         Row::MasterVolume,
         Row::MusicVolume,
         Row::MenuMusic,
@@ -282,6 +330,26 @@ impl Row {
         Row::VideoDriver,
         Row::Renderer,
         Row::Intro,
+        Row::ColourScheme,
+        Row::Effects,
+        Row::Parallax,
+        Row::Transitions,
+        Row::MenuScale,
+        Row::GameScale,
+        Row::Skew,
+        Row::Skin,
+        Row::BeatmapSkins,
+        Row::BeatmapColours,
+        Row::BeatmapHitsounds,
+        Row::MenuCursor,
+        Row::CursorStyle,
+        Row::CursorSize,
+        Row::AutoCursorSize,
+        Row::CursorTrail,
+        Row::HitLighting,
+        Row::MenuSounds,
+        Row::MenuBackground,
+        Row::PauseMenuStyle,
         Row::UpdateHz,
         Row::DrawHz,
         Row::MenuDrawHz,
@@ -290,21 +358,15 @@ impl Row {
         Row::FpsScreens,
         Row::Dim,
         Row::SongSelectDim,
-        Row::BeatmapSkins,
-        Row::BeatmapColours,
-        Row::BeatmapHitsounds,
+        Row::SongSelectThumbnails,
         Row::AlwaysPlayFirstComboBreak,
         Row::DisableWinKey,
         Row::SnakingIn,
         Row::SnakingOut,
-        Row::HitLighting,
         Row::KeyOverlay,
         Row::KeyOverlayAnimation,
         Row::HudAnimations,
-        Row::CursorTrail,
-        Row::CursorSize,
-        Row::AutoCursorSize,
-        Row::Skin,
+        Row::PauseMenuScale,
         Row::SongsFolder,
     ];
 
@@ -328,6 +390,7 @@ impl Row {
         Row::ALL.iter().position(|row| row.key_slot() == Some(slot))
     }
 
+    /// The section of the screen the row is in: one of the `section::*` indices.
     fn section(self) -> usize {
         match self {
             Row::MasterVolume
@@ -340,8 +403,8 @@ impl Row {
             | Row::PositionalHitsoundsLevel
             | Row::Backend
             | Row::Device
-            | Row::BufferFrames => 0,
-            Row::GlobalOffset => 1,
+            | Row::BufferFrames => section::AUDIO,
+            Row::GlobalOffset => section::OFFSET,
             Row::MouseButtons
             | Row::HighPrecisionMouse
             | Row::Sensitivity
@@ -353,7 +416,7 @@ impl Row {
             | Row::SmokeKey2
             | Row::ToggleFpsKey
             | Row::ToggleSettingsKey
-            | Row::ResetKeys => 2,
+            | Row::ResetKeys => section::KEYS,
             Row::Language
             | Row::ScreenMode
             | Row::NotFullscreenNote
@@ -363,31 +426,47 @@ impl Row {
             | Row::MinimiseOnFocusLoss
             | Row::VideoDriver
             | Row::Renderer
-            | Row::Intro => 3,
+            | Row::Intro
+            | Row::ColourScheme
+            | Row::Effects
+            | Row::Parallax
+            | Row::Transitions
+            | Row::MenuScale
+            | Row::GameScale
+            | Row::Skew => section::LAYOUT,
+            // Everything that takes its look or sound from the skin, or is about the
+            // cursor (ADR-0133). The rows show in the order of `Row::ALL`.
+            Row::Skin
+            | Row::BeatmapSkins
+            | Row::BeatmapColours
+            | Row::BeatmapHitsounds
+            | Row::MenuCursor
+            | Row::CursorStyle
+            | Row::CursorSize
+            | Row::AutoCursorSize
+            | Row::CursorTrail
+            | Row::HitLighting
+            | Row::MenuSounds
+            | Row::MenuBackground
+            | Row::PauseMenuStyle => section::SKIN,
             Row::UpdateHz
             | Row::DrawHz
             | Row::MenuDrawHz
             | Row::ShowFps
             | Row::FpsCorner
-            | Row::FpsScreens => 4,
+            | Row::FpsScreens => section::FRAME,
             Row::Dim
             | Row::SongSelectDim
-            | Row::BeatmapSkins
-            | Row::BeatmapColours
-            | Row::BeatmapHitsounds
+            | Row::SongSelectThumbnails
             | Row::AlwaysPlayFirstComboBreak
             | Row::DisableWinKey
             | Row::SnakingIn
             | Row::SnakingOut
-            | Row::HitLighting
             | Row::KeyOverlay
             | Row::KeyOverlayAnimation
             | Row::HudAnimations
-            | Row::CursorTrail
-            | Row::CursorSize
-            | Row::AutoCursorSize
-            | Row::Skin => 5,
-            Row::SongsFolder => 6,
+            | Row::PauseMenuScale => section::GAMEPLAY,
+            Row::SongsFolder => section::LIBRARY,
         }
     }
 
@@ -419,6 +498,17 @@ impl Row {
             Row::ResetKeys => "settings-keys-reset",
             Row::Language => "settings-layout-language",
             Row::Intro => "settings-general-intro",
+            Row::ColourScheme => "settings-general-colour-scheme",
+            Row::Effects => "settings-general-effects",
+            Row::Parallax => "settings-general-parallax",
+            Row::Transitions => "settings-general-transitions",
+            Row::MenuScale => "settings-general-menu-scale",
+            Row::GameScale => "settings-general-game-scale",
+            Row::Skew => "settings-general-skew",
+            Row::MenuBackground => "settings-general-menu-background",
+            Row::MenuCursor => "settings-general-menu-cursor",
+            Row::CursorStyle => "settings-gameplay-cursor-style",
+            Row::MenuSounds => "settings-audio-menu-sounds",
             Row::ScreenMode => "settings-layout-screen-mode",
             Row::NotFullscreenNote => "settings-layout-not-fullscreen-note",
             Row::Display => "settings-layout-display",
@@ -434,6 +524,7 @@ impl Row {
             Row::FpsScreens => "settings-frame-fps-screens",
             Row::Dim => "settings-gameplay-dim",
             Row::SongSelectDim => "settings-song-select-dim",
+            Row::SongSelectThumbnails => "settings-song-select-thumbnails",
             Row::BeatmapSkins => "settings-gameplay-beatmap-skins",
             Row::BeatmapColours => "settings-gameplay-beatmap-colours",
             Row::BeatmapHitsounds => "settings-gameplay-beatmap-hitsounds",
@@ -448,6 +539,8 @@ impl Row {
             Row::CursorTrail => "settings-gameplay-cursor-trail",
             Row::CursorSize => "settings-gameplay-cursor-size",
             Row::AutoCursorSize => "settings-gameplay-auto-cursor-size",
+            Row::PauseMenuStyle => "settings-gameplay-pause-menu-style",
+            Row::PauseMenuScale => "settings-gameplay-pause-menu-scale",
             Row::Skin => "settings-gameplay-skin",
             Row::SongsFolder => "settings-library-songs-folder",
         }
@@ -555,10 +648,55 @@ fn corner_key(corner: FpsCorner) -> &'static str {
 }
 
 /// The Fluent key of a key overlay animation option.
+fn pause_menu_style_key(style: PauseMenuStyle) -> &'static str {
+    match style {
+        PauseMenuStyle::Slam => "settings-option-pause-menu-style-slam",
+        PauseMenuStyle::Lazer => "settings-option-pause-menu-style-lazer",
+        PauseMenuStyle::Stable => "settings-option-pause-menu-style-stable",
+    }
+}
+
 fn key_animation_key(animation: KeyOverlayAnimation) -> &'static str {
     match animation {
         KeyOverlayAnimation::Stable => "settings-option-key-overlay-animation-stable",
         KeyOverlayAnimation::Lazer => "settings-option-key-overlay-animation-lazer",
+    }
+}
+
+/// The Fluent key of a thumbnails option.
+fn thumbnails_key(thumbnails: Thumbnails) -> &'static str {
+    match thumbnails {
+        Thumbnails::Off => "settings-option-thumbnails-off",
+        Thumbnails::H64 => "settings-option-thumbnails-64",
+        Thumbnails::H128 => "settings-option-thumbnails-128",
+        Thumbnails::H256 => "settings-option-thumbnails-256",
+    }
+}
+
+/// The Fluent key of a cursor style option (ADR-0124).
+fn cursor_style_key(style: CursorStyle) -> &'static str {
+    match style {
+        CursorStyle::Slam => "settings-option-cursor-slam",
+        CursorStyle::Skin => "settings-option-cursor-skin",
+        CursorStyle::System => "settings-option-cursor-system",
+    }
+}
+
+/// The Fluent key of a main menu background option.
+fn menu_background_key(background: MenuBackground) -> &'static str {
+    match background {
+        MenuBackground::Beatmap => "settings-option-menu-background-beatmap",
+        MenuBackground::Skin => "settings-option-menu-background-skin",
+        MenuBackground::None => "settings-option-menu-background-none",
+    }
+}
+
+/// The Fluent key of a menu sounds option.
+fn menu_sounds_key(sounds: MenuSounds) -> &'static str {
+    match sounds {
+        MenuSounds::Slam => "settings-option-menu-sounds-slam",
+        MenuSounds::Skin => "settings-option-menu-sounds-skin",
+        MenuSounds::Off => "settings-option-menu-sounds-off",
     }
 }
 
@@ -795,6 +933,67 @@ impl Rows {
                 step: 0.01,
                 value: round_to(s.gameplay.cursor_size, 2),
             },
+            Row::MenuScale | Row::GameScale | Row::PauseMenuScale => {
+                let scale = match row {
+                    Row::MenuScale => s.general.menu_scale,
+                    Row::GameScale => s.general.game_scale,
+                    _ => s.gameplay.pause_menu_scale,
+                };
+                RowKind::Slider {
+                    min: f64::from(UI_SCALE_RANGE.0) * 100.0,
+                    max: f64::from(UI_SCALE_RANGE.1) * 100.0,
+                    step: UI_SCALE_STEP_PERCENT,
+                    value: (f64::from(scale) * 100.0).round(),
+                }
+            }
+            Row::Skew => RowKind::Slider {
+                min: 0.0,
+                max: f64::from(MAX_SKEW_DEGREES),
+                step: 1.0,
+                value: f64::from(s.general.skew).round(),
+            },
+            Row::ColourScheme => choice(
+                ColourScheme::ALL.len(),
+                ColourScheme::ALL
+                    .iter()
+                    .position(|c| *c == s.general.colour_scheme),
+            ),
+            Row::Transitions => choice(
+                TransitionStyle::ALL.len(),
+                TransitionStyle::ALL
+                    .iter()
+                    .position(|t| *t == s.general.transitions),
+            ),
+            Row::SongSelectThumbnails => choice(
+                Thumbnails::ALL.len(),
+                Thumbnails::ALL
+                    .iter()
+                    .position(|t| *t == s.song_select.thumbnails),
+            ),
+            Row::MenuBackground => choice(
+                MenuBackground::ALL.len(),
+                MenuBackground::ALL
+                    .iter()
+                    .position(|b| *b == s.general.menu_background),
+            ),
+            Row::MenuCursor => choice(
+                CursorStyle::ALL.len(),
+                CursorStyle::ALL
+                    .iter()
+                    .position(|c| *c == s.general.menu_cursor),
+            ),
+            Row::CursorStyle => choice(
+                CursorStyle::ALL.len(),
+                CursorStyle::ALL
+                    .iter()
+                    .position(|c| *c == s.gameplay.cursor_style),
+            ),
+            Row::MenuSounds => choice(
+                MenuSounds::ALL.len(),
+                MenuSounds::ALL
+                    .iter()
+                    .position(|m| *m == s.audio.menu_sounds),
+            ),
             Row::Language => choice(
                 BUILTIN_LANGUAGES.len(),
                 BUILTIN_LANGUAGES.iter().position(|l| {
@@ -804,11 +1003,26 @@ impl Rows {
             Row::Intro => RowKind::Toggle {
                 value: s.general.intro,
             },
+            Row::Effects => RowKind::Toggle {
+                value: s.general.effects,
+            },
+            Row::Parallax => RowKind::Slider {
+                min: 0.0,
+                max: 100.0,
+                step: 5.0,
+                value: (s.general.parallax * 100.0).round(),
+            },
             Row::HitsoundDelay => choice(
                 HitsoundDelay::ALL.len(),
                 HitsoundDelay::ALL
                     .iter()
                     .position(|d| *d == s.audio.hitsound_delay),
+            ),
+            Row::PauseMenuStyle => choice(
+                PauseMenuStyle::ALL.len(),
+                PauseMenuStyle::ALL
+                    .iter()
+                    .position(|p| *p == s.gameplay.pause_menu_style),
             ),
             Row::KeyOverlayAnimation => choice(
                 KeyOverlayAnimation::ALL.len(),
@@ -1010,6 +1224,14 @@ impl Rows {
                     settings.gameplay.key_overlay_animation = *animation;
                 }
             }
+            (Row::PauseMenuStyle, RowValue::Choice(i)) => {
+                if let Some(style) = PauseMenuStyle::ALL.get(i) {
+                    settings.gameplay.pause_menu_style = *style;
+                }
+            }
+            (Row::PauseMenuScale, RowValue::Slider(v)) => {
+                settings.gameplay.pause_menu_scale = scale_from_percent(v);
+            }
             (Row::CursorTrail, RowValue::Toggle(v)) => settings.gameplay.cursor_trail = v,
             (Row::AutoCursorSize, RowValue::Toggle(v)) => {
                 settings.gameplay.auto_cursor_size = v;
@@ -1023,6 +1245,54 @@ impl Rows {
                 }
             },
             (Row::Intro, RowValue::Toggle(v)) => settings.general.intro = v,
+            (Row::Effects, RowValue::Toggle(v)) => settings.general.effects = v,
+            (Row::Parallax, RowValue::Slider(v)) => {
+                settings.general.parallax = round_to((v / 5.0).round() * 5.0 / 100.0, 2);
+            }
+            (Row::MenuScale, RowValue::Slider(v)) => {
+                settings.general.menu_scale = scale_from_percent(v);
+            }
+            (Row::GameScale, RowValue::Slider(v)) => {
+                settings.general.game_scale = scale_from_percent(v);
+            }
+            (Row::Skew, RowValue::Slider(v)) => {
+                settings.general.skew = v.round().clamp(0.0, f64::from(MAX_SKEW_DEGREES)) as f32;
+            }
+            (Row::ColourScheme, RowValue::Choice(i)) => {
+                if let Some(scheme) = ColourScheme::ALL.get(i) {
+                    settings.general.colour_scheme = *scheme;
+                }
+            }
+            (Row::Transitions, RowValue::Choice(i)) => {
+                if let Some(style) = TransitionStyle::ALL.get(i) {
+                    settings.general.transitions = *style;
+                }
+            }
+            (Row::SongSelectThumbnails, RowValue::Choice(i)) => {
+                if let Some(thumbnails) = Thumbnails::ALL.get(i) {
+                    settings.song_select.thumbnails = *thumbnails;
+                }
+            }
+            (Row::MenuCursor, RowValue::Choice(i)) => {
+                if let Some(style) = CursorStyle::ALL.get(i) {
+                    settings.general.menu_cursor = *style;
+                }
+            }
+            (Row::CursorStyle, RowValue::Choice(i)) => {
+                if let Some(style) = CursorStyle::ALL.get(i) {
+                    settings.gameplay.cursor_style = *style;
+                }
+            }
+            (Row::MenuBackground, RowValue::Choice(i)) => {
+                if let Some(background) = MenuBackground::ALL.get(i) {
+                    settings.general.menu_background = *background;
+                }
+            }
+            (Row::MenuSounds, RowValue::Choice(i)) => {
+                if let Some(sounds) = MenuSounds::ALL.get(i) {
+                    settings.audio.menu_sounds = *sounds;
+                }
+            }
             (Row::Language, RowValue::Choice(i)) => {
                 if let Some(language) = BUILTIN_LANGUAGES.get(i) {
                     settings.general.language = Some(language.langid.to_owned());
@@ -1231,9 +1501,37 @@ impl Rows {
                         .iter()
                         .map(|delay| text(delay_key(*delay)))
                         .collect(),
+                    Row::PauseMenuStyle => PauseMenuStyle::ALL
+                        .iter()
+                        .map(|style| text(pause_menu_style_key(*style)))
+                        .collect(),
                     Row::KeyOverlayAnimation => KeyOverlayAnimation::ALL
                         .iter()
                         .map(|animation| text(key_animation_key(*animation)))
+                        .collect(),
+                    Row::ColourScheme => ColourScheme::ALL
+                        .iter()
+                        .map(|scheme| text(scheme.label_key()))
+                        .collect(),
+                    Row::Transitions => TransitionStyle::ALL
+                        .iter()
+                        .map(|style| text(style.label_key()))
+                        .collect(),
+                    Row::SongSelectThumbnails => Thumbnails::ALL
+                        .iter()
+                        .map(|t| text(thumbnails_key(*t)))
+                        .collect(),
+                    Row::MenuCursor | Row::CursorStyle => CursorStyle::ALL
+                        .iter()
+                        .map(|style| text(cursor_style_key(*style)))
+                        .collect(),
+                    Row::MenuBackground => MenuBackground::ALL
+                        .iter()
+                        .map(|background| text(menu_background_key(*background)))
+                        .collect(),
+                    Row::MenuSounds => MenuSounds::ALL
+                        .iter()
+                        .map(|sounds| text(menu_sounds_key(*sounds)))
                         .collect(),
                     Row::FpsScreens => FpsScreens::ALL
                         .iter()
@@ -1270,9 +1568,14 @@ impl Rows {
                     | Row::MenuMusicVolume
                     | Row::HitsoundVolume
                     | Row::EffectsVolume
+                    | Row::Parallax
                     | Row::Dim
                     | Row::SongSelectDim
+                    | Row::MenuScale
+                    | Row::GameScale
+                    | Row::PauseMenuScale
                     | Row::PositionalHitsoundsLevel => text("settings-unit-percent"),
+                    Row::Skew => text("settings-unit-degrees"),
                     Row::Sensitivity | Row::CursorSize => text("settings-unit-times"),
                     _ => String::new(),
                 };
@@ -1318,6 +1621,13 @@ impl Rows {
     }
 }
 
+/// The interface scale a percent slider value stands for, in the allowed range and a
+/// multiple of the step.
+fn scale_from_percent(percent: f64) -> f32 {
+    let stepped = (percent / UI_SCALE_STEP_PERCENT).round() * UI_SCALE_STEP_PERCENT / 100.0;
+    (stepped as f32).clamp(UI_SCALE_RANGE.0, UI_SCALE_RANGE.1)
+}
+
 fn round_to(value: f64, decimals: i32) -> f64 {
     let factor = 10_f64.powi(decimals);
     (value * factor).round() / factor
@@ -1335,6 +1645,7 @@ pub fn round_for_save(settings: &mut Settings) {
         &mut audio.effects_volume,
         &mut settings.gameplay.dim,
         &mut settings.song_select.background_dim,
+        &mut settings.general.parallax,
     ] {
         *volume = round_to(*volume, 2);
     }
@@ -1624,6 +1935,7 @@ mod tests {
             (Row::KeyOverlay, false),
             (Row::HudAnimations, true),
             (Row::Intro, true),
+            (Row::Effects, true),
             (Row::AlwaysPlayFirstComboBreak, true),
             (Row::DisableWinKey, true),
             (Row::CursorTrail, true),
@@ -1816,6 +2128,88 @@ mod tests {
     }
 
     #[test]
+    fn the_interface_rows_edit_their_settings() {
+        let (rows, mut s) = rows();
+        let specs = rows.specs(&s);
+        assert_eq!(Row::ColourScheme.section(), 3);
+        assert_eq!(Row::MenuSounds.section(), section::SKIN);
+        assert_eq!(
+            specs[index(Row::MenuScale)].kind,
+            RowKind::Slider {
+                min: 75.0,
+                max: 150.0,
+                step: 5.0,
+                value: 100.0
+            }
+        );
+        assert_eq!(
+            specs[index(Row::ColourScheme)].kind,
+            RowKind::Dropdown {
+                options: 5,
+                selected: 0
+            }
+        );
+        rows.apply(&mut s, index(Row::ColourScheme), RowValue::Choice(4));
+        assert_eq!(s.general.colour_scheme, ColourScheme::Mono);
+        rows.apply(&mut s, index(Row::ColourScheme), RowValue::Choice(9));
+        assert_eq!(s.general.colour_scheme, ColourScheme::Mono);
+        rows.apply(&mut s, index(Row::Skew), RowValue::Slider(14.4));
+        assert_eq!(s.general.skew, 14.0);
+        rows.apply(&mut s, index(Row::Skew), RowValue::Slider(99.0));
+        assert_eq!(s.general.skew, 20.0);
+        assert_eq!(
+            rows.specs(&s)[index(Row::Skew)].kind,
+            RowKind::Slider {
+                min: 0.0,
+                max: 20.0,
+                step: 1.0,
+                value: 20.0
+            }
+        );
+        rows.apply(&mut s, index(Row::MenuScale), RowValue::Slider(125.0));
+        rows.apply(&mut s, index(Row::GameScale), RowValue::Slider(10.0));
+        assert_eq!(s.general.menu_scale, 1.25);
+        assert_eq!(s.general.game_scale, 0.75);
+        rows.apply(&mut s, index(Row::PauseMenuStyle), RowValue::Choice(2));
+        assert_eq!(s.gameplay.pause_menu_style, PauseMenuStyle::Stable);
+        rows.apply(&mut s, index(Row::PauseMenuScale), RowValue::Slider(150.0));
+        assert_eq!(s.gameplay.pause_menu_scale, 1.5);
+        assert_eq!(s.general.transitions, TransitionStyle::Random);
+        rows.apply(&mut s, index(Row::Transitions), RowValue::Choice(2));
+        assert_eq!(s.general.transitions, TransitionStyle::Band);
+        rows.apply(&mut s, index(Row::Transitions), RowValue::Choice(8));
+        assert_eq!(s.general.transitions, TransitionStyle::Band);
+        assert_eq!(Row::Transitions.section(), 3);
+        assert!(matches!(
+            rows.specs(&s)[index(Row::Transitions)].kind,
+            RowKind::Dropdown { selected: 2, .. }
+        ));
+        rows.apply(&mut s, index(Row::MenuCursor), RowValue::Choice(2));
+        assert_eq!(s.general.menu_cursor, CursorStyle::System);
+        rows.apply(&mut s, index(Row::CursorStyle), RowValue::Choice(0));
+        assert_eq!(s.gameplay.cursor_style, CursorStyle::Slam);
+        rows.apply(&mut s, index(Row::CursorStyle), RowValue::Choice(7));
+        assert_eq!(s.gameplay.cursor_style, CursorStyle::Slam);
+        assert_eq!(
+            rows.specs(&s)[index(Row::MenuCursor)].kind,
+            RowKind::Dropdown {
+                options: 3,
+                selected: 2
+            }
+        );
+        rows.apply(&mut s, index(Row::MenuBackground), RowValue::Choice(2));
+        assert_eq!(s.general.menu_background, MenuBackground::None);
+        rows.apply(&mut s, index(Row::MenuSounds), RowValue::Choice(1));
+        assert_eq!(s.audio.menu_sounds, MenuSounds::Skin);
+        let specs = rows.specs(&s);
+        assert!(!specs[index(Row::MenuScale)].restart_required);
+        assert!(matches!(
+            specs[index(Row::MenuScale)].kind,
+            RowKind::Slider { value, .. } if value == 125.0
+        ));
+    }
+
+    #[test]
     fn apply_maps_values_back_to_the_settings() {
         let (rows, mut s) = rows();
         rows.apply(&mut s, index(Row::MasterVolume), RowValue::Slider(30.0));
@@ -1974,7 +2368,7 @@ mod tests {
     fn the_skin_row_offers_the_default_and_the_folders() {
         let (rows, mut s) = with_skins(&["Alpha", "beta"], None);
         assert_eq!(skin_selected(&rows, &s), (3, 0));
-        assert_eq!(Row::Skin.section(), 5);
+        assert_eq!(Row::Skin.section(), section::SKIN);
         assert!(!Row::Skin.restart_required());
         rows.apply(&mut s, index(Row::Skin), RowValue::Choice(2));
         assert_eq!(s.skin.name.as_deref(), Some("beta"));
@@ -2013,6 +2407,75 @@ mod tests {
     }
 
     #[test]
+    fn the_thumbnails_row_chooses_the_height_and_is_labelled_in_both_languages() {
+        let (rows, mut s) = rows();
+        let at = index(Row::SongSelectThumbnails);
+        assert_eq!(at, index(Row::SongSelectDim) + 1);
+        assert_eq!(s.song_select.thumbnails, Thumbnails::H128);
+        assert_eq!(
+            rows.specs(&s)[at].kind,
+            RowKind::Dropdown {
+                options: 4,
+                selected: 2
+            }
+        );
+        rows.apply(&mut s, at, RowValue::Choice(3));
+        assert_eq!(s.song_select.thumbnails, Thumbnails::H256);
+        rows.apply(&mut s, at, RowValue::Choice(0));
+        assert_eq!(s.song_select.thumbnails, Thumbnails::Off);
+        // Out of range changes nothing.
+        rows.apply(&mut s, at, RowValue::Choice(9));
+        assert_eq!(s.song_select.thumbnails, Thumbnails::Off);
+        let localizer = Localizer::builtin().unwrap();
+        localizer.set_language("en").unwrap();
+        let labels = rows.labels(&localizer);
+        assert_eq!(
+            labels.rows[at].options,
+            ["Off", "64 px", "128 px", "256 px"]
+        );
+        localizer.set_language("ru").unwrap();
+        let labels = rows.labels(&localizer);
+        assert_eq!(labels.rows[at].options[0], "Выкл.");
+        assert!(!labels.rows[at].label.is_empty());
+    }
+
+    #[test]
+    fn the_skin_section_follows_the_layout_section_and_holds_what_the_skin_gives() {
+        assert_eq!(section::SKIN, section::LAYOUT + 1);
+        assert_eq!(SECTION_KEYS[section::SKIN], "settings-section-skin");
+        for row in [
+            Row::Skin,
+            Row::BeatmapSkins,
+            Row::BeatmapColours,
+            Row::BeatmapHitsounds,
+            Row::MenuCursor,
+            Row::CursorStyle,
+            Row::CursorSize,
+            Row::AutoCursorSize,
+            Row::CursorTrail,
+            Row::HitLighting,
+            Row::MenuSounds,
+            Row::MenuBackground,
+            Row::PauseMenuStyle,
+        ] {
+            assert_eq!(row.section(), section::SKIN, "{row:?}");
+        }
+        // The skin choice leads the section.
+        let first = Row::ALL
+            .iter()
+            .find(|row| row.section() == section::SKIN)
+            .expect("the section has rows");
+        assert_eq!(*first, Row::Skin);
+        // Every section has rows, and a row's index is its place in `Row::ALL`.
+        for s in 0..SECTIONS {
+            assert!(Row::ALL.iter().any(|row| row.section() == s), "{s}");
+        }
+        for (i, row) in Row::ALL.iter().enumerate() {
+            assert_eq!(*row as usize, i);
+        }
+    }
+
+    #[test]
     fn the_songs_folder_row_is_a_button_in_its_own_section() {
         let (rows, s) = rows();
         assert_eq!(Row::SongsFolder.section(), SECTIONS - 1);
@@ -2030,6 +2493,30 @@ mod tests {
         assert_eq!(labels.sections[SECTIONS - 1], "Library");
         // Only this row shows a value.
         assert_eq!(labels.rows.iter().filter(|r| r.shows_value).count(), 1);
+    }
+
+    #[test]
+    fn the_parallax_row_is_a_stepped_percent_slider_in_the_general_section() {
+        assert_eq!(Row::Parallax.section(), Row::Effects.section());
+        let rows = Rows::new(&Settings::default());
+        let s = Settings::default();
+        assert_eq!(
+            rows.specs(&s)[index(Row::Parallax)].kind,
+            RowKind::Slider {
+                min: 0.0,
+                max: 100.0,
+                step: 5.0,
+                value: 100.0
+            }
+        );
+        let mut s = Settings::default();
+        rows.apply(&mut s, index(Row::Parallax), RowValue::Slider(35.0));
+        assert_eq!(s.general.parallax, 0.35);
+        rows.apply(&mut s, index(Row::Parallax), RowValue::Slider(0.0));
+        assert_eq!(s.general.parallax, 0.0);
+        s.general.parallax = 0.30000000000000004;
+        round_for_save(&mut s);
+        assert_eq!(s.general.parallax, 0.3);
     }
 
     #[test]

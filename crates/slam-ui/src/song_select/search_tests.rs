@@ -492,9 +492,10 @@ fn snapshot_rows_cover_the_list_area() {
     let mut s = searchable(sets);
     s.tick(0, &layout);
     press(&mut s, I::Scroll { lines: 7.5 });
+    s.tick(1_000_000_000, &layout);
     let snap = s.snapshot();
     assert_eq!(snap.first_row, 7);
-    let shown = layout.visible_rows(snap.scroll, snap.row_count);
+    let shown = layout.visible_rows(snap.shown_scroll, snap.row_count);
     assert!(shown.start >= snap.first_row);
     assert!(shown.end <= snap.first_row + snap.rows().len());
     assert_eq!(snap.rows()[0], Row::Set(6), "set 0 is expanded");

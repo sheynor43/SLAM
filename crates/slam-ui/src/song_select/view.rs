@@ -11,28 +11,39 @@ use std::sync::Arc;
 
 use slam_render::Color;
 use slam_render::atlas::AtlasRegion;
-use slam_render::sprite::{Sprite, SpriteBatch};
+use slam_render::atlas::UvRect;
+use slam_render::shape::{Shape, ShapeBatch};
+use slam_render::sprite::SpriteBatch;
+use slam_render::upload::TextureHandle;
 use slam_text::{FontRegistry, Glyph, GlyphCache, GlyphKey, push_layout};
 
+use super::info_panel::InfoPanel;
 use super::mod_select::{
     CustomisationState, MAX_COLUMNS, MAX_SETTING_ROWS, SettingRowKind, TileDetail, TileDetails,
 };
 use super::{
-    BeatmapDetails, DetailStats, ModColumns, ModSelectSnapshot, Row, SearchQuery, SongList,
-    SongSelectLayout, SongSelectSnapshot, SongSelectStatus, can_choose_folder,
+    MAX_VISIBLE_ROWS, ModColumns, ModSelectSnapshot, Row, SearchQuery, SongList, SongSelectLayout,
+    SongSelectSnapshot, SongSelectStatus, Thumbs, can_choose_folder,
 };
 use crate::menu::Rect;
 use crate::menu::view::{Frame, Line, Typesetter};
 use crate::screen::Pose;
 use crate::theme::{Theme, faded};
+use crate::widgets::Look;
 use crate::widgets::ToggleLayout;
 
 const ELLIPSIS: char = '\u{2026}';
+/// The ellipsis as text.
+pub(crate) const ELLIPSIS_STR: &str = "\u{2026}";
 /// Bytes reserved up front in every text buffer.
-const TEXT_CAPACITY: usize = 256;
+pub(super) const TEXT_CAPACITY: usize = 256;
 /// How much of its colour a dimmed element keeps: the mod tiles under the expanded settings
 /// panel, an inactive panel header.
 const DIMMED: f32 = 0.35;
+/// Thumbnails whose fade-in start is remembered: the memory cache's size (ADR-0127).
+pub(crate) const FADES: usize = 64;
+/// How much of the accent a thumbnail's placeholder shows.
+const PLACEHOLDER_ALPHA: f32 = 0.25;
 /// What the settings values are made of; asked for up front.
 const VALUE_CHARS: &str = "0123456789.-x";
 
@@ -79,13 +90,10 @@ pub struct DetailLabels {
     pub approach_rate: String,
     pub overall_difficulty: String,
     pub drain_rate: String,
+    /// The title of the local scores list, and the line shown when there are none.
+    pub scores: String,
+    pub no_scores: String,
 }
-
-/// What the details' values are made of; asked for up front.
-const DETAIL_CHARS: &str = "0123456789.:-() \u{b7}";
-
-/// Separates the details of one line.
-const DETAIL_SEPARATOR: &str = "  \u{b7}  ";
 
 impl std::fmt::Debug for SongSelectLabels {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
@@ -117,6 +125,23 @@ impl RowSlot {
         }
     }
 }
+
+/// Width of `count` difficulty dots at the right end of a set row, with the gap before them
+/// (ADR-0131); 0 for none.
+fn dots_width(count: usize, theme: &Theme, scale: f32) -> f32 {
+    let count = count.min(MAX_DOTS);
+    if count == 0 {
+        return 0.0;
+    }
+    let (size, gap) = (
+        theme.difficulty_dot_size * scale,
+        theme.difficulty_dot_gap * scale,
+    );
+    count as f32 * (size + gap) + gap * 2.0
+}
+
+/// The most difficulty dots a set row shows.
+const MAX_DOTS: usize = 12;
 
 /// The text of one visible settings row's number, laid out again only when it changes.
 struct ValueSlot {
@@ -163,11 +188,13 @@ pub struct SongSelectView {
     slots: Vec<RowSlot>,
     /// Widths of the ellipsis at the title and detail sizes.
     ellipsis: [f32; 2],
-    detail_labels: DetailLabels,
-    /// Length, BPM and objects; then the difficulty: for the details they were written for.
-    detail_lines: [Line; 2],
-    details_for: Option<Option<BeatmapDetails>>,
-    detail_charset: Line,
+    /// The statistics and local scores on the left.
+    info: InfoPanel,
+    /// When each thumbnail seen was first drawn; replaced round-robin.
+    fades: [Option<(TextureHandle, u64)>; FADES],
+    fade_next: usize,
+    /// The thumbnails were on at the last frame: the row texts are cut for it.
+    thumbs_on: bool,
 }
 
 impl std::fmt::Debug for SongSelectView {
@@ -175,6 +202,65 @@ impl std::fmt::Debug for SongSelectView {
         f.debug_struct("SongSelectView")
             .field("slots", &self.slots.len())
             .finish_non_exhaustive()
+    }
+}
+
+/// Where a set row's thumbnail goes, relative to the row (ADR-0127).
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub(crate) struct ThumbGeometry {
+    /// Gap between the row's edge and the thumbnail.
+    pub inset: f32,
+    pub width: f32,
+    pub height: f32,
+    /// How far the row's texts move right to make room.
+    pub text_shift: f32,
+}
+
+impl ThumbGeometry {
+    pub(crate) fn new(theme: &Theme, layout: &SongSelectLayout) -> ThumbGeometry {
+        let inset = theme.song_thumbnail_inset * layout.scale;
+        let row = layout.row_height - theme.song_row_gap * layout.scale;
+        let height = (row - 2.0 * inset).max(0.0);
+        let width = height * theme.song_thumbnail_aspect;
+        ThumbGeometry {
+            inset,
+            width,
+            height,
+            text_shift: inset + width,
+        }
+    }
+
+    /// The thumbnail's top and bottom for a row at `area`, cut to the list's edges; `None`
+    /// when nothing of it is inside.
+    pub(crate) fn span(&self, area: &Rect, top_edge: f32, bottom_edge: f32) -> Option<(f32, f32)> {
+        let top = area.y + self.inset;
+        let (top, bottom) = (top.max(top_edge), (top + self.height).min(bottom_edge));
+        (bottom > top).then_some((top, bottom))
+    }
+}
+
+/// How opaque a thumbnail is `fade_ms` after it was first drawn; remembers the first draw
+/// of up to [`FADES`] thumbnails, replacing the oldest. Allocation-free.
+pub(crate) fn fade_alpha(
+    fades: &mut [Option<(TextureHandle, u64)>; FADES],
+    next: &mut usize,
+    handle: TextureHandle,
+    now_ns: u64,
+    fade_ms: f32,
+) -> f32 {
+    let start = match fades.iter().flatten().find(|(h, _)| *h == handle) {
+        Some((_, start)) => *start,
+        None => {
+            fades[*next] = Some((handle, now_ns));
+            *next = (*next + 1) % FADES;
+            now_ns
+        }
+    };
+    let elapsed_ms = now_ns.saturating_sub(start) as f32 / 1.0e6;
+    if fade_ms <= 0.0 {
+        1.0
+    } else {
+        (elapsed_ms / fade_ms).clamp(0.0, 1.0)
     }
 }
 
@@ -290,14 +376,10 @@ impl SongSelectView {
             mod_columns: labels.mod_columns,
             slots: Vec::new(),
             ellipsis: [0.0; 2],
-            detail_labels: labels.details.clone(),
-            detail_lines: std::array::from_fn(|_| {
-                let mut line = Line::new("");
-                line.text.reserve(TEXT_CAPACITY);
-                line
-            }),
-            details_for: None,
-            detail_charset: Line::new(DETAIL_CHARS),
+            info: InfoPanel::new(&labels.details),
+            fades: [None; FADES],
+            fade_next: 0,
+            thumbs_on: false,
             theme,
         };
         view.scanning.text.reserve(TEXT_CAPACITY);
@@ -337,11 +419,7 @@ impl SongSelectView {
             self.type_setter
                 .lay_out(line, self.theme.song_detail_size * scale);
         }
-        self.type_setter.lay_out(
-            &mut self.detail_charset,
-            self.theme.song_detail_size * scale,
-        );
-        self.details_for = None;
+        self.info.lay_out(&mut self.type_setter, &self.theme, scale);
         for line in [&mut self.search_placeholder, &mut self.search_no_matches] {
             self.type_setter
                 .lay_out(line, self.theme.song_title_size * scale);
@@ -409,8 +487,7 @@ impl SongSelectView {
             .iter()
             .chain(self.mod_tiles.iter().flatten())
             .chain([&self.customise_title, &self.value_charset])
-            .chain(&self.detail_lines)
-            .chain([&self.detail_charset])
+            .chain(self.info.lines())
             .chain(self.setting_lines.iter().map(|(_, line)| line))
             .chain(self.value_slots.iter().map(|slot| &slot.line));
         let rows = self
@@ -437,6 +514,7 @@ impl SongSelectView {
         generation: u64,
         list: &SongList,
         row: Row,
+        text_shift: f32,
     ) -> bool {
         if slot.holds == Some((generation, row)) {
             return true;
@@ -449,7 +527,7 @@ impl SongSelectView {
         let Some(set_row) = list.sets.get(set) else {
             return false;
         };
-        let avail = (layout.list.width - indent - 2.0 * pad).max(0.0);
+        let mut avail = (layout.list.width - indent - 2.0 * pad - text_shift).max(0.0);
         slot.holds = None;
         slot.primary.text.clear();
         slot.secondary.text.clear();
@@ -457,12 +535,23 @@ impl SongSelectView {
             Row::Set(_) => {
                 let _ = write!(slot.primary.text, "{} - {}", set_row.artist, set_row.title);
                 slot.secondary.text.push_str(&set_row.creator);
+                // The difficulty dots keep the right end.
+                avail =
+                    (avail - dots_width(set_row.difficulties.len(), theme, layout.scale)).max(0.0);
             }
             Row::Difficulty { difficulty, .. } => {
                 let Some(d) = set_row.difficulties.get(difficulty) else {
                     return false;
                 };
                 slot.primary.text.push_str(&d.version);
+                // The star pill keeps the right end; its text is the second line.
+                if let Some(stars) = d.stars {
+                    super::push_stars(&mut slot.secondary.text, stars);
+                    type_setter.lay_out(&mut slot.secondary, theme.song_detail_size * layout.scale);
+                    avail = (avail
+                        - super::info_panel::pill_width(&slot.secondary, theme, layout.scale))
+                    .max(0.0);
+                }
             }
         }
         let scale = layout.scale;
@@ -473,13 +562,15 @@ impl SongSelectView {
             avail,
             ellipsis[0],
         );
-        fit(
-            type_setter,
-            &mut slot.secondary,
-            theme.song_detail_size * scale,
-            avail,
-            ellipsis[1],
-        );
+        if matches!(row, Row::Set(_)) {
+            fit(
+                type_setter,
+                &mut slot.secondary,
+                theme.song_detail_size * scale,
+                avail,
+                ellipsis[1],
+            );
+        }
         slot.holds = Some((generation, row));
         true
     }
@@ -491,7 +582,7 @@ impl SongSelectView {
     #[allow(clippy::too_many_arguments)]
     pub fn push(
         &mut self,
-        shapes: &mut SpriteBatch,
+        shapes: &mut ShapeBatch,
         text: &mut SpriteBatch,
         glyphs: &mut GlyphCache,
         width: f32,
@@ -499,11 +590,19 @@ impl SongSelectView {
         snapshot: &SongSelectSnapshot,
         pose: Pose,
         white: AtlasRegion,
+        thumbs: Thumbs<'_>,
     ) {
         let frame = Frame { width, height };
         if frame != self.frame {
             self.frame = frame;
             self.lay_out();
+        }
+        if thumbs.enabled != self.thumbs_on {
+            // The texts of the set rows are cut to another width.
+            self.thumbs_on = thumbs.enabled;
+            for slot in &mut self.slots {
+                slot.holds = None;
+            }
         }
         if matches!(snapshot.status, SongSelectStatus::Scanning { .. })
             && !Arc::ptr_eq(&self.scanning_seen, &snapshot.scanning_text)
@@ -517,7 +616,13 @@ impl SongSelectView {
 
         self.refresh_selected(&snapshot.mods);
         self.refresh_search(&snapshot.query);
-        self.refresh_details(&snapshot.details);
+        self.info.refresh(
+            &mut self.type_setter,
+            &self.theme,
+            &self.layout,
+            self.ellipsis,
+            snapshot,
+        );
         let shift = pose.offset * width;
         let opacity = pose.opacity;
         let theme = &self.theme;
@@ -526,15 +631,14 @@ impl SongSelectView {
         let gap = theme.song_row_gap * layout.scale;
         let list = &*snapshot.list;
 
-        let mut rect = |rect: &Rect, colour: Color| {
-            let mut sprite = Sprite::new(
-                white.texture,
-                white.uv,
-                [rect.x + shift, rect.y],
-                [rect.width, rect.height],
-            );
-            sprite.colour = faded(colour, opacity);
-            shapes.push(&sprite);
+        let scale = layout.scale;
+        let mut rect = |rect: &Rect, colour: Color, look: Look| {
+            let moved = Rect {
+                x: rect.x + shift,
+                ..*rect
+            };
+            let colour = faded(colour, opacity);
+            crate::widgets::draw(shapes, white, &moved, colour, look, theme, scale);
         };
         let mut left = |line: &Line, x: f32, centre_y: f32, colour: Color| {
             let position = [x + shift, centre_y - line.layout.height() / 2.0];
@@ -548,7 +652,7 @@ impl SongSelectView {
                 width,
                 height,
             };
-            rect(&full, theme.mod_backdrop_fill);
+            rect(&full, theme.mod_backdrop_fill, Look::Plain);
             let panel = &layout.mods;
             let centred = |line: &Line, area: &Rect| {
                 (
@@ -576,7 +680,12 @@ impl SongSelectView {
                     } else {
                         theme.button_fill
                     };
-                    rect(&area, faded(fill, dim));
+                    let look = Look::Button {
+                        highlighted: on,
+                        seed: (column * 7 + index) as f32 * 0.31,
+                        fade: opacity,
+                    };
+                    rect(&area, faded(fill, dim), look);
                     let (x, y) = centred(line, &area);
                     left(line, x, y, faded(theme.text, dim));
                 }
@@ -590,7 +699,7 @@ impl SongSelectView {
                 theme.button_fill
             };
             let active = if enabled { 1.0 } else { DIMMED };
-            rect(&cl.header, faded(header_fill, active));
+            rect(&cl.header, faded(header_fill, active), Look::Round);
             left(
                 &self.customise_title,
                 cl.header.x + cl.pad,
@@ -598,7 +707,11 @@ impl SongSelectView {
                 faded(theme.text, active),
             );
             if expanded {
-                rect(&cl.content(custom.len), theme.widget_popup_fill);
+                rect(
+                    &cl.content(custom.len),
+                    theme.widget_popup_fill,
+                    Look::Panel,
+                );
                 let text_of = |key: &str| {
                     self.setting_lines
                         .iter()
@@ -612,7 +725,7 @@ impl SongSelectView {
                     let area = cl.row_rect(slot);
                     let label = text_of(row.label);
                     if matches!(row.kind, SettingRowKind::Header) {
-                        rect(&area, theme.button_fill);
+                        rect(&area, theme.button_fill, Look::Round);
                         if let Some(line) = label {
                             left(
                                 line,
@@ -624,9 +737,9 @@ impl SongSelectView {
                         continue;
                     }
                     if index == custom.selected {
-                        rect(&area, theme.button_hover_fill);
+                        rect(&area, theme.button_hover_fill, Look::Round);
                     } else if custom.hover == Some(index) {
-                        rect(&area, theme.row_hover_fill);
+                        rect(&area, theme.row_hover_fill, Look::Round);
                     }
                     let name = cl.label_rect(&area);
                     if let Some(line) = label {
@@ -650,12 +763,12 @@ impl SongSelectView {
                                 0.0
                             };
                             let tint = if unset { DIMMED } else { 1.0 };
-                            rect(&sl.track, theme.button_fill);
+                            rect(&sl.track, theme.button_fill, Look::Pill);
                             let filled = Rect {
                                 width: sl.track.width * fraction,
                                 ..sl.track
                             };
-                            rect(&filled, faded(theme.widget_accent_fill, tint));
+                            rect(&filled, faded(theme.widget_accent_fill, tint), Look::Pill);
                             let knob = (
                                 theme.widget_knob_width * cl.scale,
                                 theme.widget_knob_height * cl.scale,
@@ -668,6 +781,7 @@ impl SongSelectView {
                                     height: knob.1,
                                 },
                                 faded(theme.text, tint),
+                                Look::Pill,
                             );
                             let shown = &mut self.value_slots[slot];
                             let key = (value.to_bits(), decimals);
@@ -704,7 +818,7 @@ impl SongSelectView {
                             } else {
                                 theme.button_fill
                             };
-                            rect(&sw.track, fill);
+                            rect(&sw.track, fill, Look::Pill);
                             let pad = theme.widget_knob_pad * cl.scale;
                             let size = sw.track.height - 2.0 * pad;
                             let travel = sw.track.width - 2.0 * pad - size;
@@ -716,6 +830,7 @@ impl SongSelectView {
                                     height: size,
                                 },
                                 theme.text,
+                                Look::Pill,
                             );
                         }
                         SettingRowKind::Choice {
@@ -723,7 +838,7 @@ impl SongSelectView {
                             count,
                             values,
                         } => {
-                            rect(&control, theme.button_fill);
+                            rect(&control, theme.button_fill, Look::Round);
                             let name = chosen
                                 .filter(|&i| i < count.min(values.len()))
                                 .and_then(|i| text_of(values[i]));
@@ -737,17 +852,18 @@ impl SongSelectView {
             }
             return;
         }
-        // The panel's backing, from the status line to the hints.
-        let inset = theme.song_margin * layout.scale / 2.0;
+        // The info panel's backing on the left.
         rect(
-            &Rect {
-                x: layout.header.x - inset,
-                y: layout.header.y - inset,
-                width: layout.header.width + 2.0 * inset,
-                height: layout.hint.y + layout.hint.height + 2.0 * inset - layout.header.y,
-            },
+            &layout.info_backing(theme.song_margin * layout.scale),
             theme.song_panel_fill,
+            Look::Panel,
         );
+        // Everything on the panel leans with it (ADR-0121).
+        let lean = |x: f32, centre_y: f32| x + layout.lean_x(centre_y);
+        let leaned = |r: &Rect| Rect {
+            x: lean(r.x, r.y + r.height / 2.0),
+            ..*r
+        };
         let status_line = match snapshot.status {
             SongSelectStatus::NoFolder => Some(&self.no_folder),
             SongSelectStatus::Scanning { .. } => Some(&self.scanning),
@@ -758,21 +874,20 @@ impl SongSelectView {
         if let Some(line) = status_line {
             left(
                 line,
-                layout.header.x,
+                lean(
+                    layout.header.x,
+                    layout.header.y + layout.header.height / 2.0,
+                ),
                 layout.header.y + layout.header.height / 2.0,
                 theme.text,
             );
         }
-        // The selected difficulty's details, over the search line; the status line takes
-        // the first one's place.
-        let line_height = layout.details.height / 2.0;
-        let from = usize::from(status_line.is_some());
-        for (i, line) in self.detail_lines.iter().enumerate().skip(from) {
-            let centre = layout.details.y + line_height * (i as f32 + 0.5);
-            left(line, layout.details.x, centre, theme.text);
-        }
+        // The selected difficulty's statistics and local scores, on the left.
+        self.info
+            .push(layout, theme, snapshot, &mut rect, &mut left);
         // The search line.
-        rect(&layout.search, theme.song_search_fill);
+        let search = leaned(&layout.search);
+        rect(&search, theme.song_search_fill, Look::Round);
         let line = if snapshot.query.is_empty() {
             (&self.search_placeholder, theme.disabled_text)
         } else {
@@ -780,27 +895,31 @@ impl SongSelectView {
         };
         left(
             line.0,
-            layout.search.x + pad,
-            layout.search.y + layout.search.height / 2.0,
+            search.x + pad,
+            search.y + search.height / 2.0,
             line.1,
         );
         if list.sets.is_empty() {
             if snapshot.status == SongSelectStatus::Ready {
-                left(
-                    &self.empty,
-                    layout.list.x,
-                    layout.list.y + layout.row_height / 2.0,
-                    theme.disabled_text,
-                );
+                let y = layout.list.y + layout.row_height / 2.0;
+                left(&self.empty, lean(layout.list.x, y), y, theme.disabled_text);
             }
             if can_choose_folder(list, snapshot.status) {
-                let button = &layout.choose_folder;
+                let button = &leaned(&layout.choose_folder);
                 let fill = if snapshot.folder_hovered {
                     theme.button_hover_fill
                 } else {
                     theme.button_fill
                 };
-                rect(button, fill);
+                rect(
+                    button,
+                    fill,
+                    Look::Button {
+                        highlighted: snapshot.folder_hovered,
+                        seed: 0.0,
+                        fade: opacity,
+                    },
+                );
                 left(
                     &self.choose_folder,
                     button.x + pad,
@@ -810,15 +929,21 @@ impl SongSelectView {
             }
         } else {
             if snapshot.row_count == 0 {
+                let y = layout.list.y + layout.row_height / 2.0;
                 left(
                     &self.search_no_matches,
-                    layout.list.x,
-                    layout.list.y + layout.row_height / 2.0,
+                    lean(layout.list.x, y),
+                    y,
                     theme.disabled_text,
                 );
             }
             let rows = snapshot.rows();
-            for index in layout.visible_rows(snapshot.scroll, snapshot.row_count) {
+            // Thumbnails are pushed after the rows: their shapes wait here.
+            let mut thumb_shapes: [Option<Shape>; 2 * MAX_VISIBLE_ROWS] =
+                [None; 2 * MAX_VISIBLE_ROWS];
+            let mut thumb_count = 0;
+            let thumb = ThumbGeometry::new(theme, layout);
+            for index in layout.visible_rows(snapshot.shown_scroll, snapshot.row_count) {
                 let Some(row) = index
                     .checked_sub(snapshot.first_row)
                     .and_then(|i| rows.get(i))
@@ -828,6 +953,11 @@ impl SongSelectView {
                 };
                 let slot_count = self.slots.len();
                 let slot = &mut self.slots[index % slot_count];
+                let text_shift = if thumbs.enabled && matches!(row, Row::Set(_)) {
+                    thumb.text_shift
+                } else {
+                    0.0
+                };
                 if !Self::fill(
                     slot,
                     &mut self.type_setter,
@@ -837,6 +967,7 @@ impl SongSelectView {
                     snapshot.generation,
                     list,
                     row,
+                    text_shift,
                 ) {
                     continue;
                 }
@@ -845,9 +976,12 @@ impl SongSelectView {
                     Row::Set(_) => 0.0,
                     Row::Difficulty { .. } => layout.indent,
                 };
+                let y = layout.row_y(index, snapshot.shown_scroll);
+                // The list leans along the rows' skew (ADR-0121).
+                let lean = layout.lean_x(y + (layout.row_height - gap) / 2.0);
                 let area = Rect {
-                    x: layout.list.x + indent,
-                    y: layout.row_y(index, snapshot.scroll),
+                    x: layout.list.x + indent + lean,
+                    y,
                     width: layout.list.width - indent,
                     height: layout.row_height - gap,
                 };
@@ -874,15 +1008,104 @@ impl SongSelectView {
                 } else {
                     theme.button_fill
                 };
-                rect(
-                    &Rect {
-                        y: clipped_top,
-                        height: clipped_bottom - clipped_top,
-                        ..area
+                let clipped = Rect {
+                    y: clipped_top,
+                    height: clipped_bottom - clipped_top,
+                    ..area
+                };
+                let (set_index, stars) = match row {
+                    Row::Set(set) => (set, None),
+                    Row::Difficulty { set, difficulty } => (
+                        set,
+                        list.sets
+                            .get(set)
+                            .and_then(|s| s.difficulties.get(difficulty))
+                            .and_then(|d| d.stars),
+                    ),
+                };
+                let seed = index as f32 * 0.29;
+                let look = match row {
+                    // A difficulty glows and is outlined in its star colour (ADR-0131).
+                    Row::Difficulty { .. } => Look::TintedButton {
+                        highlighted: selected,
+                        seed,
+                        fade: opacity,
+                        tint: crate::star_colour::glow_for(stars, theme.accent),
                     },
-                    fill,
-                );
-                let x = area.x + pad;
+                    Row::Set(_) => Look::Button {
+                        highlighted: selected,
+                        seed,
+                        fade: opacity,
+                    },
+                };
+                rect(&clipped, fill, look);
+                if let Row::Difficulty { .. } = row {
+                    // The strip on the left edge, leaning with the row and cut with it.
+                    let colour = crate::star_colour::glow_for(stars, theme.accent);
+                    let width = theme.difficulty_strip_width * scale;
+                    let inset = theme.button_radius * scale * 0.5;
+                    let height = (clipped.height - 2.0 * inset).max(0.0);
+                    let tan = theme.button_skew().tan();
+                    let drop = (area.y + area.height / 2.0) - (clipped.y + clipped.height / 2.0);
+                    rect(
+                        &Rect {
+                            x: clipped.x + drop * tan,
+                            y: clipped.y + inset,
+                            width,
+                            height,
+                        },
+                        colour,
+                        Look::Strip,
+                    );
+                }
+                let x = area.x + pad + text_shift;
+                if thumbs.enabled
+                    && matches!(row, Row::Set(_))
+                    && let Some((top, bottom)) = thumb.span(&area, top_edge, bottom_edge)
+                {
+                    let (left_x, full_top) = (area.x + thumb.inset + shift, area.y + thumb.inset);
+                    let base = Shape {
+                        radius: theme.button_radius * scale,
+                        skew: theme.button_skew(),
+                        ..Shape::new(
+                            white.texture,
+                            white.uv,
+                            [left_x, top],
+                            [thumb.width, bottom - top],
+                            faded(theme.accent, PLACEHOLDER_ALPHA * opacity),
+                        )
+                    };
+                    thumb_shapes[thumb_count] = Some(base);
+                    thumb_count += 1;
+                    if let Some(image) = index
+                        .checked_sub(snapshot.first_row)
+                        .and_then(|i| thumbs.rows.get(i))
+                        .copied()
+                        .flatten()
+                    {
+                        let alpha = fade_alpha(
+                            &mut self.fades,
+                            &mut self.fade_next,
+                            image.handle,
+                            thumbs.now_ns,
+                            theme.song_thumbnail_fade_ms,
+                        );
+                        let uv = image.region.uv;
+                        let dv = uv.v1 - uv.v0;
+                        let cut = |at: f32| uv.v0 + (at - full_top) / thumb.height * dv;
+                        thumb_shapes[thumb_count] = Some(Shape {
+                            colour: faded(Color::rgb(1.0, 1.0, 1.0), alpha * opacity),
+                            texture: image.region.texture,
+                            uv: UvRect {
+                                v0: cut(top),
+                                v1: cut(bottom),
+                                ..uv
+                            },
+                            ..base
+                        });
+                        thumb_count += 1;
+                    }
+                }
                 if matches!(row, Row::Set(_)) {
                     let (top, bottom) = (
                         row_text.primary.layout.height(),
@@ -902,6 +1125,63 @@ impl SongSelectView {
                         left(&row_text.primary, x, centre, theme.text);
                     }
                 }
+                let centre = area.y + area.height / 2.0;
+                let right = area.x + area.width - pad;
+                match row {
+                    Row::Difficulty { .. } => {
+                        if let Some(stars) = stars
+                            && inside(&row_text.secondary, centre)
+                        {
+                            // The star pill, in the colour of the rating.
+                            let line = &row_text.secondary;
+                            let padding = theme.star_pill_pad * scale;
+                            let height = line.layout.height() + padding * 0.8;
+                            let width = line.layout.width() + 2.0 * padding;
+                            rect(
+                                &Rect {
+                                    x: right - width,
+                                    y: centre - height / 2.0,
+                                    width,
+                                    height,
+                                },
+                                crate::star_colour::for_stars(stars),
+                                Look::Pill,
+                            );
+                            left(
+                                line,
+                                right - width + padding,
+                                centre,
+                                crate::star_colour::text_for_stars(stars),
+                            );
+                        }
+                    }
+                    Row::Set(_) => {
+                        // One dot per difficulty, in its colour, by stars.
+                        let dots = list
+                            .sets
+                            .get(set_index)
+                            .map_or(&[][..], |s| s.difficulties.as_slice());
+                        let size = theme.difficulty_dot_size * scale;
+                        let dot_gap = theme.difficulty_dot_gap * scale;
+                        if centre - size / 2.0 >= top_edge && centre + size / 2.0 <= bottom_edge {
+                            for (n, d) in dots.iter().take(MAX_DOTS).rev().enumerate() {
+                                rect(
+                                    &Rect {
+                                        x: right - (n + 1) as f32 * (size + dot_gap) + dot_gap,
+                                        y: centre - size / 2.0,
+                                        width: size,
+                                        height: size,
+                                    },
+                                    crate::star_colour::glow_for(d.stars, theme.accent),
+                                    Look::Pill,
+                                );
+                            }
+                        }
+                    }
+                }
+            }
+            for shape in thumb_shapes[..thumb_count].iter().flatten() {
+                shapes.push_shape(shape);
             }
         }
         // The refused play's reason stands out from the hints it replaces.
@@ -912,7 +1192,7 @@ impl SongSelectView {
         };
         left(
             hint,
-            layout.hint.x,
+            lean(layout.hint.x, layout.hint.y + layout.hint.height / 2.0),
             layout.hint.y + layout.hint.height / 2.0,
             colour,
         );
@@ -924,47 +1204,6 @@ impl SongSelectView {
                 margin,
                 layout.hint.y + layout.hint.height / 2.0,
                 theme.text,
-            );
-        }
-    }
-
-    /// Writes the details' two lines unless they already show `details`.
-    fn refresh_details(&mut self, details: &Option<BeatmapDetails>) {
-        if self.details_for == Some(*details) {
-            return;
-        }
-        self.details_for = Some(*details);
-        let labels = &self.detail_labels;
-        let [stats_line, difficulty_line] = &mut self.detail_lines;
-        stats_line.text.clear();
-        difficulty_line.text.clear();
-        if let Some(d) = details {
-            if let Some(s) = d.stats {
-                write_stats(&mut stats_line.text, labels, &s);
-            }
-            let values = [
-                (&labels.circle_size, d.circle_size),
-                (&labels.approach_rate, d.approach_rate),
-                (&labels.overall_difficulty, d.overall_difficulty),
-                (&labels.drain_rate, d.drain_rate),
-            ];
-            for (i, (label, value)) in values.into_iter().enumerate() {
-                if i > 0 {
-                    difficulty_line.text.push_str(DETAIL_SEPARATOR);
-                }
-                let _ = write!(difficulty_line.text, "{label} ");
-                push_difficulty(&mut difficulty_line.text, value);
-            }
-        }
-        let scale = self.layout.scale;
-        let avail = self.layout.details.width;
-        for line in &mut self.detail_lines {
-            fit(
-                &mut self.type_setter,
-                line,
-                self.theme.song_detail_size * scale,
-                avail,
-                self.ellipsis[1],
             );
         }
     }
@@ -1026,115 +1265,6 @@ fn push_detail(text: &mut String, detail: TileDetail) {
     };
 }
 
-// Ported from osu!lazer 2026.1005.0-lazer: osu.Game/Extensions/TimeDisplayExtensions.cs (ToFormattedDuration)
-/// `mm:ss`, `hh:mm:ss` from an hour, `dd:hh:mm:ss` from a day; seconds cut, as `TimeSpan`.
-fn push_duration(text: &mut String, ms: u64) {
-    let seconds = ms / 1000;
-    let (days, hours, minutes, seconds) = (
-        seconds / 86_400,
-        seconds / 3600 % 24,
-        seconds / 60 % 60,
-        seconds % 60,
-    );
-    let _ = if days > 0 {
-        write!(text, "{days:02}:{hours:02}:{minutes:02}:{seconds:02}")
-    } else if hours > 0 {
-        write!(text, "{hours:02}:{minutes:02}:{seconds:02}")
-    } else {
-        write!(text, "{minutes:02}:{seconds:02}")
-    };
-}
-
-/// Formats into a fixed buffer, so that reading a float's digits does not allocate.
-struct StackText {
-    bytes: [u8; 32],
-    len: usize,
-}
-
-impl std::fmt::Write for StackText {
-    fn write_str(&mut self, s: &str) -> std::fmt::Result {
-        let end = self.len + s.len();
-        let slot = self.bytes.get_mut(self.len..end).ok_or(std::fmt::Error)?;
-        slot.copy_from_slice(s.as_bytes());
-        self.len = end;
-        Ok(())
-    }
-}
-
-/// A difficulty value as lazer's `float.ToString("0.##")`: .NET rounds the float to 7
-/// significant digits first, then those digits to two decimals half away from zero, and
-/// drops trailing zeros.
-fn push_difficulty(text: &mut String, value: f32) {
-    let mut digits = StackText {
-        bytes: [0; 32],
-        len: 0,
-    };
-    // "d.dddddde-N": seven significant digits, correctly rounded.
-    if !value.is_finite() || write!(digits, "{:.6e}", value.abs()).is_err() {
-        return;
-    }
-    let written = std::str::from_utf8(&digits.bytes[..digits.len]).unwrap_or("");
-    let Some((mantissa, exponent)) = written.split_once('e') else {
-        return;
-    };
-    let Ok(exponent) = exponent.parse::<i32>() else {
-        return;
-    };
-    let significand = mantissa
-        .bytes()
-        .filter(u8::is_ascii_digit)
-        .fold(0_i64, |n, d| n * 10 + i64::from(d - b'0'));
-    // The value is `significand * 10^(exponent - 6)`; in hundredths, `10^(exponent - 4)`.
-    let shift = exponent - 4;
-    let hundredths = if shift >= 0 {
-        significand.saturating_mul(10_i64.saturating_pow(shift as u32))
-    } else if shift > -18 {
-        let divisor = 10_i64.pow((-shift) as u32);
-        let (q, r) = (significand / divisor, significand % divisor);
-        q + i64::from(2 * r >= divisor)
-    } else {
-        0
-    };
-    if value < 0.0 && hundredths != 0 {
-        text.push('-');
-    }
-    let (whole, part) = (hundredths / 100, hundredths % 100);
-    let _ = write!(text, "{whole}");
-    match part {
-        0 => {}
-        p if p % 10 == 0 => {
-            let _ = write!(text, ".{}", p / 10);
-        }
-        p => {
-            let _ = write!(text, ".{p:02}");
-        }
-    }
-}
-
-// Ported from osu!lazer 2026.1005.0-lazer: osu.Game/Screens/Select/BeatmapTitleWedge.cs (updateLengthAndBpmStatistics)
-/// "Length 03:25 · BPM 150-200 (180) · Circles 512 · Sliders 300 · Spinners 2".
-fn write_stats(text: &mut String, labels: &DetailLabels, s: &DetailStats) {
-    let _ = write!(text, "{} ", labels.length);
-    push_duration(text, s.length_ms);
-    let _ = write!(text, "{DETAIL_SEPARATOR}{} ", labels.bpm);
-    let _ = if s.bpm_minimum == s.bpm_maximum {
-        write!(text, "{}", s.bpm_minimum)
-    } else {
-        write!(
-            text,
-            "{}-{} ({})",
-            s.bpm_minimum, s.bpm_maximum, s.bpm_most_common
-        )
-    };
-    for (label, count) in [
-        (&labels.circles, s.circles),
-        (&labels.sliders, s.sliders),
-        (&labels.spinners, s.spinners),
-    ] {
-        let _ = write!(text, "{DETAIL_SEPARATOR}{label} {count}");
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1194,76 +1324,5 @@ mod tests {
         let mut short = Line::new("short");
         fit_tail(&mut type_setter, &mut short, 20.0, avail, ellipsis);
         assert_eq!(short.text, "short");
-    }
-
-    #[test]
-    fn durations_as_lazer_formats_them() {
-        let cases = [
-            (0, "00:00"),
-            (59_999, "00:59"),
-            (205_000, "03:25"),
-            (3_600_000, "01:00:00"),
-            (90_061_000, "01:01:01:01"),
-        ];
-        for (ms, text) in cases {
-            let mut s = String::new();
-            push_duration(&mut s, ms);
-            assert_eq!(s, text, "{ms}");
-        }
-    }
-
-    #[test]
-    fn difficulty_values_keep_two_decimals_at_most() {
-        let cases = [
-            (4.0, "4"),
-            (9.3, "9.3"),
-            (7.666_667, "7.67"),
-            (8.005, "8.01"),
-            (10.0, "10"),
-            (0.05, "0.05"),
-            (-0.5, "-0.5"),
-            // The float rounds to 2.675000 at seven digits before the decimals: EZ on CS 5.35.
-            (5.35f32 * 0.5, "2.68"),
-            // HR on CS 4.25: 5.5249996 to 5.525000.
-            (4.25f32 * 1.3, "5.53"),
-            (12345.678, "12345.68"),
-        ];
-        for (value, text) in cases {
-            let mut s = String::new();
-            push_difficulty(&mut s, value);
-            assert_eq!(s, text, "{value}");
-        }
-    }
-
-    #[test]
-    fn stats_show_one_bpm_or_the_range_and_the_most_common() {
-        let labels = DetailLabels {
-            length: "Length".into(),
-            bpm: "BPM".into(),
-            circles: "Circles".into(),
-            sliders: "Sliders".into(),
-            spinners: "Spinners".into(),
-            ..DetailLabels::default()
-        };
-        let mut stats = DetailStats {
-            length_ms: 205_400,
-            bpm_minimum: 180,
-            bpm_maximum: 180,
-            bpm_most_common: 180,
-            circles: 512,
-            sliders: 300,
-            spinners: 2,
-        };
-        let mut s = String::new();
-        write_stats(&mut s, &labels, &stats);
-        assert_eq!(
-            s,
-            "Length 03:25  \u{b7}  BPM 180  \u{b7}  Circles 512  \u{b7}  Sliders 300  \u{b7}  Spinners 2"
-        );
-        stats.bpm_minimum = 150;
-        stats.bpm_maximum = 200;
-        s.clear();
-        write_stats(&mut s, &labels, &stats);
-        assert!(s.contains("BPM 150-200 (180)"), "{s}");
     }
 }

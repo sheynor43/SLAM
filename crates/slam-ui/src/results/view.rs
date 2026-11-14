@@ -7,7 +7,10 @@ use std::sync::Arc;
 
 use slam_render::Color;
 use slam_render::atlas::AtlasRegion;
-use slam_render::sprite::{Sprite, SpriteBatch};
+use slam_render::shape::ShapeBatch;
+use slam_render::sprite::SpriteBatch;
+
+use crate::widgets::Look;
 use slam_text::{FontRegistry, Glyph, GlyphCache, GlyphKey, push_layout};
 
 use super::{
@@ -266,7 +269,7 @@ impl ResultsView {
     #[allow(clippy::too_many_arguments)]
     pub fn push(
         &mut self,
-        shapes: &mut SpriteBatch,
+        shapes: &mut ShapeBatch,
         text: &mut SpriteBatch,
         glyphs: &mut GlyphCache,
         width: f32,
@@ -289,15 +292,14 @@ impl ResultsView {
         let pad = theme.song_text_pad * layout.scale;
         let data = &*snapshot.data;
 
-        let mut rect = |rect: &Rect, colour: Color| {
-            let mut sprite = Sprite::new(
-                white.texture,
-                white.uv,
-                [rect.x + shift, rect.y],
-                [rect.width, rect.height],
-            );
-            sprite.colour = faded(colour, opacity);
-            shapes.push(&sprite);
+        let scale = layout.scale;
+        let mut rect = |rect: &Rect, colour: Color, look: Look| {
+            let moved = Rect {
+                x: rect.x + shift,
+                ..*rect
+            };
+            let colour = faded(colour, opacity);
+            crate::widgets::draw(shapes, white, &moved, colour, look, theme, scale);
         };
         let mut place = |line: &Line, x: f32, centre_y: f32, colour: Color| {
             let position = [x + shift, centre_y - line.layout.height() / 2.0];
@@ -323,7 +325,7 @@ impl ResultsView {
         );
 
         let mut row = |area: &Rect, label: &Line, value: &Line| {
-            rect(area, theme.button_fill);
+            rect(area, theme.button_fill, Look::Round);
             let y = area.y + area.height / 2.0;
             place(label, area.x + pad, y, theme.disabled_text);
             place(
@@ -376,7 +378,12 @@ impl ResultsView {
             } else {
                 theme.button_fill
             };
-            rect(&layout.buttons[i], fill);
+            let look = Look::Button {
+                highlighted: snapshot.hovered == Some(button),
+                seed: i as f32 * 0.37,
+                fade: opacity,
+            };
+            rect(&layout.buttons[i], fill, look);
         }
         for (i, area) in layout.buttons.iter().enumerate() {
             let c = area.centre();

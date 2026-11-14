@@ -161,6 +161,7 @@ fn the_menu_picks_a_random_track_and_the_next_when_it_ends() {
             Some(Picked {
                 path,
                 preview_ms: 10_000,
+                at: (0, 0),
             })
         }
     };
@@ -268,6 +269,7 @@ fn a_menu_track_the_song_select_selects_loops_and_back_in_the_menu_moves_on() {
         Some(Picked {
             path: PathBuf::from("a.mp3"),
             preview_ms: 1_000,
+            at: (0, 0),
         })
     });
     m.loaded(1, 1, Some(LENGTH), &mut d);

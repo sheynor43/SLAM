@@ -7,6 +7,9 @@ use slam_engine::UpdateRateControl;
 
 use slam_osu::mods::ModSet;
 
+use slam_ui::cursor::CursorStyle;
+use slam_ui::theme::ColourScheme;
+
 use crate::loader::PlayOptions;
 use crate::settings::{Audio, Settings, skins};
 
@@ -169,8 +172,15 @@ pub fn play_options(settings: &Settings) -> PlayOptions {
         cursor_trail: settings.gameplay.cursor_trail,
         cursor_size: settings.gameplay.cursor_size,
         auto_cursor_size: settings.gameplay.auto_cursor_size,
+        cursor_style: crate::menu_cursor::game_style(settings),
+        cursor_scheme: if crate::menu_cursor::game_style(settings) == CursorStyle::Slam {
+            settings.general.colour_scheme
+        } else {
+            ColourScheme::default()
+        },
         positional_hitsounds_level: settings.audio.positional_hitsounds_level,
         hud_layout: settings.hud.layout.clone(),
+        game_scale: settings.general.game_scale,
         skin: skins::skin_path(
             settings.paths.songs.as_deref(),
             settings.skin.name.as_deref(),
@@ -356,6 +366,8 @@ mod tests {
         settings.gameplay.cursor_trail = false;
         settings.gameplay.cursor_size = 0.65;
         settings.gameplay.auto_cursor_size = true;
+        settings.gameplay.cursor_style = CursorStyle::Slam;
+        settings.general.colour_scheme = ColourScheme::Blue;
         settings.audio.positional_hitsounds_level = 0.65;
         assert_eq!(
             play_options(&settings),
@@ -373,8 +385,11 @@ mod tests {
                 cursor_trail: false,
                 cursor_size: 0.65,
                 auto_cursor_size: true,
+                cursor_style: CursorStyle::Slam,
+                cursor_scheme: ColourScheme::Blue,
                 positional_hitsounds_level: 0.65,
                 hud_layout: "my-hud".into(),
+                game_scale: 1.0,
                 skin: None,
                 mods: ModSet::default(),
             }
@@ -389,5 +404,28 @@ mod tests {
         );
         settings.skin.name = None;
         assert_eq!(play_options(&settings).skin, None);
+    }
+}
+
+#[cfg(test)]
+mod cursor_tests {
+    use super::*;
+
+    #[test]
+    fn the_play_takes_the_cursor_style_and_the_scheme_only_for_slams_cursor() {
+        let mut settings = Settings::default();
+        settings.general.colour_scheme = ColourScheme::Green;
+        let skin = play_options(&settings);
+        assert_eq!(skin.cursor_style, CursorStyle::Skin);
+        assert_eq!(skin.cursor_scheme, ColourScheme::default());
+        settings.gameplay.cursor_style = CursorStyle::Slam;
+        let slam = play_options(&settings);
+        assert_eq!(slam.cursor_scheme, ColourScheme::Green);
+        // The OS cursor does not follow a relative mouse: the skin's cursor is drawn.
+        settings.gameplay.cursor_style = CursorStyle::System;
+        settings.input.high_precision_mouse = true;
+        assert_eq!(play_options(&settings).cursor_style, CursorStyle::Skin);
+        settings.input.high_precision_mouse = false;
+        assert_eq!(play_options(&settings).cursor_style, CursorStyle::System);
     }
 }

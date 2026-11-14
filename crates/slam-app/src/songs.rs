@@ -5,6 +5,7 @@
 //! and their dropdown for the draw thread. The update thread only pops, swaps and clones
 //! `Arc`s; every list is built and freed here, off the hot paths.
 
+use std::collections::HashMap;
 use std::collections::hash_map::DefaultHasher;
 use std::hash::{Hash, Hasher};
 use std::path::{Path, PathBuf};
@@ -18,7 +19,10 @@ use slam_input::{FolderCallback, FolderPick};
 
 use crate::backgrounds::BackgroundLoader;
 use crate::details::DetailsReader;
-use slam_library::scan::{BeatmapSetEntry, DifficultyEntry, ScanEvent, Scanner, sort_sets};
+use crate::stars::{StarFocus, StarSet, StarsLink};
+use slam_library::scan::{
+    BeatmapSetEntry, DifficultyEntry, ScanEvent, Scanner, sort_difficulties, sort_sets,
+};
 use slam_ui::song_select::{
     DifficultyRow, SearchFields, SearchSource, SetRow, SongFilter, SongList, SongSelectStatus,
 };
@@ -28,6 +32,9 @@ use slam_ui::widgets::DropdownView;
 const RING: usize = 4;
 /// How often a scan in progress publishes what it has found.
 const PUBLISH_EVERY: Duration = Duration::from_millis(100);
+/// How often new star ratings republish the list while they keep arriving: every
+/// publication rebuilds the whole list, so the ratings come in bunches.
+const STARS_PUBLISH_EVERY: Duration = Duration::from_secs(1);
 /// How long the library thread sleeps between polls.
 const POLL: Duration = Duration::from_millis(10);
 /// After this, a folder picker that has not answered no longer blocks a new one: its
@@ -73,6 +80,9 @@ pub struct Published {
     /// The player chose another folder: the update thread swaps its values in and hands
     /// the box back with the old ones ([`SongsLink::retire`]).
     pub change: Option<Box<FolderChange>>,
+    /// The same library published again with new details (star ratings, ADR-0135), not a
+    /// new scan: the view stays where it is.
+    pub refresh: bool,
 }
 
 /// A new songs folder for the update thread's settings.
@@ -103,6 +113,15 @@ const OLD_FILTERS: usize = 16;
 /// Skin dropdowns waiting for the draw thread, and old ones waiting to be freed: room for
 /// several folder changes between two polls of the library thread.
 const SKIN_VIEWS: usize = 4;
+
+/// How the star ratings are calculated (ADR-0134).
+pub struct StarsConfig {
+    /// The cache file; `None`: nothing is cached.
+    pub cache: Option<PathBuf>,
+    pub calculator: crate::stars::Calculator,
+    /// The calculator's version, for the cache.
+    pub version: &'static str,
+}
 
 /// What the update thread asks of the library thread.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -185,9 +204,22 @@ pub struct SongsLink {
     updates: rtrb::Consumer<Published>,
     commands: rtrb::Producer<Command>,
     old_filters: rtrb::Producer<SongFilter>,
+    focus: Arc<StarFocus>,
 }
 
 impl SongsLink {
+    /// Tells the star thread which set is first in view and how many sets the view holds
+    /// (ADR-0134). Does not allocate.
+    pub fn set_focus(&self, set_key: u64, span: usize) {
+        self.focus.set(set_key, span);
+    }
+
+    /// Tells the star thread and the library thread whether a play is on: the ratings wait
+    /// for it to end (ADR-0135). Does not allocate.
+    pub fn set_playing(&self, playing: bool) {
+        self.focus.set_paused(playing);
+    }
+
     /// The newest published state, if any arrived since the last call, with the newest
     /// folder change among them. Does not allocate: older states are dropped here, but the
     /// library thread still holds their lists, and older changes go back to it.
@@ -256,13 +288,15 @@ pub fn link_with_commands() -> (
     SongsLink,
     rtrb::Consumer<Command>,
 ) {
-    let (producer, link, commands, _) = link_with_ends();
+    let (producer, link, commands, _) = link_with_ends(Arc::default());
     (producer, link, commands)
 }
 
 /// A link, the end that feeds it, the end that reads its commands and the end that receives
 /// the search buffers it hands back.
-fn link_with_ends() -> (
+fn link_with_ends(
+    focus: Arc<StarFocus>,
+) -> (
     rtrb::Producer<Published>,
     SongsLink,
     rtrb::Consumer<Command>,
@@ -277,6 +311,7 @@ fn link_with_ends() -> (
             updates,
             commands,
             old_filters,
+            focus,
         },
         consumer,
         old_filters_rx,
@@ -286,15 +321,54 @@ fn link_with_ends() -> (
 /// Starts the library thread, named `slam-library`, listing `root` if given; `folders`
 /// changes the folder on request, `scanning_text` formats the status line as sets are
 /// found, `backgrounds` loads the song select's backgrounds (ADR-0066) and `details` reads
-/// the selected difficulty's statistics (ADR-0067).
+/// the selected difficulty's statistics (ADR-0067). With `stars` the star ratings are
+/// calculated after each scan (ADR-0134).
 pub fn spawn(
     root: Option<PathBuf>,
     folders: Folders,
     scanning_text: ScanningText,
     backgrounds: Option<BackgroundLoader>,
     details: Option<DetailsReader>,
+    stars: Option<StarsConfig>,
 ) -> std::io::Result<(SongsLink, SkinViews, LibraryThread)> {
-    let (producer, link, commands, old_filters) = link_with_ends();
+    spawn_with(
+        root,
+        folders,
+        scanning_text,
+        backgrounds,
+        details,
+        stars,
+        false,
+    )
+}
+
+/// [`spawn`] with the play flag already set when `playing`: no rating is calculated
+/// before the first [`SongsLink::set_playing`].
+fn spawn_with(
+    root: Option<PathBuf>,
+    folders: Folders,
+    scanning_text: ScanningText,
+    backgrounds: Option<BackgroundLoader>,
+    details: Option<DetailsReader>,
+    stars: Option<StarsConfig>,
+    playing: bool,
+) -> std::io::Result<(SongsLink, SkinViews, LibraryThread)> {
+    let focus = Arc::<StarFocus>::default();
+    focus.set_paused(playing);
+    let (producer, link, commands, old_filters) = link_with_ends(Arc::clone(&focus));
+    let paused = Arc::clone(&focus);
+    let stars = match stars {
+        Some(config) => {
+            match StarsLink::spawn(config.cache, config.calculator, config.version, focus) {
+                Ok(link) => Some(link),
+                Err(e) => {
+                    tracing::warn!("stars: cannot start the thread: {e}");
+                    None
+                }
+            }
+        }
+        None => None,
+    };
     let (views_tx, views) = rtrb::RingBuffer::new(SKIN_VIEWS);
     let (old, old_rx) = rtrb::RingBuffer::new(SKIN_VIEWS);
     let ends = Ends {
@@ -305,6 +379,8 @@ pub fn spawn(
         old_filters,
         backgrounds,
         details,
+        stars,
+        playing: paused,
     };
     let stop = Arc::new(AtomicBool::new(false));
     let flag = Arc::clone(&stop);
@@ -331,7 +407,7 @@ fn set_key(dir: &Path) -> u64 {
 }
 
 /// The published form of a scanned difficulty: its search fields lowercased (ADR-0099).
-fn difficulty_row(d: &DifficultyEntry) -> DifficultyRow {
+fn difficulty_row(d: &DifficultyEntry, stars: Option<f32>) -> DifficultyRow {
     let m = &d.metadata;
     DifficultyRow {
         version: d.version.clone(),
@@ -351,12 +427,35 @@ fn difficulty_row(d: &DifficultyEntry) -> DifficultyRow {
         drain_rate: d.hp,
         beatmap_id: m.beatmap_id,
         beatmap_set_id: m.beatmap_set_id,
+        key: difficulty_key(&d.path),
+        stars,
     }
 }
 
-/// Builds the published form of sorted `sets`.
+/// The identity of a difficulty in the published list: never 0, which means none. Lives
+/// only in this process, like [`set_key`].
+fn difficulty_key(path: &Path) -> u64 {
+    let mut hasher = DefaultHasher::new();
+    path.hash(&mut hasher);
+    hasher.finish() | 1
+}
+
+/// The star ratings known so far, by difficulty file.
+pub type StarMap = HashMap<PathBuf, f32>;
+
+/// Builds the published form of sorted `sets`, without star ratings.
 pub fn publish(
     sets: &[BeatmapSetEntry],
+    status: SongSelectStatus,
+    scanning_text: Arc<str>,
+) -> Published {
+    publish_with_stars(sets, &StarMap::new(), status, scanning_text)
+}
+
+/// Builds the published form of sorted `sets` with the star ratings in `stars`.
+pub fn publish_with_stars(
+    sets: &[BeatmapSetEntry],
+    stars: &StarMap,
     status: SongSelectStatus,
     scanning_text: Arc<str>,
 ) -> Published {
@@ -368,7 +467,11 @@ pub fn publish(
                 artist: set.artist.clone(),
                 title: set.title.clone(),
                 creator: set.creator.clone(),
-                difficulties: set.difficulties.iter().map(difficulty_row).collect(),
+                difficulties: set
+                    .difficulties
+                    .iter()
+                    .map(|d| difficulty_row(d, stars.get(&d.path).copied()))
+                    .collect(),
             })
             .collect(),
     };
@@ -400,6 +503,7 @@ pub fn publish(
         scanning_text,
         folder: Arc::from(""),
         change: None,
+        refresh: false,
     }
 }
 
@@ -427,6 +531,12 @@ struct Library {
     /// answers, or until [`PICK_STALE`] passes in case it never does.
     picking: Option<Instant>,
     dirty: bool,
+    /// The star ratings that arrived, by file; the sets are sorted by them when published.
+    star_map: StarMap,
+    /// Ratings arrived that the published list does not show yet.
+    stars_pending: bool,
+    /// The folder changed: the star run for the old one is to be dropped.
+    cancel_stars: bool,
 }
 
 impl Library {
@@ -446,6 +556,9 @@ impl Library {
             picks: channel(),
             picking: None,
             dirty: true,
+            star_map: StarMap::new(),
+            stars_pending: false,
+            cancel_stars: false,
         };
         if let Some(root) = root {
             library.scan(root);
@@ -467,6 +580,9 @@ impl Library {
             None => SongSelectStatus::Failed,
         };
         self.sets.clear();
+        self.star_map.clear();
+        self.stars_pending = false;
+        self.cancel_stars = true;
         let old = std::mem::replace(&mut self.folder_text, Arc::from(root.display().to_string()));
         self.retired_folders.push(old);
         self.root = Some(root);
@@ -532,10 +648,42 @@ impl Library {
         }
     }
 
+    /// Hands the sets to the star thread, the sets in the order the list shows them.
+    fn start_stars(&self, stars: &mut StarsLink) {
+        let sets = self
+            .sets
+            .iter()
+            .map(|set| StarSet {
+                key: set_key(&set.dir),
+                files: set.difficulties.iter().map(|d| d.path.clone()).collect(),
+            })
+            .collect();
+        stars.start(sets);
+    }
+
+    /// Takes the ratings the star thread finished; they show with the next publication.
+    fn receive_stars(&mut self, stars: &mut StarsLink) {
+        let map = &mut self.star_map;
+        if stars.poll(|path, value| {
+            map.insert(path, value);
+        }) {
+            self.stars_pending = true;
+        }
+    }
+
+    /// Sorts every set's difficulties by the ratings known (ADR-0134).
+    fn sort_by_stars(&mut self) {
+        let map = &self.star_map;
+        for set in &mut self.sets {
+            sort_difficulties(&mut set.difficulties, |d| map.get(&d.path).copied());
+        }
+    }
+
     /// Takes what the scanner found since the last poll.
-    fn receive_scan(&mut self) {
+    fn receive_scan(&mut self) -> bool {
+        let mut finished = false;
         let Some(scanner) = &self.scanner else {
-            return;
+            return false;
         };
         while matches!(self.status, SongSelectStatus::Scanning { .. })
             && let Some(event) = scanner.try_recv()
@@ -556,6 +704,7 @@ impl Library {
                         summary.elapsed
                     );
                     self.status = SongSelectStatus::Ready;
+                    finished = true;
                 }
                 ScanEvent::Failed(e) => {
                     tracing::warn!("songs scan: {e}");
@@ -564,6 +713,7 @@ impl Library {
             }
             self.dirty = true;
         }
+        finished
     }
 }
 
@@ -576,6 +726,9 @@ struct Ends {
     old_filters: rtrb::Consumer<SongFilter>,
     backgrounds: Option<BackgroundLoader>,
     details: Option<DetailsReader>,
+    stars: Option<StarsLink>,
+    /// Set while a play is on: no list is published for ratings then (ADR-0135).
+    playing: Arc<StarFocus>,
 }
 
 fn run(
@@ -624,18 +777,39 @@ fn run(
         {
             library.skin_view = Some(view);
         }
-        library.receive_scan();
+        if std::mem::take(&mut library.cancel_stars)
+            && let Some(stars) = &mut ends.stars
+        {
+            stars.cancel();
+        }
+        if library.receive_scan()
+            && let Some(stars) = &mut ends.stars
+        {
+            library.start_stars(stars);
+        }
+        if let Some(stars) = &mut ends.stars {
+            library.receive_stars(stars);
+        }
+        // Ratings republish the list, but not every time a few arrive, and not in a play.
+        let stars_due = library.stars_pending
+            && !ends.playing.paused()
+            && last_publish.is_none_or(|at| at.elapsed() >= STARS_PUBLISH_EVERY);
         let scanning = matches!(library.status, SongSelectStatus::Scanning { .. });
         let due = !scanning || last_publish.is_none_or(|at| at.elapsed() >= PUBLISH_EVERY);
-        if library.dirty && due && ends.published.slots() > 0 {
+        if (library.dirty || stars_due) && due && ends.published.slots() > 0 {
             sort_sets(&mut library.sets);
+            library.sort_by_stars();
             let text = match library.status {
                 SongSelectStatus::Scanning { sets } => Arc::from(scanning_text(sets)),
                 _ => Arc::clone(&no_text),
             };
-            let mut published = publish(&library.sets, library.status, text);
+            let mut published =
+                publish_with_stars(&library.sets, &library.star_map, library.status, text);
             published.folder = Arc::clone(&library.folder_text);
             published.change = library.change.take();
+            // Only ratings are new: the view of the list stays (ADR-0135).
+            published.refresh = !library.dirty;
+            library.stars_pending = false;
             retired_lists.push(Arc::clone(&published.list));
             retired_files.push(Arc::clone(&published.files));
             if !Arc::ptr_eq(&published.scanning_text, &no_text) {
@@ -661,6 +835,7 @@ mod tests {
     use super::*;
     use slam_library::scan::DifficultyMetadata;
     use slam_ui::song_select::Field;
+    use std::sync::atomic::AtomicUsize;
 
     fn set(dir: &str, versions: &[&str]) -> BeatmapSetEntry {
         BeatmapSetEntry {
@@ -754,7 +929,7 @@ mod tests {
 
     #[test]
     fn retired_search_buffers_reach_the_library_thread() {
-        let (mut producer, mut link, _, mut old_filters) = link_with_ends();
+        let (mut producer, mut link, _, mut old_filters) = link_with_ends(Arc::default());
         let first = publish(&[set("a", &["x"])], SongSelectStatus::Ready, Arc::from(""));
         let second = publish(&[set("b", &["y"])], SongSelectStatus::Ready, Arc::from(""));
         producer.push(first).ok().unwrap();
@@ -839,8 +1014,15 @@ mod tests {
             }),
             relabel: SkinRelabel::none(),
         };
-        let (mut link, _views, _thread) =
-            spawn(None, folders, Box::new(|n| format!("{n} sets")), None, None).unwrap();
+        let (mut link, _views, _thread) = spawn(
+            None,
+            folders,
+            Box::new(|n| format!("{n} sets")),
+            None,
+            None,
+            None,
+        )
+        .unwrap();
         let first = wait_for(&mut link, |_| true);
         assert_eq!(first.status, SongSelectStatus::NoFolder);
         assert_eq!(&*first.folder, "");
@@ -1088,6 +1270,7 @@ mod tests {
             Box::new(|n| format!("{n} sets")),
             None,
             None,
+            None,
         )
         .unwrap();
         let published = wait_for(&mut link, |p| p.status == SongSelectStatus::Ready);
@@ -1120,6 +1303,7 @@ mod tests {
             Box::new(|n| format!("{n} sets")),
             None,
             None,
+            None,
         )
         .unwrap();
         let published = wait_for(&mut link, |p| {
@@ -1127,5 +1311,147 @@ mod tests {
         });
         assert_eq!(published.status, SongSelectStatus::Failed);
         assert!(published.list.sets.is_empty());
+    }
+
+    /// Writes a set folder with one difficulty per `(name, od)`.
+    fn write_set_ods(root: &Path, dir: &str, ods: &[(&str, &str)]) {
+        let path = root.join(dir);
+        std::fs::create_dir_all(&path).unwrap();
+        for (name, od) in ods {
+            std::fs::write(
+                path.join(format!("{name}.osu")),
+                format!(
+                    "osu file format v14\n\n[General]\nMode: 0\n\n[Metadata]\nTitle:T\n\
+                     Artist:A\nCreator:C\nVersion:{name}\n\n[Difficulty]\n\
+                     OverallDifficulty:{od}\n"
+                ),
+            )
+            .unwrap();
+        }
+    }
+
+    fn versions(published: &Published) -> Vec<(&str, Option<f32>)> {
+        published.list.sets[0]
+            .difficulties
+            .iter()
+            .map(|d| (d.version.as_str(), d.stars))
+            .collect()
+    }
+
+    #[test]
+    fn publishing_sorts_by_od_and_then_stars_once_known() {
+        let mut sets = [set("s", &["a", "b", "c"])];
+        sets[0].difficulties[0].overall_difficulty = 9.0;
+        sets[0].difficulties[1].overall_difficulty = 3.0;
+        sets[0].difficulties[2].overall_difficulty = 6.0;
+        let mut library = Library::new(None, no_folders());
+        library.sets = sets.to_vec();
+        library.sort_by_stars();
+        let names = |l: &Library| -> Vec<String> {
+            l.sets[0]
+                .difficulties
+                .iter()
+                .map(|d| d.version.clone())
+                .collect()
+        };
+        assert_eq!(names(&library), ["b", "c", "a"]);
+        // The ratings disagree with the OD.
+        for (name, stars) in [("a", 1.0), ("b", 3.0), ("c", 2.0)] {
+            library
+                .star_map
+                .insert(PathBuf::from("s").join(format!("{name}.osu")), stars);
+        }
+        library.sort_by_stars();
+        assert_eq!(names(&library), ["a", "c", "b"]);
+        let published = publish_with_stars(
+            &library.sets,
+            &library.star_map,
+            SongSelectStatus::Ready,
+            Arc::from(""),
+        );
+        let rows = &published.list.sets[0].difficulties;
+        assert_eq!(rows[0].stars, Some(1.0));
+        assert_eq!(published.files[0][0].path, PathBuf::from("s").join("a.osu"));
+        assert!(rows.iter().all(|r| r.key != 0));
+    }
+
+    #[test]
+    fn ratings_reorder_the_published_set() {
+        let root = TempDir(
+            std::env::temp_dir().join(format!("slam-app-songs-stars-{}", std::process::id())),
+        );
+        write_set_ods(
+            &root.0,
+            "set",
+            &[("Easy", "2"), ("Hard", "8"), ("Mid", "5")],
+        );
+        let calls = Arc::new(AtomicUsize::new(0));
+        let counter = Arc::clone(&calls);
+        let calculator: crate::stars::Calculator = Box::new(move |path| {
+            counter.fetch_add(1, Ordering::Relaxed);
+            // Backwards: the lower the OD, the higher the rating.
+            Ok(match path.file_stem().and_then(|s| s.to_str()) {
+                Some("Easy") => 3.0,
+                Some("Mid") => 2.0,
+                _ => 1.0,
+            })
+        });
+        let (mut link, _views, _thread) = spawn_with(
+            Some(root.0.clone()),
+            no_folders(),
+            Box::new(|n| format!("{n} sets")),
+            None,
+            None,
+            Some(StarsConfig {
+                cache: None,
+                calculator,
+                version: "test",
+            }),
+            // A play is on before the library loads: no ratings, no republication.
+            true,
+        )
+        .unwrap();
+        let first = wait_for(&mut link, |p| p.status == SongSelectStatus::Ready);
+        assert!(!first.refresh);
+        // Anything the worker would do during a play starts within milliseconds of the
+        // library being ready; look for a while after that.
+        let start = Instant::now();
+        while start.elapsed() < Duration::from_millis(500) {
+            if let Some(p) = link.latest() {
+                assert!(
+                    p.list.sets[0]
+                        .difficulties
+                        .iter()
+                        .all(|d| d.stars.is_none()),
+                    "ratings during a play"
+                );
+            }
+            assert_eq!(calls.load(Ordering::Relaxed), 0, "rated during a play");
+            std::thread::sleep(Duration::from_millis(10));
+        }
+        link.set_playing(false);
+        // Before the ratings: OD order.
+        let names: Vec<_> = versions(&first).iter().map(|v| v.0).collect();
+        assert!(names == ["Easy", "Mid", "Hard"] || names == ["Hard", "Mid", "Easy"]);
+        let rated = wait_for(&mut link, |p| {
+            p.list.sets.first().is_some_and(|s| {
+                s.difficulties.len() == 3 && s.difficulties.iter().all(|d| d.stars.is_some())
+            })
+        });
+        assert_eq!(
+            versions(&rated),
+            [("Hard", Some(1.0)), ("Mid", Some(2.0)), ("Easy", Some(3.0))]
+        );
+        assert!(rated.files[0][0].path.ends_with("Hard.osu"));
+        // Only ratings are new: the song select keeps its view.
+        assert!(rated.refresh);
+    }
+
+    #[test]
+    fn a_new_folder_cancels_the_star_run() {
+        let mut library = Library::new(None, no_folders());
+        assert!(!library.cancel_stars);
+        library.scan(PathBuf::from("/nonexistent-slam-songs"));
+        assert!(library.cancel_stars);
     }
 }

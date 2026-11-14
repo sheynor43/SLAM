@@ -272,3 +272,21 @@ fn stable_and_slam_share_their_gameplay_section() {
         Builtin::Slam.layout().gameplay
     );
 }
+
+#[test]
+fn the_game_scale_grows_an_element_about_its_anchor() {
+    let element = LayoutElement {
+        origin: Anchor::TopRight,
+        scale: [1.0, 0.5],
+        ..LayoutElement::new(ComponentKind::Score, Anchor::TopRight, [-10.0, 5.0])
+    };
+    let scaled = element.scaled_by(1.5);
+    assert_eq!(scaled.scale, [1.5, 0.75]);
+    assert_eq!(scaled.position, [-15.0, 7.5]);
+    // The corner placed on the anchor stays on it, further in by the scaled offset.
+    let map = scaled.transform(1280.0, 960.0, [100.0, 40.0]);
+    let corner = map.apply([100.0, 0.0]);
+    let unit = super::place::unit_scale(1280.0, 960.0);
+    assert!((corner[0] - (1280.0 - 15.0 * unit)).abs() < 1e-3);
+    assert!((corner[1] - 7.5 * unit).abs() < 1e-3);
+}

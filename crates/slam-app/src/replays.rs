@@ -71,16 +71,22 @@ pub fn build(job: &ReplayJob) -> Option<(String, Vec<u8>)> {
     Some((format!("{name} ({unix_millis}).osr"), osr::encode(&replay)))
 }
 
-/// Saves `job`'s replay into `dir`, logging the outcome.
-pub fn save(job: &ReplayJob, dir: &Path) {
+/// Saves `job`'s replay into `dir`, logging the outcome; the file's name if it was written.
+pub fn save(job: &ReplayJob, dir: &Path) -> Option<String> {
     let Some((name, bytes)) = build(job) else {
         tracing::warn!("replay not saved: the recording overflowed");
-        return;
+        return None;
     };
-    let path = dir.join(name);
+    let path = dir.join(&name);
     match std::fs::create_dir_all(dir).and_then(|()| std::fs::write(&path, bytes)) {
-        Ok(()) => tracing::info!("replay saved: {}", path.display()),
-        Err(e) => tracing::warn!("replay not saved: {}: {e}", path.display()),
+        Ok(()) => {
+            tracing::info!("replay saved: {}", path.display());
+            Some(name)
+        }
+        Err(e) => {
+            tracing::warn!("replay not saved: {}: {e}", path.display());
+            None
+        }
     }
 }
 

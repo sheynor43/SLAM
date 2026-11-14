@@ -13,6 +13,9 @@ use slam_input::{
 use slam_osu::replay::Actions;
 use slam_play::input::{Binding, Bindings, Input, MAX_BINDINGS};
 use slam_play::{BackgroundSettings, FpsCorner};
+use slam_ui::cursor::CursorStyle;
+use slam_ui::screen::TransitionStyle;
+use slam_ui::theme::ColourScheme;
 
 use super::keys;
 use crate::backend::Renderer;
@@ -97,6 +100,33 @@ pub struct General {
     pub language: Option<String>,
     /// Whether the startup intro plays (ADR-0114). Read at start.
     pub intro: bool,
+    /// Whether the interface effects (glow, blur, motion) are on (ADR-0123). Applies live.
+    pub effects: bool,
+    /// Strength of the menus' parallax, 0.0..=1.0 (0 is off; ADR-0132). Applies live, and
+    /// only while `effects` is on.
+    pub parallax: f64,
+    /// How screens change (ADR-0126). Applies live.
+    #[serde(serialize_with = "serialize_transitions")]
+    pub transitions: TransitionStyle,
+    /// The interface colour scheme (ADR-0117).
+    #[serde(serialize_with = "serialize_colour_scheme")]
+    pub colour_scheme: ColourScheme,
+    /// Scale of the menus, in `slam_ui::theme::UI_SCALE_RANGE` in steps of 0.05 (ADR-0118).
+    #[serde(serialize_with = "serialize_scale")]
+    pub menu_scale: f32,
+    /// Scale of the HUD, in `slam_ui::theme::UI_SCALE_RANGE` in steps of
+    /// 0.05 (ADR-0118).
+    #[serde(serialize_with = "serialize_scale")]
+    pub game_scale: f32,
+    /// Skew of the buttons and rows in degrees, `0..=slam_ui::theme::MAX_SKEW_DEGREES` in
+    /// whole degrees (ADR-0130). Applies live.
+    #[serde(serialize_with = "serialize_skew")]
+    pub skew: f32,
+    /// What the main menu shows behind its content (ADR-0119).
+    pub menu_background: MenuBackground,
+    /// The cursor of the menus, the pause menu and the results (ADR-0124). Applies live.
+    #[serde(serialize_with = "serialize_cursor_style")]
+    pub menu_cursor: CursorStyle,
 }
 
 impl Default for General {
@@ -104,7 +134,117 @@ impl Default for General {
         General {
             language: None,
             intro: true,
+            effects: true,
+            parallax: 1.0,
+            transitions: TransitionStyle::default(),
+            colour_scheme: ColourScheme::default(),
+            menu_scale: 1.0,
+            game_scale: 1.0,
+            skew: DEFAULT_SKEW_DEGREES,
+            menu_background: MenuBackground::default(),
+            menu_cursor: CursorStyle::Slam,
         }
+    }
+}
+
+fn serialize_transitions<S: Serializer>(
+    style: &TransitionStyle,
+    serializer: S,
+) -> Result<S::Ok, S::Error> {
+    serializer.serialize_str(style.name())
+}
+
+fn serialize_cursor_style<S: Serializer>(
+    style: &CursorStyle,
+    serializer: S,
+) -> Result<S::Ok, S::Error> {
+    serializer.serialize_str(style.name())
+}
+
+fn serialize_colour_scheme<S: Serializer>(
+    scheme: &ColourScheme,
+    serializer: S,
+) -> Result<S::Ok, S::Error> {
+    serializer.serialize_str(scheme.name())
+}
+
+/// Writes the skew as a whole number of degrees.
+fn serialize_skew<S: Serializer>(skew: &f32, serializer: S) -> Result<S::Ok, S::Error> {
+    serializer.serialize_f64(f64::from(*skew).round())
+}
+
+/// The skew the buttons and rows have by default, in degrees (ADR-0130).
+pub const DEFAULT_SKEW_DEGREES: f32 = 10.0;
+
+/// Writes a scale as a two-decimal number, so that the file holds `1.05` and not the
+/// `f32`'s widened `1.0499999523162842`.
+fn serialize_scale<S: Serializer>(scale: &f32, serializer: S) -> Result<S::Ok, S::Error> {
+    serializer.serialize_f64((f64::from(*scale) * 100.0).round() / 100.0)
+}
+
+/// What the main menu shows behind its content (ADR-0119).
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum MenuBackground {
+    /// The background of the beatmap whose music plays.
+    #[default]
+    Beatmap,
+    /// The skin's menu background.
+    Skin,
+    /// A plain background.
+    None,
+}
+
+impl MenuBackground {
+    pub const ALL: [MenuBackground; 3] = [
+        MenuBackground::Beatmap,
+        MenuBackground::Skin,
+        MenuBackground::None,
+    ];
+
+    /// The name in the settings file.
+    pub fn name(self) -> &'static str {
+        match self {
+            MenuBackground::Beatmap => "beatmap",
+            MenuBackground::Skin => "skin",
+            MenuBackground::None => "none",
+        }
+    }
+
+    /// The value called `name`.
+    pub fn from_name(name: &str) -> Option<MenuBackground> {
+        MenuBackground::ALL.into_iter().find(|b| b.name() == name)
+    }
+}
+
+/// Where the menu sounds come from (ADR-0120).
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum MenuSounds {
+    /// SLAM's own synthesized sounds.
+    #[default]
+    Slam,
+    /// The skin's sounds.
+    Skin,
+    /// No menu sounds.
+    Off,
+}
+
+impl MenuSounds {
+    pub const ALL: [MenuSounds; 3] = [MenuSounds::Slam, MenuSounds::Skin, MenuSounds::Off];
+
+    /// The name in the settings file.
+    pub fn name(self) -> &'static str {
+        match self {
+            MenuSounds::Slam => "slam",
+            MenuSounds::Skin => "skin",
+            MenuSounds::Off => "off",
+        }
+    }
+
+    /// The value called `name`.
+    pub fn from_name(name: &str) -> Option<MenuSounds> {
+        MenuSounds::ALL.into_iter().find(|s| s.name() == name)
     }
 }
 
@@ -142,6 +282,8 @@ pub struct Audio {
     /// How far hitsounds pan with the object's horizontal position, 0.0..=1.0 in steps of
     /// 0.01; 0 turns it off (lazer's `OsuSetting.PositionalHitsoundsLevel`, ADR-0087).
     pub positional_hitsounds_level: f32,
+    /// Where the menu sounds come from (ADR-0120).
+    pub menu_sounds: MenuSounds,
 }
 
 /// Extra delay of a stable hitsound over a SLAM one, click to sound, milliseconds
@@ -238,6 +380,7 @@ impl Default for Audio {
             menu_music_volume: 1.0,
             hitsound_delay: HitsoundDelay::default(),
             positional_hitsounds_level: slam_play::gameplay_sounds::DEFAULT_POSITIONAL_LEVEL,
+            menu_sounds: MenuSounds::default(),
         }
     }
 }
@@ -540,12 +683,65 @@ impl Default for HudSettings {
 pub struct SongSelect {
     /// Dim of the song select's background, 0 ..= 1 (ADR-0098).
     pub background_dim: f64,
+    /// Height of the beatmap thumbnails in the song list (ADR-0127).
+    pub thumbnails: Thumbnails,
 }
 
 impl Default for SongSelect {
     fn default() -> SongSelect {
         SongSelect {
             background_dim: 0.7,
+            thumbnails: Thumbnails::default(),
+        }
+    }
+}
+
+/// The height of the song list's thumbnails in pixels, or none (ADR-0127).
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum Thumbnails {
+    Off,
+    H64,
+    #[default]
+    H128,
+    H256,
+}
+
+impl Serialize for Thumbnails {
+    fn serialize<S: Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        serializer.serialize_str(self.name())
+    }
+}
+
+impl Thumbnails {
+    pub const ALL: [Thumbnails; 4] = [
+        Thumbnails::Off,
+        Thumbnails::H64,
+        Thumbnails::H128,
+        Thumbnails::H256,
+    ];
+
+    /// The name in the settings file.
+    pub fn name(self) -> &'static str {
+        match self {
+            Thumbnails::Off => "off",
+            Thumbnails::H64 => "64",
+            Thumbnails::H128 => "128",
+            Thumbnails::H256 => "256",
+        }
+    }
+
+    /// The value called `name`.
+    pub fn from_name(name: &str) -> Option<Thumbnails> {
+        Thumbnails::ALL.into_iter().find(|t| t.name() == name)
+    }
+
+    /// The thumbnails' height in pixels; `None` when off.
+    pub fn height(self) -> Option<u32> {
+        match self {
+            Thumbnails::Off => None,
+            Thumbnails::H64 => Some(64),
+            Thumbnails::H128 => Some(128),
+            Thumbnails::H256 => Some(256),
         }
     }
 }
@@ -593,6 +789,15 @@ pub struct Gameplay {
     /// Adjusts the cursor's size to the beatmap's circle size (lazer's
     /// `OsuSetting.AutoCursorSize`).
     pub auto_cursor_size: bool,
+    /// The gameplay cursor (ADR-0124).
+    #[serde(serialize_with = "serialize_cursor_style")]
+    pub cursor_style: CursorStyle,
+    /// The style of the pause and fail menus (ADR-0122).
+    pub pause_menu_style: PauseMenuStyle,
+    /// Scale of the pause and fail menus, in `slam_ui::theme::UI_SCALE_RANGE` in steps of 0.05
+    /// (ADR-0122).
+    #[serde(serialize_with = "serialize_scale")]
+    pub pause_menu_scale: f32,
 }
 
 impl Default for Gameplay {
@@ -614,7 +819,45 @@ impl Default for Gameplay {
             cursor_trail: true,
             cursor_size: 1.0,
             auto_cursor_size: false,
+            cursor_style: CursorStyle::Skin,
+            pause_menu_style: PauseMenuStyle::default(),
+            pause_menu_scale: 1.0,
         }
+    }
+}
+
+/// The style of the pause and fail menus (ADR-0122).
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum PauseMenuStyle {
+    /// SLAM's own look.
+    #[default]
+    Slam,
+    /// The menu of osu!lazer.
+    Lazer,
+    /// The images of the skin, laid out as in stable.
+    Stable,
+}
+
+impl PauseMenuStyle {
+    pub const ALL: [PauseMenuStyle; 3] = [
+        PauseMenuStyle::Slam,
+        PauseMenuStyle::Lazer,
+        PauseMenuStyle::Stable,
+    ];
+
+    /// The name in the settings file.
+    pub fn name(self) -> &'static str {
+        match self {
+            PauseMenuStyle::Slam => "slam",
+            PauseMenuStyle::Lazer => "lazer",
+            PauseMenuStyle::Stable => "stable",
+        }
+    }
+
+    /// The value called `name`.
+    pub fn from_name(name: &str) -> Option<PauseMenuStyle> {
+        PauseMenuStyle::ALL.into_iter().find(|s| s.name() == name)
     }
 }
 

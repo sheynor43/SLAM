@@ -23,6 +23,7 @@ mod gl;
 mod mode;
 #[cfg(windows)]
 mod native;
+mod pointer;
 mod relative;
 mod ring;
 mod video_driver;
@@ -46,6 +47,7 @@ pub use mode::{
 };
 #[cfg(windows)]
 pub use native::NativeHandle;
+pub use pointer::PointerWatch;
 pub use relative::{MAX_SENSITIVITY, MIN_SENSITIVITY, MouseSettings};
 pub use ring::{BUTTON_RESERVE, EventSink, EventSource, Notify, event_ring};
 pub use video_driver::{VIDEO_DRIVER_ENV, VideoDriver, preferred_video_driver, set_video_driver};

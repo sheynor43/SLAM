@@ -8,6 +8,7 @@ use slam_engine::gl::SdlGlSurface;
 use slam_input::{InputWindow, PriorityRequest};
 use slam_render::atlas::{Atlas, AtlasRegion};
 use slam_render::gl::{GlDebug, GlDevice};
+use slam_render::shape::{SHAPE_LAYOUT, ShapeBatch};
 use slam_render::sprite::{DEFAULT_SLOTS, Projection, SpriteBatch, SpriteRenderer};
 use slam_render::textures::Textures;
 use slam_render::{Device, Extent, TextureFormat, shaders};
@@ -72,7 +73,7 @@ struct Views {
     glyphs: GlyphCache,
     menu: MenuView,
     intro: IntroView,
-    shapes: SpriteBatch,
+    shapes: ShapeBatch,
     text: SpriteBatch,
     outlines: SpriteBatch,
 }
@@ -109,7 +110,7 @@ fn draw_on(
         .map_err(|e| e.to_string())?,
         menu: MenuView::new(Arc::clone(&registry), theme, &labels),
         intro: IntroView::new(registry, theme, &labels.title),
-        shapes: SpriteBatch::with_capacity(64),
+        shapes: ShapeBatch::with_capacity(64),
         text: SpriteBatch::with_capacity(64),
         outlines: SpriteBatch::with_capacity(64),
     };
@@ -124,7 +125,13 @@ fn draw_on(
     let mut gpu = Gpu {
         textures,
         white,
-        shapes: renderer(device, &shaders::SPRITE)?,
+        shapes: SpriteRenderer::with_layout(
+            device,
+            DEFAULT_SLOTS,
+            &shaders::UI_SHAPE,
+            SHAPE_LAYOUT,
+        )
+        .map_err(|e| e.to_string())?,
         text: renderer(device, &shaders::MSDF)?,
         outlines: renderer(device, &shaders::MSDF_OUTLINE)?,
     };

@@ -4,6 +4,7 @@
 use std::sync::Arc;
 
 use slam_render::atlas::{AtlasRegion, UvRect};
+use slam_render::shape::ShapeBatch;
 use slam_render::sprite::SpriteBatch;
 use slam_render::textures::TextureId;
 use slam_render::{Extent, Limits, Origin};
@@ -194,12 +195,13 @@ fn the_view_pushes_without_allocating_once_warm() {
         },
     };
     let (mut shapes, mut text) = (
-        SpriteBatch::with_capacity(256),
+        ShapeBatch::with_capacity(256),
         SpriteBatch::with_capacity(1024),
     );
     let pose = Pose {
         opacity: 0.5,
         offset: 0.05,
+        scale: 1.0,
     };
     let layout = SettingsLayout::new(1280.0, 720.0, &theme);
     let mut frame = |screen: &SettingsScreen, width: f32, height: f32, glyphs: &mut _| {
@@ -327,12 +329,13 @@ fn a_swapped_in_dropdown_view_draws_without_allocating() {
         },
     };
     let (mut shapes, mut text) = (
-        SpriteBatch::with_capacity(256),
+        ShapeBatch::with_capacity(256),
         SpriteBatch::with_capacity(1024),
     );
     let pose = Pose {
         opacity: 1.0,
         offset: 0.0,
+        scale: 1.0,
     };
     let layout = SettingsLayout::new(1920.0, 1080.0, &theme);
     let mut frame = |view: &mut SettingsView, screen: &SettingsScreen, glyphs: &mut _| {
@@ -431,12 +434,13 @@ fn hints_and_disabled_rows_draw_without_allocating() {
         },
     };
     let (mut shapes, mut text) = (
-        SpriteBatch::with_capacity(256),
+        ShapeBatch::with_capacity(256),
         SpriteBatch::with_capacity(1024),
     );
     let pose = Pose {
         opacity: 1.0,
         offset: 0.0,
+        scale: 1.0,
     };
     let layout = SettingsLayout::new(1280.0, 720.0, &theme);
     let mut frame = |screen: &SettingsScreen, glyphs: &mut _| {
@@ -519,6 +523,132 @@ fn search_and_scroll_do_not_allocate() {
             screen.input(SettingsInput::NextSection, &layout);
             screen.input(SettingsInput::Down, &layout);
             screen.input(SettingsInput::Type(' '), &layout);
+        }
+    });
+}
+
+#[test]
+fn a_name_too_long_for_its_column_ends_with_an_ellipsis() {
+    let registry = Arc::new(FontRegistry::with_builtin());
+    let theme = Theme::default();
+    let specs = rows();
+    let mut texts = labels();
+    let long = "Minimise SLAM when switching to another app while it plays a beatmap";
+    texts.rows[0].label = long.into();
+    let mut view = SettingsView::new(Arc::clone(&registry), theme, &specs, &texts);
+    view.lay_out_for(640.0, 480.0);
+    let layout = SettingsLayout::new(640.0, 480.0, &theme);
+    let column = layout.label(0).width;
+    let (shown, width) = view.shown_label(0).unwrap();
+    assert!(shown.ends_with('\u{2026}'), "{shown}");
+    assert!(width <= column, "{width} > {column}");
+    // A wide window shows it whole again.
+    view.lay_out_for(3840.0, 2160.0);
+    assert_eq!(view.shown_label(0).unwrap().0, long);
+}
+
+/// Wheel scrolling, category clicks, the easing tick and the frames drawn along the way
+/// touch no allocator, and a frame draws the lines on screen only (ADR-0133).
+#[test]
+fn the_continuous_list_scrolls_and_draws_without_allocating() {
+    let registry = Arc::new(FontRegistry::with_builtin());
+    let limits = Limits {
+        max_texture_size: 4096,
+        max_uniform_block_size: 16384,
+        max_uniform_buffer_slots: 12,
+        max_texture_slots: 16,
+    };
+    let mut glyphs = glyph_atlas(Arc::clone(&registry), &GlyphAtlasConfig::new(limits)).unwrap();
+    let theme = Theme::default();
+    let specs: Vec<RowSpec> = (0..60)
+        .map(|i| RowSpec {
+            section: i / 20,
+            kind: RowKind::Slider {
+                min: 0.0,
+                max: 100.0,
+                step: 1.0,
+                value: 10.0,
+            },
+            restart_required: false,
+        })
+        .collect();
+    let labels = SettingsLabels {
+        sections: vec!["One".into(), "Two".into(), "Three".into()],
+        rows: (0..60)
+            .map(|i| RowLabels {
+                label: format!("Row {i}"),
+                ..RowLabels::default()
+            })
+            .collect(),
+        ..SettingsLabels::default()
+    };
+    let mut screen = SettingsScreen::new(&specs, 3);
+    let mut view = SettingsView::new(registry, theme, &specs, &labels);
+    let white = AtlasRegion {
+        texture: TextureId(0),
+        origin: Origin::new(0, 0),
+        size: Extent::new(1, 1),
+        uv: UvRect {
+            u0: 0.0,
+            v0: 0.0,
+            u1: 1.0,
+            v1: 1.0,
+        },
+    };
+    let (mut shapes, mut text) = (
+        ShapeBatch::with_capacity(1024),
+        SpriteBatch::with_capacity(2048),
+    );
+    let pose = Pose {
+        opacity: 1.0,
+        offset: 0.0,
+        scale: 1.0,
+    };
+    let layout = SettingsLayout::new(1280.0, 720.0, &theme);
+    let mut now = 0_u64;
+    let mut frame = |screen: &mut SettingsScreen, glyphs: &mut _| {
+        now += 16_000_000;
+        screen.tick(now, &layout);
+        shapes.clear();
+        text.clear();
+        view.push(
+            &mut shapes,
+            &mut text,
+            glyphs,
+            1280.0,
+            720.0,
+            &screen.snapshot(),
+            pose,
+            white,
+        );
+        shapes.len()
+    };
+    // Warm every line's glyphs: scroll through the whole list.
+    for _ in 0..2 {
+        for _ in 0..70 {
+            screen.input(SettingsInput::Scroll { lines: 1.0 }, &layout);
+            for _ in 0..3 {
+                frame(&mut screen, &mut glyphs);
+            }
+        }
+        screen.input(SettingsInput::Scroll { lines: -1000.0 }, &layout);
+        for _ in 0..60 {
+            frame(&mut screen, &mut glyphs);
+        }
+    }
+    let top = frame(&mut screen, &mut glyphs);
+    // Sixty rows would draw several times what a window of them does.
+    assert!(top > 0 && top < 60, "{top} shapes");
+    assert_no_alloc(|| {
+        for i in 0..200 {
+            screen.input(SettingsInput::Scroll { lines: 0.7 }, &layout);
+            if i % 50 == 49 {
+                screen.input(SettingsInput::NextSection, &layout);
+            }
+            if i % 70 == 69 {
+                screen.input(SettingsInput::Scroll { lines: -1000.0 }, &layout);
+            }
+            frame(&mut screen, &mut glyphs);
         }
     });
 }

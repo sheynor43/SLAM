@@ -5,6 +5,7 @@
 use std::sync::Arc;
 
 use slam_render::atlas::AtlasRegion;
+use slam_render::shape::ShapeBatch;
 use slam_render::sprite::{Sprite, SpriteBatch};
 use slam_text::{EM_PX, FontRegistry, Glyph, GlyphCache, GlyphKey};
 
@@ -69,7 +70,7 @@ impl IntroView {
     #[allow(clippy::too_many_arguments)]
     pub fn push(
         &mut self,
-        shapes: &mut SpriteBatch,
+        shapes: &mut ShapeBatch,
         text: &mut SpriteBatch,
         outlines: &mut SpriteBatch,
         glyphs: &mut GlyphCache,

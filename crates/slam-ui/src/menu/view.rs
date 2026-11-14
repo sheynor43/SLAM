@@ -4,7 +4,8 @@
 use std::sync::Arc;
 
 use slam_render::atlas::AtlasRegion;
-use slam_render::sprite::{Sprite, SpriteBatch};
+use slam_render::shape::ShapeBatch;
+use slam_render::sprite::SpriteBatch;
 use slam_text::{
     FamilyId, FontRegistry, Glyph, GlyphCache, GlyphKey, Layout, LayoutContext, TextStyle,
     UI_FAMILY, push_layout,
@@ -169,7 +170,7 @@ impl MenuView {
     #[allow(clippy::too_many_arguments)]
     pub fn push(
         &mut self,
-        shapes: &mut SpriteBatch,
+        shapes: &mut ShapeBatch,
         text: &mut SpriteBatch,
         glyphs: &mut GlyphCache,
         width: f32,
@@ -185,16 +186,29 @@ impl MenuView {
         }
         let shift = pose.offset * width;
         let theme = &self.theme;
-        let mut rect = |rect: &super::Rect, colour| {
-            let mut sprite = Sprite::new(
-                white.texture,
-                white.uv,
-                [rect.x + shift, rect.y],
-                [rect.width, rect.height],
-            );
-            sprite.colour = faded(colour, pose.opacity);
-            shapes.push(&sprite);
+        let scale = self.layout.scale;
+        // One backing under the title and the buttons (ADR-0119).
+        let (first, last) = (
+            &self.layout.title,
+            &self.layout.buttons[MenuItem::ALL.len() - 1],
+        );
+        let pad = theme.menu_panel_pad * scale;
+        let skew = self.layout.button_skew_offset();
+        let backing = super::Rect {
+            x: first.x - pad - skew + shift,
+            y: first.y - pad,
+            width: first.width + 2.0 * (pad + skew),
+            height: last.y + last.height - first.y + 2.0 * pad,
         };
+        crate::widgets::panel(
+            shapes,
+            white,
+            &backing,
+            theme,
+            scale,
+            theme.menu_panel_fill,
+            pose.opacity,
+        );
         for (i, item) in MenuItem::ALL.into_iter().enumerate() {
             let selected = item.enabled() && i == snapshot.selected;
             let fill = if selected {
@@ -202,7 +216,19 @@ impl MenuView {
             } else {
                 theme.button_fill
             };
-            rect(&self.layout.buttons[i], fill);
+            let mut rect = self.layout.buttons[i];
+            rect.x += shift;
+            crate::widgets::button(
+                shapes,
+                white,
+                &rect,
+                theme,
+                scale,
+                fill,
+                selected,
+                i as f32 * 0.37,
+                pose.opacity,
+            );
         }
         let shifted = |centre: [f32; 2]| [centre[0] + shift, centre[1]];
         if !self.title_hidden {

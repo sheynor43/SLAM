@@ -60,6 +60,41 @@ fn ticks_without_navigation_do_not_allocate() {
 }
 
 #[test]
+fn fancy_transitions_do_not_allocate_and_show_the_overlay() {
+    use slam_app::settings::Settings;
+    use slam_ui::screen::TransitionStyle;
+    use slam_ui::theme::transition::FANCY_NS;
+
+    let mut settings = Settings::default();
+    settings.general.transitions = TransitionStyle::Random;
+    let mut state = ShellState::new(Theme::default(), 1280.0, 720.0, 1.0).with_settings(settings);
+    let mut snapshot = ShellSnapshot::default();
+    let enter = InputEvent {
+        time_ns: 0,
+        kind: InputKind::Key {
+            scancode: 40,
+            down: true,
+        },
+    };
+    // The first tick takes the settings; navigation may allocate.
+    state.tick(0, &[], &mut snapshot);
+    state.tick(1, &[enter], &mut snapshot);
+    let moves = [InputEvent {
+        time_ns: 0,
+        kind: InputKind::MouseMove { x: 5.0, y: 5.0 },
+    }];
+    let mut seen_band = false;
+    assert_no_alloc(|| {
+        for now in (2..2 * FANCY_NS).step_by(1_000_000) {
+            state.tick(now, &moves, &mut snapshot);
+            seen_band |= snapshot.fx.is_some();
+        }
+    });
+    assert!(seen_band);
+    assert!(snapshot.fx.is_none());
+}
+
+#[test]
 fn song_select_ticks_and_new_lists_do_not_allocate() {
     use std::path::PathBuf;
     use std::sync::Arc;
@@ -498,7 +533,7 @@ fn background_and_detail_changes_do_not_allocate_on_the_update_or_draw_thread() 
             state.tick(now, input, &mut snapshot);
             fade.advance(snapshot.background, now, failed);
             batch.clear();
-            fade.push(&mut batch, 1280.0, 720.0, now, 1.0, |_| None);
+            fade.push(&mut batch, 1280.0, 720.0, now, 1.0, 1.02, |_| None);
         });
         loader.poll();
         reader.poll();
@@ -570,4 +605,159 @@ fn searching_and_moving_in_the_open_settings_panel_does_not_allocate() {
         Some("vo")
     );
     assert!(snapshot.panel.is_some());
+}
+
+#[test]
+fn thumbnails_are_asked_for_and_handed_over_without_allocating_on_the_update_thread() {
+    use std::sync::Arc;
+
+    use slam_app::backgrounds::link;
+    use slam_app::songs::{link as songs_link, publish};
+    use slam_library::scan::{BeatmapSetEntry, DifficultyEntry};
+    use slam_render::hal::Limits;
+    use slam_render::image::ImageLimits;
+    use slam_render::upload::{TextureLoaderConfig, texture_loader};
+    use slam_ui::song_select::SongSelectStatus;
+
+    let root = std::env::temp_dir().join(format!("slam-thumbs-no-alloc-{}", std::process::id()));
+    let mut png_bytes = Vec::new();
+    {
+        let mut e = png::Encoder::new(&mut png_bytes, 4, 4);
+        e.set_color(png::ColorType::Rgba);
+        e.set_depth(png::BitDepth::Eight);
+        let mut w = e.write_header().unwrap();
+        w.write_image_data(&[200; 4 * 4 * 4]).unwrap();
+    }
+    let sets: Vec<BeatmapSetEntry> = (0..20)
+        .map(|i| {
+            let dir = root.join(format!("set {i}"));
+            std::fs::create_dir_all(&dir).unwrap();
+            std::fs::write(dir.join("bg.png"), &png_bytes).unwrap();
+            BeatmapSetEntry {
+                dir: dir.clone(),
+                artist: format!("artist {i}"),
+                title: format!("title {i}"),
+                creator: "mapper".to_owned(),
+                artist_unicode: String::new(),
+                title_unicode: String::new(),
+                source: String::new(),
+                tags: String::new(),
+                difficulties: vec![DifficultyEntry {
+                    path: dir.join("map.osu"),
+                    version: "diff".to_owned(),
+                    overall_difficulty: 5.0,
+                    approach_rate: 5.0,
+                    circle_size: 4.0,
+                    hp: 5.0,
+                    background: Some("bg.png".to_owned()),
+                    audio: String::new(),
+                    preview_time: -1,
+                    metadata: Default::default(),
+                }],
+            }
+        })
+        .collect();
+    let config = TextureLoaderConfig {
+        max_textures: slam_app::thumbnails::MAX_HANDLES + 16,
+        request_capacity: 128,
+        ..TextureLoaderConfig::new(Limits {
+            max_texture_size: 4096,
+            max_uniform_block_size: 16384,
+            max_uniform_buffer_slots: 12,
+            max_texture_slots: 16,
+        })
+    };
+    let (requests, _uploads) = texture_loader(&config).unwrap();
+    let (picker, loader, _fade) = link(requests);
+    let (thumbnails, bridge, _worker, _shown) =
+        slam_app::thumbnails::link(None, 1.6, ImageLimits::default()).unwrap();
+    let mut loader = loader.with_thumbnails(bridge);
+    let (mut producer, songs) = songs_link();
+    let mut state = ShellState::new(Theme::default(), 1280.0, 720.0, 1.0)
+        .with_songs(songs)
+        .with_backgrounds(picker)
+        .with_thumbnails(thumbnails);
+    let mut snapshot = ShellSnapshot::default();
+    let key = |scancode| InputEvent {
+        time_ns: 0,
+        kind: InputKind::Key {
+            scancode,
+            down: true,
+        },
+    };
+    state.tick(0, &[key(40)], &mut snapshot);
+    state.tick(TRANSITION_NS, &[], &mut snapshot);
+    let published = publish(&sets, SongSelectStatus::Ready, Arc::from(""));
+    let kept = (Arc::clone(&published.list), Arc::clone(&published.files));
+    producer.push(published).unwrap();
+    state.tick(TRANSITION_NS + 1, &[], &mut snapshot);
+
+    let start = 2 * TRANSITION_NS;
+    let mut loaded = 0;
+    for step in 0..400_u64 {
+        let now = start + step * 5_000_000;
+        // Down a set now and then, so that new rows come into view.
+        let input = if step % 40 == 39 { &[key(81)][..] } else { &[] };
+        assert_no_alloc(|| state.tick(now, input, &mut snapshot));
+        loader.poll();
+        std::thread::sleep(std::time::Duration::from_millis(2));
+        loaded = loaded.max(snapshot.thumbnails.handles.iter().flatten().count());
+    }
+    assert!(snapshot.thumbnails.enabled);
+    assert!(loaded >= 4, "thumbnails reached the snapshot: {loaded}");
+    drop(kept);
+    let _ = std::fs::remove_dir_all(&root);
+}
+
+#[test]
+fn the_menu_cursor_link_does_not_allocate_while_the_style_and_skin_change() {
+    use std::path::Path;
+    use std::sync::Arc;
+    use std::time::Duration;
+
+    use slam_app::menu_cursor::spawn;
+    use slam_app::settings::Settings;
+    use slam_render::hal::Limits;
+    use slam_render::upload::TextureLoaderConfig;
+    use slam_ui::cursor::CursorStyle;
+
+    let limits = Limits {
+        max_texture_size: 4096,
+        max_uniform_block_size: 16384,
+        max_uniform_buffer_slots: 12,
+        max_texture_slots: 16,
+    };
+    let (link, _uploads, _shown, thread) = spawn(&TextureLoaderConfig::new(limits)).unwrap();
+
+    // Through the shell: the skin style asks the loader on the first tick.
+    let mut settings = Settings::default();
+    settings.general.menu_cursor = CursorStyle::Skin;
+    let mut state = ShellState::new(Theme::default(), 1280.0, 720.0, 1.0)
+        .with_settings(settings)
+        .with_skin_cursor(link);
+    let mut snapshot = ShellSnapshot::default();
+    state.tick(0, &[], &mut snapshot);
+    assert_no_alloc(|| {
+        for now in 1..200 {
+            state.tick(now, &[], &mut snapshot);
+        }
+    });
+    drop(state);
+    thread.join().unwrap();
+
+    // The link on its own, through changes of the wish with the loader answering between.
+    let (mut link, _uploads, shown, thread) = spawn(&TextureLoaderConfig::new(limits)).unwrap();
+    let skin: Arc<Path> = Arc::from(Path::new("/nonexistent/slam-skin"));
+    let wishes = [Some(None), Some(Some(&skin)), None, Some(None), None];
+    for (i, wish) in wishes.iter().enumerate() {
+        assert_no_alloc(|| {
+            for _ in 0..5 {
+                link.tick(*wish);
+            }
+        });
+        std::thread::sleep(Duration::from_millis(50));
+        shown.set(link.seq().wrapping_add(i as u32));
+    }
+    drop(link);
+    thread.join().unwrap();
 }
