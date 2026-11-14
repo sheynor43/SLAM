@@ -829,8 +829,8 @@ fn the_songs_folder_row_shows_the_folder_and_opens_the_picker() {
     assert_eq!(settings_screen(&s).value_text(), "/games/osu/Songs");
     let view = &snap.panel.as_ref().expect("the panel").settings;
     assert_eq!(&*view.value_text, "/games/osu/Songs");
-    // The library section is the last; its only row is the focused one.
-    let tabs = [key(KEY_TAB); SECTIONS - 1];
+    // The library section is the last but one (Feedback follows); its only row is the focused one.
+    let tabs = [key(KEY_TAB); SECTIONS - 2];
     s.tick(LATER, &tabs, &mut snap);
     assert_eq!(settings_screen(&s).focus(), Row::SongsFolder as usize);
     s.tick(LATER, &[key(KEY_ENTER)], &mut snap);
@@ -1432,4 +1432,24 @@ fn the_menu_cursor_style_hides_the_os_cursor_and_reaches_the_snapshot_live() {
         assert_eq!(snap.menu_cursor.style, style);
         assert_eq!(shell.os_cursor.is_hidden(), hidden, "{style:?}");
     }
+}
+
+#[test]
+fn pressing_a_feedback_row_asks_to_open_its_page_once() {
+    use crate::feedback::Kind;
+    let mut s = state();
+    let mut snap = ShellSnapshot::default();
+    opened(&mut s, &mut snap);
+    // The Feedback section is the last: Tab walks to it and focuses its first row.
+    let tabs = [key(KEY_TAB); SECTIONS - 1];
+    s.tick(LATER, &tabs, &mut snap);
+    assert_eq!(settings_screen(&s).focus(), Row::FeedbackHome as usize);
+    assert_eq!(s.take_feedback_request(), None);
+    s.tick(LATER, &[key(KEY_ENTER)], &mut snap);
+    assert_eq!(s.take_feedback_request(), Some(Kind::Github));
+    assert_eq!(s.take_feedback_request(), None);
+    s.tick(LATER, &[key(KEY_DOWN), key(KEY_ENTER)], &mut snap);
+    assert_eq!(s.take_feedback_request(), Some(Kind::Bug));
+    s.tick(LATER, &[key(KEY_DOWN), key(KEY_ENTER)], &mut snap);
+    assert_eq!(s.take_feedback_request(), Some(Kind::Feature));
 }
