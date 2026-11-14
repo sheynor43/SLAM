@@ -297,6 +297,10 @@ pub struct Theme {
     /// Colours of the main menu's buttons, top to bottom (ADR-0136): the first is the
     /// scheme's accent.
     pub menu_button_tints: [Color; 3],
+    /// Colours of the mod select's columns, as lazer colours mod types (ADR-0136): difficulty
+    /// reduction, difficulty increase, conversion. An active mod's tile washes and is
+    /// outlined in its column's colour.
+    pub mod_column_tints: [Color; 3],
     /// How strong a difficulty row's glow in its star colour is, as a part of the accent
     /// glow's alpha (ADR-0131).
     pub difficulty_glow_scale: f32,
@@ -626,6 +630,11 @@ impl Theme {
                 p.accent,
                 Color::rgb(0.40, 0.80, 1.0),
                 Color::rgb(0.93, 0.27, 0.40),
+            ],
+            mod_column_tints: [
+                Color::rgb(0.70, 1.0, 0.40),
+                Color::rgb(1.0, 0.40, 0.40),
+                Color::rgb(0.55, 0.40, 1.0),
             ],
             difficulty_glow_scale: 1.0,
             star_pill_pad: 7.0,

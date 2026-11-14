@@ -668,22 +668,23 @@ impl SongSelectView {
             let expanded = custom.state != CustomisationState::Collapsed;
             let dim = if expanded { DIMMED } else { 1.0 };
             for (column, titles) in self.mod_column_titles.iter().enumerate() {
+                // Each column in the colour of its mod type (ADR-0136).
+                let tint = theme.mod_column_tints[column % theme.mod_column_tints.len()];
                 let (x, y) = centred(titles, &panel.column_titles[column]);
-                left(titles, x, y, faded(theme.disabled_text, dim));
+                left(titles, x, y, faded(tint, dim));
                 for (index, line) in self.mod_tiles[column].iter().enumerate() {
                     let area = panel.tile_rect(column, index);
                     let on = snapshot.mods.active[column] >> index & 1 != 0;
-                    let fill = if on {
-                        theme.widget_accent_fill
-                    } else if snapshot.mods.hover == Some((column, index)) {
+                    let fill = if !on && snapshot.mods.hover == Some((column, index)) {
                         theme.button_hover_fill
                     } else {
                         theme.button_fill
                     };
-                    let look = Look::Button {
+                    let look = Look::TintedButton {
                         highlighted: on,
                         seed: (column * 7 + index) as f32 * 0.31,
                         fade: opacity,
+                        tint,
                     };
                     rect(&area, faded(fill, dim), look);
                     let (x, y) = centred(line, &area);
