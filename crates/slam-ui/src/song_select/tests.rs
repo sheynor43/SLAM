@@ -832,3 +832,57 @@ mod thumbnails {
         assert!(g.span(&area, 0.0, 100.0).is_none());
     }
 }
+
+/// A list of one set whose difficulties have the given keys, with star ratings in the
+/// order of `stars` (`None` for unknown).
+fn keyed_list(keys_and_stars: &[(u64, Option<f32>)]) -> Arc<SongList> {
+    let mut one = set(1, keys_and_stars.len());
+    for (row, &(key, stars)) in one.difficulties.iter_mut().zip(keys_and_stars) {
+        row.key = key;
+        row.stars = stars;
+        row.version = format!("key {key}");
+    }
+    Arc::new(SongList { sets: vec![one] })
+}
+
+#[test]
+fn reordering_a_set_keeps_the_selected_difficulty_and_scroll() {
+    let mut s = SongSelect::new();
+    put(&mut s, keyed_list(&[(10, None), (11, None), (12, None)]));
+    press(&mut s, I::Down);
+    press(&mut s, I::Down);
+    assert_eq!(s.selected(), Some((0, 2)));
+    let scroll = s.snapshot().scroll;
+    // Stars arrive and put key 12 first.
+    put(
+        &mut s,
+        keyed_list(&[(12, Some(1.0)), (10, Some(2.0)), (11, Some(3.0))]),
+    );
+    assert_eq!(s.selected(), Some((0, 0)));
+    assert_eq!(s.snapshot().scroll, scroll);
+    assert_eq!(s.snapshot().selected_stars(), Some(1.0));
+}
+
+#[test]
+fn zero_keys_fall_back_to_the_position() {
+    let mut s = screen(&[(1, 3)]);
+    press(&mut s, I::Down);
+    put(&mut s, list(&[(1, 3)]));
+    assert_eq!(s.selected(), Some((0, 1)));
+}
+
+#[test]
+fn view_focus_names_the_first_set_in_view() {
+    let mut s = screen(&[(7, 2), (8, 2)]);
+    assert_eq!(s.view_focus().map(|f| f.0), Some(7));
+    assert!(s.view_focus().is_some_and(|f| f.1 >= 2));
+    put(&mut s, Arc::default());
+    assert_eq!(s.view_focus(), None);
+}
+
+#[test]
+fn stars_are_written_as_two_decimals() {
+    let mut text = String::from("Insane");
+    push_stars(&mut text, 5.4321);
+    assert_eq!(text, "Insane \u{2605}5.43");
+}

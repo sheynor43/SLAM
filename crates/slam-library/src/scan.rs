@@ -1,7 +1,6 @@
 //! Scan of a stable-style `Songs` folder: one subdirectory per beatmap set, each holding
 //! `.osu` files. Only headers are decoded, and only osu!standard difficulties are kept.
 
-use std::cmp::Ordering;
 use std::fs;
 use std::io;
 use std::path::{Path, PathBuf};
@@ -37,7 +36,7 @@ pub struct BeatmapSetEntry {
     pub source: String,
     /// Space-separated tags of the first difficulty.
     pub tags: String,
-    /// osu!standard difficulties, sorted by version (case-insensitive), then path.
+    /// osu!standard difficulties in the order of [`sort_difficulties`] (ADR-0134).
     pub difficulties: Vec<DifficultyEntry>,
 }
 
@@ -165,7 +164,7 @@ fn scan_set_counted(dir: &Path) -> Result<SetScan, ScanError> {
     }
 
     // Sorted so that the first difficulty, whose metadata the set shows, is deterministic.
-    difficulties.sort_by(cmp_difficulty);
+    sort_difficulties(&mut difficulties, |_| None);
     let Some(first) = difficulties.first() else {
         return Ok(SetScan {
             entry: None,
@@ -190,11 +189,32 @@ fn scan_set_counted(dir: &Path) -> Result<SetScan, ScanError> {
     })
 }
 
-fn cmp_difficulty(a: &DifficultyEntry, b: &DifficultyEntry) -> Ordering {
-    a.version
-        .to_lowercase()
-        .cmp(&b.version.to_lowercase())
-        .then_with(|| a.path.cmp(&b.path))
+/// Orders the difficulties of one set (ADR-0134): by star rating ascending when
+/// `stars` knows it for every one of them, else by overall difficulty, then name; ties by
+/// name (case-insensitive), then path. The order is one rule for the whole set, so it is a
+/// total order however many ratings are known.
+pub fn sort_difficulties(
+    difficulties: &mut [DifficultyEntry],
+    stars: impl Fn(&DifficultyEntry) -> Option<f32>,
+) {
+    let known: Option<Vec<f32>> = difficulties.iter().map(&stars).collect();
+    let by_name = |a: &DifficultyEntry, b: &DifficultyEntry| {
+        a.version
+            .to_lowercase()
+            .cmp(&b.version.to_lowercase())
+            .then_with(|| a.path.cmp(&b.path))
+    };
+    match known {
+        Some(_) => difficulties.sort_by(|a, b| {
+            let (sa, sb) = (stars(a).unwrap_or(0.0), stars(b).unwrap_or(0.0));
+            sa.total_cmp(&sb).then_with(|| by_name(a, b))
+        }),
+        None => difficulties.sort_by(|a, b| {
+            a.overall_difficulty
+                .total_cmp(&b.overall_difficulty)
+                .then_with(|| by_name(a, b))
+        }),
+    }
 }
 
 /// Scans one set directory (non-recursive). Returns `None` when it holds no osu!standard

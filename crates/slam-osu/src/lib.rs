@@ -24,6 +24,7 @@ pub mod rules;
 pub mod samples;
 pub mod scoring;
 pub mod stacking;
+pub mod stars;
 pub mod statistics;
 
 pub use beatmap::{Beatmap, BeatmapError, Difficulty};

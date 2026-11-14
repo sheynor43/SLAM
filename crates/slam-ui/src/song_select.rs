@@ -94,6 +94,11 @@ pub struct DifficultyRow {
     pub beatmap_id: i32,
     /// `BeatmapSetID`, -1 for none.
     pub beatmap_set_id: i32,
+    /// Opaque identity chosen by the application; the selected difficulty follows it
+    /// across [`SongSelect::set_list`] when the order within a set changes (0: none).
+    pub key: u64,
+    /// The star rating without mods; `None` until calculated (ADR-0134).
+    pub stars: Option<f32>,
 }
 
 impl DifficultyRow {
@@ -109,6 +114,8 @@ impl DifficultyRow {
             drain_rate: 5.0,
             beatmap_id: -1,
             beatmap_set_id: -1,
+            key: 0,
+            stars: None,
         }
     }
 }
@@ -468,6 +475,22 @@ pub struct SongSelectSnapshot {
     pub no_audio: bool,
 }
 
+/// Appends a star rating after a name: " ★5.43" (ADR-0134). Does not allocate once `text`
+/// has the room.
+pub(crate) fn push_stars(text: &mut String, stars: f32) {
+    use std::fmt::Write as _;
+    // Writing to a `String` cannot fail.
+    let _ = write!(text, " \u{2605}{stars:.2}");
+}
+
+impl SongSelectSnapshot {
+    /// The star rating of the selected difficulty, if calculated (ADR-0134).
+    pub fn selected_stars(&self) -> Option<f32> {
+        let (set, difficulty) = self.selected?;
+        self.list.sets.get(set)?.difficulties.get(difficulty)?.stars
+    }
+}
+
 /// What the song select shows of the selected difficulty (ADR-0067), computed by the
 /// application with the selected mods.
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -696,6 +719,22 @@ impl SongSelect {
         Some((set, self.filter.difficulty_index(self.set, self.difficulty)))
     }
 
+    /// The [`DifficultyRow::key`] of the selected difficulty.
+    fn selected_difficulty_key(&self) -> Option<u64> {
+        let (set, difficulty) = self.selected()?;
+        Some(self.list.sets.get(set)?.difficulties.get(difficulty)?.key)
+    }
+
+    /// Where the player is looking: the key of the first set in view and how many rows
+    /// the view holds, an upper bound of the sets in it. The star thread calculates these
+    /// sets first (ADR-0134). `None` without sets. Does not allocate.
+    pub fn view_focus(&self) -> Option<(u64, usize)> {
+        let row = self.filter.row(self.set, self.first_row())?;
+        let (Row::Set(set) | Row::Difficulty { set, .. }) = row;
+        let key = self.list.sets.get(set)?.key;
+        Some((key, self.viewport.ceil() as usize + 1))
+    }
+
     /// Replaces the list, keeping the selected set by its key when it is still visible
     /// (the difficulty position is clamped), else the selection stays at the same position.
     /// The query stays: `filter` is the buffers for the new list ([`SongFilter::for_list`]),
@@ -706,6 +745,7 @@ impl SongSelect {
             .selected()
             .and_then(|(set, _)| self.list.sets.get(set))
             .map(|s| s.key);
+        let difficulty_key = self.selected_difficulty_key();
         let old = std::mem::replace(&mut self.filter, filter);
         self.list = list;
         self.filter.apply(&self.list, &self.query);
@@ -718,6 +758,22 @@ impl SongSelect {
         self.difficulty = self
             .difficulty
             .min(self.filter.difficulty_count(self.set).saturating_sub(1));
+        // The same set with its difficulties in another order (ADR-0134): the selection
+        // stays on its difficulty, not on its position.
+        if found.is_some()
+            && let Some(wanted) = difficulty_key.filter(|key| *key != 0)
+            && let Some(set) = self
+                .filter
+                .set_index(self.set)
+                .and_then(|s| self.list.sets.get(s))
+            && let Some(position) = set
+                .difficulties
+                .iter()
+                .position(|d| d.key == wanted)
+                .and_then(|index| self.filter.difficulty_position(self.set, index))
+        {
+            self.difficulty = position;
+        }
         self.hovered = None;
         self.clamp_scroll();
         self.ensure_visible();

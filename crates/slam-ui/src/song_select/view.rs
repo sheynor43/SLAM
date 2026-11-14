@@ -524,6 +524,9 @@ impl SongSelectView {
                     return false;
                 };
                 slot.primary.text.push_str(&d.version);
+                if let Some(stars) = d.stars {
+                    super::push_stars(&mut slot.primary.text, stars);
+                }
             }
         }
         let scale = layout.scale;

@@ -266,6 +266,9 @@ impl InfoPanel {
             if let Some((set, difficulty)) = set {
                 if let Some(d) = set.difficulties.get(difficulty) {
                     self.name.text.push_str(&d.version);
+                    if let Some(stars) = d.stars {
+                        super::push_stars(&mut self.name.text, stars);
+                    }
                 }
                 let _ = write!(self.artist.text, "{} - {}", set.artist, set.title);
             }

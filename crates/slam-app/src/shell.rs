@@ -1768,6 +1768,10 @@ impl ShellState {
         }
         snapshot.intro = self.intro.and_then(|intro| intro.snapshot(now_ns));
         self.song_select.tick(now_ns, &self.song_layout);
+        // The star thread calculates what is in view first (ADR-0134).
+        if let (Some(songs), Some((key, span))) = (&self.songs, self.song_select.view_focus()) {
+            songs.set_focus(key, span);
+        }
         if self.setting_rows_for != Some(self.rows_key()) {
             self.rebuild_setting_rows();
         }
@@ -4459,6 +4463,11 @@ fn run_with<B: render::Backend>(
             scanning,
             loader,
             Some(reader),
+            Some(crate::songs::StarsConfig {
+                cache: Dirs::detect().map(|dirs| dirs.cache().join("stars.bin")),
+                calculator: crate::stars::rosu_calculator(),
+                version: slam_osu::stars::CALCULATOR_VERSION,
+            }),
         )
         .map_err(|e| e.to_string())?;
         state = state.with_songs(link);
