@@ -4,12 +4,20 @@
 
 use std::sync::Arc;
 
+use std::sync::atomic::Ordering;
+
+use slam_audio::{MusicStats, StreamCounters};
 use slam_engine::limiter::LimiterMode;
 use slam_engine::{DrawRateControl, EngineCounters, UpdateRateControl};
-use slam_play::{FpsCorner, FpsCounter, FpsLabels, FpsView};
+use slam_input::InputCounters;
+use slam_play::{
+    AudioFigures, FpsCorner, FpsCounter, FpsLabels, FpsMode, FpsView, InputFigures, ThreadFigures,
+};
 use slam_render::atlas::AtlasRegion;
-use slam_render::sprite::{PushSprite, SpriteBatch};
+use slam_render::shape::ShapeBatch;
+use slam_render::sprite::SpriteBatch;
 use slam_text::{FontRegistry, GlyphCache};
+use slam_ui::theme::Theme;
 
 use crate::settings::{FpsScreens, Frame};
 
@@ -23,6 +31,28 @@ pub struct FpsInputs {
     pub aim_draw: f64,
     /// The update rate aimed for, in Hz.
     pub aim_update: f64,
+    /// What the other threads have done lately (ADR-0138).
+    pub figures: ThreadFigures,
+}
+
+/// How long the other threads' counters are watched before their rates are worked out.
+const MEASURE_NS: u64 = 250_000_000;
+
+/// The audio thread's counters and the stream's shape.
+#[derive(Clone, Debug)]
+struct AudioSources {
+    stream: Arc<StreamCounters>,
+    music: Arc<MusicStats>,
+    buffer_ms: f64,
+}
+
+/// Counter readings at one moment.
+#[derive(Clone, Copy, Debug, Default)]
+struct Reading {
+    ticks: u64,
+    polls: u64,
+    queued: u64,
+    callbacks: u64,
 }
 
 /// Handles of a running (or about to run) engine, made before its threads start.
@@ -33,6 +63,11 @@ pub struct FpsSource {
     draw_rate: DrawRateControl,
     /// The last interval taken, for frames between two update ticks.
     update_interval_ns: u64,
+    input: Option<Arc<InputCounters>>,
+    audio: Option<AudioSources>,
+    /// The readings and the time of the last measure; the rates since.
+    measured: Option<(u64, Reading)>,
+    figures: ThreadFigures,
 }
 
 impl FpsSource {
@@ -46,12 +81,82 @@ impl FpsSource {
             update_rate,
             draw_rate,
             update_interval_ns: 0,
+            input: None,
+            audio: None,
+            measured: None,
+            figures: ThreadFigures::default(),
         }
     }
 
-    /// The inputs now: three relaxed atomic operations. Without a draw limit the update
-    /// rate is the draw aim, too.
-    pub fn sample(&mut self) -> FpsInputs {
+    /// Adds the input thread's counters.
+    pub fn with_input(mut self, counters: Arc<InputCounters>) -> FpsSource {
+        self.input = Some(counters);
+        self
+    }
+
+    /// Adds the audio thread's counters, and the stream's buffer of `buffer_frames` at
+    /// `sample_rate`.
+    pub fn with_audio(
+        mut self,
+        stream: Arc<StreamCounters>,
+        music: Arc<MusicStats>,
+        buffer_frames: u32,
+        sample_rate: u32,
+    ) -> FpsSource {
+        self.audio = Some(AudioSources {
+            stream,
+            music,
+            buffer_ms: f64::from(buffer_frames) * 1000.0 / f64::from(sample_rate.max(1)),
+        });
+        self
+    }
+
+    fn read(&self) -> Reading {
+        Reading {
+            ticks: self.counters.update_ticks(),
+            polls: self.input.as_ref().map_or(0, |i| i.polls()),
+            queued: self.input.as_ref().map_or(0, |i| i.queued()),
+            callbacks: self
+                .audio
+                .as_ref()
+                .map_or(0, |a| a.stream.callbacks.load(Ordering::Relaxed)),
+        }
+    }
+
+    /// Works the other threads' rates out from the counters since the last measure, every
+    /// [`MEASURE_NS`]. Relaxed loads only.
+    fn measure(&mut self, now_ns: u64) {
+        let now = self.read();
+        let Some((before_ns, before)) = self.measured else {
+            self.measured = Some((now_ns, now));
+            return;
+        };
+        let elapsed = now_ns.saturating_sub(before_ns);
+        if elapsed < MEASURE_NS {
+            return;
+        }
+        let rate = |now: u64, before: u64| now.saturating_sub(before) as f64 * 1e9 / elapsed as f64;
+        self.figures = ThreadFigures {
+            update_hz: rate(now.ticks, before.ticks),
+            audio: self.audio.as_ref().map(|audio| AudioFigures {
+                callbacks_hz: rate(now.callbacks, before.callbacks),
+                buffer_ms: audio.buffer_ms,
+                xruns: audio.stream.missed_buffers.load(Ordering::Relaxed)
+                    + audio.music.underruns.load(Ordering::Relaxed),
+            }),
+            input: self.input.as_ref().map(|_| InputFigures {
+                polls_hz: rate(now.polls, before.polls),
+                events_hz: rate(now.queued, before.queued),
+            }),
+        };
+        self.measured = Some((now_ns, now));
+    }
+
+    /// The inputs now, a few relaxed atomic operations; the other threads' rates are
+    /// worked out four times a second. Without a draw limit the update rate is the draw
+    /// aim, too.
+    pub fn sample(&mut self, now_ns: u64) -> FpsInputs {
+        self.measure(now_ns);
         match self.counters.take_update_interval_ns() {
             0 => {}
             ns => self.update_interval_ns = ns,
@@ -65,12 +170,16 @@ impl FpsSource {
             update_interval_ns: self.update_interval_ns,
             aim_draw,
             aim_update,
+            figures: self.figures,
         }
     }
 }
 
-/// Room in a text batch for the counter's two numbers.
-pub const MAX_FPS_GLYPHS: usize = 48;
+/// Room in a text batch for the counter's numbers and, in its thread panel, the threads'
+/// names.
+pub const MAX_FPS_GLYPHS: usize = 160;
+/// Room in a shape batch for the counter.
+pub use slam_play::fps_view::MAX_FPS_SHAPES;
 
 /// What the update thread says of the counter each tick: the settings in force (or being
 /// edited), so that a change shows at once.
@@ -79,6 +188,7 @@ pub struct FpsDisplay {
     pub show: bool,
     pub corner: FpsCorner,
     pub screens: FpsScreens,
+    pub mode: FpsMode,
 }
 
 impl FpsDisplay {
@@ -87,6 +197,7 @@ impl FpsDisplay {
             show: frame.show_fps,
             corner: frame.fps_corner,
             screens: frame.fps_screens,
+            mode: frame.fps_mode,
         }
     }
 
@@ -144,7 +255,7 @@ impl FpsOverlay {
         display: FpsDisplay,
         gameplay: bool,
     ) {
-        let inputs = self.source.sample();
+        let inputs = self.source.sample(now_ns);
         let shows = display.shows(gameplay);
         if shows && !self.shown {
             self.counter = FpsCounter::new();
@@ -159,7 +270,9 @@ impl FpsOverlay {
             inputs.aim_draw,
             inputs.aim_update,
         );
+        self.counter.set_figures(inputs.figures);
         self.view.set_corner(display.corner);
+        self.view.set_mode(display.mode);
         self.view.update(width, height, &self.counter);
     }
 
@@ -172,13 +285,14 @@ impl FpsOverlay {
     /// have room.
     pub fn push(
         &self,
-        shapes: &mut impl PushSprite,
+        shapes: &mut ShapeBatch,
+        theme: &Theme,
         text: &mut SpriteBatch,
         glyphs: &mut GlyphCache,
         white: AtlasRegion,
     ) {
         if let Some(view) = self.view() {
-            view.push_shapes(shapes, white);
+            view.push_shapes(shapes, theme, white);
             view.push_text(text, glyphs);
         }
     }
@@ -196,24 +310,74 @@ mod tests {
         update_rate.set_hz(4000.0).unwrap();
         draw_rate.set_mode(LimiterMode::Hz(240.0)).unwrap();
         assert_eq!(
-            source.sample(),
+            source.sample(0),
             FpsInputs {
                 update_interval_ns: 0,
                 aim_draw: 240.0,
                 aim_update: 4000.0,
+                figures: ThreadFigures::default(),
             }
         );
         // Unlimited drawing aims at the update rate.
         draw_rate.set_mode(LimiterMode::Unlimited).unwrap();
-        assert_eq!(source.sample().aim_draw, 4000.0);
+        assert_eq!(source.sample(1).aim_draw, 4000.0);
     }
 
     fn labels() -> FpsLabels {
-        let placeholder = slam_play::hud::OFFSET_PLACEHOLDER;
-        FpsLabels {
-            frame_time: format!("{placeholder} ms"),
-            fps: format!("{placeholder} fps"),
+        FpsLabels::english()
+    }
+
+    #[test]
+    fn the_other_threads_rates_come_from_counter_deltas() {
+        let counters = Arc::<EngineCounters>::default();
+        let input = Arc::<InputCounters>::default();
+        let stream = Arc::<StreamCounters>::default();
+        let music = Arc::<MusicStats>::default();
+        let mut source = FpsSource::new(
+            Arc::clone(&counters),
+            UpdateRateControl::new(),
+            DrawRateControl::new(),
+        )
+        .with_input(Arc::clone(&input))
+        .with_audio(Arc::clone(&stream), Arc::clone(&music), 128, 48_000);
+        // The first sample only starts the clock.
+        assert_eq!(source.sample(0).figures, ThreadFigures::default());
+        for _ in 0..50 {
+            input.record_poll();
         }
+        for _ in 0..10 {
+            input.record_queued();
+        }
+        stream.callbacks.fetch_add(94, Ordering::Relaxed);
+        stream.missed_buffers.fetch_add(2, Ordering::Relaxed);
+        music.underruns.fetch_add(1, Ordering::Relaxed);
+        // Too soon to measure.
+        assert_eq!(
+            source.sample(MEASURE_NS / 2).figures,
+            ThreadFigures::default()
+        );
+        // Half a second: rates are twice the deltas.
+        let figures = source.sample(MEASURE_NS * 2).figures;
+        // The engine's tick counter is the engine's to write.
+        assert_eq!(figures.update_hz, 0.0);
+        let audio = figures.audio.unwrap();
+        assert_eq!(audio.callbacks_hz, 188.0);
+        assert!((audio.buffer_ms - 128.0 * 1000.0 / 48_000.0).abs() < 1e-9);
+        assert_eq!(audio.xruns, 3);
+        let input = figures.input.unwrap();
+        assert_eq!((input.polls_hz, input.events_hz), (100.0, 20.0));
+    }
+
+    #[test]
+    fn missing_threads_have_no_figures() {
+        let mut source = FpsSource::new(
+            Arc::default(),
+            UpdateRateControl::new(),
+            DrawRateControl::new(),
+        );
+        source.sample(0);
+        let figures = source.sample(MEASURE_NS).figures;
+        assert_eq!((figures.audio, figures.input), (None, None));
     }
 
     #[test]
@@ -222,6 +386,7 @@ mod tests {
             show,
             corner: FpsCorner::default(),
             screens,
+            mode: FpsMode::default(),
         };
         for (screens, gameplay, menus) in [
             (FpsScreens::Everywhere, true, true),
@@ -249,6 +414,7 @@ mod tests {
             show: true,
             corner: FpsCorner::TopLeft,
             screens: FpsScreens::Gameplay,
+            mode: FpsMode::Full,
         };
         overlay.frame(1_000_000, 1280.0, 768.0, display, false);
         assert!(overlay.view().is_none());

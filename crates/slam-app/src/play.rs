@@ -595,6 +595,13 @@ fn play<B: render::Backend>(
                     Arc::clone(&counters),
                     update_rate.clone(),
                     draw_rate.clone(),
+                )
+                .with_input(Arc::clone(window.counters()))
+                .with_audio(
+                    Arc::clone(stream.counters()),
+                    Arc::clone(&music_stats),
+                    stream.config().buffer_frames,
+                    stream.config().sample_rate,
                 ),
                 registry,
                 &labels.fps,

@@ -12,7 +12,7 @@ use slam_input::{
 };
 use slam_osu::replay::Actions;
 use slam_play::input::{Binding, Bindings, Input, MAX_BINDINGS};
-use slam_play::{BackgroundSettings, FpsCorner};
+use slam_play::{BackgroundSettings, FpsCorner, FpsMode};
 use slam_ui::cursor::CursorStyle;
 use slam_ui::screen::TransitionStyle;
 use slam_ui::theme::ColourScheme;
@@ -614,6 +614,9 @@ pub struct Frame {
     pub fps_corner: FpsCorner,
     /// The screens the FPS counter shows on (ADR-0060).
     pub fps_screens: FpsScreens,
+    /// What the FPS counter shows (ADR-0138); lazer's counter by default.
+    #[serde(serialize_with = "serialize_fps_mode")]
+    pub fps_mode: FpsMode,
 }
 
 /// Where the FPS counter shows (ADR-0060); lazer shows it everywhere.
@@ -676,6 +679,10 @@ fn serialize_corner<S: Serializer>(corner: &FpsCorner, serializer: S) -> Result<
     serializer.serialize_str(corner_name(*corner))
 }
 
+fn serialize_fps_mode<S: Serializer>(mode: &FpsMode, serializer: S) -> Result<S::Ok, S::Error> {
+    serializer.serialize_str(mode.name())
+}
+
 impl Default for Frame {
     fn default() -> Frame {
         let engine = EngineConfig::default();
@@ -686,6 +693,7 @@ impl Default for Frame {
             show_fps: false,
             fps_corner: FpsCorner::default(),
             fps_screens: FpsScreens::default(),
+            fps_mode: FpsMode::default(),
         }
     }
 }

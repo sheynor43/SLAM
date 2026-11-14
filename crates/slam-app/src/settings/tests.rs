@@ -75,6 +75,7 @@ fn round_trip_non_default() {
     s.frame.show_fps = true;
     s.frame.fps_corner = FpsCorner::TopLeft;
     s.frame.fps_screens = FpsScreens::Gameplay;
+    s.frame.fps_mode = slam_play::FpsMode::Full;
     s.hotkeys.toggle_fps = Some(plain("F12"));
     s.gameplay.dim = 0.3;
     s.gameplay.beatmap_skins = false;
@@ -851,6 +852,29 @@ fn the_fps_counter_defaults_follow_lazer() {
     assert_eq!(s.frame.fps_corner, FpsCorner::BottomRight);
     assert_eq!(s.frame.fps_screens, FpsScreens::Everywhere);
     assert_eq!(s.hotkeys.toggle_fps, None);
+}
+
+#[test]
+fn the_fps_mode_defaults_to_lazers_counter_and_is_read_by_name() {
+    use slam_play::FpsMode;
+    assert_eq!(Settings::default().frame.fps_mode, FpsMode::Update);
+    for mode in FpsMode::ALL {
+        let loaded = file::from_toml_str(&format!("[frame]\nfps_mode = \"{}\"\n", mode.name()));
+        assert_eq!(loaded.status, LoadStatus::Ok, "{:?}", loaded.warnings);
+        assert_eq!(loaded.settings.frame.fps_mode, mode);
+    }
+    // An unknown name or a wrong type falls back to the default, with a warning.
+    for bad in ["\"huge\"", "3"] {
+        let loaded = file::from_toml_str(&format!("[frame]\nfps_mode = {bad}\n"));
+        assert_eq!(loaded.status, LoadStatus::Recovered, "{bad}");
+        assert_eq!(loaded.warnings.len(), 1, "{:?}", loaded.warnings);
+        assert_eq!(loaded.settings.frame.fps_mode, FpsMode::Update);
+    }
+    // Written by name, and read back.
+    let mut s = Settings::default();
+    s.frame.fps_mode = FpsMode::Draw;
+    let text = file::to_toml_string(&s).unwrap();
+    assert!(text.contains("fps_mode = \"draw\""), "{text}");
 }
 
 #[test]
