@@ -9,7 +9,7 @@
 use std::sync::Arc;
 
 use crate::menu::Rect;
-use crate::song_select::filter::with_terms;
+use crate::song_select::filter::with_term_pairs;
 use crate::song_select::{SearchQuery, ease_scroll};
 use crate::theme::Theme;
 use crate::widgets::{
@@ -761,12 +761,15 @@ impl SettingsScreen {
     /// with the focus on the first row there). Does not allocate.
     fn refilter(&mut self) {
         let texts = Arc::clone(&self.texts);
-        with_terms(&self.search, |terms| {
+        // Every word, as typed or as read on the other keyboard layout (ADR-0137).
+        with_term_pairs(&self.search, |terms| {
             for row in 0..self.len {
                 self.matched[row] = !matches!(self.widgets[row], RowWidget::Note)
-                    && texts
-                        .get(row)
-                        .is_some_and(|text| terms.iter().all(|term| text.contains(term)));
+                    && texts.get(row).is_some_and(|text| {
+                        terms
+                            .iter()
+                            .all(|&(term, alt)| text.contains(term) || text.contains(alt))
+                    });
             }
         });
         self.close_dropdowns();
