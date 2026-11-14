@@ -17,6 +17,7 @@ use drag::{ListDrag, Release};
 
 pub mod drag;
 pub mod filter;
+pub mod info_panel;
 pub mod mod_select;
 pub mod query;
 pub mod view;
@@ -200,16 +201,18 @@ enum Pressed {
     ChooseFolder,
 }
 
-/// Where the list, status line and hint are: a panel on the right of the window. A pure
-/// function of the window size and theme, shared by hit testing (update) and drawing.
+/// Where the list, status line and hint are (a panel on the right of the window) and the
+/// beatmap's info panel (on the left). A pure function of the window size and theme,
+/// shared by hit testing (update) and drawing.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct SongSelectLayout {
-    /// Status line at the top: the first line of `details`, shown instead of it until the
-    /// list is ready.
+    /// Status line at the top of the list panel.
     pub header: Rect,
-    /// Two lines of the selected beatmap's details at the top of the panel (ADR-0067).
-    pub details: Rect,
-    /// The search line between the details and the list.
+    /// The content of the info panel on the left: the selected difficulty's statistics
+    /// and local scores (ADR-0067, ADR-0125). Ends above the hint row, whose left end shows
+    /// the selected mods.
+    pub info: Rect,
+    /// The search line between the status line and the list.
     pub search: Rect,
     /// The rows' area; row 0 is at its top when not scrolled.
     pub list: Rect,
@@ -250,15 +253,17 @@ impl SongSelectLayout {
             height: hint_height,
         };
         let row_height = theme.song_row_height * scale;
-        let details = Rect {
-            x,
+        // The two panels' backings are `margin / 2` larger on every side; keep them apart by
+        // as much.
+        let info = Rect {
+            x: margin,
             y: header.y,
-            width: panel,
-            height: 2.0 * hint_height,
+            width: (x - margin - 3.0 * margin / 2.0).max(0.0),
+            height: (hint.y - margin / 2.0 - header.y).max(0.0),
         };
         let search = Rect {
             x,
-            y: details.y + details.height + margin / 2.0,
+            y: header.y + header.height + margin / 2.0,
             width: panel,
             height: row_height - theme.song_row_gap * scale,
         };
@@ -277,7 +282,7 @@ impl SongSelectLayout {
         };
         SongSelectLayout {
             header,
-            details,
+            info,
             search,
             list,
             hint,
@@ -295,6 +300,18 @@ impl SongSelectLayout {
     pub fn lean_x(&self, y: f32) -> f32 {
         let middle = (self.header.y + self.hint.y + self.hint.height) / 2.0;
         (middle - y) * self.lean
+    }
+
+    /// The info panel's backing: its content and `margin / 2` around, down to the hint
+    /// row's top.
+    pub fn info_backing(&self, margin: f32) -> Rect {
+        let inset = margin / 2.0;
+        Rect {
+            x: self.info.x - inset,
+            y: self.info.y - inset,
+            width: self.info.width + 2.0 * inset,
+            height: self.info.height + 2.0 * inset,
+        }
     }
 
     /// The panel's backing on a window `width` wide, from the status line to the hints: its
@@ -433,6 +450,68 @@ pub struct BeatmapDetails {
     pub drain_rate: f32,
     /// `None` until the file is read.
     pub stats: Option<DetailStats>,
+    /// The beatmap's best local scores; `None` until read, or when there is no data folder
+    /// (ADR-0125).
+    pub scores: Option<LocalScores>,
+}
+
+/// How many local scores the song select lists.
+pub const MAX_LOCAL_SCORES: usize = 10;
+
+/// How many mod acronyms a listed score shows.
+pub const MAX_SCORE_MODS: usize = 8;
+
+/// A listed score's mods: acronyms of up to three ASCII letters, in the order saved.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct ScoreMods {
+    acronyms: [[u8; 3]; MAX_SCORE_MODS],
+    len: u8,
+}
+
+impl ScoreMods {
+    /// Keeps the first [`MAX_SCORE_MODS`] acronyms; letters past the third of one and
+    /// non-ASCII characters are dropped.
+    pub fn from_acronyms<'a>(acronyms: impl IntoIterator<Item = &'a str>) -> ScoreMods {
+        let mut mods = ScoreMods::default();
+        for acronym in acronyms.into_iter().take(MAX_SCORE_MODS) {
+            let mut bytes = [0; 3];
+            for (slot, b) in bytes.iter_mut().zip(acronym.bytes().filter(u8::is_ascii)) {
+                *slot = b;
+            }
+            mods.acronyms[usize::from(mods.len)] = bytes;
+            mods.len += 1;
+        }
+        mods
+    }
+
+    /// The acronyms.
+    pub fn iter(&self) -> impl Iterator<Item = &str> {
+        self.acronyms[..usize::from(self.len)].iter().map(|a| {
+            let len = a.iter().position(|&b| b == 0).unwrap_or(3);
+            std::str::from_utf8(&a[..len]).unwrap_or("")
+        })
+    }
+}
+
+/// One listed local score, as the library thread reads it (ADR-0125).
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct ScoreRow {
+    pub total_score: u64,
+    /// 0..=1.
+    pub accuracy: f64,
+    pub max_combo: u32,
+    /// The rank's letters as lazer names them (`XH`, `X`, `SH`, `S`, `A`...), padded with
+    /// zeros.
+    pub rank: [u8; 2],
+    pub mods: ScoreMods,
+    /// Unix milliseconds.
+    pub date_ms: i64,
+}
+
+/// The best local scores of a beatmap, best first; `None` rows come last.
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+pub struct LocalScores {
+    pub rows: [Option<ScoreRow>; MAX_LOCAL_SCORES],
 }
 
 /// The read part of [`BeatmapDetails`], at the mods' rate.

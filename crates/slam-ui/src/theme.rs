@@ -155,6 +155,11 @@ pub struct Theme {
     /// Height of the status line above the list, and its text size.
     pub song_header_height: f32,
     pub song_status_size: f32,
+    /// The info panel's difficulty bars: height, and the empty part's colour.
+    pub song_bar_height: f32,
+    pub song_bar_track_fill: Color,
+    /// Pitch of the info panel's score rows.
+    pub song_score_row_height: f32,
     /// Width of a mod tile of the mod select panel, and the gap between its columns.
     pub mod_tile_width: f32,
     pub mod_column_gap: f32,
@@ -353,6 +358,14 @@ impl Theme {
             song_detail_size: 14.0,
             song_header_height: 36.0,
             song_status_size: 22.0,
+            song_bar_height: 6.0,
+            song_bar_track_fill: Color {
+                r: 1.0,
+                g: 1.0,
+                b: 1.0,
+                a: 0.16,
+            },
+            song_score_row_height: 38.0,
             mod_tile_width: 150.0,
             mod_column_gap: 32.0,
             mod_backdrop_fill: Color {

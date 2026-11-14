@@ -89,6 +89,8 @@ pub fn interface_views(
             approach_rate: text("song-select-details-approach-rate"),
             overall_difficulty: text("song-select-details-overall-difficulty"),
             drain_rate: text("song-select-details-drain-rate"),
+            scores: text("song-select-scores"),
+            no_scores: text("song-select-no-scores"),
         },
         mod_columns: mod_columns(),
     };

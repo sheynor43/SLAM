@@ -713,6 +713,7 @@ fn host(name: &str, with_track: bool) -> HostFixture {
         registry: Arc::new(FontRegistry::with_builtin()),
         localizer: Arc::new(Localizer::builtin().unwrap()),
         replays: Some(dir.join("replays")),
+        scores: Some(dir.join("scores")),
         hud_layouts: None,
     })
     .unwrap();
@@ -2284,6 +2285,25 @@ fn a_passed_play_saves_its_replay_before_the_results() {
         replay.beatmap_hash.as_deref(),
         Some(crate::replays::md5_hex(&map).as_str())
     );
+    // The passed attempt's score follows its replay into the beatmap's file (ADR-0125).
+    let scores = fixture
+        .dir
+        .join("scores")
+        .join(format!("{}.json", crate::replays::md5_hex(&map)));
+    let deadline = std::time::Instant::now() + Duration::from_secs(20);
+    while !scores.exists() {
+        assert!(std::time::Instant::now() < deadline, "no score saved");
+        std::thread::sleep(Duration::from_millis(1));
+    }
+    let top = crate::scores::load_top(
+        &fixture.dir.join("scores"),
+        &crate::replays::md5_hex(&map),
+        10,
+    );
+    assert_eq!(top.len(), 1);
+    assert_eq!(top[0].replay.as_deref(), Some(name.as_str()));
+    assert_eq!(top[0].player, crate::replays::PLAYER_NAME);
+    assert_ne!(top[0].rank, "F");
 }
 
 #[test]
