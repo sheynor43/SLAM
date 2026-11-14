@@ -30,6 +30,7 @@ pipewire = { version = "0.10.1", features = ["v1_0_0"] }
 proptest = { version = "1.11.0", default-features = false, features = ["std"] }
 naga = { version = "30.0.1", default-features = false, features = ["wgsl-in", "glsl-out", "hlsl-out"] }
 rtrb = "0.4.0"
+rosu-pp = "=4.0.1"
 # Skin and background images (ADR-0034).
 png = "0.18.1"
 # JPEG backgrounds and skin images (ADR-0040).
