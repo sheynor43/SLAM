@@ -112,10 +112,11 @@ const MAX_TEXTURES: usize = 16
     + MAX_BACKGROUNDS as usize
     + crate::thumbnails::MAX_HANDLES as usize
     + crate::menu_cursor::MAX_CURSOR_TEXTURES as usize;
-/// Rectangles of one frame: the buttons or rows of up to two layers, the FPS counter's
+/// Rectangles of one frame: the buttons or rows of up to two layers (each a few layers deep,
+/// ADR-0136), the FPS counter's
 /// box, two backgrounds of each layer, the language curtain (ADR-0091) and the intro's
 /// black (ADR-0114).
-const MAX_SHAPES: usize = 256
+const MAX_SHAPES: usize = 1024
     + slam_ui::screen::MAX_FX_SHAPES
     + 1
     + 2 * MAX_LAYERS

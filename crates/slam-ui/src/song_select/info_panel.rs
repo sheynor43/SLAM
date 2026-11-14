@@ -162,7 +162,63 @@ pub(super) fn pill_width(line: &Line, theme: &Theme, scale: f32) -> f32 {
     if line.text.is_empty() {
         return 0.0;
     }
-    line.layout.width() + 3.0 * theme.star_pill_pad * scale
+    pill_rect(line, theme, scale, 0.0, 0.0).width + theme.star_pill_pad * scale
+}
+
+/// The star-rating pill around `line` with its left edge at `x`, centred on `centre_y`:
+/// a star, a gap, the rating (ADR-0136, lazer's `StarRatingDisplay`).
+fn pill_rect(line: &Line, theme: &Theme, scale: f32, x: f32, centre_y: f32) -> Rect {
+    let pad = theme.star_pill_pad * scale;
+    let height = line.layout.height() + pad * 0.8;
+    Rect {
+        x,
+        y: centre_y - height / 2.0,
+        width: line.layout.width()
+            + 2.0 * pad
+            + (theme.star_icon_size + theme.star_icon_gap) * scale,
+        height,
+    }
+}
+
+/// Draws the star-rating pill of `stars` around `line`, its left edge at `x`, centred on
+/// `centre_y`: the pill in the rating's colour, a star and the rating in its text colour.
+#[allow(clippy::too_many_arguments)]
+pub(super) fn push_star_pill(
+    rect: &mut impl FnMut(&Rect, Color, Look),
+    left: &mut impl FnMut(&Line, f32, f32, Color),
+    line: &Line,
+    stars: f32,
+    theme: &Theme,
+    scale: f32,
+    x: f32,
+    centre_y: f32,
+) {
+    let pill = pill_rect(line, theme, scale, x, centre_y);
+    rect(&pill, crate::star_colour::for_stars(stars), Look::Pill);
+    let pad = theme.star_pill_pad * scale;
+    let icon = theme.star_icon_size * scale;
+    let ink = crate::star_colour::text_for_stars(stars);
+    rect(
+        &Rect {
+            x: pill.x + pad,
+            y: centre_y - icon / 2.0,
+            width: icon,
+            height: icon,
+        },
+        ink,
+        Look::Star,
+    );
+    left(
+        line,
+        pill.x + pad + icon + theme.star_icon_gap * scale,
+        centre_y,
+        ink,
+    );
+}
+
+/// Width of the pill [`push_star_pill`] draws around `line`.
+pub(super) fn star_pill_width(line: &Line, theme: &Theme, scale: f32) -> f32 {
+    pill_rect(line, theme, scale, 0.0, 0.0).width
 }
 
 /// The draw side of the info panel.
@@ -366,6 +422,8 @@ impl InfoPanel {
     }
 
     /// Draws the panel. `rect` fills, `left` draws a line left-aligned at `(x, centre_y)`.
+    /// Two wedges after lazer's (ADR-0136): the difficulty's, outlined in its star colour,
+    /// and the local scores' below it; each leans by the buttons' skew, and so does all on it.
     pub(super) fn push(
         &self,
         layout: &SongSelectLayout,
@@ -376,22 +434,91 @@ impl InfoPanel {
     ) {
         let scale = layout.scale;
         let parts = InfoLayout::new(&layout.info, theme, scale);
+        let tan = theme.button_skew().tan();
+        let inset = theme.song_margin * scale / 2.0;
+        let stars = snapshot.selected_stars();
+        let outline = match (snapshot.selected, stars) {
+            (None, _) => Color {
+                a: 0.0,
+                ..theme.accent
+            },
+            (Some(_), stars) => crate::star_colour::glow_for(stars, theme.accent),
+        };
+        // The difficulty's wedge, down to the counts.
+        let wedge = Rect {
+            x: layout.info.x - inset,
+            y: layout.info.y - inset,
+            width: layout.info.width + 2.0 * inset,
+            height: parts.counts.y + parts.counts.height - layout.info.y + 2.0 * inset,
+        };
+        rect(
+            &wedge,
+            theme.song_panel_fill,
+            Look::Wedge { lean: tan, outline },
+        );
+        // The scores' wedge, down to the last row shown.
+        let shown = snapshot
+            .details
+            .and_then(|d| d.scores)
+            .map_or(0, |s| s.rows.iter().take_while(|r| r.is_some()).count())
+            .min(parts.row_count);
+        let bottom = if shown == 0 {
+            parts.empty.y + parts.empty.height
+        } else {
+            let last = &parts.rows[shown - 1];
+            last.y + last.height
+        };
+        let board = Rect {
+            x: wedge.x,
+            y: parts.scores_title.y - inset,
+            width: wedge.width,
+            height: bottom - parts.scores_title.y + 2.0 * inset,
+        };
+        if snapshot.details.is_some() {
+            rect(
+                &board,
+                theme.song_panel_fill,
+                Look::Wedge {
+                    lean: tan,
+                    outline: Color {
+                        a: 0.0,
+                        ..theme.accent
+                    },
+                },
+            );
+        }
+        // Everything on a wedge leans with it, about the wedge's middle.
+        let lean_of = |y: f32| {
+            let middle = if y < board.y {
+                wedge.y + wedge.height / 2.0
+            } else {
+                board.y + board.height / 2.0
+            };
+            (middle - y) * tan
+        };
+        let mut rect = |r: &Rect, colour: Color, look: Look| {
+            let moved = Rect {
+                x: r.x + lean_of(r.y + r.height / 2.0),
+                ..*r
+            };
+            rect(&moved, colour, look);
+        };
+        let mut left = |line: &Line, x: f32, centre_y: f32, colour: Color| {
+            left(line, x + lean_of(centre_y), centre_y, colour);
+        };
+        let (rect, left) = (&mut rect, &mut left);
         let centre = |r: &Rect| r.y + r.height / 2.0;
         left(&self.name, parts.name.x, centre(&parts.name), theme.text);
-        if let Some(stars) = snapshot.selected_stars() {
-            let gap = theme.star_pill_pad * scale;
-            let pill = Rect {
-                x: parts.name.x + self.name.layout.width() + gap,
-                y: centre(&parts.name) - self.stars.layout.height() * 0.5 - gap * 0.4,
-                width: self.stars.layout.width() + 2.0 * gap,
-                height: self.stars.layout.height() + gap * 0.8,
-            };
-            rect(&pill, crate::star_colour::for_stars(stars), Look::Pill);
-            left(
+        if let Some(stars) = stars {
+            push_star_pill(
+                rect,
+                left,
                 &self.stars,
-                pill.x + gap,
+                stars,
+                theme,
+                scale,
+                parts.name.x + self.name.layout.width() + theme.star_pill_pad * scale,
                 centre(&parts.name),
-                crate::star_colour::text_for_stars(stars),
             );
         }
         left(

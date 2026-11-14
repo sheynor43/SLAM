@@ -173,8 +173,8 @@ fn the_empty_state_draws_its_line_and_rows_draw_boxes() {
     let empty = details(Some(LocalScores::default()));
     rig.show(empty);
     let (rects, texts) = rig.drawn(empty);
-    // The bars: a track and a fill each.
-    assert_eq!(rects, 8);
+    // The two wedges (ADR-0136), the bars: a track and a fill each.
+    assert_eq!(rects, 2 + 8);
     // Name, artist, 4 labels, 4 values, length/BPM, counts, title and the empty line.
     assert_eq!(texts, 2 + 4 + 4 + 2 + 1 + 1);
     let mut scores = LocalScores::default();
@@ -183,7 +183,7 @@ fn the_empty_state_draws_its_line_and_rows_draw_boxes() {
     let listed = details(Some(scores));
     rig.show(listed);
     let (rects, _) = rig.drawn(listed);
-    assert_eq!(rects, 8 + 2);
+    assert_eq!(rects, 2 + 8 + 2);
 }
 
 #[test]

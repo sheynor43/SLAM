@@ -952,9 +952,10 @@ fn view_focus_names_the_first_set_in_view() {
 
 #[test]
 fn stars_are_written_as_two_decimals() {
-    let mut text = String::from("Insane");
+    let mut text = String::new();
     push_stars(&mut text, 5.4321);
-    assert_eq!(text, "Insane \u{2605}5.43");
+    // No "★": the interface fonts lack it, the pill draws a star shape (ADR-0136).
+    assert_eq!(text, "5.43");
 }
 
 #[test]

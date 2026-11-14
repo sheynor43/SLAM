@@ -852,12 +852,6 @@ impl SongSelectView {
             }
             return;
         }
-        // The info panel's backing on the left.
-        rect(
-            &layout.info_backing(theme.song_margin * layout.scale),
-            theme.song_panel_fill,
-            Look::Panel,
-        );
         // Everything on the panel leans with it (ADR-0121).
         let lean = |x: f32, centre_y: f32| x + layout.lean_x(centre_y);
         let leaned = |r: &Rect| Rect {
@@ -1001,10 +995,9 @@ impl SongSelectView {
                     row,
                     Row::Difficulty { set, difficulty } if snapshot.selected == Some((set, difficulty))
                 );
-                let fill = if selected {
+                // The selection is the row's wash, outline and glow, not a fill (ADR-0136).
+                let fill = if !selected && snapshot.hovered == Some(row) {
                     theme.button_hover_fill
-                } else if snapshot.hovered == Some(row) {
-                    theme.row_hover_fill
                 } else {
                     theme.button_fill
                 };
@@ -1039,25 +1032,6 @@ impl SongSelectView {
                     },
                 };
                 rect(&clipped, fill, look);
-                if let Row::Difficulty { .. } = row {
-                    // The strip on the left edge, leaning with the row and cut with it.
-                    let colour = crate::star_colour::glow_for(stars, theme.accent);
-                    let width = theme.difficulty_strip_width * scale;
-                    let inset = theme.button_radius * scale * 0.5;
-                    let height = (clipped.height - 2.0 * inset).max(0.0);
-                    let tan = theme.button_skew().tan();
-                    let drop = (area.y + area.height / 2.0) - (clipped.y + clipped.height / 2.0);
-                    rect(
-                        &Rect {
-                            x: clipped.x + drop * tan,
-                            y: clipped.y + inset,
-                            width,
-                            height,
-                        },
-                        colour,
-                        Look::Strip,
-                    );
-                }
                 let x = area.x + pad + text_shift;
                 if thumbs.enabled
                     && matches!(row, Row::Set(_))
@@ -1134,24 +1108,16 @@ impl SongSelectView {
                         {
                             // The star pill, in the colour of the rating.
                             let line = &row_text.secondary;
-                            let padding = theme.star_pill_pad * scale;
-                            let height = line.layout.height() + padding * 0.8;
-                            let width = line.layout.width() + 2.0 * padding;
-                            rect(
-                                &Rect {
-                                    x: right - width,
-                                    y: centre - height / 2.0,
-                                    width,
-                                    height,
-                                },
-                                crate::star_colour::for_stars(stars),
-                                Look::Pill,
-                            );
-                            left(
+                            let width = super::info_panel::star_pill_width(line, theme, scale);
+                            super::info_panel::push_star_pill(
+                                &mut rect,
+                                &mut left,
                                 line,
-                                right - width + padding,
+                                stars,
+                                theme,
+                                scale,
+                                right - width,
                                 centre,
-                                crate::star_colour::text_for_stars(stars),
                             );
                         }
                     }

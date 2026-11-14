@@ -95,6 +95,7 @@ fn views_push_without_allocating_once_warm() {
             frame(1280.0, 720.0, &mut glyphs);
         }
     });
-    // The backing, three buttons, and the glow and outline of the selected one.
-    assert_eq!(shapes.len(), 6);
+    // The backing and its shadow; three buttons of a shadow, a fill, a wash and triangles;
+    // the selected one's glow, brightening and outline (ADR-0136).
+    assert_eq!(shapes.len(), 2 + 3 * 4 + 3);
 }

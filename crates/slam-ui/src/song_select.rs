@@ -302,10 +302,13 @@ impl SongSelectLayout {
         let lean_reach = (hint.y + hint.height - header.y) / 2.0 * lean;
         // The two panels' backings are `margin / 2` larger on every side; keep them apart by
         // as much.
+        // As wide as lazer's wedge at most (ADR-0136).
         let info = Rect {
             x: margin,
             y: header.y,
-            width: (x - margin - 3.0 * margin / 2.0 - lean_reach).max(0.0),
+            width: (x - margin - 3.0 * margin / 2.0 - lean_reach)
+                .min(theme.song_info_width * scale)
+                .max(0.0),
             height: (hint.y - margin / 2.0 - header.y).max(0.0),
         };
         let search = Rect {
@@ -347,18 +350,6 @@ impl SongSelectLayout {
     pub fn lean_x(&self, y: f32) -> f32 {
         let middle = (self.header.y + self.hint.y + self.hint.height) / 2.0;
         (middle - y) * self.lean
-    }
-
-    /// The info panel's backing: its content and `margin / 2` around, down to the hint
-    /// row's top.
-    pub fn info_backing(&self, margin: f32) -> Rect {
-        let inset = margin / 2.0;
-        Rect {
-            x: self.info.x - inset,
-            y: self.info.y - inset,
-            width: self.info.width + 2.0 * inset,
-            height: self.info.height + 2.0 * inset,
-        }
     }
 
     /// Whether the "choose folder" button, leaning with the panel, contains the point.
@@ -472,12 +463,12 @@ pub struct SongSelectSnapshot {
     pub no_audio: bool,
 }
 
-/// Appends a star rating after a name: " ★5.43" (ADR-0134). Does not allocate once `text`
-/// has the room.
+/// Appends a star rating: "5.43" (ADR-0134); the pill draws the star before it as a shape,
+/// as the interface fonts have no "★" (ADR-0136). Does not allocate once `text` has the room.
 pub(crate) fn push_stars(text: &mut String, stars: f32) {
     use std::fmt::Write as _;
     // Writing to a `String` cannot fail.
-    let _ = write!(text, " \u{2605}{stars:.2}");
+    let _ = write!(text, "{stars:.2}");
 }
 
 impl SongSelectSnapshot {

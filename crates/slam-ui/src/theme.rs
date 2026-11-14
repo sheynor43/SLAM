@@ -97,6 +97,16 @@ struct Palette {
     raised: Color,
 }
 
+/// `colour` moved `by` towards white.
+const fn lighter(colour: Color, by: f32) -> Color {
+    Color {
+        r: colour.r + (1.0 - colour.r) * by,
+        g: colour.g + (1.0 - colour.g) * by,
+        b: colour.b + (1.0 - colour.b) * by,
+        a: colour.a,
+    }
+}
+
 /// `colour` at alpha `a`.
 const fn alpha(colour: Color, a: f32) -> Color {
     Color { a, ..colour }
@@ -276,13 +286,32 @@ pub struct Theme {
     pub pattern_panel: f32,
     pub pattern_hover: f32,
     pub pattern_selected: f32,
-    /// Width of the coloured strip on a difficulty row's left edge, and how strong the glow
-    /// in its colour is, as a part of the accent glow's alpha (ADR-0131).
-    pub difficulty_strip_width: f32,
+    /// Layers of a button after lazer's beatmap panels (ADR-0136): how dark its fill gets
+    /// towards the right (a factor of the colour), the opacity at the left of the wash of its
+    /// colour, of the triangles at the top, and of the selected button's brightening at the
+    /// right.
+    pub button_shade: f32,
+    pub button_tint_alpha: f32,
+    pub pattern_alpha: f32,
+    pub selection_alpha: f32,
+    /// Colours of the main menu's buttons, top to bottom (ADR-0136): the first is the
+    /// scheme's accent.
+    pub menu_button_tints: [Color; 3],
+    /// How strong a difficulty row's glow in its star colour is, as a part of the accent
+    /// glow's alpha (ADR-0131).
     pub difficulty_glow_scale: f32,
     /// Height of the star-rating pill, as a part of the row's text height, and its
     /// horizontal padding.
     pub star_pill_pad: f32,
+    /// The star drawn before the rating in the pill (ADR-0136): its size and the gap after it.
+    pub star_icon_size: f32,
+    pub star_icon_gap: f32,
+    /// The info panels on the left of song select, after lazer's wedges (ADR-0136): the
+    /// widest they get, their corner radius and how much of the fill's opacity is left at
+    /// their right edge.
+    pub song_info_width: f32,
+    pub wedge_radius: f32,
+    pub wedge_fade: f32,
     /// Size of one difficulty dot on a set row and the gap between two.
     pub difficulty_dot_size: f32,
     pub difficulty_dot_gap: f32,
@@ -445,7 +474,9 @@ impl Theme {
             background: p.background,
             // Dense enough to read over a beatmap background (ADR-0119).
             button_fill: alpha(p.raised, 0.78),
-            button_hover_fill: alpha(p.accent, 0.55),
+            // A step lighter than the idle fill, not the accent: the accent is the selected
+            // button's wash and outline (ADR-0136).
+            button_hover_fill: alpha(lighter(p.raised, 0.10), 0.85),
             text: Color::WHITE,
             disabled_text: Color {
                 r: 1.0,
@@ -568,13 +599,26 @@ impl Theme {
             glow_width: 14.0,
             glow_alpha: 0.55,
             glow_pulse: 0.35,
-            pattern_button: 0.14,
+            pattern_button: 0.35,
             pattern_panel: 0.06,
-            pattern_hover: 0.22,
-            pattern_selected: 0.32,
-            difficulty_strip_width: 5.0,
+            pattern_hover: 0.55,
+            pattern_selected: 0.8,
+            button_shade: 0.8,
+            button_tint_alpha: 0.25,
+            pattern_alpha: 0.25,
+            selection_alpha: 0.5,
+            menu_button_tints: [
+                p.accent,
+                Color::rgb(0.40, 0.80, 1.0),
+                Color::rgb(0.93, 0.27, 0.40),
+            ],
             difficulty_glow_scale: 1.0,
             star_pill_pad: 7.0,
+            star_icon_size: 10.0,
+            star_icon_gap: 3.0,
+            song_info_width: 380.0,
+            wedge_radius: 10.0,
+            wedge_fade: 0.67,
             difficulty_dot_size: 7.0,
             difficulty_dot_gap: 4.0,
             background_motion: 0.06,
@@ -723,13 +767,11 @@ mod tests {
     fn the_default_keeps_the_pink_colours() {
         let theme = Theme::default();
         assert_eq!(theme.scheme, ColourScheme::Pink);
-        assert_eq!(
-            theme.button_hover_fill,
-            Color {
-                a: 0.55,
-                ..Color::rgb(1.0, 0.4, 0.7)
-            }
-        );
+        assert_eq!(theme.accent, Color::rgb(1.0, 0.4, 0.7));
+        assert_eq!(theme.menu_button_tints[0], theme.accent);
+        // Hover lightens the fill instead of washing it in the accent (ADR-0136).
+        assert!(theme.button_hover_fill.r < 0.3);
+        assert!(theme.button_hover_fill.r > theme.button_fill.r);
         assert_eq!(theme.background, Color::rgb(0.07, 0.07, 0.10));
     }
 
