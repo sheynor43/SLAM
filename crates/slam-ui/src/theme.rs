@@ -337,6 +337,39 @@ pub struct Theme {
     pub cursor_inner_ring_alpha: f32,
     pub cursor_dot: f32,
     pub cursor_gameplay_glow: f32,
+    /// Strength of the shadows under buttons, rows and panels (ADR-0136), 0 to 2: 0 draws
+    /// none. The shadow's opacity, softness (reference pixels) and drop (reference pixels)
+    /// at strength 1.
+    pub shadow: f32,
+    pub shadow_alpha: f32,
+    pub shadow_radius: f32,
+    pub shadow_offset: f32,
+    /// Which extras SLAM's menu cursor shows (ADR-0136).
+    pub cursor_fx: CursorFx,
+}
+
+/// The extras of SLAM's menu cursor, each switched in the settings (ADR-0136).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct CursorFx {
+    /// Turns towards a drag, as lazer's `CursorRotation`.
+    pub rotate: bool,
+    /// Spins about its own long axis while the pointer rests.
+    pub spin: bool,
+    /// Leaves a fading trail of itself behind a moving pointer.
+    pub trail: bool,
+    /// Sends a ring out from the tip at each press.
+    pub ripple: bool,
+}
+
+impl Default for CursorFx {
+    fn default() -> Self {
+        CursorFx {
+            rotate: true,
+            spin: true,
+            trail: true,
+            ripple: true,
+        }
+    }
 }
 
 /// Tokens of the `fancy` screen transition (ADR-0126). The `simple` one keeps the
@@ -579,12 +612,33 @@ impl Theme {
             cursor_inner_ring_alpha: 0.5,
             cursor_dot: 0.14,
             cursor_gameplay_glow: 5.0,
+            shadow: 1.0,
+            shadow_alpha: 0.45,
+            shadow_radius: 10.0,
+            shadow_offset: 3.0,
+            cursor_fx: CursorFx::default(),
         }
     }
 
     /// The same theme with the effects on or off (ADR-0123).
     pub fn with_effects(self, effects: bool) -> Theme {
         Theme { effects, ..self }
+    }
+
+    /// The same theme with the shadows at `strength` (ADR-0136), held to `[0, 2]`; not a
+    /// number means none.
+    pub fn with_shadow(self, strength: f32) -> Theme {
+        let shadow = if strength.is_finite() {
+            strength.clamp(0.0, 2.0)
+        } else {
+            0.0
+        };
+        Theme { shadow, ..self }
+    }
+
+    /// The same theme with SLAM's menu cursor showing `fx` (ADR-0136).
+    pub fn with_cursor_fx(self, cursor_fx: CursorFx) -> Theme {
+        Theme { cursor_fx, ..self }
     }
 
     /// The same theme with the buttons' and rows' skew at `degrees` (ADR-0130), held to
