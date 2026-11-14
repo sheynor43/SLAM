@@ -2532,7 +2532,7 @@ pub struct PlayView {
 
 impl PlayView {
     /// Writes SLAM's cursor (ADR-0124) for the cursors that were set to draw as such: where
-    /// the skin's textures would be, `cursor_gameplay_size` osu!pixels high at the
+    /// the skin's textures would be, `cursor_gameplay_size` osu!pixels across at the
     /// cursor's size. Allocation-free once `shapes` has room for
     /// [`MAX_CURSOR_SHAPES`](slam_ui::cursor::MAX_CURSOR_SHAPES) twice.
     pub fn push_slam_cursors(
@@ -2546,13 +2546,13 @@ impl PlayView {
             .into_iter()
             .flatten()
         {
-            slam_ui::cursor::push_slam_cursor(
+            slam_ui::cursor::push_gameplay_cursor(
                 shapes,
                 theme,
                 white,
                 pose.at,
                 theme.cursor_gameplay_size * pose.scale,
-                0.0,
+                pose.expand,
             );
         }
     }

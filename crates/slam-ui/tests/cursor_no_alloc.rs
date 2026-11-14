@@ -6,7 +6,9 @@ use slam_render::hal::Extent;
 use slam_render::shape::ShapeBatch;
 use slam_render::textures::TextureId;
 use slam_testkit::assert_no_alloc;
-use slam_ui::cursor::{MAX_CURSOR_SHAPES, PressSqueeze, push_slam_cursor, squeeze_for};
+use slam_ui::cursor::{
+    MAX_CURSOR_SHAPES, MenuCursorMotion, push_gameplay_cursor, push_slam_cursor,
+};
 use slam_ui::theme::Theme;
 
 slam_testkit::install_counting_allocator!();
@@ -20,14 +22,24 @@ fn drawing_the_cursor_does_not_allocate() {
         uv: UvRect::FULL,
     };
     let theme = Theme::default();
-    let mut shapes = ShapeBatch::with_capacity(MAX_CURSOR_SHAPES);
-    let mut press = PressSqueeze::default();
+    let mut shapes = ShapeBatch::with_capacity(2 * MAX_CURSOR_SHAPES);
+    let mut motion = MenuCursorMotion::default();
     assert_no_alloc(|| {
         for frame in 0..100_u64 {
             shapes.clear();
-            press.update(&theme, frame % 20 < 10, frame * 16_000_000);
-            let squeeze = squeeze_for(&theme, &press, frame * 16_000_000);
-            push_slam_cursor(&mut shapes, &theme, white, [10.0, 10.0], 28.0, squeeze);
+            let now = frame * 16_000_000;
+            let at = [frame as f32 * 9.0, 300.0 + frame as f32 * 4.0];
+            motion.update(&theme, 1.0, Some(at), frame % 20 < 10, frame % 30 < 20, now);
+            let sample = motion.sample(&theme, now);
+            push_slam_cursor(&mut shapes, &theme, white, [10.0, 10.0], 28.0, &sample);
+            push_gameplay_cursor(
+                &mut shapes,
+                &theme,
+                white,
+                [50.0, 50.0],
+                28.0,
+                1.0 + 0.003 * frame as f32,
+            );
         }
     });
     assert!(!shapes.is_empty());

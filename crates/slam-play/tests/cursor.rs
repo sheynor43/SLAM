@@ -572,13 +572,50 @@ fn slams_cursor_needs_no_skin_textures_and_draws_shapes() {
     };
     let theme = slam_ui::theme::Theme::default();
     let mut shapes = ShapeBatch::with_capacity(slam_ui::cursor::MAX_CURSOR_SHAPES);
-    slam_ui::cursor::push_slam_cursor(
+    slam_ui::cursor::push_gameplay_cursor(
         &mut shapes,
         &theme,
         white,
         pose.at,
         theme.cursor_gameplay_size * pose.scale,
-        0.0,
+        pose.expand,
     );
     assert!(!shapes.is_empty());
+}
+
+#[test]
+fn slams_cursor_expands_on_a_click_with_the_skins_times() {
+    let mut path = CursorPath::default();
+    let at = Vec2::new(256.0, 192.0);
+    path.push(at);
+    let expand_at = |expand: ExpandTimes, time: f64, config: CursorSkinConfig| {
+        let mut view = CursorView::new(false, CursorScale::default()).with_slam(true);
+        let mut batch = SpriteBatch::new();
+        view.push(
+            &mut batch,
+            &layout(),
+            &frame(&path, at, expand, time),
+            &textures(config),
+        );
+        view.slam_pose().unwrap().expand
+    };
+    let config = CursorSkinConfig::default();
+    assert_eq!(expand_at(ExpandTimes::default(), 0.0, config), 1.0);
+    let clicked = ExpandTimes {
+        expanded_at: 0.0,
+        contracted_at: f64::NEG_INFINITY,
+    };
+    let full = expand_at(clicked, 500.0, config);
+    assert!((full - 1.3).abs() < 1e-5, "{full}");
+    let released = ExpandTimes {
+        contracted_at: 500.0,
+        ..clicked
+    };
+    assert!((expand_at(released, 700.0, config) - 1.0).abs() < 1e-5);
+    // `CursorExpand` off in the skin: no expansion.
+    let off = CursorSkinConfig {
+        expand: false,
+        ..config
+    };
+    assert_eq!(expand_at(clicked, 500.0, off), 1.0);
 }

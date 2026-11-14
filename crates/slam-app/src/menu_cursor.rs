@@ -28,9 +28,7 @@ use slam_render::upload::{
     texture_loader,
 };
 use slam_skin::{Skin, SkinChain};
-use slam_ui::cursor::{
-    CursorStyle, MAX_CURSOR_SHAPES, PressSqueeze, push_slam_cursor, squeeze_for,
-};
+use slam_ui::cursor::{CursorStyle, MAX_CURSOR_SHAPES, MenuCursorMotion, push_slam_cursor};
 use slam_ui::theme::Theme;
 
 use crate::settings::Settings;
@@ -426,13 +424,13 @@ impl SkinCursorLink {
 
 // ---- Draw thread ----
 
-/// The draw thread's end: the pointer, the press animation and the skin's textures.
+/// The draw thread's end: the pointer, the press and drag animation and the skin's textures.
 pub struct MenuCursorView {
     pointer: PointerWatch,
     scale: WindowScale,
     uploads: Option<TextureUploads>,
     shown: Option<CursorShown>,
-    press: PressSqueeze,
+    motion: MenuCursorMotion,
     expand: ExpandTimes,
 }
 
@@ -444,7 +442,7 @@ impl MenuCursorView {
             scale,
             uploads,
             shown: None,
-            press: PressSqueeze::default(),
+            motion: MenuCursorMotion::default(),
             expand: ExpandTimes::default(),
         }
     }
@@ -487,10 +485,23 @@ impl MenuCursorView {
             shown.set(frame.seq);
         }
         let now_ms = now_ns as f64 / 1e6;
+        let ppp = self.scale.pixels_per_point();
+        let ui = theme.scale(size[1]);
         // The animations follow the buttons even when nothing is drawn, so that a cursor
         // coming back does not start mid-press.
-        if let Some(pressed) = self.press.update(theme, self.pointer.pressed(), now_ns) {
-            if pressed {
+        let was_held = self.motion.held();
+        let pointer = self.pointer.position().map(|[x, y]| [x * ppp, y * ppp]);
+        let held = self.pointer.pressed();
+        self.motion.update(
+            theme,
+            ui,
+            pointer,
+            held,
+            self.pointer.right_pressed(),
+            now_ns,
+        );
+        if held != was_held {
+            if held {
                 self.expand.expanded_at = now_ms;
                 self.expand.contracted_at = f64::NEG_INFINITY;
             } else {
@@ -500,15 +511,12 @@ impl MenuCursorView {
         if frame.gameplay_cursor || frame.style == CursorStyle::System {
             return;
         }
-        let Some([x, y]) = self.pointer.position() else {
+        let Some(tip) = pointer else {
             return;
         };
-        let ppp = self.scale.pixels_per_point();
-        let tip = [x * ppp, y * ppp];
-        let ui = theme.scale(size[1]);
         let slam = |shapes: &mut ShapeBatch| {
-            let squeeze = squeeze_for(theme, &self.press, now_ns);
-            push_slam_cursor(shapes, theme, white, tip, theme.cursor_size * ui, squeeze);
+            let motion = self.motion.sample(theme, now_ns);
+            push_slam_cursor(shapes, theme, white, tip, theme.cursor_size * ui, &motion);
         };
         if frame.style == CursorStyle::Slam {
             slam(shapes);

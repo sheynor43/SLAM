@@ -638,6 +638,8 @@ pub struct CursorPose {
     pub at: [f32; 2],
     /// Window pixels per osu!pixel at the cursor's size (`gameplay.cursor_size`).
     pub scale: f32,
+    /// How far the cursor has expanded: 1 at rest, up to 1.3 on a click (`ExpandTimes`).
+    pub expand: f32,
 }
 
 /// What a frame of the cursor draws from.
@@ -670,9 +672,8 @@ impl CursorView {
 
     /// Draws SLAM's cursor in place of the skin's textures (ADR-0124); the trail stays.
     ///
-    /// In gameplay SLAM's cursor does not expand on a click: the press squeeze of ADR-0124
-    /// belongs to the menus' cursor only, so gameplay passes no squeeze (the skin's
-    /// `CursorExpand` setting does not apply to it either).
+    /// SLAM's cursor expands on a click as the skin's does (ADR-0128): its pose carries the
+    /// same `ExpandTimes` scale, which the skin's `CursorExpand` setting turns off.
     pub fn with_slam(mut self, slam: bool) -> Self {
         self.slam = slam;
         self
@@ -757,6 +758,7 @@ impl CursorView {
             self.pose = Some(CursorPose {
                 at: [at.x, at.y],
                 scale: layout.scale() * self.trail.cursor_scale.scale,
+                expand: scale,
             });
             return;
         }

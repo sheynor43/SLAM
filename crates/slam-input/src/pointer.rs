@@ -59,6 +59,11 @@ impl PointerWatch {
         self.shared.buttons.load(Ordering::Relaxed) != 0
     }
 
+    /// Whether the right mouse button is held.
+    pub fn right_pressed(&self) -> bool {
+        self.shared.buttons.load(Ordering::Relaxed) & bit(MouseButton::Right) != 0
+    }
+
     /// Records a position; for the window thread.
     pub fn record_move(&self, x: f32, y: f32) {
         let bits = (u64::from(x.to_bits()) << 32) | u64::from(y.to_bits());
@@ -118,9 +123,10 @@ mod tests {
         pointer.record_button(MouseButton::Left, true);
         pointer.record_button(MouseButton::Right, true);
         assert!(pointer.pressed());
-        pointer.record_button(MouseButton::Left, false);
-        assert!(pointer.pressed());
+        assert!(pointer.right_pressed());
         pointer.record_button(MouseButton::Right, false);
+        assert!(pointer.pressed() && !pointer.right_pressed());
+        pointer.record_button(MouseButton::Left, false);
         assert!(!pointer.pressed());
     }
 
