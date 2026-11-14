@@ -2422,3 +2422,27 @@ fn stable_pause_menu_without_the_skins_buttons_is_slams() {
         assert_eq!(menu_style(setting, stable), shown);
     }
 }
+
+#[test]
+fn a_reordering_republish_under_the_selection_makes_no_hover_sound() {
+    use crate::menu_sounds::MenuSound;
+    let hover = MenuSound::ALL
+        .iter()
+        .position(|s| *s == MenuSound::Hover)
+        .expect("listed");
+    let (mut s, mut snap, mut producer) = in_song_select();
+    let t = TRANSITION_NS;
+    // The player moves to the second difficulty of the first set.
+    s.tick(t + 1, &[key(KEY_DOWN)], &mut snap);
+    assert_eq!(s.song_select().selected(), Some((0, 1)));
+    let _ = s.take_ui_sounds();
+    // Ratings put the difficulties in the other order: the selection is the same one.
+    let mut sets = songs(&[("a", &["Easy", "Hard"]), ("b", &["Insane"])]);
+    sets[0].difficulties.reverse();
+    let mut published = crate::songs::publish(&sets, SongSelectStatus::Ready, Arc::from(""));
+    published.refresh = true;
+    producer.push(published).unwrap_or_else(|_| panic!("ring"));
+    s.tick(t + 2, &[], &mut snap);
+    assert_eq!(s.song_select().selected(), Some((0, 0)));
+    assert!(!s.take_ui_sounds()[hover]);
+}

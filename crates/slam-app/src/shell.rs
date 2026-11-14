@@ -116,11 +116,14 @@ const MAX_TEXTURES: usize = 16
 /// box, two backgrounds of each layer, the language curtain (ADR-0091) and the intro's
 /// black (ADR-0114).
 const MAX_SHAPES: usize = 256
+    + slam_ui::screen::MAX_FX_SHAPES
     + 1
     + 2 * MAX_LAYERS
     + slam_ui::curtain::MAX_SPRITES
     + 1
     + crate::menu_cursor::MAX_MENU_CURSOR_SHAPES;
+// The transition overlays are inside the budget, so they never grow the batch.
+const _: () = assert!(MAX_SHAPES >= 256 + slam_ui::screen::MAX_FX_SHAPES);
 /// Outlined glyphs of the startup intro's title (ADR-0114).
 const MAX_INTRO_OUTLINES: usize = 64;
 /// Glyph sprites of one frame: the texts of up to two layers and the FPS counter.
@@ -385,7 +388,7 @@ pub struct ShellState {
     ui_seen: (
         usize,
         slam_ui::menu::MenuItem,
-        Option<(usize, usize)>,
+        Option<(u64, u64)>,
         bool,
         usize,
     ),
@@ -1244,7 +1247,8 @@ impl ShellState {
             AppScreen::Menu(menu) => menu.selected(),
             _ => self.ui_seen.1,
         };
-        let selected = self.song_select.selected();
+        // By key: a list reordered under the selection is not the player's move.
+        let selected = self.song_select.selected_keys();
         let open = self.settings_open();
         let focus = self.settings_screen().map_or(0, |screen| screen.focus());
         let (old_depth, old_item, old_selected, old_open, old_focus) = self.ui_seen;
@@ -1475,7 +1479,12 @@ impl ShellState {
         let Some(published) = self.songs.as_mut().and_then(SongsLink::latest) else {
             return;
         };
-        let old = self.song_select.set_list(published.list, published.filter);
+        let old = if published.refresh {
+            self.song_select
+                .refresh_list(published.list, published.filter)
+        } else {
+            self.song_select.set_list(published.list, published.filter)
+        };
         if let Some(songs) = &mut self.songs {
             songs.retire_filter(old);
         }
@@ -1776,6 +1785,10 @@ impl ShellState {
         // The star thread calculates what is in view first (ADR-0134).
         if let (Some(songs), Some((key, span))) = (&self.songs, self.song_select.view_focus()) {
             songs.set_focus(key, span);
+        }
+        // Not while a play is loading or running: stars wait for the way out (ADR-0135).
+        if let Some(songs) = &self.songs {
+            songs.set_playing(self.loading || self.playing() || self.gameplay_visible(now_ns));
         }
         if self.setting_rows_for != Some(self.rows_key()) {
             self.rebuild_setting_rows();
@@ -3701,7 +3714,12 @@ impl<B: render::Backend> Draw<ShellSnapshot> for View<B> {
                     // the layout without it.
                     self.shapes
                         .transform_from(layer_from.0, &menu_map, [1.0; 4]);
-                    self.text.transform_from(layer_from.1, &menu_map, [1.0; 4]);
+                    // Glyphs move by whole pixels: a fraction would blur them.
+                    self.text.transform_from(
+                        layer_from.1,
+                        &crate::parallax::snap_to_pixels(&menu_map),
+                        [1.0; 4],
+                    );
                 }
                 ScreenView::SongSelect(song_select) => {
                     // Under the screen and without its slide, as lazer's background stack.

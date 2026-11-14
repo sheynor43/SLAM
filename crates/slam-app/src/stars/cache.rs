@@ -18,6 +18,8 @@ use crate::thumbnails::make::{fnv, fnv_start};
 const MAGIC: &[u8; 4] = b"SLST";
 const FORMAT: u32 = 1;
 const ENTRY: usize = 12;
+/// The value of a file the calculator could not rate; any negative value means it.
+pub const NOT_COMPUTABLE: f32 = -1.0;
 
 /// The key of the file at `path` as it is now; `None` when it cannot be read.
 pub fn file_key(path: &Path) -> Option<u64> {
@@ -43,6 +45,8 @@ pub fn key_of(path: &Path, size: u64, modified_ns: u64) -> u64 {
 pub struct StarCache {
     entries: HashMap<u64, f32>,
     dirty: bool,
+    /// Keys added since the last save.
+    unsaved: usize,
 }
 
 impl StarCache {
@@ -56,6 +60,7 @@ impl StarCache {
         StarCache {
             entries,
             dirty: false,
+            unsaved: 0,
         }
     }
 
@@ -64,9 +69,19 @@ impl StarCache {
     }
 
     pub fn insert(&mut self, key: u64, stars: f32) {
-        if self.entries.insert(key, stars) != Some(stars) {
-            self.dirty = true;
+        match self.entries.insert(key, stars) {
+            None => {
+                self.dirty = true;
+                self.unsaved += 1;
+            }
+            Some(old) if old != stars => self.dirty = true,
+            Some(_) => {}
         }
+    }
+
+    /// How many keys were added since the last save.
+    pub fn unsaved(&self) -> usize {
+        self.unsaved
     }
 
     pub fn len(&self) -> usize {
@@ -94,6 +109,7 @@ impl StarCache {
         drop(file);
         fs::rename(&tmp, path)?;
         self.dirty = false;
+        self.unsaved = 0;
         Ok(())
     }
 }
@@ -217,5 +233,23 @@ mod tests {
         assert_ne!(a, key_of(Path::new("/s/b.osu"), 10, 5));
         assert_ne!(a, key_of(Path::new("/s/a.osu"), 11, 5));
         assert_ne!(a, key_of(Path::new("/s/a.osu"), 10, 6));
+    }
+
+    #[test]
+    fn counts_new_entries_since_the_last_save() {
+        let path = tmp("unsaved");
+        let mut cache = StarCache::default();
+        cache.insert(1, 1.0);
+        cache.insert(2, 2.0);
+        cache.insert(2, 2.5);
+        assert_eq!(cache.unsaved(), 2);
+        cache.save(&path, "v").unwrap();
+        assert_eq!(cache.unsaved(), 0);
+        cache.insert(3, NOT_COMPUTABLE);
+        assert_eq!(cache.unsaved(), 1);
+        cache.save(&path, "v").unwrap();
+        let loaded = StarCache::load(&path, "v");
+        assert_eq!(loaded.get(3), Some(NOT_COMPUTABLE));
+        let _ = fs::remove_file(&path);
     }
 }

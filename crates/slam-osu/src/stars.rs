@@ -21,9 +21,29 @@ pub fn stars_from_bytes(bytes: &[u8]) -> io::Result<f32> {
     Ok(stars as f32)
 }
 
-/// Nomod star rating of the `.osu` file at `path`.
+/// The largest `.osu` file rated; a bigger one counts as not computable (ADR-0135).
+pub const MAX_FILE_BYTES: u64 = 16 * 1024 * 1024;
+
+/// Nomod star rating of the `.osu` file at `path`; a file over [`MAX_FILE_BYTES`] is an
+/// error.
 pub fn stars_from_path(path: &Path) -> io::Result<f32> {
-    stars_from_bytes(&std::fs::read(path)?)
+    let file = std::fs::File::open(path)?;
+    if file.metadata()?.len() > MAX_FILE_BYTES {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            "beatmap file too large",
+        ));
+    }
+    let mut bytes = Vec::new();
+    // The limit holds even if the file grows while it is read.
+    io::Read::read_to_end(&mut io::Read::take(file, MAX_FILE_BYTES + 1), &mut bytes)?;
+    if bytes.len() as u64 > MAX_FILE_BYTES {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            "beatmap file too large",
+        ));
+    }
+    stars_from_bytes(&bytes)
 }
 
 #[cfg(test)]
@@ -40,6 +60,17 @@ mod tests {
         let got = f64::from(stars_from_path(Path::new(&path)).unwrap());
         assert!((got - expected).abs() < 1e-4, "{got} vs {expected}");
         assert!(got > 0.0);
+    }
+
+    #[test]
+    fn oversized_files_are_not_rated() {
+        let path = std::env::temp_dir().join(format!("slam-stars-big-{}.osu", std::process::id()));
+        let file = std::fs::File::create(&path).unwrap();
+        file.set_len(MAX_FILE_BYTES + 1).unwrap();
+        drop(file);
+        let err = stars_from_path(&path).unwrap_err();
+        let _ = std::fs::remove_file(&path);
+        assert_eq!(err.kind(), io::ErrorKind::InvalidData);
     }
 
     #[test]

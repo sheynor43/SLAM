@@ -956,3 +956,29 @@ fn stars_are_written_as_two_decimals() {
     push_stars(&mut text, 5.4321);
     assert_eq!(text, "Insane \u{2605}5.43");
 }
+
+#[test]
+fn a_refreshed_list_keeps_the_scroll_and_the_hover() {
+    let sets: Vec<(u64, usize)> = (0..50).map(|k| (k, 1)).collect();
+    let mut s = screen(&sets);
+    let l = layout();
+    press(&mut s, I::Scroll { lines: 20.0 });
+    s.tick(1, &l);
+    s.tick(1_000_000_000, &l);
+    let scroll = s.snapshot().scroll;
+    assert_eq!(scroll, 20.0);
+    let (x, y) = centre_of(&l, 23, scroll);
+    press(&mut s, I::PointerMove { x, y });
+    let hovered = s.snapshot().hovered;
+    assert!(hovered.is_some());
+    // The same library arrives again, as it does when star ratings reorder it.
+    let again = list(&sets);
+    let filter = SongFilter::for_list(&again);
+    s.refresh_list(again, filter);
+    s.tick(1_000_000_001, &l);
+    assert_eq!(s.snapshot().scroll, scroll);
+    assert_eq!(s.snapshot().hovered, hovered);
+    // A new list scrolls to the selection again, as before.
+    put(&mut s, list(&sets));
+    assert_eq!(s.snapshot().scroll, 0.0);
+}

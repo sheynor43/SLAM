@@ -189,32 +189,28 @@ fn scan_set_counted(dir: &Path) -> Result<SetScan, ScanError> {
     })
 }
 
-/// Orders the difficulties of one set (ADR-0134): by star rating ascending when
-/// `stars` knows it for every one of them, else by overall difficulty, then name; ties by
-/// name (case-insensitive), then path. The order is one rule for the whole set, so it is a
-/// total order however many ratings are known.
+/// Orders the difficulties of one set (ADR-0134, ADR-0135): those `stars` knows come first,
+/// by star rating ascending; the rest follow by overall difficulty, then name. Ties by
+/// name (case-insensitive), then path, so the order is total however many ratings are known.
 pub fn sort_difficulties(
     difficulties: &mut [DifficultyEntry],
     stars: impl Fn(&DifficultyEntry) -> Option<f32>,
 ) {
-    let known: Option<Vec<f32>> = difficulties.iter().map(&stars).collect();
     let by_name = |a: &DifficultyEntry, b: &DifficultyEntry| {
         a.version
             .to_lowercase()
             .cmp(&b.version.to_lowercase())
             .then_with(|| a.path.cmp(&b.path))
     };
-    match known {
-        Some(_) => difficulties.sort_by(|a, b| {
-            let (sa, sb) = (stars(a).unwrap_or(0.0), stars(b).unwrap_or(0.0));
-            sa.total_cmp(&sb).then_with(|| by_name(a, b))
-        }),
-        None => difficulties.sort_by(|a, b| {
-            a.overall_difficulty
-                .total_cmp(&b.overall_difficulty)
-                .then_with(|| by_name(a, b))
-        }),
-    }
+    difficulties.sort_by(|a, b| match (stars(a), stars(b)) {
+        (Some(sa), Some(sb)) => sa.total_cmp(&sb).then_with(|| by_name(a, b)),
+        (Some(_), None) => std::cmp::Ordering::Less,
+        (None, Some(_)) => std::cmp::Ordering::Greater,
+        (None, None) => a
+            .overall_difficulty
+            .total_cmp(&b.overall_difficulty)
+            .then_with(|| by_name(a, b)),
+    });
 }
 
 /// Scans one set directory (non-recursive). Returns `None` when it holds no osu!standard

@@ -592,6 +592,8 @@ pub struct SongSelect {
     shown_ns: u64,
     pointer: Option<(f32, f32)>,
     hovered: Option<Row>,
+    /// The list was replaced under the pointer: find the row under it on the next tick.
+    rehover: bool,
     folder_hovered: bool,
     /// The list dragged with the primary button and flung (ADR-0093).
     drag: ListDrag,
@@ -637,6 +639,7 @@ impl SongSelect {
             shown_ns: 0,
             pointer: None,
             hovered: None,
+            rehover: false,
             folder_hovered: false,
             drag: ListDrag::default(),
             pressed: None,
@@ -708,6 +711,23 @@ impl SongSelect {
         Some((set, self.filter.difficulty_index(self.set, self.difficulty)))
     }
 
+    /// The selected set's key and difficulty's key, which stay with them when a published
+    /// list reorders them (ADR-0135); a difficulty without a key counts by position. Does
+    /// not allocate.
+    pub fn selected_keys(&self) -> Option<(u64, u64)> {
+        let (set, difficulty) = self.selected()?;
+        let set = self.list.sets.get(set)?;
+        let key = set.difficulties.get(difficulty)?.key;
+        Some((
+            set.key,
+            if key == 0 {
+                (1 << 63) | difficulty as u64
+            } else {
+                key
+            },
+        ))
+    }
+
     /// The [`DifficultyRow::key`] of the selected difficulty.
     fn selected_difficulty_key(&self) -> Option<u64> {
         let (set, difficulty) = self.selected()?;
@@ -730,6 +750,23 @@ impl SongSelect {
     /// made off the update thread. Returns the filter it replaces, for the caller to free
     /// off the update thread too.
     pub fn set_list(&mut self, list: Arc<SongList>, filter: SongFilter) -> SongFilter {
+        self.replace_list(list, filter, false)
+    }
+
+    /// Like [`SongSelect::set_list`] for the same library republished with new details
+    /// (star ratings reorder the difficulties, ADR-0135): the view stays where it is, with
+    /// no scroll to the selection, and the row under the pointer is found again on the next
+    /// tick instead of being forgotten.
+    pub fn refresh_list(&mut self, list: Arc<SongList>, filter: SongFilter) -> SongFilter {
+        self.replace_list(list, filter, true)
+    }
+
+    fn replace_list(
+        &mut self,
+        list: Arc<SongList>,
+        filter: SongFilter,
+        keep_view: bool,
+    ) -> SongFilter {
         let key = self
             .selected()
             .and_then(|(set, _)| self.list.sets.get(set))
@@ -763,9 +800,14 @@ impl SongSelect {
         {
             self.difficulty = position;
         }
-        self.hovered = None;
-        self.clamp_scroll();
-        self.ensure_visible();
+        if keep_view {
+            self.rehover = true;
+            self.clamp_scroll();
+        } else {
+            self.hovered = None;
+            self.clamp_scroll();
+            self.ensure_visible();
+        }
         old
     }
 
@@ -888,6 +930,9 @@ impl SongSelect {
         let per_row = layout.reference_row_height();
         let elapsed = now_ns.saturating_sub(self.shown_ns);
         self.shown_ns = now_ns;
+        if std::mem::take(&mut self.rehover) {
+            self.update_hover(layout);
+        }
         if let Some(scroll) =
             self.drag
                 .tick(now_ns, self.scroll * per_row, self.max_scroll() * per_row)

@@ -9,6 +9,7 @@
 
 use std::collections::HashMap;
 use std::io;
+use std::panic::{AssertUnwindSafe, catch_unwind};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
@@ -26,6 +27,8 @@ const RING: usize = 256;
 const IDLE: Duration = Duration::from_millis(500);
 /// How long a worker with a full ring waits for the library thread.
 const POLL: Duration = Duration::from_millis(5);
+/// How often a worker paused for a play looks again; unparking ends the wait early.
+const PAUSED: Duration = Duration::from_millis(50);
 /// New ratings between two saves of the cache, so a quit does not lose minutes of work.
 const SAVE_EVERY: usize = 256;
 /// Sets after the visible ones that are calculated before the rest.
@@ -46,6 +49,8 @@ pub fn rosu_calculator() -> Calculator {
 pub struct StarFocus {
     key: AtomicU64,
     span: AtomicU64,
+    /// A play is on: the worker waits (ADR-0135).
+    paused: AtomicBool,
 }
 
 impl StarFocus {
@@ -54,6 +59,15 @@ impl StarFocus {
     pub fn set(&self, key: u64, span: usize) {
         self.key.store(key, Ordering::Relaxed);
         self.span.store(span as u64, Ordering::Relaxed);
+    }
+
+    /// Pauses the worker while a play is on, and the republishing of the list for ratings.
+    pub fn set_paused(&self, paused: bool) {
+        self.paused.store(paused, Ordering::Relaxed);
+    }
+
+    pub fn paused(&self) -> bool {
+        self.paused.load(Ordering::Relaxed)
     }
 
     fn get(&self) -> (u64, usize) {
@@ -138,6 +152,12 @@ impl StarsLink {
         self.wake();
     }
 
+    /// Drops the run in progress, as when the songs folder changes (ADR-0135): the worker
+    /// stops after the set it is on, and its ratings are ignored by [`StarsLink::poll`].
+    pub fn cancel(&mut self) {
+        self.start(Vec::new());
+    }
+
     /// Calls `each` with every rating that arrived since the last call; returns whether
     /// there was any.
     pub fn poll(&mut self, mut each: impl FnMut(PathBuf, f32)) -> bool {
@@ -220,6 +240,11 @@ impl Worker {
                 std::thread::park_timeout(IDLE);
                 continue;
             };
+            if self.focus.paused() {
+                // A play is on: the ratings wait for the way out (ADR-0135).
+                std::thread::park_timeout(PAUSED);
+                continue;
+            }
             let focus = self.focus.get();
             let Some(set) = next_set(&running.done, &running.index, focus, &mut running.cursor)
             else {
@@ -240,7 +265,7 @@ impl Worker {
                     stars,
                 });
             }
-            if self.cache.is_dirty() && self.cache.len().is_multiple_of(SAVE_EVERY) {
+            if self.cache.unsaved() >= SAVE_EVERY && !self.stop.load(Ordering::Relaxed) {
                 self.save();
             }
         }
@@ -256,18 +281,40 @@ impl Worker {
             }
             let key = cache::file_key(path);
             let cached = key.and_then(|key| self.cache.get(key));
-            let value = cached.or_else(|| {
-                let value = (self.calculator)(path).ok().filter(|s| s.is_finite())?;
-                if let Some(key) = key {
-                    self.cache.insert(key, value);
+            let value = match cached {
+                Some(value) => value,
+                None => {
+                    while self.focus.paused() && !self.stop.load(Ordering::Relaxed) {
+                        std::thread::park_timeout(PAUSED);
+                    }
+                    if self.stop.load(Ordering::Relaxed) {
+                        break;
+                    }
+                    let value = self.calculate(path);
+                    if let Some(key) = key {
+                        self.cache.insert(key, value);
+                    }
+                    value
                 }
-                Some(value)
-            });
-            if let Some(value) = value {
+            };
+            if value >= 0.0 {
                 stars.push((path.clone(), value));
             }
         }
         stars
+    }
+
+    /// The rating of `path`, or [`cache::NOT_COMPUTABLE`] when the calculator fails or
+    /// panics: such a file is remembered, not retried on every start.
+    fn calculate(&self, path: &Path) -> f32 {
+        match catch_unwind(AssertUnwindSafe(|| (self.calculator)(path))) {
+            Ok(Ok(value)) if value.is_finite() && value >= 0.0 => value,
+            Ok(_) => cache::NOT_COMPUTABLE,
+            Err(_) => {
+                tracing::warn!("stars: the calculator panicked on {}", path.display());
+                cache::NOT_COMPUTABLE
+            }
+        }
     }
 
     fn save(&mut self) {

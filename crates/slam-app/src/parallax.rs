@@ -59,6 +59,16 @@ pub fn layer_map(
     Affine::about([size[0] * 0.5, size[1] * 0.5], scale, 0.0, offset)
 }
 
+/// `map` with its shift rounded to whole pixels, for text: a glyph moved by a fraction of a
+/// pixel is resampled and blurs, while shapes may move smoothly. Only the shift changes.
+pub fn snap_to_pixels(map: &Affine) -> Affine {
+    Affine {
+        tx: map.tx.round(),
+        ty: map.ty.round(),
+        ..*map
+    }
+}
+
 /// The smoothed pointer: eases towards the pointer's place in the window and back to the
 /// middle while the pointer is outside.
 pub struct Parallax {

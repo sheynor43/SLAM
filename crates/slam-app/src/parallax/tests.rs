@@ -124,3 +124,14 @@ fn a_long_stall_counts_as_a_capped_step() {
     let shown = parallax.update(3_600_000_000_000, SIZE, 0.04);
     assert!((shown[0] - (1.0 - 0.5_f32.powf(2.5))).abs() < 1e-3);
 }
+
+#[test]
+fn text_snaps_to_whole_pixels_and_shapes_do_not() {
+    let map = layer_map([0.37, -0.21], [1280.0, 720.0], 0.05, 1.0, false);
+    assert_ne!(map.tx.fract(), 0.0);
+    let snapped = snap_to_pixels(&map);
+    assert_eq!(snapped.tx.fract(), 0.0);
+    assert_eq!(snapped.ty.fract(), 0.0);
+    assert!((snapped.tx - map.tx).abs() <= 0.5 && (snapped.ty - map.ty).abs() <= 0.5);
+    assert_eq!((snapped.a, snapped.d), (map.a, map.d));
+}

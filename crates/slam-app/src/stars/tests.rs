@@ -168,3 +168,101 @@ fn unreadable_files_are_skipped_and_a_new_run_ignores_old_results() {
     std::thread::sleep(Duration::from_millis(50));
     assert!(!link.poll(|_, _| panic!("stale rating")));
 }
+
+#[test]
+fn a_panicking_calculator_neither_kills_the_worker_nor_is_asked_again() {
+    let tmp = Tmp::new("panic");
+    let bad = tmp.file("bad.osu");
+    let good = tmp.file("good.osu");
+    let cache = tmp.0.join("stars.bin");
+    let calls = Arc::new(AtomicUsize::new(0));
+    let make = |calls: &Arc<AtomicUsize>| -> Calculator {
+        let calls = Arc::clone(calls);
+        Box::new(move |path| {
+            calls.fetch_add(1, Ordering::Relaxed);
+            if path.ends_with("bad.osu") {
+                panic!("rosu-pp blew up");
+            }
+            Ok(4.0)
+        })
+    };
+    let sets = || {
+        vec![StarSet {
+            key: 1,
+            files: vec![bad.clone(), good.clone()],
+        }]
+    };
+    let mut link =
+        StarsLink::spawn(Some(cache.clone()), make(&calls), "t", Arc::default()).unwrap();
+    link.start(sets());
+    let got = collect(&mut link, 1);
+    assert_eq!(got[&good], 4.0);
+    assert!(!got.contains_key(&bad));
+    // Alive: another run still works.
+    link.start(sets());
+    collect(&mut link, 1);
+    drop(link);
+    assert_eq!(calls.load(Ordering::Relaxed), 2);
+    // The failure is in the cache: the next start does not calculate again.
+    let mut link = StarsLink::spawn(Some(cache), make(&calls), "t", Arc::default()).unwrap();
+    link.start(sets());
+    assert_eq!(collect(&mut link, 1)[&good], 4.0);
+    assert_eq!(calls.load(Ordering::Relaxed), 2);
+}
+
+#[test]
+fn a_play_pauses_the_worker_until_it_ends() {
+    let tmp = Tmp::new("pause");
+    let file = tmp.file("1.osu");
+    let focus = Arc::<StarFocus>::default();
+    focus.set_paused(true);
+    let calls = Arc::new(AtomicUsize::new(0));
+    let counter = Arc::clone(&calls);
+    let calc: Calculator = Box::new(move |_| {
+        counter.fetch_add(1, Ordering::Relaxed);
+        Ok(1.0)
+    });
+    let mut link = StarsLink::spawn(None, calc, "t", Arc::clone(&focus)).unwrap();
+    link.start(vec![StarSet {
+        key: 1,
+        files: vec![file.clone()],
+    }]);
+    std::thread::sleep(Duration::from_millis(200));
+    assert_eq!(calls.load(Ordering::Relaxed), 0);
+    assert!(!link.poll(|_, _| panic!("rated during a play")));
+    focus.set_paused(false);
+    link.wake();
+    assert_eq!(collect(&mut link, 1)[&file], 1.0);
+}
+
+#[test]
+fn cancel_stops_the_run() {
+    let tmp = Tmp::new("cancel");
+    let files: Vec<PathBuf> = (0..50).map(|i| tmp.file(&format!("{i}.osu"))).collect();
+    let calls = Arc::new(AtomicUsize::new(0));
+    let counter = Arc::clone(&calls);
+    let calc: Calculator = Box::new(move |_| {
+        counter.fetch_add(1, Ordering::Relaxed);
+        std::thread::sleep(Duration::from_millis(20));
+        Ok(1.0)
+    });
+    let mut link = StarsLink::spawn(None, calc, "t", Arc::default()).unwrap();
+    link.start(
+        files
+            .iter()
+            .enumerate()
+            .map(|(i, f)| StarSet {
+                key: i as u64,
+                files: vec![f.clone()],
+            })
+            .collect(),
+    );
+    std::thread::sleep(Duration::from_millis(100));
+    link.cancel();
+    std::thread::sleep(Duration::from_millis(100));
+    let after = calls.load(Ordering::Relaxed);
+    assert!(after < 50);
+    std::thread::sleep(Duration::from_millis(200));
+    assert_eq!(calls.load(Ordering::Relaxed), after);
+    assert!(!link.poll(|_, _| panic!("stale rating")));
+}

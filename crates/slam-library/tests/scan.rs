@@ -284,10 +284,19 @@ fn difficulties_with_stars_are_ordered_by_stars_then_name() {
 }
 
 #[test]
-fn a_set_with_some_stars_unknown_keeps_the_od_order() {
+fn a_set_with_some_stars_unknown_puts_those_last_by_od_then_name() {
     let t = Tmp::new("partial-order");
-    let mut e = set_with_ods(&t, &[("Easy", "2"), ("Hard", "8")]);
-    let stars = |d: &slam_library::scan::DifficultyEntry| (d.version == "Easy").then_some(9.0);
+    let mut e = set_with_ods(
+        &t,
+        &[
+            ("Easy", "2"),
+            ("Hard", "8"),
+            ("Insane", "9"),
+            ("Alpha", "9"),
+        ],
+    );
+    // Only the hardest by OD has a rating: it leads, the rest follow by OD and name.
+    let stars = |d: &slam_library::scan::DifficultyEntry| (d.version == "Insane").then_some(9.0);
     sort_difficulties(&mut e.difficulties, stars);
-    assert_eq!(versions(&e), ["Easy", "Hard"]);
+    assert_eq!(versions(&e), ["Insane", "Easy", "Hard", "Alpha"]);
 }
