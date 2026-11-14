@@ -707,6 +707,38 @@ impl SettingsScreen {
         self.shown
     }
 
+    /// The place in the list to come back to: the scroll target (where the list was before
+    /// a search, while one runs) and the sidebar's pick.
+    pub fn position(&self) -> (f32, Option<usize>) {
+        let scroll = if self.searching() {
+            self.before_search
+        } else {
+            self.scroll
+        };
+        (scroll, self.pinned)
+    }
+
+    /// The section picked in the sidebar and highlighted until the list is scrolled by hand.
+    pub fn pinned_section(&self) -> Option<usize> {
+        self.pinned
+    }
+
+    /// Puts the list back where it was (ADR-0136): the scroll `scroll`, held to the lines
+    /// there are now, shown at once, and the sidebar's pick `pinned` if its section still
+    /// has a header. Does not allocate.
+    pub fn restore_position(&mut self, scroll: f32, pinned: Option<usize>) {
+        let last = self.lines.saturating_sub(1) as f32;
+        let scroll = if scroll.is_finite() {
+            scroll.clamp(0.0, last)
+        } else {
+            0.0
+        };
+        self.scroll = scroll;
+        self.shown = scroll;
+        self.before_search = scroll;
+        self.pinned = pinned.filter(|section| self.header(*section).is_some());
+    }
+
     /// The number of lines in the list: the section headers and the rows shown.
     pub fn lines(&self) -> usize {
         self.lines

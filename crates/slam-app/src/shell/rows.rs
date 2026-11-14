@@ -243,8 +243,18 @@ pub enum Row {
     ColourScheme,
     /// Whether the interface effects are on; applies live (ADR-0123).
     Effects,
+    /// Whether the menus' parallax is on; applies live (ADR-0136).
+    ParallaxEnabled,
     /// The strength of the menus' parallax; applies live (ADR-0132).
     Parallax,
+    /// Whether the menu backgrounds are blurred; applies live (ADR-0136).
+    Blur,
+    /// The depth of the background blur; applies live (ADR-0136).
+    BlurStrength,
+    /// Whether buttons, rows and panels cast shadows; applies live (ADR-0136).
+    Shadows,
+    /// The strength of the shadows; applies live (ADR-0136).
+    ShadowStrength,
     /// How screens change (ADR-0126).
     Transitions,
     /// The scale of the menus (ADR-0118).
@@ -259,6 +269,14 @@ pub enum Row {
     BeatmapHitsounds,
     /// The cursor of the menus; applies live (ADR-0124).
     MenuCursor,
+    /// The menu cursor turns towards a drag; applies live (ADR-0136).
+    MenuCursorRotate,
+    /// The menu cursor spins while the pointer rests; applies live (ADR-0136).
+    MenuCursorSpin,
+    /// The menu cursor leaves a trail; applies live (ADR-0136).
+    MenuCursorTrail,
+    /// The menu cursor sends a ring out at each press; applies live (ADR-0136).
+    MenuCursorRipple,
     /// The gameplay cursor (ADR-0124).
     CursorStyle,
     CursorSize,
@@ -295,7 +313,7 @@ pub enum Row {
 const _: () = assert!(Row::ALL.len() <= slam_ui::settings_screen::MAX_ROWS);
 
 impl Row {
-    pub const ALL: [Row; 72] = [
+    pub const ALL: [Row; 81] = [
         Row::MasterVolume,
         Row::MusicVolume,
         Row::MenuMusic,
@@ -332,7 +350,12 @@ impl Row {
         Row::Intro,
         Row::ColourScheme,
         Row::Effects,
+        Row::ParallaxEnabled,
         Row::Parallax,
+        Row::Blur,
+        Row::BlurStrength,
+        Row::Shadows,
+        Row::ShadowStrength,
         Row::Transitions,
         Row::MenuScale,
         Row::GameScale,
@@ -342,6 +365,10 @@ impl Row {
         Row::BeatmapColours,
         Row::BeatmapHitsounds,
         Row::MenuCursor,
+        Row::MenuCursorRotate,
+        Row::MenuCursorSpin,
+        Row::MenuCursorTrail,
+        Row::MenuCursorRipple,
         Row::CursorStyle,
         Row::CursorSize,
         Row::AutoCursorSize,
@@ -429,7 +456,12 @@ impl Row {
             | Row::Intro
             | Row::ColourScheme
             | Row::Effects
+            | Row::ParallaxEnabled
             | Row::Parallax
+            | Row::Blur
+            | Row::BlurStrength
+            | Row::Shadows
+            | Row::ShadowStrength
             | Row::Transitions
             | Row::MenuScale
             | Row::GameScale
@@ -441,6 +473,10 @@ impl Row {
             | Row::BeatmapColours
             | Row::BeatmapHitsounds
             | Row::MenuCursor
+            | Row::MenuCursorRotate
+            | Row::MenuCursorSpin
+            | Row::MenuCursorTrail
+            | Row::MenuCursorRipple
             | Row::CursorStyle
             | Row::CursorSize
             | Row::AutoCursorSize
@@ -501,6 +537,15 @@ impl Row {
             Row::ColourScheme => "settings-general-colour-scheme",
             Row::Effects => "settings-general-effects",
             Row::Parallax => "settings-general-parallax",
+            Row::ParallaxEnabled => "settings-general-parallax-enabled",
+            Row::Blur => "settings-general-blur",
+            Row::BlurStrength => "settings-general-blur-strength",
+            Row::Shadows => "settings-general-shadows",
+            Row::ShadowStrength => "settings-general-shadow-strength",
+            Row::MenuCursorRotate => "settings-general-cursor-rotate",
+            Row::MenuCursorSpin => "settings-general-cursor-spin",
+            Row::MenuCursorTrail => "settings-general-cursor-trail",
+            Row::MenuCursorRipple => "settings-general-cursor-ripple",
             Row::Transitions => "settings-general-transitions",
             Row::MenuScale => "settings-general-menu-scale",
             Row::GameScale => "settings-general-game-scale",
@@ -1006,11 +1051,29 @@ impl Rows {
             Row::Effects => RowKind::Toggle {
                 value: s.general.effects,
             },
-            Row::Parallax => RowKind::Slider {
-                min: 0.0,
-                max: 100.0,
-                step: 5.0,
-                value: (s.general.parallax * 100.0).round(),
+            Row::ParallaxEnabled => RowKind::Toggle {
+                value: s.general.parallax_enabled,
+            },
+            Row::Parallax => percent_slider(s.general.parallax),
+            Row::Blur => RowKind::Toggle {
+                value: s.general.blur,
+            },
+            Row::BlurStrength => percent_slider(s.general.blur_strength),
+            Row::Shadows => RowKind::Toggle {
+                value: s.general.shadows,
+            },
+            Row::ShadowStrength => percent_slider(s.general.shadow_strength),
+            Row::MenuCursorRotate => RowKind::Toggle {
+                value: s.general.cursor_rotate,
+            },
+            Row::MenuCursorSpin => RowKind::Toggle {
+                value: s.general.cursor_spin,
+            },
+            Row::MenuCursorTrail => RowKind::Toggle {
+                value: s.general.cursor_trail,
+            },
+            Row::MenuCursorRipple => RowKind::Toggle {
+                value: s.general.cursor_ripple,
             },
             Row::HitsoundDelay => choice(
                 HitsoundDelay::ALL.len(),
@@ -1246,9 +1309,22 @@ impl Rows {
             },
             (Row::Intro, RowValue::Toggle(v)) => settings.general.intro = v,
             (Row::Effects, RowValue::Toggle(v)) => settings.general.effects = v,
+            (Row::ParallaxEnabled, RowValue::Toggle(v)) => settings.general.parallax_enabled = v,
             (Row::Parallax, RowValue::Slider(v)) => {
-                settings.general.parallax = round_to((v / 5.0).round() * 5.0 / 100.0, 2);
+                settings.general.parallax = percent_from_slider(v);
             }
+            (Row::Blur, RowValue::Toggle(v)) => settings.general.blur = v,
+            (Row::BlurStrength, RowValue::Slider(v)) => {
+                settings.general.blur_strength = percent_from_slider(v);
+            }
+            (Row::Shadows, RowValue::Toggle(v)) => settings.general.shadows = v,
+            (Row::ShadowStrength, RowValue::Slider(v)) => {
+                settings.general.shadow_strength = percent_from_slider(v);
+            }
+            (Row::MenuCursorRotate, RowValue::Toggle(v)) => settings.general.cursor_rotate = v,
+            (Row::MenuCursorSpin, RowValue::Toggle(v)) => settings.general.cursor_spin = v,
+            (Row::MenuCursorTrail, RowValue::Toggle(v)) => settings.general.cursor_trail = v,
+            (Row::MenuCursorRipple, RowValue::Toggle(v)) => settings.general.cursor_ripple = v,
             (Row::MenuScale, RowValue::Slider(v)) => {
                 settings.general.menu_scale = scale_from_percent(v);
             }
@@ -1569,6 +1645,8 @@ impl Rows {
                     | Row::HitsoundVolume
                     | Row::EffectsVolume
                     | Row::Parallax
+                    | Row::BlurStrength
+                    | Row::ShadowStrength
                     | Row::Dim
                     | Row::SongSelectDim
                     | Row::MenuScale
@@ -1628,6 +1706,21 @@ fn scale_from_percent(percent: f64) -> f32 {
     (stepped as f32).clamp(UI_SCALE_RANGE.0, UI_SCALE_RANGE.1)
 }
 
+/// A 0 to 200 % slider in steps of 5 % for a strength of 0.0 to 2.0 (ADR-0136).
+fn percent_slider(strength: f64) -> RowKind {
+    RowKind::Slider {
+        min: 0.0,
+        max: 200.0,
+        step: 5.0,
+        value: (strength * 100.0).round(),
+    }
+}
+
+/// The strength, 0.0 to 2.0, of a percent slider's value, in steps of 5 %.
+fn percent_from_slider(value: f64) -> f64 {
+    round_to((value / 5.0).round() * 5.0 / 100.0, 2).clamp(0.0, 2.0)
+}
+
 fn round_to(value: f64, decimals: i32) -> f64 {
     let factor = 10_f64.powi(decimals);
     (value * factor).round() / factor
@@ -1646,6 +1739,8 @@ pub fn round_for_save(settings: &mut Settings) {
         &mut settings.gameplay.dim,
         &mut settings.song_select.background_dim,
         &mut settings.general.parallax,
+        &mut settings.general.blur_strength,
+        &mut settings.general.shadow_strength,
     ] {
         *volume = round_to(*volume, 2);
     }
@@ -2504,7 +2599,7 @@ mod tests {
             rows.specs(&s)[index(Row::Parallax)].kind,
             RowKind::Slider {
                 min: 0.0,
-                max: 100.0,
+                max: 200.0,
                 step: 5.0,
                 value: 100.0
             }
@@ -2517,6 +2612,54 @@ mod tests {
         s.general.parallax = 0.30000000000000004;
         round_for_save(&mut s);
         assert_eq!(s.general.parallax, 0.3);
+    }
+
+    #[test]
+    fn the_look_rows_edit_their_settings_and_sit_with_their_neighbours() {
+        assert_eq!(Row::ParallaxEnabled.section(), Row::Effects.section());
+        assert_eq!(Row::Blur.section(), Row::Effects.section());
+        assert_eq!(Row::Shadows.section(), Row::Effects.section());
+        assert_eq!(Row::MenuCursorRipple.section(), Row::MenuCursor.section());
+        let (rows, mut s) = rows();
+        for row in [
+            Row::ParallaxEnabled,
+            Row::Blur,
+            Row::Shadows,
+            Row::MenuCursorRotate,
+            Row::MenuCursorSpin,
+            Row::MenuCursorTrail,
+            Row::MenuCursorRipple,
+        ] {
+            assert_eq!(
+                rows.specs(&s)[index(row)].kind,
+                RowKind::Toggle { value: true }
+            );
+            rows.apply(&mut s, index(row), RowValue::Toggle(false));
+            assert_eq!(
+                rows.specs(&s)[index(row)].kind,
+                RowKind::Toggle { value: false }
+            );
+        }
+        let g = &s.general;
+        assert!(!g.parallax_enabled && !g.blur && !g.shadows);
+        assert!(!g.cursor_rotate && !g.cursor_spin && !g.cursor_trail && !g.cursor_ripple);
+        for row in [Row::Parallax, Row::BlurStrength, Row::ShadowStrength] {
+            assert_eq!(
+                rows.specs(&s)[index(row)].kind,
+                RowKind::Slider {
+                    min: 0.0,
+                    max: 200.0,
+                    step: 5.0,
+                    value: 100.0
+                }
+            );
+            rows.apply(&mut s, index(row), RowValue::Slider(170.0));
+        }
+        assert_eq!(s.general.parallax, 1.7);
+        assert_eq!(s.general.blur_strength, 1.7);
+        assert_eq!(s.general.shadow_strength, 1.7);
+        rows.apply(&mut s, index(Row::BlurStrength), RowValue::Slider(900.0));
+        assert_eq!(s.general.blur_strength, 2.0);
     }
 
     #[test]

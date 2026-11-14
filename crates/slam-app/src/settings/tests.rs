@@ -1417,7 +1417,7 @@ fn parallax_defaults_full_and_round_trips() {
     assert_eq!(loaded.settings.general.parallax, 0.35);
     let missing = file::from_toml_str("[general]\neffects = true\n");
     assert_eq!(missing.settings.general.parallax, 1.0);
-    for text in ["1.5", "-0.1", "nan"] {
+    for text in ["2.5", "-0.1", "nan"] {
         let bad = file::from_toml_str(&format!("[general]\nparallax = {text}\n"));
         assert_eq!(bad.status, LoadStatus::Recovered, "{text}");
         assert_eq!(bad.settings.general.parallax, 1.0, "{text}");
@@ -1676,4 +1676,50 @@ fn the_skew_defaults_snaps_to_degrees_and_falls_back() {
     let text = file::to_toml_string(&settings).unwrap();
     assert!(text.contains("skew = 0.0"), "{text}");
     assert_eq!(file::from_toml_str(&text).settings, settings);
+}
+
+#[test]
+fn the_look_settings_default_on_and_round_trip() {
+    let g = Settings::default().general;
+    assert!(g.parallax_enabled && g.blur && g.shadows);
+    assert!(g.cursor_rotate && g.cursor_spin && g.cursor_trail && g.cursor_ripple);
+    assert_eq!((g.blur_strength, g.shadow_strength), (1.0, 1.0));
+    // An old file without the keys loads the defaults.
+    let old = file::from_toml_str("[general]\neffects = false\n");
+    assert!(old.warnings.is_empty(), "{:?}", old.warnings);
+    assert_eq!(old.settings.general.blur_strength, 1.0);
+    assert!(old.settings.general.shadows);
+    let mut settings = Settings::default();
+    settings.general.parallax_enabled = false;
+    settings.general.parallax = 1.75;
+    settings.general.blur = false;
+    settings.general.blur_strength = 0.25;
+    settings.general.shadows = false;
+    settings.general.shadow_strength = 2.0;
+    settings.general.cursor_rotate = false;
+    settings.general.cursor_spin = false;
+    settings.general.cursor_trail = false;
+    settings.general.cursor_ripple = false;
+    let text = file::to_toml_string(&settings).unwrap();
+    assert_eq!(file::from_toml_str(&text).settings, settings);
+}
+
+#[test]
+fn the_look_strengths_are_held_to_zero_to_two_and_bad_types_default() {
+    let loaded = file::from_toml_str(
+        "[general]\nparallax = 3.5\nblur_strength = -1.0\nshadow_strength = 9.0\nblur = \"yes\"\n",
+    );
+    let g = &loaded.settings.general;
+    assert!((0.0..=2.0).contains(&g.parallax));
+    assert!((0.0..=2.0).contains(&g.blur_strength));
+    assert!((0.0..=2.0).contains(&g.shadow_strength));
+    assert!(g.blur);
+    assert!(
+        loaded
+            .warnings
+            .iter()
+            .any(|w| w.starts_with("general.blur"))
+    );
+    let ok = file::from_toml_str("[general]\nparallax = 1.8\n");
+    assert_eq!(ok.settings.general.parallax, 1.8);
 }
