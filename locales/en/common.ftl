@@ -177,6 +177,7 @@ settings-layout-language = Language
 settings-general-intro = Startup intro
 settings-general-colour-scheme = Colour scheme
 settings-general-effects = Visual effects (glow, blur, motion)
+settings-general-parallax = Menu parallax
 settings-general-transitions = Screen transitions
 settings-option-transitions-none = None
 settings-option-transitions-simple = Simple

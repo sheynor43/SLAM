@@ -102,6 +102,9 @@ pub struct General {
     pub intro: bool,
     /// Whether the interface effects (glow, blur, motion) are on (ADR-0123). Applies live.
     pub effects: bool,
+    /// Strength of the menus' parallax, 0.0..=1.0 (0 is off; ADR-0132). Applies live, and
+    /// only while `effects` is on.
+    pub parallax: f64,
     /// How screens change (ADR-0126). Applies live.
     #[serde(serialize_with = "serialize_transitions")]
     pub transitions: TransitionStyle,
@@ -128,6 +131,7 @@ impl Default for General {
             language: None,
             intro: true,
             effects: true,
+            parallax: 1.0,
             transitions: TransitionStyle::default(),
             colour_scheme: ColourScheme::default(),
             menu_scale: 1.0,

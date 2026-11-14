@@ -13,6 +13,7 @@ pub mod i18n;
 pub mod loader;
 pub mod menu_cursor;
 pub mod menu_sounds;
+pub mod parallax;
 pub mod play;
 pub mod replay_stats;
 pub mod replays;

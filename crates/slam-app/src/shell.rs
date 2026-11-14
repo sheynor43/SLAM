@@ -269,6 +269,8 @@ pub struct ShellSnapshot {
     pub background_dim: f32,
     /// The main menu shows the background (ADR-0119).
     pub menu_background: bool,
+    /// Strength of the menus' parallax, 0 ..= 1: 0 with it or the effects off (ADR-0132).
+    pub parallax: f32,
     /// The display lists the settings screen shows (ADR-0072).
     pub display_generation: u64,
     /// How many language switches asked for views so far: a new one closes the curtain
@@ -1789,6 +1791,11 @@ impl ShellState {
         self.stack.set_style(live_general.transitions);
         let on_menu = matches!(self.stack.top(), AppScreen::Menu(_));
         snapshot.menu_background = menu_background != MenuBackground::None;
+        snapshot.parallax = if live_general.effects {
+            live_general.parallax as f32
+        } else {
+            0.0
+        };
         if on_menu {
             snapshot.background_dim = self.theme.menu_background_dim;
         }
@@ -3363,6 +3370,8 @@ struct View<B: render::Backend> {
     thumb_shown: Option<crate::thumbnails::ThumbShown>,
     /// The menu cursor over everything (ADR-0124).
     menu_cursor: crate::menu_cursor::MenuCursorView,
+    /// The pointer's smoothed place for the parallax (ADR-0132).
+    parallax: crate::parallax::Parallax,
     _quit: crate::bench::QuitOnDrop,
 }
 
@@ -3596,6 +3605,28 @@ impl<B: render::Backend> Draw<ShellSnapshot> for View<B> {
         self.shapes.clear();
         self.text.clear();
         self.outlines.clear();
+        // The menus' parallax: the pointer's smoothed place and the shifts it makes
+        // (ADR-0132). Not in a play, a pause or the results.
+        let pointer = self.parallax.update(
+            info.wait.woke_ns,
+            [width, height],
+            self.theme.parallax_half_life,
+        );
+        let strength = if effects { snapshot.parallax } else { 0.0 };
+        let background_map = crate::parallax::layer_map(
+            pointer,
+            [width, height],
+            self.theme.parallax_background,
+            strength,
+            true,
+        );
+        let menu_map = crate::parallax::layer_map(
+            pointer,
+            [width, height],
+            self.theme.parallax_menu,
+            strength,
+            false,
+        );
         // The sheens sweep and the glows pulse with the frame's time (ADR-0123), wrapped in
         // f64 before it narrows to f32.
         let cycles = (info.wait.woke_ns as f64 / 1e9 * f64::from(self.theme.effect_speed))
@@ -3628,6 +3659,7 @@ impl<B: render::Backend> Draw<ShellSnapshot> for View<B> {
                     if snapshot.menu_background
                         && let Some((uploads, fade)) = &self.backgrounds
                     {
+                        let from = self.shapes.len();
                         fade.push(
                             &mut self.shapes,
                             width,
@@ -3640,6 +3672,7 @@ impl<B: render::Backend> Draw<ShellSnapshot> for View<B> {
                                 _ => None,
                             },
                         );
+                        self.shapes.transform_from(from, &background_map, [1.0; 4]);
                     }
                     layer_from = (self.shapes.len(), self.text.len());
                     self.menu.push(
@@ -3652,10 +3685,16 @@ impl<B: render::Backend> Draw<ShellSnapshot> for View<B> {
                         layer.pose,
                         r.white,
                     );
+                    // The buttons shift less than the background; hit-testing stays on
+                    // the layout without it.
+                    self.shapes
+                        .transform_from(layer_from.0, &menu_map, [1.0; 4]);
+                    self.text.transform_from(layer_from.1, &menu_map, [1.0; 4]);
                 }
                 ScreenView::SongSelect(song_select) => {
                     // Under the screen and without its slide, as lazer's background stack.
                     if let Some((uploads, fade)) = &self.backgrounds {
+                        let from = self.shapes.len();
                         fade.push(
                             &mut self.shapes,
                             width,
@@ -3668,6 +3707,7 @@ impl<B: render::Backend> Draw<ShellSnapshot> for View<B> {
                                 _ => None,
                             },
                         );
+                        self.shapes.transform_from(from, &background_map, [1.0; 4]);
                     }
                     layer_from = (self.shapes.len(), self.text.len());
                     self.song_select.push(
@@ -4618,6 +4658,7 @@ fn run_with<B: render::Backend>(
 
     let exited = Arc::new(AtomicBool::new(false));
     let scale_for_cursor = scale.clone();
+    let scale_for_parallax = scale.clone();
     // The window opens on the menu: it starts at the menu's rate.
     let menu_rate = settings.frame.menu_draw.to_limiter();
     let draw_rate = DrawRateControl::new();
@@ -4698,6 +4739,7 @@ fn run_with<B: render::Backend>(
             cursor_uploads,
         )
         .with_shown_opt(cursor_shown),
+        parallax: crate::parallax::Parallax::new(window.pointer(), scale_for_parallax),
         _quit: crate::bench::QuitOnDrop(window.quit_handle()),
     };
     let (mut sink, source) = event_ring(1024);

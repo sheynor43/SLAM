@@ -265,6 +265,12 @@ pub struct Theme {
     /// the seconds of one such drift (ADR-0123).
     pub background_motion: f32,
     pub background_motion_seconds: f32,
+    /// Parallax (ADR-0132): how far the background and the main menu's buttons shift with
+    /// the pointer, as a part of half the window at full strength, and the seconds the
+    /// shift takes to close half the distance to the pointer.
+    pub parallax_background: f32,
+    pub parallax_menu: f32,
+    pub parallax_half_life: f32,
     /// Blur of the menus' background, in pixels of the window (ADR-0123).
     pub background_blur: f32,
     /// Dim over the main menu's background (ADR-0119), 0 to 1.
@@ -448,6 +454,9 @@ impl Theme {
             glow_pulse: 0.35,
             background_motion: 0.06,
             background_motion_seconds: 40.0,
+            parallax_background: 0.02,
+            parallax_menu: 0.01,
+            parallax_half_life: 0.04,
             background_blur: 12.0,
             menu_background_dim: 0.5,
             menu_panel_fill: alpha(p.panel, 0.62),

@@ -1409,6 +1409,25 @@ fn modifiers_let_a_hotkey_take_menu_keys_but_not_gameplay_slots() {
 }
 
 #[test]
+fn parallax_defaults_full_and_round_trips() {
+    assert_eq!(Settings::default().general.parallax, 1.0);
+    let loaded = file::from_toml_str("[general]\nparallax = 0.35\n");
+    assert_eq!(loaded.status, LoadStatus::Ok, "{:?}", loaded.warnings);
+    assert_eq!(loaded.settings.general.parallax, 0.35);
+    let missing = file::from_toml_str("[general]\neffects = true\n");
+    assert_eq!(missing.settings.general.parallax, 1.0);
+    for text in ["1.5", "-0.1", "nan"] {
+        let bad = file::from_toml_str(&format!("[general]\nparallax = {text}\n"));
+        assert_eq!(bad.status, LoadStatus::Recovered, "{text}");
+        assert_eq!(bad.settings.general.parallax, 1.0, "{text}");
+    }
+    let mut settings = Settings::default();
+    settings.general.parallax = 0.0;
+    let again = file::from_toml_str(&file::to_toml_string(&settings).unwrap());
+    assert_eq!(again.settings.general.parallax, 0.0);
+}
+
+#[test]
 fn song_select_dim_defaults_and_round_trips() {
     assert_eq!(Settings::default().song_select.background_dim, 0.7);
     let loaded = file::from_toml_str("[song_select]\nbackground_dim = 0.25\n");

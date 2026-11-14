@@ -181,6 +181,7 @@ settings-layout-language = Язык
 settings-general-intro = Заставка при запуске
 settings-general-colour-scheme = Цветовая схема
 settings-general-effects = Визуальные эффекты (свечение, размытие, движение)
+settings-general-parallax = Параллакс меню
 settings-general-transitions = Переходы между экранами
 settings-option-transitions-none = Без переходов
 settings-option-transitions-simple = Простые

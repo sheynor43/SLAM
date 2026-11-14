@@ -230,6 +230,8 @@ pub enum Row {
     ColourScheme,
     /// Whether the interface effects are on; applies live (ADR-0123).
     Effects,
+    /// The strength of the menus' parallax; applies live (ADR-0132).
+    Parallax,
     /// How screens change (ADR-0126).
     Transitions,
     /// The scale of the menus (ADR-0118).
@@ -276,7 +278,7 @@ pub enum Row {
 const _: () = assert!(Row::ALL.len() <= slam_ui::settings_screen::MAX_ROWS);
 
 impl Row {
-    pub const ALL: [Row; 70] = [
+    pub const ALL: [Row; 71] = [
         Row::MasterVolume,
         Row::MusicVolume,
         Row::MenuMusic,
@@ -314,6 +316,7 @@ impl Row {
         Row::Intro,
         Row::ColourScheme,
         Row::Effects,
+        Row::Parallax,
         Row::Transitions,
         Row::MenuScale,
         Row::GameScale,
@@ -408,6 +411,7 @@ impl Row {
             | Row::Intro
             | Row::ColourScheme
             | Row::Effects
+            | Row::Parallax
             | Row::Transitions
             | Row::MenuScale
             | Row::GameScale
@@ -474,6 +478,7 @@ impl Row {
             Row::Intro => "settings-general-intro",
             Row::ColourScheme => "settings-general-colour-scheme",
             Row::Effects => "settings-general-effects",
+            Row::Parallax => "settings-general-parallax",
             Row::Transitions => "settings-general-transitions",
             Row::MenuScale => "settings-general-menu-scale",
             Row::GameScale => "settings-general-game-scale",
@@ -972,6 +977,12 @@ impl Rows {
             Row::Effects => RowKind::Toggle {
                 value: s.general.effects,
             },
+            Row::Parallax => RowKind::Slider {
+                min: 0.0,
+                max: 100.0,
+                step: 5.0,
+                value: (s.general.parallax * 100.0).round(),
+            },
             Row::HitsoundDelay => choice(
                 HitsoundDelay::ALL.len(),
                 HitsoundDelay::ALL
@@ -1206,6 +1217,9 @@ impl Rows {
             },
             (Row::Intro, RowValue::Toggle(v)) => settings.general.intro = v,
             (Row::Effects, RowValue::Toggle(v)) => settings.general.effects = v,
+            (Row::Parallax, RowValue::Slider(v)) => {
+                settings.general.parallax = round_to((v / 5.0).round() * 5.0 / 100.0, 2);
+            }
             (Row::MenuScale, RowValue::Slider(v)) => {
                 settings.general.menu_scale = scale_from_percent(v);
             }
@@ -1522,6 +1536,7 @@ impl Rows {
                     | Row::MenuMusicVolume
                     | Row::HitsoundVolume
                     | Row::EffectsVolume
+                    | Row::Parallax
                     | Row::Dim
                     | Row::SongSelectDim
                     | Row::MenuScale
@@ -1597,6 +1612,7 @@ pub fn round_for_save(settings: &mut Settings) {
         &mut audio.effects_volume,
         &mut settings.gameplay.dim,
         &mut settings.song_select.background_dim,
+        &mut settings.general.parallax,
     ] {
         *volume = round_to(*volume, 2);
     }
@@ -2395,6 +2411,30 @@ mod tests {
         assert_eq!(labels.sections[SECTIONS - 1], "Library");
         // Only this row shows a value.
         assert_eq!(labels.rows.iter().filter(|r| r.shows_value).count(), 1);
+    }
+
+    #[test]
+    fn the_parallax_row_is_a_stepped_percent_slider_in_the_general_section() {
+        assert_eq!(Row::Parallax.section(), Row::Effects.section());
+        let rows = Rows::new(&Settings::default());
+        let s = Settings::default();
+        assert_eq!(
+            rows.specs(&s)[index(Row::Parallax)].kind,
+            RowKind::Slider {
+                min: 0.0,
+                max: 100.0,
+                step: 5.0,
+                value: 100.0
+            }
+        );
+        let mut s = Settings::default();
+        rows.apply(&mut s, index(Row::Parallax), RowValue::Slider(35.0));
+        assert_eq!(s.general.parallax, 0.35);
+        rows.apply(&mut s, index(Row::Parallax), RowValue::Slider(0.0));
+        assert_eq!(s.general.parallax, 0.0);
+        s.general.parallax = 0.30000000000000004;
+        round_for_save(&mut s);
+        assert_eq!(s.general.parallax, 0.3);
     }
 
     #[test]
