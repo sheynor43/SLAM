@@ -29,7 +29,7 @@ fn drawing_the_cursor_does_not_allocate() {
             shapes.clear();
             let now = frame * 16_000_000;
             let at = [frame as f32 * 9.0, 300.0 + frame as f32 * 4.0];
-            motion.update(&theme, 1.0, Some(at), frame % 20 < 10, frame % 30 < 20, now);
+            motion.update(&theme, 1.0, Some(at), frame % 20 < 10, now);
             let sample = motion.sample(&theme, now);
             push_slam_cursor(&mut shapes, &theme, white, [10.0, 10.0], 28.0, &sample);
             push_gameplay_cursor(

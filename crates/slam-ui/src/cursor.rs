@@ -1,13 +1,15 @@
-//! SLAM's own cursor (ADR-0124, ADR-0128), drawn by code from shapes in the manner of
-//! osu!lazer's. The menus get a pointer with lazer's `MenuCursor` motion: it shrinks while a
-//! button is held, glows in the accent, and turns towards the drag of the right button.
+//! SLAM's own cursor (ADR-0124, ADR-0128, ADR-0136), drawn by code from shapes in the manner
+//! of osu!lazer's. The menus get a pointer with lazer's `MenuCursor` motion: it shrinks while
+//! a button is held, glows in the accent, and turns towards a drag; and SLAM's extras, each
+//! switched in the settings: it spins about its long axis while the pointer rests, leaves a
+//! trail behind a moving pointer and sends a ring out at each press.
 //! Gameplay gets lazer's default `OsuCursor`: a ring around an accent disc that expands on a
 //! click, in place of the skin's textures.
 
 use slam_render::Blend;
 use slam_render::atlas::AtlasRegion;
 use slam_render::hal::Color;
-use slam_render::shape::{Shape, ShapeBatch};
+use slam_render::shape::{Gradient, Shape, ShapeBatch, ShapeKind};
 use slam_render::sprite::Affine;
 
 use crate::anim::{ease_out_elastic, ease_out_elastic_quarter, ease_out_quint, progress};
@@ -45,22 +47,19 @@ impl CursorStyle {
 /// Shapes one SLAM cursor writes at most.
 pub const MAX_CURSOR_SHAPES: usize = 16;
 
-// The pointer in units of its height, tip at the origin, y down, before the tilt: two
-// rounded strokes that meet at the tip and open downwards, and a body between them that
-// stops short of the bottom, which leaves the notch of an arrowhead.
-const STROKE_WIDTH: f32 = 0.24;
-const STROKE_LENGTH: f32 = 1.0;
-/// Radians each stroke is turned from vertical.
-const STROKE_TURN: f32 = 0.25;
-const BODY_HALF_WIDTH: f32 = 0.2;
-const BODY_TOP: f32 = 0.15;
-const BODY_BOTTOM: f32 = 0.72;
-/// The glow's size and width, as parts of the height.
-const GLOW_SIZE: f32 = 0.45;
+/// Positions of the trail [`CursorMotion`] carries.
+pub const TRAIL_LENGTH: usize = 6;
+/// Rings from presses [`CursorMotion`] carries.
+pub const MAX_RIPPLES: usize = 3;
+
+// The pointer in units of its height, tip at the origin, y down, before the tilt: an
+// arrowhead (`ShapeKind::Arrow`) this wide, rounded by this much.
+const ARROW_WIDTH: f32 = 0.74;
+const ARROW_RADIUS: f32 = 0.07;
 
 /// The height of the pointer as drawn at `size`: for placing it by its hot spot.
 pub const fn arrow_height_units() -> f32 {
-    STROKE_LENGTH * 1.08
+    1.0
 }
 
 /// How the menu cursor looks at a moment: what [`MenuCursorMotion::sample`] gives and
@@ -73,14 +72,26 @@ pub struct CursorMotion {
     pub glow: f32,
     /// Degrees clockwise from the resting pose.
     pub rotation: f32,
+    /// Radians turned about the pointer's long axis (ADR-0136): its width shows as the
+    /// cosine, its back past a quarter turn.
+    pub spin: f32,
+    /// Where the pointer was, from the newest: offsets in pixels from where it is, and the
+    /// opacity left, 0 to 1 (ADR-0136). Unused entries have opacity 0.
+    pub trail: [([f32; 2], f32); TRAIL_LENGTH],
+    /// Rings from presses: offsets in pixels from the pointer and progress, 0 to 1; unused
+    /// entries have progress 1 or more (ADR-0136).
+    pub ripples: [([f32; 2], f32); MAX_RIPPLES],
 }
 
 impl CursorMotion {
-    /// At rest: full size, no glow, not turned.
+    /// At rest: full size, no glow, not turned, no trail or rings.
     pub const REST: CursorMotion = CursorMotion {
         scale: 1.0,
         glow: 0.0,
         rotation: 0.0,
+        spin: 0.0,
+        trail: [([0.0; 2], 0.0); TRAIL_LENGTH],
+        ripples: [([0.0; 2], 1.0); MAX_RIPPLES],
     };
 }
 
@@ -134,6 +145,11 @@ impl Tween {
         self.from + (self.to - self.from) * self.ease.apply(t)
     }
 
+    /// When the value arrives.
+    fn end_ns(&self) -> u64 {
+        self.start_ns.saturating_add(self.duration_ns)
+    }
+
     /// Starts towards `to` from `from` at `now_ns`.
     fn start(&mut self, from: f32, to: f32, now_ns: u64, ms: f32, ease: Ease) {
         *self = Tween {
@@ -171,8 +187,15 @@ pub struct MenuCursorMotion {
     origin: [f32; 2],
     last_move: Option<[f32; 2]>,
     held: bool,
-    right: bool,
     last_ns: u64,
+    /// When the pointer last moved, for the spin.
+    moved_ns: u64,
+    /// The spin's way back to face front after the pointer moves again.
+    spin_back: Tween,
+    /// Recent positions of the pointer and when it reached them, newest first.
+    trail: [([f32; 2], u64); TRAIL_LENGTH],
+    /// Presses: where and when, newest first.
+    ripples: [([f32; 2], u64); MAX_RIPPLES],
 }
 
 impl Default for MenuCursorMotion {
@@ -185,16 +208,19 @@ impl Default for MenuCursorMotion {
             origin: [0.0; 2],
             last_move: None,
             held: false,
-            right: false,
             last_ns: 0,
+            moved_ns: 0,
+            spin_back: Tween::fixed(0.0),
+            trail: [([0.0; 2], 0); TRAIL_LENGTH],
+            ripples: [([0.0; 2], 0); MAX_RIPPLES],
         }
     }
 }
 
 impl MenuCursorMotion {
     /// Takes the state of one frame at `now_ns`: the pointer in pixels (`None` when it is
-    /// outside the window or has not moved yet), whether any mouse button and whether the
-    /// right one is held, and `ui` pixels per reference pixel for the drag's distances.
+    /// outside the window or has not moved yet), whether a mouse button is held, and `ui`
+    /// pixels per reference pixel for the drag's distances.
     // Ported from osu!lazer 2026.1005.0-lazer: osu.Game/Graphics/Cursor/MenuCursorContainer.cs (Update, OnMouseMove, OnMouseDown, OnMouseUp)
     pub fn update(
         &mut self,
@@ -202,7 +228,6 @@ impl MenuCursorMotion {
         ui: f32,
         pointer: Option<[f32; 2]>,
         held: bool,
-        right: bool,
         now_ns: u64,
     ) {
         let frame_ms = now_ns.saturating_sub(self.last_ns) as f64 / 1e6;
@@ -221,14 +246,18 @@ impl MenuCursorMotion {
             self.glow
                 .start(0.0, 1.0, now_ns, theme.cursor_glow_in_ms, Ease::OutQuint);
         }
-        // Already turning: the centre stays.
-        if right
-            && !self.right
-            && self.drag != DragState::Rotating
+        if held
+            && !self.held
             && let Some(at) = position
         {
-            self.drag = DragState::DragStarted;
-            self.origin = at;
+            // A ring from the press (ADR-0136).
+            self.ripples.copy_within(..MAX_RIPPLES - 1, 1);
+            self.ripples[0] = (at, now_ns.max(1));
+            // Any button turns the cursor, as in lazer; already turning, the centre stays.
+            if theme.cursor_fx.rotate && self.drag != DragState::Rotating {
+                self.drag = DragState::DragStarted;
+                self.origin = at;
+            }
         }
 
         // The centre of the turn floats after the pointer once it is far away. The
@@ -249,6 +278,9 @@ impl MenuCursorMotion {
         if let Some(at) = pointer
             && self.last_move != Some(at)
         {
+            if self.last_move.is_some() {
+                self.moved(theme, ui, at, now_ns);
+            }
             self.last_move = Some(at);
             self.drag_to(theme, ui, at, now_ns);
         }
@@ -267,7 +299,54 @@ impl MenuCursorMotion {
             }
         }
         self.held = held;
-        self.right = right;
+    }
+
+    /// The pointer moved to `at`: the spin turns back to face front, and the trail takes
+    /// the position once it is far enough from the last one kept.
+    fn moved(&mut self, theme: &Theme, ui: f32, at: [f32; 2], now_ns: u64) {
+        let spin = self.spin_at(theme, now_ns);
+        if spin != 0.0 {
+            // To the nearest whole turn ahead, so it keeps its direction.
+            let turns = (spin / std::f32::consts::TAU).ceil() * std::f32::consts::TAU;
+            self.spin_back.start(
+                spin,
+                turns,
+                now_ns,
+                theme.cursor_spin_back_ms,
+                Ease::OutQuint,
+            );
+        }
+        self.moved_ns = now_ns;
+        let (last, at_ns) = self.trail[0];
+        if at_ns == 0 || distance(last, at) >= theme.cursor_trail_spacing * ui {
+            self.trail.copy_within(..TRAIL_LENGTH - 1, 1);
+            self.trail[0] = (at, now_ns.max(1));
+        }
+    }
+
+    /// Radians turned about the long axis at `now_ns`: on the way back after a move, or
+    /// spinning up once the pointer has rested long enough.
+    fn spin_at(&self, theme: &Theme, now_ns: u64) -> f32 {
+        if !theme.cursor_fx.spin {
+            return 0.0;
+        }
+        if now_ns < self.spin_back.end_ns() {
+            return self.spin_back.at(now_ns);
+        }
+        let rested_ms = now_ns.saturating_sub(self.moved_ns) as f32 / 1e6;
+        let spinning = rested_ms - theme.cursor_spin_delay_ms;
+        if self.last_move.is_none() || spinning <= 0.0 || self.held {
+            return 0.0;
+        }
+        // Easing in over the first turn, then steady; wrapped to keep precision.
+        let period = theme.cursor_spin_period_ms.max(1.0);
+        let ramp = (spinning / period).min(1.0);
+        let turns = if spinning < period {
+            0.5 * ramp * ramp
+        } else {
+            0.5 + (spinning - period) / period
+        };
+        (turns * std::f32::consts::TAU).rem_euclid(std::f32::consts::TAU * 64.0)
     }
 
     fn drag_to(&mut self, theme: &Theme, ui: f32, at: [f32; 2], now_ns: u64) {
@@ -299,16 +378,40 @@ impl MenuCursorMotion {
         }
     }
 
-    /// How the cursor looks at `now_ns`: at rest without effects (ADR-0123).
+    /// How the cursor looks at `now_ns`. Without effects (ADR-0123) it neither shrinks,
+    /// glows nor turns; the extras follow their own switches (ADR-0136).
     pub fn sample(&self, theme: &Theme, now_ns: u64) -> CursorMotion {
-        if !theme.effects {
-            return CursorMotion::REST;
+        let mut motion = CursorMotion::REST;
+        if theme.effects {
+            motion.scale = self.scale.at(now_ns);
+            motion.glow = self.glow.at(now_ns).clamp(0.0, 1.0);
+            motion.rotation = self.rotation.at(now_ns);
         }
-        CursorMotion {
-            scale: self.scale.at(now_ns),
-            glow: self.glow.at(now_ns).clamp(0.0, 1.0),
-            rotation: self.rotation.at(now_ns),
+        motion.spin = self.spin_at(theme, now_ns);
+        let here = self.last_move.unwrap_or([0.0; 2]);
+        let offset = |at: [f32; 2]| [at[0] - here[0], at[1] - here[1]];
+        if theme.cursor_fx.trail {
+            let life = theme.cursor_trail_ms.max(1.0);
+            // The newest position is where the pointer is: the trail starts behind it.
+            for (slot, &(at, at_ns)) in motion.trail.iter_mut().zip(&self.trail[1..]) {
+                if at_ns == 0 {
+                    break;
+                }
+                let age = now_ns.saturating_sub(at_ns) as f32 / 1e6;
+                *slot = (offset(at), (1.0 - age / life).max(0.0));
+            }
         }
+        if theme.cursor_fx.ripple {
+            let life = theme.cursor_ripple_ms.max(1.0);
+            for (slot, &(at, at_ns)) in motion.ripples.iter_mut().zip(&self.ripples) {
+                if at_ns == 0 {
+                    break;
+                }
+                let age = now_ns.saturating_sub(at_ns) as f32 / 1e6;
+                *slot = (offset(at), age / life);
+            }
+        }
+        motion
     }
 
     /// Whether a mouse button is held.
@@ -327,8 +430,9 @@ fn distance(a: [f32; 2], b: [f32; 2]) -> f32 {
 }
 
 /// Writes the menu pointer with its tip at `tip`, `height` pixels high at rest, as `motion`
-/// has it. `white` is an opaque white image. Allocation-free once the batch has room for
-/// [`MAX_CURSOR_SHAPES`].
+/// has it: the rings of presses, the trail, the shadow, the arrowhead lit from above with a
+/// dark outline, and the accent glow of a press (ADR-0136). `white` is an opaque white
+/// image. Allocation-free once the batch has room for [`MAX_CURSOR_SHAPES`].
 pub fn push_slam_cursor(
     shapes: &mut ShapeBatch,
     theme: &Theme,
@@ -340,67 +444,147 @@ pub fn push_slam_cursor(
     if height.is_nan() || height <= 0.0 || motion.scale.is_nan() || motion.scale <= 0.0 {
         return;
     }
-    let first = shapes.len();
-    let outline = (theme.cursor_outline * height).max(1.0);
-    let radius = STROKE_WIDTH * 0.5 * height;
-    // The strokes turn about the centre of their rounded ends.
-    let hinge = [tip[0], tip[1] + radius];
-    for (colour, grow) in [
-        (theme.cursor_outline_colour, outline),
-        (theme.cursor_fill, 0.0),
-    ] {
-        for turn in [-STROKE_TURN, STROKE_TURN] {
-            let at = shapes.len();
-            let mut stroke = Shape::new(
-                white.texture,
-                white.uv,
-                [tip[0] - radius - grow, tip[1] - grow],
-                [
-                    STROKE_WIDTH * height + 2.0 * grow,
-                    STROKE_LENGTH * height + 2.0 * grow,
-                ],
-                colour,
-            );
-            stroke.radius = radius + grow;
-            shapes.push_shape(&stroke);
-            shapes.transform_from(at, &Affine::about(hinge, 1.0, turn, [0.0; 2]), [1.0; 4]);
+    // Rings from presses, under everything and untouched by the pointer's turn.
+    for &(offset, progress) in &motion.ripples {
+        if !(0.0..1.0).contains(&progress) {
+            continue;
         }
-        let mut body = Shape::new(
+        let eased = ease_out_quint(progress);
+        let size = height * theme.cursor_ripple_size * (0.25 + 0.75 * eased);
+        let mut ring = Shape::new(
             white.texture,
             white.uv,
             [
-                tip[0] - BODY_HALF_WIDTH * height - grow,
-                tip[1] + BODY_TOP * height - grow,
+                tip[0] + offset[0] - size / 2.0,
+                tip[1] + offset[1] - size / 2.0,
             ],
-            [
-                2.0 * BODY_HALF_WIDTH * height + 2.0 * grow,
-                (BODY_BOTTOM - BODY_TOP) * height + 2.0 * grow,
-            ],
-            colour,
-        );
-        body.radius = 0.08 * height + grow;
-        shapes.push_shape(&body);
-    }
-    let glow = motion.glow * theme.glow_alpha;
-    if theme.effects && glow > 0.002 {
-        // Lazer's additive layer fades in over the pointer while a button is held.
-        let size = GLOW_SIZE * height;
-        let mut shape = Shape::new(
-            white.texture,
-            white.uv,
-            [tip[0] - size * 0.5, tip[1] + 0.5 * height - size * 0.5],
             [size, size],
             Color {
-                a: glow,
+                a: theme.cursor_ripple_alpha * (1.0 - progress),
                 ..theme.accent
             },
         );
-        shape.radius = size * 0.5;
-        shape.glow = size;
-        shape.blend = Blend::Additive;
-        shapes.push_shape(&shape);
+        ring.radius = size / 2.0;
+        ring.outline = (height * 0.06 * (1.0 - eased)).max(1.0);
+        shapes.push_shape(&ring);
     }
-    shapes.scale_from(first, tip, motion.scale);
+    // The trail: fading copies of the pointer where it was, in the accent.
+    for &(offset, alpha) in motion.trail.iter().rev() {
+        if alpha <= 0.0 {
+            continue;
+        }
+        let first = shapes.len();
+        let at = [tip[0] + offset[0], tip[1] + offset[1]];
+        let colour = Color {
+            a: theme.cursor_trail_alpha * alpha,
+            ..theme.accent
+        };
+        shapes.push_shape(&arrow(white, at, height, colour));
+        place(
+            shapes,
+            first,
+            theme,
+            at,
+            motion.scale * (0.7 + 0.3 * alpha),
+            motion,
+            0.0,
+        );
+    }
+    let first = shapes.len();
+    let body = arrow(white, tip, height, theme.cursor_fill);
+    if theme.shadow > 0.0 {
+        let drop = height * 0.06;
+        shapes.push_shape(&Shape {
+            position: [body.position[0], body.position[1] + drop],
+            glow: height * 0.12 * (0.5 + 0.5 * theme.shadow),
+            colour: Color {
+                a: (theme.shadow_alpha * theme.shadow).min(0.95),
+                ..theme.cursor_outline_colour
+            },
+            gradient: None,
+            ..body
+        });
+    }
+    let glow = motion.glow * theme.glow_alpha;
+    if theme.effects && glow > 0.002 {
+        // Lazer's additive layer lights the pointer while a button is held.
+        shapes.push_shape(&Shape {
+            glow: height * 0.3,
+            colour: Color {
+                a: glow,
+                ..theme.accent
+            },
+            gradient: None,
+            blend: Blend::Additive,
+            ..body
+        });
+    }
+    shapes.push_shape(&body);
+    shapes.push_shape(&Shape {
+        outline: (theme.cursor_outline * height).max(1.0),
+        colour: theme.cursor_outline_colour,
+        gradient: None,
+        ..body
+    });
+    place(shapes, first, theme, tip, motion.scale, motion, motion.spin);
+}
+
+/// The pointer's arrowhead with its tip at `tip`, `height` pixels high, before the tilt,
+/// lit from above: `colour` darkening a little towards the bottom.
+fn arrow(white: AtlasRegion, tip: [f32; 2], height: f32, colour: Color) -> Shape {
+    let width = ARROW_WIDTH * height;
+    let shade = 0.82;
+    Shape {
+        kind: ShapeKind::Arrow,
+        radius: ARROW_RADIUS * height,
+        gradient: Some(Gradient::Vertical(Color {
+            r: colour.r * shade,
+            g: colour.g * shade,
+            b: colour.b * shade,
+            a: colour.a,
+        })),
+        ..Shape::new(
+            white.texture,
+            white.uv,
+            [tip[0] - width / 2.0, tip[1]],
+            [width, height],
+            colour,
+        )
+    }
+}
+
+/// Scales the quads from `first` on by `scale` about `tip`, squeezes them about the
+/// pointer's long axis by the spin (darkening its back) and turns them to the tilt plus
+/// the motion's rotation.
+fn place(
+    shapes: &mut ShapeBatch,
+    first: usize,
+    theme: &Theme,
+    tip: [f32; 2],
+    scale: f32,
+    motion: &CursorMotion,
+    spin: f32,
+) {
+    shapes.scale_from(first, tip, scale);
+    if spin != 0.0 {
+        let width = spin.cos();
+        // Never a line: a sliver stays at the quarter turns.
+        let width = if width.abs() < 0.04 {
+            0.04f32.copysign(width)
+        } else {
+            width
+        };
+        let shade = if width < 0.0 { 0.72 } else { 1.0 };
+        let squeeze = Affine {
+            a: width,
+            b: 0.0,
+            c: 0.0,
+            d: 1.0,
+            tx: tip[0] - width * tip[0],
+            ty: 0.0,
+        };
+        shapes.transform_from(first, &squeeze, [shade, shade, shade, 1.0]);
+    }
     // Lazer's pointer is drawn tilted to the left; the drag's angle is measured from there.
     let turn = (motion.rotation - theme.cursor_tilt_degrees).to_radians();
     shapes.transform_from(first, &Affine::about(tip, 1.0, turn, [0.0; 2]), [1.0; 4]);
@@ -459,6 +643,7 @@ pub fn push_gameplay_cursor(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::theme::CursorFx;
     use slam_render::Origin;
     use slam_render::atlas::UvRect;
     use slam_render::hal::Extent;
@@ -488,7 +673,7 @@ mod tests {
     }
 
     #[test]
-    fn the_pointer_is_drawn_within_its_budget_dark_outline_below_white_fill() {
+    fn the_pointer_is_a_shadowed_arrowhead_lit_from_above_with_a_dark_outline() {
         let theme = Theme::default();
         let mut shapes = batch();
         push_slam_cursor(
@@ -499,14 +684,49 @@ mod tests {
             30.0,
             &CursorMotion::REST,
         );
-        assert!(!shapes.is_empty());
-        assert!(shapes.len() <= MAX_CURSOR_SHAPES, "{}", shapes.len());
-        let first = shapes.vertices()[0].colour;
-        let last = shapes.vertices().last().unwrap().colour;
-        let c = theme.cursor_outline_colour;
-        assert_eq!(first[..3], [c.r, c.g, c.b]);
+        // The shadow, the fill, the outline.
+        assert_eq!(shapes.len(), 3);
+        let v = shapes.vertices();
+        let kind = |quad: usize| slam_render::shape::unpack_effects(v[quad * 4].params[2]).3;
+        assert!((0..3).all(|q| kind(q) == ShapeKind::Arrow));
+        assert!(v[0].params[1] < 0.0, "the shadow is a glow");
+        // The corners lie a margin past the edges, so the gradient's colour there is close
+        // to the fill's.
         let f = theme.cursor_fill;
-        assert_eq!(last[..3], [f.r, f.g, f.b]);
+        assert!((v[4].colour[1] - f.g).abs() < 0.05, "{:?}", v[4].colour);
+        // Darker at the bottom.
+        assert!(v[4 + 3].colour[0] < v[4].colour[0]);
+        let c = theme.cursor_outline_colour;
+        assert_eq!(v[8].colour[..3], [c.r, c.g, c.b]);
+        assert!(v[8].params[1] > 0.0, "an outline");
+        // No shadow when shadows are off.
+        let mut flat = batch();
+        push_slam_cursor(
+            &mut flat,
+            &theme.with_shadow(0.0),
+            white(),
+            [100.0, 100.0],
+            30.0,
+            &CursorMotion::REST,
+        );
+        assert_eq!(flat.len(), 2);
+    }
+
+    #[test]
+    fn trail_and_rings_stay_within_the_budget() {
+        let theme = Theme::default();
+        let mut motion = CursorMotion {
+            glow: 1.0,
+            ..CursorMotion::REST
+        };
+        for (i, slot) in motion.trail.iter_mut().enumerate() {
+            *slot = ([-(i as f32) * 8.0, 0.0], 0.9);
+        }
+        motion.ripples.fill(([0.0; 2], 0.5));
+        let mut shapes = batch();
+        push_slam_cursor(&mut shapes, &theme, white(), [100.0, 100.0], 30.0, &motion);
+        assert_eq!(shapes.len(), MAX_RIPPLES + TRAIL_LENGTH + 4);
+        assert!(shapes.len() <= MAX_CURSOR_SHAPES);
     }
 
     #[test]
@@ -612,9 +832,9 @@ mod tests {
     fn a_press_shrinks_to_90_percent_and_the_release_springs_back() {
         let theme = Theme::default();
         let mut m = MenuCursorMotion::default();
-        m.update(&theme, 1.0, Some([10.0, 10.0]), false, false, 0);
+        m.update(&theme, 1.0, Some([10.0, 10.0]), false, 0);
         assert_eq!(sample(&m, &theme, 0), CursorMotion::REST);
-        m.update(&theme, 1.0, Some([10.0, 10.0]), true, false, 100 * MS);
+        m.update(&theme, 1.0, Some([10.0, 10.0]), true, 100 * MS);
         assert!(m.held());
         let mid = sample(&m, &theme, 150);
         assert!(mid.scale < 1.0 && mid.scale > theme.cursor_press_scale);
@@ -622,7 +842,7 @@ mod tests {
         let done = sample(&m, &theme, 100 + 900);
         assert!((done.scale - theme.cursor_press_scale).abs() < 1e-3);
         assert!((done.glow - 1.0).abs() < 1e-3);
-        m.update(&theme, 1.0, Some([10.0, 10.0]), false, false, 2_000 * MS);
+        m.update(&theme, 1.0, Some([10.0, 10.0]), false, 2_000 * MS);
         let back = sample(&m, &theme, 2_000 + 600);
         assert!((back.scale - 1.0).abs() < 1e-3);
         assert!(back.glow.abs() < 1e-3);
@@ -633,23 +853,136 @@ mod tests {
         assert!(peak > 1.0, "{peak}");
     }
 
+    /// The theme without any of the cursor's extras.
+    fn plain(theme: Theme) -> Theme {
+        theme.with_cursor_fx(CursorFx {
+            rotate: false,
+            spin: false,
+            trail: false,
+            ripple: false,
+        })
+    }
+
     #[test]
-    fn without_effects_the_cursor_stays_at_rest() {
-        let theme = Theme::default().with_effects(false);
+    fn without_effects_or_extras_the_cursor_stays_at_rest() {
+        let theme = plain(Theme::default().with_effects(false));
         let mut m = MenuCursorMotion::default();
-        m.update(&theme, 1.0, Some([0.0; 2]), true, true, 0);
+        m.update(&theme, 1.0, Some([0.0; 2]), true, 0);
         assert_eq!(sample(&m, &theme, 1_000), CursorMotion::REST);
     }
 
-    fn drag(m: &mut MenuCursorMotion, theme: &Theme, to: [f32; 2], ms: u64) {
-        m.update(theme, 1.0, Some(to), true, true, ms * MS);
+    #[test]
+    fn a_press_sends_out_a_ring_that_grows_and_ends() {
+        // The extras do not need the effects.
+        let theme = Theme::default().with_effects(false);
+        let mut m = MenuCursorMotion::default();
+        m.update(&theme, 1.0, Some([50.0, 50.0]), false, 0);
+        m.update(&theme, 1.0, Some([50.0, 50.0]), true, 100 * MS);
+        let ring = sample(&m, &theme, 100 + theme.cursor_ripple_ms as u64 / 2).ripples[0];
+        assert_eq!(ring.0, [0.0, 0.0]);
+        assert!((ring.1 - 0.5).abs() < 0.01, "{ring:?}");
+        // It stays where the press was while the pointer moves on.
+        m.update(&theme, 1.0, Some([80.0, 50.0]), true, 150 * MS);
+        assert_eq!(sample(&m, &theme, 150).ripples[0].0, [-30.0, 0.0]);
+        assert!(sample(&m, &theme, 2_000).ripples[0].1 >= 1.0);
+        let off = theme.with_cursor_fx(CursorFx {
+            ripple: false,
+            ..CursorFx::default()
+        });
+        assert!(sample(&m, &off, 200).ripples.iter().all(|r| r.1 >= 1.0));
     }
 
     #[test]
-    fn a_right_drag_turns_towards_the_drag_after_a_minimum_distance() {
+    fn a_moving_pointer_leaves_a_fading_trail_behind_it() {
         let theme = Theme::default();
         let mut m = MenuCursorMotion::default();
-        m.update(&theme, 1.0, Some([500.0, 500.0]), false, false, 0);
+        for i in 0..5u64 {
+            m.update(
+                &theme,
+                1.0,
+                Some([i as f32 * 20.0, 0.0]),
+                false,
+                i * 10 * MS,
+            );
+        }
+        let motion = sample(&m, &theme, 40);
+        // Behind the pointer, the older the further and the fainter.
+        let (first, second) = (motion.trail[0], motion.trail[1]);
+        assert_eq!(first.0, [-20.0, 0.0]);
+        assert_eq!(second.0, [-40.0, 0.0]);
+        assert!(first.1 > second.1 && second.1 > 0.0);
+        assert!(sample(&m, &theme, 1_000).trail.iter().all(|t| t.1 == 0.0));
+        let off = theme.with_cursor_fx(CursorFx {
+            trail: false,
+            ..CursorFx::default()
+        });
+        assert!(sample(&m, &off, 40).trail.iter().all(|t| t.1 == 0.0));
+    }
+
+    #[test]
+    fn a_resting_pointer_spins_and_faces_front_again_when_moved() {
+        let theme = Theme::default();
+        let mut m = MenuCursorMotion::default();
+        m.update(&theme, 1.0, Some([0.0; 2]), false, 0);
+        m.update(&theme, 1.0, Some([5.0, 0.0]), false, 10 * MS);
+        let delay = theme.cursor_spin_delay_ms as u64;
+        assert_eq!(sample(&m, &theme, 10 + delay - 50).spin, 0.0);
+        let spun = sample(&m, &theme, 10 + delay + 2_000).spin;
+        assert!(spun > 0.5, "{spun}");
+        // Moving turns it on to face front.
+        let at = 10 + delay + 2_000;
+        m.update(&theme, 1.0, Some([9.0, 0.0]), false, at * MS);
+        // Front again once the way back is over, until it has rested long enough again.
+        let back = sample(&m, &theme, at + 600).spin;
+        assert_eq!(back, 0.0);
+        assert!(sample(&m, &theme, at + 100).spin >= spun);
+        let off = theme.with_cursor_fx(CursorFx {
+            spin: false,
+            ..CursorFx::default()
+        });
+        assert_eq!(sample(&m, &off, at - 1).spin, 0.0);
+    }
+
+    #[test]
+    fn a_spin_squeezes_the_pointer_about_its_axis_and_darkens_its_back() {
+        let theme = Theme::default().with_shadow(0.0);
+        let (mut front, mut back) = (batch(), batch());
+        push_slam_cursor(
+            &mut front,
+            &theme,
+            white(),
+            [0.0; 2],
+            40.0,
+            &CursorMotion::REST,
+        );
+        let turned = CursorMotion {
+            spin: std::f32::consts::PI,
+            ..CursorMotion::REST
+        };
+        push_slam_cursor(&mut back, &theme, white(), [0.0; 2], 40.0, &turned);
+        assert!(back.vertices()[0].colour[0] < front.vertices()[0].colour[0]);
+        let width = |b: &ShapeBatch| {
+            let xs = b.vertices().iter().map(|v| v.position[0]);
+            xs.clone().fold(f32::MIN, f32::max) - xs.fold(f32::MAX, f32::min)
+        };
+        let half = CursorMotion {
+            spin: 1.3,
+            ..CursorMotion::REST
+        };
+        let mut squeezed = batch();
+        push_slam_cursor(&mut squeezed, &theme, white(), [0.0; 2], 40.0, &half);
+        assert!(width(&squeezed) < width(&front));
+    }
+
+    fn drag(m: &mut MenuCursorMotion, theme: &Theme, to: [f32; 2], ms: u64) {
+        m.update(theme, 1.0, Some(to), true, ms * MS);
+    }
+
+    #[test]
+    fn a_drag_turns_towards_the_drag_after_a_minimum_distance() {
+        let theme = Theme::default();
+        let mut m = MenuCursorMotion::default();
+        m.update(&theme, 1.0, Some([500.0, 500.0]), false, 0);
         drag(&mut m, &theme, [500.0, 500.0], 10);
         assert!(m.dragging());
         // Short of the minimum: no turn.
@@ -666,20 +999,29 @@ mod tests {
     }
 
     #[test]
-    fn the_left_button_alone_does_not_turn_the_cursor() {
+    fn any_button_turns_the_cursor_unless_the_turn_is_off() {
         let theme = Theme::default();
         let mut m = MenuCursorMotion::default();
-        m.update(&theme, 1.0, Some([0.0, 0.0]), true, false, 0);
-        m.update(&theme, 1.0, Some([0.0, 400.0]), true, false, 10 * MS);
+        m.update(&theme, 1.0, Some([0.0, 0.0]), true, 0);
+        m.update(&theme, 1.0, Some([0.0, 400.0]), true, 10 * MS);
+        assert!(m.dragging());
+        assert!(sample(&m, &theme, 1_000).rotation != 0.0);
+        let off = theme.with_cursor_fx(CursorFx {
+            rotate: false,
+            ..CursorFx::default()
+        });
+        let mut m = MenuCursorMotion::default();
+        m.update(&off, 1.0, Some([0.0, 0.0]), true, 0);
+        m.update(&off, 1.0, Some([0.0, 400.0]), true, 10 * MS);
         assert!(!m.dragging());
-        assert_eq!(sample(&m, &theme, 1_000).rotation, 0.0);
+        assert_eq!(sample(&m, &off, 1_000).rotation, 0.0);
     }
 
     #[test]
     fn the_turn_takes_the_shorter_way_round() {
         let theme = Theme::default();
         let mut m = MenuCursorMotion::default();
-        m.update(&theme, 1.0, Some([500.0, 500.0]), false, false, 0);
+        m.update(&theme, 1.0, Some([500.0, 500.0]), false, 0);
         drag(&mut m, &theme, [500.0, 500.0], 10);
         // Up-left of the origin gives about 135 + 24; then just past it to the other side,
         // which is a small step in the other direction, not nearly a full turn.
@@ -698,14 +1040,14 @@ mod tests {
     fn releasing_every_button_returns_the_rotation_to_zero() {
         let theme = Theme::default();
         let mut m = MenuCursorMotion::default();
-        m.update(&theme, 1.0, Some([500.0, 500.0]), false, false, 0);
+        m.update(&theme, 1.0, Some([500.0, 500.0]), false, 0);
         drag(&mut m, &theme, [500.0, 500.0], 10);
         drag(&mut m, &theme, [800.0, 500.0], 20);
         assert!(sample(&m, &theme, 1_000).rotation.abs() > 10.0);
-        // The right button goes while the left stays: still dragging.
-        m.update(&theme, 1.0, Some([800.0, 500.0]), true, false, 1_100 * MS);
+        // A button stays held: still dragging.
+        m.update(&theme, 1.0, Some([800.0, 500.0]), true, 1_100 * MS);
         assert!(m.dragging());
-        m.update(&theme, 1.0, Some([800.0, 500.0]), false, false, 1_200 * MS);
+        m.update(&theme, 1.0, Some([800.0, 500.0]), false, 1_200 * MS);
         assert!(!m.dragging());
         assert!(sample(&m, &theme, 1_200 + 1_000).rotation.abs() < 0.1);
     }
@@ -714,7 +1056,7 @@ mod tests {
     fn the_drag_centre_follows_a_far_pointer() {
         let theme = Theme::default();
         let mut m = MenuCursorMotion::default();
-        m.update(&theme, 1.0, Some([0.0, 0.0]), false, false, 0);
+        m.update(&theme, 1.0, Some([0.0, 0.0]), false, 0);
         drag(&mut m, &theme, [0.0, 0.0], 10);
         drag(&mut m, &theme, [0.0, 500.0], 12);
         let before = m.origin;

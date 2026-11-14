@@ -159,14 +159,17 @@ fn view(pointer: &PointerWatch) -> MenuCursorView {
 
 fn draw(view: &mut MenuCursorView, frame: &MenuCursorFrame, now_ns: u64) -> ShapeBatch {
     let mut shapes = ShapeBatch::with_capacity(MAX_MENU_CURSOR_SHAPES);
-    view.push(
-        &mut shapes,
-        &Theme::default(),
-        white(),
-        [1024.0, 768.0],
-        now_ns,
-        frame,
-    );
+    // Without the shadow and the extras that need time to show (ADR-0136): the pointer's
+    // own shapes only.
+    let theme = Theme::default()
+        .with_shadow(0.0)
+        .with_cursor_fx(slam_ui::theme::CursorFx {
+            rotate: true,
+            spin: false,
+            trail: false,
+            ripple: false,
+        });
+    view.push(&mut shapes, &theme, white(), [1024.0, 768.0], now_ns, frame);
     shapes
 }
 
@@ -264,12 +267,12 @@ fn dangling_handle() -> TextureHandle {
     requests.load(vec![0], TextureKind::Standalone).unwrap()
 }
 
-/// How far the pointer's own shapes (not the glow after them) reach from `tip`.
+/// How far the pointer's own shapes (the fill and the outline, last; not the glow under
+/// them) reach from `tip`.
 fn reach(shapes: &ShapeBatch, tip: [f32; 2]) -> f32 {
-    shapes
-        .vertices()
+    let v = shapes.vertices();
+    v[v.len() - 2 * 4..]
         .iter()
-        .take(6 * 4)
         .map(|v| (v.position[0] - tip[0]).hypot(v.position[1] - tip[1]))
         .fold(0.0, f32::max)
 }

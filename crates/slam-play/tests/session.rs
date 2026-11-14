@@ -2692,8 +2692,9 @@ fn menu_frames_do_not_allocate() {
     };
     // Lazer: the background and a rectangle per button.
     assert_eq!(shapes(&mut view, &mut batch, &menus[0]), 4);
-    // SLAM: the dim, the backing and a button each, none selected.
-    assert_eq!(shapes(&mut view, &mut batch, &menus[3]), 5);
+    // SLAM: the dim, the backing and its shadow, and a button each of a shadow, a fill, a
+    // wash and triangles (ADR-0136), none selected.
+    assert_eq!(shapes(&mut view, &mut batch, &menus[3]), 1 + 2 + 3 * 4);
     // Stable: the dim, the overlay and the three buttons.
     assert_eq!(shapes(&mut view, &mut batch, &menus[6]), 5);
     // Stable's fail menu: no continue button, and the save footer.

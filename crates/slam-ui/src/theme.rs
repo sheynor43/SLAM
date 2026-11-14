@@ -375,6 +375,21 @@ pub struct Theme {
     pub shadow_offset: f32,
     /// Which extras SLAM's menu cursor shows (ADR-0136).
     pub cursor_fx: CursorFx,
+    /// The spin about the long axis: milliseconds of rest before it starts, of one turn,
+    /// and of the way back to face front once the pointer moves.
+    pub cursor_spin_delay_ms: f32,
+    pub cursor_spin_period_ms: f32,
+    pub cursor_spin_back_ms: f32,
+    /// The trail: reference pixels between its positions, milliseconds each lasts, its
+    /// opacity at the start.
+    pub cursor_trail_spacing: f32,
+    pub cursor_trail_ms: f32,
+    pub cursor_trail_alpha: f32,
+    /// The ring of a press: milliseconds, its final size (a part of the pointer's height),
+    /// its opacity at the start.
+    pub cursor_ripple_ms: f32,
+    pub cursor_ripple_size: f32,
+    pub cursor_ripple_alpha: f32,
 }
 
 /// The extras of SLAM's menu cursor, each switched in the settings (ADR-0136).
@@ -661,6 +676,15 @@ impl Theme {
             shadow_radius: 10.0,
             shadow_offset: 3.0,
             cursor_fx: CursorFx::default(),
+            cursor_spin_delay_ms: 1500.0,
+            cursor_spin_period_ms: 2600.0,
+            cursor_spin_back_ms: 450.0,
+            cursor_trail_spacing: 6.0,
+            cursor_trail_ms: 140.0,
+            cursor_trail_alpha: 0.35,
+            cursor_ripple_ms: 450.0,
+            cursor_ripple_size: 1.4,
+            cursor_ripple_alpha: 0.6,
         }
     }
 
