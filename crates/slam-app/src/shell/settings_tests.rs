@@ -9,8 +9,15 @@ use slam_ui::settings_screen::{KeyValue, MouseKey, RowWidget};
 
 use super::*;
 
+/// A shell whose transitions last `TRANSITION_NS`: the default style is random.
 fn state() -> ShellState {
-    ShellState::new(Theme::default(), 1280.0, 720.0, 1.0)
+    ShellState::new(Theme::default(), 1280.0, 720.0, 1.0).with_settings(test_settings())
+}
+
+fn test_settings() -> Settings {
+    let mut settings = Settings::default();
+    settings.general.transitions = slam_ui::screen::TransitionStyle::Simple;
+    settings
 }
 
 fn key(scancode: u16) -> InputEvent {
@@ -60,7 +67,7 @@ fn closing_without_a_change_saves_nothing() {
     opened(&mut s, &mut snap);
     s.tick(LATER, &[key(KEY_ESCAPE)], &mut snap);
     assert!(s.take_save_request().is_none());
-    assert_eq!(*s.settings(), Settings::default());
+    assert_eq!(*s.settings(), test_settings());
 }
 
 #[test]
@@ -521,7 +528,7 @@ fn escape_while_listening_cancels_and_keeps_the_screen_open() {
     s.tick(LATER, &[key(KEY_ENTER), key(KEY_ESCAPE)], &mut snap);
     assert!(s.settings_open());
     assert!(!settings_screen(&s).is_listening());
-    assert_eq!(*edited(&s), Settings::default());
+    assert_eq!(*edited(&s), test_settings());
     // Now it closes.
     s.tick(LATER, &[key(KEY_ESCAPE)], &mut snap);
     assert!(!s.settings_open());
@@ -566,7 +573,7 @@ fn a_click_starts_listening_and_the_next_press_of_any_button_is_captured() {
     );
     // The click itself was not taken as the binding.
     assert!(settings_screen(&s).is_listening());
-    assert_eq!(*edited(&s), Settings::default());
+    assert_eq!(*edited(&s), test_settings());
     s.tick(LATER, &[mouse(MouseButton::X1, true)], &mut snap);
     assert!(!settings_screen(&s).is_listening());
     assert!(s.settings_open());
@@ -599,12 +606,12 @@ fn a_taken_key_asks_and_keeping_changes_nothing() {
     assert_eq!(conflict.row, Row::LeftKey1 as usize);
     assert_eq!(conflict.key, KeyValue::Key(KEY_X));
     assert_eq!(conflict.other, Some(Row::RightKey1 as usize));
-    assert_eq!(*edited(&s), Settings::default());
+    assert_eq!(*edited(&s), test_settings());
     // Escape keeps and does not close.
     s.tick(LATER, &[key(KEY_ESCAPE)], &mut snap);
     assert!(s.settings_open());
     assert!(settings_screen(&s).conflict().is_none());
-    assert_eq!(*edited(&s), Settings::default());
+    assert_eq!(*edited(&s), test_settings());
     // Activate keeps by default.
     s.tick(
         LATER,
@@ -612,7 +619,7 @@ fn a_taken_key_asks_and_keeping_changes_nothing() {
         &mut snap,
     );
     assert!(settings_screen(&s).conflict().is_none());
-    assert_eq!(*edited(&s), Settings::default());
+    assert_eq!(*edited(&s), test_settings());
 }
 
 #[test]

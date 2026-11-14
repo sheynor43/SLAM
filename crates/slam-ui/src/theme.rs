@@ -301,6 +301,36 @@ pub mod transition {
     pub const BAND_WIDTH: f32 = 0.22;
     /// Opacity of the band at the middle of the transition.
     pub const BAND_PEAK_OPACITY: f32 = 0.55;
+
+    // The variants of ADR-0129.
+    /// Length of `slices`.
+    pub const SLICES_NS: u64 = 500_000_000;
+    /// Length of `iris`.
+    pub const IRIS_NS: u64 = 600_000_000;
+    /// Length of `shards`.
+    pub const SHARDS_NS: u64 = 600_000_000;
+    /// Length of `shutter`.
+    pub const SHUTTER_NS: u64 = 450_000_000;
+    /// Slide of the screens in `slices`, as a fraction of the window width.
+    pub const SLICES_SLIDE: f32 = 0.06;
+    /// Scales of the incoming and outgoing screens in `iris`.
+    pub const IRIS_SCALE_IN: f32 = 0.92;
+    pub const IRIS_SCALE_OUT: f32 = 1.08;
+    /// Scales of the incoming and outgoing screens in `shards`.
+    pub const SHARDS_SCALE_IN: f32 = 1.04;
+    pub const SHARDS_SCALE_OUT: f32 = 0.96;
+    /// Scale of the outgoing screen in `shutter`.
+    pub const SHUTTER_SCALE_OUT: f32 = 0.97;
+    /// Bars of `slices`.
+    pub const SLICE_COUNT: usize = 5;
+    /// Columns and rows of the tiles of `shards`; at most 64 together.
+    pub const SHARD_COLS: usize = 8;
+    pub const SHARD_ROWS: usize = 5;
+    /// Longest stagger between the shapes of a covering transition, as a fraction of its
+    /// length; at most `0.5 - GROW`.
+    pub const MAX_DELAY: f32 = 0.2;
+    /// How long one shape takes to grow or shrink, as a fraction of the transition.
+    pub const GROW: f32 = 0.3;
 }
 
 /// Largest skew [`Theme::button_skew_degrees`] takes.

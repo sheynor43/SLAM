@@ -60,13 +60,13 @@ fn ticks_without_navigation_do_not_allocate() {
 }
 
 #[test]
-fn fancy_transitions_do_not_allocate_and_show_the_band() {
+fn fancy_transitions_do_not_allocate_and_show_the_overlay() {
     use slam_app::settings::Settings;
     use slam_ui::screen::TransitionStyle;
     use slam_ui::theme::transition::FANCY_NS;
 
     let mut settings = Settings::default();
-    settings.general.transitions = TransitionStyle::Fancy;
+    settings.general.transitions = TransitionStyle::Random;
     let mut state = ShellState::new(Theme::default(), 1280.0, 720.0, 1.0).with_settings(settings);
     let mut snapshot = ShellSnapshot::default();
     let enter = InputEvent {
@@ -87,11 +87,11 @@ fn fancy_transitions_do_not_allocate_and_show_the_band() {
     assert_no_alloc(|| {
         for now in (2..2 * FANCY_NS).step_by(1_000_000) {
             state.tick(now, &moves, &mut snapshot);
-            seen_band |= snapshot.band.is_some();
+            seen_band |= snapshot.fx.is_some();
         }
     });
     assert!(seen_band);
-    assert!(snapshot.band.is_none());
+    assert!(snapshot.fx.is_none());
 }
 
 #[test]

@@ -246,9 +246,9 @@ fn styled(style: TransitionStyle) -> ScreenStack<&'static str> {
 }
 
 #[test]
-fn simple_is_the_default_and_poses_have_no_scale() {
-    assert_eq!(TransitionStyle::default(), TransitionStyle::Simple);
-    let mut stack = ScreenStack::new("menu");
+fn simple_poses_have_no_scale() {
+    assert_eq!(TransitionStyle::default(), TransitionStyle::Random);
+    let mut stack = styled(TransitionStyle::Simple);
     stack.navigate(Nav::Push("select"), 0);
     for t in [0, 50, 100, 150, 200] {
         for (_, pose) in names(&stack, t * MS) {
@@ -274,7 +274,7 @@ fn none_is_instant_without_a_leaving_layer() {
 #[test]
 fn fancy_poses_at_the_ends_and_the_middle() {
     use crate::theme::transition::*;
-    let mut stack = styled(TransitionStyle::Fancy);
+    let mut stack = styled(TransitionStyle::Band);
     stack.navigate(Nav::Push("select"), 0);
     let start = names(&stack, 0);
     assert_eq!(start[0].1, Pose::SHOWN);
@@ -305,7 +305,7 @@ fn fancy_poses_at_the_ends_and_the_middle() {
 
 #[test]
 fn fancy_poses_move_monotonically() {
-    for style in [TransitionStyle::Simple, TransitionStyle::Fancy] {
+    for style in [TransitionStyle::Simple, TransitionStyle::Band] {
         for pop in [false, true] {
             let mut stack = styled(style);
             stack.navigate(Nav::Push("select"), 0);
@@ -344,7 +344,7 @@ impl AbsDiffToOne for f32 {
 
 #[test]
 fn a_transition_keeps_the_style_it_started_in() {
-    let mut stack = styled(TransitionStyle::Fancy);
+    let mut stack = styled(TransitionStyle::Band);
     stack.navigate(Nav::Push("select"), 0);
     stack.set_style(TransitionStyle::None);
     assert!(stack.in_transition(300 * MS));
@@ -362,7 +362,7 @@ const FANCY_NS_FOR_TEST: u64 = crate::theme::transition::FANCY_NS;
 #[test]
 fn the_band_crosses_right_to_left_on_push_and_back_on_pop() {
     let theme = Theme::default();
-    let mut stack = styled(TransitionStyle::Fancy);
+    let mut stack = styled(TransitionStyle::Band);
     stack.navigate(Nav::Push("select"), 0);
     let centre = |b: &Band| {
         let s = b.shape(&theme, white(), 1000.0, 500.0);
@@ -390,7 +390,7 @@ fn the_band_crosses_right_to_left_on_push_and_back_on_pop() {
 #[test]
 fn the_band_peaks_in_the_middle_and_is_accent_coloured_and_skewed() {
     let theme = Theme::default();
-    let mut stack = styled(TransitionStyle::Fancy);
+    let mut stack = styled(TransitionStyle::Band);
     stack.navigate(Nav::Push("select"), 0);
     let strength = |f: u64| stack.band(FANCY_NS_FOR_TEST * f / 100).unwrap().strength;
     assert!(strength(50) > strength(25) && strength(50) > strength(75));
@@ -421,4 +421,219 @@ fn style_names_round_trip() {
         assert_eq!(TransitionStyle::from_name(style.name()), Some(style));
     }
     assert_eq!(TransitionStyle::from_name("flashy"), None);
+}
+
+const FANCY_STYLES: [TransitionStyle; 5] = [
+    TransitionStyle::Band,
+    TransitionStyle::Slices,
+    TransitionStyle::Iris,
+    TransitionStyle::Shards,
+    TransitionStyle::Shutter,
+];
+
+fn overlay(fx: &TransitionFx, width: f32, height: f32) -> Vec<Shape> {
+    let mut out = Vec::new();
+    fx.emit(&Theme::default(), white(), width, height, |s| out.push(s));
+    out
+}
+
+fn fx_of(style: TransitionStyle, pop: bool, linear: f32) -> TransitionFx {
+    TransitionFx {
+        style,
+        forward: !pop,
+        linear,
+        origin: Some([300.0, 200.0]),
+    }
+}
+
+/// Fraction of a `w` x `h` grid of sample points that lie inside some shape.
+fn covered(shapes: &[Shape], w: f32, h: f32) -> f32 {
+    let (nx, ny) = (80, 50);
+    let mut hit = 0;
+    for iy in 0..ny {
+        for ix in 0..nx {
+            let (x, y) = (
+                (ix as f32 + 0.5) * w / nx as f32,
+                (iy as f32 + 0.5) * h / ny as f32,
+            );
+            if shapes.iter().any(|s| inside(s, x, y)) {
+                hit += 1;
+            }
+        }
+    }
+    hit as f32 / (nx * ny) as f32
+}
+
+fn inside(s: &Shape, x: f32, y: f32) -> bool {
+    let c = [
+        s.position[0] + s.size[0] * 0.5,
+        s.position[1] + s.size[1] * 0.5,
+    ];
+    // Undo the skew about the centre line: positive leans the top right.
+    let x = x - (c[1] - y) * s.skew.tan();
+    if s.radius >= s.size[0] * 0.5 - 0.01 && s.size[0] == s.size[1] {
+        let d = (x - c[0]).hypot(y - c[1]);
+        let r = s.size[0] * 0.5;
+        return d <= r && (s.outline <= 0.0 || d >= r - s.outline);
+    }
+    (x - c[0]).abs() <= s.size[0] * 0.5 && (y - c[1]).abs() <= s.size[1] * 0.5
+}
+
+#[test]
+fn covering_overlays_are_empty_at_the_ends_and_cover_the_middle() {
+    let (w, h) = (1000.0, 500.0);
+    for style in [
+        TransitionStyle::Slices,
+        TransitionStyle::Iris,
+        TransitionStyle::Shards,
+        TransitionStyle::Shutter,
+    ] {
+        for pop in [false, true] {
+            assert!(
+                overlay(&fx_of(style, pop, 0.0), w, h).is_empty(),
+                "{style:?} start"
+            );
+            assert!(
+                overlay(&fx_of(style, pop, 1.0), w, h).is_empty(),
+                "{style:?} end"
+            );
+            let mid = overlay(&fx_of(style, pop, 0.5), w, h);
+            assert!(!mid.is_empty());
+            assert!(
+                covered(&mid, w, h) > 0.995,
+                "{style:?} mid {}",
+                covered(&mid, w, h)
+            );
+            let early = covered(&overlay(&fx_of(style, pop, 0.15), w, h), w, h);
+            assert!(early < 0.9, "{style:?} early {early}");
+            let late = covered(&overlay(&fx_of(style, pop, 0.9), w, h), w, h);
+            assert!(late < 0.9, "{style:?} late {late}");
+        }
+    }
+}
+
+#[test]
+fn band_overlay_is_one_translucent_shape_and_empty_at_the_ends() {
+    let (w, h) = (1000.0, 500.0);
+    assert!(overlay(&fx_of(TransitionStyle::Band, false, 0.0), w, h).is_empty());
+    assert!(overlay(&fx_of(TransitionStyle::Band, false, 1.0), w, h).is_empty());
+    let mid = overlay(&fx_of(TransitionStyle::Band, false, 0.5), w, h);
+    assert_eq!(mid.len(), 1);
+    assert!(mid[0].colour.a < 1.0);
+}
+
+#[test]
+fn iris_opens_from_the_origin_or_the_centre() {
+    let (w, h) = (1000.0, 500.0);
+    let mut fx = fx_of(TransitionStyle::Iris, false, 0.2);
+    let s = overlay(&fx, w, h)[0];
+    assert!(close(s.position[0] + s.size[0] * 0.5, 300.0));
+    assert!(close(s.position[1] + s.size[1] * 0.5, 200.0));
+    fx.origin = None;
+    let s = overlay(&fx, w, h)[0];
+    assert!(close(s.position[0] + s.size[0] * 0.5, 500.0));
+    assert!(close(s.position[1] + s.size[1] * 0.5, 250.0));
+    // Past the middle the disc is a ring that opens from the same point.
+    fx.linear = 0.75;
+    let ring = overlay(&fx, w, h)[0];
+    assert!(ring.outline > 0.0);
+    assert!(!inside(&ring, 500.0, 250.0) && inside(&ring, 5.0, 5.0));
+}
+
+#[test]
+fn overlays_are_skewed_by_the_theme_and_stay_within_the_shape_budget() {
+    let theme = Theme::default();
+    for style in [
+        TransitionStyle::Slices,
+        TransitionStyle::Shards,
+        TransitionStyle::Shutter,
+    ] {
+        for step in 0..=100 {
+            let shapes = overlay(&fx_of(style, false, step as f32 / 100.0), 1280.0, 720.0);
+            assert!(shapes.len() <= MAX_FX_SHAPES);
+            assert!(shapes.iter().all(|s| s.skew == theme.button_skew()));
+        }
+    }
+    let shards = overlay(&fx_of(TransitionStyle::Shards, false, 0.5), 1280.0, 720.0);
+    assert_eq!(
+        shards.len(),
+        crate::theme::transition::SHARD_COLS * crate::theme::transition::SHARD_ROWS
+    );
+}
+
+#[test]
+fn sweeps_start_at_the_edge_the_new_screen_comes_from() {
+    let first_x = |pop: bool| {
+        let shapes = overlay(&fx_of(TransitionStyle::Slices, pop, 0.1), 1000.0, 500.0);
+        let s = shapes[0];
+        s.position[0] + s.size[0] * 0.5
+    };
+    assert!(first_x(false) > 500.0);
+    assert!(first_x(true) < 500.0);
+}
+
+#[test]
+fn random_never_repeats_and_visits_every_fancy_style() {
+    let mut stack = styled(TransitionStyle::Random);
+    let mut seen = Vec::new();
+    let mut last = None;
+    for i in 0..40u64 {
+        let now = i * 10_000 * MS;
+        stack.navigate(if i % 2 == 0 { Nav::Push("a") } else { Nav::Pop }, now);
+        let style = stack.fx(now + 1).unwrap().style;
+        assert!(FANCY_STYLES.contains(&style));
+        assert_ne!(Some(style), last);
+        last = Some(style);
+        if !seen.contains(&style) {
+            seen.push(style);
+        }
+        stack.tick(now + 9_000 * MS);
+    }
+    assert_eq!(seen.len(), FANCY_STYLES.len());
+    // Deterministic: a second stack walks the same way.
+    let mut again = styled(TransitionStyle::Random);
+    again.navigate(Nav::Push("a"), 0);
+    let mut first = styled(TransitionStyle::Random);
+    first.navigate(Nav::Push("a"), 0);
+    assert_eq!(again.fx(1).unwrap().style, first.fx(1).unwrap().style);
+}
+
+#[test]
+fn a_random_transition_keeps_its_variant_while_running() {
+    let mut stack = styled(TransitionStyle::Random);
+    stack.navigate(Nav::Push("a"), 0);
+    let style = stack.fx(1).unwrap().style;
+    stack.set_style(TransitionStyle::Simple);
+    assert_eq!(stack.fx(2).unwrap().style, style);
+    assert!(stack.in_transition(style.duration_ns() - 1));
+}
+
+#[test]
+fn covering_poses_swap_the_screens_while_covered() {
+    for style in [
+        TransitionStyle::Slices,
+        TransitionStyle::Iris,
+        TransitionStyle::Shards,
+        TransitionStyle::Shutter,
+    ] {
+        let mut stack = styled(style);
+        stack.navigate(Nav::Push("select"), 0);
+        let d = style.duration_ns();
+        let at = |f: u64| names(&stack, d * f / 100);
+        assert_eq!(at(0)[1].1.opacity, 0.0);
+        assert_eq!(at(30)[0].1.opacity, 1.0);
+        assert_eq!(at(70)[1].1.opacity, 1.0);
+        assert_eq!(at(70)[0].1.opacity, 0.0);
+        assert!(stack.fx(d - 1).is_some() && stack.fx(d).is_none());
+        assert!((450_000_000..=600_000_000).contains(&d));
+    }
+}
+
+#[test]
+fn style_names_include_the_old_fancy() {
+    assert_eq!(
+        TransitionStyle::from_name("fancy"),
+        Some(TransitionStyle::Band)
+    );
+    assert_eq!(TransitionStyle::ALL.len(), 8);
 }

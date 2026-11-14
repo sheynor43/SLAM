@@ -47,7 +47,7 @@ use slam_ui::results::{
     Results, ResultsAction, ResultsData, ResultsInput, ResultsLayout, ResultsMods, ResultsSnapshot,
     ResultsView, StatKind,
 };
-use slam_ui::screen::{Band, MAX_LAYERS, Nav, Navigated, Pose, ScreenStack};
+use slam_ui::screen::{MAX_LAYERS, Nav, Navigated, Pose, ScreenStack, TransitionFx};
 use slam_ui::settings_screen::panel::{
     PanelMotion, panel_layout, panel_pose, panel_width, push_backdrop,
 };
@@ -274,8 +274,8 @@ pub struct ShellSnapshot {
     /// How many language switches asked for views so far: a new one closes the curtain
     /// (ADR-0091).
     pub language_switch: u64,
-    /// The accent band across a `fancy` screen transition (ADR-0126).
-    pub band: Option<Band>,
+    /// The shapes over the layers during a fancy screen transition (ADR-0126, ADR-0129).
+    pub fx: Option<TransitionFx>,
     /// The settings panel over the screens, while it shows.
     pub panel: Option<PanelView>,
     /// The startup intro over everything, while it shows (ADR-0114).
@@ -937,6 +937,7 @@ impl ShellState {
             };
             // A full stack cannot happen from the song select or the results: the play
             // would be unreachable then, so the shell's depth leaves room for it.
+            self.stack.set_origin(Some(self.cursor));
             self.stack.navigate(nav, now_ns);
         }
     }
@@ -952,6 +953,7 @@ impl ShellState {
         if self.playing() {
             // Navigation: the data nobody else holds goes now.
             self.held_results.retain(|data| Arc::strong_count(data) > 1);
+            self.stack.set_origin(Some(self.cursor));
             self.stack.navigate(after_play(results), now_ns);
             if let AppScreen::Results(results) = self.stack.top() {
                 self.held_results.push(results.share());
@@ -1734,10 +1736,11 @@ impl ShellState {
             if open_panel {
                 self.open_settings(now_ns);
             }
-            if let Some(nav) = nav
-                && self.stack.navigate(nav, now_ns) == Navigated::Exit
-            {
-                return Navigated::Exit;
+            if let Some(nav) = nav {
+                self.stack.set_origin(Some(self.cursor));
+                if self.stack.navigate(nav, now_ns) == Navigated::Exit {
+                    return Navigated::Exit;
+                }
             }
         }
         Navigated::Stay
@@ -1807,7 +1810,7 @@ impl ShellState {
             );
             snapshot.background = backgrounds.tick_source(now_ns, source);
         }
-        snapshot.band = self.stack.band(now_ns);
+        snapshot.fx = self.stack.fx(now_ns);
         self.tick_thumbnails(&mut snapshot.thumbnails);
         // The cursor's style as edited in the settings screen counts at once (ADR-0124).
         let cursor_style = self
@@ -3751,11 +3754,11 @@ impl<B: render::Backend> Draw<ShellSnapshot> for View<B> {
         }
         // Last, over every screen and the play (ADR-0060).
         let overlay_from = (self.shapes.len() as u32, self.text.len() as u32);
-        // The `fancy` transition's band crosses over the layers; not without effects.
+        // A fancy transition's shapes cross over the layers; not without effects.
         if self.theme.effects
-            && let Some(band) = &snapshot.band
+            && let Some(fx) = &snapshot.fx
         {
-            band.push(&mut self.shapes, &self.theme, r.white, width, height);
+            fx.push(&mut self.shapes, &self.theme, r.white, width, height);
         }
         // Over every screen and the panel, under the curtain and the FPS counter; its
         // outlines are drawn last, over them, while the letters are outlined.
