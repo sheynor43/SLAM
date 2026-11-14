@@ -280,7 +280,7 @@ pub enum Row {
 const _: () = assert!(Row::ALL.len() <= slam_ui::settings_screen::MAX_ROWS);
 
 impl Row {
-    pub const ALL: [Row; 71] = [
+    pub const ALL: [Row; 72] = [
         Row::MasterVolume,
         Row::MusicVolume,
         Row::MenuMusic,
