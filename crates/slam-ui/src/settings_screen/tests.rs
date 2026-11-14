@@ -58,20 +58,26 @@ fn input(screen: &mut SettingsScreen, input: SettingsInput) -> Option<SettingsAc
 fn starts_on_the_first_row_of_the_first_section() {
     let s = screen();
     assert_eq!((s.section(), s.focus(), s.sections()), (0, 0, 2));
-    assert_eq!(s.slot(2), 2);
-    assert_eq!(s.slot(3), 0);
+    // Headers are lines of the one list: header, three rows, header, one row.
+    assert_eq!((s.header(0), s.header(1)), (Some(0), Some(4)));
+    assert_eq!((s.slot(0), s.slot(2), s.slot(3)), (1, 3, 5));
+    assert_eq!(s.lines(), 6);
 }
 
 #[test]
-fn up_and_down_move_the_focus_within_the_section() {
+fn up_and_down_walk_the_one_list_across_sections() {
     let mut s = screen();
     assert_eq!(input(&mut s, SettingsInput::Up), None);
     assert_eq!(s.focus(), 0);
     input(&mut s, SettingsInput::Down);
     input(&mut s, SettingsInput::Down);
     assert_eq!(s.focus(), 2);
-    // The second section's row is not reachable from here.
+    // The second section's row follows the first's, past its header.
     input(&mut s, SettingsInput::Down);
+    assert_eq!(s.focus(), 3);
+    input(&mut s, SettingsInput::Down);
+    assert_eq!(s.focus(), 3);
+    input(&mut s, SettingsInput::Up);
     assert_eq!(s.focus(), 2);
     input(&mut s, SettingsInput::Up);
     assert_eq!(s.focus(), 1);
@@ -192,7 +198,7 @@ fn pointer_press_on_a_tab_switches_the_section() {
 #[test]
 fn pointer_press_on_a_toggle_row_flips_it_and_focuses_it() {
     let mut s = screen();
-    let (x, y) = centre(layout().row(1));
+    let (x, y) = centre(layout().row(s.slot(1)));
     assert_eq!(
         input(&mut s, SettingsInput::PointerPress { x, y }),
         Some(SettingsAction::Changed {
@@ -207,7 +213,7 @@ fn pointer_press_on_a_toggle_row_flips_it_and_focuses_it() {
 fn dragging_a_slider_follows_the_pointer_until_release() {
     let mut s = screen();
     let l = layout();
-    let widget = SliderLayout::new(l.widget(0), &theme(), l.scale);
+    let widget = SliderLayout::new(l.widget(s.slot(0)), &theme(), l.scale);
     let y = widget.hit.y + 2.0;
     let at = |fraction: f32| widget.track.x + widget.track.width * fraction;
     assert_eq!(
@@ -242,11 +248,12 @@ fn dragging_a_slider_follows_the_pointer_until_release() {
 fn pointer_chooses_from_an_open_list_and_a_press_elsewhere_closes_it() {
     let mut s = screen();
     let l = layout();
-    let widget = l.widget(2);
+    let slot = s.slot(2);
+    let widget = l.widget(slot);
     let (x, y) = centre(widget);
     assert_eq!(input(&mut s, SettingsInput::PointerPress { x, y }), None);
     assert!(matches!(s.widget(2), Some(RowWidget::Dropdown(d)) if d.is_open()));
-    let option = l.dropdown(2, 4).option(3);
+    let option = l.dropdown(slot, 4).option(3);
     let (ox, oy) = centre(option);
     assert_eq!(
         input(&mut s, SettingsInput::PointerPress { x: ox, y: oy }),
@@ -266,7 +273,7 @@ fn pointer_chooses_from_an_open_list_and_a_press_elsewhere_closes_it() {
 #[test]
 fn hover_focuses_the_row_under_the_pointer() {
     let mut s = screen();
-    let (x, y) = centre(layout().row(2));
+    let (x, y) = centre(layout().row(s.slot(2)));
     input(&mut s, SettingsInput::PointerMove { x, y });
     assert_eq!(s.focus(), 2);
 }
@@ -767,10 +774,10 @@ fn a_hidden_row_is_not_hit_and_the_rows_below_move_up() {
     let old_toggle = centre(l.row(s.slot(1)));
     s.set_hidden(0, true);
     assert!(s.is_hidden(0) && !s.is_hidden(1));
-    assert_eq!(s.slot(1), 0);
-    assert_eq!(s.slot(2), 1);
+    assert_eq!(s.slot(1), 1);
+    assert_eq!(s.slot(2), 2);
     // The toggle now sits where the slider was; the old place holds the dropdown row.
-    let first = centre(l.row(0));
+    let first = centre(l.row(1));
     assert!(matches!(
         input(
             &mut s,
@@ -793,8 +800,8 @@ fn a_hidden_row_is_not_hit_and_the_rows_below_move_up() {
         },
     );
     assert_eq!(s.focus(), 2);
-    // Nothing is left at the slot below the last visible row.
-    let past = centre(l.row(2));
+    // The line below the section's last row is the next header, which takes no press.
+    let past = centre(l.row(3));
     input(
         &mut s,
         SettingsInput::PointerPress {
@@ -805,7 +812,7 @@ fn a_hidden_row_is_not_hit_and_the_rows_below_move_up() {
     assert_eq!(s.focus(), 2);
     let snapshot = s.snapshot();
     assert!(snapshot.hidden[0] && !snapshot.hidden[1]);
-    assert_eq!(snapshot.slots[1], 0);
+    assert_eq!(snapshot.slots[1], 1);
 }
 
 #[test]
@@ -827,7 +834,10 @@ fn the_focus_leaves_a_row_that_becomes_hidden() {
     input(&mut s, SettingsInput::Down);
     s.set_hidden(1, true);
     assert_eq!(s.focus(), 2);
+    // Nothing below in the section: the next row of the list is the second section's.
     s.set_hidden(2, true);
+    assert_eq!(s.focus(), 3);
+    s.set_hidden(3, true);
     assert_eq!(s.focus(), 0);
 }
 
@@ -843,7 +853,7 @@ fn hiding_an_open_dropdown_closes_it_without_an_action() {
     assert!(
         matches!(s.widget(2), Some(RowWidget::Dropdown(d)) if !d.is_open() && d.selected() == 1)
     );
-    assert_eq!(s.focus(), 1);
+    assert_eq!(s.focus(), 3);
     // Back now closes the screen, not a dropdown.
     assert_eq!(
         input(&mut s, SettingsInput::Back),
@@ -870,8 +880,8 @@ fn showing_a_row_again_restores_its_state() {
     assert_eq!(input(&mut s, SettingsInput::Right), None);
     s.set_hidden(0, false);
     assert!(s.is_disabled(0) && s.is_hinted(0) && !s.is_hidden(0));
-    assert_eq!(s.slot(0), 0);
-    assert_eq!(s.slot(1), 1);
+    assert_eq!(s.slot(0), 1);
+    assert_eq!(s.slot(1), 2);
     assert!(matches!(s.widget(0), Some(RowWidget::Slider(w)) if w.value() > 50.0));
 }
 
@@ -880,9 +890,10 @@ fn hidden_rows_shrink_the_section() {
     let mut s = screen();
     s.set_hidden(0, true);
     s.set_hidden(1, true);
-    // One visible row in section 0 is left, at slot 0; section 1 is untouched.
-    assert_eq!(s.slot(2), 0);
-    assert_eq!(s.slot(3), 0);
+    // One visible row in section 0 is left, under its header; section 1 follows it.
+    assert_eq!(s.slot(2), 1);
+    assert_eq!(s.header(1), Some(2));
+    assert_eq!(s.slot(3), 3);
     let visible = s.snapshot().hidden[..3].iter().filter(|h| !**h).count();
     assert_eq!(visible, 1);
 }
@@ -926,8 +937,7 @@ fn a_note_row_is_skipped_by_navigation_and_never_focused() {
 fn a_note_row_is_not_hit_and_gives_no_action() {
     let mut s = notes_screen();
     let l = layout();
-    // Slot 1 of section 0 is the note.
-    let (x, y) = centre(l.row(1));
+    let (x, y) = centre(l.row(s.slot(1)));
     assert_eq!(input(&mut s, SettingsInput::PointerPress { x, y }), None);
     assert_eq!(s.focus(), 0);
     input(&mut s, SettingsInput::PointerMove { x, y });
@@ -949,9 +959,10 @@ fn hiding_the_focused_row_never_moves_the_focus_to_a_note() {
     let mut s = notes_screen();
     input(&mut s, SettingsInput::Down);
     assert_eq!(s.focus(), 2);
-    // Nothing visible below in the section; the note above is passed over.
+    // Nothing below in the section: the focus goes on to the next row of the list, passing
+    // the note of section 1.
     s.set_hidden(2, true);
-    assert_eq!(s.focus(), 0);
+    assert_eq!(s.focus(), 4);
 }
 
 #[test]
@@ -959,17 +970,17 @@ fn a_note_row_can_be_hidden_and_shown() {
     let mut s = notes_screen();
     s.set_hidden(1, true);
     assert!(s.is_hidden(1));
-    assert_eq!(s.slot(2), 1);
+    assert_eq!(s.slot(2), 2);
     s.set_hidden(1, false);
     assert!(!s.is_hidden(1));
-    assert_eq!(s.slot(2), 2);
+    assert_eq!(s.slot(2), 3);
 }
 
 #[test]
 fn hiding_a_slider_while_dragging_ends_the_drag() {
     let mut s = screen();
     let l = layout();
-    let widget = SliderLayout::new(l.widget(0), &theme(), l.scale);
+    let widget = SliderLayout::new(l.widget(s.slot(0)), &theme(), l.scale);
     let y = widget.hit.y + 2.0;
     let at = |fraction: f32| widget.track.x + widget.track.width * fraction;
     input(&mut s, SettingsInput::PointerPress { x: at(0.25), y });
@@ -995,24 +1006,19 @@ fn hiding_a_slider_while_dragging_ends_the_drag() {
 }
 
 #[test]
-fn input_to_a_focus_left_in_another_section_is_ignored() {
+fn a_section_without_rows_has_no_header_and_is_skipped() {
     let mut s = screen();
-    // Hide the only row of section 1; the focus stays on a row of section 0.
+    // Hide the only row of section 1.
     s.set_hidden(3, true);
+    assert_eq!((s.header(0), s.header(1)), (Some(0), None));
+    assert_eq!(s.lines(), 4);
     input(&mut s, SettingsInput::NextSection);
-    assert_eq!(s.section(), 1);
+    assert_eq!(s.section(), 0);
     assert_eq!(s.focus(), 0);
-    for i in [
-        SettingsInput::Activate,
-        SettingsInput::Left,
-        SettingsInput::Right,
-    ] {
-        assert_eq!(input(&mut s, i), None);
-    }
-    let Some(RowWidget::Slider(sl)) = s.widget(0) else {
-        panic!()
-    };
-    assert_eq!(sl.value(), 50.0);
+    // Clicking its tab does nothing either.
+    let (x, y) = centre(layout().tabs[1]);
+    assert_eq!(input(&mut s, SettingsInput::PointerPress { x, y }), None);
+    assert_eq!(s.section(), 0);
     // Back still closes.
     assert_eq!(
         input(&mut s, SettingsInput::Back),
@@ -1079,8 +1085,9 @@ fn search_lists_matches_of_all_sections_with_global_slots() {
     assert_eq!(s.search().as_str(), "volume");
     let snap = s.snapshot();
     assert_eq!(snap.hidden[..5], [false, false, true, false, true]);
-    assert_eq!((s.slot(0), s.slot(1), s.slot(3)), (0, 1, 2));
-    // Tabs unselected: the screen shows a list, not a section.
+    // Header, two results, the header of the second section, its result.
+    assert_eq!((s.slot(0), s.slot(1), s.slot(3)), (1, 2, 4));
+    assert_eq!(snap.headers[..2], [Some(0), Some(3)]);
     assert!(snap.search.as_str() == "volume");
     // The focus is on the first result and moves over the results of both sections.
     assert_eq!(s.focus(), 0);
@@ -1153,20 +1160,23 @@ fn moving_the_focus_past_the_bottom_scrolls_to_keep_it_visible() {
     let (mut s, l) = long_screen();
     let visible = l.visible_rows().floor() as usize;
     assert_eq!(s.scroll(), 0.0);
-    for _ in 0..visible - 1 {
+    // The header takes the first line: the rows under it fit `visible - 1` lines.
+    for _ in 0..visible - 2 {
         s.input(SettingsInput::Down, &l);
     }
     assert_eq!(s.scroll(), 0.0);
     s.input(SettingsInput::Down, &l);
-    assert_eq!(s.focus(), visible);
+    assert_eq!(s.focus(), visible - 1);
     assert_eq!(s.scroll(), 1.0);
-    assert!(l.scrolled(s.scroll()).shows(s.slot(s.focus())));
+    s.tick(1_000_000_000, &l);
+    assert!(l.scrolled(s.shown_scroll()).shows(s.slot(s.focus())));
     for _ in 0..30 {
         s.input(SettingsInput::Down, &l);
     }
     assert_eq!(s.focus(), 29);
-    assert!(l.scrolled(s.scroll()).shows(s.slot(29)));
-    // And back up.
+    s.tick(2_000_000_000, &l);
+    assert!(l.scrolled(s.shown_scroll()).shows(s.slot(29)));
+    // And back up, to the header.
     for _ in 0..30 {
         s.input(SettingsInput::Up, &l);
     }
@@ -1181,10 +1191,11 @@ fn the_wheel_scrolls_the_rows_and_is_clamped() {
     s.input(SettingsInput::Scroll { lines: -10.0 }, &l);
     assert_eq!(s.scroll(), 0.0);
     s.input(SettingsInput::Scroll { lines: 1000.0 }, &l);
-    let max = (30.0 - l.visible_rows()).ceil();
+    // 30 rows and the header.
+    let max = 31.0 - l.visible_rows();
     assert_eq!(s.scroll(), max);
     // The last row is shown whole at the end.
-    assert!(l.scrolled(s.scroll()).shows(29));
+    assert!(l.scrolled(s.scroll()).shows(30));
     // A short list does not scroll.
     let mut short = screen();
     short.input(SettingsInput::Scroll { lines: 5.0 }, &layout());
@@ -1207,21 +1218,204 @@ fn the_wheel_scrolls_an_open_dropdown_not_the_rows() {
 fn pointing_respects_the_scroll() {
     let (mut s, l) = long_screen();
     s.input(SettingsInput::Scroll { lines: 5.0 }, &l);
-    let scrolled = l.scrolled(s.scroll());
-    // Row 2 is above the content now: not found, wherever it lies.
+    s.tick(1_000_000_000, &l);
+    let scrolled = l.scrolled(s.shown_scroll());
+    // Row 2 (line 3) is above the content now: not found, wherever it lies.
     assert_eq!(s.row_at(&scrolled, 0.0, 0.0), None);
-    let (x, y) = centre(scrolled.row(2));
+    let (x, y) = centre(scrolled.row(s.slot(2)));
     assert_eq!(s.row_at(&scrolled, x, y), None);
-    let (x, y) = centre(scrolled.row(5));
+    let (x, y) = centre(scrolled.row(s.slot(5)));
     assert_eq!(s.row_at(&scrolled, x, y), Some(5));
-    let (x, y) = centre(scrolled.row(7));
-    assert_eq!(s.row_at(&scrolled, x, y), Some(7));
-    // A slot past the content area is not pointed at either.
-    let below = (6..30).find(|slot| !scrolled.shows(*slot)).unwrap();
+    let (x, y) = centre(scrolled.row(s.slot(6)));
+    assert_eq!(s.row_at(&scrolled, x, y), Some(6));
+    // A line past the content area is not pointed at either.
+    let below = (6..31).find(|slot| !scrolled.shows(*slot)).unwrap();
     let (x, y) = centre(scrolled.row(below));
     assert_eq!(s.row_at(&scrolled, x, y), None);
-    // A press at row 0's old place focuses the row there now (5), not row 0.
+    // A press at line 0's place focuses the line there now (5, row 4), not row 0.
     let (x, y) = centre(l.row(0));
     s.input(SettingsInput::PointerPress { x, y }, &l);
-    assert_eq!(s.focus(), 5);
+    assert_eq!(s.focus(), 4);
+}
+
+/// Three sections of 20 sliders each in a window that fits only some of them: 63 lines.
+fn sectioned_screen() -> (SettingsScreen, SettingsLayout) {
+    let rows: Vec<RowSpec> = (0..60_u32)
+        .map(|i| slider((i / 20) as usize, f64::from(i)))
+        .collect();
+    let layout = SettingsLayout::new(1280.0, 500.0, &theme());
+    let mut s = SettingsScreen::new(&rows, 3);
+    s.tick(0, &layout);
+    s.set_search_texts(texts(
+        &(0..60)
+            .map(|i| if i == 45 { "needle" } else { "hay" })
+            .collect::<Vec<_>>(),
+    ));
+    (s, layout)
+}
+
+/// Lets the eased scroll settle.
+fn settle(s: &mut SettingsScreen, l: &SettingsLayout) {
+    for step in 1..=200_u64 {
+        s.tick(step * 16_000_000, l);
+    }
+}
+
+#[test]
+fn all_sections_are_one_list_with_a_header_each() {
+    let (s, _) = sectioned_screen();
+    assert_eq!(s.lines(), 63);
+    assert_eq!(
+        (s.header(0), s.header(1), s.header(2)),
+        (Some(0), Some(21), Some(42))
+    );
+    assert_eq!(s.slot(0), 1);
+    assert_eq!(s.slot(20), 22);
+    assert_eq!(s.slot(59), 62);
+    let snap = s.snapshot();
+    assert_eq!(snap.headers[..3], [Some(0), Some(21), Some(42)]);
+}
+
+#[test]
+fn a_click_on_a_category_scrolls_to_its_header_and_the_sidebar_follows() {
+    let (mut s, l) = sectioned_screen();
+    let (x, y) = centre(l.tabs[1]);
+    assert_eq!(s.input(SettingsInput::PointerPress { x, y }, &l), None);
+    // The target is the header; nothing has moved yet.
+    assert_eq!(s.scroll(), 21.0);
+    assert_eq!(s.shown_scroll(), 0.0);
+    assert_eq!(s.section(), 1);
+    assert_eq!(s.focus(), 20);
+    settle(&mut s, &l);
+    assert_eq!(s.shown_scroll(), 21.0);
+    assert_eq!(s.section(), 1);
+    // The last section cannot reach the top of a short window: it is the one highlighted.
+    let (x, y) = centre(l.tabs[2]);
+    s.input(SettingsInput::PointerPress { x, y }, &l);
+    assert_eq!(s.section(), 2);
+    assert!(s.scroll() <= 42.0);
+    settle(&mut s, &l);
+    assert_eq!(s.section(), 2);
+}
+
+#[test]
+fn the_sidebar_highlights_the_section_at_the_top_of_a_scrolled_list() {
+    let (mut s, l) = sectioned_screen();
+    assert_eq!(s.section(), 0);
+    s.input(SettingsInput::Scroll { lines: 22.0 }, &l);
+    settle(&mut s, &l);
+    assert_eq!(s.section(), 1);
+    s.input(SettingsInput::Scroll { lines: 20.0 }, &l);
+    settle(&mut s, &l);
+    assert_eq!(s.section(), 2);
+    s.input(SettingsInput::Scroll { lines: -1000.0 }, &l);
+    settle(&mut s, &l);
+    assert_eq!(s.section(), 0);
+    // Halfway through the eased scroll the highlight is where the list is.
+    s.input(SettingsInput::Scroll { lines: 30.0 }, &l);
+    assert_eq!(s.section(), 0);
+    settle(&mut s, &l);
+    assert_eq!(s.section(), 1);
+}
+
+#[test]
+fn a_picked_section_stays_highlighted_until_the_list_is_scrolled() {
+    let (mut s, l) = sectioned_screen();
+    let (x, y) = centre(l.tabs[2]);
+    s.input(SettingsInput::PointerPress { x, y }, &l);
+    settle(&mut s, &l);
+    s.input(SettingsInput::Scroll { lines: -15.0 }, &l);
+    settle(&mut s, &l);
+    assert_eq!(s.section(), 1);
+}
+
+#[test]
+fn the_scroll_eases_to_its_target_and_lands() {
+    let (mut s, l) = sectioned_screen();
+    s.input(SettingsInput::Scroll { lines: 10.0 }, &l);
+    assert_eq!((s.scroll(), s.shown_scroll()), (10.0, 0.0));
+    // One frame moves it part of the way, never past the target.
+    s.tick(16_000_000, &l);
+    assert!(s.shown_scroll() > 0.0 && s.shown_scroll() < 10.0);
+    let mut last = s.shown_scroll();
+    for step in 2..=100_u64 {
+        s.tick(step * 16_000_000, &l);
+        assert!(s.shown_scroll() >= last && s.shown_scroll() <= 10.0);
+        last = s.shown_scroll();
+    }
+    assert_eq!(s.shown_scroll(), 10.0);
+    // The snapshot draws the eased scroll.
+    assert_eq!(s.snapshot().scroll, 10.0);
+}
+
+#[test]
+fn the_keyboard_scrolls_the_list_and_shows_a_sections_header_with_its_first_row() {
+    let (mut s, l) = sectioned_screen();
+    // Down to the last row of section 0, then the first of section 1.
+    for _ in 0..20 {
+        s.input(SettingsInput::Down, &l);
+    }
+    assert_eq!(s.focus(), 20);
+    // Its header is the line above the first row: it scrolls in with it.
+    let visible = l.visible_rows().floor();
+    assert!(s.scroll() <= 21.0 && s.scroll() + visible > 21.0);
+    // Page down goes to the header of the section after the one at the top of the list.
+    s.input(SettingsInput::NextSection, &l);
+    assert_eq!((s.scroll(), s.section()), (21.0, 1));
+    s.input(SettingsInput::NextSection, &l);
+    assert_eq!(s.scroll(), 42.0_f32.min(s.max_scroll()));
+    assert_eq!(s.section(), 2);
+}
+
+#[test]
+fn search_scrolls_to_the_first_match_hides_empty_headers_and_clearing_returns() {
+    let (mut s, l) = sectioned_screen();
+    s.input(SettingsInput::Scroll { lines: 30.0 }, &l);
+    settle(&mut s, &l);
+    type_str(&mut s, "needle");
+    // One match, in section 2: only that section's header remains.
+    let snap = s.snapshot();
+    assert_eq!(snap.headers[..3], [None, None, Some(0)]);
+    assert_eq!(s.lines(), 2);
+    assert_eq!(s.slot(45), 1);
+    assert_eq!(s.focus(), 45);
+    // The target is the top of the results; the list glides there.
+    assert_eq!(s.scroll(), 0.0);
+    assert!(s.shown_scroll() > 0.0);
+    settle(&mut s, &l);
+    assert_eq!(s.shown_scroll(), 0.0);
+    assert_eq!(s.section(), 2);
+    // Clearing goes back to where the list was.
+    s.input(SettingsInput::Back, &l);
+    assert!(!s.searching());
+    assert_eq!(s.scroll(), 30.0);
+    assert_eq!(s.lines(), 63);
+    settle(&mut s, &l);
+    assert_eq!(s.shown_scroll(), 30.0);
+    assert_eq!(s.section(), 1);
+    // A match in a later section than the one at the top is reached from anywhere.
+    s.input(SettingsInput::Scroll { lines: -30.0 }, &l);
+    type_str(&mut s, "hay");
+    assert_eq!(s.scroll(), 0.0);
+    assert_eq!(s.snapshot().headers[..3], [Some(0), Some(21), Some(42)]);
+}
+
+#[test]
+fn only_the_lines_touching_the_content_are_visible_slots() {
+    let (mut s, l) = sectioned_screen();
+    let range = l.visible_slots();
+    assert_eq!(range.start, 0);
+    assert!((range.end as f32) < l.visible_rows() + 3.0);
+    s.input(SettingsInput::Scroll { lines: 10.5 }, &l);
+    settle(&mut s, &l);
+    let scrolled = l.scrolled(s.shown_scroll());
+    let range = scrolled.visible_slots();
+    assert_eq!(range.start, 10);
+    assert!(range.end < 10 + 1 + l.visible_rows().ceil() as usize + 2);
+    // A line partly out of the content shows in part; one far out, nothing.
+    let half = scrolled.fraction(10);
+    assert!(half > 0.0 && half < 1.0, "{half}");
+    assert_eq!(scrolled.fraction(0), 0.0);
+    assert_eq!(scrolled.fraction(62), 0.0);
+    assert!((scrolled.fraction(12) - 1.0).abs() < 1e-4);
 }

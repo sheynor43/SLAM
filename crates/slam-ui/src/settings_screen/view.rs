@@ -220,6 +220,9 @@ enum RowView {
     Dropdown(DropdownView),
 }
 
+/// How much larger than a row's text a section header's is (ADR-0133).
+const HEADER_TEXT: f32 = 1.25;
+
 /// The draw side of [`SettingsScreen`].
 pub struct SettingsView {
     theme: Theme,
@@ -232,6 +235,8 @@ pub struct SettingsView {
     search: Line,
     search_seen: SearchQuery,
     tabs: Vec<Line>,
+    /// The section names as headers of the list, larger than the tabs'.
+    headers: Vec<Line>,
     labels: Vec<Line>,
     /// The rows' whole names: `labels` holds them as fitted to the label column.
     label_texts: Vec<String>,
@@ -357,6 +362,7 @@ impl SettingsView {
             },
             search_seen: SearchQuery::default(),
             tabs: labels.sections.iter().map(|s| Line::new(s)).collect(),
+            headers: labels.sections.iter().map(|s| Line::new(s)).collect(),
             labels: (0..rows.len())
                 .map(|i| {
                     let mut line = Line::new(labels.rows.get(i).map_or("", |r| &r.label));
@@ -439,6 +445,9 @@ impl SettingsView {
         let tab = self.layout.tabs[0].width - pad;
         for line in &mut self.tabs {
             lay_out_fitted(&mut self.type_setter, line, text, tab);
+        }
+        for line in &mut self.headers {
+            self.type_setter.lay_out(line, text * HEADER_TEXT);
         }
         for line in [
             &mut self.placeholder,
@@ -656,13 +665,13 @@ impl SettingsView {
             );
         }
         for (i, tab) in self.tabs.iter().enumerate() {
-            let fill_colour = if !snapshot.searching && i == snapshot.section {
+            let fill_colour = if i == snapshot.section {
                 theme.button_hover_fill
             } else {
                 theme.button_fill
             };
             let look = Look::Button {
-                highlighted: !snapshot.searching && i == snapshot.section,
+                highlighted: i == snapshot.section,
                 seed: i as f32 * 0.41,
                 fade: opacity,
             };
@@ -694,11 +703,7 @@ impl SettingsView {
         // An open list covers rows below or above it, whose texts would show through (all
         // texts are drawn over all rectangles): those rows are left out.
         let open_list = (0..snapshot.len).find_map(|i| match &snapshot.widgets[i] {
-            RowWidget::Dropdown(d)
-                if d.is_open()
-                    && (snapshot.searching || self.meta[i].0 == snapshot.section)
-                    && !snapshot.hidden[i] =>
-            {
+            RowWidget::Dropdown(d) if d.is_open() && !snapshot.hidden[i] => {
                 Some((usize::from(snapshot.slots[i]), d.count()))
             }
             _ => None,
@@ -706,18 +711,43 @@ impl SettingsView {
         // The open list is drawn last, over the other widgets' rectangles.
         let mut open_row = None;
         let mut any = false;
-        for i in 0..snapshot.len.min(self.meta.len()) {
-            let (section, _, restart) = self.meta[i];
-            let slot = usize::from(snapshot.slots[i]);
-            let in_view =
-                (snapshot.searching || section == snapshot.section) && !snapshot.hidden[i];
-            any |= in_view;
-            if !in_view
-                || !layout.shows(slot)
+        // Only the lines that touch the content area are laid out and drawn (ADR-0133).
+        let visible = layout.visible_slots();
+        for (section, header) in snapshot.headers.iter().enumerate().take(self.headers.len()) {
+            let Some(slot) = header.map(usize::from).filter(|s| visible.contains(s)) else {
+                continue;
+            };
+            let fraction = layout.fraction(slot);
+            if fraction <= 0.0
                 || open_list.is_some_and(|(open, count)| layout.covered_by_list(open, count, slot))
             {
                 continue;
             }
+            push_left(
+                text,
+                &self.headers[section],
+                &layout.row(slot),
+                pad,
+                faded(theme.text, opacity * fraction),
+                glyphs,
+            );
+        }
+        for i in 0..snapshot.len.min(self.meta.len()) {
+            let (_, _, restart) = self.meta[i];
+            let slot = usize::from(snapshot.slots[i]);
+            any |= !snapshot.hidden[i];
+            if snapshot.hidden[i]
+                || !visible.contains(&slot)
+                || open_list.is_some_and(|(open, count)| layout.covered_by_list(open, count, slot))
+            {
+                continue;
+            }
+            let fraction = layout.fraction(slot);
+            if fraction <= 0.0 {
+                continue;
+            }
+            // A row partly scrolled out fades by the part that is out: nothing clips it.
+            let opacity = opacity * fraction;
             if matches!(self.views[i], RowView::Note) {
                 // The whole row, left-aligned; there is no theme token for a warning.
                 push_left(

@@ -85,8 +85,8 @@ fn the_frame_section_changes_the_draw_rates() {
     let mut s = state();
     let mut snap = ShellSnapshot::default();
     opened(&mut s, &mut snap);
-    // Audio, offset, keys, layout, frame rates.
-    let tabs = [key(KEY_TAB); 4];
+    // Audio, offset, keys, layout, skin, frame rates.
+    let tabs = [key(KEY_TAB); 5];
     s.tick(LATER, &tabs, &mut snap);
     // Update rate, gameplay rate: the next option after 1000 Hz is 2000 Hz.
     s.tick(LATER, &[key(KEY_DOWN), key(KEY_RIGHT)], &mut snap);
@@ -122,7 +122,7 @@ fn a_released_primary_button_ends_a_slider_drag() {
     let mut snap = ShellSnapshot::default();
     opened(&mut s, &mut snap);
     let layout = s.settings_layout;
-    let widget = slam_ui::widgets::SliderLayout::new(layout.widget(0), &s.theme, layout.scale);
+    let widget = slam_ui::widgets::SliderLayout::new(layout.widget(1), &s.theme, layout.scale);
     let (y, x) = (
         widget.hit.y + 2.0,
         widget.track.x + widget.track.width * 0.5,
@@ -391,8 +391,8 @@ fn a_committed_update_rate_reaches_the_engine() {
     shell.update_rate = AppliedUpdateRate::new(control.clone(), 1000.0);
     let mut snap = ShellSnapshot::default();
     opened(&mut shell.state, &mut snap);
-    // Audio, offset, keys, layout, frame rates; the update rate is the first row.
-    let tabs = [key(KEY_TAB); 4];
+    // Audio, offset, keys, layout, skin, frame rates; the update rate is the first row.
+    let tabs = [key(KEY_TAB); 5];
     shell.state.tick(LATER, &tabs, &mut snap);
     shell.state.tick(LATER, &[key(KEY_RIGHT)], &mut snap);
     // Not before the screen closes.
@@ -552,8 +552,9 @@ fn a_click_starts_listening_and_the_next_press_of_any_button_is_captured() {
     let mut s = state();
     let mut snap = ShellSnapshot::default();
     on_keys(&mut s, &mut snap);
-    let layout = s.settings_layout;
-    let widget = layout.widget(layout_slot(Row::LeftKey2));
+    let screen = settings_screen(&s);
+    let layout = s.settings_layout.scrolled(screen.shown_scroll());
+    let widget = layout.widget(screen.slot(Row::LeftKey2 as usize));
     let (x, y) = (widget.x + 4.0, widget.y + 4.0);
     s.tick(
         LATER,
@@ -581,12 +582,6 @@ fn a_click_starts_listening_and_the_next_press_of_any_button_is_captured() {
         edited(&s).input.slot(Actions::RIGHT, 0),
         Some(Input::Mouse(MouseButton::Middle))
     );
-}
-
-/// The position of `row` in its section.
-fn layout_slot(row: Row) -> usize {
-    // The keys section starts with the mouse toggle.
-    row as usize - Row::MouseButtons as usize
 }
 
 #[test]

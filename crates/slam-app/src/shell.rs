@@ -1847,6 +1847,11 @@ impl ShellState {
             // Navigation: the screen goes with the panel.
             self.panel = None;
         }
+        let layout = self.settings_layout;
+        if let Some(panel) = &mut self.panel {
+            // The list scrolls smoothly (ADR-0133).
+            panel.screen.tick(now_ns, &layout);
+        }
         snapshot.panel = self.panel.as_ref().map(|p| PanelView {
             settings: p.screen.snapshot(),
             openness: p.motion.openness(now_ns),

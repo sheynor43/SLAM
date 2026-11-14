@@ -28,15 +28,30 @@ use slam_ui::screen::TransitionStyle;
 use slam_ui::theme::{ColourScheme, UI_SCALE_RANGE};
 
 /// Sections, in order; the keys of their names are in [`SECTION_KEYS`].
-const SECTION_KEYS: [&str; 7] = [
+const SECTION_KEYS: [&str; 8] = [
     "settings-section-audio",
     "settings-section-offset",
     "settings-section-keys",
     "settings-section-layout",
+    "settings-section-skin",
     "settings-section-frame",
     "settings-section-gameplay",
     "settings-section-library",
 ];
+/// The indices of the sections, in the order they show; [`SECTION_KEYS`] has their names in
+/// the same order. A new row goes to the section of its `Row::section` arm, and shows among
+/// its section's rows in the order of `Row::ALL`.
+mod section {
+    pub const AUDIO: usize = 0;
+    pub const OFFSET: usize = 1;
+    pub const KEYS: usize = 2;
+    pub const LAYOUT: usize = 3;
+    pub const SKIN: usize = 4;
+    pub const FRAME: usize = 5;
+    pub const GAMEPLAY: usize = 6;
+    pub const LIBRARY: usize = 7;
+}
+
 /// The index of the skin row.
 pub fn skin_row() -> usize {
     Row::ALL
@@ -187,8 +202,6 @@ pub enum Row {
     MusicVolume,
     MenuMusic,
     MenuMusicVolume,
-    /// Where the menu sounds come from (ADR-0120).
-    MenuSounds,
     HitsoundVolume,
     EffectsVolume,
     HitsoundDelay,
@@ -236,10 +249,23 @@ pub enum Row {
     MenuScale,
     /// The scale of the HUD and the pause and fail menus (ADR-0118).
     GameScale,
-    /// What the main menu shows behind its content (ADR-0119).
-    MenuBackground,
+    Skin,
+    BeatmapSkins,
+    BeatmapColours,
+    BeatmapHitsounds,
     /// The cursor of the menus; applies live (ADR-0124).
     MenuCursor,
+    /// The gameplay cursor (ADR-0124).
+    CursorStyle,
+    CursorSize,
+    AutoCursorSize,
+    CursorTrail,
+    HitLighting,
+    /// Where the menu sounds come from (ADR-0120).
+    MenuSounds,
+    /// What the main menu shows behind its content (ADR-0119).
+    MenuBackground,
+    PauseMenuStyle,
     UpdateHz,
     DrawHz,
     MenuDrawHz,
@@ -250,25 +276,14 @@ pub enum Row {
     SongSelectDim,
     /// Height of the song list's thumbnails (ADR-0127).
     SongSelectThumbnails,
-    BeatmapSkins,
-    BeatmapColours,
-    BeatmapHitsounds,
     AlwaysPlayFirstComboBreak,
     DisableWinKey,
     SnakingIn,
     SnakingOut,
-    HitLighting,
     KeyOverlay,
     KeyOverlayAnimation,
     HudAnimations,
-    CursorTrail,
-    CursorSize,
-    AutoCursorSize,
-    /// The gameplay cursor (ADR-0124).
-    CursorStyle,
-    PauseMenuStyle,
     PauseMenuScale,
-    Skin,
     SongsFolder,
 }
 
@@ -281,7 +296,6 @@ impl Row {
         Row::MusicVolume,
         Row::MenuMusic,
         Row::MenuMusicVolume,
-        Row::MenuSounds,
         Row::HitsoundVolume,
         Row::EffectsVolume,
         Row::HitsoundDelay,
@@ -317,8 +331,19 @@ impl Row {
         Row::Transitions,
         Row::MenuScale,
         Row::GameScale,
-        Row::MenuBackground,
+        Row::Skin,
+        Row::BeatmapSkins,
+        Row::BeatmapColours,
+        Row::BeatmapHitsounds,
         Row::MenuCursor,
+        Row::CursorStyle,
+        Row::CursorSize,
+        Row::AutoCursorSize,
+        Row::CursorTrail,
+        Row::HitLighting,
+        Row::MenuSounds,
+        Row::MenuBackground,
+        Row::PauseMenuStyle,
         Row::UpdateHz,
         Row::DrawHz,
         Row::MenuDrawHz,
@@ -328,24 +353,14 @@ impl Row {
         Row::Dim,
         Row::SongSelectDim,
         Row::SongSelectThumbnails,
-        Row::BeatmapSkins,
-        Row::BeatmapColours,
-        Row::BeatmapHitsounds,
         Row::AlwaysPlayFirstComboBreak,
         Row::DisableWinKey,
         Row::SnakingIn,
         Row::SnakingOut,
-        Row::HitLighting,
         Row::KeyOverlay,
         Row::KeyOverlayAnimation,
         Row::HudAnimations,
-        Row::CursorTrail,
-        Row::CursorSize,
-        Row::AutoCursorSize,
-        Row::CursorStyle,
-        Row::PauseMenuStyle,
         Row::PauseMenuScale,
-        Row::Skin,
         Row::SongsFolder,
     ];
 
@@ -369,21 +384,21 @@ impl Row {
         Row::ALL.iter().position(|row| row.key_slot() == Some(slot))
     }
 
+    /// The section of the screen the row is in: one of the `section::*` indices.
     fn section(self) -> usize {
         match self {
             Row::MasterVolume
             | Row::MusicVolume
             | Row::MenuMusic
             | Row::MenuMusicVolume
-            | Row::MenuSounds
             | Row::HitsoundVolume
             | Row::EffectsVolume
             | Row::HitsoundDelay
             | Row::PositionalHitsoundsLevel
             | Row::Backend
             | Row::Device
-            | Row::BufferFrames => 0,
-            Row::GlobalOffset => 1,
+            | Row::BufferFrames => section::AUDIO,
+            Row::GlobalOffset => section::OFFSET,
             Row::MouseButtons
             | Row::HighPrecisionMouse
             | Row::Sensitivity
@@ -395,7 +410,7 @@ impl Row {
             | Row::SmokeKey2
             | Row::ToggleFpsKey
             | Row::ToggleSettingsKey
-            | Row::ResetKeys => 2,
+            | Row::ResetKeys => section::KEYS,
             Row::Language
             | Row::ScreenMode
             | Row::NotFullscreenNote
@@ -410,37 +425,40 @@ impl Row {
             | Row::Effects
             | Row::Transitions
             | Row::MenuScale
-            | Row::GameScale
+            | Row::GameScale => section::LAYOUT,
+            // Everything that takes its look or sound from the skin, or is about the
+            // cursor (ADR-0133). The rows show in the order of `Row::ALL`.
+            Row::Skin
+            | Row::BeatmapSkins
+            | Row::BeatmapColours
+            | Row::BeatmapHitsounds
+            | Row::MenuCursor
+            | Row::CursorStyle
+            | Row::CursorSize
+            | Row::AutoCursorSize
+            | Row::CursorTrail
+            | Row::HitLighting
+            | Row::MenuSounds
             | Row::MenuBackground
-            | Row::MenuCursor => 3,
+            | Row::PauseMenuStyle => section::SKIN,
             Row::UpdateHz
             | Row::DrawHz
             | Row::MenuDrawHz
             | Row::ShowFps
             | Row::FpsCorner
-            | Row::FpsScreens => 4,
+            | Row::FpsScreens => section::FRAME,
             Row::Dim
             | Row::SongSelectDim
             | Row::SongSelectThumbnails
-            | Row::BeatmapSkins
-            | Row::BeatmapColours
-            | Row::BeatmapHitsounds
             | Row::AlwaysPlayFirstComboBreak
             | Row::DisableWinKey
             | Row::SnakingIn
             | Row::SnakingOut
-            | Row::HitLighting
             | Row::KeyOverlay
             | Row::KeyOverlayAnimation
             | Row::HudAnimations
-            | Row::CursorTrail
-            | Row::CursorSize
-            | Row::AutoCursorSize
-            | Row::CursorStyle
-            | Row::PauseMenuStyle
-            | Row::PauseMenuScale
-            | Row::Skin => 5,
-            Row::SongsFolder => 6,
+            | Row::PauseMenuScale => section::GAMEPLAY,
+            Row::SongsFolder => section::LIBRARY,
         }
     }
 
@@ -2083,7 +2101,7 @@ mod tests {
         let (rows, mut s) = rows();
         let specs = rows.specs(&s);
         assert_eq!(Row::ColourScheme.section(), 3);
-        assert_eq!(Row::MenuSounds.section(), 0);
+        assert_eq!(Row::MenuSounds.section(), section::SKIN);
         assert_eq!(
             specs[index(Row::MenuScale)].kind,
             RowKind::Slider {
@@ -2306,7 +2324,7 @@ mod tests {
     fn the_skin_row_offers_the_default_and_the_folders() {
         let (rows, mut s) = with_skins(&["Alpha", "beta"], None);
         assert_eq!(skin_selected(&rows, &s), (3, 0));
-        assert_eq!(Row::Skin.section(), 5);
+        assert_eq!(Row::Skin.section(), section::SKIN);
         assert!(!Row::Skin.restart_required());
         rows.apply(&mut s, index(Row::Skin), RowValue::Choice(2));
         assert_eq!(s.skin.name.as_deref(), Some("beta"));
@@ -2375,6 +2393,42 @@ mod tests {
         let labels = rows.labels(&localizer);
         assert_eq!(labels.rows[at].options[0], "Выкл.");
         assert!(!labels.rows[at].label.is_empty());
+    }
+
+    #[test]
+    fn the_skin_section_follows_the_layout_section_and_holds_what_the_skin_gives() {
+        assert_eq!(section::SKIN, section::LAYOUT + 1);
+        assert_eq!(SECTION_KEYS[section::SKIN], "settings-section-skin");
+        for row in [
+            Row::Skin,
+            Row::BeatmapSkins,
+            Row::BeatmapColours,
+            Row::BeatmapHitsounds,
+            Row::MenuCursor,
+            Row::CursorStyle,
+            Row::CursorSize,
+            Row::AutoCursorSize,
+            Row::CursorTrail,
+            Row::HitLighting,
+            Row::MenuSounds,
+            Row::MenuBackground,
+            Row::PauseMenuStyle,
+        ] {
+            assert_eq!(row.section(), section::SKIN, "{row:?}");
+        }
+        // The skin choice leads the section.
+        let first = Row::ALL
+            .iter()
+            .find(|row| row.section() == section::SKIN)
+            .expect("the section has rows");
+        assert_eq!(*first, Row::Skin);
+        // Every section has rows, and a row's index is its place in `Row::ALL`.
+        for s in 0..SECTIONS {
+            assert!(Row::ALL.iter().any(|row| row.section() == s), "{s}");
+        }
+        for (i, row) in Row::ALL.iter().enumerate() {
+            assert_eq!(*row as usize, i);
+        }
     }
 
     #[test]

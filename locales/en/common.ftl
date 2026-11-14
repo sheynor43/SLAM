@@ -128,6 +128,7 @@ settings-section-audio = Audio
 settings-section-offset = Offset
 settings-section-keys = Keys
 settings-section-layout = Layout
+settings-section-skin = Skin
 settings-section-frame = Frame rates
 settings-section-gameplay = Gameplay
 settings-section-library = Library
