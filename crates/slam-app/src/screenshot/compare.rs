@@ -14,11 +14,13 @@ pub struct Tolerance {
 
 impl Default for Tolerance {
     /// Rounding and filtering differences between Mesa versions, not a moved or missing
-    /// element: a sprite of 20×20 pixels is already 0.13 % of a 640×480 frame.
+    /// element: a sprite of 20×20 pixels is already 0.13 % of a 640×480 frame. The share
+    /// leaves room for the ~0.054 % that the intro's text edges differ by between Mesa
+    /// 26.2 and CI's older Mesa.
     fn default() -> Self {
         Self {
             channel: 8,
-            pixels: 0.0005,
+            pixels: 0.001,
         }
     }
 }
