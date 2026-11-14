@@ -36,13 +36,16 @@ fn list_of(count: u64) -> Arc<SongList> {
                 creator: "mapper".into(),
                 difficulties: (0..3)
                     .map(|d| {
-                        DifficultyRow::new(SearchSource {
+                        let mut row = DifficultyRow::new(SearchSource {
                             difficulty: &format!("diff {d}"),
                             creator: "mapper",
                             artist: &format!("artist {k}"),
                             title: &format!("title {k}"),
                             ..SearchSource::default()
-                        })
+                        });
+                        // Two rated, one not yet: pills, dots and the accent fallback.
+                        row.stars = (d < 2).then_some(1.5 + d as f32 * 2.7);
+                        row
                     })
                     .collect(),
             })

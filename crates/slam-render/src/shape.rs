@@ -25,8 +25,9 @@ pub struct ShapeVertex {
     pub local: [f32; 2],
     /// Half the shape's width and height in pixels.
     pub half_size: [f32; 2],
-    /// Corner radius; outline width (0: filled; negative: glow width); sheen strength or
-    /// glow pulse depth; phase in cycles.
+    /// Corner radius; outline width (0: filled; negative: glow width); the packed effect
+    /// word (sheen strength or glow pulse depth, pattern strength and seed, see
+    /// [`pack_effects`]); phase in cycles.
     pub params: [f32; 4],
 }
 
@@ -70,6 +71,25 @@ pub const SHAPE_LAYOUT: VertexLayout<'static> = VertexLayout {
     attributes: &SHAPE_ATTRIBUTES,
 };
 
+/// Packs the effect strengths into one `f32` (`params[2]`): 8 bits each of the sheen (or
+/// glow pulse), the pattern's strength (ADR-0131) and the pattern's seed, so the vertex
+/// stays 64 bytes. The result is an integer below 2^24, exact in an `f32`; the shader
+/// reads it flat, without interpolation.
+pub fn pack_effects(sheen: f32, pattern: f32, seed: u8) -> f32 {
+    let quantise = |x: f32| (x.clamp(0.0, 1.0) * 255.0 + 0.5) as u32;
+    (quantise(sheen) | quantise(pattern) << 8 | u32::from(seed) << 16) as f32
+}
+
+/// The inverse of [`pack_effects`]: the sheen, the pattern's strength and its seed.
+pub fn unpack_effects(word: f32) -> (f32, f32, u8) {
+    let bits = word as u32;
+    (
+        (bits & 255) as f32 / 255.0,
+        (bits >> 8 & 255) as f32 / 255.0,
+        (bits >> 16 & 255) as u8,
+    )
+}
+
 /// Pixels the quad reaches past the shape on every side, so the shader can smooth the
 /// edge outside it.
 pub const EDGE_MARGIN: f32 = 1.0;
@@ -100,6 +120,11 @@ pub struct Shape {
     /// Width in pixels of a soft glow outside the edge: then the shape is only that glow,
     /// pulsing by `sheen` (0: none).
     pub glow: f32,
+    /// Strength, 0 to 1, of the pattern of triangles and circles floating up the fill
+    /// (ADR-0131); 0: none, and the shader skips it. Rises faster the stronger it is.
+    pub pattern: f32,
+    /// Makes this shape's pattern differ from its neighbours'.
+    pub pattern_seed: u8,
 }
 
 impl Shape {
@@ -125,6 +150,8 @@ impl Shape {
             sheen: 0.0,
             phase: 0.0,
             glow: 0.0,
+            pattern: 0.0,
+            pattern_seed: 0,
         }
     }
 
@@ -266,7 +293,12 @@ impl ShapeBatch {
         let params = [
             radius,
             edge,
-            shape.sheen.clamp(0.0, 1.0),
+            // A glow has no pattern.
+            pack_effects(
+                shape.sheen,
+                if glow > 0.0 { 0.0 } else { shape.pattern },
+                shape.pattern_seed,
+            ),
             shape.phase + self.drift,
         ];
         for (fx, fy) in [(0.0, 0.0), (1.0, 0.0), (1.0, 1.0), (0.0, 1.0)] {
@@ -521,7 +553,43 @@ mod tests {
         let v = batch.vertices();
         assert!(close(v[0].position, [3.0, 3.0]));
         assert_eq!(v[0].params[1], -6.0);
-        assert_eq!(v[0].params[2], 0.4);
+        assert_eq!(unpack_effects(v[0].params[2]), (102.0 / 255.0, 0.0, 0));
+    }
+
+    #[test]
+    fn the_pattern_rides_in_the_effect_word_and_the_vertex_stays_64_bytes() {
+        assert_eq!(size_of::<ShapeVertex>(), 64);
+        let word = pack_effects(0.35, 0.3, 200);
+        let (sheen, pattern, seed) = unpack_effects(word);
+        assert!((sheen - 0.35).abs() < 1.0 / 255.0);
+        assert!((pattern - 0.3).abs() < 1.0 / 255.0);
+        assert_eq!(seed, 200);
+        // Exact in an f32, so the shader can read it back with `u32(...)`.
+        assert!(word < 16_777_216.0);
+        assert_eq!(unpack_effects(pack_effects(1.0, 1.0, 255)), (1.0, 1.0, 255));
+        assert_eq!(pack_effects(0.0, 0.0, 0), 0.0);
+        assert_eq!(pack_effects(-1.0, 7.0, 0), 65_280.0);
+        let mut batch = ShapeBatch::new();
+        batch.push_shape(&Shape {
+            pattern: 0.3,
+            pattern_seed: 9,
+            ..shape([0.0, 0.0], [10.0, 10.0])
+        });
+        batch.push_shape(&Shape {
+            pattern: 0.3,
+            glow: 4.0,
+            ..shape([0.0, 0.0], [10.0, 10.0])
+        });
+        batch.push_shape(&shape([0.0, 0.0], [10.0, 10.0]));
+        let v = batch.vertices();
+        let on = unpack_effects(v[0].params[2]);
+        assert!((on.1 - 0.3).abs() < 0.01 && on.2 == 9);
+        // A glow carries no pattern; a shape without strength skips it (strength 0).
+        assert_eq!(unpack_effects(v[4].params[2]).1, 0.0);
+        assert_eq!(unpack_effects(v[8].params[2]).1, 0.0);
+        // Sprites are plain.
+        batch.push(&Sprite::new(WHITE, UvRect::FULL, [0.0, 0.0], [1.0, 1.0]));
+        assert_eq!(batch.vertices()[12].params, [0.0; 4]);
     }
 
     #[test]
@@ -553,6 +621,8 @@ mod tests {
                 radius: 3.0,
                 skew: 0.2,
                 sheen: 0.5,
+                pattern: 0.3,
+                pattern_seed: 3,
                 glow: 4.0,
                 ..shape([0.0, 0.0], [10.0, 10.0])
             });

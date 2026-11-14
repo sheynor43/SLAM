@@ -126,6 +126,23 @@ impl RowSlot {
     }
 }
 
+/// Width of `count` difficulty dots at the right end of a set row, with the gap before them
+/// (ADR-0131); 0 for none.
+fn dots_width(count: usize, theme: &Theme, scale: f32) -> f32 {
+    let count = count.min(MAX_DOTS);
+    if count == 0 {
+        return 0.0;
+    }
+    let (size, gap) = (
+        theme.difficulty_dot_size * scale,
+        theme.difficulty_dot_gap * scale,
+    );
+    count as f32 * (size + gap) + gap * 2.0
+}
+
+/// The most difficulty dots a set row shows.
+const MAX_DOTS: usize = 12;
+
 /// The text of one visible settings row's number, laid out again only when it changes.
 struct ValueSlot {
     shown: Option<(u64, u8)>,
@@ -510,7 +527,7 @@ impl SongSelectView {
         let Some(set_row) = list.sets.get(set) else {
             return false;
         };
-        let avail = (layout.list.width - indent - 2.0 * pad - text_shift).max(0.0);
+        let mut avail = (layout.list.width - indent - 2.0 * pad - text_shift).max(0.0);
         slot.holds = None;
         slot.primary.text.clear();
         slot.secondary.text.clear();
@@ -518,14 +535,22 @@ impl SongSelectView {
             Row::Set(_) => {
                 let _ = write!(slot.primary.text, "{} - {}", set_row.artist, set_row.title);
                 slot.secondary.text.push_str(&set_row.creator);
+                // The difficulty dots keep the right end.
+                avail =
+                    (avail - dots_width(set_row.difficulties.len(), theme, layout.scale)).max(0.0);
             }
             Row::Difficulty { difficulty, .. } => {
                 let Some(d) = set_row.difficulties.get(difficulty) else {
                     return false;
                 };
                 slot.primary.text.push_str(&d.version);
+                // The star pill keeps the right end; its text is the second line.
                 if let Some(stars) = d.stars {
-                    super::push_stars(&mut slot.primary.text, stars);
+                    super::push_stars(&mut slot.secondary.text, stars);
+                    type_setter.lay_out(&mut slot.secondary, theme.song_detail_size * layout.scale);
+                    avail = (avail
+                        - super::info_panel::pill_width(&slot.secondary, theme, layout.scale))
+                    .max(0.0);
                 }
             }
         }
@@ -537,13 +562,15 @@ impl SongSelectView {
             avail,
             ellipsis[0],
         );
-        fit(
-            type_setter,
-            &mut slot.secondary,
-            theme.song_detail_size * scale,
-            avail,
-            ellipsis[1],
-        );
+        if matches!(row, Row::Set(_)) {
+            fit(
+                type_setter,
+                &mut slot.secondary,
+                theme.song_detail_size * scale,
+                avail,
+                ellipsis[1],
+            );
+        }
         slot.holds = Some((generation, row));
         true
     }
@@ -981,19 +1008,56 @@ impl SongSelectView {
                 } else {
                     theme.button_fill
                 };
-                rect(
-                    &Rect {
-                        y: clipped_top,
-                        height: clipped_bottom - clipped_top,
-                        ..area
-                    },
-                    fill,
-                    Look::Button {
+                let clipped = Rect {
+                    y: clipped_top,
+                    height: clipped_bottom - clipped_top,
+                    ..area
+                };
+                let (set_index, stars) = match row {
+                    Row::Set(set) => (set, None),
+                    Row::Difficulty { set, difficulty } => (
+                        set,
+                        list.sets
+                            .get(set)
+                            .and_then(|s| s.difficulties.get(difficulty))
+                            .and_then(|d| d.stars),
+                    ),
+                };
+                let seed = index as f32 * 0.29;
+                let look = match row {
+                    // A difficulty glows and is outlined in its star colour (ADR-0131).
+                    Row::Difficulty { .. } => Look::TintedButton {
                         highlighted: selected,
-                        seed: index as f32 * 0.29,
+                        seed,
+                        fade: opacity,
+                        tint: crate::star_colour::glow_for(stars, theme.accent),
+                    },
+                    Row::Set(_) => Look::Button {
+                        highlighted: selected,
+                        seed,
                         fade: opacity,
                     },
-                );
+                };
+                rect(&clipped, fill, look);
+                if let Row::Difficulty { .. } = row {
+                    // The strip on the left edge, leaning with the row and cut with it.
+                    let colour = crate::star_colour::glow_for(stars, theme.accent);
+                    let width = theme.difficulty_strip_width * scale;
+                    let inset = theme.button_radius * scale * 0.5;
+                    let height = (clipped.height - 2.0 * inset).max(0.0);
+                    let tan = theme.button_skew().tan();
+                    let drop = (area.y + area.height / 2.0) - (clipped.y + clipped.height / 2.0);
+                    rect(
+                        &Rect {
+                            x: clipped.x + drop * tan,
+                            y: clipped.y + inset,
+                            width,
+                            height,
+                        },
+                        colour,
+                        Look::Strip,
+                    );
+                }
                 let x = area.x + pad + text_shift;
                 if thumbs.enabled
                     && matches!(row, Row::Set(_))
@@ -1059,6 +1123,60 @@ impl SongSelectView {
                     let centre = area.y + area.height / 2.0;
                     if inside(&row_text.primary, centre) {
                         left(&row_text.primary, x, centre, theme.text);
+                    }
+                }
+                let centre = area.y + area.height / 2.0;
+                let right = area.x + area.width - pad;
+                match row {
+                    Row::Difficulty { .. } => {
+                        if let Some(stars) = stars
+                            && inside(&row_text.secondary, centre)
+                        {
+                            // The star pill, in the colour of the rating.
+                            let line = &row_text.secondary;
+                            let padding = theme.star_pill_pad * scale;
+                            let height = line.layout.height() + padding * 0.8;
+                            let width = line.layout.width() + 2.0 * padding;
+                            rect(
+                                &Rect {
+                                    x: right - width,
+                                    y: centre - height / 2.0,
+                                    width,
+                                    height,
+                                },
+                                crate::star_colour::for_stars(stars),
+                                Look::Pill,
+                            );
+                            left(
+                                line,
+                                right - width + padding,
+                                centre,
+                                crate::star_colour::text_for_stars(stars),
+                            );
+                        }
+                    }
+                    Row::Set(_) => {
+                        // One dot per difficulty, in its colour, by stars.
+                        let dots = list
+                            .sets
+                            .get(set_index)
+                            .map_or(&[][..], |s| s.difficulties.as_slice());
+                        let size = theme.difficulty_dot_size * scale;
+                        let dot_gap = theme.difficulty_dot_gap * scale;
+                        if centre - size / 2.0 >= top_edge && centre + size / 2.0 <= bottom_edge {
+                            for (n, d) in dots.iter().take(MAX_DOTS).rev().enumerate() {
+                                rect(
+                                    &Rect {
+                                        x: right - (n + 1) as f32 * (size + dot_gap) + dot_gap,
+                                        y: centre - size / 2.0,
+                                        width: size,
+                                        height: size,
+                                    },
+                                    crate::star_colour::glow_for(d.stars, theme.accent),
+                                    Look::Pill,
+                                );
+                            }
+                        }
                     }
                 }
             }
