@@ -132,6 +132,7 @@ settings-section-audio = Звук
 settings-section-offset = Смещение
 settings-section-keys = Клавиши
 settings-section-layout = Экран
+settings-section-skin = Скин
 settings-section-frame = Частоты
 settings-section-gameplay = Игра
 settings-section-library = Библиотека

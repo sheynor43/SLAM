@@ -9,8 +9,8 @@
 use std::sync::Arc;
 
 use crate::menu::Rect;
-use crate::song_select::SearchQuery;
 use crate::song_select::filter::with_terms;
+use crate::song_select::{SearchQuery, ease_scroll};
 use crate::theme::Theme;
 use crate::widgets::{
     Dropdown, DropdownAction, DropdownInput, DropdownLayout, KeyBind, KeyBindAction, KeyBindInput,
@@ -24,9 +24,9 @@ pub mod view;
 pub use view::{KeyLabels, RowLabels, SettingsLabels, SettingsView};
 
 /// Most rows; more are ignored.
-pub const MAX_ROWS: usize = 72;
+pub const MAX_ROWS: usize = 96;
 /// Most sections; rows of later ones go into the last.
-pub const MAX_SECTIONS: usize = 7;
+pub const MAX_SECTIONS: usize = 8;
 
 /// A mouse button, as the screen names it; the application converts to and from its own.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -349,6 +349,31 @@ impl SettingsLayout {
             && row.y + row.height <= self.content.y + self.content.height + 0.5
     }
 
+    /// The slots of the lines that touch the content area at the scroll laid out: the only
+    /// ones to lay out and draw (ADR-0133). A superset by a line at the most.
+    pub fn visible_slots(&self) -> std::ops::Range<usize> {
+        let first = self.scroll.floor().max(0.0) as usize;
+        let last = (self.scroll + self.visible_rows()).ceil().max(0.0) as usize + 1;
+        first..last
+    }
+
+    /// The part (0 to 1) of the line at `slot` inside the content area: a line partly
+    /// scrolled out is drawn faded by it, as there is no clipping.
+    pub fn fraction(&self, slot: usize) -> f32 {
+        let row = self.row(slot);
+        let top = row.y.max(self.content.y);
+        let bottom = (row.y + row.height).min(self.content.y + self.content.height);
+        if row.height <= 0.0 {
+            return 0.0;
+        }
+        ((bottom - top) / row.height).clamp(0.0, 1.0)
+    }
+
+    /// Whether the point is in the content area, where the lines are.
+    pub fn in_content(&self, x: f32, y: f32) -> bool {
+        self.content.contains(x, y)
+    }
+
     /// The layout moved `dx` to the right.
     pub fn shifted(&self, dx: f32) -> SettingsLayout {
         let mut layout = *self;
@@ -461,6 +486,7 @@ pub struct SettingsSnapshot {
     pub len: usize,
     /// Index of the focused row.
     pub focus: usize,
+    /// The section at the top of the list, which the sidebar highlights.
     pub section: usize,
     pub conflict: Option<Conflict>,
     /// The text of the button row that shows a value (see [`RowLabels::shows_value`]).
@@ -471,15 +497,16 @@ pub struct SettingsSnapshot {
     pub hinted: [bool; MAX_ROWS],
     /// Per row: it is not shown and takes no room; the draw side skips it.
     pub hidden: [bool; MAX_ROWS],
-    /// Per row: its position among the visible rows of its section, or of the search's
-    /// results, as the screen lays out and hit-tests it. Meaningless for a hidden row.
+    /// Per row: its line in the one continuous list (section headers count as lines), as
+    /// the screen lays out and hit-tests it. Meaningless for a hidden row.
     pub slots: [u8; MAX_ROWS],
+    /// Per section: the line of its header, `None` when the section has no row shown.
+    pub headers: [Option<u8>; MAX_SECTIONS],
     /// What the player typed in the search box.
     pub search: SearchQuery,
-    /// The rows shown are the search's results from every section, not `section`'s; a row
-    /// that does not match is `hidden`.
+    /// The list shows the search's results only; a row that does not match is `hidden`.
     pub searching: bool,
-    /// Rows scrolled off the top ([`SettingsLayout::scrolled`]).
+    /// Lines scrolled off the top as shown, eased ([`SettingsLayout::scrolled`]).
     pub scroll: f32,
 }
 
@@ -491,22 +518,36 @@ pub struct SettingsScreen {
     len: usize,
     sections: usize,
     focus: usize,
-    section: usize,
     conflict: Option<Conflict>,
     value_text: Arc<str>,
     disabled: [bool; MAX_ROWS],
     hinted: [bool; MAX_ROWS],
     hidden: [bool; MAX_ROWS],
     search: SearchQuery,
+    /// Per section: the line of its header, `None` without rows shown.
+    headers: [Option<u8>; MAX_SECTIONS],
+    /// The number of lines in the list: headers and rows shown.
+    lines: usize,
+    /// A section picked in the sidebar, highlighted until the list is scrolled by hand (the
+    /// last sections cannot scroll to the top).
+    pinned: Option<usize>,
+    /// Where the list was before a search began, to which clearing it returns.
+    before_search: f32,
+    /// How many lines fit the content area, as of the last layout seen.
+    visible_lines: f32,
     /// Per row, the lowercased text the search looks in ([`SettingsScreen::set_search_texts`]).
     texts: Arc<[Box<str>]>,
     /// Per row: it matches the search.
     matched: [bool; MAX_ROWS],
+    /// The scroll the list eases towards, in lines.
     scroll: f32,
+    /// The scroll as shown (ADR-0121's easing).
+    shown: f32,
+    shown_ns: u64,
 }
 
 impl SettingsScreen {
-    /// A screen for `rows` in `sections` sections, on the first section's first row. Call it
+    /// A screen for `rows` in `sections` sections, on the first row of the list. Call it
     /// off the hot paths.
     pub fn new(rows: &[RowSpec], sections: usize) -> SettingsScreen {
         let sections = sections.clamp(1, MAX_SECTIONS);
@@ -543,18 +584,25 @@ impl SettingsScreen {
             len,
             sections,
             focus: 0,
-            section: 0,
             conflict: None,
             value_text: Arc::from(""),
             disabled: [false; MAX_ROWS],
             hinted: [false; MAX_ROWS],
             hidden: [false; MAX_ROWS],
             search: SearchQuery::default(),
+            headers: [None; MAX_SECTIONS],
+            lines: 0,
+            pinned: None,
+            before_search: 0.0,
+            visible_lines: 0.0,
             texts: Arc::from([]),
             matched: [false; MAX_ROWS],
             scroll: 0.0,
+            shown: 0.0,
+            shown_ns: 0,
         };
-        screen.focus = screen.first_row(0).unwrap_or(0);
+        screen.recompute_slots();
+        screen.focus = screen.first_shown().unwrap_or(0);
         screen
     }
 
@@ -562,8 +610,45 @@ impl SettingsScreen {
         self.sections
     }
 
+    /// The section at the top of the list (or the one just picked in the sidebar).
     pub fn section(&self) -> usize {
-        self.section
+        self.pinned.unwrap_or_else(|| self.section_at(self.shown))
+    }
+
+    /// The section at the top of the list scrolled to `scroll`: the last whose header is
+    /// at or above it (give or take half a line), the last section once at the end.
+    fn section_at(&self, scroll: f32) -> usize {
+        let at_end = scroll > 0.0 && scroll >= self.max_scroll() - 0.01;
+        let mut top = 0;
+        for (section, header) in self.headers[..self.sections].iter().enumerate() {
+            if let Some(line) = header
+                && (at_end || f32::from(*line) <= scroll + 0.5)
+            {
+                top = section;
+            }
+        }
+        top
+    }
+
+    /// The line of `section`'s header, if the section has rows shown.
+    pub fn header(&self, section: usize) -> Option<usize> {
+        self.headers
+            .get(section)
+            .copied()
+            .flatten()
+            .map(usize::from)
+    }
+
+    /// Moves the scroll as shown `now_ns` on towards its target, which is clamped to the
+    /// content `layout` has. Call it every tick the screen shows. Does not allocate.
+    pub fn tick(&mut self, now_ns: u64, layout: &SettingsLayout) {
+        self.visible_lines = layout.visible_rows();
+        let elapsed = now_ns.saturating_sub(self.shown_ns);
+        self.shown_ns = now_ns;
+        self.scroll = self.scroll.clamp(0.0, self.max_scroll());
+        if self.shown != self.scroll {
+            self.shown = ease_scroll(self.shown, self.scroll, elapsed);
+        }
     }
 
     /// Index of the focused row.
@@ -581,16 +666,17 @@ impl SettingsScreen {
             widgets: self.widgets,
             len: self.len,
             focus: self.focus,
-            section: self.section,
+            section: self.section(),
             conflict: self.conflict,
             value_text: Arc::clone(&self.value_text),
             disabled: self.disabled,
             hinted: self.hinted,
             hidden: std::array::from_fn(|row| !self.visible(row)),
             slots: self.meta.map(|(_, slot)| slot),
+            headers: self.headers,
             search: self.search,
             searching: self.searching(),
-            scroll: self.scroll,
+            scroll: self.shown,
         }
     }
 
@@ -611,9 +697,19 @@ impl SettingsScreen {
         !self.search.is_empty()
     }
 
-    /// Rows scrolled off the top.
+    /// The scroll the list eases towards, in lines.
     pub fn scroll(&self) -> f32 {
         self.scroll
+    }
+
+    /// The scroll as shown, in lines.
+    pub fn shown_scroll(&self) -> f32 {
+        self.shown
+    }
+
+    /// The number of lines in the list: the section headers and the rows shown.
+    pub fn lines(&self) -> usize {
+        self.lines
     }
 
     /// Whether row `row` takes room: not hidden, and matching the search if there is one.
@@ -621,16 +717,16 @@ impl SettingsScreen {
         row < self.len && !self.hidden[row] && (!self.searching() || self.matched[row])
     }
 
-    /// Whether row `row` is among the rows shown: visible, and of the current section
-    /// unless searching.
+    /// Whether row `row` is among the rows shown: all sections are one list.
     fn shown(&self, row: usize) -> bool {
-        self.visible(row) && (self.searching() || self.section_of(row) == self.section)
+        self.visible(row)
     }
 
     // Ported from osu-framework 2026.921.1: osu.Framework/Graphics/Containers/SearchContainer.cs (match)
     /// Matches the rows against the search: every word a substring of the row's text. Notes
-    /// never match. Renumbers the rows, and puts the focus on the first result (or, the
-    /// search cleared, the section's first row), scrolled to the top. Does not allocate.
+    /// never match. Renumbers the rows, and puts the focus on the first result and the
+    /// scroll target on it (the search cleared, back where the list was before the search,
+    /// with the focus on the first row there). Does not allocate.
     fn refilter(&mut self) {
         let texts = Arc::clone(&self.texts);
         with_terms(&self.search, |terms| {
@@ -643,8 +739,19 @@ impl SettingsScreen {
         });
         self.close_dropdowns();
         self.recompute_slots();
-        self.scroll = 0.0;
-        let first = self.shown_rows().next();
+        self.pinned = None;
+        // The results are the whole list: its first line is a header over the first match.
+        self.scroll = if self.searching() {
+            0.0
+        } else {
+            self.before_search
+        };
+        self.scroll = self.scroll.clamp(0.0, self.max_scroll());
+        let first = if self.searching() {
+            self.first_shown()
+        } else {
+            self.first_at(self.scroll)
+        };
         if let Some(row) = first {
             self.focus = row;
         }
@@ -654,7 +761,11 @@ impl SettingsScreen {
         if c.is_control() || (c.is_whitespace() && self.search.is_empty()) {
             return;
         }
+        let began = self.search.is_empty();
         if self.search.push(c) {
+            if began {
+                self.before_search = self.scroll;
+            }
             self.refilter();
         }
     }
@@ -681,32 +792,46 @@ impl SettingsScreen {
             .filter(|row| self.shown(*row) && !matches!(self.widgets[*row], RowWidget::Note))
     }
 
-    /// How many rows are shown (their slots run from 0).
-    fn shown_count(&self) -> usize {
-        (0..self.len)
-            .filter(|row| self.shown(*row))
-            .map(|row| self.slot(row) + 1)
-            .max()
-            .unwrap_or(0)
+    /// The first row of the list that can take the focus.
+    fn first_shown(&self) -> Option<usize> {
+        self.shown_rows().min_by_key(|row| self.slot(*row))
     }
 
-    fn max_scroll(&self, layout: &SettingsLayout) -> f32 {
-        (self.shown_count() as f32 - layout.visible_rows()).max(0.0)
+    /// The first row at or below line `scroll` that can take the focus.
+    fn first_at(&self, scroll: f32) -> Option<usize> {
+        self.shown_rows()
+            .filter(|row| self.slot(*row) as f32 >= scroll.ceil())
+            .min_by_key(|row| self.slot(*row))
+            .or_else(|| self.first_shown())
     }
 
-    /// Scrolls the least that shows the focused row whole.
-    fn scroll_to_focus(&mut self, layout: &SettingsLayout) {
+    /// The farthest the list scrolls: the last line at the bottom.
+    fn max_scroll(&self) -> f32 {
+        (self.lines as f32 - self.visible_lines).max(0.0)
+    }
+
+    /// Scrolls the target the least that shows the focused row whole, and its section's
+    /// header with it when it is the section's first row.
+    fn scroll_to_focus(&mut self) {
         if !self.shown(self.focus) {
             return;
         }
-        let slot = self.slot(self.focus) as f32;
-        let visible = layout.visible_rows().floor().max(1.0);
-        if slot < self.scroll {
-            self.scroll = slot;
+        let slot = self.slot(self.focus);
+        let header = self.header(self.section_of(self.focus));
+        let top = if header.is_some_and(|h| h + 1 == slot) {
+            slot - 1
+        } else {
+            slot
+        };
+        let top = top as f32;
+        let visible = self.visible_lines.floor().max(1.0);
+        let slot = slot as f32;
+        if top < self.scroll {
+            self.scroll = top;
         } else if slot + 1.0 > self.scroll + visible {
             self.scroll = slot + 1.0 - visible;
         }
-        self.scroll = self.scroll.clamp(0.0, self.max_scroll(layout).ceil());
+        self.scroll = self.scroll.clamp(0.0, self.max_scroll());
     }
 
     /// Makes toggle or slider row `row` unchangeable (or changeable again): input to it is
@@ -737,7 +862,7 @@ impl SettingsScreen {
     /// Hides row `row` or shows it again. A hidden row is not drawn, takes no room (the rows
     /// below move up), cannot be pointed at and is skipped by the focus; its value, disabled
     /// and hint state are kept. If it holds the focus, the focus moves to the next visible
-    /// row of its section, else the previous; an open dropdown closes and a listening key row
+    /// row of the list, else the previous; an open dropdown closes and a listening key row
     /// stops, without an action; a slider being dragged is released (as by
     /// [`SettingsInput::PointerRelease`]: dragging ends, no `Changed`). Unknown rows are left
     /// alone. Does not allocate.
@@ -745,6 +870,7 @@ impl SettingsScreen {
         if row >= self.len || self.hidden[row] == hidden {
             return;
         }
+        let at = self.slot(row);
         self.hidden[row] = hidden;
         self.recompute_slots();
         if !hidden {
@@ -774,8 +900,13 @@ impl SettingsScreen {
             // Notes take no focus either.
             let next = self
                 .shown_rows()
-                .find(|r| *r > row)
-                .or_else(|| self.shown_rows().filter(|r| *r < row).last());
+                .filter(|r| self.slot(*r) >= at)
+                .min_by_key(|r| self.slot(*r))
+                .or_else(|| {
+                    self.shown_rows()
+                        .filter(|r| self.slot(*r) < at)
+                        .max_by_key(|r| self.slot(*r))
+                });
             if let Some(next) = next {
                 self.focus = next;
             }
@@ -787,22 +918,29 @@ impl SettingsScreen {
         self.hidden.get(row).copied().unwrap_or(false) && row < self.len
     }
 
-    /// Numbers the visible rows of each section from 0, or, searching, the results of all
-    /// sections together.
+    /// Numbers the lines of the list: each section with a visible row has a header, then
+    /// its visible rows in the order they were given; a row's slot is its line.
     fn recompute_slots(&mut self) {
-        let mut counts = [0_u8; MAX_SECTIONS];
-        let searching = self.searching();
-        for row in 0..self.len {
-            let section = if searching {
-                0
+        self.headers = [None; MAX_SECTIONS];
+        let mut next = 0_usize;
+        for section in 0..self.sections {
+            let header = next;
+            next += 1;
+            let mut any = false;
+            for row in 0..self.len {
+                if usize::from(self.meta[row].0) == section && self.visible(row) {
+                    self.meta[row].1 = next.min(usize::from(u8::MAX)) as u8;
+                    next += 1;
+                    any = true;
+                }
+            }
+            if any {
+                self.headers[section] = Some(header as u8);
             } else {
-                usize::from(self.meta[row].0)
-            };
-            self.meta[row].1 = counts[section];
-            if self.visible(row) {
-                counts[section] = counts[section].saturating_add(1);
+                next = header;
             }
         }
+        self.lines = next;
     }
 
     /// Sets the text of the button row that shows a value (an empty text shows the row's
@@ -869,7 +1007,7 @@ impl SettingsScreen {
         self.conflict.as_ref()
     }
 
-    /// The position of `row` within its section.
+    /// The line of `row` in the list: section headers count as lines.
     pub fn slot(&self, row: usize) -> usize {
         usize::from(self.meta[row].1)
     }
@@ -878,20 +1016,20 @@ impl SettingsScreen {
         usize::from(self.meta[row].0)
     }
 
-    /// The rows of `section` that can take the focus: visible and not notes.
+    /// The rows of `section` that can take the focus: shown and not notes.
     fn rows_of(&self, section: usize) -> impl Iterator<Item = usize> + '_ {
         (0..self.len).filter(move |row| {
             self.section_of(*row) == section
-                && !self.hidden[*row]
+                && self.shown(*row)
                 && !matches!(self.widgets[*row], RowWidget::Note)
         })
     }
 
     fn first_row(&self, section: usize) -> Option<usize> {
-        self.rows_of(section).next()
+        self.rows_of(section).min_by_key(|row| self.slot(*row))
     }
 
-    /// The row of the current section with an open dropdown.
+    /// The row with an open dropdown.
     fn open_dropdown(&self) -> Option<usize> {
         self.shown_rows()
             .find(|row| matches!(&self.widgets[*row], RowWidget::Dropdown(d) if d.is_open()))
@@ -910,41 +1048,57 @@ impl SettingsScreen {
     }
 
     fn move_focus(&mut self, forward: bool) {
+        // Down and up follow the list, whatever the order the rows were given in.
+        let at = self.slot(self.focus);
         let next = if forward {
-            self.shown_rows().find(|row| *row > self.focus)
+            self.shown_rows()
+                .filter(|row| self.slot(*row) > at)
+                .min_by_key(|row| self.slot(*row))
         } else {
-            self.shown_rows().filter(|row| *row < self.focus).last()
+            self.shown_rows()
+                .filter(|row| self.slot(*row) < at)
+                .max_by_key(|row| self.slot(*row))
         };
         if let Some(row) = next {
             self.focus = row;
+            self.pinned = None;
         }
     }
 
-    /// Shows `section`, leaving a search.
+    /// Scrolls to `section`'s header, leaving a search; the sidebar then shows it as the
+    /// section at the top even where the list cannot scroll far enough.
     fn switch_section(&mut self, section: usize) {
         self.close_dropdowns();
-        self.section = section;
-        if !self.clear_search() {
-            self.scroll = 0.0;
+        self.clear_search();
+        if let Some(header) = self.header(section) {
+            self.scroll = (header as f32).clamp(0.0, self.max_scroll());
+            self.pinned = Some(section);
         }
         if let Some(row) = self.first_row(section) {
             self.focus = row;
         }
     }
 
+    /// Goes to the next (or previous) section that has rows shown.
     fn step_section(&mut self, forward: bool) {
         let n = self.sections;
-        let section = if forward {
-            (self.section + 1) % n
-        } else {
-            (self.section + n - 1) % n
-        };
-        self.switch_section(section);
+        // From where the list is going, so that quick presses go on.
+        let mut section = self.pinned.unwrap_or_else(|| self.section_at(self.scroll));
+        for _ in 0..n {
+            section = if forward {
+                (section + 1) % n
+            } else {
+                (section + n - 1) % n
+            };
+            if self.header(section).is_some() {
+                self.switch_section(section);
+                return;
+            }
+        }
     }
 
-    /// Gives `input` to row `row`'s widget, if the row may take input: visible, in the
-    /// current section and not a note. A focus left on another section's row (the current
-    /// section has nothing to focus) gets nothing.
+    /// Gives `input` to row `row`'s widget, if the row may take input: visible and not a
+    /// note.
     fn route(
         &mut self,
         row: usize,
@@ -1040,7 +1194,8 @@ impl SettingsScreen {
         input: SettingsInput,
         layout: &SettingsLayout,
     ) -> Option<SettingsAction> {
-        let action = self.input_scrolled(input, &layout.scrolled(self.scroll));
+        self.visible_lines = layout.visible_rows();
+        let action = self.input_scrolled(input, &layout.scrolled(self.shown));
         if matches!(
             input,
             SettingsInput::Up
@@ -1051,9 +1206,9 @@ impl SettingsScreen {
                 | SettingsInput::NextSection
                 | SettingsInput::PrevSection
         ) {
-            self.scroll_to_focus(layout);
+            self.scroll_to_focus();
         }
-        self.scroll = self.scroll.clamp(0.0, self.max_scroll(layout).ceil());
+        self.scroll = self.scroll.clamp(0.0, self.max_scroll());
         action
     }
 
@@ -1138,6 +1293,7 @@ impl SettingsScreen {
                     return self.route(row, input, layout);
                 }
                 self.scroll += lines;
+                self.pinned = None;
                 None
             }
             // Only meaningful while a key row listens.
@@ -1219,10 +1375,11 @@ impl SettingsScreen {
     }
 
     fn row_at(&self, layout: &SettingsLayout, x: f32, y: f32) -> Option<usize> {
-        self.shown_rows().find(|row| {
-            let slot = self.slot(*row);
-            layout.shows(slot) && layout.row(slot).contains(x, y)
-        })
+        if !layout.in_content(x, y) {
+            return None;
+        }
+        self.shown_rows()
+            .find(|row| layout.row(self.slot(*row)).contains(x, y))
     }
 }
 
