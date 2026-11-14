@@ -2,40 +2,33 @@
 
 ## English
 
-### What's new in 0.1.0
-The first build with all of the "playable gameplay" milestone done: maps play from start to finish with hitsounds, offsets and lazer's timing rules.
+### What's new in 0.1.1
+A refreshed interface and the first part of the "Skins" milestone: the gameplay HUD now comes from your skin.
 
-**Gameplay**
-- Objects shake when a press is blocked (note lock, pressing too early).
-- Toggles for slider snaking (off by default), hit lighting and cursor trail; cursor size (0.1–2.0×) with an option to scale it by circle size.
-- A failed play can be saved from the fail screen (button or F1).
-- Keys repeat when held: offset, speed mods, arrows in menus, settings and song select.
-- Hitsound delay "as in stable" option and a stereo separation slider for positional hitsounds.
-- Skin and gameplay view changes apply from the pause and fail screens without restarting the play.
-- Maps without a background show the default one.
-- The Windows key is blocked during play (on by default); on Linux, desktop shortcuts such as Super and Alt+Tab are blocked too.
+**Skins and HUD**
+- Score, accuracy and combo are drawn with the skin's digits and roll smoothly; the health bar comes from the skin too. HUD animations can be turned off.
+- Built-in HUD layouts with a song progress bar, a key overlay and a skinned skip button. Choosing a layout in the settings comes later.
+- An image in a skin that can't be decoded counts as missing (the default one is used) instead of breaking the skin.
 
-**Sound**
-- Output device, backend and buffer size change without restarting.
-- The mixer runs at the device's sample rate, so 44.1 kHz devices work in Low latency and Exclusive modes.
-- WASAPI Exclusive adapts to drivers that cannot keep a very short period, instead of stuttering.
-- Menu music: song preview on song select, a random track in the main menu; toggle and volume in **Audio**.
-
-**Graphics**
-- Renderer setting on Windows: OpenGL by default, Direct3D 11 as an option (applies after restart). If OpenGL fails to start, SLAM retries and falls back to Direct3D 11.
-- Linux video driver setting: Auto, Wayland or X11 (applies after restart).
-
-**Menus**
-- Settings open as a side panel over the current screen (Ctrl+O), with search; available on song select, pause, results and fail screens.
-- Interface language: English or Русский, switched on the fly.
-- Song select: background dim (70 % by default), lazer-style search (`ar>9`, `[Insane]`, `artist="xi"!`, `creator!=…`, beatmap IDs), mouse dragging of the list with inertia.
+**Interface**
+- New look: rounded, slanted buttons with layered gradients, outlined triangles and shadows; colour schemes; separate interface and gameplay scale.
+- Song select at lazer's proportions: beatmap thumbnails, a statistics panel and local scores on the left, star ratings (calculated in the background and cached), and difficulties sorted by stars that slide open under their set.
+- Search also understands text typed in the other keyboard layout (Russian ↔ English).
+- Menu background, menu sounds, parallax, blur, glow and shadows, each with its own strength (0–200 %) and an off switch.
+- Screen transitions: none, simple, band, slices, iris, shards, shutter or random.
+- Menu and gameplay cursors: SLAM's own arrow (spin at rest, trail, press rings, all optional), the skin's, or the system cursor.
+- Settings are one continuous list that remembers where you were, with a new **Skin** section.
+- Pause menu styles, including one like stable's.
+- A startup intro with its own sound (can be turned off).
+- FPS counter modes, from a single figure up to a panel with the draw, update, audio and input threads and frame-time graphs.
+- **Feedback** section in the settings: opens a pre-filled bug report or suggestion form in the browser.
 
 **Known limitations**
+- Hot-reloading skins, skin profiles, `.osk` import and choosing HUD layouts in the settings are not done yet.
+- The skin's score and accuracy sit 10–13 px further right than in lazer and stable at 1920×1080.
 - Search keys `star`, `bpm`, `length`, `divisor`, `status` and dates are accepted but do not filter yet.
 - Spinners follow lazer's rules, not stable's.
-- "As in stable" hitsound delay is an estimate (~20 ms), not a measurement.
-- A saved failed play cannot be watched or exported in-game yet.
-- Blocking desktop shortcuts does not work through XWayland: choose Wayland in the video driver setting.
+- The new interface effects have not been checked on Direct3D 11 yet; if something looks wrong, try OpenGL.
 
 ### Download
 - **Windows 10+ x64:** `SLAM-…-windows-x64.zip`
@@ -65,7 +58,7 @@ The first build with all of the "playable gameplay" milestone done: maps play fr
 - **Portable mode.** Put an empty file named `portable` next to `slam.exe`: settings and data are then kept next to it.
 
 ### Reporting a bug
-Open an [issue](https://github.com/sheynor43/SLAM/issues/new) with:
+The quickest way is **Settings → Feedback**: it opens a form with the version and your system filled in. Or open an [issue](https://github.com/sheynor43/SLAM/issues/new) with:
 - the SLAM version and your OS;
 - what you did, what you expected and what happened;
 - the beatmap, if the problem is tied to one (a link or the file);
@@ -77,40 +70,33 @@ Open an [issue](https://github.com/sheynor43/SLAM/issues/new) with:
 
 ## Русский
 
-### Что нового в 0.1.0
-Первая сборка с полностью закрытым этапом «играбельный геймплей»: карты играются от начала до конца, с хитсаундами, офсетами и правилами тайминга лазера.
+### Что нового в 0.1.1
+Обновлённый интерфейс и первая часть этапа «Скины»: игровой HUD теперь берётся из скина.
 
-**Игра**
-- Объекты трясутся, если нажатие заблокировано (note lock, слишком раннее нажатие).
-- Переключатели «змейки» слайдеров (по умолчанию выключена), подсветки попаданий и следа курсора; размер курсора (0,1–2,0×) с вариантом «по размеру кругов».
-- Проваленную попытку можно сохранить с экрана провала (кнопка или F1).
-- Повтор клавиш при удержании: офсет, моды скорости, стрелки в меню, настройках и выборе песни.
-- Задержка хитсаундов «как в stable» и ползунок стереоразделения позиционных хитсаундов.
-- Смена скина и вида игры из паузы и экрана провала — без перезапуска попытки.
-- У карт без фона показывается фон по умолчанию.
-- Клавиша Windows блокируется во время игры (по умолчанию включено); на Linux блокируются и сочетания рабочего стола вроде Super и Alt+Tab.
+**Скины и HUD**
+- Счёт, точность и комбо рисуются цифрами скина и плавно прокручиваются; полоска здоровья — тоже из скина. Анимации HUD можно выключить.
+- Встроенные раскладки HUD с прогрессом песни, оверлеем клавиш и кнопкой пропуска из скина. Выбор раскладки в настройках появится позже.
+- Изображение скина, которое не удалось декодировать, считается отсутствующим (берётся стандартное), а не ломает скин.
 
-**Звук**
-- Устройство вывода, бэкенд и размер буфера меняются без перезапуска.
-- Микшер работает на частоте устройства, поэтому устройства на 44,1 кГц работают в режимах Low latency и Exclusive.
-- WASAPI Exclusive подстраивается под драйверы, которые не держат очень короткий период, вместо заиканий.
-- Музыка в меню: превью песни на выборе песни, случайный трек в главном меню; переключатель и громкость в разделе **Звук**.
+**Интерфейс**
+- Новый вид: скруглённые наклонные кнопки со слоями градиента, контурными треугольниками и тенями; цветовые схемы; отдельный масштаб меню и игры.
+- Выбор песни в пропорциях лазера: миниатюры карт, панель характеристик и локальные рекорды слева, звёздный рейтинг (считается в фоне и кешируется), сложности по звёздам, плавно раскрываются под своим сетом.
+- Поиск понимает текст, набранный в другой раскладке (русская ↔ английская).
+- Фон и звуки меню, параллакс, размытие, свечение и тени — у каждого своя сила (0–200 %) и выключатель.
+- Переходы между экранами: нет, простой, полоса, полосы, круг, осколки, створки или случайный.
+- Курсор меню и игры: свой курсор-стрелка SLAM (вращение в покое, шлейф, кольца нажатий — всё отключаемо), из скина или системный.
+- Настройки — один сплошной список, который помнит место; новый раздел **Скин**.
+- Стили меню паузы, в том числе как в stable.
+- Заставка при запуске со своим звуком (можно выключить).
+- Режимы счётчика FPS: от одного числа до панели с потоками отрисовки, update, звука и ввода и графиками времени кадра.
+- Раздел **Связь** в настройках: открывает в браузере заполненную форму сообщения об ошибке или предложения.
 
-**Графика**
-- Настройка рендера на Windows: OpenGL по умолчанию, Direct3D 11 — по выбору (после перезапуска). Если OpenGL не запустился, SLAM повторяет попытку и переходит на Direct3D 11.
-- Настройка видеодрайвера на Linux: Авто, Wayland или X11 (после перезапуска).
-
-**Меню**
-- Настройки открываются боковой панелью поверх текущего экрана (Ctrl+O), с поиском; доступны на выборе песни, в паузе, на результатах и экране провала.
-- Язык интерфейса: English или Русский, переключается на лету.
-- Выбор песни: затемнение фона (по умолчанию 70 %), поиск как в лазере (`ar>9`, `[Insane]`, `artist="xi"!`, `creator!=…`, номера карт), перетаскивание списка мышью с инерцией.
-
-**Ограничения**
+**Известные ограничения**
+- Горячей перезагрузки скинов, профилей скина, импорта `.osk` и выбора раскладки HUD в настройках пока нет.
+- Счёт и точность скина при 1920×1080 стоят на 10–13 px правее, чем в лазере и stable.
 - Ключи поиска `star`, `bpm`, `length`, `divisor`, `status` и даты принимаются, но пока не фильтруют.
 - Спиннеры работают по правилам лазера, а не stable.
-- Задержка хитсаундов «как в stable» — оценка (~20 мс), а не замер.
-- Сохранённую проваленную попытку пока нельзя посмотреть или экспортировать из игры.
-- Блокировка сочетаний рабочего стола не работает через XWayland: выберите Wayland в настройке видеодрайвера.
+- Новые эффекты интерфейса ещё не проверены на Direct3D 11; если что-то выглядит не так, попробуйте OpenGL.
 
 ### Скачать
 - **Windows 10+ x64:** `SLAM-…-windows-x64.zip`
@@ -140,10 +126,11 @@ Open an [issue](https://github.com/sheynor43/SLAM/issues/new) with:
 - **Портативный режим.** Положите пустой файл `portable` рядом с `slam.exe` — настройки и данные будут храниться рядом с ним.
 
 ### Как сообщить об ошибке
-Создайте [issue](https://github.com/sheynor43/SLAM/issues/new) и укажите:
+Быстрее всего — **Настройки → Связь**: откроется форма, где уже указаны версия и система. Или создайте [issue](https://github.com/sheynor43/SLAM/issues/new) и укажите:
 - версию SLAM и ОС;
 - что делали, что ожидали и что произошло;
 - карту, если ошибка связана с ней (ссылку или файл);
 - лог: запустите SLAM из терминала с `RUST_LOG=info` и приложите вывод.
   - Linux: `RUST_LOG=info ./SLAM-*.AppImage`
   - Windows (cmd): `set RUST_LOG=info`, затем `slam.exe`
+
