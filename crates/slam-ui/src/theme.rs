@@ -273,17 +273,39 @@ pub struct Theme {
     pub menu_panel_fill: Color,
     /// Margin of that backing around them.
     pub menu_panel_pad: f32,
-    /// SLAM's cursor (ADR-0124): its height in reference pixels, the fill, the outline's
-    /// width, how far a press shrinks it (a part of its size) and the milliseconds the
-    /// shrink and the way back take.
+    /// SLAM's menu cursor (ADR-0124, ADR-0128): its height in reference pixels, the fill,
+    /// the outline's colour and width (a part of the height), and the tilt of its silhouette.
     pub cursor_size: f32,
     pub cursor_fill: Color,
+    pub cursor_outline_colour: Color,
     pub cursor_outline: f32,
-    pub cursor_squeeze: f32,
-    pub cursor_squeeze_in_ms: f32,
-    pub cursor_squeeze_out_ms: f32,
-    /// The cursor's height in osu!pixels where gameplay draws it (ADR-0124).
+    pub cursor_tilt_degrees: f32,
+    /// Press, as the lazer menu cursor: the scale it shrinks to, the milliseconds the shrink
+    /// and the way back take, and the fade of the accent glow that comes with it.
+    pub cursor_press_scale: f32,
+    pub cursor_press_in_ms: f32,
+    pub cursor_press_out_ms: f32,
+    pub cursor_glow_in_ms: f32,
+    pub cursor_glow_out_ms: f32,
+    /// Drag rotation (right button): milliseconds of a turn towards the drag, the base of
+    /// the way back (it grows with the angle), the distance the drag must reach before it
+    /// turns the cursor, and the one from which its centre starts to follow (reference
+    /// pixels).
+    pub cursor_rotate_ms: f32,
+    pub cursor_rotate_back_ms: f32,
+    pub cursor_drag_start: f32,
+    pub cursor_drag_float: f32,
+    /// SLAM's gameplay cursor (ADR-0128, lazer's `OsuCursor`): its diameter in osu!pixels,
+    /// the widths of the outer and the inner ring (parts of the diameter), the opacity of
+    /// the accent fill and of the inner ring, the centre dot's size (a part of the diameter)
+    /// and the width of the glow around it in osu!pixels.
     pub cursor_gameplay_size: f32,
+    pub cursor_ring: f32,
+    pub cursor_inner_ring: f32,
+    pub cursor_ring_fill_alpha: f32,
+    pub cursor_inner_ring_alpha: f32,
+    pub cursor_dot: f32,
+    pub cursor_gameplay_glow: f32,
 }
 
 /// Tokens of the `fancy` screen transition (ADR-0126). The `simple` one keeps the
@@ -452,13 +474,32 @@ impl Theme {
             menu_background_dim: 0.5,
             menu_panel_fill: alpha(p.panel, 0.62),
             menu_panel_pad: 28.0,
-            cursor_size: 28.0,
+            cursor_size: 30.0,
             cursor_fill: Color::rgb(0.96, 0.97, 1.0),
-            cursor_outline: 2.5,
-            cursor_squeeze: 0.18,
-            cursor_squeeze_in_ms: 70.0,
-            cursor_squeeze_out_ms: 160.0,
-            cursor_gameplay_size: 34.0,
+            cursor_outline_colour: Color {
+                r: 0.04,
+                g: 0.05,
+                b: 0.09,
+                a: 0.9,
+            },
+            cursor_outline: 0.055,
+            cursor_tilt_degrees: 24.3,
+            cursor_press_scale: 0.9,
+            cursor_press_in_ms: 800.0,
+            cursor_press_out_ms: 500.0,
+            cursor_glow_in_ms: 800.0,
+            cursor_glow_out_ms: 500.0,
+            cursor_rotate_ms: 120.0,
+            cursor_rotate_back_ms: 400.0,
+            cursor_drag_start: 80.0,
+            cursor_drag_float: 60.0,
+            cursor_gameplay_size: 28.0,
+            cursor_ring: 1.0 / 6.0,
+            cursor_inner_ring: 1.0 / 3.0,
+            cursor_ring_fill_alpha: 0.55,
+            cursor_inner_ring_alpha: 0.5,
+            cursor_dot: 0.14,
+            cursor_gameplay_glow: 5.0,
         }
     }
 

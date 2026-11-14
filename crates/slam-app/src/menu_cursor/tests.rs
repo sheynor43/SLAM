@@ -209,8 +209,9 @@ fn the_slam_cursor_follows_the_freshest_position_in_pixels() {
         .iter()
         .map(|v| v.position[1])
         .fold(f32::MAX, f32::min);
+    // The pointer leans to the left: its tip is the top, a little of it reaches left.
     assert!(
-        (min_x - 60.0).abs() < 6.0 && (min_y - 80.0).abs() < 6.0,
+        (min_x - 60.0).abs() < 25.0 && (min_y - 80.0).abs() < 8.0,
         "{min_x} {min_y}"
     );
 }
@@ -263,24 +264,67 @@ fn dangling_handle() -> TextureHandle {
     requests.load(vec![0], TextureKind::Standalone).unwrap()
 }
 
+/// How far the pointer's own shapes (not the glow after them) reach from `tip`.
+fn reach(shapes: &ShapeBatch, tip: [f32; 2]) -> f32 {
+    shapes
+        .vertices()
+        .iter()
+        .take(6 * 4)
+        .map(|v| (v.position[0] - tip[0]).hypot(v.position[1] - tip[1]))
+        .fold(0.0, f32::max)
+}
+
 #[test]
-fn a_press_squeezes_the_slam_cursor_only_with_effects() {
+fn a_press_shrinks_the_slam_cursor_only_with_effects() {
     let pointer = PointerWatch::default();
     pointer.record_move(100.0, 100.0);
     let frame = MenuCursorFrame::default();
-    let height = |shapes: &ShapeBatch| {
-        shapes
-            .vertices()
-            .iter()
-            .map(|v| v.position[1])
-            .fold(f32::MIN, f32::max)
-    };
+    let tip = [200.0, 200.0];
     let mut view = view(&pointer);
-    let rest = height(&draw(&mut view, &frame, 0));
+    let rest = reach(&draw(&mut view, &frame, 0), tip);
     pointer.record_button(slam_input::MouseButton::Left, true);
     let _ = draw(&mut view, &frame, 1_000);
-    let squeezed = height(&draw(&mut view, &frame, 1_000_000_000));
-    assert!(squeezed < rest, "{squeezed} {rest}");
+    let shrunk = reach(&draw(&mut view, &frame, 1_000_000_000), tip);
+    assert!(shrunk < rest * 0.95, "{shrunk} {rest}");
+}
+
+#[test]
+fn a_right_drag_turns_the_slam_cursor_and_releasing_returns_it() {
+    let pointer = PointerWatch::default();
+    pointer.record_move(100.0, 100.0);
+    let frame = MenuCursorFrame::default();
+    let mut view = view(&pointer);
+    let tip = |shapes: &ShapeBatch| shapes.vertices()[0].position;
+    let rest = tip(&draw(&mut view, &frame, 0));
+    pointer.record_button(slam_input::MouseButton::Right, true);
+    let _ = draw(&mut view, &frame, 1_000_000);
+    // A far drag to the right.
+    pointer.record_move(400.0, 100.0);
+    let _ = draw(&mut view, &frame, 2_000_000);
+    let turned = tip(&draw(&mut view, &frame, 1_500_000_000));
+    assert!(
+        (turned[0] - rest[0]).abs() > 1.0 || (turned[1] - rest[1]).abs() > 1.0,
+        "{rest:?} {turned:?}"
+    );
+    pointer.record_button(slam_input::MouseButton::Right, false);
+    pointer.record_move(100.0, 100.0);
+    let _ = draw(&mut view, &frame, 1_600_000_000);
+    let back = tip(&draw(&mut view, &frame, 4_000_000_000));
+    assert!(
+        (back[0] - rest[0]).abs() < 0.5 && (back[1] - rest[1]).abs() < 0.5,
+        "{rest:?} {back:?}"
+    );
+}
+
+#[test]
+fn nothing_is_drawn_while_the_pointer_is_outside_the_window() {
+    let pointer = PointerWatch::default();
+    pointer.record_move(10.0, 10.0);
+    let mut view = view(&pointer);
+    let frame = MenuCursorFrame::default();
+    assert!(!draw(&mut view, &frame, 0).is_empty());
+    pointer.record_outside(true);
+    assert!(draw(&mut view, &frame, 1).is_empty());
 }
 
 // ---- Release protocol ----
