@@ -11,7 +11,7 @@ use slam_render::gl::{GlDebug, GlDevice};
 use slam_render::shape::{SHAPE_LAYOUT, ShapeBatch};
 use slam_render::sprite::{DEFAULT_SLOTS, Projection, SpriteBatch, SpriteRenderer};
 use slam_render::textures::Textures;
-use slam_render::{Device, Extent, TextureFormat, shaders};
+use slam_render::{Color, Device, Extent, TextureFormat, shaders};
 use slam_text::{FontRegistry, GlyphAtlasConfig, GlyphCache, glyph_atlas};
 use slam_ui::i18n::Localizer;
 use slam_ui::intro::{IntroSnapshot, IntroView};
@@ -21,7 +21,7 @@ use slam_ui::theme::Theme;
 
 use super::{Frame, LOAD_TIMEOUT, REFERENCE_RENDERER};
 
-type Gl = GlDevice<SdlGlSurface>;
+pub(crate) type Gl = GlDevice<SdlGlSurface>;
 
 /// Draws the intro over the menu at each of `times_ms` since its start, on a
 /// `size` window, in English. Opens SDL video: one call at a time in a process, on its
@@ -31,6 +31,19 @@ pub fn render_intro(
     size: (u32, u32),
     any_renderer: bool,
 ) -> Result<Vec<Frame>, String> {
+    let times = times_ms.to_vec();
+    let extent = Extent::new(size.0, size.1);
+    with_headless_gl(size, move |device| {
+        draw_on(device, &times, extent, any_renderer)
+    })
+}
+
+/// Runs `work` on the draw thread with an OpenGL device of a headless window of `size`.
+/// Opens SDL video: one call at a time in a process, on its main thread.
+pub(crate) fn with_headless_gl<T: Send + 'static>(
+    size: (u32, u32),
+    work: impl FnOnce(&mut Gl) -> Result<T, String> + Send + 'static,
+) -> Result<T, String> {
     let (width, height) = size;
     let to_i32 = |v: u32| i32::try_from(v).map_err(|_| format!("size {v} is too large"));
     let mut window =
@@ -39,33 +52,66 @@ pub fn render_intro(
     let context = window
         .create_gl_context_with(PriorityRequest::Default)
         .map_err(|e| e.to_string())?;
-    let times = times_ms.to_vec();
-    let size = Extent::new(width, height);
-    let (frames, surface) = std::thread::spawn(move || {
+    let (result, surface) = std::thread::spawn(move || {
         let mut device = match GlDevice::new(SdlGlSurface(context), GlDebug::Off) {
             Ok(device) => device,
             Err(e) => return (Err(format!("OpenGL: {e}")), None),
         };
-        let frames = draw_on(&mut device, &times, size, any_renderer);
+        let result = work(&mut device);
         match device.into_surface() {
-            Ok(surface) => (frames, Some(surface)),
-            Err(e) => (frames.and(Err(format!("releasing the context: {e}"))), None),
+            Ok(surface) => (result, Some(surface)),
+            Err(e) => (result.and(Err(format!("releasing the context: {e}"))), None),
         }
     })
     .join()
     .map_err(|_| "the draw thread panicked".to_owned())?;
     drop(surface);
     drop(window);
-    frames
+    result
 }
 
 /// The GPU side: textures and the three sprite renderers the shell draws with.
-struct Gpu {
-    textures: Textures<<Gl as Device>::Texture>,
-    white: AtlasRegion,
-    shapes: SpriteRenderer<Gl>,
-    text: SpriteRenderer<Gl>,
-    outlines: SpriteRenderer<Gl>,
+pub(crate) struct Gpu {
+    pub(crate) textures: Textures<<Gl as Device>::Texture>,
+    pub(crate) white: AtlasRegion,
+    pub(crate) shapes: SpriteRenderer<Gl>,
+    pub(crate) text: SpriteRenderer<Gl>,
+    pub(crate) outlines: SpriteRenderer<Gl>,
+}
+
+impl Gpu {
+    pub(crate) fn new(device: &mut Gl) -> Result<Gpu, String> {
+        let mut textures = Textures::with_capacity(8);
+        let mut atlas = Atlas::new(Extent::new(64, 64), TextureFormat::Rgba8);
+        let white = atlas
+            .add(device, &mut textures, Extent::new(8, 8), &[255; 8 * 8 * 4])
+            .map_err(|e| e.to_string())?;
+        let renderer = |device: &mut Gl, shader| {
+            SpriteRenderer::with_shader(device, DEFAULT_SLOTS, shader).map_err(|e| e.to_string())
+        };
+        Ok(Gpu {
+            textures,
+            white,
+            shapes: SpriteRenderer::with_layout(
+                device,
+                DEFAULT_SLOTS,
+                &shaders::UI_SHAPE,
+                SHAPE_LAYOUT,
+            )
+            .map_err(|e| e.to_string())?,
+            text: renderer(device, &shaders::MSDF)?,
+            outlines: renderer(device, &shaders::MSDF_OUTLINE)?,
+        })
+    }
+
+    pub(crate) fn destroy(mut self, device: &mut Gl) {
+        self.shapes.destroy(device);
+        self.text.destroy(device);
+        self.outlines.destroy(device);
+        for texture in self.textures.drain() {
+            device.destroy_texture(texture);
+        }
+    }
 }
 
 /// The views and their batches.
@@ -114,27 +160,7 @@ fn draw_on(
         text: SpriteBatch::with_capacity(64),
         outlines: SpriteBatch::with_capacity(64),
     };
-    let mut textures = Textures::with_capacity(8);
-    let mut atlas = Atlas::new(Extent::new(64, 64), TextureFormat::Rgba8);
-    let white = atlas
-        .add(device, &mut textures, Extent::new(8, 8), &[255; 8 * 8 * 4])
-        .map_err(|e| e.to_string())?;
-    let renderer = |device: &mut Gl, shader| {
-        SpriteRenderer::with_shader(device, DEFAULT_SLOTS, shader).map_err(|e| e.to_string())
-    };
-    let mut gpu = Gpu {
-        textures,
-        white,
-        shapes: SpriteRenderer::with_layout(
-            device,
-            DEFAULT_SLOTS,
-            &shaders::UI_SHAPE,
-            SHAPE_LAYOUT,
-        )
-        .map_err(|e| e.to_string())?,
-        text: renderer(device, &shaders::MSDF)?,
-        outlines: renderer(device, &shaders::MSDF_OUTLINE)?,
-    };
+    let mut gpu = Gpu::new(device)?;
     let frames = times
         .iter()
         .map(|&ms| {
@@ -143,39 +169,43 @@ fn draw_on(
                 exit: 0.0,
                 skipped: false,
             };
-            settle(device, &mut gpu, &mut views, &snapshot, &theme, size)
-                .map_err(|e| format!("{ms} ms: {e}"))
+            settle(
+                device,
+                &mut gpu,
+                &mut views,
+                |views| &mut views.glyphs,
+                theme.background,
+                size,
+                |device, gpu, views| draw_frame(device, gpu, views, &snapshot, size),
+            )
+            .map_err(|e| format!("{ms} ms: {e}"))
         })
         .collect();
-    gpu.shapes.destroy(device);
-    gpu.text.destroy(device);
-    gpu.outlines.destroy(device);
-    for texture in gpu.textures.drain() {
-        device.destroy_texture(texture);
-    }
+    gpu.destroy(device);
     frames
 }
 
-/// Draws `snapshot` until every glyph is in and two frames in a row are the same, and
-/// gives that frame.
-fn settle(
+/// Draws a frame with `draw` until every glyph of `glyphs(state)` is in and two frames in
+/// a row are the same, and gives that frame.
+pub(crate) fn settle<S>(
     device: &mut Gl,
     gpu: &mut Gpu,
-    views: &mut Views,
-    snapshot: &IntroSnapshot,
-    theme: &Theme,
+    state: &mut S,
+    glyphs: fn(&mut S) -> &mut GlyphCache,
+    background: Color,
     size: Extent,
+    mut draw: impl FnMut(&mut Gl, &mut Gpu, &mut S) -> Result<(), String>,
 ) -> Result<Frame, String> {
     let deadline = Instant::now() + LOAD_TIMEOUT;
     let mut last: Option<Vec<u8>> = None;
     loop {
-        let drawn = device.begin_frame(theme.background);
+        let drawn = device.begin_frame(background);
         if drawn != size {
             return Err(format!("drew {drawn:?}, not {size:?}"));
         }
-        views.glyphs.process(device, &mut gpu.textures);
-        let loaded = views.glyphs.all_ready();
-        draw_frame(device, gpu, views, snapshot, size)?;
+        glyphs(state).process(device, &mut gpu.textures);
+        let loaded = glyphs(state).all_ready();
+        draw(device, gpu, state)?;
         let pixels = loaded.then(|| device.read_frame(size));
         device.present().map_err(|e| e.to_string())?;
         if let Some(pixels) = pixels {
@@ -195,6 +225,38 @@ fn settle(
             std::thread::sleep(Duration::from_millis(1));
         }
     }
+}
+
+/// Uploads and draws one layer: its `shapes`, then its `text`.
+pub(crate) fn draw_layer(
+    device: &mut Gl,
+    gpu: &mut Gpu,
+    shapes: &ShapeBatch,
+    text: &SpriteBatch,
+    size: Extent,
+) -> Result<(), String> {
+    for renderer in [&mut gpu.shapes, &mut gpu.text, &mut gpu.outlines] {
+        renderer.begin_frame();
+    }
+    let projection = Projection::pixels(size);
+    let textures = &gpu.textures;
+    let texture = |id| textures.get(id);
+    let err = |e: slam_render::sprite::SpriteError| e.to_string();
+    let uploaded = gpu
+        .shapes
+        .upload(device, shapes, &projection, texture)
+        .map_err(err)?;
+    gpu.shapes
+        .draw_range(device, &uploaded, shapes, 0..shapes.len() as u32, texture)
+        .map_err(err)?;
+    let uploaded = gpu
+        .text
+        .upload(device, text, &projection, texture)
+        .map_err(err)?;
+    gpu.text
+        .draw_range(device, &uploaded, text, 0..text.len() as u32, texture)
+        .map(drop)
+        .map_err(err)
 }
 
 /// The menu, then the intro over it, as the shell's frame draws them.
