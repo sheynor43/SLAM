@@ -294,6 +294,8 @@ pub enum Row {
     ShowFps,
     FpsCorner,
     FpsScreens,
+    /// What the FPS counter shows (ADR-0138).
+    FpsMode,
     Dim,
     SongSelectDim,
     /// Height of the song list's thumbnails (ADR-0127).
@@ -313,7 +315,7 @@ pub enum Row {
 const _: () = assert!(Row::ALL.len() <= slam_ui::settings_screen::MAX_ROWS);
 
 impl Row {
-    pub const ALL: [Row; 81] = [
+    pub const ALL: [Row; 82] = [
         Row::MasterVolume,
         Row::MusicVolume,
         Row::MenuMusic,
@@ -383,6 +385,7 @@ impl Row {
         Row::ShowFps,
         Row::FpsCorner,
         Row::FpsScreens,
+        Row::FpsMode,
         Row::Dim,
         Row::SongSelectDim,
         Row::SongSelectThumbnails,
@@ -490,7 +493,8 @@ impl Row {
             | Row::MenuDrawHz
             | Row::ShowFps
             | Row::FpsCorner
-            | Row::FpsScreens => section::FRAME,
+            | Row::FpsScreens
+            | Row::FpsMode => section::FRAME,
             Row::Dim
             | Row::SongSelectDim
             | Row::SongSelectThumbnails
@@ -567,6 +571,7 @@ impl Row {
             Row::ShowFps => "settings-frame-show-fps",
             Row::FpsCorner => "settings-frame-fps-corner",
             Row::FpsScreens => "settings-frame-fps-screens",
+            Row::FpsMode => "settings-frame-fps-mode",
             Row::Dim => "settings-gameplay-dim",
             Row::SongSelectDim => "settings-song-select-dim",
             Row::SongSelectThumbnails => "settings-song-select-thumbnails",
@@ -750,6 +755,16 @@ fn delay_key(delay: HitsoundDelay) -> &'static str {
     match delay {
         HitsoundDelay::None => "settings-option-hitsound-delay-none",
         HitsoundDelay::Stable => "settings-option-hitsound-delay-stable",
+    }
+}
+
+/// The Fluent key of an option of what the FPS counter shows (ADR-0138).
+fn fps_mode_key(mode: slam_play::FpsMode) -> &'static str {
+    match mode {
+        slam_play::FpsMode::Fps => "settings-option-fps-mode-fps",
+        slam_play::FpsMode::Draw => "settings-option-fps-mode-draw",
+        slam_play::FpsMode::Update => "settings-option-fps-mode-update",
+        slam_play::FpsMode::Full => "settings-option-fps-mode-full",
     }
 }
 
@@ -1153,6 +1168,12 @@ impl Rows {
                     .iter()
                     .position(|w| *w == s.frame.fps_screens),
             ),
+            Row::FpsMode => choice(
+                slam_play::FpsMode::ALL.len(),
+                slam_play::FpsMode::ALL
+                    .iter()
+                    .position(|m| *m == s.frame.fps_mode),
+            ),
             Row::BeatmapSkins => RowKind::Toggle {
                 value: s.gameplay.beatmap_skins,
             },
@@ -1457,6 +1478,11 @@ impl Rows {
                     settings.window.windowed_position = position;
                 }
             }
+            (Row::FpsMode, RowValue::Choice(i)) => {
+                if let Some(mode) = slam_play::FpsMode::ALL.get(i) {
+                    settings.frame.fps_mode = *mode;
+                }
+            }
             (Row::FpsScreens, RowValue::Choice(i)) => {
                 if let Some(screens) = FpsScreens::ALL.get(i) {
                     settings.frame.fps_screens = *screens;
@@ -1608,6 +1634,10 @@ impl Rows {
                     Row::MenuSounds => MenuSounds::ALL
                         .iter()
                         .map(|sounds| text(menu_sounds_key(*sounds)))
+                        .collect(),
+                    Row::FpsMode => slam_play::FpsMode::ALL
+                        .iter()
+                        .map(|mode| text(fps_mode_key(*mode)))
                         .collect(),
                     Row::FpsScreens => FpsScreens::ALL
                         .iter()

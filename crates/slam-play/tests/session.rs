@@ -25,6 +25,7 @@ use slam_play::circles::{
 use slam_play::cursor::{
     CursorSkinConfig, CursorTextures, CursorView, ExpandTimes, MAX_CURSOR_SPRITES,
 };
+use slam_play::fps_view::MAX_FPS_SHAPES;
 use slam_play::health_bar::{HealthTextures, MarkerTextures};
 use slam_play::hud::{HudTextures, MAX_HUD_SHAPES, OFFSET_PLACEHOLDER, SkipTextures};
 use slam_play::key_overlay::KeyOverlayTextures;
@@ -38,8 +39,8 @@ use slam_play::session::{PAUSE_IMAGES, PauseTextures};
 use slam_play::slider_body::Snaking;
 use slam_play::sliders::{AnimationSprites, HitSliders, SliderBodies, SliderVisuals};
 use slam_play::{
-    BackgroundSettings, BackgroundView, FpsCorner, FpsCounter, FpsLabels, FpsView, HudLabels,
-    HudSetup, HudValues, HudView, MenuLabels,
+    AudioFigures, BackgroundSettings, BackgroundView, FpsCorner, FpsCounter, FpsLabels, FpsMode,
+    FpsView, HudLabels, HudSetup, HudValues, HudView, InputFigures, MenuLabels, ThreadFigures,
 };
 use slam_play::{
     Bindings, FrameTextures, GameTime, GameplaySounds, LiveInput, Offsets, PlaySession,
@@ -56,6 +57,7 @@ use slam_skin::SIXTY_FRAME_TIME;
 use slam_testkit::assert_no_alloc;
 use slam_text::{FontRegistry, GlyphAtlasConfig, glyph_atlas};
 use slam_ui::hud_layout::{Anchor, Builtin, ComponentKind, LayoutElement};
+use slam_ui::theme::Theme;
 
 slam_testkit::install_counting_allocator!();
 
@@ -789,6 +791,7 @@ fn labels() -> HudLabels {
         fps: FpsLabels {
             frame_time: format!("{OFFSET_PLACEHOLDER} мс"),
             fps: format!("{OFFSET_PLACEHOLDER} fps"),
+            ..FpsLabels::english()
         },
     }
 }
@@ -2612,7 +2615,8 @@ fn fps_counter_frames_do_not_allocate() {
     assert!(view.request_glyphs(&mut glyphs) > 0);
     let mut counter = FpsCounter::new();
     let mut text = SpriteBatch::with_capacity(256);
-    let mut batch = SpriteBatch::with_capacity(16);
+    let mut batch = ShapeBatch::with_capacity(MAX_FPS_SHAPES);
+    let theme = Theme::default();
     assert_no_alloc(|| {
         let mut now = 0;
         for frame in 0..4000_u64 {
@@ -2628,16 +2632,31 @@ fn fps_counter_frames_do_not_allocate() {
                 _ => 1000 * 1000 + frame * 1000,
             };
             counter.frame(now, update, aim, 1000.0);
+            if frame % 250 == 0 {
+                counter.set_figures(ThreadFigures {
+                    update_hz: 1000.0 + frame as f64,
+                    audio: (frame % 500 == 0).then_some(AudioFigures {
+                        callbacks_hz: 375.0,
+                        buffer_ms: 2.7,
+                        xruns: frame,
+                    }),
+                    input: Some(InputFigures {
+                        polls_hz: 1000.0,
+                        events_hz: 125.0,
+                    }),
+                });
+            }
             let height = [720.0, 1080.0, 1.0, 0.0][(frame / 500) as usize % 4];
             view.set_corner(FpsCorner::ALL[(frame / 300) as usize % 4]);
+            view.set_mode(FpsMode::ALL[(frame / 100) as usize % 4]);
             view.update(1280.0, height, &counter);
             batch.clear();
             text.clear();
-            view.push_shapes(&mut batch, WHITE);
+            view.push_shapes(&mut batch, &theme, WHITE);
             view.push_text(&mut text, &mut glyphs);
         }
     });
-    assert_eq!(batch.len(), 1);
+    assert!(batch.len() <= MAX_FPS_SHAPES);
 }
 
 #[test]

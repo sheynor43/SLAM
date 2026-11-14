@@ -117,6 +117,7 @@ const MAX_TEXTURES: usize = 16
 /// box, two backgrounds of each layer, the language curtain (ADR-0091) and the intro's
 /// black (ADR-0114).
 const MAX_SHAPES: usize = 1024
+    + crate::play::fps::MAX_FPS_SHAPES
     + slam_ui::screen::MAX_FX_SHAPES
     + 1
     + 2 * MAX_LAYERS
@@ -3862,8 +3863,13 @@ impl<B: render::Backend> Draw<ShellSnapshot> for View<B> {
             info.wait.woke_ns,
             r.white,
         );
-        self.fps
-            .push(&mut self.shapes, &mut self.text, &mut self.glyphs, r.white);
+        self.fps.push(
+            &mut self.shapes,
+            &self.theme,
+            &mut self.text,
+            &mut self.glyphs,
+            r.white,
+        );
         // The menu cursor is the last of all, over the curtain and the FPS counter, unless
         // gameplay draws its own (ADR-0124).
         let mut cursor = snapshot.menu_cursor;

@@ -5,6 +5,9 @@
 use std::path::PathBuf;
 use std::sync::Arc;
 
+use slam_play::{
+    AudioFigures, FpsCorner, FpsCounter, FpsMode, FpsView, InputFigures, ThreadFigures,
+};
 use slam_render::shape::ShapeBatch;
 use slam_render::sprite::SpriteBatch;
 use slam_render::{Device, Extent};
@@ -83,13 +86,17 @@ pub fn run(options: &Options) -> Result<(), String> {
 #[derive(Clone, Copy)]
 enum Scene {
     Menu(usize),
-    SongSelect { effects: bool },
+    SongSelect {
+        effects: bool,
+    },
     Settings,
     Cursor,
+    /// The FPS counter in each of its modes, one per corner (ADR-0138).
+    Fps,
 }
 
 /// The names of the PNGs and what they show, in the order they are drawn.
-const SCENES: [(&str, Scene); 6] = [
+const SCENES: [(&str, Scene); 7] = [
     ("menu-play", Scene::Menu(0)),
     ("menu-settings", Scene::Menu(1)),
     ("song-select", Scene::SongSelect { effects: true }),
@@ -99,6 +106,7 @@ const SCENES: [(&str, Scene); 6] = [
     ),
     ("settings", Scene::Settings),
     ("cursor", Scene::Cursor),
+    ("fps", Scene::Fps),
 ];
 
 /// Draws the previews, named. Opens SDL video: one call at a time in a process, on its
@@ -152,6 +160,9 @@ struct State {
     /// The same views with the theme's effects and shadows off.
     plain_views: InterfaceViews,
     song_select: SongSelect,
+    /// The FPS counter's views, one per mode, and the counter they show.
+    fps: Vec<(FpsMode, FpsCorner, FpsView)>,
+    fps_counter: FpsCounter,
     shapes: ShapeBatch,
     text: SpriteBatch,
 }
@@ -166,9 +177,25 @@ impl State {
         let views = interface_views(&registry, theme, &localizer, &rows, &settings);
         let plain = theme.with_effects(false).with_shadow(0.0);
         let plain_views = interface_views(&registry, plain, &localizer, &rows, &settings);
+        let labels = crate::play::scene::hud_labels(&localizer).fps;
+        let fps = [
+            (FpsMode::Fps, FpsCorner::TopLeft),
+            (FpsMode::Draw, FpsCorner::TopRight),
+            (FpsMode::Update, FpsCorner::BottomLeft),
+            (FpsMode::Full, FpsCorner::BottomRight),
+        ]
+        .map(|(mode, corner)| {
+            let mut view = FpsView::new(Arc::clone(&registry), &labels);
+            view.set_mode(mode);
+            view.set_corner(corner);
+            (mode, corner, view)
+        })
+        .into();
         let glyphs = glyph_atlas(registry, &GlyphAtlasConfig::new(device.limits()))
             .map_err(|e| e.to_string())?;
         Ok(State {
+            fps,
+            fps_counter: sample_fps_counter(),
             glyphs,
             song_select: sample_song_select(&theme, size),
             settings,
@@ -235,6 +262,13 @@ impl State {
                     white,
                 );
             }
+            Scene::Fps => {
+                for (_, _, view) in &mut self.fps {
+                    view.update(width, height, &self.fps_counter);
+                    view.push_shapes(&mut self.shapes, &self.views.theme, white);
+                    view.push_text(&mut self.text, &mut self.glyphs);
+                }
+            }
             Scene::Cursor => {
                 // At rest, pressed with a ring, turned, spun part-way, and with a trail.
                 let mut trailing = CursorMotion::REST;
@@ -278,6 +312,40 @@ impl State {
         }
         draw_layer(device, gpu, &self.shapes, &self.text, size)
     }
+}
+
+/// A counter that has watched a 240 Hz game with a few slow frames and ticks, and the
+/// other threads running.
+fn sample_fps_counter() -> FpsCounter {
+    const MS: u64 = 1_000_000;
+    let mut counter = FpsCounter::new();
+    let mut now = 0;
+    for frame in 0..1200_u64 {
+        // 4.2 ms frames, with a slow one now and then.
+        now += match frame % 97 {
+            0 => 11 * MS,
+            50 => 7 * MS,
+            _ => 4_200_000,
+        };
+        let update = match frame % 131 {
+            0 => 3 * MS,
+            _ => 250_000 + (frame % 7) * 20_000,
+        };
+        counter.frame(now, update, 240.0, 4000.0);
+    }
+    counter.set_figures(ThreadFigures {
+        update_hz: 3980.0,
+        audio: Some(AudioFigures {
+            callbacks_hz: 375.0,
+            buffer_ms: 2.7,
+            xruns: 0,
+        }),
+        input: Some(InputFigures {
+            polls_hz: 1010.0,
+            events_hz: 125.0,
+        }),
+    });
+    counter
 }
 
 /// A song select with a sample list, a selected difficulty in an expanded set, one hovered

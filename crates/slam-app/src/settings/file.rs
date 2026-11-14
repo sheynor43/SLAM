@@ -538,6 +538,16 @@ fn from_table(mut table: Table) -> Loaded {
             )),
         }
     }
+    let mut mode: Option<String> = None;
+    cx.opt(&mut frame, "frame", "fps_mode", &mut mode);
+    if let Some(name) = mode {
+        match slam_play::FpsMode::from_name(&name) {
+            Some(mode) => settings.frame.fps_mode = mode,
+            None => cx.warn(format!(
+                "frame.fps_mode: unknown value \"{name}\", using the default"
+            )),
+        }
+    }
     cx.unknown(&frame, "frame");
 
     let mut gameplay = cx.section(&mut table, "gameplay");

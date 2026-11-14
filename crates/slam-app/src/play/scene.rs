@@ -67,7 +67,8 @@ const MAX_TEXTURES: usize = 64;
 const MAX_GLYPH_SPRITES: usize = 256;
 /// Dim, backing, each button with its outline, the fail footer, the save button and its
 /// hover, and the FPS counter's box.
-const MAX_MENU_SPRITES: usize = 6 + 2 * slam_play::menu_overlay::MAX_BUTTONS + 3;
+const MAX_MENU_SPRITES: usize =
+    6 + 2 * slam_play::menu_overlay::MAX_BUTTONS + 3 + slam_play::fps_view::MAX_FPS_SHAPES;
 
 /// What a play takes from the player's settings.
 #[derive(Clone, Debug, PartialEq)]
@@ -247,6 +248,16 @@ pub fn hud_labels(localizer: &Localizer) -> HudLabels {
         fps: FpsLabels {
             frame_time: text("fps-counter-frame-time"),
             fps: text("fps-counter-fps"),
+            hz: text("fps-counter-hz"),
+            events: text("fps-counter-events"),
+            buffer: text("fps-counter-buffer"),
+            xruns: text("fps-counter-xruns"),
+            threads: [
+                text("fps-counter-thread-draw"),
+                text("fps-counter-thread-update"),
+                text("fps-counter-thread-audio"),
+                text("fps-counter-thread-input"),
+            ],
         },
     }
 }
@@ -688,7 +699,7 @@ impl PlayScene {
         // Last: the counter is on top of the menus.
         if let Some(view) = fps {
             if let Some(white) = textures.white {
-                view.push_shapes(&mut self.menu_shapes, white);
+                view.push_shapes(&mut self.menu_shapes, &self.cursor_theme, white);
             }
             view.push_text(&mut self.menu_text, &mut self.glyphs);
         }
