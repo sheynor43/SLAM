@@ -273,6 +273,8 @@ const FLOOR_ALPHA: f32 = 0.16;
 const GRAPH_PERIODS: f32 = 3.0;
 /// What a number is laid out with to settle the buffers and warm the glyphs.
 const WARM_NUMBER: &str = "0123456789.,0123456789-";
+/// How long the compact panel's texts must need less room before it narrows to them.
+const SHRINK_AFTER_MS: f64 = 1000.0;
 
 /// Text sizes and positions of one window size.
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -299,9 +301,14 @@ pub struct FpsView {
     names: [String; 4],
     name_layouts: [Layout; 4],
     shown: Option<Shown>,
-    /// The compact panel's width in pixels: it only grows, until the window changes size
-    /// or the mode.
+    /// The compact panel's width in pixels: it grows at once and shrinks only after its
+    /// texts have needed less for [`SHRINK_AFTER_MS`], so that a digit coming and going
+    /// does not make it jitter. Starts over with the window size and the mode.
     box_width: f32,
+    /// The width the compact panel's texts need now.
+    needed_width: f32,
+    /// Counter time since which the texts have needed less than `box_width`.
+    narrow_since: Option<f64>,
     colours: [Color; CELLS],
     alpha: f32,
     /// Bars of the draw and update graphs, in milliseconds, and each graph's full height.
@@ -362,6 +369,8 @@ impl FpsView {
             name_layouts: std::array::from_fn(|_| Layout::new()),
             shown: None,
             box_width: 0.0,
+            needed_width: 0.0,
+            narrow_since: None,
             colours: [NEUTRAL; CELLS],
             alpha: 0.0,
             bars: [[0.0; GRAPH_LEN]; 2],
@@ -421,7 +430,13 @@ impl FpsView {
             self.mode = mode;
             self.shown = None;
             self.box_width = 0.0;
+            self.narrow_since = None;
         }
+    }
+
+    /// The counter shows again, with its time from zero: the panel's narrowing starts over.
+    pub fn restart(&mut self) {
+        self.narrow_since = None;
     }
 
     pub fn mode(&self) -> FpsMode {
@@ -440,6 +455,7 @@ impl FpsView {
             self.frame = frame;
             self.shown = None;
             self.box_width = 0.0;
+            self.narrow_since = None;
         }
         let texts = counter.texts();
         for (colour, cell) in self.colours.iter_mut().zip(FpsCell::ALL) {
@@ -465,6 +481,7 @@ impl FpsView {
         }
         let numbers = FpsCell::ALL.map(|cell| texts.number(cell));
         if self.shown == Some((numbers, self.mode)) {
+            self.fit_box(counter.time_ms());
             return;
         }
         self.shown = Some((numbers, self.mode));
@@ -500,7 +517,31 @@ impl FpsView {
             }
         } else {
             let inner = width - ENTRY_GAP * scale;
-            self.box_width = self.box_width.max(inner + 2.0 * PAD * scale);
+            self.needed_width = inner + 2.0 * PAD * scale;
+            self.fit_box(counter.time_ms());
+        }
+    }
+
+    /// Widens the compact panel to its texts at once, and narrows it to them once they
+    /// have needed less for [`SHRINK_AFTER_MS`] of counter time `now_ms`.
+    fn fit_box(&mut self, now_ms: f64) {
+        if self.mode.is_full() {
+            return;
+        }
+        // Under half a pixel is layout noise, not a narrower text.
+        if self.needed_width >= self.box_width - 0.5 {
+            self.box_width = self.box_width.max(self.needed_width);
+            self.narrow_since = None;
+            return;
+        }
+        // Time going back is a new counter's, should `restart` have been missed.
+        let since = match self.narrow_since {
+            Some(since) if since <= now_ms => since,
+            _ => *self.narrow_since.insert(now_ms),
+        };
+        if now_ms - since >= SHRINK_AFTER_MS {
+            self.box_width = self.needed_width;
+            self.narrow_since = None;
         }
     }
 
@@ -764,7 +805,7 @@ mod tests {
     }
 
     #[test]
-    fn the_compact_panel_sits_in_the_chosen_corner_and_only_grows() {
+    fn the_compact_panel_sits_in_the_chosen_corner_and_grows_at_once() {
         let c = counter();
         let mut view = view();
         let (width, height) = (1280.0, 768.0);
@@ -795,6 +836,63 @@ mod tests {
         assert_eq!(h, 2.0 * COMPACT_HEIGHT);
         assert!(w < 2.0 * wide * 1.01);
         assert_eq!(FpsCorner::default(), FpsCorner::BottomRight);
+    }
+
+    /// A counter that has run steadily at `hz` for `ms` milliseconds.
+    fn steady(hz: u64, ms: u64) -> FpsCounter {
+        let mut c = FpsCounter::new();
+        let step = 1_000_000_000 / hz;
+        for n in 1..=ms * 1_000_000 / step {
+            c.frame(n * step, step, hz as f64, hz as f64);
+        }
+        c
+    }
+
+    #[test]
+    fn the_compact_panel_narrows_a_second_after_its_texts_do() {
+        let mut view = view();
+        let (width, height) = (1280.0, 768.0);
+        // Four-digit rates in the play...
+        view.update(width, height, &steady(2000, 1000));
+        let wide = view.bounds().1[0];
+        // ...then three in the menu: the panel holds its width a while,
+        let mut menu = steady(240, 300);
+        view.update(width, height, &menu);
+        assert_eq!(view.bounds().1[0], wide);
+        // and fits the texts once they have needed less for a second.
+        let start = menu.time_ms();
+        let step = 1_000_000_000 / 240;
+        let mut n = 300 * 1_000_000 / step;
+        let mut run = |view: &mut FpsView, menu: &mut FpsCounter, until: f64| {
+            while menu.time_ms() < until {
+                n += 1;
+                menu.frame(n * step, step, 240.0, 240.0);
+                view.update(width, height, menu);
+                if view.bounds().1[0] < wide {
+                    return menu.time_ms();
+                }
+            }
+            f64::INFINITY
+        };
+        // Wide again for a moment: the second starts over from there.
+        let held = run(&mut view, &mut menu, start + 600.0);
+        assert_eq!(held, f64::INFINITY);
+        view.update(width, height, &steady(2000, 1000));
+        let rewide = menu.time_ms();
+        let narrowed = run(&mut view, &mut menu, rewide + SHRINK_AFTER_MS + 300.0);
+        assert!(
+            narrowed >= rewide + SHRINK_AFTER_MS,
+            "{narrowed} vs {rewide}"
+        );
+        assert!(
+            narrowed < rewide + SHRINK_AFTER_MS + 50.0,
+            "{narrowed} vs {rewide}"
+        );
+        let narrow = view.bounds().1[0];
+        assert!(narrow < wide - 1.0, "{narrow} vs {wide}");
+        // It widens again at once.
+        view.update(width, height, &steady(2000, 1000));
+        assert_eq!(view.bounds().1[0], wide);
     }
 
     #[test]

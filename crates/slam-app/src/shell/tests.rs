@@ -679,6 +679,8 @@ fn detached_audio() -> (Audio, slam_audio::Mixer) {
         mixer: mixer_handle,
         volumes: AppliedVolumes::new(Volumes::of(&Settings::default().audio)),
         sample_rate: SAMPLE_RATE,
+        counters: Arc::default(),
+        buffer_frames: 256,
     };
     (audio, mixer)
 }
@@ -723,6 +725,7 @@ fn host(name: &str, with_track: bool) -> HostFixture {
     let (audio, mixer) = detached_audio();
     let (scene_tx, scenes) = rtrb::RingBuffer::new(2);
     let host = PlayHost {
+        audio_feed: AudioFeed::new(Arc::default()),
         audio,
         output: None,
         requested: Settings::default().audio,

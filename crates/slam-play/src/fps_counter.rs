@@ -477,6 +477,11 @@ impl FpsCounter {
         &self.texts
     }
 
+    /// Milliseconds since the counter's first frame.
+    pub fn time_ms(&self) -> f64 {
+        self.time
+    }
+
     /// The counter's alpha now (lazer's `mainContent`); the panel's own
     /// alpha is a fraction of it.
     pub fn alpha(&self) -> f32 {

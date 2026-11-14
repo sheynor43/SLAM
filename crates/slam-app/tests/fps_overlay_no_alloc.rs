@@ -4,7 +4,10 @@
 
 use std::sync::Arc;
 
-use slam_app::play::fps::{FpsDisplay, FpsOverlay, FpsSource, MAX_FPS_GLYPHS, MAX_FPS_SHAPES};
+use slam_app::play::fps::{
+    AudioFeed, AudioMeter, AudioReading, FpsDisplay, FpsOverlay, FpsSource, MAX_FPS_GLYPHS,
+    MAX_FPS_SHAPES,
+};
 use slam_app::settings::FpsScreens;
 use slam_audio::{MusicStats, StreamCounters};
 use slam_engine::{DrawRateControl, EngineCounters, UpdateRateControl};
@@ -82,6 +85,60 @@ fn overlay_frames_do_not_allocate() {
             text.clear();
             overlay.push(&mut shapes, &theme, &mut text, &mut glyphs, WHITE);
             assert!(shapes.len() <= MAX_FPS_SHAPES);
+        }
+    });
+}
+
+/// The shell's way: the update thread feeds a meter across output switches (ADR-0139).
+#[test]
+fn metered_audio_does_not_allocate() {
+    let registry = Arc::new(FontRegistry::with_builtin());
+    let mut glyphs = glyph_atlas(Arc::clone(&registry), &GlyphAtlasConfig::new(LIMITS)).unwrap();
+    let meter = Arc::<AudioMeter>::default();
+    let mut feed = AudioFeed::new(Arc::clone(&meter));
+    let streams = [
+        Arc::<StreamCounters>::default(),
+        Arc::<StreamCounters>::default(),
+    ];
+    let music = [
+        MusicStats::default(),
+        MusicStats::default(),
+        MusicStats::default(),
+    ];
+    let source = FpsSource::new(
+        Arc::default(),
+        UpdateRateControl::new(),
+        DrawRateControl::new(),
+    )
+    .with_input(Arc::default())
+    .with_audio_meter(Arc::clone(&meter));
+    let labels = FpsLabels::english();
+    let mut overlay = FpsOverlay::new(source, registry, &labels);
+    overlay.request_glyphs(&mut glyphs);
+    let mut shapes = ShapeBatch::with_capacity(MAX_FPS_SHAPES);
+    let theme = Theme::default();
+    let mut text = SpriteBatch::with_capacity(MAX_FPS_GLYPHS);
+    let display = FpsDisplay {
+        show: true,
+        corner: FpsCorner::default(),
+        screens: FpsScreens::Everywhere,
+        mode: FpsMode::Full,
+    };
+    assert_no_alloc(|| {
+        for frame in 0..3000_u64 {
+            // Two outputs taking turns, with a gap between them.
+            let stream = &streams[(frame / 700) as usize % 2];
+            stream
+                .callbacks
+                .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+            let live = frame % 700 > 50;
+            feed.follow(live.then(|| {
+                AudioReading::of(stream, &[&music[0], &music[1], &music[2]], 128, 48_000)
+            }));
+            overlay.frame(frame * 1_000_000, 1280.0, 720.0, display, false);
+            shapes.clear();
+            text.clear();
+            overlay.push(&mut shapes, &theme, &mut text, &mut glyphs, WHITE);
         }
     });
 }

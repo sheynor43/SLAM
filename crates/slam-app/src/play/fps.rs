@@ -4,7 +4,7 @@
 
 use std::sync::Arc;
 
-use std::sync::atomic::Ordering;
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 
 use slam_audio::{MusicStats, StreamCounters};
 use slam_engine::limiter::LimiterMode;
@@ -40,10 +40,137 @@ const MEASURE_NS: u64 = 250_000_000;
 
 /// The audio thread's counters and the stream's shape.
 #[derive(Clone, Debug)]
-struct AudioSources {
-    stream: Arc<StreamCounters>,
-    music: Arc<MusicStats>,
-    buffer_ms: f64,
+enum AudioSources {
+    /// One stream for the engine's whole life (the `play` command).
+    Stream {
+        stream: Arc<StreamCounters>,
+        music: Arc<MusicStats>,
+        buffer_ms: f64,
+    },
+    /// The shell's outputs, which come and go with the device (ADR-0089).
+    Meter(Arc<AudioMeter>),
+}
+
+impl AudioSources {
+    fn callbacks(&self) -> u64 {
+        match self {
+            AudioSources::Stream { stream, .. } => stream.callbacks.load(Ordering::Relaxed),
+            AudioSources::Meter(meter) => meter.callbacks.load(Ordering::Relaxed),
+        }
+    }
+
+    /// The buffer's length and the gaps so far; `None` without an output.
+    fn shape(&self) -> Option<(f64, u64)> {
+        match self {
+            AudioSources::Stream {
+                stream,
+                music,
+                buffer_ms,
+            } => Some((
+                *buffer_ms,
+                stream.missed_buffers.load(Ordering::Relaxed)
+                    + music.underruns.load(Ordering::Relaxed),
+            )),
+            AudioSources::Meter(meter) => meter.live.load(Ordering::Acquire).then(|| {
+                (
+                    f64::from_bits(meter.buffer_ms.load(Ordering::Relaxed)),
+                    meter.xruns.load(Ordering::Relaxed),
+                )
+            }),
+        }
+    }
+}
+
+/// The shell's audio counters for the counter on the draw thread: running totals over
+/// every output the window has had, kept by the update thread (see [`AudioFeed`]), as
+/// the output thread reopens the stream with each device switch (ADR-0089).
+#[derive(Debug, Default)]
+pub struct AudioMeter {
+    callbacks: AtomicU64,
+    xruns: AtomicU64,
+    /// `f64` bits.
+    buffer_ms: AtomicU64,
+    live: AtomicBool,
+}
+
+/// One output's counters as the update thread reads them.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct AudioReading {
+    /// Which output: its counters' address, as each opened output has its own.
+    pub output: usize,
+    /// Callbacks so far.
+    pub callbacks: u64,
+    /// Missed buffers and music underruns so far.
+    pub xruns: u64,
+    /// The stream's buffer, in milliseconds.
+    pub buffer_ms: f64,
+}
+
+impl AudioReading {
+    /// The readings of an output of `buffer_frames` at `sample_rate`, with its tracks.
+    pub fn of(
+        stream: &Arc<StreamCounters>,
+        music: &[&MusicStats],
+        buffer_frames: u32,
+        sample_rate: u32,
+    ) -> AudioReading {
+        AudioReading {
+            output: Arc::as_ptr(stream) as usize,
+            callbacks: stream.callbacks.load(Ordering::Relaxed),
+            xruns: stream.missed_buffers.load(Ordering::Relaxed)
+                + music
+                    .iter()
+                    .map(|m| m.underruns.load(Ordering::Relaxed))
+                    .sum::<u64>(),
+            buffer_ms: buffer_ms(buffer_frames, sample_rate),
+        }
+    }
+}
+
+/// The update thread's side of an [`AudioMeter`]: adds each output's counts since the
+/// last tick to the totals. Atomics only.
+#[derive(Debug)]
+pub struct AudioFeed {
+    meter: Arc<AudioMeter>,
+    /// The output last seen, its callbacks and its gaps.
+    last: Option<(usize, u64, u64)>,
+}
+
+impl AudioFeed {
+    pub fn new(meter: Arc<AudioMeter>) -> AudioFeed {
+        AudioFeed { meter, last: None }
+    }
+
+    /// Follows the output now; `None` while there is none (opening or lost).
+    pub fn follow(&mut self, now: Option<AudioReading>) {
+        let meter = &self.meter;
+        let Some(now) = now else {
+            meter.live.store(false, Ordering::Relaxed);
+            self.last = None;
+            return;
+        };
+        // An output first seen (also one swapped in between two ticks) counts from here.
+        let (callbacks, xruns) = match self.last {
+            Some((output, callbacks, xruns)) if output == now.output => (callbacks, xruns),
+            _ => (now.callbacks, now.xruns),
+        };
+        meter
+            .callbacks
+            .fetch_add(now.callbacks.saturating_sub(callbacks), Ordering::Relaxed);
+        meter
+            .xruns
+            .fetch_add(now.xruns.saturating_sub(xruns), Ordering::Relaxed);
+        meter
+            .buffer_ms
+            .store(now.buffer_ms.to_bits(), Ordering::Relaxed);
+        // Release: the draw thread that sees the output live sees its buffer, too.
+        meter.live.store(true, Ordering::Release);
+        self.last = Some((now.output, now.callbacks, now.xruns));
+    }
+}
+
+fn buffer_ms(buffer_frames: u32, sample_rate: u32) -> f64 {
+    f64::from(buffer_frames) * 1000.0 / f64::from(sample_rate.max(1))
 }
 
 /// Counter readings at one moment.
@@ -103,11 +230,17 @@ impl FpsSource {
         buffer_frames: u32,
         sample_rate: u32,
     ) -> FpsSource {
-        self.audio = Some(AudioSources {
+        self.audio = Some(AudioSources::Stream {
             stream,
             music,
-            buffer_ms: f64::from(buffer_frames) * 1000.0 / f64::from(sample_rate.max(1)),
+            buffer_ms: buffer_ms(buffer_frames, sample_rate),
         });
+        self
+    }
+
+    /// Adds the shell's audio counters, which outlive each output.
+    pub fn with_audio_meter(mut self, meter: Arc<AudioMeter>) -> FpsSource {
+        self.audio = Some(AudioSources::Meter(meter));
         self
     }
 
@@ -116,10 +249,7 @@ impl FpsSource {
             ticks: self.counters.update_ticks(),
             polls: self.input.as_ref().map_or(0, |i| i.polls()),
             queued: self.input.as_ref().map_or(0, |i| i.queued()),
-            callbacks: self
-                .audio
-                .as_ref()
-                .map_or(0, |a| a.stream.callbacks.load(Ordering::Relaxed)),
+            callbacks: self.audio.as_ref().map_or(0, AudioSources::callbacks),
         }
     }
 
@@ -136,19 +266,21 @@ impl FpsSource {
             return;
         }
         let rate = |now: u64, before: u64| now.saturating_sub(before) as f64 * 1e9 / elapsed as f64;
-        self.figures = ThreadFigures {
-            update_hz: rate(now.ticks, before.ticks),
-            audio: self.audio.as_ref().map(|audio| AudioFigures {
-                callbacks_hz: rate(now.callbacks, before.callbacks),
-                buffer_ms: audio.buffer_ms,
-                xruns: audio.stream.missed_buffers.load(Ordering::Relaxed)
-                    + audio.music.underruns.load(Ordering::Relaxed),
-            }),
-            input: self.input.as_ref().map(|_| InputFigures {
-                polls_hz: rate(now.polls, before.polls),
-                events_hz: rate(now.queued, before.queued),
-            }),
-        };
+        self.figures =
+            ThreadFigures {
+                update_hz: rate(now.ticks, before.ticks),
+                audio: self.audio.as_ref().and_then(AudioSources::shape).map(
+                    |(buffer_ms, xruns)| AudioFigures {
+                        callbacks_hz: rate(now.callbacks, before.callbacks),
+                        buffer_ms,
+                        xruns,
+                    },
+                ),
+                input: self.input.as_ref().map(|_| InputFigures {
+                    polls_hz: rate(now.polls, before.polls),
+                    events_hz: rate(now.queued, before.queued),
+                }),
+            };
         self.measured = Some((now_ns, now));
     }
 
@@ -259,6 +391,7 @@ impl FpsOverlay {
         let shows = display.shows(gameplay);
         if shows && !self.shown {
             self.counter = FpsCounter::new();
+            self.view.restart();
         }
         self.shown = shows;
         if !shows {
@@ -366,6 +499,61 @@ mod tests {
         assert_eq!(audio.xruns, 3);
         let input = figures.input.unwrap();
         assert_eq!((input.polls_hz, input.events_hz), (100.0, 20.0));
+    }
+
+    #[test]
+    fn the_meter_sums_the_outputs_and_shows_none_without_one() {
+        let meter = Arc::<AudioMeter>::default();
+        let mut feed = AudioFeed::new(Arc::clone(&meter));
+        let mut source = FpsSource::new(
+            Arc::default(),
+            UpdateRateControl::new(),
+            DrawRateControl::new(),
+        )
+        .with_audio_meter(Arc::clone(&meter));
+        let reading = |output, callbacks, xruns, buffer_ms| {
+            Some(AudioReading {
+                output,
+                callbacks,
+                xruns,
+                buffer_ms,
+            })
+        };
+        // An output that ran before the meter saw it: only what comes after counts.
+        feed.follow(reading(1, 1000, 5, 2.5));
+        source.sample(0);
+        feed.follow(reading(1, 1040, 6, 2.5));
+        // The device switches: no figures while it opens,
+        feed.follow(None);
+        let figures = source.sample(MEASURE_NS).figures;
+        assert_eq!(figures.audio, None);
+        // and the new output counts from when it is seen.
+        feed.follow(reading(2, 10, 0, 5.0));
+        feed.follow(reading(2, 30, 2, 5.0));
+        // An output swapped in between two ticks counts from when it is seen, too, even
+        // with more counts than the old one had.
+        feed.follow(reading(3, 2000, 9, 5.0));
+        feed.follow(reading(3, 2005, 9, 5.0));
+        let audio = source.sample(2 * MEASURE_NS).figures.audio.unwrap();
+        // 20 + 5 callbacks in a quarter of a second.
+        assert_eq!(audio.callbacks_hz, 25.0 * 4.0);
+        assert_eq!(audio.buffer_ms, 5.0);
+        assert_eq!(audio.xruns, 1 + 2);
+        assert_eq!(meter.callbacks.load(Ordering::Relaxed), 40 + 20 + 5);
+        let stream = Arc::<StreamCounters>::default();
+        stream.callbacks.store(7, Ordering::Relaxed);
+        stream.missed_buffers.store(1, Ordering::Relaxed);
+        let music = MusicStats::default();
+        music.underruns.store(2, Ordering::Relaxed);
+        assert_eq!(
+            AudioReading::of(&stream, &[&music, &music], 480, 48_000),
+            AudioReading {
+                output: Arc::as_ptr(&stream) as usize,
+                callbacks: 7,
+                xruns: 5,
+                buffer_ms: 10.0,
+            }
+        );
     }
 
     #[test]
