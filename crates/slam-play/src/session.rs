@@ -2523,6 +2523,32 @@ pub struct PlayView {
 }
 
 impl PlayView {
+    /// Writes SLAM's cursor (ADR-0124) for the cursors that were set to draw as such: where
+    /// the skin's textures would be, `cursor_gameplay_size` osu!pixels high at the
+    /// cursor's size. Allocation-free once `shapes` has room for
+    /// [`MAX_CURSOR_SHAPES`](slam_ui::cursor::MAX_CURSOR_SHAPES) twice.
+    pub fn push_slam_cursors(
+        &self,
+        shapes: &mut slam_render::shape::ShapeBatch,
+        theme: &slam_ui::theme::Theme,
+        white: Option<AtlasRegion>,
+    ) {
+        let Some(white) = white else { return };
+        for pose in [self.cursor.slam_pose(), self.resume.cursor().slam_pose()]
+            .into_iter()
+            .flatten()
+        {
+            slam_ui::cursor::push_slam_cursor(
+                shapes,
+                theme,
+                white,
+                pose.at,
+                theme.cursor_gameplay_size * pose.scale,
+                0.0,
+            );
+        }
+    }
+
     /// Writes the playfield's sprites of `snapshot` drawn at engine time `now_ns` on a
     /// surface laid out by `layout`, and the slider bodies to draw between them into `bodies`
     /// (cleared first); the cursor goes on top of the HUD with [`PlayView::push_cursor`].

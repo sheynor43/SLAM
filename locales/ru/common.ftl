@@ -285,3 +285,9 @@ key-mod-shift = Shift+
 key-mod-alt = Alt+
 
 hud-layout-migrated-name = { $name } (шкала ошибок × { $scale })
+
+settings-general-menu-cursor = Курсор в меню
+settings-gameplay-cursor-style = Курсор в игре
+settings-option-cursor-slam = SLAM
+settings-option-cursor-skin = Из скина
+settings-option-cursor-system = Системный

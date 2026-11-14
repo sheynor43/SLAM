@@ -61,6 +61,11 @@ pub struct PlayOptions {
     pub cursor_size: f64,
     /// The cursor's size follows the beatmap's circle size.
     pub auto_cursor_size: bool,
+    /// Which cursor gameplay draws (ADR-0124); with relative mouse, `system` is `skin`.
+    pub cursor_style: slam_ui::cursor::CursorStyle,
+    /// The colour scheme of SLAM's cursor; the default one with another style, so that a
+    /// change of scheme does not prepare the play again for nothing.
+    pub cursor_scheme: slam_ui::theme::ColourScheme,
     /// How far hitsounds pan with the object's position (ADR-0087).
     pub positional_hitsounds_level: f32,
     /// Id of the active HUD layout (ADR-0109); resolved on the loader thread.
@@ -254,6 +259,8 @@ pub fn spawn(mut config: LoaderConfig) -> std::io::Result<(LoaderLink, SceneTras
                     config.settings.cursor_trail = options.cursor_trail;
                     config.settings.cursor_size = options.cursor_size as f32;
                     config.settings.auto_cursor_size = options.auto_cursor_size;
+                    config.settings.cursor_style = options.cursor_style;
+                    config.settings.cursor_scheme = options.cursor_scheme;
                     config.settings.positional_hitsounds_level = options.positional_hitsounds_level;
                     config.settings.skin = options.skin;
                     config.settings.mods = options.mods;
@@ -323,6 +330,8 @@ mod tests {
             cursor_trail: true,
             cursor_size: 1.0,
             auto_cursor_size: false,
+            cursor_style: slam_ui::cursor::CursorStyle::Skin,
+            cursor_scheme: slam_ui::theme::ColourScheme::default(),
             positional_hitsounds_level: 0.2,
             hud_layout: "builtin:stable".into(),
             game_scale: 1.0,

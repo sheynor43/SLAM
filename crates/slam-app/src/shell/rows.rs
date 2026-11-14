@@ -22,6 +22,7 @@ use crate::settings::{
     DrawRate, FpsScreens, HitsoundDelay, InputSettings, KeyOverlayAnimation, KeySlot,
     MenuBackground, MenuSounds, PauseMenuStyle, RendererChoice, Settings, Timing, skins,
 };
+use slam_ui::cursor::CursorStyle;
 use slam_ui::theme::{ColourScheme, UI_SCALE_RANGE};
 
 /// Sections, in order; the keys of their names are in [`SECTION_KEYS`].
@@ -233,6 +234,8 @@ pub enum Row {
     GameScale,
     /// What the main menu shows behind its content (ADR-0119).
     MenuBackground,
+    /// The cursor of the menus; applies live (ADR-0124).
+    MenuCursor,
     UpdateHz,
     DrawHz,
     MenuDrawHz,
@@ -255,6 +258,8 @@ pub enum Row {
     CursorTrail,
     CursorSize,
     AutoCursorSize,
+    /// The gameplay cursor (ADR-0124).
+    CursorStyle,
     PauseMenuStyle,
     PauseMenuScale,
     Skin,
@@ -265,7 +270,7 @@ pub enum Row {
 const _: () = assert!(Row::ALL.len() <= slam_ui::settings_screen::MAX_ROWS);
 
 impl Row {
-    pub const ALL: [Row; 66] = [
+    pub const ALL: [Row; 68] = [
         Row::MasterVolume,
         Row::MusicVolume,
         Row::MenuMusic,
@@ -306,6 +311,7 @@ impl Row {
         Row::MenuScale,
         Row::GameScale,
         Row::MenuBackground,
+        Row::MenuCursor,
         Row::UpdateHz,
         Row::DrawHz,
         Row::MenuDrawHz,
@@ -328,6 +334,7 @@ impl Row {
         Row::CursorTrail,
         Row::CursorSize,
         Row::AutoCursorSize,
+        Row::CursorStyle,
         Row::PauseMenuStyle,
         Row::PauseMenuScale,
         Row::Skin,
@@ -395,7 +402,8 @@ impl Row {
             | Row::Effects
             | Row::MenuScale
             | Row::GameScale
-            | Row::MenuBackground => 3,
+            | Row::MenuBackground
+            | Row::MenuCursor => 3,
             Row::UpdateHz
             | Row::DrawHz
             | Row::MenuDrawHz
@@ -418,6 +426,7 @@ impl Row {
             | Row::CursorTrail
             | Row::CursorSize
             | Row::AutoCursorSize
+            | Row::CursorStyle
             | Row::PauseMenuStyle
             | Row::PauseMenuScale
             | Row::Skin => 5,
@@ -458,6 +467,8 @@ impl Row {
             Row::MenuScale => "settings-general-menu-scale",
             Row::GameScale => "settings-general-game-scale",
             Row::MenuBackground => "settings-general-menu-background",
+            Row::MenuCursor => "settings-general-menu-cursor",
+            Row::CursorStyle => "settings-gameplay-cursor-style",
             Row::MenuSounds => "settings-audio-menu-sounds",
             Row::ScreenMode => "settings-layout-screen-mode",
             Row::NotFullscreenNote => "settings-layout-not-fullscreen-note",
@@ -609,6 +620,15 @@ fn key_animation_key(animation: KeyOverlayAnimation) -> &'static str {
     match animation {
         KeyOverlayAnimation::Stable => "settings-option-key-overlay-animation-stable",
         KeyOverlayAnimation::Lazer => "settings-option-key-overlay-animation-lazer",
+    }
+}
+
+/// The Fluent key of a cursor style option (ADR-0124).
+fn cursor_style_key(style: CursorStyle) -> &'static str {
+    match style {
+        CursorStyle::Slam => "settings-option-cursor-slam",
+        CursorStyle::Skin => "settings-option-cursor-skin",
+        CursorStyle::System => "settings-option-cursor-system",
     }
 }
 
@@ -888,6 +908,18 @@ impl Rows {
                     .iter()
                     .position(|b| *b == s.general.menu_background),
             ),
+            Row::MenuCursor => choice(
+                CursorStyle::ALL.len(),
+                CursorStyle::ALL
+                    .iter()
+                    .position(|c| *c == s.general.menu_cursor),
+            ),
+            Row::CursorStyle => choice(
+                CursorStyle::ALL.len(),
+                CursorStyle::ALL
+                    .iter()
+                    .position(|c| *c == s.gameplay.cursor_style),
+            ),
             Row::MenuSounds => choice(
                 MenuSounds::ALL.len(),
                 MenuSounds::ALL
@@ -1151,6 +1183,16 @@ impl Rows {
                     settings.general.colour_scheme = *scheme;
                 }
             }
+            (Row::MenuCursor, RowValue::Choice(i)) => {
+                if let Some(style) = CursorStyle::ALL.get(i) {
+                    settings.general.menu_cursor = *style;
+                }
+            }
+            (Row::CursorStyle, RowValue::Choice(i)) => {
+                if let Some(style) = CursorStyle::ALL.get(i) {
+                    settings.gameplay.cursor_style = *style;
+                }
+            }
             (Row::MenuBackground, RowValue::Choice(i)) => {
                 if let Some(background) = MenuBackground::ALL.get(i) {
                     settings.general.menu_background = *background;
@@ -1380,6 +1422,10 @@ impl Rows {
                     Row::ColourScheme => ColourScheme::ALL
                         .iter()
                         .map(|scheme| text(scheme.label_key()))
+                        .collect(),
+                    Row::MenuCursor | Row::CursorStyle => CursorStyle::ALL
+                        .iter()
+                        .map(|style| text(cursor_style_key(*style)))
                         .collect(),
                     Row::MenuBackground => MenuBackground::ALL
                         .iter()
@@ -2014,6 +2060,19 @@ mod tests {
         assert_eq!(s.gameplay.pause_menu_style, PauseMenuStyle::Stable);
         rows.apply(&mut s, index(Row::PauseMenuScale), RowValue::Slider(150.0));
         assert_eq!(s.gameplay.pause_menu_scale, 1.5);
+        rows.apply(&mut s, index(Row::MenuCursor), RowValue::Choice(2));
+        assert_eq!(s.general.menu_cursor, CursorStyle::System);
+        rows.apply(&mut s, index(Row::CursorStyle), RowValue::Choice(0));
+        assert_eq!(s.gameplay.cursor_style, CursorStyle::Slam);
+        rows.apply(&mut s, index(Row::CursorStyle), RowValue::Choice(7));
+        assert_eq!(s.gameplay.cursor_style, CursorStyle::Slam);
+        assert_eq!(
+            rows.specs(&s)[index(Row::MenuCursor)].kind,
+            RowKind::Dropdown {
+                options: 3,
+                selected: 2
+            }
+        );
         rows.apply(&mut s, index(Row::MenuBackground), RowValue::Choice(2));
         assert_eq!(s.general.menu_background, MenuBackground::None);
         rows.apply(&mut s, index(Row::MenuSounds), RowValue::Choice(1));

@@ -13,6 +13,7 @@ use slam_input::{
 use slam_osu::replay::Actions;
 use slam_play::input::{Binding, Bindings, Input, MAX_BINDINGS};
 use slam_play::{BackgroundSettings, FpsCorner};
+use slam_ui::cursor::CursorStyle;
 use slam_ui::theme::ColourScheme;
 
 use super::keys;
@@ -112,6 +113,9 @@ pub struct General {
     pub game_scale: f32,
     /// What the main menu shows behind its content (ADR-0119).
     pub menu_background: MenuBackground,
+    /// The cursor of the menus, the pause menu and the results (ADR-0124). Applies live.
+    #[serde(serialize_with = "serialize_cursor_style")]
+    pub menu_cursor: CursorStyle,
 }
 
 impl Default for General {
@@ -124,8 +128,16 @@ impl Default for General {
             menu_scale: 1.0,
             game_scale: 1.0,
             menu_background: MenuBackground::default(),
+            menu_cursor: CursorStyle::Slam,
         }
     }
+}
+
+fn serialize_cursor_style<S: Serializer>(
+    style: &CursorStyle,
+    serializer: S,
+) -> Result<S::Ok, S::Error> {
+    serializer.serialize_str(style.name())
 }
 
 fn serialize_colour_scheme<S: Serializer>(
@@ -695,6 +707,9 @@ pub struct Gameplay {
     /// Adjusts the cursor's size to the beatmap's circle size (lazer's
     /// `OsuSetting.AutoCursorSize`).
     pub auto_cursor_size: bool,
+    /// The gameplay cursor (ADR-0124).
+    #[serde(serialize_with = "serialize_cursor_style")]
+    pub cursor_style: CursorStyle,
     /// The style of the pause and fail menus (ADR-0122).
     pub pause_menu_style: PauseMenuStyle,
     /// Scale of the pause and fail menus, in `slam_ui::theme::UI_SCALE_RANGE` in steps of 0.05
@@ -722,6 +737,7 @@ impl Default for Gameplay {
             cursor_trail: true,
             cursor_size: 1.0,
             auto_cursor_size: false,
+            cursor_style: CursorStyle::Skin,
             pause_menu_style: PauseMenuStyle::default(),
             pause_menu_scale: 1.0,
         }

@@ -39,8 +39,10 @@ use slam_render::upload::{
 use slam_render::{Color, Device, Extent, Limits, shaders};
 use slam_skin::{Skin, SkinChain};
 use slam_text::{FontRegistry, GlyphAtlasConfig, GlyphCache, glyph_atlas};
+use slam_ui::cursor::{CursorStyle, MAX_CURSOR_SHAPES};
 use slam_ui::hud_layout::{Builtin, LayoutElement};
 use slam_ui::i18n::{FluentArgs, Localizer};
+use slam_ui::theme::Theme;
 
 use super::find_beatmap_file;
 use super::fps::{FpsOverlay, MAX_FPS_GLYPHS};
@@ -98,6 +100,11 @@ pub struct PlaySettings {
     pub cursor_size: f32,
     /// Lazer's `AutoCursorSize`: the cursor's size follows the beatmap's circle size.
     pub auto_cursor_size: bool,
+    /// Which cursor gameplay draws (ADR-0124): the skin's, SLAM's, or none (the OS cursor
+    /// stays).
+    pub cursor_style: slam_ui::cursor::CursorStyle,
+    /// The colour scheme SLAM's cursor takes its outline from.
+    pub cursor_scheme: slam_ui::theme::ColourScheme,
     /// Lazer's `PositionalHitsoundsLevel` (ADR-0087).
     pub positional_hitsounds_level: f32,
     /// Rate of the mixer the samples are prepared for (ADR-0102).
@@ -125,6 +132,8 @@ impl Default for PlaySettings {
             cursor_trail: true,
             cursor_size: 1.0,
             auto_cursor_size: false,
+            cursor_style: slam_ui::cursor::CursorStyle::Skin,
+            cursor_scheme: slam_ui::theme::ColourScheme::default(),
             positional_hitsounds_level: DEFAULT_POSITIONAL_LEVEL,
             sample_rate: slam_audio::DEFAULT_SAMPLE_RATE,
             key_overlay: None,
@@ -335,8 +344,10 @@ pub fn prepare(
             &loaded.skins,
             settings.hit_lighting,
         ),
-        cursor: CursorView::new(settings.cursor_trail, cursor_scale),
-        resume: slam_play::resume::ResumeView::new(settings.cursor_trail, cursor_scale),
+        cursor: CursorView::new(settings.cursor_trail, cursor_scale)
+            .with_slam(settings.cursor_style == CursorStyle::Slam),
+        resume: slam_play::resume::ResumeView::new(settings.cursor_trail, cursor_scale)
+            .with_slam(settings.cursor_style == CursorStyle::Slam),
     };
 
     let (mut requests, uploads): (TextureRequests, TextureUploads) =
@@ -402,6 +413,9 @@ pub fn prepare(
         objects: beatmap.hit_objects.len(),
         text,
         cursor: SpriteBatch::with_capacity(MAX_CURSOR_SPRITES + MAX_TARGET_SPRITES),
+        cursor_shapes: ShapeBatch::with_capacity(2 * MAX_CURSOR_SHAPES),
+        cursor_style: settings.cursor_style,
+        cursor_theme: Theme::new(settings.cursor_scheme, 1.0),
         menu,
         menu_shapes: ShapeBatch::with_capacity(MAX_MENU_SPRITES),
         menu_text: SpriteBatch::with_capacity(MAX_GLYPH_SPRITES + MAX_FPS_GLYPHS),
@@ -460,6 +474,10 @@ pub struct PlayScene {
     text: SpriteBatch,
     /// The cursor, on top of the HUD.
     cursor: SpriteBatch,
+    /// SLAM's cursors, drawn over `cursor` with the cursor style `slam` (ADR-0124).
+    cursor_shapes: ShapeBatch,
+    cursor_style: CursorStyle,
+    cursor_theme: Theme,
     /// The pause and fail menus, on top of everything (ADR-0052).
     menu: MenuView,
     menu_shapes: ShapeBatch,
@@ -505,9 +523,13 @@ impl PlayScene {
         let renderer = SpriteRenderer::new(device, 3 * DEFAULT_SLOTS).expect("renderer");
         let text_renderer =
             SpriteRenderer::with_shader(device, 2 * DEFAULT_SLOTS, &shaders::MSDF).expect("text");
-        let shape_renderer =
-            SpriteRenderer::with_layout(device, DEFAULT_SLOTS, &shaders::UI_SHAPE, SHAPE_LAYOUT)
-                .expect("shape renderer");
+        let shape_renderer = SpriteRenderer::with_layout(
+            device,
+            2 * DEFAULT_SLOTS,
+            &shaders::UI_SHAPE,
+            SHAPE_LAYOUT,
+        )
+        .expect("shape renderer");
         let mut sliders = SliderRenderer::new(device, MAX_LIVE_SLIDERS).expect("slider renderer");
         let mut slider_buffers: Vec<_> = (0..self.objects).map(|_| None).collect();
         for (index, mesh) in &self.meshes {
@@ -567,6 +589,7 @@ impl PlayScene {
         self.batch.clear();
         self.text.clear();
         self.cursor.clear();
+        self.cursor_shapes.clear();
         self.menu_shapes.clear();
         self.menu_text.clear();
         let background = slam_play::background::shown_region(
@@ -619,8 +642,18 @@ impl PlayScene {
             &mut self.glyphs,
             &textures.hud,
         );
-        self.view
-            .push_cursor(&mut self.cursor, &layout, snapshot, now_ns, &textures);
+        // The OS cursor stays with `system`: nothing of the cursor is drawn.
+        if self.cursor_style != CursorStyle::System {
+            self.view
+                .push_cursor(&mut self.cursor, &layout, snapshot, now_ns, &textures);
+            if self.cursor_style == CursorStyle::Slam {
+                self.view.push_slam_cursors(
+                    &mut self.cursor_shapes,
+                    &self.cursor_theme,
+                    textures.white,
+                );
+            }
+        }
         let layer = fail.map_or(Affine::IDENTITY, |fail| fail.layer);
         let layer_tint = fail.map_or([1.0; 4], |fail| fail.layer_tint());
         if fail.is_some() {
@@ -710,6 +743,11 @@ impl PlayScene {
             .text_renderer
             .draw(device, &self.text, &projection, texture);
         let _ = r.renderer.draw(device, &self.cursor, &projection, texture);
+        if !self.cursor_shapes.is_empty() {
+            let _ = r
+                .shape_renderer
+                .draw(device, &self.cursor_shapes, &projection, texture);
+        }
         if !self.menu_shapes.is_empty() {
             let _ = r
                 .shape_renderer

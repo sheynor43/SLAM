@@ -625,6 +625,19 @@ pub struct CursorView {
     previous_time: Option<f64>,
     /// The player turned the trail off (lazer's `ShowCursorTrail`).
     trail_hidden: bool,
+    /// SLAM's cursor stands in for the skin's textures (ADR-0124): `push` leaves a
+    /// [`CursorPose`] for the shape drawer instead of sprites.
+    slam: bool,
+    pose: Option<CursorPose>,
+}
+
+/// Where and how large the cursor of the frame is, for drawing SLAM's cursor in its place.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct CursorPose {
+    /// The cursor's position in window pixels.
+    pub at: [f32; 2],
+    /// Window pixels per osu!pixel at the cursor's size (`gameplay.cursor_size`).
+    pub scale: f32,
 }
 
 /// What a frame of the cursor draws from.
@@ -653,6 +666,18 @@ impl CursorView {
         };
         view.trail.set_cursor_scale(scale);
         view
+    }
+
+    /// Draws SLAM's cursor in place of the skin's textures (ADR-0124); the trail stays.
+    pub fn with_slam(mut self, slam: bool) -> Self {
+        self.slam = slam;
+        self
+    }
+
+    /// The pose of SLAM's cursor of the last frame; `None` when the cursor is not drawn
+    /// that way or hidden.
+    pub fn slam_pose(&self) -> Option<CursorPose> {
+        self.pose
     }
 
     /// Whether the trail is drawn.
@@ -686,6 +711,7 @@ impl CursorView {
             // Positions of the old play are not the new trail's.
             self.seen = frame.path.written();
         }
+        self.pose = None;
         let config = &textures.config;
         let scale = frame.expand.scale(frame.time, config.expand);
         let rotation = rotation(frame.time, config.rotate);
@@ -723,6 +749,13 @@ impl CursorView {
             self.trail.push(batch, layout, trail, config, part_rotation);
         }
         let at = layout.to_window(frame.position);
+        if self.slam {
+            self.pose = Some(CursorPose {
+                at: [at.x, at.y],
+                scale: layout.scale() * self.trail.cursor_scale.scale,
+            });
+            return;
+        }
         let origin = if config.centre { 0.5 } else { 0.0 };
         let mut piece = |texture: &SkinSprite, scale: f32, rotation: f32| {
             let size = texture.size / STABLE_MAGIC_SCALE_FACTOR * (scale * layout.scale());
