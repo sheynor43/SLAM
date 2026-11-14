@@ -203,6 +203,26 @@ impl ShapeBatch {
         &self.batches
     }
 
+    /// Scales the quads from the `first`-th on by `scale` about `pivot`: a layer shrunk or
+    /// grown after it was recorded. The shape's size, radius, outline and glow follow, so
+    /// it stays the same shape; the skew angle and the colours are kept.
+    pub fn scale_from(&mut self, first: usize, pivot: [f32; 2], scale: f32) {
+        if scale == 1.0 {
+            return;
+        }
+        for v in self.vertices.iter_mut().skip(first * 4) {
+            v.position = [
+                pivot[0] + (v.position[0] - pivot[0]) * scale,
+                pivot[1] + (v.position[1] - pivot[1]) * scale,
+            ];
+            v.local = [v.local[0] * scale, v.local[1] * scale];
+            v.half_size = [v.half_size[0] * scale, v.half_size[1] * scale];
+            // Radius and edge width (outline or glow) are lengths.
+            v.params[0] *= scale;
+            v.params[1] *= scale;
+        }
+    }
+
     /// Records `shape` on top of what was recorded before. Empty shapes are skipped.
     pub fn push_shape(&mut self, shape: &Shape) {
         let [w, h] = shape.size;
@@ -320,6 +340,46 @@ mod tests {
 
     fn close(a: [f32; 2], b: [f32; 2]) -> bool {
         (a[0] - b[0]).abs() < 1e-4 && (a[1] - b[1]).abs() < 1e-4
+    }
+
+    #[test]
+    fn scale_from_scales_only_the_later_shapes_about_the_pivot() {
+        let mut batch = ShapeBatch::new();
+        let kept = Shape {
+            radius: 4.0,
+            ..shape([0.0, 0.0], [10.0, 10.0])
+        };
+        batch.push_shape(&kept);
+        batch.push_shape(&Shape {
+            radius: 4.0,
+            outline: 2.0,
+            skew: 0.2,
+            ..shape([10.0, 20.0], [40.0, 10.0])
+        });
+        let before = batch.vertices().to_vec();
+        batch.scale_from(1, [10.0, 20.0], 2.0);
+        let v = batch.vertices();
+        assert_eq!(v[..4], before[..4]);
+        // The pivot stays; other points move away from it.
+        let (a, b) = (before[4], v[4]);
+        assert!(close(
+            b.position,
+            [
+                10.0 + (a.position[0] - 10.0) * 2.0,
+                20.0 + (a.position[1] - 20.0) * 2.0
+            ]
+        ));
+        assert!(close(b.local, [a.local[0] * 2.0, a.local[1] * 2.0]));
+        assert!(close(
+            b.half_size,
+            [a.half_size[0] * 2.0, a.half_size[1] * 2.0]
+        ));
+        assert_eq!(b.params[0], a.params[0] * 2.0);
+        assert_eq!(b.params[1], a.params[1] * 2.0);
+        assert_eq!(b.params[2], a.params[2]);
+        assert_eq!(b.colour, a.colour);
+        batch.scale_from(0, [0.0, 0.0], 1.0);
+        assert_eq!(batch.vertices()[4], b);
     }
 
     #[test]

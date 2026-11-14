@@ -264,6 +264,23 @@ pub struct Theme {
     pub menu_panel_pad: f32,
 }
 
+/// Tokens of the `fancy` screen transition (ADR-0126). The `simple` one keeps the
+/// constants in `screen`.
+pub mod transition {
+    /// Length of the transition.
+    pub const FANCY_NS: u64 = 450_000_000;
+    /// How far a screen slides, as a fraction of the window width.
+    pub const FANCY_SLIDE: f32 = 0.15;
+    /// Scale an incoming screen starts at.
+    pub const FANCY_SCALE_IN: f32 = 1.06;
+    /// Scale an outgoing screen ends at.
+    pub const FANCY_SCALE_OUT: f32 = 0.94;
+    /// Width of the accent band, as a fraction of the window width.
+    pub const BAND_WIDTH: f32 = 0.22;
+    /// Opacity of the band at the middle of the transition.
+    pub const BAND_PEAK_OPACITY: f32 = 0.55;
+}
+
 /// Largest skew [`Theme::button_skew_degrees`] takes.
 pub const MAX_SKEW_DEGREES: f32 = 20.0;
 

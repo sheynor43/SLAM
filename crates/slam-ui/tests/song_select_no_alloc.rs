@@ -166,6 +166,7 @@ impl Rig {
         let pose = Pose {
             opacity: 0.5,
             offset: 0.05,
+            scale: 1.0,
         };
         self.view.push(
             &mut self.shapes,

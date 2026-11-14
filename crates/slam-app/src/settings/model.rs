@@ -13,6 +13,7 @@ use slam_input::{
 use slam_osu::replay::Actions;
 use slam_play::input::{Binding, Bindings, Input, MAX_BINDINGS};
 use slam_play::{BackgroundSettings, FpsCorner};
+use slam_ui::screen::TransitionStyle;
 use slam_ui::theme::ColourScheme;
 
 use super::keys;
@@ -100,6 +101,9 @@ pub struct General {
     pub intro: bool,
     /// Whether the interface effects (glow, blur, motion) are on (ADR-0123). Applies live.
     pub effects: bool,
+    /// How screens change (ADR-0126). Applies live.
+    #[serde(serialize_with = "serialize_transitions")]
+    pub transitions: TransitionStyle,
     /// The interface colour scheme (ADR-0117).
     #[serde(serialize_with = "serialize_colour_scheme")]
     pub colour_scheme: ColourScheme,
@@ -120,12 +124,20 @@ impl Default for General {
             language: None,
             intro: true,
             effects: true,
+            transitions: TransitionStyle::default(),
             colour_scheme: ColourScheme::default(),
             menu_scale: 1.0,
             game_scale: 1.0,
             menu_background: MenuBackground::default(),
         }
     }
+}
+
+fn serialize_transitions<S: Serializer>(
+    style: &TransitionStyle,
+    serializer: S,
+) -> Result<S::Ok, S::Error> {
+    serializer.serialize_str(style.name())
 }
 
 fn serialize_colour_scheme<S: Serializer>(

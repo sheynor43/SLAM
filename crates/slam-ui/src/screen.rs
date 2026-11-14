@@ -5,7 +5,10 @@
 //! the screen asks for into a [`Nav`] and writes [`ScreenStack::layers`] into its snapshot
 //! for the draw thread.
 
-use crate::anim::{ease_out_cubic, progress};
+use crate::anim::{ease_out_cubic, ease_out_quint, progress};
+use crate::theme::{Theme, faded, transition as fancy};
+use slam_render::atlas::AtlasRegion;
+use slam_render::shape::{Shape, ShapeBatch};
 
 /// Length of a screen transition.
 pub const TRANSITION_NS: u64 = 200_000_000;
@@ -41,6 +44,161 @@ pub enum Navigated {
     Exit,
 }
 
+/// How screens change (ADR-0126).
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum TransitionStyle {
+    /// At once; the leaving screen is not drawn.
+    None,
+    /// A short fade with a slide (ADR-0044).
+    #[default]
+    Simple,
+    /// A longer one with scale and an accent band across the screen.
+    Fancy,
+}
+
+impl TransitionStyle {
+    pub const ALL: [TransitionStyle; 3] = [
+        TransitionStyle::None,
+        TransitionStyle::Simple,
+        TransitionStyle::Fancy,
+    ];
+
+    /// The name in the settings file.
+    pub fn name(self) -> &'static str {
+        match self {
+            TransitionStyle::None => "none",
+            TransitionStyle::Simple => "simple",
+            TransitionStyle::Fancy => "fancy",
+        }
+    }
+
+    /// The style called `name`.
+    pub fn from_name(name: &str) -> Option<TransitionStyle> {
+        TransitionStyle::ALL.into_iter().find(|s| s.name() == name)
+    }
+
+    /// The Fluent key of the style's label.
+    pub fn label_key(self) -> &'static str {
+        match self {
+            TransitionStyle::None => "settings-option-transitions-none",
+            TransitionStyle::Simple => "settings-option-transitions-simple",
+            TransitionStyle::Fancy => "settings-option-transitions-fancy",
+        }
+    }
+
+    /// Length of a transition in this style.
+    pub fn duration_ns(self) -> u64 {
+        match self {
+            TransitionStyle::None => 0,
+            TransitionStyle::Simple => TRANSITION_NS,
+            TransitionStyle::Fancy => fancy::FANCY_NS,
+        }
+    }
+
+    /// Eased progress `0 ..= 1` of a transition that started at `start_ns`.
+    fn eased(self, start_ns: u64, now_ns: u64) -> f32 {
+        let linear = progress(start_ns, now_ns, self.duration_ns());
+        match self {
+            TransitionStyle::Fancy => ease_out_quint(linear),
+            _ => ease_out_cubic(linear),
+        }
+    }
+
+    /// Slide, as a fraction of the window width, and the scales an incoming screen starts
+    /// at and an outgoing one ends at.
+    fn motion(self) -> (f32, f32, f32) {
+        match self {
+            TransitionStyle::Fancy => (
+                fancy::FANCY_SLIDE,
+                fancy::FANCY_SCALE_IN,
+                fancy::FANCY_SCALE_OUT,
+            ),
+            _ => (SLIDE, 1.0, 1.0),
+        }
+    }
+
+    /// Poses of the screen coming in and the one going out, `p` into the transition
+    /// (eased), when the incoming one comes from `side`: +1 right, -1 left.
+    fn poses(self, p: f32, side: f32) -> (Pose, Pose) {
+        let (slide, scale_in, scale_out) = self.motion();
+        let incoming = Pose {
+            opacity: p,
+            offset: side * slide * (1.0 - p),
+            scale: 1.0 + (scale_in - 1.0) * (1.0 - p),
+        };
+        let outgoing = Pose {
+            opacity: 1.0 - p,
+            offset: -side * slide * p,
+            scale: 1.0 + (scale_out - 1.0) * p,
+        };
+        (incoming, outgoing)
+    }
+}
+
+/// The accent band of a `fancy` transition (ADR-0126), as a function of time.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct Band {
+    /// Eased progress across the screen, `0 ..= 1`.
+    pub progress: f32,
+    /// Push or replace: the band crosses right to left; on a pop, left to right.
+    pub leftward: bool,
+    /// 0 at both ends, 1 in the middle; multiplied by the token's peak opacity to draw.
+    pub strength: f32,
+}
+
+impl Band {
+    /// The band as a shape in a `width` × `height` window: a skewed, accent-coloured
+    /// strip the full height, coming in past one edge and leaving past the other. `None`
+    /// while it is invisible.
+    pub fn shape(
+        &self,
+        theme: &Theme,
+        white: AtlasRegion,
+        width: f32,
+        height: f32,
+    ) -> Option<Shape> {
+        let alpha = fancy::BAND_PEAK_OPACITY * self.strength;
+        if alpha <= 0.0 || width <= 0.0 || height <= 0.0 {
+            return None;
+        }
+        let skew = theme.button_skew();
+        let band_width = width * fancy::BAND_WIDTH;
+        // The top edge leans by this much; the strip starts and ends clear of the window.
+        let lean = height * skew.tan();
+        let reach = 0.5 * (band_width + lean.abs());
+        let (from, to) = if self.leftward {
+            (width + reach, -reach)
+        } else {
+            (-reach, width + reach)
+        };
+        let centre = from + (to - from) * self.progress;
+        Some(Shape {
+            skew,
+            ..Shape::new(
+                white.texture,
+                white.uv,
+                [centre - band_width * 0.5, 0.0],
+                [band_width, height],
+                faded(theme.accent, alpha),
+            )
+        })
+    }
+
+    /// Draws the band into `shapes`, over everything recorded so far.
+    pub fn push(
+        &self,
+        shapes: &mut ShapeBatch,
+        theme: &Theme,
+        white: AtlasRegion,
+        width: f32,
+        height: f32,
+    ) {
+        if let Some(shape) = self.shape(theme, white, width, height) {
+            shapes.push_shape(&shape);
+        }
+    }
+}
+
 /// Where a visible layer is in its transition.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct Pose {
@@ -48,6 +206,8 @@ pub struct Pose {
     pub opacity: f32,
     /// Horizontal shift as a fraction of the window width; positive is to the right.
     pub offset: f32,
+    /// Scale about the window's centre; 1 is none.
+    pub scale: f32,
 }
 
 impl Pose {
@@ -55,6 +215,7 @@ impl Pose {
     pub const SHOWN: Pose = Pose {
         opacity: 1.0,
         offset: 0.0,
+        scale: 1.0,
     };
 }
 
@@ -70,6 +231,8 @@ enum Direction {
 struct Transition {
     start_ns: u64,
     direction: Direction,
+    /// The style the transition started in; a setting changed meanwhile waits.
+    style: TransitionStyle,
 }
 
 /// The screens of the application, bottom first.
@@ -79,6 +242,8 @@ pub struct ScreenStack<S> {
     /// A popped or replaced screen still animating out; it gets no input.
     leaving: Option<S>,
     transition: Option<Transition>,
+    /// The style the next transition starts in.
+    style: TransitionStyle,
 }
 
 impl<S> ScreenStack<S> {
@@ -90,7 +255,13 @@ impl<S> ScreenStack<S> {
             screens,
             leaving: None,
             transition: None,
+            style: TransitionStyle::default(),
         }
+    }
+
+    /// Sets the style of the transitions that start from now on; one running keeps its own.
+    pub fn set_style(&mut self, style: TransitionStyle) {
+        self.style = style;
     }
 
     /// The screen that takes input.
@@ -111,7 +282,7 @@ impl<S> ScreenStack<S> {
     /// Whether a transition is still running at `now_ns`.
     pub fn in_transition(&self, now_ns: u64) -> bool {
         self.transition
-            .is_some_and(|t| now_ns < t.start_ns.saturating_add(TRANSITION_NS))
+            .is_some_and(|t| now_ns < t.start_ns.saturating_add(t.style.duration_ns()))
     }
 
     /// Applies `nav` at `now_ns`. A transition already running ends at once: its leaving
@@ -137,10 +308,17 @@ impl<S> ScreenStack<S> {
                 Direction::Back
             }
         };
-        self.transition = Some(Transition {
-            start_ns: now_ns,
-            direction,
-        });
+        if self.style == TransitionStyle::None {
+            // At once: nothing leaves, nothing animates.
+            self.leaving = None;
+            self.transition = None;
+        } else {
+            self.transition = Some(Transition {
+                start_ns: now_ns,
+                direction,
+                style: self.style,
+            });
+        }
         Navigated::Stay
     }
 
@@ -159,17 +337,10 @@ impl<S> ScreenStack<S> {
         let Some(transition) = self.transition else {
             return [Some((top, Pose::SHOWN)), None];
         };
-        let p = ease_out_cubic(progress(transition.start_ns, now_ns, TRANSITION_NS));
+        let p = transition.style.eased(transition.start_ns, now_ns);
         match transition.direction {
             Direction::Forward => {
-                let incoming = Pose {
-                    opacity: p,
-                    offset: SLIDE * (1.0 - p),
-                };
-                let outgoing = Pose {
-                    opacity: 1.0 - p,
-                    offset: -SLIDE * p,
-                };
+                let (incoming, outgoing) = transition.style.poses(p, 1.0);
                 // A replaced screen is leaving; a pushed one covers the screen below it.
                 let below = self
                     .leaving
@@ -178,20 +349,27 @@ impl<S> ScreenStack<S> {
                 [below.map(|s| (s, outgoing)), Some((top, incoming))]
             }
             Direction::Back => {
-                let returning = Pose {
-                    opacity: p,
-                    offset: -SLIDE * (1.0 - p),
-                };
-                let outgoing = Pose {
-                    opacity: 1.0 - p,
-                    offset: SLIDE * p,
-                };
+                let (returning, outgoing) = transition.style.poses(p, -1.0);
                 [
                     Some((top, returning)),
                     self.leaving.as_ref().map(|s| (s, outgoing)),
                 ]
             }
         }
+    }
+
+    /// The accent band at `now_ns`: only during a `fancy` transition.
+    pub fn band(&self, now_ns: u64) -> Option<Band> {
+        let transition = self.transition?;
+        if transition.style != TransitionStyle::Fancy || !self.in_transition(now_ns) {
+            return None;
+        }
+        let linear = progress(transition.start_ns, now_ns, transition.style.duration_ns());
+        Some(Band {
+            progress: transition.style.eased(transition.start_ns, now_ns),
+            leftward: transition.direction == Direction::Forward,
+            strength: (linear * std::f32::consts::PI).sin().max(0.0),
+        })
     }
 }
 

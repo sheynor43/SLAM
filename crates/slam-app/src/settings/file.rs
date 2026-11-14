@@ -9,6 +9,7 @@ use slam_engine::limiter::MIN_HZ;
 use slam_input::VideoDriver;
 use slam_play::input::{Bindings, MAX_BINDINGS};
 use slam_ui::i18n::BUILTIN_LANGUAGES;
+use slam_ui::screen::TransitionStyle;
 use slam_ui::theme::{ColourScheme, UI_SCALE_RANGE};
 use toml::{Table, Value};
 
@@ -266,6 +267,16 @@ fn from_table(mut table: Table) -> Loaded {
             f64::from(UI_SCALE_RANGE.0)..=f64::from(UI_SCALE_RANGE.1),
         );
         *slot = ((scale * 20.0).round() / 20.0) as f32;
+    }
+    let mut transitions: Option<String> = None;
+    cx.opt(&mut general, "general", "transitions", &mut transitions);
+    if let Some(name) = transitions {
+        match TransitionStyle::from_name(&name) {
+            Some(style) => settings.general.transitions = style,
+            None => cx.warn(format!(
+                "general.transitions: unknown value \"{name}\", using the default"
+            )),
+        }
     }
     let mut background: Option<String> = None;
     cx.opt(&mut general, "general", "menu_background", &mut background);

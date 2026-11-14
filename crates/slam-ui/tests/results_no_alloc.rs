@@ -106,6 +106,7 @@ fn view_pushes_without_allocating_once_warm() {
     let pose = Pose {
         opacity: 0.5,
         offset: 0.05,
+        scale: 1.0,
     };
     let mut frame = |snapshot: &_| {
         shapes.clear();

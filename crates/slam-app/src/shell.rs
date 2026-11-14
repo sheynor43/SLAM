@@ -34,7 +34,7 @@ use slam_play::{
 use slam_render::atlas::{Atlas, AtlasRegion};
 use slam_render::blur::Blur;
 use slam_render::shape::{SHAPE_LAYOUT, ShapeBatch};
-use slam_render::sprite::{DEFAULT_SLOTS, Projection, SpriteBatch, SpriteRenderer};
+use slam_render::sprite::{Affine, DEFAULT_SLOTS, Projection, SpriteBatch, SpriteRenderer};
 use slam_render::textures::{TextureId, Textures};
 use slam_render::upload::{TextureLoaderConfig, TextureState, TextureUploads, texture_loader};
 use slam_render::{Color, Device, Extent, TextureFormat, shaders};
@@ -46,7 +46,7 @@ use slam_ui::results::{
     Results, ResultsAction, ResultsData, ResultsInput, ResultsLayout, ResultsMods, ResultsSnapshot,
     ResultsView, StatKind,
 };
-use slam_ui::screen::{MAX_LAYERS, Nav, Navigated, Pose, ScreenStack};
+use slam_ui::screen::{Band, MAX_LAYERS, Nav, Navigated, Pose, ScreenStack};
 use slam_ui::settings_screen::panel::{
     PanelMotion, panel_layout, panel_pose, panel_width, push_backdrop,
 };
@@ -262,6 +262,8 @@ pub struct ShellSnapshot {
     /// How many language switches asked for views so far: a new one closes the curtain
     /// (ADR-0091).
     pub language_switch: u64,
+    /// The accent band across a `fancy` screen transition (ADR-0126).
+    pub band: Option<Band>,
     /// The settings panel over the screens, while it shows.
     pub panel: Option<PanelView>,
     /// The startup intro over everything, while it shows (ADR-0114).
@@ -1712,12 +1714,10 @@ impl ShellState {
         self.song_select.set_details(details);
         // The main menu shows the menu music's beatmap or the skin's background
         // (ADR-0119); the other screens the song select's selection.
-        let menu_background = self
-            .editing
-            .as_ref()
-            .unwrap_or(&self.settings)
-            .general
-            .menu_background;
+        let live_general = &self.editing.as_ref().unwrap_or(&self.settings).general;
+        let menu_background = live_general.menu_background;
+        // Transitions started from now on; one running keeps its style (ADR-0126).
+        self.stack.set_style(live_general.transitions);
         let on_menu = matches!(self.stack.top(), AppScreen::Menu(_));
         snapshot.menu_background = menu_background != MenuBackground::None;
         if on_menu {
@@ -1738,6 +1738,7 @@ impl ShellState {
             );
             snapshot.background = backgrounds.tick_source(now_ns, source);
         }
+        snapshot.band = self.stack.band(now_ns);
         let top: *const AppScreen = self.stack.top();
         for (slot, layer) in snapshot.layers.iter_mut().zip(self.stack.layers(now_ns)) {
             *slot = layer.and_then(|(screen, pose)| {
@@ -3505,6 +3506,8 @@ impl<B: render::Backend> Draw<ShellSnapshot> for View<B> {
         let mut ends = [(0_u32, 0_u32, false); MAX_LAYERS + 1];
         let mut layers = 0;
         for layer in snapshot.layers.iter().flatten() {
+            // Where the screen's own quads start: its background is not scaled.
+            let mut layer_from = (self.shapes.len(), self.text.len());
             match &layer.view {
                 ScreenView::Menu(menu) => {
                     // Under the menu and without its slide, as on the song select (ADR-0119).
@@ -3524,6 +3527,7 @@ impl<B: render::Backend> Draw<ShellSnapshot> for View<B> {
                             },
                         );
                     }
+                    layer_from = (self.shapes.len(), self.text.len());
                     self.menu.push(
                         &mut self.shapes,
                         &mut self.text,
@@ -3551,6 +3555,7 @@ impl<B: render::Backend> Draw<ShellSnapshot> for View<B> {
                             },
                         );
                     }
+                    layer_from = (self.shapes.len(), self.text.len());
                     self.song_select.push(
                         &mut self.shapes,
                         &mut self.text,
@@ -3574,6 +3579,18 @@ impl<B: render::Backend> Draw<ShellSnapshot> for View<B> {
                 ),
                 // Drawn whole, without the transition's slide.
                 ScreenView::Play(_) => {}
+            }
+            // The transition's scale, about the window's centre, for all the layer's quads
+            // (ADR-0126).
+            if layer.pose.scale != 1.0 {
+                let centre = [width * 0.5, height * 0.5];
+                self.shapes
+                    .scale_from(layer_from.0, centre, layer.pose.scale);
+                self.text.transform_from(
+                    layer_from.1,
+                    &Affine::about(centre, layer.pose.scale, 0.0, [0.0, 0.0]),
+                    [1.0; 4],
+                );
             }
             let play = matches!(layer.view, ScreenView::Play(_));
             ends[layers] = (self.shapes.len() as u32, self.text.len() as u32, play);
@@ -3615,6 +3632,12 @@ impl<B: render::Backend> Draw<ShellSnapshot> for View<B> {
         }
         // Last, over every screen and the play (ADR-0060).
         let overlay_from = (self.shapes.len() as u32, self.text.len() as u32);
+        // The `fancy` transition's band crosses over the layers; not without effects.
+        if self.theme.effects
+            && let Some(band) = &snapshot.band
+        {
+            band.push(&mut self.shapes, &self.theme, r.white, width, height);
+        }
         // Over every screen and the panel, under the curtain and the FPS counter; its
         // outlines are drawn last, over them, while the letters are outlined.
         if let (Some(view), Some(intro)) = (&mut self.intro, &snapshot.intro) {

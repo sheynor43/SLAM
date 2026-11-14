@@ -9,6 +9,7 @@ use slam_input::{MouseButton, VideoDriver, WindowMode};
 use slam_osu::replay::Actions;
 use slam_play::input::{Binding, Bindings, Input, MAX_BINDINGS};
 use slam_play::{BackgroundSettings, FpsCorner};
+use slam_ui::screen::TransitionStyle;
 use slam_ui::theme::ColourScheme;
 
 use super::dirs::{Os, resolve};
@@ -96,6 +97,7 @@ fn round_trip_non_default() {
     s.general.menu_scale = 1.05;
     s.general.game_scale = 0.8;
     s.general.menu_background = MenuBackground::Skin;
+    s.general.transitions = TransitionStyle::Fancy;
     s.gameplay.pause_menu_style = PauseMenuStyle::Stable;
     s.gameplay.pause_menu_scale = 1.25;
     s.audio.menu_sounds = MenuSounds::Off;
@@ -1528,4 +1530,26 @@ fn bad_pause_menu_settings_fall_back_with_a_warning() {
             loaded.warnings
         );
     }
+}
+
+#[test]
+fn transitions_default_to_simple_and_read_by_name() {
+    assert_eq!(
+        Settings::default().general.transitions,
+        TransitionStyle::Simple
+    );
+    for style in TransitionStyle::ALL {
+        let loaded =
+            file::from_toml_str(&format!("[general]\ntransitions = \"{}\"\n", style.name()));
+        assert_eq!(loaded.status, LoadStatus::Ok, "{:?}", loaded.warnings);
+        assert_eq!(loaded.settings.general.transitions, style);
+    }
+    let bad = file::from_toml_str("[general]\ntransitions = \"wild\"\n");
+    assert_eq!(bad.status, LoadStatus::Recovered);
+    assert_eq!(bad.settings.general.transitions, TransitionStyle::Simple);
+    assert!(
+        bad.warnings
+            .iter()
+            .any(|w| w.starts_with("general.transitions"))
+    );
 }

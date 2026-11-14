@@ -7,6 +7,12 @@ pub fn ease_out_cubic(t: f32) -> f32 {
     1.0 - inv * inv * inv
 }
 
+/// Quintic ease-out: faster start and softer stop than cubic. `t` is clamped to `0 ..= 1`.
+pub fn ease_out_quint(t: f32) -> f32 {
+    let inv = 1.0 - t.clamp(0.0, 1.0);
+    1.0 - inv * inv * inv * inv * inv
+}
+
 /// Linear progress of an animation that started at `start_ns` and lasts `duration_ns`, at
 /// `now_ns`: 0 before the start, 1 from its end on. A zero duration is already done.
 pub fn progress(start_ns: u64, now_ns: u64, duration_ns: u64) -> f32 {

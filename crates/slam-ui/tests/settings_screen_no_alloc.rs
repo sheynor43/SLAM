@@ -201,6 +201,7 @@ fn the_view_pushes_without_allocating_once_warm() {
     let pose = Pose {
         opacity: 0.5,
         offset: 0.05,
+        scale: 1.0,
     };
     let layout = SettingsLayout::new(1280.0, 720.0, &theme);
     let mut frame = |screen: &SettingsScreen, width: f32, height: f32, glyphs: &mut _| {
@@ -334,6 +335,7 @@ fn a_swapped_in_dropdown_view_draws_without_allocating() {
     let pose = Pose {
         opacity: 1.0,
         offset: 0.0,
+        scale: 1.0,
     };
     let layout = SettingsLayout::new(1920.0, 1080.0, &theme);
     let mut frame = |view: &mut SettingsView, screen: &SettingsScreen, glyphs: &mut _| {
@@ -438,6 +440,7 @@ fn hints_and_disabled_rows_draw_without_allocating() {
     let pose = Pose {
         opacity: 1.0,
         offset: 0.0,
+        scale: 1.0,
     };
     let layout = SettingsLayout::new(1280.0, 720.0, &theme);
     let mut frame = |screen: &SettingsScreen, glyphs: &mut _| {

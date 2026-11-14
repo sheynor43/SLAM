@@ -60,6 +60,41 @@ fn ticks_without_navigation_do_not_allocate() {
 }
 
 #[test]
+fn fancy_transitions_do_not_allocate_and_show_the_band() {
+    use slam_app::settings::Settings;
+    use slam_ui::screen::TransitionStyle;
+    use slam_ui::theme::transition::FANCY_NS;
+
+    let mut settings = Settings::default();
+    settings.general.transitions = TransitionStyle::Fancy;
+    let mut state = ShellState::new(Theme::default(), 1280.0, 720.0, 1.0).with_settings(settings);
+    let mut snapshot = ShellSnapshot::default();
+    let enter = InputEvent {
+        time_ns: 0,
+        kind: InputKind::Key {
+            scancode: 40,
+            down: true,
+        },
+    };
+    // The first tick takes the settings; navigation may allocate.
+    state.tick(0, &[], &mut snapshot);
+    state.tick(1, &[enter], &mut snapshot);
+    let moves = [InputEvent {
+        time_ns: 0,
+        kind: InputKind::MouseMove { x: 5.0, y: 5.0 },
+    }];
+    let mut seen_band = false;
+    assert_no_alloc(|| {
+        for now in (2..2 * FANCY_NS).step_by(1_000_000) {
+            state.tick(now, &moves, &mut snapshot);
+            seen_band |= snapshot.band.is_some();
+        }
+    });
+    assert!(seen_band);
+    assert!(snapshot.band.is_none());
+}
+
+#[test]
 fn song_select_ticks_and_new_lists_do_not_allocate() {
     use std::path::PathBuf;
     use std::sync::Arc;

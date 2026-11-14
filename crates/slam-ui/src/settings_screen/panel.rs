@@ -97,6 +97,7 @@ pub fn panel_pose(openness: f32) -> Pose {
     Pose {
         opacity: 1.0,
         offset: -(1.0 - openness),
+        scale: 1.0,
     }
 }
 

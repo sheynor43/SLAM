@@ -22,6 +22,7 @@ use crate::settings::{
     DrawRate, FpsScreens, HitsoundDelay, InputSettings, KeyOverlayAnimation, KeySlot,
     MenuBackground, MenuSounds, PauseMenuStyle, RendererChoice, Settings, Timing, skins,
 };
+use slam_ui::screen::TransitionStyle;
 use slam_ui::theme::{ColourScheme, UI_SCALE_RANGE};
 
 /// Sections, in order; the keys of their names are in [`SECTION_KEYS`].
@@ -227,6 +228,8 @@ pub enum Row {
     ColourScheme,
     /// Whether the interface effects are on; applies live (ADR-0123).
     Effects,
+    /// How screens change (ADR-0126).
+    Transitions,
     /// The scale of the menus (ADR-0118).
     MenuScale,
     /// The scale of the HUD and the pause and fail menus (ADR-0118).
@@ -265,7 +268,7 @@ pub enum Row {
 const _: () = assert!(Row::ALL.len() <= slam_ui::settings_screen::MAX_ROWS);
 
 impl Row {
-    pub const ALL: [Row; 66] = [
+    pub const ALL: [Row; 67] = [
         Row::MasterVolume,
         Row::MusicVolume,
         Row::MenuMusic,
@@ -303,6 +306,7 @@ impl Row {
         Row::Intro,
         Row::ColourScheme,
         Row::Effects,
+        Row::Transitions,
         Row::MenuScale,
         Row::GameScale,
         Row::MenuBackground,
@@ -393,6 +397,7 @@ impl Row {
             | Row::Intro
             | Row::ColourScheme
             | Row::Effects
+            | Row::Transitions
             | Row::MenuScale
             | Row::GameScale
             | Row::MenuBackground => 3,
@@ -455,6 +460,7 @@ impl Row {
             Row::Intro => "settings-general-intro",
             Row::ColourScheme => "settings-general-colour-scheme",
             Row::Effects => "settings-general-effects",
+            Row::Transitions => "settings-general-transitions",
             Row::MenuScale => "settings-general-menu-scale",
             Row::GameScale => "settings-general-game-scale",
             Row::MenuBackground => "settings-general-menu-background",
@@ -882,6 +888,12 @@ impl Rows {
                     .iter()
                     .position(|c| *c == s.general.colour_scheme),
             ),
+            Row::Transitions => choice(
+                TransitionStyle::ALL.len(),
+                TransitionStyle::ALL
+                    .iter()
+                    .position(|t| *t == s.general.transitions),
+            ),
             Row::MenuBackground => choice(
                 MenuBackground::ALL.len(),
                 MenuBackground::ALL
@@ -1151,6 +1163,11 @@ impl Rows {
                     settings.general.colour_scheme = *scheme;
                 }
             }
+            (Row::Transitions, RowValue::Choice(i)) => {
+                if let Some(style) = TransitionStyle::ALL.get(i) {
+                    settings.general.transitions = *style;
+                }
+            }
             (Row::MenuBackground, RowValue::Choice(i)) => {
                 if let Some(background) = MenuBackground::ALL.get(i) {
                     settings.general.menu_background = *background;
@@ -1380,6 +1397,10 @@ impl Rows {
                     Row::ColourScheme => ColourScheme::ALL
                         .iter()
                         .map(|scheme| text(scheme.label_key()))
+                        .collect(),
+                    Row::Transitions => TransitionStyle::ALL
+                        .iter()
+                        .map(|style| text(style.label_key()))
                         .collect(),
                     Row::MenuBackground => MenuBackground::ALL
                         .iter()
@@ -2014,6 +2035,16 @@ mod tests {
         assert_eq!(s.gameplay.pause_menu_style, PauseMenuStyle::Stable);
         rows.apply(&mut s, index(Row::PauseMenuScale), RowValue::Slider(150.0));
         assert_eq!(s.gameplay.pause_menu_scale, 1.5);
+        assert_eq!(s.general.transitions, TransitionStyle::Simple);
+        rows.apply(&mut s, index(Row::Transitions), RowValue::Choice(2));
+        assert_eq!(s.general.transitions, TransitionStyle::Fancy);
+        rows.apply(&mut s, index(Row::Transitions), RowValue::Choice(7));
+        assert_eq!(s.general.transitions, TransitionStyle::Fancy);
+        assert_eq!(Row::Transitions.section(), 3);
+        assert!(matches!(
+            rows.specs(&s)[index(Row::Transitions)].kind,
+            RowKind::Dropdown { selected: 2, .. }
+        ));
         rows.apply(&mut s, index(Row::MenuBackground), RowValue::Choice(2));
         assert_eq!(s.general.menu_background, MenuBackground::None);
         rows.apply(&mut s, index(Row::MenuSounds), RowValue::Choice(1));
