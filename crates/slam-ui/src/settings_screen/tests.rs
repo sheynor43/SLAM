@@ -1419,3 +1419,21 @@ fn only_the_lines_touching_the_content_are_visible_slots() {
     assert_eq!(scrolled.fraction(62), 0.0);
     assert!((scrolled.fraction(12) - 1.0).abs() < 1e-4);
 }
+
+#[test]
+fn a_position_is_restored_held_to_the_list_and_without_easing() {
+    let (mut s, l) = sectioned_screen();
+    s.restore_position(7.0, Some(1));
+    assert_eq!((s.scroll(), s.shown_scroll()), (7.0, 7.0));
+    assert_eq!(s.pinned_section(), Some(1));
+    assert_eq!(s.position(), (7.0, Some(1)));
+    // A list that became shorter holds the scroll; a section without a header is dropped.
+    s.restore_position(10_000.0, Some(MAX_SECTIONS + 5));
+    assert_eq!(s.scroll(), (s.lines() - 1) as f32);
+    assert_eq!(s.pinned_section(), None);
+    s.restore_position(f32::NAN, None);
+    assert_eq!(s.scroll(), 0.0);
+    s.restore_position(-3.0, None);
+    assert_eq!(s.scroll(), 0.0);
+    settle(&mut s, &l);
+}

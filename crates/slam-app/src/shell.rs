@@ -61,7 +61,7 @@ use slam_ui::song_select::{
     SongSelectStatus, SongSelectView, TileDetail,
 };
 use slam_ui::song_select::{MAX_VISIBLE_ROWS, RowThumb, Thumbs};
-use slam_ui::theme::Theme;
+use slam_ui::theme::{CursorFx, Theme};
 use slam_ui::widgets::DropdownView;
 
 use crate::backend::{self as render, Opened, WindowKind, WithBackend};
@@ -271,7 +271,7 @@ pub struct ShellSnapshot {
     pub background_dim: f32,
     /// The main menu shows the background (ADR-0119).
     pub menu_background: bool,
-    /// Strength of the menus' parallax, 0 ..= 1: 0 with it or the effects off (ADR-0132).
+    /// Strength of the menus' parallax, 0 ..= 2: 0 with it off (ADR-0132, ADR-0136).
     pub parallax: f32,
     /// The display lists the settings screen shows (ADR-0072).
     pub display_generation: u64,
@@ -359,6 +359,9 @@ pub struct ShellState {
     modifiers: u8,
     /// The settings panel, open or sliding out (ADR-0095).
     panel: Option<Panel>,
+    /// Where the settings list was when the panel went: its scroll and the sidebar's pick,
+    /// put back when it opens again; not saved (ADR-0136).
+    settings_position: (f32, Option<usize>),
     /// The play shows its pause or fail menu: the settings panel may open over it.
     play_menu: bool,
     /// The settings panel closed with changes not yet looked at by the play (ADR-0096).
@@ -466,6 +469,7 @@ impl ShellState {
             setting_rows_for: None,
             modifiers: 0,
             panel: None,
+            settings_position: (0.0, None),
             play_menu: false,
             settings_changed: false,
             localizer: None,
@@ -1044,6 +1048,8 @@ impl ShellState {
         if let Some(localizer) = &self.localizer {
             screen.set_search_texts(Rows::search_texts(localizer));
         }
+        let (scroll, pinned) = self.settings_position;
+        screen.restore_position(scroll, pinned);
         self.panel = Some(Panel {
             screen: Box::new(screen),
             motion: PanelMotion::opening(now_ns, &self.theme),
@@ -1810,7 +1816,7 @@ impl ShellState {
         self.stack.set_style(live_general.transitions);
         let on_menu = matches!(self.stack.top(), AppScreen::Menu(_));
         snapshot.menu_background = menu_background != MenuBackground::None;
-        snapshot.parallax = if live_general.effects {
+        snapshot.parallax = if live_general.parallax_enabled {
             live_general.parallax as f32
         } else {
             0.0
@@ -1870,8 +1876,10 @@ impl ShellState {
             .as_ref()
             .is_some_and(|p| p.motion.is_gone(now_ns))
         {
-            // Navigation: the screen goes with the panel.
-            self.panel = None;
+            // Navigation: the screen goes with the panel, the place in its list stays.
+            if let Some(panel) = self.panel.take() {
+                self.settings_position = panel.screen.position();
+            }
         }
         let layout = self.settings_layout;
         if let Some(panel) = &mut self.panel {
@@ -3586,7 +3594,11 @@ impl<B: render::Backend> Draw<ShellSnapshot> for View<B> {
                     ScreenView::SongSelect(_) => true,
                     _ => false,
                 });
-            if self.theme.effects && shows_background && size.width > 0 && size.height > 0 {
+            if self.theme.background_blur > 0.0
+                && shows_background
+                && size.width > 0
+                && size.height > 0
+            {
                 blur_backgrounds(
                     &mut r.device,
                     &r.textures,
@@ -3601,9 +3613,10 @@ impl<B: render::Backend> Draw<ShellSnapshot> for View<B> {
         }
         // The blurred image of each background shown, if any: drawn in its place.
         let effects = self.theme.effects;
+        let blur_on = self.theme.background_blur > 0.0;
         let blurred = |image| {
             let slot = r.blurs.iter().position(|s| s.image == Some(image))?;
-            effects.then_some(BLUR_TEXTURES[slot])
+            blur_on.then_some(BLUR_TEXTURES[slot])
         };
         let in_place = |region: AtlasRegion, image| match blurred(image) {
             Some(texture) => AtlasRegion {
@@ -3636,7 +3649,7 @@ impl<B: render::Backend> Draw<ShellSnapshot> for View<B> {
             [width, height],
             self.theme.parallax_half_life,
         );
-        let strength = if effects { snapshot.parallax } else { 0.0 };
+        let strength = snapshot.parallax;
         let background_map = crate::parallax::layer_map(
             pointer,
             [width, height],
@@ -4354,9 +4367,28 @@ fn interface_localizer(settings: &Settings) -> Result<Localizer, String> {
 /// `live` (with the settings screen's edits), the menu scale of `committed`: the menus'
 /// scale changes when the settings are kept, not under the slider dragging it.
 pub fn interface_theme(live: &Settings, committed: &Settings) -> Theme {
-    Theme::new(live.general.colour_scheme, committed.general.menu_scale)
-        .with_effects(live.general.effects)
-        .with_skew(live.general.skew)
+    let general = &live.general;
+    let mut theme = Theme::new(general.colour_scheme, committed.general.menu_scale)
+        .with_effects(general.effects)
+        .with_skew(general.skew)
+        .with_shadow(if general.shadows {
+            general.shadow_strength as f32
+        } else {
+            0.0
+        })
+        .with_cursor_fx(CursorFx {
+            rotate: general.cursor_rotate,
+            spin: general.cursor_spin,
+            trail: general.cursor_trail,
+            ripple: general.cursor_ripple,
+        });
+    // The background blur is its own switch, whatever the effects say (ADR-0136).
+    theme.background_blur = if general.blur {
+        theme.background_blur * (general.blur_strength as f32).clamp(0.0, 2.0)
+    } else {
+        0.0
+    };
+    theme
 }
 
 fn run_with<B: render::Backend>(

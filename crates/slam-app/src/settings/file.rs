@@ -250,7 +250,70 @@ fn from_table(mut table: Table) -> Loaded {
         "general",
         "parallax",
         &mut settings.general.parallax,
-        0.0..=1.0,
+        0.0..=2.0,
+    );
+    cx.float(
+        &mut general,
+        "general",
+        "blur_strength",
+        &mut settings.general.blur_strength,
+        0.0..=2.0,
+    );
+    cx.float(
+        &mut general,
+        "general",
+        "shadow_strength",
+        &mut settings.general.shadow_strength,
+        0.0..=2.0,
+    );
+    cx.field(
+        &mut general,
+        "general",
+        "parallax_enabled",
+        &mut settings.general.parallax_enabled,
+        |_| Ok(()),
+    );
+    cx.field(
+        &mut general,
+        "general",
+        "blur",
+        &mut settings.general.blur,
+        |_| Ok(()),
+    );
+    cx.field(
+        &mut general,
+        "general",
+        "shadows",
+        &mut settings.general.shadows,
+        |_| Ok(()),
+    );
+    cx.field(
+        &mut general,
+        "general",
+        "cursor_rotate",
+        &mut settings.general.cursor_rotate,
+        |_| Ok(()),
+    );
+    cx.field(
+        &mut general,
+        "general",
+        "cursor_spin",
+        &mut settings.general.cursor_spin,
+        |_| Ok(()),
+    );
+    cx.field(
+        &mut general,
+        "general",
+        "cursor_trail",
+        &mut settings.general.cursor_trail,
+        |_| Ok(()),
+    );
+    cx.field(
+        &mut general,
+        "general",
+        "cursor_ripple",
+        &mut settings.general.cursor_ripple,
+        |_| Ok(()),
     );
     let mut scheme: Option<String> = None;
     cx.opt(&mut general, "general", "colour_scheme", &mut scheme);
