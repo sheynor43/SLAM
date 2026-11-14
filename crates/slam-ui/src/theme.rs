@@ -164,6 +164,8 @@ pub struct Theme {
     pub song_thumbnail_inset: f32,
     /// How long a thumbnail fades in, in milliseconds.
     pub song_thumbnail_fade_ms: f32,
+    /// Milliseconds a set's difficulties take to slide open (ADR-0136).
+    pub song_expand_ms: f32,
     /// Size of the artist and title, and of version texts.
     pub song_title_size: f32,
     /// Size of the creator and of the hint.
@@ -542,6 +544,7 @@ impl Theme {
             song_thumbnail_aspect: 1.6,
             song_thumbnail_inset: 3.0,
             song_thumbnail_fade_ms: 200.0,
+            song_expand_ms: 250.0,
             song_title_size: 20.0,
             song_detail_size: 13.0,
             song_info_title_size: 26.0,
