@@ -82,7 +82,8 @@ fn star5(p_in: vec2<f32>, r: f32, rf: f32) -> f32 {
     p.y = p.y - r;
     let ba = rf * vec2<f32>(-k1.y, k1.x) - vec2<f32>(0.0, 1.0);
     let h = clamp(dot(p, ba) / dot(ba, ba), 0.0, r);
-    return length(p - ba * h) * sign(p.y * ba.x - p.x * ba.y);
+    // `select`, not `sign`: HLSL's `sign` gives an integer.
+    return length(p - ba * h) * select(-1.0, 1.0, p.y * ba.x - p.x * ba.y >= 0.0);
 }
 
 // Signed distance to the menu pointer filling a box of half size `hs`: an arrowhead with its
@@ -100,7 +101,8 @@ fn arrow(p: vec2<f32>, hs: vec2<f32>) -> f32 {
     for (var i = 0u; i < 4u; i = i + 1u) {
         let e = v[j] - v[i];
         let w = p - v[i];
-        let b = w - e * clamp(dot(w, e) / dot(e, e), 0.0, 1.0);
+        // Guarded: a degenerate pointer has edges of length zero.
+        let b = w - e * clamp(dot(w, e) / max(dot(e, e), 1e-8), 0.0, 1.0);
         d = min(d, dot(b, b));
         let c0 = p.y >= v[i].y;
         let c1 = v[j].y > p.y;
@@ -130,9 +132,20 @@ fn pattern(local: vec2<f32>, half_size: vec2<f32>, strength: f32, seed: f32, pha
         // (`set_drift`), and 1024 times the rate is then a whole number of cells.
         let spread = hash(vec3<f32>(col + seed * 13.0, 7.0, 5.0));
         let rate = floor((0.6 + 2.4 * strength) * (0.4 + 0.9 * spread) * 16.0 + 0.5) / 16.0;
+        // Cells the column rises through in one wrap of the drift: a whole number, so the
+        // rows taken modulo it repeat exactly and the wrap does not swap the triangles.
+        let wrap = 1024.0 * rate;
         let py = (local.y + half_size.y) / cell + phase * rate;
+        let fy = fract(py);
         for (var dy = -1; dy <= 1; dy = dy + 1) {
-            let row = floor(py) + f32(dy);
+            // A triangle reaches at most 0.375 of a cell below its centre and 0.75 above it:
+            // the cell above matters only near this cell's top, the one below only past
+            // its first quarter.
+            if ((dy == -1 && fy > 0.375) || (dy == 1 && fy < 0.25)) {
+                continue;
+            }
+            let raw = floor(py) + f32(dy);
+            let row = raw - wrap * floor(raw / wrap);
             let key = vec3<f32>(col + seed * 13.0, row, 0.0);
             if (hash(key) > 0.35 + 0.35 * strength) {
                 continue;
@@ -142,7 +155,7 @@ fn pattern(local: vec2<f32>, half_size: vec2<f32>, strength: f32, seed: f32, pha
                 col + hash(key + vec3<f32>(0.0, 0.0, 1.0)),
                 row + hash(key + vec3<f32>(0.0, 0.0, 2.0)),
             );
-            let p = (vec2<f32>(px, py) - centre) * cell;
+            let p = (vec2<f32>(px, py) - vec2<f32>(centre.x, raw + (centre.y - row))) * cell;
             let d = triangle(p, r);
             let width = max(1.0, r * 0.03);
             cover = max(cover, 1.0 - smoothstep(width * 0.5, width * 0.5 + 1.0, abs(d)));

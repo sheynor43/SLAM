@@ -212,7 +212,17 @@ fn view_pushes_without_allocating_once_warm() {
         }
     });
     assert!(rig.shapes.len() > 4);
+    // A full list stays well within the shell's frame budget for two layers (ADR-0136).
+    assert!(
+        rig.shapes.len() <= SONG_SELECT_SHAPE_BUDGET,
+        "{}",
+        rig.shapes.len()
+    );
 }
+
+/// Shapes a song select frame may take: under half the shell's `MAX_SHAPES` (1024), so a
+/// transition's two layers and the overlays fit.
+const SONG_SELECT_SHAPE_BUDGET: usize = 400;
 
 #[test]
 fn changing_lists_and_scanning_texts_do_not_allocate() {

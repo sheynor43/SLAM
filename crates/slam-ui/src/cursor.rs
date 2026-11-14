@@ -333,20 +333,27 @@ impl MenuCursorMotion {
         if now_ns < self.spin_back.end_ns() {
             return self.spin_back.at(now_ns);
         }
-        let rested_ms = now_ns.saturating_sub(self.moved_ns) as f32 / 1e6;
-        let spinning = rested_ms - theme.cursor_spin_delay_ms;
-        if self.last_move.is_none() || spinning <= 0.0 || self.held {
+        if self.last_move.is_none() || self.held {
             return 0.0;
         }
-        // Easing in over the first turn, then steady; wrapped to keep precision.
-        let period = theme.cursor_spin_period_ms.max(1.0);
-        let ramp = (spinning / period).min(1.0);
-        let turns = if spinning < period {
+        // In whole nanoseconds until wrapped to one turn, so a long rest keeps its precision.
+        let delay_ns = (theme.cursor_spin_delay_ms.max(0.0) * 1e6) as u64;
+        let period_ns = ((theme.cursor_spin_period_ms.max(1.0) * 1e6) as u64).max(1);
+        let Some(spinning) = now_ns
+            .saturating_sub(self.moved_ns)
+            .checked_sub(delay_ns)
+            .filter(|&ns| ns > 0)
+        else {
+            return 0.0;
+        };
+        // Easing in over the first turn, then steady.
+        let turns = if spinning < period_ns {
+            let ramp = spinning as f32 / period_ns as f32;
             0.5 * ramp * ramp
         } else {
-            0.5 + (spinning - period) / period
+            0.5 + ((spinning - period_ns) % period_ns) as f32 / period_ns as f32
         };
-        (turns * std::f32::consts::TAU).rem_euclid(std::f32::consts::TAU * 64.0)
+        turns * std::f32::consts::TAU
     }
 
     fn drag_to(&mut self, theme: &Theme, ui: f32, at: [f32; 2], now_ns: u64) {
@@ -941,6 +948,22 @@ mod tests {
             ..CursorFx::default()
         });
         assert_eq!(sample(&m, &off, at - 1).spin, 0.0);
+    }
+
+    #[test]
+    fn a_long_rest_spins_as_smoothly_as_a_short_one() {
+        let theme = Theme::default();
+        let mut m = MenuCursorMotion::default();
+        m.update(&theme, 1.0, Some([0.0; 2]), false, 0);
+        m.update(&theme, 1.0, Some([5.0, 0.0]), false, MS);
+        let period = theme.cursor_spin_period_ms as u64 * MS;
+        // A day later, at a whole number of turns, and 4 ms on.
+        let day = 86_400_000 * MS;
+        let base = MS + theme.cursor_spin_delay_ms as u64 * MS + period * (day / period);
+        let a = m.sample(&theme, base).spin;
+        let b = m.sample(&theme, base + 4 * MS).spin;
+        let step = std::f32::consts::TAU * 4.0 / theme.cursor_spin_period_ms;
+        assert!((b - a - step).abs() < 1e-3, "{a} {b} {step}");
     }
 
     #[test]

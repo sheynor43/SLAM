@@ -27,8 +27,10 @@ fn drawing_the_cursor_does_not_allocate() {
     assert_no_alloc(|| {
         for frame in 0..100_u64 {
             shapes.clear();
-            let now = frame * 16_000_000;
-            let at = [frame as f32 * 9.0, 300.0 + frame as f32 * 4.0];
+            let now = frame * 40_000_000;
+            // The pointer rests from the 40th frame on, long enough to spin (ADR-0136).
+            let moving = frame.min(40) as f32;
+            let at = [moving * 9.0, 300.0 + moving * 4.0];
             motion.update(&theme, 1.0, Some(at), frame % 20 < 10, now);
             let sample = motion.sample(&theme, now);
             push_slam_cursor(&mut shapes, &theme, white, [10.0, 10.0], 28.0, &sample);
@@ -43,4 +45,8 @@ fn drawing_the_cursor_does_not_allocate() {
         }
     });
     assert!(!shapes.is_empty());
+    assert!(
+        motion.sample(&theme, 99 * 40_000_000).spin != 0.0,
+        "the spin was drawn"
+    );
 }
