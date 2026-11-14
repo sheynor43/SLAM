@@ -642,12 +642,65 @@ impl Default for HudSettings {
 pub struct SongSelect {
     /// Dim of the song select's background, 0 ..= 1 (ADR-0098).
     pub background_dim: f64,
+    /// Height of the beatmap thumbnails in the song list (ADR-0127).
+    pub thumbnails: Thumbnails,
 }
 
 impl Default for SongSelect {
     fn default() -> SongSelect {
         SongSelect {
             background_dim: 0.7,
+            thumbnails: Thumbnails::default(),
+        }
+    }
+}
+
+/// The height of the song list's thumbnails in pixels, or none (ADR-0127).
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum Thumbnails {
+    Off,
+    H64,
+    #[default]
+    H128,
+    H256,
+}
+
+impl Serialize for Thumbnails {
+    fn serialize<S: Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        serializer.serialize_str(self.name())
+    }
+}
+
+impl Thumbnails {
+    pub const ALL: [Thumbnails; 4] = [
+        Thumbnails::Off,
+        Thumbnails::H64,
+        Thumbnails::H128,
+        Thumbnails::H256,
+    ];
+
+    /// The name in the settings file.
+    pub fn name(self) -> &'static str {
+        match self {
+            Thumbnails::Off => "off",
+            Thumbnails::H64 => "64",
+            Thumbnails::H128 => "128",
+            Thumbnails::H256 => "256",
+        }
+    }
+
+    /// The value called `name`.
+    pub fn from_name(name: &str) -> Option<Thumbnails> {
+        Thumbnails::ALL.into_iter().find(|t| t.name() == name)
+    }
+
+    /// The thumbnails' height in pixels; `None` when off.
+    pub fn height(self) -> Option<u32> {
+        match self {
+            Thumbnails::Off => None,
+            Thumbnails::H64 => Some(64),
+            Thumbnails::H128 => Some(128),
+            Thumbnails::H256 => Some(256),
         }
     }
 }

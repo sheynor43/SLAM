@@ -104,6 +104,11 @@ impl Dirs {
         self.config.join(super::FILE_NAME)
     }
 
+    /// Where caches are kept: thumbnails and the like (ARCHITECTURE §17).
+    pub fn cache(&self) -> PathBuf {
+        self.data.join("cache")
+    }
+
     /// Where replays are saved (ARCHITECTURE §17).
     pub fn replays(&self) -> PathBuf {
         self.data.join("replays")

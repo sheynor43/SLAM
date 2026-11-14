@@ -19,3 +19,4 @@ pub mod screenshot;
 pub mod settings;
 pub mod shell;
 pub mod songs;
+pub mod thumbnails;

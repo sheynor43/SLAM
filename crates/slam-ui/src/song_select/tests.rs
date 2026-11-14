@@ -731,3 +731,104 @@ fn the_leaning_backing_reaches_past_the_right_edge() {
         assert!((l.lean - half).abs() < 1e-6);
     }
 }
+
+mod thumbnails {
+    use slam_render::hal::Limits;
+    use slam_render::upload::{TextureHandle, TextureKind, TextureLoaderConfig, texture_loader};
+
+    use super::super::view::{FADES, ThumbGeometry, fade_alpha};
+    use super::*;
+
+    fn handles(n: usize) -> Vec<TextureHandle> {
+        let limits = Limits {
+            max_texture_size: 4096,
+            max_uniform_block_size: 16384,
+            max_uniform_buffer_slots: 12,
+            max_texture_slots: 16,
+        };
+        let (mut requests, _uploads) = texture_loader(&TextureLoaderConfig {
+            max_textures: 256,
+            ..TextureLoaderConfig::new(limits)
+        })
+        .unwrap();
+        (0..n)
+            .map(|_| requests.load(Vec::new(), TextureKind::Standalone).unwrap())
+            .collect()
+    }
+
+    const MS: u64 = 1_000_000;
+
+    #[test]
+    fn a_thumbnail_fades_in_from_its_first_frame_and_stays() {
+        let h = handles(2);
+        let mut fades = [None; FADES];
+        let mut next = 0;
+        assert_eq!(
+            fade_alpha(&mut fades, &mut next, h[0], 100 * MS, 200.0),
+            0.0
+        );
+        let half = fade_alpha(&mut fades, &mut next, h[0], 200 * MS, 200.0);
+        assert!((half - 0.5).abs() < 1e-6, "{half}");
+        assert_eq!(
+            fade_alpha(&mut fades, &mut next, h[0], 900 * MS, 200.0),
+            1.0
+        );
+        // Another thumbnail starts on its own.
+        assert_eq!(
+            fade_alpha(&mut fades, &mut next, h[1], 900 * MS, 200.0),
+            0.0
+        );
+        assert_eq!(
+            fade_alpha(&mut fades, &mut next, h[0], 901 * MS, 200.0),
+            1.0
+        );
+        // No fade time: whole at once.
+        let mut fades = [None; FADES];
+        assert_eq!(fade_alpha(&mut fades, &mut 0, h[0], 0, 0.0), 1.0);
+    }
+
+    #[test]
+    fn the_fade_table_replaces_the_oldest_when_full() {
+        let h = handles(FADES + 1);
+        let mut fades = [None; FADES];
+        let mut next = 0;
+        for handle in &h[..FADES] {
+            fade_alpha(&mut fades, &mut next, *handle, 0, 100.0);
+        }
+        // One more: the first is forgotten, so it starts over.
+        fade_alpha(&mut fades, &mut next, h[FADES], 500 * MS, 100.0);
+        assert_eq!(
+            fade_alpha(&mut fades, &mut next, h[0], 600 * MS, 100.0),
+            0.0
+        );
+        // The third is still known (it was shown at 0 and is whole).
+        assert_eq!(
+            fade_alpha(&mut fades, &mut next, h[2], 600 * MS, 100.0),
+            1.0
+        );
+    }
+
+    #[test]
+    fn the_thumbnail_sits_inside_the_row_and_the_text_makes_room() {
+        let theme = Theme::default();
+        let layout = SongSelectLayout::new(1280.0, 720.0, &theme);
+        let g = ThumbGeometry::new(&theme, &layout);
+        let row = layout.row_height - theme.song_row_gap * layout.scale;
+        assert!(g.height > 0.0 && g.height < row);
+        assert!((g.height + 2.0 * g.inset - row).abs() < 1e-3);
+        assert!((g.width / g.height - theme.song_thumbnail_aspect).abs() < 1e-3);
+        assert!((g.text_shift - (g.inset + g.width)).abs() < 1e-3);
+        // Cut at the list's edges; nothing outside gives none.
+        let area = Rect {
+            x: 0.0,
+            y: 100.0,
+            width: 300.0,
+            height: row,
+        };
+        let (top, bottom) = g.span(&area, 0.0, 1000.0).unwrap();
+        assert!((top - (100.0 + g.inset)).abs() < 1e-3 && (bottom - top - g.height).abs() < 1e-3);
+        let (top, _) = g.span(&area, 120.0, 1000.0).unwrap();
+        assert_eq!(top, 120.0);
+        assert!(g.span(&area, 0.0, 100.0).is_none());
+    }
+}

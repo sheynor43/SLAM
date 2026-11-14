@@ -571,3 +571,105 @@ fn searching_and_moving_in_the_open_settings_panel_does_not_allocate() {
     );
     assert!(snapshot.panel.is_some());
 }
+
+#[test]
+fn thumbnails_are_asked_for_and_handed_over_without_allocating_on_the_update_thread() {
+    use std::sync::Arc;
+
+    use slam_app::backgrounds::link;
+    use slam_app::songs::{link as songs_link, publish};
+    use slam_library::scan::{BeatmapSetEntry, DifficultyEntry};
+    use slam_render::hal::Limits;
+    use slam_render::image::ImageLimits;
+    use slam_render::upload::{TextureLoaderConfig, texture_loader};
+    use slam_ui::song_select::SongSelectStatus;
+
+    let root = std::env::temp_dir().join(format!("slam-thumbs-no-alloc-{}", std::process::id()));
+    let mut png_bytes = Vec::new();
+    {
+        let mut e = png::Encoder::new(&mut png_bytes, 4, 4);
+        e.set_color(png::ColorType::Rgba);
+        e.set_depth(png::BitDepth::Eight);
+        let mut w = e.write_header().unwrap();
+        w.write_image_data(&[200; 4 * 4 * 4]).unwrap();
+    }
+    let sets: Vec<BeatmapSetEntry> = (0..20)
+        .map(|i| {
+            let dir = root.join(format!("set {i}"));
+            std::fs::create_dir_all(&dir).unwrap();
+            std::fs::write(dir.join("bg.png"), &png_bytes).unwrap();
+            BeatmapSetEntry {
+                dir: dir.clone(),
+                artist: format!("artist {i}"),
+                title: format!("title {i}"),
+                creator: "mapper".to_owned(),
+                artist_unicode: String::new(),
+                title_unicode: String::new(),
+                source: String::new(),
+                tags: String::new(),
+                difficulties: vec![DifficultyEntry {
+                    path: dir.join("map.osu"),
+                    version: "diff".to_owned(),
+                    overall_difficulty: 5.0,
+                    approach_rate: 5.0,
+                    circle_size: 4.0,
+                    hp: 5.0,
+                    background: Some("bg.png".to_owned()),
+                    audio: String::new(),
+                    preview_time: -1,
+                    metadata: Default::default(),
+                }],
+            }
+        })
+        .collect();
+    let config = TextureLoaderConfig {
+        max_textures: slam_app::thumbnails::MAX_HANDLES + 16,
+        request_capacity: 128,
+        ..TextureLoaderConfig::new(Limits {
+            max_texture_size: 4096,
+            max_uniform_block_size: 16384,
+            max_uniform_buffer_slots: 12,
+            max_texture_slots: 16,
+        })
+    };
+    let (requests, _uploads) = texture_loader(&config).unwrap();
+    let (picker, loader, _fade) = link(requests);
+    let (thumbnails, bridge, _worker, _shown) =
+        slam_app::thumbnails::link(None, 1.6, ImageLimits::default()).unwrap();
+    let mut loader = loader.with_thumbnails(bridge);
+    let (mut producer, songs) = songs_link();
+    let mut state = ShellState::new(Theme::default(), 1280.0, 720.0, 1.0)
+        .with_songs(songs)
+        .with_backgrounds(picker)
+        .with_thumbnails(thumbnails);
+    let mut snapshot = ShellSnapshot::default();
+    let key = |scancode| InputEvent {
+        time_ns: 0,
+        kind: InputKind::Key {
+            scancode,
+            down: true,
+        },
+    };
+    state.tick(0, &[key(40)], &mut snapshot);
+    state.tick(TRANSITION_NS, &[], &mut snapshot);
+    let published = publish(&sets, SongSelectStatus::Ready, Arc::from(""));
+    let kept = (Arc::clone(&published.list), Arc::clone(&published.files));
+    producer.push(published).unwrap();
+    state.tick(TRANSITION_NS + 1, &[], &mut snapshot);
+
+    let start = 2 * TRANSITION_NS;
+    let mut loaded = 0;
+    for step in 0..400_u64 {
+        let now = start + step * 5_000_000;
+        // Down a set now and then, so that new rows come into view.
+        let input = if step % 40 == 39 { &[key(81)][..] } else { &[] };
+        assert_no_alloc(|| state.tick(now, input, &mut snapshot));
+        loader.poll();
+        std::thread::sleep(std::time::Duration::from_millis(2));
+        loaded = loaded.max(snapshot.thumbnails.handles.iter().flatten().count());
+    }
+    assert!(snapshot.thumbnails.enabled);
+    assert!(loaded >= 4, "thumbnails reached the snapshot: {loaded}");
+    drop(kept);
+    let _ = std::fs::remove_dir_all(&root);
+}

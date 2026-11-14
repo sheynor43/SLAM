@@ -115,6 +115,7 @@ pub fn link(mut requests: TextureRequests) -> (BackgroundPicker, BackgroundLoade
             replies: replies_tx,
             unsent: None,
             releases: Vec::with_capacity(MAX_BACKGROUNDS as usize),
+            thumbnails: None,
         },
         BackgroundFade::new(shown, default),
     )
@@ -364,14 +365,25 @@ pub struct BackgroundLoader {
     replies: rtrb::Producer<BackgroundReply>,
     /// An answer the full ring did not take yet.
     unsent: Option<BackgroundReply>,
+    /// The thumbnails' library-thread end (ADR-0127).
+    thumbnails: Option<crate::thumbnails::ThumbBridge>,
     /// Releases the full request queue did not take yet.
     releases: Vec<TextureHandle>,
 }
 
 impl BackgroundLoader {
+    /// Lets the loader also serve the thumbnails (ADR-0127).
+    pub fn with_thumbnails(mut self, thumbnails: crate::thumbnails::ThumbBridge) -> Self {
+        self.thumbnails = Some(thumbnails);
+        self
+    }
+
     /// Handles the waiting commands: releases all, loads only the newest of the loads.
     /// Reads the file here, so the library thread waits for the disk.
     pub fn poll(&mut self) {
+        if let Some(thumbnails) = &mut self.thumbnails {
+            thumbnails.poll(&mut self.requests);
+        }
         self.releases
             .retain(|&handle| self.requests.release(handle).is_err_and(is_queue_full));
         if let Some(reply) = self.unsent.take()

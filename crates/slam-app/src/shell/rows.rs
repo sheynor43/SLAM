@@ -20,7 +20,8 @@ use super::keybinds;
 use crate::displays::{DisplayLists, DisplayViews};
 use crate::settings::{
     DrawRate, FpsScreens, HitsoundDelay, InputSettings, KeyOverlayAnimation, KeySlot,
-    MenuBackground, MenuSounds, PauseMenuStyle, RendererChoice, Settings, Timing, skins,
+    MenuBackground, MenuSounds, PauseMenuStyle, RendererChoice, Settings, Thumbnails, Timing,
+    skins,
 };
 use slam_ui::theme::{ColourScheme, UI_SCALE_RANGE};
 
@@ -241,6 +242,8 @@ pub enum Row {
     FpsScreens,
     Dim,
     SongSelectDim,
+    /// Height of the song list's thumbnails (ADR-0127).
+    SongSelectThumbnails,
     BeatmapSkins,
     BeatmapColours,
     BeatmapHitsounds,
@@ -265,7 +268,7 @@ pub enum Row {
 const _: () = assert!(Row::ALL.len() <= slam_ui::settings_screen::MAX_ROWS);
 
 impl Row {
-    pub const ALL: [Row; 66] = [
+    pub const ALL: [Row; 67] = [
         Row::MasterVolume,
         Row::MusicVolume,
         Row::MenuMusic,
@@ -314,6 +317,7 @@ impl Row {
         Row::FpsScreens,
         Row::Dim,
         Row::SongSelectDim,
+        Row::SongSelectThumbnails,
         Row::BeatmapSkins,
         Row::BeatmapColours,
         Row::BeatmapHitsounds,
@@ -404,6 +408,7 @@ impl Row {
             | Row::FpsScreens => 4,
             Row::Dim
             | Row::SongSelectDim
+            | Row::SongSelectThumbnails
             | Row::BeatmapSkins
             | Row::BeatmapColours
             | Row::BeatmapHitsounds
@@ -474,6 +479,7 @@ impl Row {
             Row::FpsScreens => "settings-frame-fps-screens",
             Row::Dim => "settings-gameplay-dim",
             Row::SongSelectDim => "settings-song-select-dim",
+            Row::SongSelectThumbnails => "settings-song-select-thumbnails",
             Row::BeatmapSkins => "settings-gameplay-beatmap-skins",
             Row::BeatmapColours => "settings-gameplay-beatmap-colours",
             Row::BeatmapHitsounds => "settings-gameplay-beatmap-hitsounds",
@@ -609,6 +615,16 @@ fn key_animation_key(animation: KeyOverlayAnimation) -> &'static str {
     match animation {
         KeyOverlayAnimation::Stable => "settings-option-key-overlay-animation-stable",
         KeyOverlayAnimation::Lazer => "settings-option-key-overlay-animation-lazer",
+    }
+}
+
+/// The Fluent key of a thumbnails option.
+fn thumbnails_key(thumbnails: Thumbnails) -> &'static str {
+    match thumbnails {
+        Thumbnails::Off => "settings-option-thumbnails-off",
+        Thumbnails::H64 => "settings-option-thumbnails-64",
+        Thumbnails::H128 => "settings-option-thumbnails-128",
+        Thumbnails::H256 => "settings-option-thumbnails-256",
     }
 }
 
@@ -882,6 +898,12 @@ impl Rows {
                     .iter()
                     .position(|c| *c == s.general.colour_scheme),
             ),
+            Row::SongSelectThumbnails => choice(
+                Thumbnails::ALL.len(),
+                Thumbnails::ALL
+                    .iter()
+                    .position(|t| *t == s.song_select.thumbnails),
+            ),
             Row::MenuBackground => choice(
                 MenuBackground::ALL.len(),
                 MenuBackground::ALL
@@ -1151,6 +1173,11 @@ impl Rows {
                     settings.general.colour_scheme = *scheme;
                 }
             }
+            (Row::SongSelectThumbnails, RowValue::Choice(i)) => {
+                if let Some(thumbnails) = Thumbnails::ALL.get(i) {
+                    settings.song_select.thumbnails = *thumbnails;
+                }
+            }
             (Row::MenuBackground, RowValue::Choice(i)) => {
                 if let Some(background) = MenuBackground::ALL.get(i) {
                     settings.general.menu_background = *background;
@@ -1380,6 +1407,10 @@ impl Rows {
                     Row::ColourScheme => ColourScheme::ALL
                         .iter()
                         .map(|scheme| text(scheme.label_key()))
+                        .collect(),
+                    Row::SongSelectThumbnails => Thumbnails::ALL
+                        .iter()
+                        .map(|t| text(thumbnails_key(*t)))
                         .collect(),
                     Row::MenuBackground => MenuBackground::ALL
                         .iter()
@@ -2221,6 +2252,39 @@ mod tests {
         let labels = rows.labels(&localizer);
         assert_eq!(labels.rows[index(Row::Skin)].label, "Скин");
         assert_eq!(labels.rows[index(Row::Skin)].options[0], "Стандартный");
+    }
+
+    #[test]
+    fn the_thumbnails_row_chooses_the_height_and_is_labelled_in_both_languages() {
+        let (rows, mut s) = rows();
+        let at = index(Row::SongSelectThumbnails);
+        assert_eq!(at, index(Row::SongSelectDim) + 1);
+        assert_eq!(s.song_select.thumbnails, Thumbnails::H128);
+        assert_eq!(
+            rows.specs(&s)[at].kind,
+            RowKind::Dropdown {
+                options: 4,
+                selected: 2
+            }
+        );
+        rows.apply(&mut s, at, RowValue::Choice(3));
+        assert_eq!(s.song_select.thumbnails, Thumbnails::H256);
+        rows.apply(&mut s, at, RowValue::Choice(0));
+        assert_eq!(s.song_select.thumbnails, Thumbnails::Off);
+        // Out of range changes nothing.
+        rows.apply(&mut s, at, RowValue::Choice(9));
+        assert_eq!(s.song_select.thumbnails, Thumbnails::Off);
+        let localizer = Localizer::builtin().unwrap();
+        localizer.set_language("en").unwrap();
+        let labels = rows.labels(&localizer);
+        assert_eq!(
+            labels.rows[at].options,
+            ["Off", "64 px", "128 px", "256 px"]
+        );
+        localizer.set_language("ru").unwrap();
+        let labels = rows.labels(&localizer);
+        assert_eq!(labels.rows[at].options[0], "Выкл.");
+        assert!(!labels.rows[at].label.is_empty());
     }
 
     #[test]
