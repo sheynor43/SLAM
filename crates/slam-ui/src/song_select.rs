@@ -1231,6 +1231,8 @@ impl SongSelect {
 }
 
 #[cfg(test)]
+mod layout_tests;
+#[cfg(test)]
 mod matching_tests;
 #[cfg(test)]
 mod query_tests;

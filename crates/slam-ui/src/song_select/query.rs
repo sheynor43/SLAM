@@ -63,6 +63,10 @@ pub enum MatchMode {
 pub struct TextFilter {
     start: u16,
     end: u16,
+    /// The term as read on the other keyboard layout (free-text terms only); empty if the
+    /// swap changes nothing.
+    alt_start: u16,
+    alt_end: u16,
     pub mode: MatchMode,
     /// Whether the filter keeps what does not match (`!=`).
     pub exclude: bool,
@@ -71,6 +75,17 @@ pub struct TextFilter {
 impl TextFilter {
     pub fn has_filter(&self) -> bool {
         self.end > self.start
+    }
+
+    /// The filter for the other-layout form of the term, if there is one.
+    fn alternative(&self) -> Option<TextFilter> {
+        (self.alt_end > self.alt_start).then_some(TextFilter {
+            start: self.alt_start,
+            end: self.alt_end,
+            alt_start: 0,
+            alt_end: 0,
+            ..*self
+        })
     }
 }
 
@@ -888,7 +903,23 @@ impl Criteria {
 
     fn push_term(&mut self, value: &str) {
         if self.term_count < MAX_TERMS {
-            let term = self.set_term(TextFilter::default(), value);
+            let mut term = self.set_term(TextFilter::default(), value);
+            // Free text only: keyword values (`ar>9`, `artist=...`) are never swapped. The
+            // lowercased term is swapped through a stack buffer into the text buffer; an
+            // alternative that does not fit whole is dropped.
+            let mut buf = [0u8; 2 * TEXT_BYTES / MAX_TERMS + 2 * QUERY_CAPACITY];
+            let original = &self.text[usize::from(term.start)..usize::from(term.end)];
+            let original = std::str::from_utf8(original).unwrap_or("");
+            let swapped = crate::layout_swap::swap_into(original, &mut buf);
+            if swapped != original && !swapped.is_empty() {
+                let at = self.text_len;
+                let (start, end) = self.push_lower(swapped);
+                if usize::from(end - start) == swapped.len() {
+                    (term.alt_start, term.alt_end) = (start, end);
+                } else {
+                    self.text_len = at;
+                }
+            }
             self.terms[self.term_count] = term;
             self.term_count += 1;
         }
@@ -922,10 +953,13 @@ impl Criteria {
         if self.term_count > 0 {
             // Ported from osu!lazer 2026.1005.0-lazer: osu.Game/Beatmaps/BeatmapInfoExtensions.cs (Match)
             // Ported from osu!lazer 2026.1005.0-lazer: osu.Game/Beatmaps/BeatmapMetadataInfoExtensions.cs (Match)
+            // A term also passes in its other-layout form (ADR-0137).
             matched = self.terms().iter().all(|term| {
-                Field::ALL
-                    .iter()
-                    .any(|&f| self.text_matches(term, field(f)))
+                let alt = term.alternative();
+                Field::ALL.iter().any(|&f| {
+                    self.text_matches(term, field(f))
+                        || alt.is_some_and(|alt| self.text_matches(&alt, field(f)))
+                })
             });
             // A number found nowhere in the text may be an online ID.
             if !matched && let Some(number) = self.search_number {

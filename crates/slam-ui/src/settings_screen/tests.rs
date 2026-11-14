@@ -1437,3 +1437,31 @@ fn a_position_is_restored_held_to_the_list_and_without_easing() {
     assert_eq!(s.scroll(), 0.0);
     settle(&mut s, &l);
 }
+
+fn searchable_ru() -> SettingsScreen {
+    let mut s = searchable();
+    s.set_search_texts(texts(&[
+        "общая громкость",
+        "громкость музыки музыка",
+        "подсветка",
+        "гамма",
+        "скин",
+    ]));
+    s
+}
+
+#[test]
+fn search_reads_the_other_keyboard_layout() {
+    let mut s = searchable_ru();
+    type_str(&mut s, "ufvvf");
+    assert_eq!(s.snapshot().hidden[..5], [true, true, true, false, true]);
+    let mut s = searchable_ru();
+    type_str(&mut s, "vepsrf");
+    assert_eq!(s.snapshot().hidden[..5], [true, false, true, true, true]);
+    // English labels found with the Russian layout; mixed with a plain word.
+    let mut s = searchable();
+    type_str(&mut s, "ьгышс");
+    assert_eq!(s.snapshot().hidden[..5], [true, false, true, true, true]);
+    type_str(&mut s, " vol");
+    assert_eq!(s.snapshot().hidden[..5], [true, false, true, true, true]);
+}
