@@ -1553,3 +1553,50 @@ fn transitions_default_to_simple_and_read_by_name() {
             .any(|w| w.starts_with("general.transitions"))
     );
 }
+
+#[test]
+fn the_thumbnails_setting_defaults_to_128_and_round_trips() {
+    use super::Thumbnails;
+    assert_eq!(Settings::default().song_select.thumbnails, Thumbnails::H128);
+    for (name, value, height) in [
+        ("off", Thumbnails::Off, None),
+        ("64", Thumbnails::H64, Some(64)),
+        ("128", Thumbnails::H128, Some(128)),
+        ("256", Thumbnails::H256, Some(256)),
+    ] {
+        let loaded = file::from_toml_str(&format!("[song_select]\nthumbnails = \"{name}\"\n"));
+        assert_eq!(
+            loaded.status,
+            LoadStatus::Ok,
+            "{name}: {:?}",
+            loaded.warnings
+        );
+        assert_eq!(loaded.settings.song_select.thumbnails, value);
+        assert_eq!(value.height(), height);
+        let mut settings = Settings::default();
+        settings.song_select.thumbnails = value;
+        let text = file::to_toml_string(&settings).unwrap();
+        assert!(text.contains(&format!("thumbnails = \"{name}\"")), "{text}");
+        assert_eq!(file::from_toml_str(&text).settings, settings);
+    }
+}
+
+#[test]
+fn a_bad_thumbnails_value_falls_back_with_a_warning() {
+    for text in ["\"huge\"", "128", "true"] {
+        let loaded = file::from_toml_str(&format!("[song_select]\nthumbnails = {text}\n"));
+        assert_eq!(loaded.status, LoadStatus::Recovered, "{text}");
+        assert_eq!(
+            loaded.settings.song_select.thumbnails,
+            Settings::default().song_select.thumbnails
+        );
+        assert!(
+            loaded
+                .warnings
+                .iter()
+                .any(|w| w.starts_with("song_select.thumbnails")),
+            "{text}: {:?}",
+            loaded.warnings
+        );
+    }
+}

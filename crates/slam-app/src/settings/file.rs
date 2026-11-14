@@ -16,8 +16,8 @@ use toml::{Table, Value};
 use super::keys;
 use super::model::{
     BindingEntry, Combo, DrawRate, FpsScreens, HitsoundDelay, InputSettings, KeyOverlayAnimation,
-    KeySlot, MenuBackground, MenuSounds, PauseMenuStyle, RendererChoice, Settings, Timing, Window,
-    corner_from_name, parse_size, window_mode_from_name,
+    KeySlot, MenuBackground, MenuSounds, PauseMenuStyle, RendererChoice, Settings, Thumbnails,
+    Timing, Window, corner_from_name, parse_size, window_mode_from_name,
 };
 
 /// The schema version this build writes.
@@ -625,6 +625,21 @@ fn from_table(mut table: Table) -> Loaded {
         &mut settings.song_select.background_dim,
         0.0..=1.0,
     );
+    let mut thumbnails: Option<String> = None;
+    cx.opt(
+        &mut song_select,
+        "song_select",
+        "thumbnails",
+        &mut thumbnails,
+    );
+    if let Some(name) = thumbnails {
+        match Thumbnails::from_name(&name) {
+            Some(thumbnails) => settings.song_select.thumbnails = thumbnails,
+            None => cx.warn(format!(
+                "song_select.thumbnails: unknown value \"{name}\", using the default"
+            )),
+        }
+    }
     cx.unknown(&song_select, "song_select");
 
     read_window(&mut cx, &mut table, &mut settings.window);

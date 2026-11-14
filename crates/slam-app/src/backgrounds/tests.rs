@@ -296,6 +296,7 @@ fn loader() -> (
         replies: replies_tx,
         unsent: None,
         releases: Vec::new(),
+        thumbnails: None,
     };
     (loader, commands, replies)
 }

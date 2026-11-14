@@ -17,7 +17,8 @@ pub use model::{
     Audio, BINDING_SLOTS, BindingEntry, Combo, DrawRate, FpsScreens, Frame, Gameplay,
     HitsoundDelay, Hotkeys, HudSettings, InputSettings, KeyOverlayAnimation, KeySlot,
     MenuBackground, MenuSounds, Mods, Paths, PauseMenuStyle, RendererChoice,
-    STABLE_HITSOUND_DELAY_MS, Settings, SkinSettings, Timing, corner_from_name, corner_name,
+    STABLE_HITSOUND_DELAY_MS, Settings, SkinSettings, Thumbnails, Timing, corner_from_name,
+    corner_name,
 };
 
 /// File name of the settings file inside the config directory.

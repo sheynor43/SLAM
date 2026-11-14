@@ -59,6 +59,7 @@ use slam_ui::song_select::{
     SongSelect, SongSelectAction, SongSelectInput, SongSelectLayout, SongSelectSnapshot,
     SongSelectStatus, SongSelectView, TileDetail,
 };
+use slam_ui::song_select::{MAX_VISIBLE_ROWS, RowThumb, Thumbs};
 use slam_ui::theme::Theme;
 use slam_ui::widgets::DropdownView;
 
@@ -106,7 +107,7 @@ pub const USAGE: &str = "usage: slam-app [--songs DIR]\n\
 
 /// Textures of the draw thread: the white square, the glyph pages and the song select's
 /// backgrounds.
-const MAX_TEXTURES: usize = 16 + MAX_BACKGROUNDS as usize;
+const MAX_TEXTURES: usize = 16 + MAX_BACKGROUNDS as usize + crate::thumbnails::MAX_HANDLES as usize;
 /// Rectangles of one frame: the buttons or rows of up to two layers, the FPS counter's
 /// box, two backgrounds of each layer, the language curtain (ADR-0091) and the intro's
 /// black (ADR-0114).
@@ -252,6 +253,8 @@ pub struct ShellSnapshot {
     pub fps: FpsDisplay,
     /// The song select's background (ADR-0066).
     pub background: BackgroundTarget,
+    /// The thumbnails of the song list's rows (ADR-0127).
+    pub thumbnails: crate::thumbnails::ThumbSnapshot,
     /// Dim of the background, 0 ..= 1: the song select's (ADR-0098), or the theme's behind
     /// the main menu (ADR-0119).
     pub background_dim: f32,
@@ -375,6 +378,10 @@ pub struct ShellState {
     ),
     /// Asks for the song select's background; without a menu texture loader `None`.
     backgrounds: Option<BackgroundPicker>,
+    /// Asks for the song list's thumbnails; without a menu texture loader `None` (ADR-0127).
+    thumbnails: Option<crate::thumbnails::Thumbnails>,
+    /// The update tick's number, for the thumbnails' release.
+    thumb_seq: u32,
     /// Asks for the selected difficulty's statistics; without a library thread `None`.
     details: Option<DetailsPicker>,
     /// The startup intro until it is over; `None` when off (ADR-0114).
@@ -455,6 +462,8 @@ impl ShellState {
             ui_sounds: ui_sounds::UiSoundQueue::default(),
             ui_seen: (1, slam_ui::menu::MenuItem::ALL[0], None, false, 0),
             backgrounds: None,
+            thumbnails: None,
+            thumb_seq: 0,
             details: None,
             intro: None,
             intro_gate: Arc::new(AtomicBool::new(false)),
@@ -512,6 +521,37 @@ impl ShellState {
         self
     }
 
+    /// Asks for the thumbnails of the song list's rows in view and fills `out` with the
+    /// loaded ones (ADR-0127). Neither blocks nor allocates.
+    fn tick_thumbnails(&mut self, out: &mut crate::thumbnails::ThumbSnapshot) {
+        use crate::thumbnails::{MARGIN, WANTED};
+        let Some(thumbnails) = &mut self.thumbnails else {
+            *out = crate::thumbnails::ThumbSnapshot::default();
+            return;
+        };
+        self.thumb_seq = self.thumb_seq.wrapping_add(1);
+        let height = self
+            .editing
+            .as_ref()
+            .unwrap_or(&self.settings)
+            .song_select
+            .thumbnails
+            .height();
+        let first = self.song_select.first_row();
+        let mut wanted = [None; WANTED];
+        for (i, slot) in wanted.iter_mut().enumerate() {
+            let flat = (first + i).checked_sub(MARGIN);
+            *slot = match flat.and_then(|flat| self.song_select.row_at_index(flat)) {
+                Some(slam_ui::song_select::Row::Set(set)) => Some(set),
+                _ => None,
+            };
+        }
+        let handles = thumbnails.tick(self.thumb_seq, height, &self.files, &wanted);
+        out.seq = self.thumb_seq;
+        out.enabled = height.is_some();
+        out.handles.copy_from_slice(&handles[MARGIN..]);
+    }
+
     /// The selected difficulty's details with the selected mods. Neither blocks nor
     /// allocates.
     fn beatmap_details(&mut self, now_ns: u64) -> Option<BeatmapDetails> {
@@ -557,6 +597,12 @@ impl ShellState {
     /// A shell whose song select shows the selected beatmap's background (ADR-0066).
     pub fn with_backgrounds(mut self, backgrounds: BackgroundPicker) -> ShellState {
         self.backgrounds = Some(backgrounds);
+        self
+    }
+
+    /// A shell whose song list shows thumbnails (ADR-0127).
+    pub fn with_thumbnails(mut self, thumbnails: crate::thumbnails::Thumbnails) -> ShellState {
+        self.thumbnails = Some(thumbnails);
         self
     }
 
@@ -1742,6 +1788,7 @@ impl ShellState {
             snapshot.background = backgrounds.tick_source(now_ns, source);
         }
         snapshot.band = self.stack.band(now_ns);
+        self.tick_thumbnails(&mut snapshot.thumbnails);
         let top: *const AppScreen = self.stack.top();
         for (slot, layer) in snapshot.layers.iter_mut().zip(self.stack.layers(now_ns)) {
             *slot = layer.and_then(|(screen, pose)| {
@@ -3267,6 +3314,8 @@ struct View<B: render::Backend> {
     swap: LanguageSwap<Box<language::InterfaceViews>>,
     /// The menu's texture loader and the song select's background (ADR-0066).
     backgrounds: Option<(TextureUploads, BackgroundFade)>,
+    /// Tells the update thread which snapshot was drawn (ADR-0127).
+    thumb_shown: Option<crate::thumbnails::ThumbShown>,
     _quit: crate::bench::QuitOnDrop,
 }
 
@@ -3439,6 +3488,9 @@ impl<B: render::Backend> Draw<ShellSnapshot> for View<B> {
         });
         self.glyphs.process(&mut r.device, &mut r.textures);
         // On every screen: releases queued during a play would otherwise fill the queue.
+        if let Some(shown) = &self.thumb_shown {
+            shown.set(snapshot.thumbnails.seq);
+        }
         if let Some((uploads, fade)) = &mut self.backgrounds {
             uploads.process(&mut r.device, &mut r.textures);
             fade.set_dim(snapshot.background_dim);
@@ -3505,6 +3557,17 @@ impl<B: render::Backend> Draw<ShellSnapshot> for View<B> {
             .set_title_hidden(snapshot.intro.is_some_and(|i| i.hides_menu_title()));
         // Where each layer's sprites end: layers are drawn one after another, shapes then
         // text, so a screen coming in covers the text of the one leaving.
+        // The song list's thumbnails that are uploaded (ADR-0127).
+        let mut thumb_rows: [Option<RowThumb>; MAX_VISIBLE_ROWS] = [None; MAX_VISIBLE_ROWS];
+        if let Some((uploads, _)) = &self.backgrounds {
+            for (slot, handle) in thumb_rows.iter_mut().zip(snapshot.thumbnails.handles) {
+                if let Some(handle) = handle
+                    && let TextureState::Ready(region) = uploads.get(handle)
+                {
+                    *slot = Some(RowThumb { handle, region });
+                }
+            }
+        }
         // The screens' layers and the settings panel's.
         let mut ends = [(0_u32, 0_u32, false); MAX_LAYERS + 1];
         let mut layers = 0;
@@ -3568,6 +3631,11 @@ impl<B: render::Backend> Draw<ShellSnapshot> for View<B> {
                         song_select,
                         layer.pose,
                         r.white,
+                        Thumbs {
+                            enabled: snapshot.thumbnails.enabled,
+                            rows: &thumb_rows,
+                            now_ns: info.wait.woke_ns,
+                        },
                     )
                 }
                 ScreenView::Results(results) => self.results.push(
@@ -4229,6 +4297,9 @@ fn run_with<B: render::Backend>(
         },
         None => (None, None),
     };
+    // The thumbnail thread is joined when `run` returns, after the engine (ADR-0127).
+    let mut thumb_worker = None;
+    let mut thumb_shown = None;
     // The library thread is joined when `run` returns, after the engine.
     let (skin_views, _library, backgrounds) = {
         let scanning_localizer = Arc::clone(&localizer);
@@ -4282,15 +4353,33 @@ fn run_with<B: render::Backend>(
             },
         };
         // Without the menu's texture loader the song select shows the theme's background.
-        let (loader, fade) = match texture_loader(&TextureLoaderConfig {
-            max_textures: MAX_BACKGROUNDS,
-            request_capacity: MAX_BACKGROUNDS as usize,
-            job_capacity: 4,
+        let loader_config = TextureLoaderConfig {
+            max_textures: MAX_BACKGROUNDS + crate::thumbnails::MAX_HANDLES,
+            request_capacity: 128,
+            job_capacity: 8,
             ..TextureLoaderConfig::new(limits)
-        }) {
+        };
+        let (loader, fade) = match texture_loader(&loader_config) {
             Ok((requests, uploads)) => {
                 let (picker, loader, fade) = crate::backgrounds::link(requests);
                 state = state.with_backgrounds(picker);
+                let cache = Dirs::detect().map(|dirs| dirs.cache());
+                let loader = match crate::thumbnails::link(
+                    cache,
+                    theme.song_thumbnail_aspect,
+                    loader_config.image_limits(),
+                ) {
+                    Ok((thumbnails, bridge, worker, shown)) => {
+                        state = state.with_thumbnails(thumbnails);
+                        thumb_worker = Some(worker);
+                        thumb_shown = Some(shown);
+                        loader.with_thumbnails(bridge)
+                    }
+                    Err(e) => {
+                        tracing::warn!("thumbnails: cannot start the thread: {e}");
+                        loader
+                    }
+                };
                 (Some(loader), Some((uploads, fade)))
             }
             Err(e) => {
@@ -4524,6 +4613,7 @@ fn run_with<B: render::Backend>(
         languages: language_views,
         swap: LanguageSwap::default(),
         backgrounds,
+        thumb_shown,
         _quit: crate::bench::QuitOnDrop(window.quit_handle()),
     };
     let (mut sink, source) = event_ring(1024);
@@ -4587,6 +4677,8 @@ fn run_with<B: render::Backend>(
         }
     }
     drop(output_thread);
+    // After the engine: the update thread no longer asks it for anything.
+    drop(thumb_worker);
     // A place the window was given just before closing waits no longer.
     if shell.window_save_at.take().is_some() {
         shell.state.save_settings();

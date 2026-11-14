@@ -11,8 +11,10 @@ use std::sync::Arc;
 
 use slam_render::Color;
 use slam_render::atlas::AtlasRegion;
-use slam_render::shape::ShapeBatch;
+use slam_render::atlas::UvRect;
+use slam_render::shape::{Shape, ShapeBatch};
 use slam_render::sprite::SpriteBatch;
+use slam_render::upload::TextureHandle;
 use slam_text::{FontRegistry, Glyph, GlyphCache, GlyphKey, push_layout};
 
 use super::info_panel::InfoPanel;
@@ -20,8 +22,8 @@ use super::mod_select::{
     CustomisationState, MAX_COLUMNS, MAX_SETTING_ROWS, SettingRowKind, TileDetail, TileDetails,
 };
 use super::{
-    ModColumns, ModSelectSnapshot, Row, SearchQuery, SongList, SongSelectLayout,
-    SongSelectSnapshot, SongSelectStatus, can_choose_folder,
+    MAX_VISIBLE_ROWS, ModColumns, ModSelectSnapshot, Row, SearchQuery, SongList, SongSelectLayout,
+    SongSelectSnapshot, SongSelectStatus, Thumbs, can_choose_folder,
 };
 use crate::menu::Rect;
 use crate::menu::view::{Frame, Line, Typesetter};
@@ -38,6 +40,10 @@ pub(super) const TEXT_CAPACITY: usize = 256;
 /// How much of its colour a dimmed element keeps: the mod tiles under the expanded settings
 /// panel, an inactive panel header.
 const DIMMED: f32 = 0.35;
+/// Thumbnails whose fade-in start is remembered: the memory cache's size (ADR-0127).
+pub(crate) const FADES: usize = 64;
+/// How much of the accent a thumbnail's placeholder shows.
+const PLACEHOLDER_ALPHA: f32 = 0.25;
 /// What the settings values are made of; asked for up front.
 const VALUE_CHARS: &str = "0123456789.-x";
 
@@ -167,6 +173,11 @@ pub struct SongSelectView {
     ellipsis: [f32; 2],
     /// The statistics and local scores on the left.
     info: InfoPanel,
+    /// When each thumbnail seen was first drawn; replaced round-robin.
+    fades: [Option<(TextureHandle, u64)>; FADES],
+    fade_next: usize,
+    /// The thumbnails were on at the last frame: the row texts are cut for it.
+    thumbs_on: bool,
 }
 
 impl std::fmt::Debug for SongSelectView {
@@ -174,6 +185,65 @@ impl std::fmt::Debug for SongSelectView {
         f.debug_struct("SongSelectView")
             .field("slots", &self.slots.len())
             .finish_non_exhaustive()
+    }
+}
+
+/// Where a set row's thumbnail goes, relative to the row (ADR-0127).
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub(crate) struct ThumbGeometry {
+    /// Gap between the row's edge and the thumbnail.
+    pub inset: f32,
+    pub width: f32,
+    pub height: f32,
+    /// How far the row's texts move right to make room.
+    pub text_shift: f32,
+}
+
+impl ThumbGeometry {
+    pub(crate) fn new(theme: &Theme, layout: &SongSelectLayout) -> ThumbGeometry {
+        let inset = theme.song_thumbnail_inset * layout.scale;
+        let row = layout.row_height - theme.song_row_gap * layout.scale;
+        let height = (row - 2.0 * inset).max(0.0);
+        let width = height * theme.song_thumbnail_aspect;
+        ThumbGeometry {
+            inset,
+            width,
+            height,
+            text_shift: inset + width,
+        }
+    }
+
+    /// The thumbnail's top and bottom for a row at `area`, cut to the list's edges; `None`
+    /// when nothing of it is inside.
+    pub(crate) fn span(&self, area: &Rect, top_edge: f32, bottom_edge: f32) -> Option<(f32, f32)> {
+        let top = area.y + self.inset;
+        let (top, bottom) = (top.max(top_edge), (top + self.height).min(bottom_edge));
+        (bottom > top).then_some((top, bottom))
+    }
+}
+
+/// How opaque a thumbnail is `fade_ms` after it was first drawn; remembers the first draw
+/// of up to [`FADES`] thumbnails, replacing the oldest. Allocation-free.
+pub(crate) fn fade_alpha(
+    fades: &mut [Option<(TextureHandle, u64)>; FADES],
+    next: &mut usize,
+    handle: TextureHandle,
+    now_ns: u64,
+    fade_ms: f32,
+) -> f32 {
+    let start = match fades.iter().flatten().find(|(h, _)| *h == handle) {
+        Some((_, start)) => *start,
+        None => {
+            fades[*next] = Some((handle, now_ns));
+            *next = (*next + 1) % FADES;
+            now_ns
+        }
+    };
+    let elapsed_ms = now_ns.saturating_sub(start) as f32 / 1.0e6;
+    if fade_ms <= 0.0 {
+        1.0
+    } else {
+        (elapsed_ms / fade_ms).clamp(0.0, 1.0)
     }
 }
 
@@ -290,6 +360,9 @@ impl SongSelectView {
             slots: Vec::new(),
             ellipsis: [0.0; 2],
             info: InfoPanel::new(&labels.details),
+            fades: [None; FADES],
+            fade_next: 0,
+            thumbs_on: false,
             theme,
         };
         view.scanning.text.reserve(TEXT_CAPACITY);
@@ -424,6 +497,7 @@ impl SongSelectView {
         generation: u64,
         list: &SongList,
         row: Row,
+        text_shift: f32,
     ) -> bool {
         if slot.holds == Some((generation, row)) {
             return true;
@@ -436,7 +510,7 @@ impl SongSelectView {
         let Some(set_row) = list.sets.get(set) else {
             return false;
         };
-        let avail = (layout.list.width - indent - 2.0 * pad).max(0.0);
+        let avail = (layout.list.width - indent - 2.0 * pad - text_shift).max(0.0);
         slot.holds = None;
         slot.primary.text.clear();
         slot.secondary.text.clear();
@@ -486,11 +560,19 @@ impl SongSelectView {
         snapshot: &SongSelectSnapshot,
         pose: Pose,
         white: AtlasRegion,
+        thumbs: Thumbs<'_>,
     ) {
         let frame = Frame { width, height };
         if frame != self.frame {
             self.frame = frame;
             self.lay_out();
+        }
+        if thumbs.enabled != self.thumbs_on {
+            // The texts of the set rows are cut to another width.
+            self.thumbs_on = thumbs.enabled;
+            for slot in &mut self.slots {
+                slot.holds = None;
+            }
         }
         if matches!(snapshot.status, SongSelectStatus::Scanning { .. })
             && !Arc::ptr_eq(&self.scanning_seen, &snapshot.scanning_text)
@@ -833,6 +915,11 @@ impl SongSelectView {
                 );
             }
             let rows = snapshot.rows();
+            // Thumbnails are pushed after the rows: their shapes wait here.
+            let mut thumb_shapes: [Option<Shape>; 2 * MAX_VISIBLE_ROWS] =
+                [None; 2 * MAX_VISIBLE_ROWS];
+            let mut thumb_count = 0;
+            let thumb = ThumbGeometry::new(theme, layout);
             for index in layout.visible_rows(snapshot.shown_scroll, snapshot.row_count) {
                 let Some(row) = index
                     .checked_sub(snapshot.first_row)
@@ -843,6 +930,11 @@ impl SongSelectView {
                 };
                 let slot_count = self.slots.len();
                 let slot = &mut self.slots[index % slot_count];
+                let text_shift = if thumbs.enabled && matches!(row, Row::Set(_)) {
+                    thumb.text_shift
+                } else {
+                    0.0
+                };
                 if !Self::fill(
                     slot,
                     &mut self.type_setter,
@@ -852,6 +944,7 @@ impl SongSelectView {
                     snapshot.generation,
                     list,
                     row,
+                    text_shift,
                 ) {
                     continue;
                 }
@@ -905,7 +998,54 @@ impl SongSelectView {
                         fade: opacity,
                     },
                 );
-                let x = area.x + pad;
+                let x = area.x + pad + text_shift;
+                if thumbs.enabled
+                    && matches!(row, Row::Set(_))
+                    && let Some((top, bottom)) = thumb.span(&area, top_edge, bottom_edge)
+                {
+                    let (left_x, full_top) = (area.x + thumb.inset + shift, area.y + thumb.inset);
+                    let base = Shape {
+                        radius: theme.button_radius * scale,
+                        skew: theme.button_skew(),
+                        ..Shape::new(
+                            white.texture,
+                            white.uv,
+                            [left_x, top],
+                            [thumb.width, bottom - top],
+                            faded(theme.accent, PLACEHOLDER_ALPHA * opacity),
+                        )
+                    };
+                    thumb_shapes[thumb_count] = Some(base);
+                    thumb_count += 1;
+                    if let Some(image) = index
+                        .checked_sub(snapshot.first_row)
+                        .and_then(|i| thumbs.rows.get(i))
+                        .copied()
+                        .flatten()
+                    {
+                        let alpha = fade_alpha(
+                            &mut self.fades,
+                            &mut self.fade_next,
+                            image.handle,
+                            thumbs.now_ns,
+                            theme.song_thumbnail_fade_ms,
+                        );
+                        let uv = image.region.uv;
+                        let dv = uv.v1 - uv.v0;
+                        let cut = |at: f32| uv.v0 + (at - full_top) / thumb.height * dv;
+                        thumb_shapes[thumb_count] = Some(Shape {
+                            colour: faded(Color::rgb(1.0, 1.0, 1.0), alpha * opacity),
+                            texture: image.region.texture,
+                            uv: UvRect {
+                                v0: cut(top),
+                                v1: cut(bottom),
+                                ..uv
+                            },
+                            ..base
+                        });
+                        thumb_count += 1;
+                    }
+                }
                 if matches!(row, Row::Set(_)) {
                     let (top, bottom) = (
                         row_text.primary.layout.height(),
@@ -925,6 +1065,9 @@ impl SongSelectView {
                         left(&row_text.primary, x, centre, theme.text);
                     }
                 }
+            }
+            for shape in thumb_shapes[..thumb_count].iter().flatten() {
+                shapes.push_shape(shape);
             }
         }
         // The refused play's reason stands out from the hints it replaces.

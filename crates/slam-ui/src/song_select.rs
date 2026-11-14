@@ -33,6 +33,34 @@ pub use mod_select::{
 };
 pub use view::{DetailLabels, SongSelectLabels, SongSelectView};
 
+/// A loaded thumbnail of a set row, as the draw side resolved it (ADR-0127).
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct RowThumb {
+    /// Tells thumbnails apart for the fade-in.
+    pub handle: slam_render::upload::TextureHandle,
+    pub region: slam_render::atlas::AtlasRegion,
+}
+
+/// The thumbnails of the rows in view, for [`SongSelectView::push`].
+#[derive(Clone, Copy, Debug)]
+pub struct Thumbs<'a> {
+    /// Whether the rows reserve room for thumbnails: when not, the old layout.
+    pub enabled: bool,
+    /// By snapshot row (`SongSelectSnapshot::rows`); `None` where not loaded (yet).
+    pub rows: &'a [Option<RowThumb>],
+    /// The frame's time, for the fade-in.
+    pub now_ns: u64,
+}
+
+impl Thumbs<'_> {
+    /// No thumbnails: rows as they were before ADR-0127.
+    pub const OFF: Thumbs<'static> = Thumbs {
+        enabled: false,
+        rows: &[],
+        now_ns: 0,
+    };
+}
+
 /// The sets to show, built by the application from the library. Immutable once built;
 /// shared as `Arc<SongList>` and replaced wholesale when the library changes.
 #[derive(Clone, Debug, Default, PartialEq)]
@@ -650,6 +678,18 @@ impl SongSelect {
         &self.filter
     }
 
+    /// The flat index of the first row of the snapshot: the first one the shown scroll
+    /// touches.
+    pub fn first_row(&self) -> usize {
+        let row_count = self.filter.row_count(self.set);
+        (self.shown.max(0.0).floor() as usize).min(row_count)
+    }
+
+    /// The row at flat index `index` of the filtered column (ADR-0127: the rows around the view).
+    pub fn row_at_index(&self, index: usize) -> Option<Row> {
+        self.filter.row(self.set, index)
+    }
+
     /// The selected `(set, difficulty)` as indices into the list, if a set is visible.
     pub fn selected(&self) -> Option<(usize, usize)> {
         let set = self.filter.set_index(self.set)?;
@@ -759,7 +799,7 @@ impl SongSelect {
 
     pub fn snapshot(&self) -> SongSelectSnapshot {
         let row_count = self.filter.row_count(self.set);
-        let first_row = (self.shown.max(0.0).floor() as usize).min(row_count);
+        let first_row = self.first_row();
         // Every slot `rows` returns is filled, however many rows the view shows.
         let mut rows = [Row::Set(0); MAX_VISIBLE_ROWS];
         for (slot, index) in rows.iter_mut().zip(first_row..row_count) {

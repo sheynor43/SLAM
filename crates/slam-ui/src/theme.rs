@@ -148,6 +148,12 @@ pub struct Theme {
     pub song_indent: f32,
     /// Padding between a row's edge and its text.
     pub song_text_pad: f32,
+    /// Width over height of a song row's thumbnail (ADR-0127).
+    pub song_thumbnail_aspect: f32,
+    /// Gap between a row's edge and its thumbnail.
+    pub song_thumbnail_inset: f32,
+    /// How long a thumbnail fades in, in milliseconds.
+    pub song_thumbnail_fade_ms: f32,
     /// Size of the artist and title, and of version texts.
     pub song_title_size: f32,
     /// Size of the creator and of the hint.
@@ -354,6 +360,9 @@ impl Theme {
             song_row_gap: 4.0,
             song_indent: 32.0,
             song_text_pad: 16.0,
+            song_thumbnail_aspect: 1.6,
+            song_thumbnail_inset: 3.0,
+            song_thumbnail_fade_ms: 200.0,
             song_title_size: 20.0,
             song_detail_size: 14.0,
             song_header_height: 36.0,

@@ -12,9 +12,9 @@ use slam_testkit::assert_no_alloc;
 use slam_text::{FontRegistry, GlyphAtlasConfig, glyph_atlas};
 use slam_ui::screen::Pose;
 use slam_ui::song_select::{
-    DifficultyRow, ModColumns, QUERY_CAPACITY, SearchSource, SetRow, SettingRow, SettingRowKind,
-    SongFilter, SongList, SongSelect, SongSelectInput, SongSelectLabels, SongSelectLayout,
-    SongSelectStatus, SongSelectView,
+    DifficultyRow, MAX_VISIBLE_ROWS, ModColumns, QUERY_CAPACITY, RowThumb, SearchSource, SetRow,
+    SettingRow, SettingRowKind, SongFilter, SongList, SongSelect, SongSelectInput,
+    SongSelectLabels, SongSelectLayout, SongSelectStatus, SongSelectView, Thumbs,
 };
 use slam_ui::theme::Theme;
 
@@ -148,6 +148,9 @@ struct Rig {
     glyphs: slam_text::GlyphCache,
     shapes: ShapeBatch,
     text: SpriteBatch,
+    thumbs: bool,
+    rows: [Option<RowThumb>; MAX_VISIBLE_ROWS],
+    now_ns: u64,
 }
 
 impl Rig {
@@ -159,6 +162,9 @@ impl Rig {
             glyphs,
             shapes: ShapeBatch::with_capacity(256),
             text: SpriteBatch::with_capacity(8192),
+            thumbs: false,
+            rows: [None; MAX_VISIBLE_ROWS],
+            now_ns: 0,
         }
     }
 
@@ -179,6 +185,11 @@ impl Rig {
             snapshot,
             pose,
             white(),
+            Thumbs {
+                enabled: self.thumbs,
+                rows: &self.rows,
+                now_ns: self.now_ns,
+            },
         );
     }
 }
@@ -666,4 +677,50 @@ fn switching_to_the_no_audio_message_does_not_allocate() {
             rig.frame(&refused);
         }
     });
+}
+
+/// Handles of a texture loader: distinct, whatever the bytes.
+fn thumbnail_rows() -> [Option<RowThumb>; MAX_VISIBLE_ROWS] {
+    use slam_render::upload::{TextureKind, TextureLoaderConfig, texture_loader};
+    let (mut requests, _uploads) = texture_loader(&TextureLoaderConfig::new(LIMITS)).unwrap();
+    std::array::from_fn(|i| {
+        // Every other row has not arrived yet.
+        (i % 2 == 0).then(|| RowThumb {
+            handle: requests.load(Vec::new(), TextureKind::Standalone).unwrap(),
+            region: AtlasRegion {
+                texture: TextureId(3),
+                origin: Origin::new(0, 0),
+                size: Extent::new(8, 8),
+                uv: UvRect::FULL,
+            },
+        })
+    })
+}
+
+#[test]
+fn thumbnails_do_not_allocate_once_warm_and_add_shapes() {
+    let mut rig = Rig::new();
+    rig.thumbs = true;
+    rig.rows = thumbnail_rows();
+    let mut screen = SongSelect::new();
+    put(&mut screen, list_of(200));
+    screen.set_status(SongSelectStatus::Ready);
+    let layout = SongSelectLayout::new(1280.0, 720.0, &Theme::default());
+    let pass = |rig: &mut Rig, screen: &mut SongSelect| {
+        screen.input(SongSelectInput::Home, &layout);
+        for i in 0..400 {
+            screen.input(SongSelectInput::Scroll { lines: 0.5 }, &layout);
+            rig.now_ns = i * 8_000_000;
+            rig.frame(&screen.snapshot());
+        }
+    };
+    pass(&mut rig, &mut screen);
+    slam_testkit::assert_no_alloc(|| pass(&mut rig, &mut screen));
+    // Placeholders and images: more shapes than without thumbnails.
+    let snapshot = screen.snapshot();
+    rig.frame(&snapshot);
+    let with = rig.shapes.len();
+    rig.thumbs = false;
+    rig.frame(&snapshot);
+    assert!(with > rig.shapes.len(), "{with} vs {}", rig.shapes.len());
 }
