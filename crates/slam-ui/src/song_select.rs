@@ -302,14 +302,17 @@ impl SongSelectLayout {
         let lean_reach = (hint.y + hint.height - header.y) / 2.0 * lean;
         // The two panels' backings are `margin / 2` larger on every side; keep them apart by
         // as much.
-        // As wide as lazer's wedge at most (ADR-0136).
+        // As wide as lazer's wedge at most (ADR-0136). The wedges lean by the buttons' skew
+        // from their bottom edge, so their top reaches right by their height's lean.
+        let info_height = (hint.y - margin / 2.0 - header.y).max(0.0);
+        let wedge_lean = (info_height + margin) * theme.button_skew().tan();
         let info = Rect {
             x: margin,
             y: header.y,
-            width: (x - margin - 3.0 * margin / 2.0 - lean_reach)
+            width: (x - margin - 3.0 * margin / 2.0 - lean_reach - wedge_lean)
                 .min(theme.song_info_width * scale)
                 .max(0.0),
-            height: (hint.y - margin / 2.0 - header.y).max(0.0),
+            height: info_height,
         };
         let search = Rect {
             x,

@@ -118,10 +118,33 @@ impl Rig {
             &layout,
             &self.theme,
             &snapshot,
+            1.0,
             &mut |_, _, _| rects += 1,
             &mut |line, _, _, _| texts += usize::from(!line.text.is_empty()),
         );
         (rects, texts)
+    }
+
+    /// The outlines of the wedges drawn at `opacity`.
+    fn outlines(&self, details: BeatmapDetails, opacity: f32) -> Vec<Color> {
+        let mut screen = self.screen.clone();
+        screen.set_details(Some(details));
+        let snapshot = screen.snapshot();
+        let layout = SongSelectLayout::new(1280.0, 768.0, &self.theme);
+        let mut found = Vec::new();
+        self.panel.push(
+            &layout,
+            &self.theme,
+            &snapshot,
+            opacity,
+            &mut |_, _, look| {
+                if let Look::Wedge { outline, .. } = look {
+                    found.push(outline);
+                }
+            },
+            &mut |_, _, _, _| {},
+        );
+        found
     }
 }
 
@@ -230,6 +253,17 @@ fn the_panel_fits_and_keeps_clear_of_the_list_at_common_sizes() {
             assert!(layout.list.y + layout.list.height <= layout.hint.y, "{tag}");
             let parts = InfoLayout::new(&info, &theme, layout.scale);
             let bottom = info.y + info.height;
+            // The two wedges keep apart (ADR-0136).
+            assert!(
+                parts.counts.y + parts.counts.height + inset < parts.scores_title.y - inset,
+                "{tag}"
+            );
+            // Leaning from the bottom, the wedges' top right corner stays clear of the list.
+            let lean = (info.height + 2.0 * inset) * theme.button_skew().tan();
+            assert!(
+                info.x + info.width + inset + lean <= layout.header.x - inset + 0.5,
+                "{tag}"
+            );
             // At the largest scale the panel is shorter than its parts; every part shown
             // still lies inside, and the statistics fit at the others.
             if menu_scale <= 1.0 {
@@ -343,5 +377,21 @@ fn difficulty_values_keep_two_decimals_at_most() {
         let mut s = String::new();
         push_difficulty(&mut s, value);
         assert_eq!(s, text, "{value}");
+    }
+}
+
+#[test]
+fn the_wedge_outline_fades_with_the_screen() {
+    let rig = Rig::new();
+    let shown = details(Some(LocalScores::default()));
+    let full = rig.outlines(shown, 1.0);
+    let leaving = rig.outlines(shown, 0.25);
+    assert_eq!(full.len(), leaving.len());
+    assert!(
+        full[0].a > 0.0,
+        "the selected difficulty's wedge is outlined"
+    );
+    for (a, b) in full.iter().zip(&leaving) {
+        assert!((b.a - a.a * 0.25).abs() < 1e-6, "{a:?} {b:?}");
     }
 }

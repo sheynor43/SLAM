@@ -14,7 +14,7 @@ use super::{
 };
 use crate::menu::Rect;
 use crate::menu::view::{Line, Typesetter};
-use crate::theme::Theme;
+use crate::theme::{Theme, faded};
 use crate::widgets::Look;
 
 /// What the panel's values are made of; asked for up front.
@@ -99,7 +99,9 @@ impl InfoLayout {
         y.set(y.get() + gap);
         let stats = next(detail * 1.8);
         let counts = next(detail * 1.8);
-        y.set(y.get() + gap);
+        // The scores sit on their own wedge (ADR-0136): both wedges reach `margin / 2` past
+        // their content, so a margin more keeps them `gap` apart.
+        y.set(y.get() + theme.song_margin * scale + gap);
         let scores_title = next(detail * 2.0);
         let pitch = theme.song_score_row_height * scale;
         let row_gap = theme.song_row_gap * scale;
@@ -421,7 +423,8 @@ impl InfoPanel {
         }
     }
 
-    /// Draws the panel. `rect` fills, `left` draws a line left-aligned at `(x, centre_y)`.
+    /// Draws the panel at the layer's `opacity`. `rect` fills (fading the colour by the
+    /// opacity), `left` draws a line left-aligned at `(x, centre_y)`.
     /// Two wedges after lazer's (ADR-0136): the difficulty's, outlined in its star colour,
     /// and the local scores' below it; each leans by the buttons' skew, and so does all on it.
     pub(super) fn push(
@@ -429,6 +432,7 @@ impl InfoPanel {
         layout: &SongSelectLayout,
         theme: &Theme,
         snapshot: &SongSelectSnapshot,
+        opacity: f32,
         rect: &mut impl FnMut(&Rect, Color, Look),
         left: &mut impl FnMut(&Line, f32, f32, Color),
     ) {
@@ -444,6 +448,9 @@ impl InfoPanel {
             },
             (Some(_), stars) => crate::star_colour::glow_for(stars, theme.accent),
         };
+        // `rect` fades the fill with the layer; the outline is the look's, faded here, so it
+        // leaves with the screen.
+        let wedge_outline = faded(outline, opacity);
         // The difficulty's wedge, down to the counts.
         let wedge = Rect {
             x: layout.info.x - inset,
@@ -451,7 +458,10 @@ impl InfoPanel {
             width: layout.info.width + 2.0 * inset,
             height: parts.counts.y + parts.counts.height - layout.info.y + 2.0 * inset,
         };
-        let wedge_look = Look::Wedge { lean: tan, outline };
+        let wedge_look = Look::Wedge {
+            lean: tan,
+            outline: wedge_outline,
+        };
         // The scores' wedge, down to the last row shown.
         let shown = snapshot
             .details

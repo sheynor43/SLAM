@@ -879,7 +879,7 @@ impl SongSelectView {
         }
         // The selected difficulty's statistics and local scores, on the left.
         self.info
-            .push(layout, theme, snapshot, &mut rect, &mut left);
+            .push(layout, theme, snapshot, opacity, &mut rect, &mut left);
         // The search line.
         let search = leaned(&layout.search);
         rect(&search, theme.song_search_fill, Look::Round);
