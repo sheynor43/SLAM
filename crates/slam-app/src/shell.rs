@@ -10,7 +10,8 @@ use std::time::{Duration, Instant, SystemTime};
 
 use slam_audio::{
     AudioPosition, Backend, MixerConfig, MixerHandle, MusicConfig, MusicEvent, MusicPlayer,
-    MusicPosition, Sample, StreamConfig, TrackSource, VoiceGroup, VoiceId, VoiceParams,
+    MusicPosition, Sample, StreamConfig, StreamCounters, TrackSource, VoiceGroup, VoiceId,
+    VoiceParams,
 };
 use slam_engine::clock::now_ns;
 use slam_engine::{
@@ -72,7 +73,9 @@ use crate::backgrounds::{
 use crate::details::DetailsPicker;
 use crate::displays::{ListsLink, ShownViews};
 use crate::loader::{LoaderConfig, LoaderLink, PlayOptions, SceneTrash, Trash};
-use crate::play::fps::{FpsDisplay, FpsOverlay, FpsSource, MAX_FPS_GLYPHS};
+use crate::play::fps::{
+    AudioFeed, AudioMeter, AudioReading, FpsDisplay, FpsOverlay, FpsSource, MAX_FPS_GLYPHS,
+};
 use crate::play::pack_size;
 use crate::play::scene::{CHANNELS, PlayScene, PlaySettings, Prepared, SceneGpu};
 use crate::replays::{ReplayBeatmap, ReplayJob};
@@ -2139,6 +2142,22 @@ struct Audio {
     volumes: AppliedVolumes,
     /// Rate of the mixer, the tracks and the output (ADR-0102).
     sample_rate: u32,
+    /// The output's counters and buffer, for the FPS counter (ADR-0138).
+    counters: Arc<StreamCounters>,
+    buffer_frames: u32,
+}
+
+impl Audio {
+    /// The output's counters now, for the FPS counter. Relaxed loads only.
+    fn reading(&self) -> AudioReading {
+        let [a, b] = &self.previews;
+        AudioReading::of(
+            &self.counters,
+            &[self.player.stats(), a.stats(), b.stats()],
+            self.buffer_frames,
+            self.sample_rate,
+        )
+    }
 }
 
 /// How long a play's track may take to open.
@@ -2247,6 +2266,8 @@ impl Retiring {
 /// The update side of plays: loads them, runs the one on top, frees them via the loader.
 struct PlayHost {
     audio: Audio,
+    /// Feeds the FPS counter's audio figures (ADR-0138).
+    audio_feed: AudioFeed,
     /// The `slam-audio-output` thread, which owns the output (ADR-0089); `None` in tests
     /// and when it did not start.
     output: Option<OutputLink<Audio>>,
@@ -2462,6 +2483,8 @@ impl PlayHost {
     fn advance(&mut self, now_ns: u64, state: &mut ShellState) {
         self.end_game(now_ns, state);
         self.switch_output();
+        let live = !(self.switching || self.no_output);
+        self.audio_feed.follow(live.then(|| self.audio.reading()));
         if !self.no_output {
             state.set_no_audio(false);
         }
@@ -4251,6 +4274,8 @@ fn open_audio(
         mixer: mixer_handle,
         volumes: AppliedVolumes::new(volumes),
         sample_rate,
+        counters: Arc::clone(stream.counters()),
+        buffer_frames: stream.config().buffer_frames,
     };
     // Once the output is open: a failed open keeps the last backend that did.
     crate::feedback::set_audio(format!("{backend:?}"));
@@ -4699,9 +4724,12 @@ fn run_with<B: render::Backend>(
             (None, None, None, None)
         }
     };
+    // The FPS counter's audio figures, fed by the update thread across output switches.
+    let audio_meter = Arc::<AudioMeter>::default();
     let host = audio.map(|audio| {
         let audio_rate = audio.sample_rate;
         PlayHost {
+            audio_feed: AudioFeed::new(Arc::clone(&audio_meter)),
             audio,
             output,
             requested: settings.audio.clone(),
@@ -4820,7 +4848,9 @@ fn run_with<B: render::Backend>(
                 Arc::clone(&counters),
                 update_rate.clone(),
                 draw_rate.clone(),
-            ),
+            )
+            .with_input(Arc::clone(window.counters()))
+            .with_audio_meter(audio_meter),
             fps_view,
         ),
         languages: language_views,
