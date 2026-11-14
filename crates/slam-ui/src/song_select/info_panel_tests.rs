@@ -395,3 +395,35 @@ fn the_wedge_outline_fades_with_the_screen() {
         assert!((b.a - a.a * 0.25).abs() < 1e-6, "{a:?} {b:?}");
     }
 }
+
+#[test]
+fn the_wedges_run_off_the_left_edge_from_top_to_bottom() {
+    let rig = Rig::new();
+    let mut screen = rig.screen.clone();
+    screen.set_details(Some(details(Some(LocalScores::default()))));
+    let snapshot = screen.snapshot();
+    let layout = SongSelectLayout::new(1280.0, 768.0, &rig.theme);
+    let tan = rig.theme.button_skew().tan();
+    let mut lefts = Vec::new();
+    rig.panel.push(
+        &layout,
+        &rig.theme,
+        &snapshot,
+        1.0,
+        &mut |r, _, look| {
+            if let Look::Wedge { lean, .. } = look {
+                assert_eq!(lean, tan);
+                // The sheared left edge at the top and at the bottom.
+                let centre = r.x + r.width / 2.0;
+                let top = centre - r.width / 2.0 + r.height / 2.0 * lean;
+                let bottom = centre - r.width / 2.0 - r.height / 2.0 * lean;
+                lefts.push((top, bottom));
+            }
+        },
+        &mut |_, _, _, _| {},
+    );
+    assert_eq!(lefts.len(), 2);
+    for (top, bottom) in lefts {
+        assert!(top <= 0.0 && bottom <= 0.0, "{top} {bottom}");
+    }
+}

@@ -506,9 +506,20 @@ impl InfoPanel {
             left(line, x + lean_of(centre_y), centre_y, colour);
         };
         let (rect, left) = (&mut rect, &mut left);
-        rect(&wedge, theme.song_panel_fill, wedge_look);
+        // The wedges run off the window's left edge, as lazer's: only their right edge leans,
+        // and no gap opens at the top left (ADR-0136). Once leaned, the top left corner lies
+        // a corner radius past the edge.
+        let bleed = |r: &Rect| {
+            let x = -theme.wedge_radius * scale - lean_of(r.y);
+            Rect {
+                x,
+                width: r.x + r.width - x,
+                ..*r
+            }
+        };
+        rect(&bleed(&wedge), theme.song_panel_fill, wedge_look);
         if snapshot.details.is_some() {
-            rect(&board, theme.song_panel_fill, board_look);
+            rect(&bleed(&board), theme.song_panel_fill, board_look);
         }
         let centre = |r: &Rect| r.y + r.height / 2.0;
         left(&self.name, parts.name.x, centre(&parts.name), theme.text);
