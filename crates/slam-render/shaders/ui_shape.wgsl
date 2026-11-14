@@ -34,7 +34,7 @@ struct VertexOutput {
     @location(2) local: vec2<f32>,
     @location(3) half_size: vec2<f32>,
     // Flat: the packed effect word is an integer that interpolation would blur.
-    @location(4) @interpolate(flat) params: vec4<f32>,
+    @location(4) @interpolate(flat, either) params: vec4<f32>,
 }
 
 @vertex
@@ -75,8 +75,11 @@ fn triangle(p: vec2<f32>, r: f32) -> f32 {
 // small shape at a hashed spot, size and kind, fading towards the shape's top and bottom.
 // `strength` sets how many there are and how fast they rise; `seed` differs per shape.
 fn pattern(local: vec2<f32>, half_size: vec2<f32>, strength: f32, seed: f32, phase: f32) -> f32 {
-    let cell = max(half_size.y * 1.5, 12.0);
-    let rate = 1.5 + 6.0 * strength;
+    // Capped, so a huge panel does not get huge shapes.
+    let cell = clamp(half_size.y * 1.5, 12.0, 64.0);
+    // A multiple of 1/16: the drift wraps every 1024 cycles (`set_drift`), and 1024 times
+    // the rate is a whole number of cells, so the pattern does not jump at the wrap.
+    let rate = floor((1.5 + 6.0 * strength) * 16.0 + 0.5) / 16.0;
     let g = vec2<f32>((local.x + half_size.x) / cell, (local.y + half_size.y) / cell + phase * rate);
     let id = floor(g);
     let f = fract(g);
@@ -84,11 +87,14 @@ fn pattern(local: vec2<f32>, half_size: vec2<f32>, strength: f32, seed: f32, pha
     if (hash(key) > 0.18 + 0.3 * strength) {
         return 0.0;
     }
-    let centre = vec2<f32>(
-        0.3 + 0.4 * hash(key + vec3<f32>(0.0, 0.0, 1.0)),
-        0.3 + 0.4 * hash(key + vec3<f32>(0.0, 0.0, 2.0)),
-    );
     let radius = (0.10 + 0.16 * hash(key + vec3<f32>(0.0, 0.0, 3.0))) * cell;
+    // The centre keeps the whole shape (a triangle's corners are 1.25 radii out, plus a
+    // pixel of edge) inside the cell, which would clip it.
+    let margin = min((radius * 1.25 + 1.0) / cell, 0.5);
+    let centre = vec2<f32>(
+        margin + (1.0 - 2.0 * margin) * hash(key + vec3<f32>(0.0, 0.0, 1.0)),
+        margin + (1.0 - 2.0 * margin) * hash(key + vec3<f32>(0.0, 0.0, 2.0)),
+    );
     let p = (f - centre) * cell;
     var d = length(p) - radius;
     if (hash(key + vec3<f32>(0.0, 0.0, 4.0)) < 0.5) {
@@ -106,7 +112,7 @@ fn fs_main(
     @location(1) uv: vec2<f32>,
     @location(2) local: vec2<f32>,
     @location(3) half_size: vec2<f32>,
-    @location(4) @interpolate(flat) params: vec4<f32>,
+    @location(4) @interpolate(flat, either) params: vec4<f32>,
 ) -> @location(0) vec4<f32> {
     let radius = params.x;
     // Positive: an outline that wide; negative: a glow that wide outside the edge.

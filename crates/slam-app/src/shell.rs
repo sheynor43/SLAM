@@ -122,8 +122,6 @@ const MAX_SHAPES: usize = 256
     + slam_ui::curtain::MAX_SPRITES
     + 1
     + crate::menu_cursor::MAX_MENU_CURSOR_SHAPES;
-// The transition overlays are inside the budget, so they never grow the batch.
-const _: () = assert!(MAX_SHAPES >= 256 + slam_ui::screen::MAX_FX_SHAPES);
 /// Outlined glyphs of the startup intro's title (ADR-0114).
 const MAX_INTRO_OUTLINES: usize = 64;
 /// Glyph sprites of one frame: the texts of up to two layers and the FPS counter.

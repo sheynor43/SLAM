@@ -982,3 +982,48 @@ fn a_refreshed_list_keeps_the_scroll_and_the_hover() {
     put(&mut s, list(&sets));
     assert_eq!(s.snapshot().scroll, 0.0);
 }
+
+fn put_refresh(s: &mut SongSelect, list: Arc<SongList>) {
+    let filter = SongFilter::for_list(&list);
+    s.refresh_list(list, filter);
+}
+
+#[test]
+fn a_refresh_reordering_the_pressed_row_does_not_click_another() {
+    let mut s = SongSelect::new();
+    put(&mut s, keyed_list(&[(10, None), (11, None), (12, None)]));
+    press(&mut s, I::Down);
+    press(&mut s, I::Down);
+    assert_eq!(s.selected(), Some((0, 2)));
+    let l = layout();
+    // Row 0 is the set, rows 1 to 3 its difficulties: press the middle one (key 11).
+    let (x, y) = centre_of(&l, 2, 0.0);
+    assert_eq!(press(&mut s, I::PointerMove { x, y }), None);
+    assert_eq!(press(&mut s, I::PointerPress { x, y }), None);
+    // Stars arrive: the selected key 12 now sits where key 11 was.
+    put_refresh(
+        &mut s,
+        keyed_list(&[(10, Some(1.0)), (12, Some(2.0)), (11, Some(3.0))]),
+    );
+    s.tick(1, &l);
+    assert_eq!(s.selected(), Some((0, 1)));
+    assert!(s.snapshot().hovered.is_some());
+    // The row under the pointer is the selected one, not the pressed one: no play.
+    assert_eq!(press(&mut s, I::PointerRelease), None);
+    assert_eq!(s.selected(), Some((0, 1)));
+}
+
+#[test]
+fn a_refresh_keeps_a_pressed_row_that_stays_put() {
+    let mut s = SongSelect::new();
+    put(&mut s, keyed_list(&[(10, None), (11, None), (12, None)]));
+    let l = layout();
+    let (x, y) = centre_of(&l, 2, 0.0);
+    assert_eq!(press(&mut s, I::PointerPress { x, y }), None);
+    put_refresh(
+        &mut s,
+        keyed_list(&[(10, Some(1.0)), (11, Some(2.0)), (12, Some(3.0))]),
+    );
+    assert_eq!(press(&mut s, I::PointerRelease), None);
+    assert_eq!(s.selected(), Some((0, 1)));
+}

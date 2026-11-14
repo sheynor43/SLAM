@@ -54,7 +54,12 @@ const TEXT_SPECTRUM: [(f32, Color); 5] = [
 // Ported from osu!lazer 2026.1005.0-lazer: osu.Game/Graphics/OsuColour.cs (`Orange1`)
 const ORANGE: Color = hex(0xffd966);
 
+// Ported from osu-framework 2026.921.1:
+// osu.Framework/Extensions/Color4Extensions/Color4Extensions.cs (`ToLinear`)
 fn to_linear(c: f32) -> f32 {
+    if c == 1.0 {
+        return 1.0;
+    }
     if c <= 0.04045 {
         c / 12.92
     } else {
@@ -62,9 +67,14 @@ fn to_linear(c: f32) -> f32 {
     }
 }
 
+// Ported from osu-framework 2026.921.1:
+// osu.Framework/Extensions/Color4Extensions/Color4Extensions.cs (`ToSRGB`)
 fn to_srgb(c: f32) -> f32 {
-    if c <= 0.003_130_8 {
-        c * 12.92
+    if c == 1.0 {
+        return 1.0;
+    }
+    if c < 0.003_130_8 {
+        12.92 * c
     } else {
         1.055 * c.powf(1.0 / 2.4) - 0.055
     }
@@ -82,10 +92,16 @@ fn sample(gradient: &[(f32, Color)], point: f32) -> Color {
         if point >= end {
             continue;
         }
-        if from == to || point - start == 0.0 || end - start == 0.0 {
+        if from == to
+            || f64::from(point) - f64::from(start) == 0.0
+            || f64::from(end) - f64::from(start) == 0.0
+        {
             return from;
         }
-        let t = ((point - start) / (end - start)).clamp(0.0, 1.0);
+        // The fraction is a double in lazer, narrowed to a float after the division.
+        let t = (((f64::from(point) - f64::from(start)) / (f64::from(end) - f64::from(start)))
+            as f32)
+            .clamp(0.0, 1.0);
         let mix = |a: f32, b: f32| {
             let (a, b) = (to_linear(a), to_linear(b));
             to_srgb(a + t * (b - a))
@@ -95,9 +111,10 @@ fn sample(gradient: &[(f32, Color)], point: f32) -> Color {
     gradient[gradient.len() - 1].1
 }
 
-/// Rounds half away from zero to two decimals, as lazer rounds before sampling.
+/// Rounds half away from zero to two decimals in double precision, as lazer's
+/// `Math.Round(double, 2, MidpointRounding.AwayFromZero)` does before sampling.
 fn round_hundredths(stars: f32) -> f32 {
-    (f64::from(stars) * 100.0).round() as f32 / 100.0
+    ((f64::from(stars) * 100.0).round() / 100.0) as f32
 }
 
 /// The colour of `stars`.
@@ -190,6 +207,27 @@ mod tests {
         assert!((c.g - 1.0).abs() < 1e-5);
         // Rounded to hundredths first: 2.504 samples as 2.5.
         assert_eq!(for_stars(2.504), for_stars(2.5));
+    }
+
+    #[test]
+    fn the_conversions_keep_one_and_split_where_lazer_does() {
+        assert_eq!(to_linear(1.0), 1.0);
+        assert_eq!(to_srgb(1.0), 1.0);
+        // `<` below the sRGB threshold, so the threshold itself takes the power branch.
+        let edge = 0.003_130_8_f32;
+        assert_eq!(to_srgb(edge), 1.055 * edge.powf(1.0 / 2.4) - 0.055);
+        assert_eq!(to_srgb(edge * 0.5), 12.92 * edge * 0.5);
+        assert_eq!(to_linear(0.04045), 0.04045 / 12.92);
+    }
+
+    #[test]
+    fn rounding_is_done_in_double_precision() {
+        // f32 2.675 is 2.67499995...: below the midpoint in double precision.
+        assert_eq!(round_hundredths(2.675), 2.67);
+        assert_eq!(round_hundredths(2.504), 2.5);
+        assert_eq!(round_hundredths(2.5), 2.5);
+        assert_eq!(round_hundredths(0.5), 0.5);
+        assert_eq!(round_hundredths(0.0), 0.0);
     }
 
     #[test]

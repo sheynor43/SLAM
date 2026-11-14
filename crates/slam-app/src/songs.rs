@@ -331,7 +331,30 @@ pub fn spawn(
     details: Option<DetailsReader>,
     stars: Option<StarsConfig>,
 ) -> std::io::Result<(SongsLink, SkinViews, LibraryThread)> {
+    spawn_with(
+        root,
+        folders,
+        scanning_text,
+        backgrounds,
+        details,
+        stars,
+        false,
+    )
+}
+
+/// [`spawn`] with the play flag already set when `playing`: no rating is calculated
+/// before the first [`SongsLink::set_playing`].
+fn spawn_with(
+    root: Option<PathBuf>,
+    folders: Folders,
+    scanning_text: ScanningText,
+    backgrounds: Option<BackgroundLoader>,
+    details: Option<DetailsReader>,
+    stars: Option<StarsConfig>,
+    playing: bool,
+) -> std::io::Result<(SongsLink, SkinViews, LibraryThread)> {
     let focus = Arc::<StarFocus>::default();
+    focus.set_paused(playing);
     let (producer, link, commands, old_filters) = link_with_ends(Arc::clone(&focus));
     let paused = Arc::clone(&focus);
     let stars = match stars {
@@ -812,6 +835,7 @@ mod tests {
     use super::*;
     use slam_library::scan::DifficultyMetadata;
     use slam_ui::song_select::Field;
+    use std::sync::atomic::AtomicUsize;
 
     fn set(dir: &str, versions: &[&str]) -> BeatmapSetEntry {
         BeatmapSetEntry {
@@ -1361,7 +1385,10 @@ mod tests {
             "set",
             &[("Easy", "2"), ("Hard", "8"), ("Mid", "5")],
         );
-        let calculator: crate::stars::Calculator = Box::new(|path| {
+        let calls = Arc::new(AtomicUsize::new(0));
+        let counter = Arc::clone(&calls);
+        let calculator: crate::stars::Calculator = Box::new(move |path| {
+            counter.fetch_add(1, Ordering::Relaxed);
             // Backwards: the lower the OD, the higher the rating.
             Ok(match path.file_stem().and_then(|s| s.to_str()) {
                 Some("Easy") => 3.0,
@@ -1369,7 +1396,7 @@ mod tests {
                 _ => 1.0,
             })
         });
-        let (mut link, _views, _thread) = spawn(
+        let (mut link, _views, _thread) = spawn_with(
             Some(root.0.clone()),
             no_folders(),
             Box::new(|n| format!("{n} sets")),
@@ -1380,14 +1407,16 @@ mod tests {
                 calculator,
                 version: "test",
             }),
+            // A play is on before the library loads: no ratings, no republication.
+            true,
         )
         .unwrap();
-        // A play is on while the library loads: no ratings, no republication.
-        link.set_playing(true);
         let first = wait_for(&mut link, |p| p.status == SongSelectStatus::Ready);
         assert!(!first.refresh);
+        // Anything the worker would do during a play starts within milliseconds of the
+        // library being ready; look for a while after that.
         let start = Instant::now();
-        while start.elapsed() < Duration::from_millis(1500) {
+        while start.elapsed() < Duration::from_millis(500) {
             if let Some(p) = link.latest() {
                 assert!(
                     p.list.sets[0]
@@ -1397,6 +1426,7 @@ mod tests {
                     "ratings during a play"
                 );
             }
+            assert_eq!(calls.load(Ordering::Relaxed), 0, "rated during a play");
             std::thread::sleep(Duration::from_millis(10));
         }
         link.set_playing(false);

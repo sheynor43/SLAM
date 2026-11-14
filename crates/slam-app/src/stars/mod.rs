@@ -34,7 +34,9 @@ const SAVE_EVERY: usize = 256;
 /// Sets after the visible ones that are calculated before the rest.
 const FOCUS_MARGIN: usize = 4;
 
-/// Calculates the rating of a file.
+/// Calculates the rating of a file. It must have no shared mutable state (interior
+/// mutability, locks, caches): a panic is caught with `AssertUnwindSafe`, so a calculator
+/// left half-updated by one would be used again.
 pub type Calculator = Box<dyn Fn(&Path) -> io::Result<f32> + Send>;
 
 /// The calculator of the game: `rosu-pp` through [`slam_osu::stars`].
@@ -290,7 +292,11 @@ impl Worker {
                     if self.stop.load(Ordering::Relaxed) {
                         break;
                     }
-                    let value = self.calculate(path);
+                    // A transient failure is neither cached nor reported: a later run
+                    // asks again.
+                    let Some(value) = self.calculate(path) else {
+                        continue;
+                    };
                     if let Some(key) = key {
                         self.cache.insert(key, value);
                     }
@@ -304,15 +310,22 @@ impl Worker {
         stars
     }
 
-    /// The rating of `path`, or [`cache::NOT_COMPUTABLE`] when the calculator fails or
-    /// panics: such a file is remembered, not retried on every start.
-    fn calculate(&self, path: &Path) -> f32 {
+    /// The rating of `path`, or [`cache::NOT_COMPUTABLE`] when the file cannot be rated
+    /// (a parse failure, `InvalidData`, or a panic): such a file is remembered, not
+    /// retried on every start. `None` for any other I/O error (permissions, a sharing
+    /// violation, EIO), which may pass: nothing is cached.
+    fn calculate(&self, path: &Path) -> Option<f32> {
         match catch_unwind(AssertUnwindSafe(|| (self.calculator)(path))) {
-            Ok(Ok(value)) if value.is_finite() && value >= 0.0 => value,
-            Ok(_) => cache::NOT_COMPUTABLE,
+            Ok(Ok(value)) if value.is_finite() && value >= 0.0 => Some(value),
+            Ok(Ok(_)) => Some(cache::NOT_COMPUTABLE),
+            Ok(Err(e)) if e.kind() == io::ErrorKind::InvalidData => Some(cache::NOT_COMPUTABLE),
+            Ok(Err(e)) => {
+                tracing::debug!("stars: cannot rate {}: {e}", path.display());
+                None
+            }
             Err(_) => {
                 tracing::warn!("stars: the calculator panicked on {}", path.display());
-                cache::NOT_COMPUTABLE
+                Some(cache::NOT_COMPUTABLE)
             }
         }
     }

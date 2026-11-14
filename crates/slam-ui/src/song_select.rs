@@ -236,6 +236,14 @@ enum Pressed {
     ChooseFolder,
 }
 
+/// [`Pressed`] by keys instead of indices, which a replaced list shuffles.
+#[derive(Clone, Copy)]
+enum PressedKeys {
+    Set(u64),
+    Difficulty(u64, u64),
+    ChooseFolder,
+}
+
 /// Where the list, status line and hint are (a panel on the right of the window) and the
 /// beatmap's info panel (on the left). A pure function of the window size and theme,
 /// shared by hit testing (update) and drawing.
@@ -772,6 +780,7 @@ impl SongSelect {
             .and_then(|(set, _)| self.list.sets.get(set))
             .map(|s| s.key);
         let difficulty_key = self.selected_difficulty_key();
+        let pressed_keys = self.pressed_keys();
         let old = std::mem::replace(&mut self.filter, filter);
         self.list = list;
         self.filter.apply(&self.list, &self.query);
@@ -800,6 +809,7 @@ impl SongSelect {
         {
             self.difficulty = position;
         }
+        self.pressed = self.remap_pressed(pressed_keys);
         if keep_view {
             self.rehover = true;
             self.clamp_scroll();
@@ -809,6 +819,44 @@ impl SongSelect {
             self.ensure_visible();
         }
         old
+    }
+
+    /// The keys of the row being pressed, to find it again in a replaced list.
+    fn pressed_keys(&self) -> Option<PressedKeys> {
+        match self.pressed? {
+            Pressed::ChooseFolder => Some(PressedKeys::ChooseFolder),
+            Pressed::Row(Row::Set(set)) => Some(PressedKeys::Set(self.list.sets.get(set)?.key)),
+            Pressed::Row(Row::Difficulty { set, difficulty }) => {
+                let set = self.list.sets.get(set)?;
+                Some(PressedKeys::Difficulty(
+                    set.key,
+                    set.difficulties.get(difficulty)?.key,
+                ))
+            }
+        }
+    }
+
+    /// The pressed row in the (already replaced) list by its keys; `None` when it is gone
+    /// or has no key to find it by, so the release clicks nothing.
+    fn remap_pressed(&self, keys: Option<PressedKeys>) -> Option<Pressed> {
+        match keys? {
+            PressedKeys::ChooseFolder => self.pressed,
+            PressedKeys::Set(key) => {
+                let set = self.list.sets.iter().position(|s| s.key == key)?;
+                Some(Pressed::Row(Row::Set(set)))
+            }
+            PressedKeys::Difficulty(set_key, key) => {
+                if key == 0 {
+                    return None;
+                }
+                let set = self.list.sets.iter().position(|s| s.key == set_key)?;
+                let difficulty = self.list.sets[set]
+                    .difficulties
+                    .iter()
+                    .position(|d| d.key == key)?;
+                Some(Pressed::Row(Row::Difficulty { set, difficulty }))
+            }
+        }
     }
 
     /// Filters the list again after the query changed. The selection stays on its

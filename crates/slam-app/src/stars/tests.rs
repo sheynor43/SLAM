@@ -257,12 +257,62 @@ fn cancel_stops_the_run() {
             })
             .collect(),
     );
-    std::thread::sleep(Duration::from_millis(100));
+    let deadline = Instant::now() + Duration::from_secs(10);
+    while calls.load(Ordering::Relaxed) == 0 {
+        assert!(Instant::now() < deadline, "the run did not start");
+        std::thread::sleep(Duration::from_millis(1));
+    }
     link.cancel();
-    std::thread::sleep(Duration::from_millis(100));
-    let after = calls.load(Ordering::Relaxed);
-    assert!(after < 50);
-    std::thread::sleep(Duration::from_millis(200));
-    assert_eq!(calls.load(Ordering::Relaxed), after);
+    // The run settles: at most the call in flight finishes.
+    let mut last = usize::MAX;
+    let mut steady = 0;
+    while steady < 4 {
+        assert!(Instant::now() < deadline, "the run did not stop");
+        std::thread::sleep(Duration::from_millis(50));
+        let now = calls.load(Ordering::Relaxed);
+        steady = if now == last { steady + 1 } else { 0 };
+        last = now;
+    }
+    assert!(last < 50);
     assert!(!link.poll(|_, _| panic!("stale rating")));
+}
+
+#[test]
+fn transient_errors_are_not_cached_but_parse_failures_are() {
+    let tmp = Tmp::new("transient");
+    let busy = tmp.file("busy.osu");
+    let broken = tmp.file("broken.osu");
+    let good = tmp.file("good.osu");
+    let cache = tmp.0.join("stars.bin");
+    let calls = Arc::new(AtomicUsize::new(0));
+    let make = |calls: &Arc<AtomicUsize>| -> Calculator {
+        let calls = Arc::clone(calls);
+        Box::new(move |path| {
+            calls.fetch_add(1, Ordering::Relaxed);
+            if path.ends_with("busy.osu") {
+                Err(io::Error::from(io::ErrorKind::PermissionDenied))
+            } else if path.ends_with("broken.osu") {
+                Err(io::Error::from(io::ErrorKind::InvalidData))
+            } else {
+                Ok(3.0)
+            }
+        })
+    };
+    let sets = || {
+        vec![StarSet {
+            key: 1,
+            files: vec![busy.clone(), broken.clone(), good.clone()],
+        }]
+    };
+    let mut link =
+        StarsLink::spawn(Some(cache.clone()), make(&calls), "t", Arc::default()).unwrap();
+    link.start(sets());
+    assert_eq!(collect(&mut link, 1).len(), 1);
+    drop(link);
+    assert_eq!(calls.load(Ordering::Relaxed), 3);
+    // Only the busy file is asked again.
+    let mut link = StarsLink::spawn(Some(cache), make(&calls), "t", Arc::default()).unwrap();
+    link.start(sets());
+    assert_eq!(collect(&mut link, 1).len(), 1);
+    assert_eq!(calls.load(Ordering::Relaxed), 4);
 }
