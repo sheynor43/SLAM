@@ -8,6 +8,7 @@ use slam_engine::MAX_UPDATE_HZ;
 use slam_engine::limiter::MIN_HZ;
 use slam_input::VideoDriver;
 use slam_play::input::{Bindings, MAX_BINDINGS};
+use slam_ui::cursor::CursorStyle;
 use slam_ui::i18n::BUILTIN_LANGUAGES;
 use slam_ui::screen::TransitionStyle;
 use slam_ui::theme::{ColourScheme, UI_SCALE_RANGE};
@@ -251,6 +252,16 @@ fn from_table(mut table: Table) -> Loaded {
             Some(scheme) => settings.general.colour_scheme = scheme,
             None => cx.warn(format!(
                 "general.colour_scheme: unknown value \"{name}\", using the default"
+            )),
+        }
+    }
+    let mut menu_cursor: Option<String> = None;
+    cx.opt(&mut general, "general", "menu_cursor", &mut menu_cursor);
+    if let Some(name) = menu_cursor {
+        match CursorStyle::from_name(&name) {
+            Some(style) => settings.general.menu_cursor = style,
+            None => cx.warn(format!(
+                "general.menu_cursor: unknown value \"{name}\", using the default"
             )),
         }
     }
@@ -572,6 +583,16 @@ fn from_table(mut table: Table) -> Loaded {
         &mut settings.gameplay.auto_cursor_size,
         |_| Ok(()),
     );
+    let mut cursor_style: Option<String> = None;
+    cx.opt(&mut gameplay, "gameplay", "cursor_style", &mut cursor_style);
+    if let Some(name) = cursor_style {
+        match CursorStyle::from_name(&name) {
+            Some(style) => settings.gameplay.cursor_style = style,
+            None => cx.warn(format!(
+                "gameplay.cursor_style: unknown value \"{name}\", using the default"
+            )),
+        }
+    }
     let mut style: Option<String> = None;
     cx.opt(&mut gameplay, "gameplay", "pause_menu_style", &mut style);
     if let Some(name) = style {

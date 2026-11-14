@@ -9,6 +9,7 @@ use slam_input::{MouseButton, VideoDriver, WindowMode};
 use slam_osu::replay::Actions;
 use slam_play::input::{Binding, Bindings, Input, MAX_BINDINGS};
 use slam_play::{BackgroundSettings, FpsCorner};
+use slam_ui::cursor::CursorStyle;
 use slam_ui::screen::TransitionStyle;
 use slam_ui::theme::ColourScheme;
 
@@ -100,6 +101,8 @@ fn round_trip_non_default() {
     s.general.transitions = TransitionStyle::Fancy;
     s.gameplay.pause_menu_style = PauseMenuStyle::Stable;
     s.gameplay.pause_menu_scale = 1.25;
+    s.general.menu_cursor = CursorStyle::System;
+    s.gameplay.cursor_style = CursorStyle::Slam;
     s.audio.menu_sounds = MenuSounds::Off;
     s.hud.layout = "my-hud".into();
     s.input.bindings = Bindings::new(&[
@@ -1599,4 +1602,29 @@ fn a_bad_thumbnails_value_falls_back_with_a_warning() {
             loaded.warnings
         );
     }
+}
+
+#[test]
+fn the_cursor_styles_default_read_by_name_and_round_trip() {
+    let d = Settings::default();
+    assert_eq!(d.general.menu_cursor, CursorStyle::Slam);
+    assert_eq!(d.gameplay.cursor_style, CursorStyle::Skin);
+    let loaded = file::from_toml_str(
+        "[general]\nmenu_cursor = \"system\"\n[gameplay]\ncursor_style = \"slam\"\n",
+    );
+    assert_eq!(loaded.status, LoadStatus::Ok, "{:?}", loaded.warnings);
+    assert_eq!(loaded.settings.general.menu_cursor, CursorStyle::System);
+    assert_eq!(loaded.settings.gameplay.cursor_style, CursorStyle::Slam);
+    let text = file::to_toml_string(&loaded.settings).unwrap();
+    assert!(text.contains("menu_cursor = \"system\""), "{text}");
+    assert!(text.contains("cursor_style = \"slam\""), "{text}");
+    let bad =
+        file::from_toml_str("[general]\nmenu_cursor = \"big\"\n[gameplay]\ncursor_style = 3\n");
+    assert_eq!(bad.settings.general.menu_cursor, CursorStyle::Slam);
+    assert_eq!(bad.settings.gameplay.cursor_style, CursorStyle::Skin);
+    assert!(
+        bad.warnings
+            .iter()
+            .any(|w| w.starts_with("general.menu_cursor"))
+    );
 }

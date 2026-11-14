@@ -734,7 +734,6 @@ fn host(name: &str, with_track: bool) -> HostFixture {
         ui_sounds: ui_sounds::UiSoundPlayer::new(SAMPLE_RATE),
         loader,
         scenes: scene_tx,
-        os_cursor: CursorVisibility::default(),
         win_key: WinKeyBlock::default(),
         menu_shown: false,
         pending: Pending::Idle,

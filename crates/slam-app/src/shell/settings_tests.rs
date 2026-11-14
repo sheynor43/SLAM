@@ -189,6 +189,7 @@ pub(super) fn shell_with(link: crate::settings::saver::SaveLink) -> Shell {
         scale: slam_input::WindowScale::default(),
         pixels_per_point: 1.0,
         exited: Arc::new(AtomicBool::new(false)),
+        os_cursor: slam_input::CursorVisibility::default(),
         draw_rate: DrawRateControl::new(),
         rate_switch: DrawRateSwitch::new(LimiterMode::Hz(1000.0)),
         update_rate: AppliedUpdateRate::new(UpdateRateControl::new(), 1000.0),
@@ -1406,4 +1407,27 @@ fn the_snapshot_carries_the_song_select_dim() {
     s.editing.as_mut().unwrap().song_select.background_dim = 0.25;
     s.tick(t, &[], &mut snap);
     assert!((snap.background_dim - 0.25).abs() < 1e-6);
+}
+
+#[test]
+fn the_menu_cursor_style_hides_the_os_cursor_and_reaches_the_snapshot_live() {
+    use slam_ui::cursor::CursorStyle;
+    let (link, _taken) = crate::settings::saver::detached(1);
+    let mut shell = shell_with(link);
+    let info = slam_engine::TickInfo {
+        now_ns: LATER,
+        deadline_ns: LATER,
+        by_input: false,
+    };
+    let mut snap = ShellSnapshot::default();
+    for (style, hidden) in [
+        (CursorStyle::Slam, true),
+        (CursorStyle::Skin, true),
+        (CursorStyle::System, false),
+    ] {
+        shell.state.settings.general.menu_cursor = style;
+        slam_engine::Update::tick(&mut shell, &info, &[], &mut snap);
+        assert_eq!(snap.menu_cursor.style, style);
+        assert_eq!(shell.os_cursor.is_hidden(), hidden, "{style:?}");
+    }
 }

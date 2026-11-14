@@ -292,3 +292,9 @@ key-mod-shift = Shift+
 key-mod-alt = Alt+
 
 hud-layout-migrated-name = { $name } (hit error meter × { $scale })
+
+settings-general-menu-cursor = Menu cursor
+settings-gameplay-cursor-style = Gameplay cursor
+settings-option-cursor-slam = SLAM
+settings-option-cursor-skin = From the skin
+settings-option-cursor-system = System

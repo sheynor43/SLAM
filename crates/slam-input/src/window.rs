@@ -94,6 +94,8 @@ pub struct InputWindow {
     alive: Arc<Mutex<bool>>,
     /// Whether the OS cursor should be hidden over the window, set by any thread.
     cursor_hidden: Arc<AtomicBool>,
+    /// The pointer's last position and buttons, for the draw thread (ADR-0124).
+    pointer: crate::PointerWatch,
     /// Whether it is hidden now.
     cursor_applied: bool,
     /// Whether the Windows key should be blocked, set by any thread (ADR-0094).
@@ -387,6 +389,7 @@ impl InputWindow {
             counters: Arc::default(),
             alive,
             cursor_hidden: Arc::default(),
+            pointer: crate::PointerWatch::default(),
             cursor_applied: false,
             win_key_wanted: Arc::default(),
             win_key_hook: WinKeyHook::default(),
@@ -696,6 +699,11 @@ impl InputWindow {
         }
     }
 
+    /// A handle that reads the pointer's last position and buttons (ADR-0124).
+    pub fn pointer(&self) -> crate::PointerWatch {
+        self.pointer.clone()
+    }
+
     /// Hides or shows the OS cursor as [`CursorVisibility`] last asked.
     fn apply_cursor(&mut self) {
         let hidden = self.cursor_hidden.load(Ordering::Relaxed);
@@ -976,6 +984,7 @@ impl InputWindow {
                     // Consumers see the position the game tracks (ADR-0069).
                     motion.x = x;
                     motion.y = y;
+                    self.pointer.record_move(x, y);
                     // When relative mode turns off, SDL first restores the OS cursor to
                     // its own position (kept inside the window), then the warp below
                     // moves it to ours: one motion event jumps, as in osu-framework.
@@ -988,6 +997,9 @@ impl InputWindow {
                 }
                 _ if self.follow_window(&event) => {}
                 _ => {
+                    if let Some((_, InputKind::MouseButton { button, down })) = convert(&event) {
+                        self.pointer.record_button(button, down);
+                    }
                     // SAFETY: `event` came from SDL_WaitEvent just now; the next poll is
                     // after this call.
                     if unsafe { dispatch(&event, sink, mapper) } {

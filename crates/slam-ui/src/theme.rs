@@ -273,6 +273,17 @@ pub struct Theme {
     pub menu_panel_fill: Color,
     /// Margin of that backing around them.
     pub menu_panel_pad: f32,
+    /// SLAM's cursor (ADR-0124): its height in reference pixels, the fill, the outline's
+    /// width, how far a press shrinks it (a part of its size) and the milliseconds the
+    /// shrink and the way back take.
+    pub cursor_size: f32,
+    pub cursor_fill: Color,
+    pub cursor_outline: f32,
+    pub cursor_squeeze: f32,
+    pub cursor_squeeze_in_ms: f32,
+    pub cursor_squeeze_out_ms: f32,
+    /// The cursor's height in osu!pixels where gameplay draws it (ADR-0124).
+    pub cursor_gameplay_size: f32,
 }
 
 /// Tokens of the `fancy` screen transition (ADR-0126). The `simple` one keeps the
@@ -441,6 +452,13 @@ impl Theme {
             menu_background_dim: 0.5,
             menu_panel_fill: alpha(p.panel, 0.62),
             menu_panel_pad: 28.0,
+            cursor_size: 28.0,
+            cursor_fill: Color::rgb(0.96, 0.97, 1.0),
+            cursor_outline: 2.5,
+            cursor_squeeze: 0.18,
+            cursor_squeeze_in_ms: 70.0,
+            cursor_squeeze_out_ms: 160.0,
+            cursor_gameplay_size: 34.0,
         }
     }
 

@@ -39,6 +39,7 @@ use slam_render::textures::{TextureId, Textures};
 use slam_render::upload::{TextureLoaderConfig, TextureState, TextureUploads, texture_loader};
 use slam_render::{Color, Device, Extent, TextureFormat, shaders};
 use slam_text::{FontRegistry, GlyphAtlasConfig, GlyphCache, glyph_atlas};
+use slam_ui::cursor::CursorStyle;
 use slam_ui::i18n::Localizer;
 use slam_ui::intro::{Intro, IntroSnapshot, IntroView};
 use slam_ui::menu::{MainMenu, MenuAction, MenuInput, MenuLayout, MenuSnapshot, MenuView};
@@ -107,11 +108,19 @@ pub const USAGE: &str = "usage: slam-app [--songs DIR]\n\
 
 /// Textures of the draw thread: the white square, the glyph pages and the song select's
 /// backgrounds.
-const MAX_TEXTURES: usize = 16 + MAX_BACKGROUNDS as usize + crate::thumbnails::MAX_HANDLES as usize;
+const MAX_TEXTURES: usize = 16
+    + MAX_BACKGROUNDS as usize
+    + crate::thumbnails::MAX_HANDLES as usize
+    + crate::menu_cursor::MAX_CURSOR_TEXTURES as usize;
 /// Rectangles of one frame: the buttons or rows of up to two layers, the FPS counter's
 /// box, two backgrounds of each layer, the language curtain (ADR-0091) and the intro's
 /// black (ADR-0114).
-const MAX_SHAPES: usize = 256 + 1 + 2 * MAX_LAYERS + slam_ui::curtain::MAX_SPRITES + 1;
+const MAX_SHAPES: usize = 256
+    + 1
+    + 2 * MAX_LAYERS
+    + slam_ui::curtain::MAX_SPRITES
+    + 1
+    + crate::menu_cursor::MAX_MENU_CURSOR_SHAPES;
 /// Outlined glyphs of the startup intro's title (ADR-0114).
 const MAX_INTRO_OUTLINES: usize = 64;
 /// Glyph sprites of one frame: the texts of up to two layers and the FPS counter.
@@ -271,6 +280,8 @@ pub struct ShellSnapshot {
     pub panel: Option<PanelView>,
     /// The startup intro over everything, while it shows (ADR-0114).
     pub intro: Option<IntroSnapshot>,
+    /// The menu cursor drawn over everything (ADR-0124).
+    pub menu_cursor: crate::menu_cursor::MenuCursorFrame,
 }
 
 /// The update logic without the window: input to navigation to snapshot.
@@ -382,6 +393,9 @@ pub struct ShellState {
     thumbnails: Option<crate::thumbnails::Thumbnails>,
     /// The update tick's number, for the thumbnails' release.
     thumb_seq: u32,
+    /// Loads the skin's cursor for the menus (ADR-0124); without it the skin's cursor is
+    /// SLAM's.
+    skin_cursor: Option<crate::menu_cursor::SkinCursorLink>,
     /// Asks for the selected difficulty's statistics; without a library thread `None`.
     details: Option<DetailsPicker>,
     /// The startup intro until it is over; `None` when off (ADR-0114).
@@ -458,6 +472,7 @@ impl ShellState {
             size: [width, height],
             menu_track: None,
             menu_skin: None,
+            skin_cursor: None,
             menu_skin_of: (None, None),
             ui_sounds: ui_sounds::UiSoundQueue::default(),
             ui_seen: (1, slam_ui::menu::MenuItem::ALL[0], None, false, 0),
@@ -595,6 +610,11 @@ impl ShellState {
     }
 
     /// A shell whose song select shows the selected beatmap's background (ADR-0066).
+    pub fn with_skin_cursor(mut self, link: crate::menu_cursor::SkinCursorLink) -> ShellState {
+        self.skin_cursor = Some(link);
+        self
+    }
+
     pub fn with_backgrounds(mut self, backgrounds: BackgroundPicker) -> ShellState {
         self.backgrounds = Some(backgrounds);
         self
@@ -1789,6 +1809,19 @@ impl ShellState {
         }
         snapshot.band = self.stack.band(now_ns);
         self.tick_thumbnails(&mut snapshot.thumbnails);
+        // The cursor's style as edited in the settings screen counts at once (ADR-0124).
+        let cursor_style = self
+            .editing
+            .as_ref()
+            .unwrap_or(&self.settings)
+            .general
+            .menu_cursor;
+        let cursor_skin = (cursor_style == CursorStyle::Skin).then(|| self.menu_skin().cloned());
+        snapshot.menu_cursor.style = cursor_style;
+        snapshot.menu_cursor.skin = match &mut self.skin_cursor {
+            Some(link) => link.tick(cursor_skin.as_ref().map(Option::as_ref)),
+            None => Default::default(),
+        };
         let top: *const AppScreen = self.stack.top();
         for (slot, layer) in snapshot.layers.iter_mut().zip(self.stack.layers(now_ns)) {
             *slot = layer.and_then(|(screen, pose)| {
@@ -2182,8 +2215,6 @@ struct PlayHost {
     loader: LoaderLink,
     /// Scenes for the draw thread, one per play, named by the play's id.
     scenes: rtrb::Producer<(u64, PlayScene)>,
-    /// Hides the OS cursor while the play draws its own.
-    os_cursor: CursorVisibility,
     /// Blocks the Windows key while playing (ADR-0094).
     win_key: WinKeyBlock,
     /// The play showed its pause or fail menu at its last tick (ADR-0095).
@@ -2264,10 +2295,9 @@ impl PlayHost {
         self.game.is_some() && self.menu_shown
     }
 
-    /// Shows or hides the OS cursor and blocks the Windows key as the play's state asks.
+    /// Blocks the Windows key as the play's state asks.
     fn follow_play(&mut self, snapshot: &PlaySnapshot) {
         self.menu_shown = matches!(snapshot.state, PlayState::Paused | PlayState::Failed);
-        self.os_cursor.set_hidden(snapshot.state.hides_os_cursor());
         self.win_key.set_blocked(
             self.input.disable_win_key && blocks_win_key(snapshot.state, snapshot.is_break_time),
         );
@@ -2680,7 +2710,6 @@ impl PlayHost {
             && mixer.stop_all().is_ok()
             && let Some(mut game) = self.game.take()
         {
-            self.os_cursor.set_hidden(false);
             self.win_key.set_blocked(false);
             // The results come from the session before it retires.
             let results = game.session.results().map(|r| {
@@ -2971,6 +3000,8 @@ struct Shell {
     pixels_per_point: f32,
     /// Set when the menu quits; the window closes then.
     exited: Arc<AtomicBool>,
+    /// Hides the OS cursor while a cursor of our own is shown (ADR-0124).
+    os_cursor: CursorVisibility,
     /// Changes the draw thread's rate (ADR-0047).
     draw_rate: DrawRateControl,
     rate_switch: DrawRateSwitch,
@@ -3167,6 +3198,16 @@ impl Update for Shell {
             }
         }
         self.apply_settings(now);
+        let play = self
+            .host
+            .as_ref()
+            .and_then(|host| host.game.as_ref())
+            .map(|_| snapshot.play.state);
+        self.os_cursor
+            .set_hidden(crate::menu_cursor::os_cursor_hidden(
+                self.state.live_settings(),
+                play,
+            ));
     }
 }
 
@@ -3316,6 +3357,8 @@ struct View<B: render::Backend> {
     backgrounds: Option<(TextureUploads, BackgroundFade)>,
     /// Tells the update thread which snapshot was drawn (ADR-0127).
     thumb_shown: Option<crate::thumbnails::ThumbShown>,
+    /// The menu cursor over everything (ADR-0124).
+    menu_cursor: crate::menu_cursor::MenuCursorView,
     _quit: crate::bench::QuitOnDrop,
 }
 
@@ -3487,6 +3530,7 @@ impl<B: render::Backend> Draw<ShellSnapshot> for View<B> {
             )
         });
         self.glyphs.process(&mut r.device, &mut r.textures);
+        self.menu_cursor.process(&mut r.device, &mut r.textures);
         // On every screen: releases queued during a play would otherwise fill the queue.
         if let Some(shown) = &self.thumb_shown {
             shown.set(snapshot.thumbnails.seq);
@@ -3734,6 +3778,18 @@ impl<B: render::Backend> Draw<ShellSnapshot> for View<B> {
         );
         self.fps
             .push(&mut self.shapes, &mut self.text, &mut self.glyphs, r.white);
+        // The menu cursor is the last of all, over the curtain and the FPS counter, unless
+        // gameplay draws its own (ADR-0124).
+        let mut cursor = snapshot.menu_cursor;
+        cursor.gameplay_cursor = gameplay && snapshot.play.state.hides_os_cursor();
+        self.menu_cursor.push(
+            &mut self.shapes,
+            &self.theme,
+            r.white,
+            [width, height],
+            info.wait.woke_ns,
+            &cursor,
+        );
         r.renderer.begin_frame();
         r.text_renderer.begin_frame();
         r.outline_renderer.begin_frame();
@@ -4404,6 +4460,17 @@ fn run_with<B: render::Backend>(
         state = state.with_songs(link);
         (Some(skin_views), thread, fade)
     };
+    // The skin's cursor for the menus; it ends once the update side drops its link.
+    let cursor_uploads = match crate::menu_cursor::spawn(&TextureLoaderConfig::new(limits)) {
+        Ok((link, uploads, _thread)) => {
+            state = state.with_skin_cursor(link);
+            Some(uploads)
+        }
+        Err(e) => {
+            tracing::warn!("menu cursor: cannot start the loader: {e}");
+            None
+        }
+    };
     // Joined when `run` returns, after the engine. Without the thread the settings screen
     // hides the display and resolution rows.
     let (display_views, _displays) = {
@@ -4451,6 +4518,8 @@ fn run_with<B: render::Backend>(
                 cursor_trail: options.cursor_trail,
                 cursor_size: options.cursor_size as f32,
                 auto_cursor_size: options.auto_cursor_size,
+                cursor_style: options.cursor_style,
+                cursor_scheme: options.cursor_scheme,
                 positional_hitsounds_level: options.positional_hitsounds_level,
                 skin: options.skin,
                 ..PlaySettings::default()
@@ -4506,7 +4575,6 @@ fn run_with<B: render::Backend>(
             ui_sounds: ui_sounds::UiSoundPlayer::new(audio_rate),
             loader,
             scenes: scene_tx,
-            os_cursor: window.cursor_visibility(),
             win_key: window.win_key_block(),
             menu_shown: false,
             pending: Pending::Idle,
@@ -4541,6 +4609,7 @@ fn run_with<B: render::Backend>(
     });
 
     let exited = Arc::new(AtomicBool::new(false));
+    let scale_for_cursor = scale.clone();
     // The window opens on the menu: it starts at the menu's rate.
     let menu_rate = settings.frame.menu_draw.to_limiter();
     let draw_rate = DrawRateControl::new();
@@ -4569,6 +4638,7 @@ fn run_with<B: render::Backend>(
         window_sent: settings.window.state(),
         position_sent: settings.window.windowed_position,
         window_save_at: None,
+        os_cursor: window.cursor_visibility(),
         draw_rate: draw_rate.clone(),
         rate_switch: DrawRateSwitch::new(menu_rate),
         update_rate: AppliedUpdateRate::new(update_rate.clone(), settings.frame.update_hz),
@@ -4614,6 +4684,11 @@ fn run_with<B: render::Backend>(
         swap: LanguageSwap::default(),
         backgrounds,
         thumb_shown,
+        menu_cursor: crate::menu_cursor::MenuCursorView::new(
+            window.pointer(),
+            scale_for_cursor,
+            cursor_uploads,
+        ),
         _quit: crate::bench::QuitOnDrop(window.quit_handle()),
     };
     let (mut sink, source) = event_ring(1024);
