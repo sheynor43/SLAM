@@ -828,13 +828,6 @@ impl SongSelectView {
             theme.song_panel_fill,
             Look::Panel,
         );
-        // The list panel's backing, from the status line to the hints.
-        // Its right side reaches past the window's edge (ADR-0121).
-        rect(
-            &layout.backing(width, theme.song_margin * layout.scale),
-            theme.song_panel_fill,
-            Look::LeaningPanel { lean: layout.lean },
-        );
         // Everything on the panel leans with it (ADR-0121).
         let lean = |x: f32, centre_y: f32| x + layout.lean_x(centre_y);
         let leaned = |r: &Rect| Rect {

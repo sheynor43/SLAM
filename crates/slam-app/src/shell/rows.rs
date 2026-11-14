@@ -25,7 +25,7 @@ use crate::settings::{
 };
 use slam_ui::cursor::CursorStyle;
 use slam_ui::screen::TransitionStyle;
-use slam_ui::theme::{ColourScheme, UI_SCALE_RANGE};
+use slam_ui::theme::{ColourScheme, MAX_SKEW_DEGREES, UI_SCALE_RANGE};
 
 /// Sections, in order; the keys of their names are in [`SECTION_KEYS`].
 const SECTION_KEYS: [&str; 7] = [
@@ -236,6 +236,8 @@ pub enum Row {
     MenuScale,
     /// The scale of the HUD and the pause and fail menus (ADR-0118).
     GameScale,
+    /// Skew of the buttons and rows; applies live (ADR-0130).
+    Skew,
     /// What the main menu shows behind its content (ADR-0119).
     MenuBackground,
     /// The cursor of the menus; applies live (ADR-0124).
@@ -276,7 +278,7 @@ pub enum Row {
 const _: () = assert!(Row::ALL.len() <= slam_ui::settings_screen::MAX_ROWS);
 
 impl Row {
-    pub const ALL: [Row; 70] = [
+    pub const ALL: [Row; 71] = [
         Row::MasterVolume,
         Row::MusicVolume,
         Row::MenuMusic,
@@ -317,6 +319,7 @@ impl Row {
         Row::Transitions,
         Row::MenuScale,
         Row::GameScale,
+        Row::Skew,
         Row::MenuBackground,
         Row::MenuCursor,
         Row::UpdateHz,
@@ -411,6 +414,7 @@ impl Row {
             | Row::Transitions
             | Row::MenuScale
             | Row::GameScale
+            | Row::Skew
             | Row::MenuBackground
             | Row::MenuCursor => 3,
             Row::UpdateHz
@@ -477,6 +481,7 @@ impl Row {
             Row::Transitions => "settings-general-transitions",
             Row::MenuScale => "settings-general-menu-scale",
             Row::GameScale => "settings-general-game-scale",
+            Row::Skew => "settings-general-skew",
             Row::MenuBackground => "settings-general-menu-background",
             Row::MenuCursor => "settings-general-menu-cursor",
             Row::CursorStyle => "settings-gameplay-cursor-style",
@@ -918,6 +923,12 @@ impl Rows {
                     value: (f64::from(scale) * 100.0).round(),
                 }
             }
+            Row::Skew => RowKind::Slider {
+                min: 0.0,
+                max: f64::from(MAX_SKEW_DEGREES),
+                step: 1.0,
+                value: f64::from(s.general.skew).round(),
+            },
             Row::ColourScheme => choice(
                 ColourScheme::ALL.len(),
                 ColourScheme::ALL
@@ -1211,6 +1222,9 @@ impl Rows {
             }
             (Row::GameScale, RowValue::Slider(v)) => {
                 settings.general.game_scale = scale_from_percent(v);
+            }
+            (Row::Skew, RowValue::Slider(v)) => {
+                settings.general.skew = v.round().clamp(0.0, f64::from(MAX_SKEW_DEGREES)) as f32;
             }
             (Row::ColourScheme, RowValue::Choice(i)) => {
                 if let Some(scheme) = ColourScheme::ALL.get(i) {
@@ -1528,6 +1542,7 @@ impl Rows {
                     | Row::GameScale
                     | Row::PauseMenuScale
                     | Row::PositionalHitsoundsLevel => text("settings-unit-percent"),
+                    Row::Skew => text("settings-unit-degrees"),
                     Row::Sensitivity | Row::CursorSize => text("settings-unit-times"),
                     _ => String::new(),
                 };
@@ -2104,6 +2119,19 @@ mod tests {
         assert_eq!(s.general.colour_scheme, ColourScheme::Mono);
         rows.apply(&mut s, index(Row::ColourScheme), RowValue::Choice(9));
         assert_eq!(s.general.colour_scheme, ColourScheme::Mono);
+        rows.apply(&mut s, index(Row::Skew), RowValue::Slider(14.4));
+        assert_eq!(s.general.skew, 14.0);
+        rows.apply(&mut s, index(Row::Skew), RowValue::Slider(99.0));
+        assert_eq!(s.general.skew, 20.0);
+        assert_eq!(
+            rows.specs(&s)[index(Row::Skew)].kind,
+            RowKind::Slider {
+                min: 0.0,
+                max: 20.0,
+                step: 1.0,
+                value: 20.0
+            }
+        );
         rows.apply(&mut s, index(Row::MenuScale), RowValue::Slider(125.0));
         rows.apply(&mut s, index(Row::GameScale), RowValue::Slider(10.0));
         assert_eq!(s.general.menu_scale, 1.25);

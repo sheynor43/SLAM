@@ -56,7 +56,7 @@ pub struct BarLayout {
 
 impl InfoLayout {
     pub fn new(info: &Rect, theme: &Theme, scale: f32) -> InfoLayout {
-        let detail = theme.song_detail_size * scale;
+        let detail = theme.song_info_detail_size * scale;
         let gap = theme.song_text_pad * scale / 2.0;
         let y = std::cell::Cell::new(info.y);
         let next = |height: f32| {
@@ -69,8 +69,8 @@ impl InfoLayout {
             y.set(y.get() + height);
             rect
         };
-        let name = next(theme.song_title_size * scale * 1.4);
-        let artist = next(detail * 1.7);
+        let name = next(theme.song_info_title_size * scale * 1.4);
+        let artist = next(theme.song_info_artist_size * scale * 1.7);
         y.set(y.get() + gap);
         let bar_height = detail * 1.8;
         let label_width = (detail * 2.8).min(info.width / 4.0);
@@ -209,7 +209,7 @@ impl InfoPanel {
 
     /// Lays the static texts out for `scale` and forgets what the others showed.
     pub(super) fn lay_out(&mut self, type_setter: &mut Typesetter, theme: &Theme, scale: f32) {
-        let detail = theme.song_detail_size * scale;
+        let detail = theme.song_info_detail_size * scale;
         for line in self.bar_labels.iter_mut().chain([
             &mut self.scores_title,
             &mut self.no_scores,
@@ -250,10 +250,18 @@ impl InfoPanel {
         snapshot: &SongSelectSnapshot,
     ) {
         let scale = layout.scale;
-        let (title, detail) = (
-            theme.song_title_size * scale,
-            theme.song_detail_size * scale,
+        let (title, artist_size, detail) = (
+            theme.song_info_title_size * scale,
+            theme.song_info_artist_size * scale,
+            theme.song_info_detail_size * scale,
         );
+        // The ellipsis widths are measured at the rows' sizes.
+        let ellipsis = [
+            ellipsis[0] * theme.song_info_title_size / theme.song_title_size,
+            ellipsis[1] * theme.song_info_detail_size / theme.song_detail_size,
+        ];
+        let artist_ellipsis =
+            ellipsis[1] * theme.song_info_artist_size / theme.song_info_detail_size;
         let parts = InfoLayout::new(&layout.info, theme, scale);
         let key = (snapshot.generation, snapshot.selected);
         if self.name_for != Some(key) {
@@ -279,9 +287,9 @@ impl InfoPanel {
             fit(
                 type_setter,
                 &mut self.artist,
-                detail,
+                artist_size,
                 parts.artist.width,
-                ellipsis[1],
+                artist_ellipsis,
             );
         }
         if self.details_for != Some(snapshot.details) {
@@ -299,10 +307,10 @@ impl InfoPanel {
             self.scores_for = Some(scores);
             let rows = scores.map(|s| s.rows).unwrap_or_default();
             let gap = theme.song_text_pad * scale;
-            let avail = (parts.rows[0].width - title * 2.2 - gap).max(0.0);
+            let avail = (parts.rows[0].width - artist_size * 2.2 - gap).max(0.0);
             for (lines, row) in self.scores.iter_mut().zip(rows) {
                 write_score(lines, row.as_ref());
-                type_setter.lay_out(&mut lines.rank, title);
+                type_setter.lay_out(&mut lines.rank, artist_size);
                 type_setter.lay_out(&mut lines.accuracy, detail);
                 let accuracy = lines.accuracy.layout.width();
                 fit(
@@ -416,7 +424,7 @@ impl InfoPanel {
             return;
         }
         let pad = theme.song_text_pad * scale;
-        let rank_width = theme.song_title_size * scale * 2.2;
+        let rank_width = theme.song_info_artist_size * scale * 2.2;
         for ((area, row), lines) in parts
             .rows
             .iter()

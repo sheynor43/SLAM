@@ -158,6 +158,12 @@ pub struct Theme {
     pub song_title_size: f32,
     /// Size of the creator and of the hint.
     pub song_detail_size: f32,
+    /// Sizes of the info panel's name, artist and other texts (ADR-0130).
+    pub song_info_title_size: f32,
+    pub song_info_artist_size: f32,
+    pub song_info_detail_size: f32,
+    /// Height of the search line.
+    pub song_search_height: f32,
     /// Height of the status line above the list, and its text size.
     pub song_header_height: f32,
     pub song_status_size: f32,
@@ -168,6 +174,9 @@ pub struct Theme {
     pub song_score_row_height: f32,
     /// Width of a mod tile of the mod select panel, and the gap between its columns.
     pub mod_tile_width: f32,
+    /// Height and pitch of a mod tile.
+    pub mod_tile_height: f32,
+    pub mod_tile_pitch: f32,
     pub mod_column_gap: f32,
     /// Fill over the screen under the mod select panel.
     pub mod_backdrop_fill: Color,
@@ -352,7 +361,7 @@ impl Theme {
                 b: 1.0,
                 a: 0.18,
             },
-            song_panel_ratio: 0.55,
+            song_panel_ratio: 0.375,
             song_panel_fill: alpha(p.panel, 0.78),
             song_search_fill: Color {
                 r: 1.0,
@@ -367,17 +376,21 @@ impl Theme {
                 a: 0.7,
             },
             song_margin: 24.0,
-            song_row_height: 52.0,
-            song_row_gap: 4.0,
-            song_indent: 32.0,
+            song_row_height: 65.0,
+            song_row_gap: 3.0,
+            song_indent: 24.0,
             song_text_pad: 16.0,
             song_thumbnail_aspect: 1.6,
             song_thumbnail_inset: 3.0,
             song_thumbnail_fade_ms: 200.0,
             song_title_size: 20.0,
-            song_detail_size: 14.0,
+            song_detail_size: 13.0,
+            song_info_title_size: 26.0,
+            song_info_artist_size: 14.0,
+            song_info_detail_size: 11.5,
+            song_search_height: 44.0,
             song_header_height: 36.0,
-            song_status_size: 22.0,
+            song_status_size: 18.0,
             song_bar_height: 6.0,
             song_bar_track_fill: Color {
                 r: 1.0,
@@ -385,8 +398,10 @@ impl Theme {
                 b: 1.0,
                 a: 0.16,
             },
-            song_score_row_height: 38.0,
+            song_score_row_height: 30.0,
             mod_tile_width: 150.0,
+            mod_tile_height: 48.0,
+            mod_tile_pitch: 52.0,
             mod_column_gap: 32.0,
             mod_backdrop_fill: Color {
                 r: 0.0,
@@ -465,6 +480,20 @@ impl Theme {
     /// The same theme with the effects on or off (ADR-0123).
     pub fn with_effects(self, effects: bool) -> Theme {
         Theme { effects, ..self }
+    }
+
+    /// The same theme with the buttons' and rows' skew at `degrees` (ADR-0130), held to
+    /// `[0, MAX_SKEW_DEGREES]`; not a number means the default.
+    pub fn with_skew(self, degrees: f32) -> Theme {
+        let degrees = if degrees.is_finite() {
+            degrees.clamp(0.0, MAX_SKEW_DEGREES)
+        } else {
+            Theme::new(self.scheme, self.ui_scale).button_skew_degrees
+        };
+        Theme {
+            button_skew_degrees: degrees,
+            ..self
+        }
     }
 
     /// The same theme at another interface scale: the in-game overlays take the game's.

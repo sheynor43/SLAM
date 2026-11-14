@@ -279,6 +279,15 @@ fn from_table(mut table: Table) -> Loaded {
         );
         *slot = ((scale * 20.0).round() / 20.0) as f32;
     }
+    let mut skew = f64::from(settings.general.skew);
+    cx.float(
+        &mut general,
+        "general",
+        "skew",
+        &mut skew,
+        0.0..=f64::from(slam_ui::theme::MAX_SKEW_DEGREES),
+    );
+    settings.general.skew = skew.round() as f32;
     let mut transitions: Option<String> = None;
     cx.opt(&mut general, "general", "transitions", &mut transitions);
     if let Some(name) = transitions {
