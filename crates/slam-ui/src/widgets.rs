@@ -167,13 +167,18 @@ fn push_button(
         gradient: Some(Gradient::Horizontal(faded(accent, 0.0))),
         ..shape
     });
-    let strength = theme.pattern(level);
+    // The triangles keep their number and pace whatever the state, so hover does not
+    // restart them; hover and selection only light them up (ADR-0136).
+    let strength = theme.pattern(PatternLevel::Button);
     if strength > 0.0 {
         shapes.push_shape(&Shape {
             kind: ShapeKind::PatternLayer,
             pattern: strength,
             pattern_seed: pattern_seed(seed),
-            colour: faded(accent, theme.pattern_alpha * fade),
+            colour: faded(
+                accent,
+                (theme.pattern_alpha * theme.pattern_gain(level)).min(1.0) * fade,
+            ),
             gradient: Some(Gradient::Vertical(faded(accent, 0.0))),
             ..shape
         });
@@ -600,22 +605,34 @@ mod look_tests {
             .fold(0.0, f32::max)
     }
 
+    /// The opacity of the triangles' layer, and its pattern strength.
+    fn triangles_of(theme: &Theme, colour: Color, look: Look) -> (f32, f32) {
+        let quads = quads(theme, colour, look);
+        let layer = quads
+            .iter()
+            .find(|q| q.kind == ShapeKind::PatternLayer)
+            .expect("a triangles layer");
+        (layer.colour[3], layer.pattern)
+    }
+
     #[test]
-    fn buttons_carry_a_pattern_that_grows_with_hover_and_selection() {
+    fn hover_and_selection_light_the_triangles_without_changing_their_pace() {
         let theme = Theme::default();
         let button = |highlighted| Look::Button {
             highlighted,
             seed: 0.4,
             fade: 1.0,
         };
-        let idle = pattern_of(&theme, theme.button_fill, button(false));
-        let hover = pattern_of(&theme, theme.button_hover_fill, button(false));
-        let selected = pattern_of(&theme, theme.button_hover_fill, button(true));
+        let idle = triangles_of(&theme, theme.button_fill, button(false));
+        let hover = triangles_of(&theme, theme.button_hover_fill, button(false));
+        let selected = triangles_of(&theme, theme.button_fill, button(true));
+        // The same strength: the same triangles at the same pace, so they do not jump.
+        assert!(idle.1 > 0.0);
+        assert_eq!(idle.1, hover.1);
+        assert_eq!(idle.1, selected.1);
+        assert!(idle.0 < hover.0 && hover.0 < selected.0);
         let panel = pattern_of(&theme, theme.settings_panel_fill, Look::Panel);
-        assert!(idle > 0.0 && panel > 0.0);
-        assert!(panel < idle && idle < hover && hover < selected);
-        assert!((idle - theme.pattern_button).abs() < 0.005);
-        assert!((selected - theme.pattern_selected).abs() < 0.005);
+        assert!(panel > 0.0 && panel < idle.1);
         // Plain shapes and the strip are left bare.
         assert_eq!(pattern_of(&theme, Color::WHITE, Look::Strip), 0.0);
         assert_eq!(pattern_of(&theme, Color::WHITE, Look::Round), 0.0);

@@ -282,8 +282,9 @@ pub struct Theme {
     pub glow_width: f32,
     pub glow_alpha: f32,
     pub glow_pulse: f32,
-    /// Strength of the pattern of triangles and circles floating up buttons, panels, a lit
-    /// (hovered) button and a selected one (0 to 1; ADR-0131). Stronger also rises faster.
+    /// Strength of the pattern of triangles floating up buttons and panels (0 to 1;
+    /// ADR-0131, ADR-0136): more of them, rising faster. A lit (hovered) and a selected
+    /// button keep the button's strength and brighten its triangles by these factors.
     pub pattern_button: f32,
     pub pattern_panel: f32,
     pub pattern_hover: f32,
@@ -625,8 +626,8 @@ impl Theme {
             glow_pulse: 0.35,
             pattern_button: 0.35,
             pattern_panel: 0.04,
-            pattern_hover: 0.55,
-            pattern_selected: 0.8,
+            pattern_hover: 1.6,
+            pattern_selected: 2.4,
             button_shade: 0.8,
             button_tint_alpha: 0.25,
             pattern_alpha: 0.25,
@@ -767,10 +768,21 @@ impl Theme {
             return 0.0;
         }
         match level {
-            PatternLevel::Button => self.pattern_button,
+            // Lit buttons keep the idle triangles (ADR-0136): see `pattern_gain`.
+            PatternLevel::Button | PatternLevel::Hover | PatternLevel::Selected => {
+                self.pattern_button
+            }
             PatternLevel::Panel => self.pattern_panel,
+        }
+    }
+
+    /// How much brighter than idle a button's triangles are when it is lit by hover or
+    /// selected (ADR-0136): their strength stays the idle one, so they keep their pace.
+    pub fn pattern_gain(&self, level: PatternLevel) -> f32 {
+        match level {
             PatternLevel::Hover => self.pattern_hover,
             PatternLevel::Selected => self.pattern_selected,
+            PatternLevel::Button | PatternLevel::Panel => 1.0,
         }
     }
 
