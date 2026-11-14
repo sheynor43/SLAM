@@ -8,7 +8,7 @@
 
 use slam_render::Color;
 use slam_render::atlas::AtlasRegion;
-use slam_render::shape::{Shape, ShapeBatch};
+use slam_render::shape::{Gradient, Shape, ShapeBatch, ShapeKind};
 use slam_render::sprite::{Sprite, SpriteBatch};
 use slam_text::{GlyphCache, push_layout};
 
@@ -31,11 +31,12 @@ pub use toggle::{Toggle, ToggleAction, ToggleInput, ToggleLayout, ToggleView};
 /// Bytes reserved up front in every dynamic text buffer.
 pub(crate) const TEXT_CAPACITY: usize = 64;
 
-/// A button-like element (ADR-0116, ADR-0117): rounded, skewed by the theme, `fill` lit
-/// by the button pattern; highlighted, it also gets an outline of the accent. `seed`
-/// offsets the pattern so neighbours differ; `opacity` fades the whole.
+/// A button-like element (ADR-0116, ADR-0117, ADR-0136): rounded, skewed by the theme,
+/// layered over `fill` in its own colour `tint` (see [`push_button`]); highlighted, it also
+/// gets an outline of `tint`. `seed` offsets the pattern so neighbours differ; `opacity`
+/// fades the whole.
 #[allow(clippy::too_many_arguments)]
-pub(crate) fn button(
+pub(crate) fn tinted_button(
     shapes: &mut ShapeBatch,
     white: AtlasRegion,
     rect: &Rect,
@@ -45,6 +46,7 @@ pub(crate) fn button(
     highlighted: bool,
     seed: f32,
     opacity: f32,
+    tint: Color,
 ) {
     push_button(
         shapes,
@@ -56,7 +58,7 @@ pub(crate) fn button(
         highlighted,
         seed,
         opacity,
-        theme.accent,
+        tint,
     );
 }
 
@@ -66,11 +68,53 @@ pub(crate) fn pattern_seed(seed: f32) -> u8 {
     (bits >> 24) as u8
 }
 
-/// [`button`] with `fill` faded already and the highlight faded by `fade`: with the
-/// effects on (ADR-0123), a highlighted button glows, pulsing, and a sheen sweeps it;
-/// triangles and circles float up every button, faster and brighter when it is lit by hover
-/// (a fill other than the idle one) or selected (ADR-0131). `accent` colours the glow and
-/// the outline.
+/// The soft shadow under `shape` (ADR-0136): a black glow of the same outline, dropped
+/// down, as strong as the theme's shadow setting; none at strength 0. `fade` is the layer's
+/// opacity.
+pub(crate) fn push_shadow(
+    shapes: &mut ShapeBatch,
+    shape: &Shape,
+    theme: &Theme,
+    scale: f32,
+    fade: f32,
+) {
+    let strength = theme.shadow;
+    if strength <= 0.0 || fade <= 0.0 {
+        return;
+    }
+    let drop = theme.shadow_offset * scale;
+    shapes.push_shape(&Shape {
+        position: [shape.position[0], shape.position[1] + drop],
+        glow: theme.shadow_radius * scale * (0.5 + 0.5 * strength),
+        sheen: 0.0,
+        pattern: 0.0,
+        gradient: None,
+        blend: slam_render::Blend::Alpha,
+        colour: Color {
+            a: (theme.shadow_alpha * strength).min(0.95) * fade,
+            ..Color::rgb(0.0, 0.0, 0.0)
+        },
+        ..*shape
+    });
+}
+
+/// `colour` with its red, green and blue multiplied by `factor`.
+fn shaded(colour: Color, factor: f32) -> Color {
+    Color {
+        r: colour.r * factor,
+        g: colour.g * factor,
+        b: colour.b * factor,
+        a: colour.a,
+    }
+}
+
+/// [`button`] with `fill` faded already and the highlight faded by `fade`, layered like
+/// lazer's beatmap panels (ADR-0136): a shadow; `fill` darkening to the right; a wash of
+/// `accent` fading out to the right; with the effects on (ADR-0123), outlined triangles
+/// floating up in `accent`, fading out downwards, faster and more of them when the button is
+/// lit by hover (a fill other than the idle one) or selected (ADR-0131). Selected, the button
+/// also brightens towards the right in `accent`, gets an outline of it and, with the effects,
+/// glows, pulsing, and a sheen sweeps it.
 #[allow(clippy::too_many_arguments)]
 fn push_button(
     shapes: &mut ShapeBatch,
@@ -95,8 +139,6 @@ fn push_button(
         radius: theme.button_radius * scale,
         skew: theme.button_skew(),
         phase: seed,
-        pattern: theme.pattern(level),
-        pattern_seed: pattern_seed(seed),
         ..Shape::new(
             white.texture,
             white.uv,
@@ -105,25 +147,55 @@ fn push_button(
             fill,
         )
     };
+    push_shadow(shapes, &shape, theme, scale, fade);
     let effects = highlighted && theme.effects;
     if effects {
         shapes.push_shape(&Shape {
             glow: theme.glow_width * scale,
             sheen: theme.glow_pulse,
             colour: faded(accent, theme.glow_alpha * fade),
-            pattern: 0.0,
             ..shape
         });
     }
     shapes.push_shape(&Shape {
         sheen: if effects { theme.button_sheen } else { 0.0 },
+        gradient: Some(Gradient::Horizontal(shaded(fill, theme.button_shade))),
         ..shape
     });
+    shapes.push_shape(&Shape {
+        colour: faded(accent, theme.button_tint_alpha * fade),
+        gradient: Some(Gradient::Horizontal(faded(accent, 0.0))),
+        ..shape
+    });
+    // The triangles keep their number and pace whatever the state, so hover does not
+    // restart them; hover and selection only light them up (ADR-0136).
+    let strength = theme.pattern(PatternLevel::Button);
+    if strength > 0.0 {
+        shapes.push_shape(&Shape {
+            kind: ShapeKind::PatternLayer,
+            pattern: strength,
+            pattern_seed: pattern_seed(seed),
+            colour: faded(
+                accent,
+                (theme.pattern_alpha * theme.pattern_gain(level)).min(1.0) * fade,
+            ),
+            gradient: Some(Gradient::Vertical(faded(accent, 0.0))),
+            ..shape
+        });
+    }
     if highlighted {
+        shapes.push_shape(&Shape {
+            colour: faded(accent, 0.0),
+            gradient: Some(Gradient::Horizontal(faded(
+                accent,
+                theme.selection_alpha * fade,
+            ))),
+            blend: slam_render::Blend::Additive,
+            ..shape
+        });
         shapes.push_shape(&Shape {
             outline: theme.outline_width * scale,
             colour: faded(accent, fade),
-            pattern: 0.0,
             ..shape
         });
     }
@@ -140,7 +212,7 @@ pub(crate) fn panel(
     fill: Color,
     opacity: f32,
 ) {
-    shapes.push_shape(&Shape {
+    let shape = Shape {
         radius: theme.panel_radius * scale,
         pattern: theme.pattern(PatternLevel::Panel),
         pattern_seed: pattern_seed(rect.width),
@@ -151,7 +223,9 @@ pub(crate) fn panel(
             [rect.width, rect.height],
             faded(fill, opacity),
         )
-    });
+    };
+    push_shadow(shapes, &shape, theme, scale, opacity);
+    shapes.push_shape(&shape);
 }
 
 /// A rounded rectangle of `colour` without skew or pattern: tracks, knobs, boxes.
@@ -201,6 +275,12 @@ pub enum Look {
     Panel,
     /// [`panel`] skewed by `lean` (`tan` of the angle): behind a leaning list (ADR-0121).
     LeaningPanel { lean: f32 },
+    /// A panel after lazer's wedges (ADR-0136): skewed by `lean` (`tan` of the angle),
+    /// rounded, its fill fading towards the right, with a shadow and an outline of
+    /// `outline` (none when transparent).
+    Wedge { lean: f32, outline: Color },
+    /// A five-pointed star filling the rectangle's smaller side (ADR-0136).
+    Star,
     /// [`rounded`] with the button radius.
     Round,
     /// Ends fully rounded: tracks, knobs, switches.
@@ -265,19 +345,66 @@ pub fn draw(
             )
         }),
         Look::Panel => panel(shapes, white, rect, theme, scale, colour, 1.0),
-        Look::LeaningPanel { lean } => shapes.push_shape(&Shape {
-            radius: theme.panel_radius * scale,
-            skew: lean.atan(),
-            pattern: theme.pattern(PatternLevel::Panel),
-            pattern_seed: pattern_seed(rect.width),
-            ..Shape::new(
-                white.texture,
-                white.uv,
-                [rect.x, rect.y],
-                [rect.width, rect.height],
-                colour,
-            )
-        }),
+        Look::LeaningPanel { lean } => {
+            let shape = Shape {
+                radius: theme.panel_radius * scale,
+                skew: lean.atan(),
+                pattern: theme.pattern(PatternLevel::Panel),
+                pattern_seed: pattern_seed(rect.width),
+                ..Shape::new(
+                    white.texture,
+                    white.uv,
+                    [rect.x, rect.y],
+                    [rect.width, rect.height],
+                    colour,
+                )
+            };
+            push_shadow(shapes, &shape, theme, scale, colour.a.min(1.0));
+            shapes.push_shape(&shape);
+        }
+        Look::Wedge { lean, outline } => {
+            let shape = Shape {
+                radius: theme.wedge_radius * scale,
+                skew: lean.atan(),
+                gradient: Some(Gradient::Horizontal(Color {
+                    a: colour.a * theme.wedge_fade,
+                    ..colour
+                })),
+                ..Shape::new(
+                    white.texture,
+                    white.uv,
+                    [rect.x, rect.y],
+                    [rect.width, rect.height],
+                    colour,
+                )
+            };
+            push_shadow(shapes, &shape, theme, scale, colour.a.min(1.0));
+            shapes.push_shape(&shape);
+            if outline.a > 0.0 {
+                shapes.push_shape(&Shape {
+                    outline: theme.outline_width * scale,
+                    colour: outline,
+                    gradient: None,
+                    ..shape
+                });
+            }
+        }
+        Look::Star => {
+            let side = rect.width.min(rect.height);
+            shapes.push_shape(&Shape {
+                kind: ShapeKind::Star,
+                ..Shape::new(
+                    white.texture,
+                    white.uv,
+                    [
+                        rect.x + (rect.width - side) / 2.0,
+                        rect.y + (rect.height - side) / 2.0,
+                    ],
+                    [side, side],
+                    colour,
+                )
+            });
+        }
         Look::Round => rounded(shapes, white, rect, theme.button_radius * scale, colour),
         Look::Pill => rounded(
             shapes,
@@ -346,42 +473,112 @@ mod look_tests {
 
     #[test]
     fn a_highlight_fades_with_its_layer() {
-        let white = AtlasRegion {
-            texture: TextureId(0),
-            origin: Origin::new(0, 0),
-            size: slam_render::Extent::new(1, 1),
-            uv: UvRect::FULL,
-        };
-        let theme = Theme::default();
-        let mut shapes = ShapeBatch::new();
-        let rect = Rect {
-            x: 0.0,
-            y: 0.0,
-            width: 100.0,
-            height: 40.0,
-        };
+        let theme = Theme::default().with_shadow(0.0);
         let look = Look::Button {
             highlighted: true,
             seed: 0.0,
             fade: 0.25,
         };
-        draw(&mut shapes, white, &rect, Color::WHITE, look, &theme, 1.0);
-        // The glow under it, the button, the outline.
-        assert_eq!(shapes.len(), 3);
-        let glow = shapes.vertices()[0].colour[3];
+        let quads = quads(&theme, Color::WHITE, look);
+        // The glow, the fill, the wash, the triangles, the brightening, the outline.
+        assert_eq!(quads.len(), 6, "{quads:?}");
+        let glow = quads[0];
+        assert!(glow.edge < 0.0, "a glow");
         assert!(
-            (glow - theme.accent.a * theme.glow_alpha * 0.25).abs() < 1e-6,
-            "{glow}"
+            (glow.colour[3] - theme.accent.a * theme.glow_alpha * 0.25).abs() < 1e-6,
+            "{glow:?}"
         );
-        assert!(shapes.vertices()[0].params[1] < 0.0, "a glow");
-        let outline = shapes.vertices()[8].colour[3];
-        assert!((outline - theme.accent.a * 0.25).abs() < 1e-6, "{outline}");
-        // Without the effects: no glow and no sheen.
-        shapes.clear();
+        let outline = quads[5];
+        assert!(outline.edge > 0.0);
+        assert!((outline.colour[3] - theme.accent.a * 0.25).abs() < 1e-6);
+        // Without the effects: no glow, no sheen and no triangles.
         let flat = theme.with_effects(false);
-        draw(&mut shapes, white, &rect, Color::WHITE, look, &flat, 1.0);
-        assert_eq!(shapes.len(), 2);
-        assert_eq!(shapes.vertices()[0].params[2], 0.0);
+        let quads = super::look_tests::quads(&flat, Color::WHITE, look);
+        assert_eq!(quads.len(), 4, "{quads:?}");
+        assert!(quads.iter().all(|q| q.sheen == 0.0 && q.pattern == 0.0));
+    }
+
+    #[test]
+    fn a_shadow_drops_under_a_button_as_strong_as_the_setting() {
+        let look = Look::Button {
+            highlighted: false,
+            seed: 0.0,
+            fade: 1.0,
+        };
+        let theme = Theme::default();
+        let shadowed = quads(&theme, theme.button_fill, look);
+        let shadow = shadowed[0];
+        assert!(shadow.edge < 0.0, "a glow");
+        assert_eq!(shadow.colour[..3], [0.0, 0.0, 0.0]);
+        assert!((shadow.colour[3] - theme.shadow_alpha).abs() < 1e-6);
+        // Dropped below the fill.
+        assert!(shadow.middle > shadowed[1].middle);
+        let strong = quads(&theme.with_shadow(2.0), theme.button_fill, look)[0];
+        assert!(strong.colour[3] > shadow.colour[3]);
+        assert!(strong.edge < shadow.edge, "wider");
+        let none = quads(&theme.with_shadow(0.0), theme.button_fill, look);
+        assert_eq!(none.len(), shadowed.len() - 1);
+        // Panels cast one too.
+        let panel = quads(&theme, theme.settings_panel_fill, Look::Panel);
+        assert_eq!(panel.len(), 2);
+        assert_eq!(panel[0].colour[..3], [0.0, 0.0, 0.0]);
+    }
+
+    #[test]
+    fn a_button_washes_in_its_tint_fading_to_the_right_and_its_fill_darkens() {
+        let theme = Theme::default().with_shadow(0.0);
+        let tint = Color::rgb(0.9, 0.2, 0.3);
+        let look = Look::TintedButton {
+            highlighted: false,
+            seed: 0.0,
+            fade: 1.0,
+            tint,
+        };
+        let quads = quads(&theme, theme.button_fill, look);
+        let (fill, wash, triangles) = (quads[0], quads[1], quads[2]);
+        // Corners: top left, top right, bottom right, bottom left.
+        assert!(fill.right_colour[0] < fill.colour[0]);
+        assert_eq!(wash.colour[..3], [tint.r, tint.g, tint.b]);
+        assert!(wash.colour[3] > wash.right_colour[3]);
+        assert_eq!(triangles.kind, ShapeKind::PatternLayer);
+        assert_eq!(triangles.colour[..3], [tint.r, tint.g, tint.b]);
+        assert!(triangles.colour[3] > triangles.bottom_colour[3]);
+    }
+
+    /// One quad as drawn: its kind, edge (negative: a glow), top-left colour, the colours of
+    /// its top-right and bottom-left corners, effects and vertical middle.
+    #[derive(Clone, Copy, Debug)]
+    pub(super) struct Quad {
+        pub kind: ShapeKind,
+        pub edge: f32,
+        pub colour: [f32; 4],
+        pub right_colour: [f32; 4],
+        pub bottom_colour: [f32; 4],
+        pub sheen: f32,
+        pub pattern: f32,
+        pub middle: f32,
+    }
+
+    pub(super) fn quads(theme: &Theme, colour: Color, look: Look) -> Vec<Quad> {
+        let mut shapes = ShapeBatch::new();
+        draw(&mut shapes, white(), &RECT, colour, look, theme, 1.0);
+        shapes
+            .vertices()
+            .chunks(4)
+            .map(|v| {
+                let (sheen, pattern, _, kind) = slam_render::shape::unpack_effects(v[0].params[2]);
+                Quad {
+                    kind,
+                    edge: v[0].params[1],
+                    colour: v[0].colour,
+                    right_colour: v[1].colour,
+                    bottom_colour: v[3].colour,
+                    sheen,
+                    pattern,
+                    middle: (v[0].position[1] + v[3].position[1]) / 2.0,
+                }
+            })
+            .collect()
     }
 
     fn white() -> AtlasRegion {
@@ -400,41 +597,42 @@ mod look_tests {
         height: 40.0,
     };
 
-    /// The pattern strength of the first quad drawn.
+    /// The strongest pattern among the quads drawn.
     fn pattern_of(theme: &Theme, colour: Color, look: Look) -> f32 {
-        let mut shapes = ShapeBatch::new();
-        draw(&mut shapes, white(), &RECT, colour, look, theme, 1.0);
-        let quad = shapes.len()
-            - if matches!(
-                look,
-                Look::Button {
-                    highlighted: true,
-                    ..
-                }
-            ) {
-                2
-            } else {
-                1
-            };
-        slam_render::shape::unpack_effects(shapes.vertices()[quad * 4].params[2]).1
+        quads(theme, colour, look)
+            .iter()
+            .map(|q| q.pattern)
+            .fold(0.0, f32::max)
+    }
+
+    /// The opacity of the triangles' layer, and its pattern strength.
+    fn triangles_of(theme: &Theme, colour: Color, look: Look) -> (f32, f32) {
+        let quads = quads(theme, colour, look);
+        let layer = quads
+            .iter()
+            .find(|q| q.kind == ShapeKind::PatternLayer)
+            .expect("a triangles layer");
+        (layer.colour[3], layer.pattern)
     }
 
     #[test]
-    fn buttons_carry_a_pattern_that_grows_with_hover_and_selection() {
+    fn hover_and_selection_light_the_triangles_without_changing_their_pace() {
         let theme = Theme::default();
         let button = |highlighted| Look::Button {
             highlighted,
             seed: 0.4,
             fade: 1.0,
         };
-        let idle = pattern_of(&theme, theme.button_fill, button(false));
-        let hover = pattern_of(&theme, theme.button_hover_fill, button(false));
-        let selected = pattern_of(&theme, theme.button_hover_fill, button(true));
+        let idle = triangles_of(&theme, theme.button_fill, button(false));
+        let hover = triangles_of(&theme, theme.button_hover_fill, button(false));
+        let selected = triangles_of(&theme, theme.button_fill, button(true));
+        // The same strength: the same triangles at the same pace, so they do not jump.
+        assert!(idle.1 > 0.0);
+        assert_eq!(idle.1, hover.1);
+        assert_eq!(idle.1, selected.1);
+        assert!(idle.0 < hover.0 && hover.0 < selected.0);
         let panel = pattern_of(&theme, theme.settings_panel_fill, Look::Panel);
-        assert!(idle > 0.0 && panel > 0.0);
-        assert!(panel < idle && idle < hover && hover < selected);
-        assert!((idle - theme.pattern_button).abs() < 0.005);
-        assert!((selected - theme.pattern_selected).abs() < 0.005);
+        assert!(panel > 0.0 && panel < idle.1);
         // Plain shapes and the strip are left bare.
         assert_eq!(pattern_of(&theme, Color::WHITE, Look::Strip), 0.0);
         assert_eq!(pattern_of(&theme, Color::WHITE, Look::Round), 0.0);
@@ -473,22 +671,20 @@ mod look_tests {
 
     #[test]
     fn a_tinted_button_glows_and_is_outlined_in_its_tint() {
-        let theme = Theme::default();
+        let theme = Theme::default().with_shadow(0.0);
         let tint = Color::rgb(0.9, 0.2, 0.3);
-        let mut shapes = ShapeBatch::new();
         let look = Look::TintedButton {
             highlighted: true,
             seed: 0.0,
             fade: 1.0,
             tint,
         };
-        draw(&mut shapes, white(), &RECT, Color::WHITE, look, &theme, 1.0);
-        assert_eq!(shapes.len(), 3);
-        let v = shapes.vertices();
-        assert_eq!(v[0].colour[..3], [tint.r, tint.g, tint.b]);
-        assert_eq!(v[8].colour[..3], [tint.r, tint.g, tint.b]);
+        let quads = quads(&theme, Color::WHITE, look);
+        let (glow, outline) = (quads[0], quads[quads.len() - 1]);
+        assert_eq!(glow.colour[..3], [tint.r, tint.g, tint.b]);
+        assert_eq!(outline.colour[..3], [tint.r, tint.g, tint.b]);
         // The glow and the outline carry no pattern.
-        assert_eq!(slam_render::shape::unpack_effects(v[0].params[2]).1, 0.0);
-        assert_eq!(slam_render::shape::unpack_effects(v[8].params[2]).1, 0.0);
+        assert_eq!(glow.pattern, 0.0);
+        assert_eq!(outline.pattern, 0.0);
     }
 }

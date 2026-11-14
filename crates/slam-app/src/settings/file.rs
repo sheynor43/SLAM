@@ -250,7 +250,70 @@ fn from_table(mut table: Table) -> Loaded {
         "general",
         "parallax",
         &mut settings.general.parallax,
-        0.0..=1.0,
+        0.0..=2.0,
+    );
+    cx.float(
+        &mut general,
+        "general",
+        "blur_strength",
+        &mut settings.general.blur_strength,
+        0.0..=2.0,
+    );
+    cx.float(
+        &mut general,
+        "general",
+        "shadow_strength",
+        &mut settings.general.shadow_strength,
+        0.0..=2.0,
+    );
+    cx.field(
+        &mut general,
+        "general",
+        "parallax_enabled",
+        &mut settings.general.parallax_enabled,
+        |_| Ok(()),
+    );
+    cx.field(
+        &mut general,
+        "general",
+        "blur",
+        &mut settings.general.blur,
+        |_| Ok(()),
+    );
+    cx.field(
+        &mut general,
+        "general",
+        "shadows",
+        &mut settings.general.shadows,
+        |_| Ok(()),
+    );
+    cx.field(
+        &mut general,
+        "general",
+        "cursor_rotate",
+        &mut settings.general.cursor_rotate,
+        |_| Ok(()),
+    );
+    cx.field(
+        &mut general,
+        "general",
+        "cursor_spin",
+        &mut settings.general.cursor_spin,
+        |_| Ok(()),
+    );
+    cx.field(
+        &mut general,
+        "general",
+        "cursor_trail",
+        &mut settings.general.cursor_trail,
+        |_| Ok(()),
+    );
+    cx.field(
+        &mut general,
+        "general",
+        "cursor_ripple",
+        &mut settings.general.cursor_ripple,
+        |_| Ok(()),
     );
     let mut scheme: Option<String> = None;
     cx.opt(&mut general, "general", "colour_scheme", &mut scheme);
@@ -472,6 +535,16 @@ fn from_table(mut table: Table) -> Loaded {
             Some(screens) => settings.frame.fps_screens = screens,
             None => cx.warn(format!(
                 "frame.fps_screens: unknown value \"{name}\", using the default"
+            )),
+        }
+    }
+    let mut mode: Option<String> = None;
+    cx.opt(&mut frame, "frame", "fps_mode", &mut mode);
+    if let Some(name) = mode {
+        match slam_play::FpsMode::from_name(&name) {
+            Some(mode) => settings.frame.fps_mode = mode,
+            None => cx.warn(format!(
+                "frame.fps_mode: unknown value \"{name}\", using the default"
             )),
         }
     }

@@ -302,11 +302,17 @@ impl SongSelectLayout {
         let lean_reach = (hint.y + hint.height - header.y) / 2.0 * lean;
         // The two panels' backings are `margin / 2` larger on every side; keep them apart by
         // as much.
+        // As wide as lazer's wedge at most (ADR-0136). The wedges lean by the buttons' skew
+        // from their bottom edge, so their top reaches right by their height's lean.
+        let info_height = (hint.y - margin / 2.0 - header.y).max(0.0);
+        let wedge_lean = (info_height + margin) * theme.button_skew().tan();
         let info = Rect {
             x: margin,
             y: header.y,
-            width: (x - margin - 3.0 * margin / 2.0 - lean_reach).max(0.0),
-            height: (hint.y - margin / 2.0 - header.y).max(0.0),
+            width: (x - margin - 3.0 * margin / 2.0 - lean_reach - wedge_lean)
+                .min(theme.song_info_width * scale)
+                .max(0.0),
+            height: info_height,
         };
         let search = Rect {
             x,
@@ -347,18 +353,6 @@ impl SongSelectLayout {
     pub fn lean_x(&self, y: f32) -> f32 {
         let middle = (self.header.y + self.hint.y + self.hint.height) / 2.0;
         (middle - y) * self.lean
-    }
-
-    /// The info panel's backing: its content and `margin / 2` around, down to the hint
-    /// row's top.
-    pub fn info_backing(&self, margin: f32) -> Rect {
-        let inset = margin / 2.0;
-        Rect {
-            x: self.info.x - inset,
-            y: self.info.y - inset,
-            width: self.info.width + 2.0 * inset,
-            height: self.info.height + 2.0 * inset,
-        }
     }
 
     /// Whether the "choose folder" button, leaning with the panel, contains the point.
@@ -435,6 +429,13 @@ pub fn ease_scroll(shown: f32, target: f32, elapsed_ns: u64) -> f32 {
 /// the rows cut at both ends. A theme with a taller area is cut to this many rows.
 pub const MAX_VISIBLE_ROWS: usize = 16;
 
+/// Rows the snapshot also carries above and below those: the ones a set opening or closing
+/// slides into view (ADR-0136).
+pub const ROW_PAD: usize = 16;
+
+/// All the rows the snapshot carries.
+const WINDOW_ROWS: usize = MAX_VISIBLE_ROWS + 2 * ROW_PAD;
+
 /// What the draw side needs; cloning copies an `Arc` and some fixed-size data, no
 /// allocation.
 #[derive(Clone, Debug)]
@@ -449,7 +450,10 @@ pub struct SongSelectSnapshot {
     pub row_count: usize,
     /// Flat index of the first of `rows`.
     pub first_row: usize,
-    rows: [Row; MAX_VISIBLE_ROWS],
+    /// Flat index of the first of `window`: up to [`ROW_PAD`] before `first_row`.
+    window_start: usize,
+    /// The rows from `window_start`: `rows` and up to [`ROW_PAD`] on either side.
+    window: [Row; WINDOW_ROWS],
     /// Rows scrolled off the top: where the list goes.
     pub scroll: f32,
     /// Rows scrolled off the top as shown, easing towards `scroll` (ADR-0121).
@@ -472,12 +476,12 @@ pub struct SongSelectSnapshot {
     pub no_audio: bool,
 }
 
-/// Appends a star rating after a name: " ★5.43" (ADR-0134). Does not allocate once `text`
-/// has the room.
+/// Appends a star rating: "5.43" (ADR-0134); the pill draws the star before it as a shape,
+/// as the interface fonts have no "★" (ADR-0136). Does not allocate once `text` has the room.
 pub(crate) fn push_stars(text: &mut String, stars: f32) {
     use std::fmt::Write as _;
     // Writing to a `String` cannot fail.
-    let _ = write!(text, " \u{2605}{stars:.2}");
+    let _ = write!(text, "{stars:.2}");
 }
 
 impl SongSelectSnapshot {
@@ -579,7 +583,19 @@ impl SongSelectSnapshot {
     /// The rows that are in or near the list area, from flat index `first_row`.
     pub fn rows(&self) -> &[Row] {
         let len = self.row_count.saturating_sub(self.first_row);
-        &self.rows[..len.min(MAX_VISIBLE_ROWS)]
+        let start = self.first_row - self.window_start;
+        &self.window[start..start + len.min(MAX_VISIBLE_ROWS)]
+    }
+
+    /// The row at flat index `index`, if the snapshot carries it: [`rows`](Self::rows)
+    /// and up to [`ROW_PAD`] rows on either side.
+    pub fn row_at(&self, index: usize) -> Option<Row> {
+        if index >= self.row_count {
+            return None;
+        }
+        self.window
+            .get(index.checked_sub(self.window_start)?)
+            .copied()
     }
 }
 
@@ -936,8 +952,9 @@ impl SongSelect {
         let row_count = self.filter.row_count(self.set);
         let first_row = self.first_row();
         // Every slot `rows` returns is filled, however many rows the view shows.
-        let mut rows = [Row::Set(0); MAX_VISIBLE_ROWS];
-        for (slot, index) in rows.iter_mut().zip(first_row..row_count) {
+        let window_start = first_row.saturating_sub(ROW_PAD);
+        let mut window = [Row::Set(0); WINDOW_ROWS];
+        for (slot, index) in window.iter_mut().zip(window_start..row_count) {
             if let Some(row) = self.filter.row(self.set, index) {
                 *slot = row;
             }
@@ -948,7 +965,8 @@ impl SongSelect {
             query: self.query,
             row_count,
             first_row,
-            rows,
+            window_start,
+            window,
             scroll: self.scroll,
             shown_scroll: self.shown,
             hovered: self.hovered,
@@ -1236,6 +1254,8 @@ impl SongSelect {
     }
 }
 
+#[cfg(test)]
+mod layout_tests;
 #[cfg(test)]
 mod matching_tests;
 #[cfg(test)]

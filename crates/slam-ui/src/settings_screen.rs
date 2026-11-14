@@ -9,7 +9,7 @@
 use std::sync::Arc;
 
 use crate::menu::Rect;
-use crate::song_select::filter::with_terms;
+use crate::song_select::filter::with_term_pairs;
 use crate::song_select::{SearchQuery, ease_scroll};
 use crate::theme::Theme;
 use crate::widgets::{
@@ -26,7 +26,7 @@ pub use view::{KeyLabels, RowLabels, SettingsLabels, SettingsView};
 /// Most rows; more are ignored.
 pub const MAX_ROWS: usize = 96;
 /// Most sections; rows of later ones go into the last.
-pub const MAX_SECTIONS: usize = 8;
+pub const MAX_SECTIONS: usize = 9;
 
 /// A mouse button, as the screen names it; the application converts to and from its own.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -707,6 +707,38 @@ impl SettingsScreen {
         self.shown
     }
 
+    /// The place in the list to come back to: the scroll target (where the list was before
+    /// a search, while one runs) and the sidebar's pick.
+    pub fn position(&self) -> (f32, Option<usize>) {
+        let scroll = if self.searching() {
+            self.before_search
+        } else {
+            self.scroll
+        };
+        (scroll, self.pinned)
+    }
+
+    /// The section picked in the sidebar and highlighted until the list is scrolled by hand.
+    pub fn pinned_section(&self) -> Option<usize> {
+        self.pinned
+    }
+
+    /// Puts the list back where it was (ADR-0136): the scroll `scroll`, held to the lines
+    /// there are now, shown at once, and the sidebar's pick `pinned` if its section still
+    /// has a header. Does not allocate.
+    pub fn restore_position(&mut self, scroll: f32, pinned: Option<usize>) {
+        let last = self.lines.saturating_sub(1) as f32;
+        let scroll = if scroll.is_finite() {
+            scroll.clamp(0.0, last)
+        } else {
+            0.0
+        };
+        self.scroll = scroll;
+        self.shown = scroll;
+        self.before_search = scroll;
+        self.pinned = pinned.filter(|section| self.header(*section).is_some());
+    }
+
     /// The number of lines in the list: the section headers and the rows shown.
     pub fn lines(&self) -> usize {
         self.lines
@@ -729,12 +761,15 @@ impl SettingsScreen {
     /// with the focus on the first row there). Does not allocate.
     fn refilter(&mut self) {
         let texts = Arc::clone(&self.texts);
-        with_terms(&self.search, |terms| {
+        // Every word, as typed or as read on the other keyboard layout (ADR-0137).
+        with_term_pairs(&self.search, |terms| {
             for row in 0..self.len {
                 self.matched[row] = !matches!(self.widgets[row], RowWidget::Note)
-                    && texts
-                        .get(row)
-                        .is_some_and(|text| terms.iter().all(|term| text.contains(term)));
+                    && texts.get(row).is_some_and(|text| {
+                        terms
+                            .iter()
+                            .all(|&(term, alt)| text.contains(term) || text.contains(alt))
+                    });
             }
         });
         self.close_dropdowns();

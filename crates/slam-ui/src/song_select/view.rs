@@ -6,6 +6,7 @@
 //! draw thread. A new list generation only marks the slots stale. Row texts are cut to the
 //! row's width with an ellipsis, which bounds the glyphs per row.
 
+use crate::anim::{ease_out_quint, progress};
 use std::fmt::Write as _;
 use std::sync::Arc;
 
@@ -193,6 +194,8 @@ pub struct SongSelectView {
     /// When each thumbnail seen was first drawn; replaced round-robin.
     fades: [Option<(TextureHandle, u64)>; FADES],
     fade_next: usize,
+    /// The set whose difficulties are opening, and the one closing (ADR-0136).
+    expansion: Expansion,
     /// The thumbnails were on at the last frame: the row texts are cut for it.
     thumbs_on: bool,
 }
@@ -378,6 +381,7 @@ impl SongSelectView {
             ellipsis: [0.0; 2],
             info: InfoPanel::new(&labels.details),
             fades: [None; FADES],
+            expansion: Expansion::default(),
             fade_next: 0,
             thumbs_on: false,
             theme,
@@ -632,17 +636,20 @@ impl SongSelectView {
         let list = &*snapshot.list;
 
         let scale = layout.scale;
+        // Rows emerging as their set expands fade in on top of the layer (ADR-0136).
+        let row_alpha = std::cell::Cell::new(1.0f32);
         let mut rect = |rect: &Rect, colour: Color, look: Look| {
             let moved = Rect {
                 x: rect.x + shift,
                 ..*rect
             };
-            let colour = faded(colour, opacity);
+            let colour = faded(colour, opacity * row_alpha.get());
             crate::widgets::draw(shapes, white, &moved, colour, look, theme, scale);
         };
         let mut left = |line: &Line, x: f32, centre_y: f32, colour: Color| {
             let position = [x + shift, centre_y - line.layout.height() / 2.0];
-            push_layout(text, &line.layout, position, faded(colour, opacity), glyphs);
+            let colour = faded(colour, opacity * row_alpha.get());
+            push_layout(text, &line.layout, position, colour, glyphs);
         };
 
         if snapshot.mods.open {
@@ -668,22 +675,23 @@ impl SongSelectView {
             let expanded = custom.state != CustomisationState::Collapsed;
             let dim = if expanded { DIMMED } else { 1.0 };
             for (column, titles) in self.mod_column_titles.iter().enumerate() {
+                // Each column in the colour of its mod type (ADR-0136).
+                let tint = theme.mod_column_tints[column % theme.mod_column_tints.len()];
                 let (x, y) = centred(titles, &panel.column_titles[column]);
-                left(titles, x, y, faded(theme.disabled_text, dim));
+                left(titles, x, y, faded(tint, dim));
                 for (index, line) in self.mod_tiles[column].iter().enumerate() {
                     let area = panel.tile_rect(column, index);
                     let on = snapshot.mods.active[column] >> index & 1 != 0;
-                    let fill = if on {
-                        theme.widget_accent_fill
-                    } else if snapshot.mods.hover == Some((column, index)) {
+                    let fill = if !on && snapshot.mods.hover == Some((column, index)) {
                         theme.button_hover_fill
                     } else {
                         theme.button_fill
                     };
-                    let look = Look::Button {
+                    let look = Look::TintedButton {
                         highlighted: on,
                         seed: (column * 7 + index) as f32 * 0.31,
                         fade: opacity,
+                        tint,
                     };
                     rect(&area, faded(fill, dim), look);
                     let (x, y) = centred(line, &area);
@@ -852,12 +860,6 @@ impl SongSelectView {
             }
             return;
         }
-        // The info panel's backing on the left.
-        rect(
-            &layout.info_backing(theme.song_margin * layout.scale),
-            theme.song_panel_fill,
-            Look::Panel,
-        );
         // Everything on the panel leans with it (ADR-0121).
         let lean = |x: f32, centre_y: f32| x + layout.lean_x(centre_y);
         let leaned = |r: &Rect| Rect {
@@ -884,7 +886,7 @@ impl SongSelectView {
         }
         // The selected difficulty's statistics and local scores, on the left.
         self.info
-            .push(layout, theme, snapshot, &mut rect, &mut left);
+            .push(layout, theme, snapshot, opacity, &mut rect, &mut left);
         // The search line.
         let search = leaned(&layout.search);
         rect(&search, theme.song_search_fill, Look::Round);
@@ -937,18 +939,21 @@ impl SongSelectView {
                     theme.disabled_text,
                 );
             }
-            let rows = snapshot.rows();
             // Thumbnails are pushed after the rows: their shapes wait here.
             let mut thumb_shapes: [Option<Shape>; 2 * MAX_VISIBLE_ROWS] =
                 [None; 2 * MAX_VISIBLE_ROWS];
             let mut thumb_count = 0;
             let thumb = ThumbGeometry::new(theme, layout);
-            for index in layout.visible_rows(snapshot.shown_scroll, snapshot.row_count) {
-                let Some(row) = index
-                    .checked_sub(snapshot.first_row)
-                    .and_then(|i| rows.get(i))
-                    .copied()
-                else {
+            let expansion = self
+                .expansion
+                .track(list, snapshot.selected, thumbs.now_ns, theme);
+            // Rows pulled in from past the window's ends while the list moves.
+            let visible = layout.visible_rows(snapshot.shown_scroll, snapshot.row_count);
+            let reach = expansion.reach();
+            let rows_to_draw =
+                visible.start.saturating_sub(reach)..(visible.end + reach).min(snapshot.row_count);
+            for index in rows_to_draw {
+                let Some(row) = snapshot.row_at(index) else {
                     continue;
                 };
                 let slot_count = self.slots.len();
@@ -976,7 +981,9 @@ impl SongSelectView {
                     Row::Set(_) => 0.0,
                     Row::Difficulty { .. } => layout.indent,
                 };
-                let y = layout.row_y(index, snapshot.shown_scroll);
+                let (shift_rows, alpha) = expansion.offset(row);
+                row_alpha.set(alpha);
+                let y = layout.row_y(index, snapshot.shown_scroll) + shift_rows * layout.row_height;
                 // The list leans along the rows' skew (ADR-0121).
                 let lean = layout.lean_x(y + (layout.row_height - gap) / 2.0);
                 let area = Rect {
@@ -1001,10 +1008,9 @@ impl SongSelectView {
                     row,
                     Row::Difficulty { set, difficulty } if snapshot.selected == Some((set, difficulty))
                 );
-                let fill = if selected {
+                // The selection is the row's wash, outline and glow, not a fill (ADR-0136).
+                let fill = if !selected && snapshot.hovered == Some(row) {
                     theme.button_hover_fill
-                } else if snapshot.hovered == Some(row) {
-                    theme.row_hover_fill
                 } else {
                     theme.button_fill
                 };
@@ -1029,35 +1035,26 @@ impl SongSelectView {
                     Row::Difficulty { .. } => Look::TintedButton {
                         highlighted: selected,
                         seed,
-                        fade: opacity,
+                        fade: opacity * alpha,
                         tint: crate::star_colour::glow_for(stars, theme.accent),
                     },
-                    Row::Set(_) => Look::Button {
+                    // A set in the colour of its hardest difficulty (ADR-0136).
+                    Row::Set(set) => Look::TintedButton {
                         highlighted: selected,
                         seed,
-                        fade: opacity,
+                        fade: opacity * alpha,
+                        tint: crate::star_colour::glow_for(
+                            list.sets.get(set).and_then(|s| {
+                                s.difficulties
+                                    .iter()
+                                    .filter_map(|d| d.stars)
+                                    .reduce(f32::max)
+                            }),
+                            theme.accent,
+                        ),
                     },
                 };
                 rect(&clipped, fill, look);
-                if let Row::Difficulty { .. } = row {
-                    // The strip on the left edge, leaning with the row and cut with it.
-                    let colour = crate::star_colour::glow_for(stars, theme.accent);
-                    let width = theme.difficulty_strip_width * scale;
-                    let inset = theme.button_radius * scale * 0.5;
-                    let height = (clipped.height - 2.0 * inset).max(0.0);
-                    let tan = theme.button_skew().tan();
-                    let drop = (area.y + area.height / 2.0) - (clipped.y + clipped.height / 2.0);
-                    rect(
-                        &Rect {
-                            x: clipped.x + drop * tan,
-                            y: clipped.y + inset,
-                            width,
-                            height,
-                        },
-                        colour,
-                        Look::Strip,
-                    );
-                }
                 let x = area.x + pad + text_shift;
                 if thumbs.enabled
                     && matches!(row, Row::Set(_))
@@ -1134,24 +1131,16 @@ impl SongSelectView {
                         {
                             // The star pill, in the colour of the rating.
                             let line = &row_text.secondary;
-                            let padding = theme.star_pill_pad * scale;
-                            let height = line.layout.height() + padding * 0.8;
-                            let width = line.layout.width() + 2.0 * padding;
-                            rect(
-                                &Rect {
-                                    x: right - width,
-                                    y: centre - height / 2.0,
-                                    width,
-                                    height,
-                                },
-                                crate::star_colour::for_stars(stars),
-                                Look::Pill,
-                            );
-                            left(
+                            let width = super::info_panel::star_pill_width(line, theme, scale);
+                            super::info_panel::push_star_pill(
+                                &mut rect,
+                                &mut left,
                                 line,
-                                right - width + padding,
+                                stars,
+                                theme,
+                                scale,
+                                right - width,
                                 centre,
-                                crate::star_colour::text_for_stars(stars),
                             );
                         }
                     }
@@ -1180,6 +1169,7 @@ impl SongSelectView {
                     }
                 }
             }
+            row_alpha.set(1.0);
             for shape in thumb_shapes[..thumb_count].iter().flatten() {
                 shapes.push_shape(shape);
             }
@@ -1253,6 +1243,123 @@ impl SongSelectView {
     }
 }
 
+/// The expanded set and when it changed, so its difficulties slide out from under its row
+/// and the rows below follow, while the set that closed slides shut (ADR-0136).
+#[derive(Clone, Copy, Debug, Default)]
+struct Expansion {
+    /// Key of the expanded set.
+    key: Option<u64>,
+    /// When it last changed; 0 before any change.
+    start_ns: u64,
+    /// Key and difficulty count of the set that closed then.
+    closed: Option<(u64, usize)>,
+}
+
+/// One frame of an [`Expansion`]: where the opening and the closing sets are in the list.
+#[derive(Clone, Copy, Debug)]
+struct ExpansionFrame {
+    /// How far the change is, 0 to 1, eased.
+    t: f32,
+    /// The opening set's index and difficulty count.
+    open: Option<(usize, usize)>,
+    /// The closing set's index and difficulty count.
+    closed: Option<(usize, usize)>,
+}
+
+impl Expansion {
+    /// Follows the selection: a new expanded set starts the animation from `now_ns`. The
+    /// same set in a republished list (another index, same key) does not.
+    fn track(
+        &mut self,
+        list: &SongList,
+        selected: Option<(usize, usize)>,
+        now_ns: u64,
+        theme: &Theme,
+    ) -> ExpansionFrame {
+        let open = selected.and_then(|(set, _)| Some((set, list.sets.get(set)?)));
+        let key = open.map(|(_, s)| s.key);
+        if key != self.key {
+            let closed = self.key.and_then(|old| {
+                let count = list.sets.iter().find(|s| s.key == old)?.difficulties.len();
+                Some((old, count))
+            });
+            // The first selection opens at once.
+            let start_ns = if self.key.is_some() { now_ns.max(1) } else { 0 };
+            *self = Expansion {
+                key,
+                start_ns,
+                closed,
+            };
+        }
+        let duration = (theme.song_expand_ms.max(0.0) * 1e6) as u64;
+        let t = if self.start_ns == 0 {
+            1.0
+        } else {
+            ease_out_quint(progress(self.start_ns, now_ns, duration))
+        };
+        if t >= 1.0 {
+            // Settled: nothing moves, and the list is not searched.
+            return ExpansionFrame {
+                t,
+                open: None,
+                closed: None,
+            };
+        }
+        let closed = self.closed.and_then(|(old, count)| {
+            let index = list.sets.iter().position(|s| s.key == old)?;
+            Some((index, count))
+        });
+        // No further than the snapshot carries rows past the window, so nothing slides in
+        // from where there is no row to draw.
+        let cap = |count: usize| count.min(super::ROW_PAD);
+        ExpansionFrame {
+            t,
+            open: open.map(|(index, s)| (index, cap(s.difficulties.len()))),
+            closed: closed.map(|(index, count)| (index, cap(count))),
+        }
+    }
+}
+
+impl ExpansionFrame {
+    /// Rows the list may move by: drawn past the window's ends meanwhile.
+    fn reach(&self) -> usize {
+        if self.t >= 1.0 {
+            return 0;
+        }
+        self.open.map_or(0, |o| o.1) + self.closed.map_or(0, |c| c.1)
+    }
+
+    /// Rows `row` is moved down by (negative: up), and its opacity.
+    fn offset(&self, row: Row) -> (f32, f32) {
+        let left = 1.0 - self.t;
+        if left <= 0.0 {
+            return (0.0, 1.0);
+        }
+        let set = match row {
+            Row::Set(set) | Row::Difficulty { set, .. } => set,
+        };
+        let mut rows = 0.0;
+        let mut alpha = 1.0;
+        if let Some((open, count)) = self.open {
+            match row {
+                // Out from under the set's row, the later ones from further.
+                Row::Difficulty { set, difficulty } if set == open => {
+                    rows -= left * (difficulty as f32 + 1.0);
+                    alpha = self.t;
+                }
+                _ if set > open => rows -= left * count as f32,
+                _ => {}
+            }
+        }
+        if let Some((closed, count)) = self.closed
+            && set > closed
+        {
+            rows += left * count as f32;
+        }
+        (rows, alpha)
+    }
+}
+
 /// Appends a tile's detail after its acronym: " 1.05x", " AR9.4", " AR10" (lazer's
 /// `ToStandardFormattedString(1)` drops a zero decimal).
 fn push_detail(text: &mut String, detail: TileDetail) {
@@ -1268,6 +1375,93 @@ fn push_detail(text: &mut String, detail: TileDetail) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn sets(counts: &[usize]) -> SongList {
+        use crate::song_select::{DifficultyRow, SearchSource, SetRow};
+        SongList {
+            sets: counts
+                .iter()
+                .enumerate()
+                .map(|(i, &n)| SetRow {
+                    key: 100 + i as u64,
+                    artist: String::new(),
+                    title: String::new(),
+                    creator: String::new(),
+                    difficulties: (0..n)
+                        .map(|_| DifficultyRow::new(SearchSource::default()))
+                        .collect(),
+                })
+                .collect(),
+        }
+    }
+
+    const MS: u64 = 1_000_000;
+
+    #[test]
+    fn the_first_selection_opens_at_once() {
+        let theme = Theme::default();
+        let list = sets(&[3, 2]);
+        let mut e = Expansion::default();
+        let frame = e.track(&list, Some((0, 0)), 5 * MS, &theme);
+        assert_eq!(frame.reach(), 0);
+        assert_eq!(
+            frame.offset(Row::Difficulty {
+                set: 0,
+                difficulty: 2
+            }),
+            (0.0, 1.0)
+        );
+    }
+
+    #[test]
+    fn a_new_set_slides_its_difficulties_out_and_the_old_one_shut() {
+        let theme = Theme::default();
+        let list = sets(&[3, 2, 4]);
+        let mut e = Expansion::default();
+        e.track(&list, Some((0, 0)), 0, &theme);
+        // Set 2 opens at 1 s; set 0 (3 difficulties) closes.
+        let start = e.track(&list, Some((2, 0)), 1_000 * MS, &theme);
+        assert_eq!(start.t, 0.0);
+        assert_eq!(start.reach(), 4 + 3);
+        // Its difficulties start under its row (which is where it was: below the closing
+        // set's rows), unseen.
+        let (rows, alpha) = start.offset(Row::Difficulty {
+            set: 2,
+            difficulty: 1,
+        });
+        let (set_rows, _) = start.offset(Row::Set(2));
+        assert_eq!(set_rows, 3.0);
+        assert_eq!((rows - set_rows, alpha), (-2.0, 0.0));
+        // Rows between the two sets stay where they were: below the closing set's rows.
+        assert_eq!(start.offset(Row::Set(1)), (3.0, 1.0));
+        assert_eq!(start.offset(Row::Set(0)), (0.0, 1.0));
+        // Halfway they are on their way; after the duration everything is in place.
+        let mid = e.track(&list, Some((2, 1)), 1_000 * MS + 60 * MS, &theme);
+        let (rows, alpha) = mid.offset(Row::Difficulty {
+            set: 2,
+            difficulty: 1,
+        });
+        let (set_rows, _) = mid.offset(Row::Set(2));
+        let under = rows - set_rows;
+        assert!(under > -2.0 && under < 0.0 && alpha > 0.0 && alpha < 1.0);
+        let done = e.track(&list, Some((2, 1)), 2_000 * MS, &theme);
+        assert_eq!(done.reach(), 0);
+        assert_eq!(done.offset(Row::Set(1)), (0.0, 1.0));
+    }
+
+    #[test]
+    fn a_republished_list_with_the_same_set_does_not_animate() {
+        let theme = Theme::default();
+        let mut e = Expansion::default();
+        e.track(&sets(&[3, 2]), Some((1, 0)), 0, &theme);
+        // The set moved to index 0 (its key is 101), as a resort would do.
+        let mut moved = sets(&[2, 3]);
+        moved.sets.swap(0, 1);
+        moved.sets[0].key = 101;
+        moved.sets[1].key = 100;
+        let frame = e.track(&moved, Some((0, 0)), 500 * MS, &theme);
+        assert_eq!(frame.reach(), 0);
+    }
 
     #[test]
     fn details_follow_the_acronym() {

@@ -118,10 +118,33 @@ impl Rig {
             &layout,
             &self.theme,
             &snapshot,
+            1.0,
             &mut |_, _, _| rects += 1,
             &mut |line, _, _, _| texts += usize::from(!line.text.is_empty()),
         );
         (rects, texts)
+    }
+
+    /// The outlines of the wedges drawn at `opacity`.
+    fn outlines(&self, details: BeatmapDetails, opacity: f32) -> Vec<Color> {
+        let mut screen = self.screen.clone();
+        screen.set_details(Some(details));
+        let snapshot = screen.snapshot();
+        let layout = SongSelectLayout::new(1280.0, 768.0, &self.theme);
+        let mut found = Vec::new();
+        self.panel.push(
+            &layout,
+            &self.theme,
+            &snapshot,
+            opacity,
+            &mut |_, _, look| {
+                if let Look::Wedge { outline, .. } = look {
+                    found.push(outline);
+                }
+            },
+            &mut |_, _, _, _| {},
+        );
+        found
     }
 }
 
@@ -173,8 +196,8 @@ fn the_empty_state_draws_its_line_and_rows_draw_boxes() {
     let empty = details(Some(LocalScores::default()));
     rig.show(empty);
     let (rects, texts) = rig.drawn(empty);
-    // The bars: a track and a fill each.
-    assert_eq!(rects, 8);
+    // The two wedges (ADR-0136), the bars: a track and a fill each.
+    assert_eq!(rects, 2 + 8);
     // Name, artist, 4 labels, 4 values, length/BPM, counts, title and the empty line.
     assert_eq!(texts, 2 + 4 + 4 + 2 + 1 + 1);
     let mut scores = LocalScores::default();
@@ -183,7 +206,7 @@ fn the_empty_state_draws_its_line_and_rows_draw_boxes() {
     let listed = details(Some(scores));
     rig.show(listed);
     let (rects, _) = rig.drawn(listed);
-    assert_eq!(rects, 8 + 2);
+    assert_eq!(rects, 2 + 8 + 2);
 }
 
 #[test]
@@ -230,6 +253,17 @@ fn the_panel_fits_and_keeps_clear_of_the_list_at_common_sizes() {
             assert!(layout.list.y + layout.list.height <= layout.hint.y, "{tag}");
             let parts = InfoLayout::new(&info, &theme, layout.scale);
             let bottom = info.y + info.height;
+            // The two wedges keep apart (ADR-0136).
+            assert!(
+                parts.counts.y + parts.counts.height + inset < parts.scores_title.y - inset,
+                "{tag}"
+            );
+            // Leaning from the bottom, the wedges' top right corner stays clear of the list.
+            let lean = (info.height + 2.0 * inset) * theme.button_skew().tan();
+            assert!(
+                info.x + info.width + inset + lean <= layout.header.x - inset + 0.5,
+                "{tag}"
+            );
             // At the largest scale the panel is shorter than its parts; every part shown
             // still lies inside, and the statistics fit at the others.
             if menu_scale <= 1.0 {
@@ -343,5 +377,53 @@ fn difficulty_values_keep_two_decimals_at_most() {
         let mut s = String::new();
         push_difficulty(&mut s, value);
         assert_eq!(s, text, "{value}");
+    }
+}
+
+#[test]
+fn the_wedge_outline_fades_with_the_screen() {
+    let rig = Rig::new();
+    let shown = details(Some(LocalScores::default()));
+    let full = rig.outlines(shown, 1.0);
+    let leaving = rig.outlines(shown, 0.25);
+    assert_eq!(full.len(), leaving.len());
+    assert!(
+        full[0].a > 0.0,
+        "the selected difficulty's wedge is outlined"
+    );
+    for (a, b) in full.iter().zip(&leaving) {
+        assert!((b.a - a.a * 0.25).abs() < 1e-6, "{a:?} {b:?}");
+    }
+}
+
+#[test]
+fn the_wedges_run_off_the_left_edge_from_top_to_bottom() {
+    let rig = Rig::new();
+    let mut screen = rig.screen.clone();
+    screen.set_details(Some(details(Some(LocalScores::default()))));
+    let snapshot = screen.snapshot();
+    let layout = SongSelectLayout::new(1280.0, 768.0, &rig.theme);
+    let tan = rig.theme.button_skew().tan();
+    let mut lefts = Vec::new();
+    rig.panel.push(
+        &layout,
+        &rig.theme,
+        &snapshot,
+        1.0,
+        &mut |r, _, look| {
+            if let Look::Wedge { lean, .. } = look {
+                assert_eq!(lean, tan);
+                // The sheared left edge at the top and at the bottom.
+                let centre = r.x + r.width / 2.0;
+                let top = centre - r.width / 2.0 + r.height / 2.0 * lean;
+                let bottom = centre - r.width / 2.0 - r.height / 2.0 * lean;
+                lefts.push((top, bottom));
+            }
+        },
+        &mut |_, _, _, _| {},
+    );
+    assert_eq!(lefts.len(), 2);
+    for (top, bottom) in lefts {
+        assert!(top <= 0.0 && bottom <= 0.0, "{top} {bottom}");
     }
 }

@@ -492,14 +492,7 @@ impl MenuCursorView {
         let was_held = self.motion.held();
         let pointer = self.pointer.position().map(|[x, y]| [x * ppp, y * ppp]);
         let held = self.pointer.pressed();
-        self.motion.update(
-            theme,
-            ui,
-            pointer,
-            held,
-            self.pointer.right_pressed(),
-            now_ns,
-        );
+        self.motion.update(theme, ui, pointer, held, now_ns);
         if held != was_held {
             if held {
                 self.expand.expanded_at = now_ms;

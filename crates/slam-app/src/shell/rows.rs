@@ -28,7 +28,7 @@ use slam_ui::screen::TransitionStyle;
 use slam_ui::theme::{ColourScheme, MAX_SKEW_DEGREES, UI_SCALE_RANGE};
 
 /// Sections, in order; the keys of their names are in [`SECTION_KEYS`].
-const SECTION_KEYS: [&str; 8] = [
+const SECTION_KEYS: [&str; 9] = [
     "settings-section-audio",
     "settings-section-offset",
     "settings-section-keys",
@@ -37,6 +37,7 @@ const SECTION_KEYS: [&str; 8] = [
     "settings-section-frame",
     "settings-section-gameplay",
     "settings-section-library",
+    "settings-section-feedback",
 ];
 /// The indices of the sections, in the order they show; [`SECTION_KEYS`] has their names in
 /// the same order. A new row goes to the section of its `Row::section` arm, and shows among
@@ -50,6 +51,7 @@ mod section {
     pub const FRAME: usize = 5;
     pub const GAMEPLAY: usize = 6;
     pub const LIBRARY: usize = 7;
+    pub const FEEDBACK: usize = 8;
 }
 
 /// The index of the skin row.
@@ -243,8 +245,18 @@ pub enum Row {
     ColourScheme,
     /// Whether the interface effects are on; applies live (ADR-0123).
     Effects,
+    /// Whether the menus' parallax is on; applies live (ADR-0136).
+    ParallaxEnabled,
     /// The strength of the menus' parallax; applies live (ADR-0132).
     Parallax,
+    /// Whether the menu backgrounds are blurred; applies live (ADR-0136).
+    Blur,
+    /// The depth of the background blur; applies live (ADR-0136).
+    BlurStrength,
+    /// Whether buttons, rows and panels cast shadows; applies live (ADR-0136).
+    Shadows,
+    /// The strength of the shadows; applies live (ADR-0136).
+    ShadowStrength,
     /// How screens change (ADR-0126).
     Transitions,
     /// The scale of the menus (ADR-0118).
@@ -259,6 +271,14 @@ pub enum Row {
     BeatmapHitsounds,
     /// The cursor of the menus; applies live (ADR-0124).
     MenuCursor,
+    /// The menu cursor turns towards a drag; applies live (ADR-0136).
+    MenuCursorRotate,
+    /// The menu cursor spins while the pointer rests; applies live (ADR-0136).
+    MenuCursorSpin,
+    /// The menu cursor leaves a trail; applies live (ADR-0136).
+    MenuCursorTrail,
+    /// The menu cursor sends a ring out at each press; applies live (ADR-0136).
+    MenuCursorRipple,
     /// The gameplay cursor (ADR-0124).
     CursorStyle,
     CursorSize,
@@ -276,6 +296,8 @@ pub enum Row {
     ShowFps,
     FpsCorner,
     FpsScreens,
+    /// What the FPS counter shows (ADR-0138).
+    FpsMode,
     Dim,
     SongSelectDim,
     /// Height of the song list's thumbnails (ADR-0127).
@@ -289,13 +311,19 @@ pub enum Row {
     HudAnimations,
     PauseMenuScale,
     SongsFolder,
+    /// Opens the project page.
+    FeedbackHome,
+    /// Opens the bug report form, filled in.
+    FeedbackBug,
+    /// Opens the feature request form.
+    FeedbackFeature,
 }
 
 // The screen ignores rows past its capacity.
 const _: () = assert!(Row::ALL.len() <= slam_ui::settings_screen::MAX_ROWS);
 
 impl Row {
-    pub const ALL: [Row; 72] = [
+    pub const ALL: [Row; 85] = [
         Row::MasterVolume,
         Row::MusicVolume,
         Row::MenuMusic,
@@ -332,7 +360,12 @@ impl Row {
         Row::Intro,
         Row::ColourScheme,
         Row::Effects,
+        Row::ParallaxEnabled,
         Row::Parallax,
+        Row::Blur,
+        Row::BlurStrength,
+        Row::Shadows,
+        Row::ShadowStrength,
         Row::Transitions,
         Row::MenuScale,
         Row::GameScale,
@@ -342,6 +375,10 @@ impl Row {
         Row::BeatmapColours,
         Row::BeatmapHitsounds,
         Row::MenuCursor,
+        Row::MenuCursorRotate,
+        Row::MenuCursorSpin,
+        Row::MenuCursorTrail,
+        Row::MenuCursorRipple,
         Row::CursorStyle,
         Row::CursorSize,
         Row::AutoCursorSize,
@@ -356,6 +393,7 @@ impl Row {
         Row::ShowFps,
         Row::FpsCorner,
         Row::FpsScreens,
+        Row::FpsMode,
         Row::Dim,
         Row::SongSelectDim,
         Row::SongSelectThumbnails,
@@ -368,7 +406,21 @@ impl Row {
         Row::HudAnimations,
         Row::PauseMenuScale,
         Row::SongsFolder,
+        Row::FeedbackHome,
+        Row::FeedbackBug,
+        Row::FeedbackFeature,
     ];
+
+    /// The page a Feedback row opens.
+    pub fn feedback(self) -> Option<crate::feedback::Kind> {
+        use crate::feedback::Kind;
+        match self {
+            Row::FeedbackHome => Some(Kind::Github),
+            Row::FeedbackBug => Some(Kind::Bug),
+            Row::FeedbackFeature => Some(Kind::Feature),
+            _ => None,
+        }
+    }
 
     /// The key a key row edits.
     pub fn key_slot(self) -> Option<KeySlot> {
@@ -429,7 +481,12 @@ impl Row {
             | Row::Intro
             | Row::ColourScheme
             | Row::Effects
+            | Row::ParallaxEnabled
             | Row::Parallax
+            | Row::Blur
+            | Row::BlurStrength
+            | Row::Shadows
+            | Row::ShadowStrength
             | Row::Transitions
             | Row::MenuScale
             | Row::GameScale
@@ -441,6 +498,10 @@ impl Row {
             | Row::BeatmapColours
             | Row::BeatmapHitsounds
             | Row::MenuCursor
+            | Row::MenuCursorRotate
+            | Row::MenuCursorSpin
+            | Row::MenuCursorTrail
+            | Row::MenuCursorRipple
             | Row::CursorStyle
             | Row::CursorSize
             | Row::AutoCursorSize
@@ -454,7 +515,8 @@ impl Row {
             | Row::MenuDrawHz
             | Row::ShowFps
             | Row::FpsCorner
-            | Row::FpsScreens => section::FRAME,
+            | Row::FpsScreens
+            | Row::FpsMode => section::FRAME,
             Row::Dim
             | Row::SongSelectDim
             | Row::SongSelectThumbnails
@@ -467,6 +529,7 @@ impl Row {
             | Row::HudAnimations
             | Row::PauseMenuScale => section::GAMEPLAY,
             Row::SongsFolder => section::LIBRARY,
+            Row::FeedbackHome | Row::FeedbackBug | Row::FeedbackFeature => section::FEEDBACK,
         }
     }
 
@@ -501,6 +564,15 @@ impl Row {
             Row::ColourScheme => "settings-general-colour-scheme",
             Row::Effects => "settings-general-effects",
             Row::Parallax => "settings-general-parallax",
+            Row::ParallaxEnabled => "settings-general-parallax-enabled",
+            Row::Blur => "settings-general-blur",
+            Row::BlurStrength => "settings-general-blur-strength",
+            Row::Shadows => "settings-general-shadows",
+            Row::ShadowStrength => "settings-general-shadow-strength",
+            Row::MenuCursorRotate => "settings-general-cursor-rotate",
+            Row::MenuCursorSpin => "settings-general-cursor-spin",
+            Row::MenuCursorTrail => "settings-general-cursor-trail",
+            Row::MenuCursorRipple => "settings-general-cursor-ripple",
             Row::Transitions => "settings-general-transitions",
             Row::MenuScale => "settings-general-menu-scale",
             Row::GameScale => "settings-general-game-scale",
@@ -522,6 +594,7 @@ impl Row {
             Row::ShowFps => "settings-frame-show-fps",
             Row::FpsCorner => "settings-frame-fps-corner",
             Row::FpsScreens => "settings-frame-fps-screens",
+            Row::FpsMode => "settings-frame-fps-mode",
             Row::Dim => "settings-gameplay-dim",
             Row::SongSelectDim => "settings-song-select-dim",
             Row::SongSelectThumbnails => "settings-song-select-thumbnails",
@@ -543,6 +616,9 @@ impl Row {
             Row::PauseMenuScale => "settings-gameplay-pause-menu-scale",
             Row::Skin => "settings-gameplay-skin",
             Row::SongsFolder => "settings-library-songs-folder",
+            Row::FeedbackHome => "settings-feedback-home",
+            Row::FeedbackBug => "settings-feedback-bug",
+            Row::FeedbackFeature => "settings-feedback-feature",
         }
     }
 
@@ -705,6 +781,16 @@ fn delay_key(delay: HitsoundDelay) -> &'static str {
     match delay {
         HitsoundDelay::None => "settings-option-hitsound-delay-none",
         HitsoundDelay::Stable => "settings-option-hitsound-delay-stable",
+    }
+}
+
+/// The Fluent key of an option of what the FPS counter shows (ADR-0138).
+fn fps_mode_key(mode: slam_play::FpsMode) -> &'static str {
+    match mode {
+        slam_play::FpsMode::Fps => "settings-option-fps-mode-fps",
+        slam_play::FpsMode::Draw => "settings-option-fps-mode-draw",
+        slam_play::FpsMode::Update => "settings-option-fps-mode-update",
+        slam_play::FpsMode::Full => "settings-option-fps-mode-full",
     }
 }
 
@@ -914,7 +1000,11 @@ impl Rows {
             };
         }
         match row {
-            Row::ResetKeys | Row::SongsFolder => RowKind::Button,
+            Row::ResetKeys
+            | Row::SongsFolder
+            | Row::FeedbackHome
+            | Row::FeedbackBug
+            | Row::FeedbackFeature => RowKind::Button,
             Row::NotFullscreenNote => RowKind::Note,
             Row::MasterVolume => percent(s.audio.master_volume),
             Row::MusicVolume => percent(s.audio.music_volume),
@@ -1006,11 +1096,29 @@ impl Rows {
             Row::Effects => RowKind::Toggle {
                 value: s.general.effects,
             },
-            Row::Parallax => RowKind::Slider {
-                min: 0.0,
-                max: 100.0,
-                step: 5.0,
-                value: (s.general.parallax * 100.0).round(),
+            Row::ParallaxEnabled => RowKind::Toggle {
+                value: s.general.parallax_enabled,
+            },
+            Row::Parallax => percent_slider(s.general.parallax),
+            Row::Blur => RowKind::Toggle {
+                value: s.general.blur,
+            },
+            Row::BlurStrength => percent_slider(s.general.blur_strength),
+            Row::Shadows => RowKind::Toggle {
+                value: s.general.shadows,
+            },
+            Row::ShadowStrength => percent_slider(s.general.shadow_strength),
+            Row::MenuCursorRotate => RowKind::Toggle {
+                value: s.general.cursor_rotate,
+            },
+            Row::MenuCursorSpin => RowKind::Toggle {
+                value: s.general.cursor_spin,
+            },
+            Row::MenuCursorTrail => RowKind::Toggle {
+                value: s.general.cursor_trail,
+            },
+            Row::MenuCursorRipple => RowKind::Toggle {
+                value: s.general.cursor_ripple,
             },
             Row::HitsoundDelay => choice(
                 HitsoundDelay::ALL.len(),
@@ -1089,6 +1197,12 @@ impl Rows {
                 FpsScreens::ALL
                     .iter()
                     .position(|w| *w == s.frame.fps_screens),
+            ),
+            Row::FpsMode => choice(
+                slam_play::FpsMode::ALL.len(),
+                slam_play::FpsMode::ALL
+                    .iter()
+                    .position(|m| *m == s.frame.fps_mode),
             ),
             Row::BeatmapSkins => RowKind::Toggle {
                 value: s.gameplay.beatmap_skins,
@@ -1246,9 +1360,22 @@ impl Rows {
             },
             (Row::Intro, RowValue::Toggle(v)) => settings.general.intro = v,
             (Row::Effects, RowValue::Toggle(v)) => settings.general.effects = v,
+            (Row::ParallaxEnabled, RowValue::Toggle(v)) => settings.general.parallax_enabled = v,
             (Row::Parallax, RowValue::Slider(v)) => {
-                settings.general.parallax = round_to((v / 5.0).round() * 5.0 / 100.0, 2);
+                settings.general.parallax = percent_from_slider(v);
             }
+            (Row::Blur, RowValue::Toggle(v)) => settings.general.blur = v,
+            (Row::BlurStrength, RowValue::Slider(v)) => {
+                settings.general.blur_strength = percent_from_slider(v);
+            }
+            (Row::Shadows, RowValue::Toggle(v)) => settings.general.shadows = v,
+            (Row::ShadowStrength, RowValue::Slider(v)) => {
+                settings.general.shadow_strength = percent_from_slider(v);
+            }
+            (Row::MenuCursorRotate, RowValue::Toggle(v)) => settings.general.cursor_rotate = v,
+            (Row::MenuCursorSpin, RowValue::Toggle(v)) => settings.general.cursor_spin = v,
+            (Row::MenuCursorTrail, RowValue::Toggle(v)) => settings.general.cursor_trail = v,
+            (Row::MenuCursorRipple, RowValue::Toggle(v)) => settings.general.cursor_ripple = v,
             (Row::MenuScale, RowValue::Slider(v)) => {
                 settings.general.menu_scale = scale_from_percent(v);
             }
@@ -1379,6 +1506,11 @@ impl Rows {
                     );
                     settings.window.windowed_size = size;
                     settings.window.windowed_position = position;
+                }
+            }
+            (Row::FpsMode, RowValue::Choice(i)) => {
+                if let Some(mode) = slam_play::FpsMode::ALL.get(i) {
+                    settings.frame.fps_mode = *mode;
                 }
             }
             (Row::FpsScreens, RowValue::Choice(i)) => {
@@ -1533,6 +1665,10 @@ impl Rows {
                         .iter()
                         .map(|sounds| text(menu_sounds_key(*sounds)))
                         .collect(),
+                    Row::FpsMode => slam_play::FpsMode::ALL
+                        .iter()
+                        .map(|mode| text(fps_mode_key(*mode)))
+                        .collect(),
                     Row::FpsScreens => FpsScreens::ALL
                         .iter()
                         .map(|screens| text(screens_key(*screens)))
@@ -1569,6 +1705,8 @@ impl Rows {
                     | Row::HitsoundVolume
                     | Row::EffectsVolume
                     | Row::Parallax
+                    | Row::BlurStrength
+                    | Row::ShadowStrength
                     | Row::Dim
                     | Row::SongSelectDim
                     | Row::MenuScale
@@ -1583,6 +1721,9 @@ impl Rows {
                     Row::ResetKeys => text("settings-keys-reset-button"),
                     // The placeholder of an empty folder.
                     Row::SongsFolder => text("settings-library-songs-folder-none"),
+                    Row::FeedbackHome => text("settings-feedback-home-button"),
+                    Row::FeedbackBug => text("settings-feedback-bug-button"),
+                    Row::FeedbackFeature => text("settings-feedback-feature-button"),
                     _ => String::new(),
                 };
                 // Lazer shows the stereo separation at zero as "Disabled".
@@ -1628,6 +1769,21 @@ fn scale_from_percent(percent: f64) -> f32 {
     (stepped as f32).clamp(UI_SCALE_RANGE.0, UI_SCALE_RANGE.1)
 }
 
+/// A 0 to 200 % slider in steps of 5 % for a strength of 0.0 to 2.0 (ADR-0136).
+fn percent_slider(strength: f64) -> RowKind {
+    RowKind::Slider {
+        min: 0.0,
+        max: 200.0,
+        step: 5.0,
+        value: (strength * 100.0).round(),
+    }
+}
+
+/// The strength, 0.0 to 2.0, of a percent slider's value, in steps of 5 %.
+fn percent_from_slider(value: f64) -> f64 {
+    round_to((value / 5.0).round() * 5.0 / 100.0, 2).clamp(0.0, 2.0)
+}
+
 fn round_to(value: f64, decimals: i32) -> f64 {
     let factor = 10_f64.powi(decimals);
     (value * factor).round() / factor
@@ -1646,6 +1802,8 @@ pub fn round_for_save(settings: &mut Settings) {
         &mut settings.gameplay.dim,
         &mut settings.song_select.background_dim,
         &mut settings.general.parallax,
+        &mut settings.general.blur_strength,
+        &mut settings.general.shadow_strength,
     ] {
         *volume = round_to(*volume, 2);
     }
@@ -2476,9 +2634,37 @@ mod tests {
     }
 
     #[test]
+    fn the_feedback_rows_are_buttons_in_the_last_section() {
+        let (rows, s) = rows();
+        let localizer = Localizer::builtin().unwrap();
+        localizer.set_language("en").unwrap();
+        let labels = rows.labels(&localizer);
+        assert_eq!(labels.sections[SECTIONS - 1], "Feedback");
+        for (row, button, kind) in [
+            (
+                Row::FeedbackHome,
+                "Open GitHub",
+                crate::feedback::Kind::Github,
+            ),
+            (Row::FeedbackBug, "Report a bug", crate::feedback::Kind::Bug),
+            (
+                Row::FeedbackFeature,
+                "Suggest a feature",
+                crate::feedback::Kind::Feature,
+            ),
+        ] {
+            assert_eq!(row.section(), SECTIONS - 1);
+            assert_eq!(rows.specs(&s)[index(row)].kind, RowKind::Button);
+            assert_eq!(labels.rows[index(row)].button, button);
+            assert_eq!(row.feedback(), Some(kind));
+        }
+        assert_eq!(Row::SongsFolder.feedback(), None);
+    }
+
+    #[test]
     fn the_songs_folder_row_is_a_button_in_its_own_section() {
         let (rows, s) = rows();
-        assert_eq!(Row::SongsFolder.section(), SECTIONS - 1);
+        assert_eq!(Row::SongsFolder.section(), SECTIONS - 2);
         assert_eq!(
             rows.specs(&s)[index(Row::SongsFolder)].kind,
             RowKind::Button
@@ -2490,7 +2676,7 @@ mod tests {
         assert_eq!(row.label, "Songs folder");
         assert_eq!(row.button, "Not selected");
         assert!(row.shows_value);
-        assert_eq!(labels.sections[SECTIONS - 1], "Library");
+        assert_eq!(labels.sections[SECTIONS - 2], "Library");
         // Only this row shows a value.
         assert_eq!(labels.rows.iter().filter(|r| r.shows_value).count(), 1);
     }
@@ -2504,7 +2690,7 @@ mod tests {
             rows.specs(&s)[index(Row::Parallax)].kind,
             RowKind::Slider {
                 min: 0.0,
-                max: 100.0,
+                max: 200.0,
                 step: 5.0,
                 value: 100.0
             }
@@ -2517,6 +2703,54 @@ mod tests {
         s.general.parallax = 0.30000000000000004;
         round_for_save(&mut s);
         assert_eq!(s.general.parallax, 0.3);
+    }
+
+    #[test]
+    fn the_look_rows_edit_their_settings_and_sit_with_their_neighbours() {
+        assert_eq!(Row::ParallaxEnabled.section(), Row::Effects.section());
+        assert_eq!(Row::Blur.section(), Row::Effects.section());
+        assert_eq!(Row::Shadows.section(), Row::Effects.section());
+        assert_eq!(Row::MenuCursorRipple.section(), Row::MenuCursor.section());
+        let (rows, mut s) = rows();
+        for row in [
+            Row::ParallaxEnabled,
+            Row::Blur,
+            Row::Shadows,
+            Row::MenuCursorRotate,
+            Row::MenuCursorSpin,
+            Row::MenuCursorTrail,
+            Row::MenuCursorRipple,
+        ] {
+            assert_eq!(
+                rows.specs(&s)[index(row)].kind,
+                RowKind::Toggle { value: true }
+            );
+            rows.apply(&mut s, index(row), RowValue::Toggle(false));
+            assert_eq!(
+                rows.specs(&s)[index(row)].kind,
+                RowKind::Toggle { value: false }
+            );
+        }
+        let g = &s.general;
+        assert!(!g.parallax_enabled && !g.blur && !g.shadows);
+        assert!(!g.cursor_rotate && !g.cursor_spin && !g.cursor_trail && !g.cursor_ripple);
+        for row in [Row::Parallax, Row::BlurStrength, Row::ShadowStrength] {
+            assert_eq!(
+                rows.specs(&s)[index(row)].kind,
+                RowKind::Slider {
+                    min: 0.0,
+                    max: 200.0,
+                    step: 5.0,
+                    value: 100.0
+                }
+            );
+            rows.apply(&mut s, index(row), RowValue::Slider(170.0));
+        }
+        assert_eq!(s.general.parallax, 1.7);
+        assert_eq!(s.general.blur_strength, 1.7);
+        assert_eq!(s.general.shadow_strength, 1.7);
+        rows.apply(&mut s, index(Row::BlurStrength), RowValue::Slider(900.0));
+        assert_eq!(s.general.blur_strength, 2.0);
     }
 
     #[test]

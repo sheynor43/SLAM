@@ -25,7 +25,9 @@ Builds are published under [Releases](https://github.com/sheynor43/SLAM/releases
 - Portable mode: put an empty file named `portable` next to `slam.exe`, and settings and data are kept next to it.
 
 **Reporting a bug**
-Open an [issue](https://github.com/sheynor43/SLAM/issues/new) with:
+The quickest way is Settings → Feedback → Report a bug in the game: it opens a pre-filled issue form with your version, OS and GPU.
+
+Or open an [issue](https://github.com/sheynor43/SLAM/issues/new) with:
 - the SLAM version and your OS;
 - what you did, what you expected and what happened;
 - the beatmap, if the bug is related to one (an osu.ppy.sh link or the file);

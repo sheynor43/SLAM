@@ -35,9 +35,10 @@ pub fn pointer_target(pointer: Option<[f32; 2]>, size: [f32; 2]) -> [f32; 2] {
 
 /// How far a layer shifts and grows for a smoothed pointer `pointer` (from
 /// [`Parallax::update`]) on a surface of `size`, with the layer's `amount` (a part of the
-/// half size at full strength) and the setting's `strength`, 0 to 1 (0 is off, and so is
-/// effects being off: the caller passes 0 then). The layer shifts with the pointer and is
-/// scaled up to cover the edges the shift would show when `cover` is set.
+/// half size at full strength) and the setting's `strength`, 0 to 2 (0 is off, and so is
+/// `general.parallax_enabled` being off: the caller passes 0 then; above 1 is SLAM's own
+/// extension of lazer's, ADR-0136). The layer shifts with the pointer and is scaled up to
+/// cover the edges the shift would show when `cover` is set.
 // Ported from osu!lazer 2026.1005.0-lazer: osu.Game/Graphics/Containers/ParallaxContainer.cs
 // (`offset = relativeAmount * sizeDiv2 * amount`, `scale = 1 + |amount|`)
 pub fn layer_map(
@@ -47,7 +48,7 @@ pub fn layer_map(
     strength: f32,
     cover: bool,
 ) -> Affine {
-    let amount = amount * strength.clamp(0.0, 1.0);
+    let amount = amount * strength.clamp(0.0, 2.0);
     if amount == 0.0 {
         return Affine::IDENTITY;
     }

@@ -71,23 +71,66 @@ pub const SHAPE_LAYOUT: VertexLayout<'static> = VertexLayout {
     attributes: &SHAPE_ATTRIBUTES,
 };
 
-/// Packs the effect strengths into one `f32` (`params[2]`): 8 bits each of the sheen (or
-/// glow pulse), the pattern's strength (ADR-0131) and the pattern's seed, so the vertex
-/// stays 64 bytes. The result is an integer below 2^24, exact in an `f32`; the shader
-/// reads it flat, without interpolation.
-pub fn pack_effects(sheen: f32, pattern: f32, seed: u8) -> f32 {
-    let quantise = |x: f32| (x.clamp(0.0, 1.0) * 255.0 + 0.5) as u32;
-    (quantise(sheen) | quantise(pattern) << 8 | u32::from(seed) << 16) as f32
+/// What a [`Shape`] outlines (ADR-0136): the shader's `kind`.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum ShapeKind {
+    /// A rounded rectangle.
+    #[default]
+    Rect = 0,
+    /// A rounded rectangle that draws only its pattern, in its colour: a layer of floating
+    /// triangles over another shape.
+    PatternLayer = 1,
+    /// A five-pointed star, point up, filling the smaller side.
+    Star = 2,
+    /// The menu pointer: an arrowhead with its tip at the top centre and a notch at the
+    /// bottom; the radius rounds it.
+    Arrow = 3,
 }
 
-/// The inverse of [`pack_effects`]: the sheen, the pattern's strength and its seed.
-pub fn unpack_effects(word: f32) -> (f32, f32, u8) {
+impl ShapeKind {
+    fn from_bits(bits: u32) -> ShapeKind {
+        match bits & 3 {
+            0 => ShapeKind::Rect,
+            1 => ShapeKind::PatternLayer,
+            2 => ShapeKind::Star,
+            _ => ShapeKind::Arrow,
+        }
+    }
+}
+
+/// Seeds a pattern takes: [`pack_effects`] keeps the low 6 bits.
+pub const PATTERN_SEEDS: u8 = 64;
+
+/// Packs the effect strengths into one `f32` (`params[2]`): 8 bits each of the sheen (or
+/// glow pulse) and the pattern's strength (ADR-0131), 6 bits of the pattern's seed and 2 of
+/// the shape's kind (ADR-0136), so the vertex stays 64 bytes. The result is an integer
+/// below 2^24, exact in an `f32`; the shader reads it flat, without interpolation.
+pub fn pack_effects(sheen: f32, pattern: f32, seed: u8, kind: ShapeKind) -> f32 {
+    let quantise = |x: f32| (x.clamp(0.0, 1.0) * 255.0 + 0.5) as u32;
+    (quantise(sheen)
+        | quantise(pattern) << 8
+        | u32::from(seed % PATTERN_SEEDS) << 16
+        | (kind as u32) << 22) as f32
+}
+
+/// The inverse of [`pack_effects`]: the sheen, the pattern's strength, its seed and the
+/// shape's kind.
+pub fn unpack_effects(word: f32) -> (f32, f32, u8, ShapeKind) {
     let bits = word as u32;
     (
         (bits & 255) as f32 / 255.0,
         (bits >> 8 & 255) as f32 / 255.0,
-        (bits >> 16 & 255) as u8,
+        (bits >> 16 & 63) as u8,
+        ShapeKind::from_bits(bits >> 22),
     )
+}
+
+/// A shape's colour running to another across it (ADR-0136): from [`Shape::colour`] at the
+/// left (top) edge to this one at the right (bottom) edge, before the skew.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub enum Gradient {
+    Horizontal(Color),
+    Vertical(Color),
 }
 
 /// Pixels the quad reaches past the shape on every side, so the shader can smooth the
@@ -123,8 +166,12 @@ pub struct Shape {
     /// Strength, 0 to 1, of the pattern of triangles and circles floating up the fill
     /// (ADR-0131); 0: none, and the shader skips it. Rises faster the stronger it is.
     pub pattern: f32,
-    /// Makes this shape's pattern differ from its neighbours'.
+    /// Makes this shape's pattern differ from its neighbours' (low 6 bits).
     pub pattern_seed: u8,
+    /// What the shape outlines (ADR-0136).
+    pub kind: ShapeKind,
+    /// The colour across the shape, if not even (ADR-0136).
+    pub gradient: Option<Gradient>,
 }
 
 impl Shape {
@@ -152,6 +199,8 @@ impl Shape {
             glow: 0.0,
             pattern: 0.0,
             pattern_seed: 0,
+            kind: ShapeKind::Rect,
+            gradient: None,
         }
     }
 
@@ -298,16 +347,28 @@ impl ShapeBatch {
                 shape.sheen,
                 if glow > 0.0 { 0.0 } else { shape.pattern },
                 shape.pattern_seed,
+                shape.kind,
             ),
             shape.phase + self.drift,
         ];
+        // A gradient's corners take the colour where they are, a margin past the edges, so
+        // that the interpolation across the quad is the gradient's within the shape.
+        let corner_colour = |tx: f32, ty: f32| -> [f32; 4] {
+            let (end, t) = match shape.gradient {
+                None => return [r, g, b, a],
+                Some(Gradient::Horizontal(end)) => (end, tx),
+                Some(Gradient::Vertical(end)) => (end, ty),
+            };
+            let mix = |x: f32, y: f32| x + (y - x) * t;
+            [mix(r, end.r), mix(g, end.g), mix(b, end.b), mix(a, end.a)]
+        };
         for (fx, fy) in [(0.0, 0.0), (1.0, 0.0), (1.0, 1.0), (0.0, 1.0)] {
             let tx = if fx == 0.0 { -mx } else { 1.0 + mx };
             let ty = if fy == 0.0 { -my } else { 1.0 + my };
             let local = [(tx - 0.5) * w, (ty - 0.5) * h];
             self.vertices.push(ShapeVertex {
                 position: [centre[0] + local[0] - local[1] * tan, centre[1] + local[1]],
-                colour: [r, g, b, a],
+                colour: corner_colour(tx, ty),
                 uv: [u0 + (u1 - u0) * tx, v0 + (v1 - v0) * ty],
                 local,
                 half_size: half,
@@ -553,22 +614,72 @@ mod tests {
         let v = batch.vertices();
         assert!(close(v[0].position, [3.0, 3.0]));
         assert_eq!(v[0].params[1], -6.0);
-        assert_eq!(unpack_effects(v[0].params[2]), (102.0 / 255.0, 0.0, 0));
+        assert_eq!(
+            unpack_effects(v[0].params[2]),
+            (102.0 / 255.0, 0.0, 0, ShapeKind::Rect)
+        );
+    }
+
+    #[test]
+    fn a_gradient_runs_across_the_shape_between_its_two_colours() {
+        let mut batch = ShapeBatch::new();
+        let end = Color {
+            r: 0.0,
+            g: 0.0,
+            b: 1.0,
+            a: 0.0,
+        };
+        batch.push_shape(&Shape {
+            gradient: Some(Gradient::Horizontal(end)),
+            ..shape([0.0, 0.0], [100.0, 10.0])
+        });
+        let v = batch.vertices();
+        // The corners lie a margin past the edges; the colour there continues the line
+        // from the left edge's colour to the right edge's.
+        let margin = EDGE_MARGIN / 100.0;
+        let left = v[0].colour;
+        let right = v[1].colour;
+        let at = |t: f32| left[3] + (right[3] - left[3]) * (t + margin) / (1.0 + 2.0 * margin);
+        assert!((at(0.0) - 1.0).abs() < 1e-5, "{left:?} {right:?}");
+        assert!(at(1.0).abs() < 1e-5);
+        // A vertical one changes from top to bottom only.
+        batch.clear();
+        batch.push_shape(&Shape {
+            gradient: Some(Gradient::Vertical(end)),
+            ..shape([0.0, 0.0], [100.0, 10.0])
+        });
+        let v = batch.vertices();
+        assert_eq!(v[0].colour, v[1].colour);
+        assert_eq!(v[2].colour, v[3].colour);
+        assert!(v[0].colour[3] > v[3].colour[3]);
     }
 
     #[test]
     fn the_pattern_rides_in_the_effect_word_and_the_vertex_stays_64_bytes() {
         assert_eq!(size_of::<ShapeVertex>(), 64);
-        let word = pack_effects(0.35, 0.3, 200);
-        let (sheen, pattern, seed) = unpack_effects(word);
+        let word = pack_effects(0.35, 0.3, 200, ShapeKind::Arrow);
+        let (sheen, pattern, seed, kind) = unpack_effects(word);
         assert!((sheen - 0.35).abs() < 1.0 / 255.0);
         assert!((pattern - 0.3).abs() < 1.0 / 255.0);
-        assert_eq!(seed, 200);
+        // The seed keeps its low 6 bits.
+        assert_eq!(seed, 200 % PATTERN_SEEDS);
+        assert_eq!(kind, ShapeKind::Arrow);
         // Exact in an f32, so the shader can read it back with `u32(...)`.
         assert!(word < 16_777_216.0);
-        assert_eq!(unpack_effects(pack_effects(1.0, 1.0, 255)), (1.0, 1.0, 255));
-        assert_eq!(pack_effects(0.0, 0.0, 0), 0.0);
-        assert_eq!(pack_effects(-1.0, 7.0, 0), 65_280.0);
+        for kind in [
+            ShapeKind::Rect,
+            ShapeKind::PatternLayer,
+            ShapeKind::Star,
+            ShapeKind::Arrow,
+        ] {
+            assert_eq!(
+                unpack_effects(pack_effects(1.0, 1.0, 63, kind)),
+                (1.0, 1.0, 63, kind)
+            );
+            assert!(pack_effects(1.0, 1.0, 255, kind) < 16_777_216.0);
+        }
+        assert_eq!(pack_effects(0.0, 0.0, 0, ShapeKind::Rect), 0.0);
+        assert_eq!(pack_effects(-1.0, 7.0, 0, ShapeKind::Rect), 65_280.0);
         let mut batch = ShapeBatch::new();
         batch.push_shape(&Shape {
             pattern: 0.3,

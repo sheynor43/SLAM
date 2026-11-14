@@ -12,7 +12,7 @@ use slam_input::{
 };
 use slam_osu::replay::Actions;
 use slam_play::input::{Binding, Bindings, Input, MAX_BINDINGS};
-use slam_play::{BackgroundSettings, FpsCorner};
+use slam_play::{BackgroundSettings, FpsCorner, FpsMode};
 use slam_ui::cursor::CursorStyle;
 use slam_ui::screen::TransitionStyle;
 use slam_ui::theme::ColourScheme;
@@ -100,11 +100,29 @@ pub struct General {
     pub language: Option<String>,
     /// Whether the startup intro plays (ADR-0114). Read at start.
     pub intro: bool,
-    /// Whether the interface effects (glow, blur, motion) are on (ADR-0123). Applies live.
+    /// Whether the interface effects (glow, motion) are on (ADR-0123). Applies live.
     pub effects: bool,
-    /// Strength of the menus' parallax, 0.0..=1.0 (0 is off; ADR-0132). Applies live, and
-    /// only while `effects` is on.
+    /// Whether the menus' parallax is on (ADR-0136). Applies live, whatever `effects` says.
+    pub parallax_enabled: bool,
+    /// Strength of the menus' parallax, 0.0..=2.0 (ADR-0132, ADR-0136). Applies live.
     pub parallax: f64,
+    /// Whether the menu backgrounds are blurred (ADR-0136). Applies live, whatever
+    /// `effects` says.
+    pub blur: bool,
+    /// Depth of the background blur, 0.0..=2.0 times the theme's radius. Applies live.
+    pub blur_strength: f64,
+    /// Whether buttons, rows and panels cast shadows (ADR-0136). Applies live.
+    pub shadows: bool,
+    /// Strength of the shadows, 0.0..=2.0. Applies live.
+    pub shadow_strength: f64,
+    /// The menu cursor turns towards a drag (ADR-0136). Applies live.
+    pub cursor_rotate: bool,
+    /// The menu cursor spins while the pointer rests (ADR-0136). Applies live.
+    pub cursor_spin: bool,
+    /// The menu cursor leaves a trail (ADR-0136). Applies live.
+    pub cursor_trail: bool,
+    /// The menu cursor sends a ring out at each press (ADR-0136). Applies live.
+    pub cursor_ripple: bool,
     /// How screens change (ADR-0126). Applies live.
     #[serde(serialize_with = "serialize_transitions")]
     pub transitions: TransitionStyle,
@@ -135,7 +153,16 @@ impl Default for General {
             language: None,
             intro: true,
             effects: true,
+            parallax_enabled: true,
             parallax: 1.0,
+            blur: true,
+            blur_strength: 1.0,
+            shadows: true,
+            shadow_strength: 1.0,
+            cursor_rotate: true,
+            cursor_spin: true,
+            cursor_trail: true,
+            cursor_ripple: true,
             transitions: TransitionStyle::default(),
             colour_scheme: ColourScheme::default(),
             menu_scale: 1.0,
@@ -587,6 +614,9 @@ pub struct Frame {
     pub fps_corner: FpsCorner,
     /// The screens the FPS counter shows on (ADR-0060).
     pub fps_screens: FpsScreens,
+    /// What the FPS counter shows (ADR-0138); lazer's counter by default.
+    #[serde(serialize_with = "serialize_fps_mode")]
+    pub fps_mode: FpsMode,
 }
 
 /// Where the FPS counter shows (ADR-0060); lazer shows it everywhere.
@@ -649,6 +679,10 @@ fn serialize_corner<S: Serializer>(corner: &FpsCorner, serializer: S) -> Result<
     serializer.serialize_str(corner_name(*corner))
 }
 
+fn serialize_fps_mode<S: Serializer>(mode: &FpsMode, serializer: S) -> Result<S::Ok, S::Error> {
+    serializer.serialize_str(mode.name())
+}
+
 impl Default for Frame {
     fn default() -> Frame {
         let engine = EngineConfig::default();
@@ -659,6 +693,7 @@ impl Default for Frame {
             show_fps: false,
             fps_corner: FpsCorner::default(),
             fps_screens: FpsScreens::default(),
+            fps_mode: FpsMode::default(),
         }
     }
 }

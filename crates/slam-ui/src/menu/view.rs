@@ -218,7 +218,8 @@ impl MenuView {
             };
             let mut rect = self.layout.buttons[i];
             rect.x += shift;
-            crate::widgets::button(
+            // Each button in its own colour (ADR-0136).
+            crate::widgets::tinted_button(
                 shapes,
                 white,
                 &rect,
@@ -228,6 +229,7 @@ impl MenuView {
                 selected,
                 i as f32 * 0.37,
                 pose.opacity,
+                theme.menu_button_tints[i % theme.menu_button_tints.len()],
             );
         }
         let shifted = |centre: [f32; 2]| [centre[0] + shift, centre[1]];

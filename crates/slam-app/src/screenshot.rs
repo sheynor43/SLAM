@@ -9,6 +9,7 @@ pub mod compare;
 pub mod corpus;
 mod intro;
 mod offline;
+pub mod preview;
 
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
@@ -399,7 +400,7 @@ impl Options {
     }
 }
 
-fn parse_size(v: &str) -> Result<(u32, u32), String> {
+pub(crate) fn parse_size(v: &str) -> Result<(u32, u32), String> {
     let bad = || format!("bad --size {v}, expected WxH");
     let (w, h) = v.split_once('x').ok_or_else(bad)?;
     let (w, h): (u32, u32) = (w.parse().map_err(|_| bad())?, h.parse().map_err(|_| bad())?);

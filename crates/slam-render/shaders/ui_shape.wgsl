@@ -1,7 +1,7 @@
 // Interface shape (ADR-0116, ADR-0123): a rounded rectangle, filled or outlined, optionally
 // skewed, tinting a texture region, with a band of light sweeping across it and sparse
-// triangles and circles floating up it (ADR-0131); or the soft, pulsing glow around such a
-// rectangle. The skew is in the
+// outlined triangles floating up it (ADR-0131, ADR-0136); or the soft, pulsing glow around such a
+// rectangle. A star and the menu pointer take the same edge, outline and glow (ADR-0136). The skew is in the
 // geometry (`src/shape.rs` shears the corners); `local` stays unsheared, so the distance
 // below is that of a plain rounded rectangle. Colour is straight alpha (ADR-0020).
 
@@ -62,48 +62,119 @@ fn hash(p: vec3<f32>) -> f32 {
     return fract((q.x + q.y) * q.z);
 }
 
-// Signed distance in the units of `p` to an upward-pointing equilateral triangle whose
-// corners are `r` from its centre (y down).
+// Signed distance to the outline of an upward-pointing equilateral triangle whose corners
+// are `r` from its centre (y down): negative inside.
 fn triangle(p: vec2<f32>, r: f32) -> f32 {
     let base = p.y - r * 0.5;
     let side = abs(p.x) * 0.8660254 - p.y * 0.5 - r * 0.5;
     return max(base, side);
 }
 
-// Brightening in [0, 1] of the sparse triangles and circles under `local` (pixels from the
-// shape's centre): a grid of cells scrolling up with `phase`, each cell holding at most one
-// small shape at a hashed spot, size and kind, fading towards the shape's top and bottom.
-// `strength` sets how many there are and how fast they rise; `seed` differs per shape.
-fn pattern(local: vec2<f32>, half_size: vec2<f32>, strength: f32, seed: f32, phase: f32) -> f32 {
-    // Capped, so a huge panel does not get huge shapes.
-    let cell = clamp(half_size.y * 1.5, 12.0, 64.0);
-    // A multiple of 1/16: the drift wraps every 1024 cycles (`set_drift`), and 1024 times
-    // the rate is a whole number of cells, so the pattern does not jump at the wrap.
-    let rate = floor((1.5 + 6.0 * strength) * 16.0 + 0.5) / 16.0;
-    let g = vec2<f32>((local.x + half_size.x) / cell, (local.y + half_size.y) / cell + phase * rate);
-    let id = floor(g);
-    let f = fract(g);
-    let key = vec3<f32>(id.x + seed * 13.0, id.y, 0.0);
-    if (hash(key) > 0.18 + 0.3 * strength) {
-        return 0.0;
-    }
-    let radius = (0.10 + 0.16 * hash(key + vec3<f32>(0.0, 0.0, 3.0))) * cell;
-    // The centre keeps the whole shape (a triangle's corners are 1.25 radii out, plus a
-    // pixel of edge) inside the cell, which would clip it.
-    let margin = min((radius * 1.25 + 1.0) / cell, 0.5);
-    let centre = vec2<f32>(
-        margin + (1.0 - 2.0 * margin) * hash(key + vec3<f32>(0.0, 0.0, 1.0)),
-        margin + (1.0 - 2.0 * margin) * hash(key + vec3<f32>(0.0, 0.0, 2.0)),
+// Signed distance to a five-pointed star, point up, its points `r` from the centre and its
+// inner corners `r * rf` (after Inigo Quilez's `sdStar5`, MIT).
+fn star5(p_in: vec2<f32>, r: f32, rf: f32) -> f32 {
+    let k1 = vec2<f32>(0.809016994375, -0.587785252292);
+    let k2 = vec2<f32>(-k1.x, k1.y);
+    var p = vec2<f32>(abs(p_in.x), -p_in.y);
+    p = p - 2.0 * max(dot(k1, p), 0.0) * k1;
+    p = p - 2.0 * max(dot(k2, p), 0.0) * k2;
+    p.x = abs(p.x);
+    p.y = p.y - r;
+    let ba = rf * vec2<f32>(-k1.y, k1.x) - vec2<f32>(0.0, 1.0);
+    let h = clamp(dot(p, ba) / dot(ba, ba), 0.0, r);
+    // `select`, not `sign`: HLSL's `sign` gives an integer.
+    return length(p - ba * h) * select(-1.0, 1.0, p.y * ba.x - p.x * ba.y >= 0.0);
+}
+
+// Signed distance to the menu pointer filling a box of half size `hs`: an arrowhead with its
+// tip at the top centre, its wings at the bottom corners and a notch between them.
+fn arrow(p: vec2<f32>, hs: vec2<f32>) -> f32 {
+    var v = array<vec2<f32>, 4>(
+        vec2<f32>(0.0, -hs.y),
+        vec2<f32>(hs.x, hs.y),
+        vec2<f32>(0.0, hs.y * 0.42),
+        vec2<f32>(-hs.x, hs.y),
     );
-    let p = (f - centre) * cell;
-    var d = length(p) - radius;
-    if (hash(key + vec3<f32>(0.0, 0.0, 4.0)) < 0.5) {
-        d = triangle(p, radius * 1.25);
+    var d = dot(p - v[0], p - v[0]);
+    var s = 1.0;
+    var j = 3u;
+    for (var i = 0u; i < 4u; i = i + 1u) {
+        let e = v[j] - v[i];
+        let w = p - v[i];
+        // Guarded: a degenerate pointer has edges of length zero.
+        let b = w - e * clamp(dot(w, e) / max(dot(e, e), 1e-8), 0.0, 1.0);
+        d = min(d, dot(b, b));
+        let c0 = p.y >= v[i].y;
+        let c1 = v[j].y > p.y;
+        let c2 = e.x * w.y > e.y * w.x;
+        if ((c0 && c1 && c2) || (!c0 && !c1 && !c2)) {
+            s = -s;
+        }
+        j = i;
     }
-    let cover = 1.0 - smoothstep(-0.5, 0.5, d);
-    let across = local.y / max(half_size.y, 1.0);
-    let fade = clamp((1.0 - abs(across)) * 3.0, 0.0, 1.0);
-    return cover * fade;
+    return s * sqrt(d);
+}
+
+// Coverage in [0, 1] of the outlines of triangles floating up the shape under `local`
+// (pixels from its centre), after lazer's `TrianglesV2`: columns a cell wide, each rising at
+// its own speed, a cell holding at most one triangle of hashed size and place; neighbouring
+// cells are looked at too, so a triangle may reach past its own. `strength` sets how many
+// there are and how fast they rise; `seed` differs per shape.
+fn pattern(local: vec2<f32>, half_size: vec2<f32>, strength: f32, seed: f32, phase: f32) -> f32 {
+    // Capped, so a huge panel does not get huge triangles.
+    let cell = clamp(half_size.y * 1.6, 20.0, 120.0);
+    let px = (local.x + half_size.x) / cell;
+    var cover = 0.0;
+    for (var dx = -1; dx <= 1; dx = dx + 1) {
+        let col = floor(px) + f32(dx);
+        // The column's speed: around half the base, never below a quarter (lazer's
+        // normal spread). A multiple of 1/16: the drift wraps every 1024 cycles
+        // (`set_drift`), and 1024 times the rate is then a whole number of cells.
+        let spread = hash(vec3<f32>(col + seed * 13.0, 7.0, 5.0));
+        let rate = floor((0.6 + 2.4 * strength) * (0.4 + 0.9 * spread) * 16.0 + 0.5) / 16.0;
+        // Cells the column rises through in one wrap of the drift: a whole number, so the
+        // rows taken modulo it repeat exactly and the wrap does not swap the triangles.
+        let wrap = 1024.0 * rate;
+        let py = (local.y + half_size.y) / cell + phase * rate;
+        let fy = fract(py);
+        for (var dy = -1; dy <= 1; dy = dy + 1) {
+            // A triangle reaches at most 0.375 of a cell below its centre and 0.75 above it:
+            // the cell above matters only near this cell's top, the one below only past
+            // its first quarter.
+            if ((dy == -1 && fy > 0.375) || (dy == 1 && fy < 0.25)) {
+                continue;
+            }
+            let raw = floor(py) + f32(dy);
+            let row = raw - wrap * floor(raw / wrap);
+            let key = vec3<f32>(col + seed * 13.0, row, 0.0);
+            if (hash(key) > 0.35 + 0.35 * strength) {
+                continue;
+            }
+            let r = (0.45 + 0.55 * hash(key + vec3<f32>(0.0, 0.0, 3.0))) * cell * 0.75;
+            let centre = vec2<f32>(
+                col + hash(key + vec3<f32>(0.0, 0.0, 1.0)),
+                row + hash(key + vec3<f32>(0.0, 0.0, 2.0)),
+            );
+            let p = (vec2<f32>(px, py) - vec2<f32>(centre.x, raw + (centre.y - row))) * cell;
+            let d = triangle(p, r);
+            let width = max(1.0, r * 0.03);
+            cover = max(cover, 1.0 - smoothstep(width * 0.5, width * 0.5 + 1.0, abs(d)));
+        }
+    }
+    return cover;
+}
+
+// Signed distance to the shape of `kind`: 0 and 1 a rounded rectangle, 2 a star, 3 the
+// pointer.
+fn shape_distance(kind: u32, local: vec2<f32>, half_size: vec2<f32>, radius: f32) -> f32 {
+    if (kind == 2u) {
+        let r = min(half_size.x, half_size.y);
+        return star5(local, r, 0.45) - radius;
+    }
+    if (kind == 3u) {
+        return arrow(local, half_size - vec2<f32>(radius, radius)) - radius;
+    }
+    return rounded_box(local, half_size, radius);
 }
 
 @fragment
@@ -122,12 +193,17 @@ fn fs_main(
     let bits = u32(params.z + 0.5);
     let amount = f32(bits & 255u) / 255.0;
     let strength = f32((bits >> 8u) & 255u) / 255.0;
-    let seed = f32((bits >> 16u) & 255u);
+    let seed = f32((bits >> 16u) & 63u);
+    // 0 a rectangle, 1 a rectangle drawing only its pattern in its colour (a layer over
+    // another shape), 2 a star, 3 the pointer.
+    let kind = (bits >> 22u) & 3u;
     // Cycles of the sheen's sweep or the glow's pulse.
     let phase = params.w;
-    let d = rounded_box(local, half_size, radius);
+    let d = shape_distance(kind, local, half_size, radius);
     let aa = max(fwidth(d), 1e-4);
-    let texel = colour * textureSample(shape_texture, shape_sampler, uv);
+    // Gradients write corner colours a margin past the shape, which may step out of range.
+    let tint = clamp(colour, vec4<f32>(0.0), vec4<f32>(1.0));
+    let texel = tint * textureSample(shape_texture, shape_sampler, uv);
     if (edge < 0.0) {
         let width = -edge;
         let outside = clamp(0.5 + d / aa, 0.0, 1.0);
@@ -135,11 +211,19 @@ fn fs_main(
         let pulse = 1.0 - amount * 0.5 * (1.0 + sin(6.2831853 * phase));
         // The colour alone: the quad reaches past the texture's region by the glow, where
         // the atlas holds other images or nothing.
-        return vec4<f32>(colour.rgb, colour.a * outside * fall * fall * pulse);
+        return vec4<f32>(tint.rgb, tint.a * outside * fall * fall * pulse);
     }
     var coverage = clamp(0.5 - d / aa, 0.0, 1.0);
     if (edge > 0.0) {
         coverage = coverage * clamp(0.5 + (d + edge) / aa, 0.0, 1.0);
+    }
+    if (kind == 1u) {
+        // The pattern alone, in the shape's colour.
+        if (strength <= 0.0) {
+            return vec4<f32>(0.0);
+        }
+        let lines = pattern(local, half_size, strength, seed, phase);
+        return vec4<f32>(texel.rgb, texel.a * lines * coverage);
     }
     var out = texel;
     if (strength > 0.0) {

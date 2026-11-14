@@ -2446,3 +2446,88 @@ fn a_reordering_republish_under_the_selection_makes_no_hover_sound() {
     assert_eq!(s.song_select().selected(), Some((0, 0)));
     assert!(!s.take_ui_sounds()[hover]);
 }
+
+/// Closes the settings panel and ticks until it is gone.
+fn close_settings_fully(s: &mut ShellState, snap: &mut ShellSnapshot, now: u64) {
+    s.close_settings(now);
+    s.tick(now + 60 * TRANSITION_NS, &[], snap);
+    assert!(!s.settings_open());
+}
+
+#[test]
+fn the_settings_list_comes_back_where_it_was_left() {
+    let mut s = state();
+    let mut snap = ShellSnapshot::default();
+    s.open_settings(0);
+    let screen = s.settings_screen().expect("panel");
+    assert_eq!(screen.position(), (0.0, None));
+    assert!(screen.lines() > 10);
+    s.panel
+        .as_mut()
+        .unwrap()
+        .screen
+        .restore_position(6.0, Some(2));
+    close_settings_fully(&mut s, &mut snap, 1);
+    s.open_settings(2);
+    let screen = s.settings_screen().expect("panel");
+    assert_eq!(screen.scroll(), 6.0);
+    assert_eq!(screen.shown_scroll(), 6.0);
+    assert_eq!(screen.pinned_section(), Some(2));
+}
+
+#[test]
+fn a_remembered_settings_position_is_held_to_the_list() {
+    let mut s = state();
+    s.settings_position = (1.0e6, None);
+    s.open_settings(0);
+    let screen = s.settings_screen().expect("panel");
+    assert_eq!(screen.scroll(), (screen.lines() - 1) as f32);
+}
+
+#[test]
+fn the_blur_shadow_and_cursor_settings_reach_the_theme_whatever_the_effects() {
+    let defaults = Settings::default();
+    let base = interface_theme(&defaults, &defaults);
+    assert!(base.background_blur > 0.0);
+    assert_eq!(base.shadow, 1.0);
+    let mut live = defaults.clone();
+    live.general.effects = false;
+    let theme = interface_theme(&live, &defaults);
+    assert!(!theme.effects);
+    assert_eq!(theme.background_blur, base.background_blur);
+    live.general.blur_strength = 2.0;
+    assert_eq!(
+        interface_theme(&live, &defaults).background_blur,
+        base.background_blur * 2.0
+    );
+    live.general.blur = false;
+    assert_eq!(interface_theme(&live, &defaults).background_blur, 0.0);
+    live.general.shadow_strength = 1.5;
+    assert_eq!(interface_theme(&live, &defaults).shadow, 1.5);
+    live.general.shadows = false;
+    assert_eq!(interface_theme(&live, &defaults).shadow, 0.0);
+    live.general.cursor_spin = false;
+    live.general.cursor_ripple = false;
+    let fx = interface_theme(&live, &defaults).cursor_fx;
+    assert_eq!(
+        (fx.rotate, fx.spin, fx.trail, fx.ripple),
+        (true, false, true, false)
+    );
+}
+
+#[test]
+fn the_parallax_follows_its_own_switch_not_the_effects() {
+    let mut settings = Settings::default();
+    settings.general.transitions = slam_ui::screen::TransitionStyle::Simple;
+    settings.general.effects = false;
+    settings.general.parallax = 1.5;
+    let mut s =
+        ShellState::new(Theme::default(), 1280.0, 720.0, 1.0).with_settings(settings.clone());
+    let mut snap = ShellSnapshot::default();
+    s.tick(0, &[], &mut snap);
+    assert_eq!(snap.parallax, 1.5);
+    settings.general.parallax_enabled = false;
+    let mut s = ShellState::new(Theme::default(), 1280.0, 720.0, 1.0).with_settings(settings);
+    s.tick(0, &[], &mut snap);
+    assert_eq!(snap.parallax, 0.0);
+}

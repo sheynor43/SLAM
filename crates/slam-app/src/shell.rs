@@ -61,7 +61,7 @@ use slam_ui::song_select::{
     SongSelectStatus, SongSelectView, TileDetail,
 };
 use slam_ui::song_select::{MAX_VISIBLE_ROWS, RowThumb, Thumbs};
-use slam_ui::theme::Theme;
+use slam_ui::theme::{CursorFx, Theme};
 use slam_ui::widgets::DropdownView;
 
 use crate::backend::{self as render, Opened, WindowKind, WithBackend};
@@ -88,7 +88,7 @@ use language::{LanguageSwap, LanguageViews};
 use live::{AppliedUpdateRate, AppliedVolumes, Volumes};
 use output::{DeviceList, DeviceViews, OutputLink, Request};
 mod keybinds;
-mod language;
+pub(crate) mod language;
 mod menu_music;
 mod mod_settings;
 mod ui_sounds;
@@ -112,10 +112,12 @@ const MAX_TEXTURES: usize = 16
     + MAX_BACKGROUNDS as usize
     + crate::thumbnails::MAX_HANDLES as usize
     + crate::menu_cursor::MAX_CURSOR_TEXTURES as usize;
-/// Rectangles of one frame: the buttons or rows of up to two layers, the FPS counter's
+/// Rectangles of one frame: the buttons or rows of up to two layers (each a few layers deep,
+/// ADR-0136), the FPS counter's
 /// box, two backgrounds of each layer, the language curtain (ADR-0091) and the intro's
 /// black (ADR-0114).
-const MAX_SHAPES: usize = 256
+const MAX_SHAPES: usize = 1024
+    + crate::play::fps::MAX_FPS_SHAPES
     + slam_ui::screen::MAX_FX_SHAPES
     + 1
     + 2 * MAX_LAYERS
@@ -270,7 +272,7 @@ pub struct ShellSnapshot {
     pub background_dim: f32,
     /// The main menu shows the background (ADR-0119).
     pub menu_background: bool,
-    /// Strength of the menus' parallax, 0 ..= 1: 0 with it or the effects off (ADR-0132).
+    /// Strength of the menus' parallax, 0 ..= 2: 0 with it off (ADR-0132, ADR-0136).
     pub parallax: f32,
     /// The display lists the settings screen shows (ADR-0072).
     pub display_generation: u64,
@@ -331,6 +333,9 @@ pub struct ShellState {
     /// The settings screen opened: its device list is to be made again (ADR-0089), not yet
     /// taken by [`ShellState::take_device_list_request`].
     device_list_request: bool,
+    /// A Feedback row was pressed: the page to open, not yet taken by
+    /// [`ShellState::take_feedback_request`].
+    feedback_request: Option<crate::feedback::Kind>,
     /// The settings in force: what the file said, then what the settings screen committed.
     settings: Settings,
     /// The options of the settings screen's dropdowns, fixed for the run.
@@ -358,6 +363,9 @@ pub struct ShellState {
     modifiers: u8,
     /// The settings panel, open or sliding out (ADR-0095).
     panel: Option<Panel>,
+    /// Where the settings list was when the panel went: its scroll and the sidebar's pick,
+    /// put back when it opens again; not saved (ADR-0136).
+    settings_position: (f32, Option<usize>),
     /// The play shows its pause or fail menu: the settings panel may open over it.
     play_menu: bool,
     /// The settings panel closed with changes not yet looked at by the play (ADR-0096).
@@ -447,6 +455,7 @@ impl ShellState {
             retry_request: false,
             track_stop: false,
             device_list_request: false,
+            feedback_request: None,
             settings: Settings::default(),
             rows: Rows::new(&Settings::default()),
             editing: None,
@@ -465,6 +474,7 @@ impl ShellState {
             setting_rows_for: None,
             modifiers: 0,
             panel: None,
+            settings_position: (0.0, None),
             play_menu: false,
             settings_changed: false,
             localizer: None,
@@ -665,6 +675,11 @@ impl ShellState {
         if self.editing.is_some() {
             self.device_list_request = true;
         }
+    }
+
+    /// The page a Feedback row asked to open, once; the caller opens it off the update tick.
+    pub fn take_feedback_request(&mut self) -> Option<crate::feedback::Kind> {
+        self.feedback_request.take()
     }
 
     pub fn take_device_list_request(&mut self) -> Option<&crate::settings::Audio> {
@@ -1043,6 +1058,8 @@ impl ShellState {
         if let Some(localizer) = &self.localizer {
             screen.set_search_texts(Rows::search_texts(localizer));
         }
+        let (scroll, pinned) = self.settings_position;
+        screen.restore_position(scroll, pinned);
         self.panel = Some(Panel {
             screen: Box::new(screen),
             motion: PanelMotion::opening(now_ns, &self.theme),
@@ -1605,6 +1622,12 @@ impl ShellState {
             {
                 self.pick_folder();
             }
+            Some(SettingsAction::Pressed { row })
+                if Row::ALL.get(row).and_then(|row| row.feedback()).is_some() =>
+            {
+                self.ui_sounds.push(crate::menu_sounds::MenuSound::Click);
+                self.feedback_request = Row::ALL.get(row).and_then(|row| row.feedback());
+            }
             Some(
                 action @ (SettingsAction::KeyCaptured { .. }
                 | SettingsAction::KeyCleared { .. }
@@ -1809,7 +1832,7 @@ impl ShellState {
         self.stack.set_style(live_general.transitions);
         let on_menu = matches!(self.stack.top(), AppScreen::Menu(_));
         snapshot.menu_background = menu_background != MenuBackground::None;
-        snapshot.parallax = if live_general.effects {
+        snapshot.parallax = if live_general.parallax_enabled {
             live_general.parallax as f32
         } else {
             0.0
@@ -1869,8 +1892,10 @@ impl ShellState {
             .as_ref()
             .is_some_and(|p| p.motion.is_gone(now_ns))
         {
-            // Navigation: the screen goes with the panel.
-            self.panel = None;
+            // Navigation: the screen goes with the panel, the place in its list stays.
+            if let Some(panel) = self.panel.take() {
+                self.settings_position = panel.screen.position();
+            }
         }
         let layout = self.settings_layout;
         if let Some(panel) = &mut self.panel {
@@ -2449,6 +2474,9 @@ impl PlayHost {
         self.ui_sounds.follow_skin(now_ns, mode, skin.as_ref());
         self.ui_sounds
             .play(now_ns, noted, mode, &mut self.audio.mixer);
+        if let Some(kind) = state.take_feedback_request() {
+            crate::feedback::open(kind);
+        }
         if let Some(link) = &mut self.output {
             if let Some(settings) = state.take_device_list_request() {
                 // A full ring drops it: the screen keeps the list it has.
@@ -3427,6 +3455,7 @@ impl<B: render::Backend> Draw<ShellSnapshot> for View<B> {
         // failing now is a driver fault the shell does not recover from.
         let surface = self.surface.take().expect("surface is set before start");
         let mut device = surface.create_device().expect("render device");
+        crate::feedback::set_driver(format!("{}, {}", B::NAME, B::driver_info(&device)));
         let renderer = SpriteRenderer::with_layout(
             &mut device,
             DEFAULT_SLOTS,
@@ -3585,7 +3614,11 @@ impl<B: render::Backend> Draw<ShellSnapshot> for View<B> {
                     ScreenView::SongSelect(_) => true,
                     _ => false,
                 });
-            if self.theme.effects && shows_background && size.width > 0 && size.height > 0 {
+            if self.theme.background_blur > 0.0
+                && shows_background
+                && size.width > 0
+                && size.height > 0
+            {
                 blur_backgrounds(
                     &mut r.device,
                     &r.textures,
@@ -3600,9 +3633,10 @@ impl<B: render::Backend> Draw<ShellSnapshot> for View<B> {
         }
         // The blurred image of each background shown, if any: drawn in its place.
         let effects = self.theme.effects;
+        let blur_on = self.theme.background_blur > 0.0;
         let blurred = |image| {
             let slot = r.blurs.iter().position(|s| s.image == Some(image))?;
-            effects.then_some(BLUR_TEXTURES[slot])
+            blur_on.then_some(BLUR_TEXTURES[slot])
         };
         let in_place = |region: AtlasRegion, image| match blurred(image) {
             Some(texture) => AtlasRegion {
@@ -3635,7 +3669,7 @@ impl<B: render::Backend> Draw<ShellSnapshot> for View<B> {
             [width, height],
             self.theme.parallax_half_life,
         );
-        let strength = if effects { snapshot.parallax } else { 0.0 };
+        let strength = snapshot.parallax;
         let background_map = crate::parallax::layer_map(
             pointer,
             [width, height],
@@ -3848,8 +3882,13 @@ impl<B: render::Backend> Draw<ShellSnapshot> for View<B> {
             info.wait.woke_ns,
             r.white,
         );
-        self.fps
-            .push(&mut self.shapes, &mut self.text, &mut self.glyphs, r.white);
+        self.fps.push(
+            &mut self.shapes,
+            &self.theme,
+            &mut self.text,
+            &mut self.glyphs,
+            r.white,
+        );
         // The menu cursor is the last of all, over the curtain and the FPS counter, unless
         // gameplay draws its own (ADR-0124).
         let mut cursor = snapshot.menu_cursor;
@@ -4213,6 +4252,8 @@ fn open_audio(
         volumes: AppliedVolumes::new(volumes),
         sample_rate,
     };
+    // Once the output is open: a failed open keeps the last backend that did.
+    crate::feedback::set_audio(format!("{backend:?}"));
     Ok((audio, stream))
 }
 
@@ -4353,9 +4394,28 @@ fn interface_localizer(settings: &Settings) -> Result<Localizer, String> {
 /// `live` (with the settings screen's edits), the menu scale of `committed`: the menus'
 /// scale changes when the settings are kept, not under the slider dragging it.
 pub fn interface_theme(live: &Settings, committed: &Settings) -> Theme {
-    Theme::new(live.general.colour_scheme, committed.general.menu_scale)
-        .with_effects(live.general.effects)
-        .with_skew(live.general.skew)
+    let general = &live.general;
+    let mut theme = Theme::new(general.colour_scheme, committed.general.menu_scale)
+        .with_effects(general.effects)
+        .with_skew(general.skew)
+        .with_shadow(if general.shadows {
+            general.shadow_strength as f32
+        } else {
+            0.0
+        })
+        .with_cursor_fx(CursorFx {
+            rotate: general.cursor_rotate,
+            spin: general.cursor_spin,
+            trail: general.cursor_trail,
+            ripple: general.cursor_ripple,
+        });
+    // The background blur is its own switch, whatever the effects say (ADR-0136).
+    theme.background_blur = if general.blur {
+        theme.background_blur * (general.blur_strength as f32).clamp(0.0, 2.0)
+    } else {
+        0.0
+    };
+    theme
 }
 
 fn run_with<B: render::Backend>(

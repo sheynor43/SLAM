@@ -6,18 +6,12 @@
 //! the update thread's last scheduled tick interval; it steps on the draw thread's
 //! clock, where lazer steps on the update thread's. Allocation-free.
 
-use std::fmt;
-use std::sync::Arc;
-
 use slam_render::Color;
-use slam_render::atlas::AtlasRegion;
-use slam_render::sprite::{PushSprite, Sprite, SpriteBatch};
-use slam_text::{
-    FamilyId, FontRegistry, GlyphCache, GlyphKey, Layout, LayoutContext, TextStats, TextStyle,
-    UI_FAMILY, push_layout,
-};
 
-use crate::hud::{NUMBER_TEXT_LEN, NumberText, Template, number_text};
+use crate::fps_graph::FrameGraph;
+use crate::hud::{NumberText, number_text};
+
+pub use crate::fps_view::{FpsCell, FpsCorner, FpsLabels, FpsMode, FpsRow, FpsView};
 
 // Ported from osu!lazer 2026.1005.0-lazer: osu.Game/Graphics/UserInterface/FPSCounter.cs
 const MIN_TIME_BETWEEN_UPDATES: f64 = 10.0;
@@ -27,8 +21,6 @@ const DAMP_TIME: f64 = 100.0;
 const DISPLAY_TIME: f64 = 2000.0;
 const FADE_DURATION: f64 = 300.0;
 const DIMMED_ALPHA: f32 = 0.7;
-/// The background's alpha (lazer's `idle_background_alpha`; no hover here).
-pub const BACKGROUND_ALPHA: f32 = 0.4;
 
 // Ported from osu!lazer 2026.1005.0-lazer: osu.Game/Graphics/OsuColour.cs (Red, Orange2, Lime0)
 const RED: [f32; 3] = hex(0xed, 0x11, 0x21);
@@ -110,7 +102,38 @@ impl Fade {
     }
 }
 
-/// The counter's two texts as last updated: the number and its colour.
+/// What the other threads have been doing, as rates over the last second or so (ADR-0138).
+/// Measured by the caller from counters that already exist; `None` where it has none.
+#[derive(Debug, Clone, Copy, Default, PartialEq)]
+pub struct ThreadFigures {
+    /// Update ticks per second; 0 before the first measure.
+    pub update_hz: f64,
+    pub audio: Option<AudioFigures>,
+    pub input: Option<InputFigures>,
+}
+
+/// The audio thread's figures.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct AudioFigures {
+    /// Callbacks per second.
+    pub callbacks_hz: f64,
+    /// The buffer's length in milliseconds.
+    pub buffer_ms: f64,
+    /// Buffers missed plus music underruns since the stream opened.
+    pub xruns: u64,
+}
+
+/// The input thread's figures.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct InputFigures {
+    /// Returns of the event wait per second.
+    pub polls_hz: f64,
+    /// Input events queued per second.
+    pub events_hz: f64,
+}
+
+/// The counter's texts as last updated: each number and, where it is judged against a
+/// target, its colour.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct FpsTexts {
     /// The update thread's frame time, e.g. `0.9` or `12`.
@@ -119,6 +142,70 @@ pub struct FpsTexts {
     /// The draw rate, e.g. `1,000`.
     pub fps: NumberText,
     pub fps_colour: Color,
+    /// The draw thread's frame time, as the update thread's.
+    pub draw_time: NumberText,
+    pub draw_time_colour: Color,
+    /// The other threads' figures; `-` where unknown.
+    pub update_rate: NumberText,
+    pub audio_period: NumberText,
+    pub audio_buffer: NumberText,
+    pub audio_xruns: NumberText,
+    pub input_polls: NumberText,
+    pub input_events: NumberText,
+    /// Set while the audio thread has missed anything.
+    pub audio_xruns_colour: Option<Color>,
+}
+
+impl FpsTexts {
+    /// The text of `cell`.
+    pub fn number(&self, cell: FpsCell) -> NumberText {
+        match cell {
+            FpsCell::Fps => self.fps,
+            FpsCell::DrawTime => self.draw_time,
+            FpsCell::UpdateTime => self.frame_time,
+            FpsCell::UpdateRate => self.update_rate,
+            FpsCell::AudioPeriod => self.audio_period,
+            FpsCell::AudioBuffer => self.audio_buffer,
+            FpsCell::AudioXruns => self.audio_xruns,
+            FpsCell::InputPolls => self.input_polls,
+            FpsCell::InputEvents => self.input_events,
+        }
+    }
+
+    /// The colour of `cell` against its target; `None` for a plain figure.
+    pub fn colour(&self, cell: FpsCell) -> Option<Color> {
+        match cell {
+            FpsCell::Fps => Some(self.fps_colour),
+            FpsCell::DrawTime => Some(self.draw_time_colour),
+            FpsCell::UpdateTime => Some(self.frame_time_colour),
+            FpsCell::AudioXruns => self.audio_xruns_colour,
+            _ => None,
+        }
+    }
+}
+
+/// The text of a figure that is not known.
+fn unknown() -> NumberText {
+    number_text(format_args!("-"))
+}
+
+/// A rate in Hz as a whole number.
+fn format_hz(hz: f64) -> NumberText {
+    grouped(round_half_away(hz))
+}
+
+/// A period in milliseconds from a rate in Hz; unknown for none.
+fn format_period(hz: f64) -> NumberText {
+    if hz > 0.0 && hz.is_finite() {
+        format_frame_time(1000.0 / hz)
+    } else {
+        unknown()
+    }
+}
+
+/// A buffer length in milliseconds, to a tenth.
+fn format_buffer(ms: f64) -> NumberText {
+    number_text(format_args!("{:.1}", ms.max(0.0)))
 }
 
 /// The counter's state on the draw thread.
@@ -132,6 +219,7 @@ pub struct FpsCounter {
     draw_rate: FrameRate,
     displayed_fps_count: f64,
     displayed_frame_time: f64,
+    displayed_draw_time: f64,
     aim_draw_fps: f64,
     aim_update_fps: f64,
     last_update: f64,
@@ -139,6 +227,9 @@ pub struct FpsCounter {
     is_displayed: bool,
     fade: Fade,
     texts: FpsTexts,
+    figures: ThreadFigures,
+    draw_graph: FrameGraph,
+    update_graph: FrameGraph,
 }
 
 impl Default for FpsCounter {
@@ -156,6 +247,7 @@ impl FpsCounter {
             draw_rate: FrameRate::default(),
             displayed_fps_count: 0.0,
             displayed_frame_time: 0.0,
+            displayed_draw_time: 0.0,
             aim_draw_fps: 0.0,
             aim_update_fps: 0.0,
             last_update: 0.0,
@@ -172,7 +264,19 @@ impl FpsCounter {
                 frame_time_colour: Color::WHITE,
                 fps: NumberText::default(),
                 fps_colour: Color::WHITE,
+                draw_time: NumberText::default(),
+                draw_time_colour: Color::WHITE,
+                update_rate: unknown(),
+                audio_period: unknown(),
+                audio_buffer: unknown(),
+                audio_xruns: unknown(),
+                input_polls: unknown(),
+                input_events: unknown(),
+                audio_xruns_colour: None,
             },
+            figures: ThreadFigures::default(),
+            draw_graph: FrameGraph::new(),
+            update_graph: FrameGraph::new(),
         };
         // `LoadComplete`.
         counter.request_display();
@@ -200,6 +304,15 @@ impl FpsCounter {
             return;
         }
 
+        if elapsed_draw_frame_time > 0.0 {
+            self.draw_graph
+                .record(self.time, elapsed_draw_frame_time as f32);
+        }
+        if update_interval_ns > 0 {
+            self.update_graph
+                .record(self.time, elapsed_update_frame_time as f32);
+        }
+
         let aim_rates_changed = self.update_aim_fps(aim_draw, aim_update);
 
         let has_update_spike =
@@ -215,6 +328,17 @@ impl FpsCounter {
             damp_continuously(
                 self.displayed_frame_time,
                 elapsed_update_frame_time,
+                DAMP_TIME,
+                elapsed_draw_frame_time,
+            )
+        };
+
+        self.displayed_draw_time = if has_draw_spike {
+            elapsed_draw_frame_time
+        } else {
+            damp_continuously(
+                self.displayed_draw_time,
+                elapsed_draw_frame_time,
                 DAMP_TIME,
                 elapsed_draw_frame_time,
             )
@@ -270,6 +394,9 @@ impl FpsCounter {
     fn update_fps_display(&mut self) {
         self.texts.fps_colour = colour(self.displayed_fps_count / self.aim_draw_fps);
         self.texts.fps = format_fps(self.displayed_fps_count);
+        self.texts.draw_time = format_frame_time(self.displayed_draw_time);
+        self.texts.draw_time_colour =
+            colour((1000.0 / self.displayed_draw_time) / self.aim_draw_fps);
     }
 
     fn update_frame_time_display(&mut self) {
@@ -287,13 +414,71 @@ impl FpsCounter {
         false
     }
 
+    /// Takes the other threads' figures; formats them when they changed. Allocation-free.
+    pub fn set_figures(&mut self, figures: ThreadFigures) {
+        if figures == self.figures {
+            return;
+        }
+        self.figures = figures;
+        let texts = &mut self.texts;
+        texts.update_rate = if figures.update_hz > 0.0 {
+            format_hz(figures.update_hz)
+        } else {
+            unknown()
+        };
+        match figures.audio {
+            Some(audio) => {
+                texts.audio_period = format_period(audio.callbacks_hz);
+                texts.audio_buffer = format_buffer(audio.buffer_ms);
+                texts.audio_xruns = grouped(audio.xruns);
+                texts.audio_xruns_colour = (audio.xruns > 0).then(|| colour(0.0));
+            }
+            None => {
+                texts.audio_period = unknown();
+                texts.audio_buffer = unknown();
+                texts.audio_xruns = unknown();
+                texts.audio_xruns_colour = None;
+            }
+        }
+        match figures.input {
+            Some(input) => {
+                texts.input_polls = format_hz(input.polls_hz);
+                texts.input_events = format_hz(input.events_hz);
+            }
+            None => {
+                texts.input_polls = unknown();
+                texts.input_events = unknown();
+            }
+        }
+    }
+
+    /// The draw frame times of the last few seconds.
+    pub fn draw_graph(&self) -> &FrameGraph {
+        &self.draw_graph
+    }
+
+    /// The update tick intervals of the last few seconds.
+    pub fn update_graph(&self) -> &FrameGraph {
+        &self.update_graph
+    }
+
+    /// The draw rate aimed for, in Hz.
+    pub fn aim_draw(&self) -> f64 {
+        self.aim_draw_fps
+    }
+
+    /// The update rate aimed for, in Hz.
+    pub fn aim_update(&self) -> f64 {
+        self.aim_update_fps
+    }
+
     /// The texts as last updated.
     pub fn texts(&self) -> &FpsTexts {
         &self.texts
     }
 
-    /// The counter's alpha now (lazer's `mainContent`); the background is
-    /// [`BACKGROUND_ALPHA`] of it.
+    /// The counter's alpha now (lazer's `mainContent`); the panel's own
+    /// alpha is a fraction of it.
     pub fn alpha(&self) -> f32 {
         self.fade.alpha(self.time)
     }
@@ -403,286 +588,14 @@ fn grouped(value: u64) -> NumberText {
     text
 }
 
-/// The counter's localised texts: the unit around each number, with
-/// [`crate::hud::OFFSET_PLACEHOLDER`] standing for it.
-#[derive(Debug, Clone)]
-pub struct FpsLabels {
-    /// The frame time, e.g. `{} ms`.
-    pub frame_time: String,
-    /// The draw rate, e.g. `{} fps`.
-    pub fps: String,
-}
-
-/// Window height the sizes are given at; they scale with the window.
-const REFERENCE_HEIGHT: f32 = 768.0;
-// Ported from osu!lazer 2026.1005.0-lazer: osu.Game/Graphics/UserInterface/FPSCounter.cs (load)
-// The box sits at the bottom right with this margin and is this tall.
-const BOX_MARGIN: f32 = 5.0;
-const BOX_HEIGHT: f32 = 26.0;
-const FRAME_TIME_SIZE: f32 = 16.0;
-const FPS_SIZE: f32 = 13.0;
-const WEIGHT: u16 = 600;
-// Each text's distance from the box's right edge (its margin) and its top from the box's
-// top (its `Y` plus margin). lazer also tightens the letters (-1 and -2) and sets the
-// digits fixed-width; text here has neither.
-const FRAME_TIME_RIGHT: f32 = 1.0;
-const FRAME_TIME_TOP: f32 = -1.0;
-const FPS_RIGHT: f32 = 2.0;
-const FPS_TOP: f32 = 12.0;
-
-/// What a number is laid out with to settle the buffers and warm the glyphs.
-const WARM_NUMBER: &str = "0123456789.,0123456789";
-const BACKGROUND: Color = Color {
-    r: 0.0,
-    g: 0.0,
-    b: 0.0,
-    a: 1.0,
-};
-
-/// The window corner the counter sits in (ADR-0060); lazer's is the bottom right.
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Hash)]
-pub enum FpsCorner {
-    TopLeft,
-    TopRight,
-    BottomLeft,
-    #[default]
-    BottomRight,
-}
-
-impl FpsCorner {
-    pub const ALL: [FpsCorner; 4] = [
-        FpsCorner::TopLeft,
-        FpsCorner::TopRight,
-        FpsCorner::BottomLeft,
-        FpsCorner::BottomRight,
-    ];
-
-    fn left(self) -> bool {
-        matches!(self, FpsCorner::TopLeft | FpsCorner::BottomLeft)
-    }
-
-    fn top(self) -> bool {
-        matches!(self, FpsCorner::TopLeft | FpsCorner::TopRight)
-    }
-}
-
-/// Text sizes and positions of one window size.
-#[derive(Debug, Clone, Copy, PartialEq)]
-struct Frame {
-    width: f32,
-    height: f32,
-    scale: f32,
-}
-
-/// The draw side of the FPS counter: lays out its two texts and the box behind them.
-pub struct FpsView {
-    registry: Arc<FontRegistry>,
-    family: FamilyId,
-    context: LayoutContext,
-    frame: Frame,
-    corner: FpsCorner,
-    /// Frame time, then fps.
-    templates: [Template; 2],
-    text: String,
-    layouts: [Layout; 2],
-    /// The numbers the layouts show; `None` lays them out on the next update.
-    shown: Option<[NumberText; 2]>,
-    /// The box's width in pixels: it only grows, until the window changes size.
-    box_width: f32,
-    colours: [Color; 2],
-    alpha: f32,
-    /// The templates and the number alone laid out with [`WARM_NUMBER`]: the glyphs to
-    /// warm.
-    warm: [Layout; 3],
-}
-
-impl fmt::Debug for FpsView {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.debug_struct("FpsView")
-            .field("frame", &self.frame)
-            .field("corner", &self.corner)
-            .field("box_width", &self.box_width)
-            .field("shown", &self.shown)
-            .finish_non_exhaustive()
-    }
-}
-
-impl FpsView {
-    /// A view with fonts from `registry` and the localised `labels`. Lays out every
-    /// character it will show, so that later layouts do not allocate: call it off the hot
-    /// paths.
-    pub fn new(registry: Arc<FontRegistry>, labels: &FpsLabels) -> FpsView {
-        let templates = [
-            Template::new(&labels.frame_time),
-            Template::new(&labels.fps),
-        ];
-        let longest = templates.iter().map(Template::len).max().unwrap_or(0);
-        // An unknown family lays out nothing; the built-in registry has the UI family.
-        let family = registry.family(UI_FAMILY).unwrap_or(FamilyId(u32::MAX));
-        let mut view = FpsView {
-            registry,
-            family,
-            context: LayoutContext::new(),
-            frame: Frame {
-                width: 0.0,
-                height: 0.0,
-                scale: 0.0,
-            },
-            corner: FpsCorner::default(),
-            templates,
-            text: String::with_capacity(longest + NUMBER_TEXT_LEN),
-            layouts: [Layout::new(), Layout::new()],
-            shown: None,
-            box_width: 0.0,
-            colours: [Color::WHITE; 2],
-            alpha: 0.0,
-            warm: [Layout::new(), Layout::new(), Layout::new()],
-        };
-        let style = TextStyle::new(view.family, WEIGHT, 1.0);
-        for i in 0..2 {
-            view.templates[i].write(WARM_NUMBER, &mut view.text);
-            view.context
-                .layout_into(&view.registry, &view.text, &style, &mut view.warm[i]);
-            view.context
-                .layout_into(&view.registry, &view.text, &style, &mut view.layouts[i]);
-        }
-        view.context
-            .layout_into(&view.registry, WARM_NUMBER, &style, &mut view.warm[2]);
-        view
-    }
-
-    /// Asks `glyphs` for every glyph the counter shows. Returns how many are not ready
-    /// yet; repeat with [`GlyphCache::process`] in between until none are, before the
-    /// play starts.
-    pub fn request_glyphs(&self, glyphs: &mut GlyphCache) -> usize {
-        self.warm
-            .iter()
-            .flat_map(Layout::glyphs)
-            .filter(|g| matches!(glyphs.glyph(GlyphKey::of(g)), slam_text::Glyph::Pending))
-            .count()
-    }
-
-    /// Puts the box in `corner` from the next frame on.
-    pub fn set_corner(&mut self, corner: FpsCorner) {
-        self.corner = corner;
-    }
-
-    /// Lays out what changed for `counter` on a window of `width` × `height` pixels.
-    /// Allocation-free.
-    pub fn update(&mut self, width: f32, height: f32, counter: &FpsCounter) {
-        let frame = Frame {
-            width,
-            height,
-            scale: height / REFERENCE_HEIGHT,
-        };
-        if frame != self.frame {
-            self.frame = frame;
-            self.shown = None;
-            self.box_width = 0.0;
-        }
-        let texts = counter.texts();
-        self.colours = [texts.frame_time_colour, texts.fps_colour];
-        self.alpha = counter.alpha();
-        let numbers = [texts.frame_time, texts.fps];
-        if self.shown == Some(numbers) {
-            return;
-        }
-        self.shown = Some(numbers);
-        let scale = frame.scale;
-        for (i, size) in [FRAME_TIME_SIZE, FPS_SIZE].into_iter().enumerate() {
-            // lazer's texts start empty; no lone unit before the first numbers.
-            if numbers[i].as_str().is_empty() {
-                self.text.clear();
-            } else {
-                self.templates[i].write(numbers[i].as_str(), &mut self.text);
-            }
-            let style = TextStyle::new(self.family, WEIGHT, size * scale);
-            self.context
-                .layout_into(&self.registry, &self.text, &style, &mut self.layouts[i]);
-        }
-        let [frame_time, fps] = &self.layouts;
-        let counters = (frame_time.width() + 2.0 * FRAME_TIME_RIGHT * scale)
-            .max(fps.width() + 2.0 * FPS_RIGHT * scale);
-        self.box_width = self.box_width.max(counters);
-    }
-
-    /// The box's position and size.
-    fn bounds(&self) -> ([f32; 2], [f32; 2]) {
-        let Frame {
-            width,
-            height,
-            scale,
-        } = self.frame;
-        let size = [self.box_width, BOX_HEIGHT * scale];
-        let margin = BOX_MARGIN * scale;
-        let x = if self.corner.left() {
-            margin
-        } else {
-            width - margin - size[0]
-        };
-        let y = if self.corner.top() {
-            margin
-        } else {
-            height - margin - size[1]
-        };
-        ([x, y], size)
-    }
-
-    /// Writes the counter's background, tinting `white` (an opaque white image).
-    /// Allocation-free once `batch` has room.
-    pub fn push_shapes(&self, batch: &mut impl PushSprite, white: AtlasRegion) {
-        if self.alpha <= 0.0 {
-            return;
-        }
-        let (position, size) = self.bounds();
-        let mut sprite = Sprite::new(white.texture, white.uv, position, size);
-        sprite.colour = Color {
-            a: BACKGROUND_ALPHA * self.alpha,
-            ..BACKGROUND
-        };
-        batch.push_sprite(&sprite);
-    }
-
-    /// Writes the counter's text into a batch drawn with the MSDF shader. Glyphs not
-    /// ready yet are skipped and counted. Allocation-free once `batch` has room.
-    pub fn push_text(&self, batch: &mut SpriteBatch, glyphs: &mut GlyphCache) -> TextStats {
-        let mut stats = TextStats::default();
-        if self.alpha <= 0.0 {
-            return stats;
-        }
-        let scale = self.frame.scale;
-        let ([x, y], size) = self.bounds();
-        let right = x + size[0];
-        for (i, (from_right, top)) in [(FRAME_TIME_RIGHT, FRAME_TIME_TOP), (FPS_RIGHT, FPS_TOP)]
-            .into_iter()
-            .enumerate()
-        {
-            let layout = &self.layouts[i];
-            let colour = Color {
-                a: self.alpha,
-                ..self.colours[i]
-            };
-            let position = [right - from_right * scale - layout.width(), y + top * scale];
-            let s = push_layout(batch, layout, position, colour, glyphs);
-            stats.drawn += s.drawn;
-            stats.pending += s.pending;
-        }
-        stats
-    }
-}
-
 #[cfg(test)]
 pub(crate) mod tests {
     use super::*;
-    use crate::hud::OFFSET_PLACEHOLDER;
 
     const MS: u64 = 1_000_000;
 
     pub(crate) fn labels() -> FpsLabels {
-        FpsLabels {
-            frame_time: format!("{OFFSET_PLACEHOLDER} ms"),
-            fps: format!("{OFFSET_PLACEHOLDER} fps"),
-        }
+        FpsLabels::english()
     }
 
     /// Runs frames `period_ms` apart for `duration_ms` with a steady update interval.
@@ -783,59 +696,5 @@ pub(crate) mod tests {
         c.frame(20_000 * MS, 15_000 * MS, 1000.0, 1000.0);
         c.frame(20_020 * MS, 15_000 * MS, 1000.0, 1000.0);
         assert_eq!(c.texts().frame_time, before.frame_time);
-    }
-
-    #[test]
-    fn the_box_sits_at_the_bottom_right_and_only_grows() {
-        let mut c = FpsCounter::new();
-        run(&mut c, 1, 2000, 1, 1.0);
-        let mut view = FpsView::new(Arc::new(FontRegistry::with_builtin()), &labels());
-        view.update(1280.0, 768.0, &c);
-        let (position, size) = view.bounds();
-        assert_eq!(size[1], BOX_HEIGHT);
-        assert!((position[0] + size[0] - (1280.0 - BOX_MARGIN)).abs() < 1e-3);
-        assert!((position[1] + size[1] - (768.0 - BOX_MARGIN)).abs() < 1e-3);
-        // "1.0 ms" over "1,000 fps": the box holds the wider with its margins.
-        let [frame_time, fps] = &view.layouts;
-        let wider =
-            (frame_time.width() + 2.0 * FRAME_TIME_RIGHT).max(fps.width() + 2.0 * FPS_RIGHT);
-        assert!((size[0] - wider).abs() < 1e-3);
-        assert!((fps.font_size() - FPS_SIZE).abs() < 1e-4);
-        assert_eq!(view.alpha, 1.0);
-
-        // Narrower text keeps the box; a new window size starts it again.
-        view.update(1280.0, 768.0, &FpsCounter::new());
-        assert_eq!(view.bounds().1[0], size[0]);
-        view.update(1280.0, 1536.0, &FpsCounter::new());
-        let (position, size) = view.bounds();
-        assert_eq!(size[1], 2.0 * BOX_HEIGHT);
-        assert!(size[0] < 2.0 * wider);
-        assert!((position[1] + size[1] - (1536.0 - 2.0 * BOX_MARGIN)).abs() < 1e-3);
-    }
-
-    #[test]
-    fn the_box_sits_in_the_chosen_corner() {
-        let mut c = FpsCounter::new();
-        run(&mut c, 1, 2000, 1, 1.0);
-        let mut view = FpsView::new(Arc::new(FontRegistry::with_builtin()), &labels());
-        let (width, height) = (1280.0, 768.0);
-        for corner in FpsCorner::ALL {
-            view.set_corner(corner);
-            view.update(width, height, &c);
-            let ([x, y], [w, h]) = view.bounds();
-            let expected_x = if corner.left() {
-                BOX_MARGIN
-            } else {
-                width - BOX_MARGIN - w
-            };
-            let expected_y = if corner.top() {
-                BOX_MARGIN
-            } else {
-                height - BOX_MARGIN - h
-            };
-            assert!((x - expected_x).abs() < 1e-3, "{corner:?}");
-            assert!((y - expected_y).abs() < 1e-3, "{corner:?}");
-        }
-        assert_eq!(FpsCorner::default(), FpsCorner::BottomRight);
     }
 }

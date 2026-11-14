@@ -97,6 +97,16 @@ struct Palette {
     raised: Color,
 }
 
+/// `colour` moved `by` towards white.
+const fn lighter(colour: Color, by: f32) -> Color {
+    Color {
+        r: colour.r + (1.0 - colour.r) * by,
+        g: colour.g + (1.0 - colour.g) * by,
+        b: colour.b + (1.0 - colour.b) * by,
+        a: colour.a,
+    }
+}
+
 /// `colour` at alpha `a`.
 const fn alpha(colour: Color, a: f32) -> Color {
     Color { a, ..colour }
@@ -154,6 +164,8 @@ pub struct Theme {
     pub song_thumbnail_inset: f32,
     /// How long a thumbnail fades in, in milliseconds.
     pub song_thumbnail_fade_ms: f32,
+    /// Milliseconds a set's difficulties take to slide open (ADR-0136).
+    pub song_expand_ms: f32,
     /// Size of the artist and title, and of version texts.
     pub song_title_size: f32,
     /// Size of the creator and of the hint.
@@ -270,19 +282,45 @@ pub struct Theme {
     pub glow_width: f32,
     pub glow_alpha: f32,
     pub glow_pulse: f32,
-    /// Strength of the pattern of triangles and circles floating up buttons, panels, a lit
-    /// (hovered) button and a selected one (0 to 1; ADR-0131). Stronger also rises faster.
+    /// Strength of the pattern of triangles floating up buttons and panels (0 to 1;
+    /// ADR-0131, ADR-0136): more of them, rising faster. A lit (hovered) and a selected
+    /// button keep the button's strength and brighten its triangles by these factors.
     pub pattern_button: f32,
     pub pattern_panel: f32,
     pub pattern_hover: f32,
     pub pattern_selected: f32,
-    /// Width of the coloured strip on a difficulty row's left edge, and how strong the glow
-    /// in its colour is, as a part of the accent glow's alpha (ADR-0131).
-    pub difficulty_strip_width: f32,
+    /// Layers of a button after lazer's beatmap panels (ADR-0136): how dark its fill gets
+    /// towards the right (a factor of the colour), the opacity at the left of the wash of its
+    /// colour, of the triangles at the top, and of the selected button's brightening at the
+    /// right.
+    pub button_shade: f32,
+    pub button_tint_alpha: f32,
+    pub pattern_alpha: f32,
+    pub selection_alpha: f32,
+    /// Colours of the main menu's buttons, top to bottom (ADR-0136): the first is the
+    /// scheme's accent.
+    pub menu_button_tints: [Color; 3],
+    /// Colours of the mod select's columns, as lazer colours mod types (ADR-0136): difficulty
+    /// reduction, difficulty increase, conversion. An active mod's tile washes and is
+    /// outlined in its column's colour.
+    pub mod_column_tints: [Color; 3],
+    /// Colours of the settings' sections, in turn (ADR-0136).
+    pub section_tints: [Color; 8],
+    /// How strong a difficulty row's glow in its star colour is, as a part of the accent
+    /// glow's alpha (ADR-0131).
     pub difficulty_glow_scale: f32,
     /// Height of the star-rating pill, as a part of the row's text height, and its
     /// horizontal padding.
     pub star_pill_pad: f32,
+    /// The star drawn before the rating in the pill (ADR-0136): its size and the gap after it.
+    pub star_icon_size: f32,
+    pub star_icon_gap: f32,
+    /// The info panels on the left of song select, after lazer's wedges (ADR-0136): the
+    /// widest they get, their corner radius and how much of the fill's opacity is left at
+    /// their right edge.
+    pub song_info_width: f32,
+    pub wedge_radius: f32,
+    pub wedge_fade: f32,
     /// Size of one difficulty dot on a set row and the gap between two.
     pub difficulty_dot_size: f32,
     pub difficulty_dot_gap: f32,
@@ -337,6 +375,54 @@ pub struct Theme {
     pub cursor_inner_ring_alpha: f32,
     pub cursor_dot: f32,
     pub cursor_gameplay_glow: f32,
+    /// Strength of the shadows under buttons, rows and panels (ADR-0136), 0 to 2: 0 draws
+    /// none. The shadow's opacity, softness (reference pixels) and drop (reference pixels)
+    /// at strength 1.
+    pub shadow: f32,
+    pub shadow_alpha: f32,
+    pub shadow_radius: f32,
+    pub shadow_offset: f32,
+    /// Which extras SLAM's menu cursor shows (ADR-0136).
+    pub cursor_fx: CursorFx,
+    /// The spin about the long axis: milliseconds of rest before it starts, of one turn,
+    /// and of the way back to face front once the pointer moves.
+    pub cursor_spin_delay_ms: f32,
+    pub cursor_spin_period_ms: f32,
+    pub cursor_spin_back_ms: f32,
+    /// The trail: reference pixels between its positions, milliseconds each lasts, its
+    /// opacity at the start.
+    pub cursor_trail_spacing: f32,
+    pub cursor_trail_ms: f32,
+    pub cursor_trail_alpha: f32,
+    /// The ring of a press: milliseconds, its final size (a part of the pointer's height),
+    /// its opacity at the start.
+    pub cursor_ripple_ms: f32,
+    pub cursor_ripple_size: f32,
+    pub cursor_ripple_alpha: f32,
+}
+
+/// The extras of SLAM's menu cursor, each switched in the settings (ADR-0136).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct CursorFx {
+    /// Turns towards a drag, as lazer's `CursorRotation`.
+    pub rotate: bool,
+    /// Spins about its own long axis while the pointer rests.
+    pub spin: bool,
+    /// Leaves a fading trail of itself behind a moving pointer.
+    pub trail: bool,
+    /// Sends a ring out from the tip at each press.
+    pub ripple: bool,
+}
+
+impl Default for CursorFx {
+    fn default() -> Self {
+        CursorFx {
+            rotate: true,
+            spin: true,
+            trail: true,
+            ripple: true,
+        }
+    }
 }
 
 /// Tokens of the `fancy` screen transition (ADR-0126). The `simple` one keeps the
@@ -412,7 +498,9 @@ impl Theme {
             background: p.background,
             // Dense enough to read over a beatmap background (ADR-0119).
             button_fill: alpha(p.raised, 0.78),
-            button_hover_fill: alpha(p.accent, 0.55),
+            // A step lighter than the idle fill, not the accent: the accent is the selected
+            // button's wash and outline (ADR-0136).
+            button_hover_fill: alpha(lighter(p.raised, 0.10), 0.85),
             text: Color::WHITE,
             disabled_text: Color {
                 r: 1.0,
@@ -457,6 +545,7 @@ impl Theme {
             song_thumbnail_aspect: 1.6,
             song_thumbnail_inset: 3.0,
             song_thumbnail_fade_ms: 200.0,
+            song_expand_ms: 250.0,
             song_title_size: 20.0,
             song_detail_size: 13.0,
             song_info_title_size: 26.0,
@@ -535,13 +624,41 @@ impl Theme {
             glow_width: 14.0,
             glow_alpha: 0.55,
             glow_pulse: 0.35,
-            pattern_button: 0.14,
-            pattern_panel: 0.06,
-            pattern_hover: 0.22,
-            pattern_selected: 0.32,
-            difficulty_strip_width: 5.0,
+            pattern_button: 0.35,
+            pattern_panel: 0.04,
+            pattern_hover: 1.6,
+            pattern_selected: 2.4,
+            button_shade: 0.8,
+            button_tint_alpha: 0.25,
+            pattern_alpha: 0.25,
+            selection_alpha: 0.5,
+            menu_button_tints: [
+                p.accent,
+                Color::rgb(0.40, 0.80, 1.0),
+                Color::rgb(0.93, 0.27, 0.40),
+            ],
+            section_tints: [
+                p.accent,
+                Color::rgb(0.40, 0.80, 1.0),
+                Color::rgb(0.70, 1.0, 0.40),
+                Color::rgb(1.0, 0.80, 0.30),
+                Color::rgb(0.55, 0.40, 1.0),
+                Color::rgb(0.30, 0.95, 0.80),
+                Color::rgb(1.0, 0.50, 0.35),
+                Color::rgb(0.85, 0.45, 0.95),
+            ],
+            mod_column_tints: [
+                Color::rgb(0.70, 1.0, 0.40),
+                Color::rgb(1.0, 0.40, 0.40),
+                Color::rgb(0.55, 0.40, 1.0),
+            ],
             difficulty_glow_scale: 1.0,
             star_pill_pad: 7.0,
+            star_icon_size: 10.0,
+            star_icon_gap: 3.0,
+            song_info_width: 380.0,
+            wedge_radius: 10.0,
+            wedge_fade: 0.67,
             difficulty_dot_size: 7.0,
             difficulty_dot_gap: 4.0,
             background_motion: 0.06,
@@ -579,12 +696,42 @@ impl Theme {
             cursor_inner_ring_alpha: 0.5,
             cursor_dot: 0.14,
             cursor_gameplay_glow: 5.0,
+            shadow: 1.0,
+            shadow_alpha: 0.45,
+            shadow_radius: 10.0,
+            shadow_offset: 3.0,
+            cursor_fx: CursorFx::default(),
+            cursor_spin_delay_ms: 1500.0,
+            cursor_spin_period_ms: 2600.0,
+            cursor_spin_back_ms: 450.0,
+            cursor_trail_spacing: 6.0,
+            cursor_trail_ms: 140.0,
+            cursor_trail_alpha: 0.35,
+            cursor_ripple_ms: 450.0,
+            cursor_ripple_size: 1.4,
+            cursor_ripple_alpha: 0.6,
         }
     }
 
     /// The same theme with the effects on or off (ADR-0123).
     pub fn with_effects(self, effects: bool) -> Theme {
         Theme { effects, ..self }
+    }
+
+    /// The same theme with the shadows at `strength` (ADR-0136), held to `[0, 2]`; not a
+    /// number means none.
+    pub fn with_shadow(self, strength: f32) -> Theme {
+        let shadow = if strength.is_finite() {
+            strength.clamp(0.0, 2.0)
+        } else {
+            0.0
+        };
+        Theme { shadow, ..self }
+    }
+
+    /// The same theme with SLAM's menu cursor showing `fx` (ADR-0136).
+    pub fn with_cursor_fx(self, cursor_fx: CursorFx) -> Theme {
+        Theme { cursor_fx, ..self }
     }
 
     /// The same theme with the buttons' and rows' skew at `degrees` (ADR-0130), held to
@@ -621,10 +768,21 @@ impl Theme {
             return 0.0;
         }
         match level {
-            PatternLevel::Button => self.pattern_button,
+            // Lit buttons keep the idle triangles (ADR-0136): see `pattern_gain`.
+            PatternLevel::Button | PatternLevel::Hover | PatternLevel::Selected => {
+                self.pattern_button
+            }
             PatternLevel::Panel => self.pattern_panel,
+        }
+    }
+
+    /// How much brighter than idle a button's triangles are when it is lit by hover or
+    /// selected (ADR-0136): their strength stays the idle one, so they keep their pace.
+    pub fn pattern_gain(&self, level: PatternLevel) -> f32 {
+        match level {
             PatternLevel::Hover => self.pattern_hover,
             PatternLevel::Selected => self.pattern_selected,
+            PatternLevel::Button | PatternLevel::Panel => 1.0,
         }
     }
 
@@ -669,13 +827,11 @@ mod tests {
     fn the_default_keeps_the_pink_colours() {
         let theme = Theme::default();
         assert_eq!(theme.scheme, ColourScheme::Pink);
-        assert_eq!(
-            theme.button_hover_fill,
-            Color {
-                a: 0.55,
-                ..Color::rgb(1.0, 0.4, 0.7)
-            }
-        );
+        assert_eq!(theme.accent, Color::rgb(1.0, 0.4, 0.7));
+        assert_eq!(theme.menu_button_tints[0], theme.accent);
+        // Hover lightens the fill instead of washing it in the accent (ADR-0136).
+        assert!(theme.button_hover_fill.r < 0.3);
+        assert!(theme.button_hover_fill.r > theme.button_fill.r);
         assert_eq!(theme.background, Color::rgb(0.07, 0.07, 0.10));
     }
 
