@@ -427,3 +427,46 @@ fn the_wedges_run_off_the_left_edge_from_top_to_bottom() {
         assert!(top <= 0.0 && bottom <= 0.0, "{top} {bottom}");
     }
 }
+
+#[test]
+fn the_difficulty_lines_keep_a_text_pad_from_the_leaning_edge() {
+    let mut rig = Rig::new();
+    rig.show(details(Some(LocalScores::default())));
+    let mut screen = rig.screen.clone();
+    screen.set_details(Some(details(Some(LocalScores::default()))));
+    let snapshot = screen.snapshot();
+    let layout = SongSelectLayout::new(1280.0, 768.0, &rig.theme);
+    let pad = rig.theme.song_text_pad * layout.scale;
+    let inset = rig.theme.song_margin * layout.scale / 2.0;
+    let mut wedges = Vec::new();
+    let mut lines = Vec::new();
+    rig.panel.push(
+        &layout,
+        &rig.theme,
+        &snapshot,
+        1.0,
+        &mut |r, _, look| {
+            if let Look::Wedge { lean, .. } = look {
+                wedges.push((*r, lean));
+            }
+        },
+        &mut |line, x, centre_y, _| {
+            if !line.text.is_empty() {
+                lines.push((x, x + line.layout.width(), centre_y));
+            }
+        },
+    );
+    // The difficulty's wedge is the first; its right edge leans from its centre.
+    let (wedge, lean) = wedges[0];
+    let edge = |y: f32| wedge.x + wedge.width + (wedge.y + wedge.height / 2.0 - y) * lean;
+    let inside: Vec<_> = lines
+        .into_iter()
+        .filter(|&(_, _, y)| y > wedge.y && y < wedge.y + wedge.height)
+        .collect();
+    // The name, the artist, four bars of two lines and the two statistics lines.
+    assert!(inside.len() >= 12, "{}", inside.len());
+    for (left, right, y) in inside {
+        assert!(right <= edge(y) - pad, "{right} vs edge {} at {y}", edge(y));
+        assert!(left >= inset, "{left} at {y}");
+    }
+}

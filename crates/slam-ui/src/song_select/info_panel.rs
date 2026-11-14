@@ -437,7 +437,7 @@ impl InfoPanel {
         left: &mut impl FnMut(&Line, f32, f32, Color),
     ) {
         let scale = layout.scale;
-        let parts = InfoLayout::new(&layout.info, theme, scale);
+        let mut parts = InfoLayout::new(&layout.info, theme, scale);
         let tan = theme.button_skew().tan();
         let inset = theme.song_margin * scale / 2.0;
         let stars = snapshot.selected_stars();
@@ -506,6 +506,25 @@ impl InfoPanel {
             left(line, x + lean_of(centre_y), centre_y, colour);
         };
         let (rect, left) = (&mut rect, &mut left);
+        // Leaning with the edge pushes the difficulty's lines right, up to the edge, and
+        // leaves room at the left: they move back by a text pad, as far as they lean, so
+        // that their right end clears the edge and the left never reaches the window's.
+        let shift = (theme.song_text_pad * scale)
+            .min(lean_of(parts.counts.y + parts.counts.height))
+            .max(0.0);
+        for r in [
+            &mut parts.name,
+            &mut parts.artist,
+            &mut parts.stats,
+            &mut parts.counts,
+        ] {
+            r.x -= shift;
+        }
+        for bar in &mut parts.bars {
+            bar.label.x -= shift;
+            bar.track.x -= shift;
+            bar.value.x -= shift;
+        }
         // The wedges run off the window's left edge, as lazer's: only their right edge leans,
         // and no gap opens at the top left (ADR-0136). Once leaned, the top left corner lies
         // a corner radius past the edge.
