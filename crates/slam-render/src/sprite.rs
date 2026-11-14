@@ -449,14 +449,14 @@ pub fn tint_srgb(colour: [f32; 4], tint: [f32; 4]) -> [f32; 4] {
 }
 
 /// A tint with its colour in linear light, for many colours.
-struct Tint {
+pub(crate) struct Tint {
     srgb: [f32; 4],
     linear: [f32; 3],
     white: bool,
 }
 
 impl Tint {
-    fn new(srgb: [f32; 4]) -> Self {
+    pub(crate) fn new(srgb: [f32; 4]) -> Self {
         Self {
             srgb,
             linear: [0, 1, 2].map(|i| srgb_to_linear(srgb[i])),
@@ -466,7 +466,7 @@ impl Tint {
 
     // Ported from osu-framework 2026.921.1: osu.Framework/Graphics/Colour/SRGBColour.cs (operator *)
     /// A white side gives the other colour as it is.
-    fn apply(&self, colour: [f32; 4]) -> [f32; 4] {
+    pub(crate) fn apply(&self, colour: [f32; 4]) -> [f32; 4] {
         let alpha = colour[3] * self.srgb[3];
         if self.white {
             [colour[0], colour[1], colour[2], alpha]

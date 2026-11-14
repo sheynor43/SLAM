@@ -2645,6 +2645,19 @@ impl PlayView {
             visible: snapshot.state != PlayState::Resuming,
         };
         self.cursor.push(batch, layout, &frame, &textures.cursor);
+        self.push_resume(batch, layout, snapshot, now_ns, textures);
+    }
+
+    /// Writes the resume overlay's target alone: with the OS cursor in place of ours
+    /// (ADR-0124) the player still has to find the target to resume.
+    pub fn push_resume(
+        &mut self,
+        batch: &mut SpriteBatch,
+        layout: &PlayfieldLayout,
+        snapshot: &PlaySnapshot,
+        now_ns: u64,
+        textures: &FrameTextures,
+    ) {
         self.resume.push(
             batch,
             layout,

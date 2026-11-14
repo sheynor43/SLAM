@@ -642,8 +642,12 @@ impl PlayScene {
             &mut self.glyphs,
             &textures.hud,
         );
-        // The OS cursor stays with `system`: nothing of the cursor is drawn.
-        if self.cursor_style != CursorStyle::System {
+        // The OS cursor stays with `system`: nothing of the cursor is drawn but the resume
+        // overlay's target, which the player must click.
+        if self.cursor_style == CursorStyle::System {
+            self.view
+                .push_resume(&mut self.cursor, &layout, snapshot, now_ns, &textures);
+        } else {
             self.view
                 .push_cursor(&mut self.cursor, &layout, snapshot, now_ns, &textures);
             if self.cursor_style == CursorStyle::Slam {
@@ -660,6 +664,7 @@ impl PlayScene {
             self.batch.transform_from(layer_first, &layer, layer_tint);
             self.text.transform_from(0, &layer, layer_tint);
             self.cursor.transform_from(0, &layer, layer_tint);
+            self.cursor_shapes.transform_from(0, &layer, layer_tint);
         }
         // The menus' glows pulse and sheens sweep with the frame's time (ADR-0123).
         let speed = f64::from(slam_ui::theme::Theme::default().effect_speed);

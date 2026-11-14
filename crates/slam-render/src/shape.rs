@@ -9,7 +9,7 @@ use std::mem::size_of;
 
 use crate::atlas::UvRect;
 use crate::hal::{Blend, Color, VertexAttribute, VertexFormat, VertexLayout};
-use crate::sprite::{Batch, PushSprite, QuadSource, Sprite, extend_batches};
+use crate::sprite::{Affine, Batch, PushSprite, QuadSource, Sprite, Tint, extend_batches};
 use crate::textures::TextureId;
 
 /// One corner of a shape, as `shaders/ui_shape.wgsl` reads it.
@@ -223,6 +223,22 @@ impl ShapeBatch {
         }
     }
 
+    /// Moves the quads from the `first`-th on by `map` and multiplies their colours by
+    /// `tint`, as [`SpriteBatch::transform_from`](crate::sprite::SpriteBatch::transform_from)
+    /// does for sprites: a layer turned, moved or faded after it was recorded. Only the
+    /// corners move; the shape's own pixels (`local`, size, radius) are kept, so the shape
+    /// turns and scales with the corners and its edge stays smooth.
+    pub fn transform_from(&mut self, first: usize, map: &Affine, tint: [f32; 4]) {
+        let identity = map.is_identity();
+        let tint = Tint::new(tint);
+        for v in self.vertices.iter_mut().skip(first * 4) {
+            if !identity {
+                v.position = map.apply(v.position);
+            }
+            v.colour = tint.apply(v.colour);
+        }
+    }
+
     /// Records `shape` on top of what was recorded before. Empty shapes are skipped.
     pub fn push_shape(&mut self, shape: &Shape) {
         let [w, h] = shape.size;
@@ -380,6 +396,35 @@ mod tests {
         assert_eq!(b.colour, a.colour);
         batch.scale_from(0, [0.0, 0.0], 1.0);
         assert_eq!(batch.vertices()[4], b);
+    }
+
+    #[test]
+    fn transform_from_moves_and_tints_only_the_later_shapes_keeping_their_own_pixels() {
+        let mut batch = ShapeBatch::new();
+        batch.push_shape(&shape([0.0, 0.0], [10.0, 10.0]));
+        batch.push_shape(&Shape {
+            radius: 4.0,
+            ..shape([10.0, 20.0], [40.0, 10.0])
+        });
+        let before = batch.vertices().to_vec();
+        let map = Affine {
+            tx: 5.0,
+            ty: -3.0,
+            ..Affine::IDENTITY
+        };
+        batch.transform_from(1, &map, [1.0, 1.0, 1.0, 0.5]);
+        let v = batch.vertices();
+        assert_eq!(v[..4], before[..4]);
+        for (a, b) in before[4..].iter().zip(&v[4..]) {
+            assert!(close(
+                b.position,
+                [a.position[0] + 5.0, a.position[1] - 3.0]
+            ));
+            assert_eq!(b.local, a.local);
+            assert_eq!(b.half_size, a.half_size);
+            assert_eq!(b.params, a.params);
+            assert_eq!(b.colour[3], a.colour[3] * 0.5);
+        }
     }
 
     #[test]
