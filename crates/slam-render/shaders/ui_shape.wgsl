@@ -1,6 +1,7 @@
 // Interface shape (ADR-0116, ADR-0123): a rounded rectangle, filled or outlined, optionally
-// skewed, tinting a texture region, with a band of light sweeping across it; or the soft,
-// pulsing glow around such a rectangle. The skew is in the
+// skewed, tinting a texture region, with a band of light sweeping across it and sparse
+// triangles and circles floating up it (ADR-0131); or the soft, pulsing glow around such a
+// rectangle. The skew is in the
 // geometry (`src/shape.rs` shears the corners); `local` stays unsheared, so the distance
 // below is that of a plain rounded rectangle. Colour is straight alpha (ADR-0020).
 
@@ -21,7 +22,8 @@ struct VertexInput {
     @location(3) local: vec2<f32>,
     // Half the width and height in pixels.
     @location(4) half_size: vec2<f32>,
-    // Corner radius, outline width (0: filled), pattern strength, pattern phase.
+    // Corner radius, outline width (0: filled), the packed effect word (8 bits each of sheen,
+    // pattern strength and pattern seed; `pack_effects` in `src/shape.rs`), phase in cycles.
     @location(5) params: vec4<f32>,
 }
 
@@ -31,7 +33,8 @@ struct VertexOutput {
     @location(1) uv: vec2<f32>,
     @location(2) local: vec2<f32>,
     @location(3) half_size: vec2<f32>,
-    @location(4) params: vec4<f32>,
+    // Flat: the packed effect word is an integer that interpolation would blur.
+    @location(4) @interpolate(flat) params: vec4<f32>,
 }
 
 @vertex
@@ -59,19 +62,61 @@ fn hash(p: vec3<f32>) -> f32 {
     return fract((q.x + q.y) * q.z);
 }
 
+// Signed distance in the units of `p` to an upward-pointing equilateral triangle whose
+// corners are `r` from its centre (y down).
+fn triangle(p: vec2<f32>, r: f32) -> f32 {
+    let base = p.y - r * 0.5;
+    let side = abs(p.x) * 0.8660254 - p.y * 0.5 - r * 0.5;
+    return max(base, side);
+}
+
+// Brightening in [0, 1] of the sparse triangles and circles under `local` (pixels from the
+// shape's centre): a grid of cells scrolling up with `phase`, each cell holding at most one
+// small shape at a hashed spot, size and kind, fading towards the shape's top and bottom.
+// `strength` sets how many there are and how fast they rise; `seed` differs per shape.
+fn pattern(local: vec2<f32>, half_size: vec2<f32>, strength: f32, seed: f32, phase: f32) -> f32 {
+    let cell = max(half_size.y * 1.5, 12.0);
+    let rate = 1.5 + 6.0 * strength;
+    let g = vec2<f32>((local.x + half_size.x) / cell, (local.y + half_size.y) / cell + phase * rate);
+    let id = floor(g);
+    let f = fract(g);
+    let key = vec3<f32>(id.x + seed * 13.0, id.y, 0.0);
+    if (hash(key) > 0.18 + 0.3 * strength) {
+        return 0.0;
+    }
+    let centre = vec2<f32>(
+        0.3 + 0.4 * hash(key + vec3<f32>(0.0, 0.0, 1.0)),
+        0.3 + 0.4 * hash(key + vec3<f32>(0.0, 0.0, 2.0)),
+    );
+    let radius = (0.10 + 0.16 * hash(key + vec3<f32>(0.0, 0.0, 3.0))) * cell;
+    let p = (f - centre) * cell;
+    var d = length(p) - radius;
+    if (hash(key + vec3<f32>(0.0, 0.0, 4.0)) < 0.5) {
+        d = triangle(p, radius * 1.25);
+    }
+    let cover = 1.0 - smoothstep(-0.5, 0.5, d);
+    let across = local.y / max(half_size.y, 1.0);
+    let fade = clamp((1.0 - abs(across)) * 3.0, 0.0, 1.0);
+    return cover * fade;
+}
+
 @fragment
 fn fs_main(
     @location(0) colour: vec4<f32>,
     @location(1) uv: vec2<f32>,
     @location(2) local: vec2<f32>,
     @location(3) half_size: vec2<f32>,
-    @location(4) params: vec4<f32>,
+    @location(4) @interpolate(flat) params: vec4<f32>,
 ) -> @location(0) vec4<f32> {
     let radius = params.x;
     // Positive: an outline that wide; negative: a glow that wide outside the edge.
     let edge = params.y;
-    // A fill's sheen strength, a glow's pulse depth.
-    let amount = params.z;
+    // The packed effect word: a fill's sheen strength or a glow's pulse depth, the
+    // pattern's strength and its seed.
+    let bits = u32(params.z + 0.5);
+    let amount = f32(bits & 255u) / 255.0;
+    let strength = f32((bits >> 8u) & 255u) / 255.0;
+    let seed = f32((bits >> 16u) & 255u);
     // Cycles of the sheen's sweep or the glow's pulse.
     let phase = params.w;
     let d = rounded_box(local, half_size, radius);
@@ -91,6 +136,13 @@ fn fs_main(
         coverage = coverage * clamp(0.5 + (d + edge) / aa, 0.0, 1.0);
     }
     var out = texel;
+    if (strength > 0.0) {
+        let light = pattern(local, half_size, strength, seed, phase) * min(strength * 2.0, 1.0);
+        out = vec4<f32>(
+            mix(out.rgb, vec3<f32>(1.0, 1.0, 1.0), light),
+            out.a + (1.0 - out.a) * light * 0.5,
+        );
+    }
     if (amount > 0.0) {
         // A band leaning like the skew, from left of the shape to right of it once a cycle,
         // out of sight for the rest.

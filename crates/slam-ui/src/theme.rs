@@ -270,6 +270,22 @@ pub struct Theme {
     pub glow_width: f32,
     pub glow_alpha: f32,
     pub glow_pulse: f32,
+    /// Strength of the pattern of triangles and circles floating up buttons, panels, a lit
+    /// (hovered) button and a selected one (0 to 1; ADR-0131). Stronger also rises faster.
+    pub pattern_button: f32,
+    pub pattern_panel: f32,
+    pub pattern_hover: f32,
+    pub pattern_selected: f32,
+    /// Width of the coloured strip on a difficulty row's left edge, and how strong the glow
+    /// in its colour is, as a part of the accent glow's alpha (ADR-0131).
+    pub difficulty_strip_width: f32,
+    pub difficulty_glow_scale: f32,
+    /// Height of the star-rating pill, as a part of the row's text height, and its
+    /// horizontal padding.
+    pub star_pill_pad: f32,
+    /// Size of one difficulty dot on a set row and the gap between two.
+    pub difficulty_dot_size: f32,
+    pub difficulty_dot_gap: f32,
     /// How far the main menu's background zooms in and back, as a part of its size, and
     /// the seconds of one such drift (ADR-0123).
     pub background_motion: f32,
@@ -519,6 +535,15 @@ impl Theme {
             glow_width: 14.0,
             glow_alpha: 0.55,
             glow_pulse: 0.35,
+            pattern_button: 0.14,
+            pattern_panel: 0.06,
+            pattern_hover: 0.22,
+            pattern_selected: 0.32,
+            difficulty_strip_width: 5.0,
+            difficulty_glow_scale: 1.0,
+            star_pill_pad: 7.0,
+            difficulty_dot_size: 7.0,
+            difficulty_dot_gap: 4.0,
             background_motion: 0.06,
             background_motion_seconds: 40.0,
             parallax_background: 0.02,
@@ -589,12 +614,35 @@ impl Theme {
         height / self.reference_height * self.ui_scale
     }
 
+    /// The pattern's strength for a button that is idle, lit by hover or selected, or for a
+    /// panel (ADR-0131): 0 with the effects off, so the shader skips it.
+    pub fn pattern(&self, level: PatternLevel) -> f32 {
+        if !self.effects {
+            return 0.0;
+        }
+        match level {
+            PatternLevel::Button => self.pattern_button,
+            PatternLevel::Panel => self.pattern_panel,
+            PatternLevel::Hover => self.pattern_hover,
+            PatternLevel::Selected => self.pattern_selected,
+        }
+    }
+
     /// The skew of buttons and rows in radians, within `[0, MAX_SKEW_DEGREES]`.
     pub fn button_skew(&self) -> f32 {
         self.button_skew_degrees
             .clamp(0.0, MAX_SKEW_DEGREES)
             .to_radians()
     }
+}
+
+/// Which of the theme's pattern strengths an element takes ([`Theme::pattern`]).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum PatternLevel {
+    Button,
+    Panel,
+    Hover,
+    Selected,
 }
 
 /// `colour` with its alpha multiplied by `opacity`.

@@ -157,6 +157,14 @@ impl ScoreLines {
     }
 }
 
+/// Width of a star-rating pill around `line`, and the gap before it (ADR-0131).
+pub(super) fn pill_width(line: &Line, theme: &Theme, scale: f32) -> f32 {
+    if line.text.is_empty() {
+        return 0.0;
+    }
+    line.layout.width() + 3.0 * theme.star_pill_pad * scale
+}
+
 /// The draw side of the info panel.
 pub(super) struct InfoPanel {
     labels: DetailLabels,
@@ -166,6 +174,8 @@ pub(super) struct InfoPanel {
     no_scores: Line,
     charset: Line,
     name: Line,
+    /// The difficulty's star rating, drawn in a pill of its colour after the name.
+    stars: Line,
     artist: Line,
     /// The selection and list generation the name and artist are written for.
     name_for: Option<(u64, Option<(usize, usize)>)>,
@@ -196,6 +206,7 @@ impl InfoPanel {
             no_scores: Line::new(&labels.no_scores),
             charset: Line::new(CHARSET),
             name: line(),
+            stars: line(),
             artist: line(),
             name_for: None,
             values: std::array::from_fn(|_| line()),
@@ -232,6 +243,7 @@ impl InfoPanel {
                 &self.no_scores,
                 &self.charset,
                 &self.name,
+                &self.stars,
                 &self.artist,
                 &self.stats,
                 &self.counts,
@@ -267,6 +279,7 @@ impl InfoPanel {
         if self.name_for != Some(key) {
             self.name_for = Some(key);
             self.name.text.clear();
+            self.stars.text.clear();
             self.artist.text.clear();
             let set = snapshot
                 .selected
@@ -275,16 +288,18 @@ impl InfoPanel {
                 if let Some(d) = set.difficulties.get(difficulty) {
                     self.name.text.push_str(&d.version);
                     if let Some(stars) = d.stars {
-                        super::push_stars(&mut self.name.text, stars);
+                        super::push_stars(&mut self.stars.text, stars);
                     }
                 }
                 let _ = write!(self.artist.text, "{} - {}", set.artist, set.title);
             }
+            type_setter.lay_out(&mut self.stars, detail);
+            let pill = pill_width(&self.stars, theme, scale);
             fit(
                 type_setter,
                 &mut self.name,
                 title,
-                parts.name.width,
+                (parts.name.width - pill).max(0.0),
                 ellipsis[0],
             );
             fit(
@@ -363,6 +378,22 @@ impl InfoPanel {
         let parts = InfoLayout::new(&layout.info, theme, scale);
         let centre = |r: &Rect| r.y + r.height / 2.0;
         left(&self.name, parts.name.x, centre(&parts.name), theme.text);
+        if let Some(stars) = snapshot.selected_stars() {
+            let gap = theme.star_pill_pad * scale;
+            let pill = Rect {
+                x: parts.name.x + self.name.layout.width() + gap,
+                y: centre(&parts.name) - self.stars.layout.height() * 0.5 - gap * 0.4,
+                width: self.stars.layout.width() + 2.0 * gap,
+                height: self.stars.layout.height() + gap * 0.8,
+            };
+            rect(&pill, crate::star_colour::for_stars(stars), Look::Pill);
+            left(
+                &self.stars,
+                pill.x + gap,
+                centre(&parts.name),
+                crate::star_colour::text_for_stars(stars),
+            );
+        }
         left(
             &self.artist,
             parts.artist.x,
