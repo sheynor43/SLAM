@@ -15,6 +15,8 @@ use crate::songs::SongFiles;
 
 /// How long the thread sleeps when it has nothing to do.
 const POLL: Duration = Duration::from_millis(5);
+/// How long an idle worker parks at most: requests unpark it, so this is only a safety net.
+const IDLE: Duration = Duration::from_millis(500);
 /// Requests the thread keeps; past this the oldest is dropped.
 pub const QUEUE: usize = 32;
 
@@ -83,9 +85,19 @@ pub struct ThumbWorker {
     thread: Option<JoinHandle<()>>,
 }
 
+impl ThumbWorker {
+    /// The worker thread, to unpark when a request is queued.
+    pub fn thread(&self) -> Option<std::thread::Thread> {
+        self.thread.as_ref().map(|t| t.thread().clone())
+    }
+}
+
 impl Drop for ThumbWorker {
     fn drop(&mut self) {
         self.stop.store(true, Ordering::Relaxed);
+        if let Some(thread) = &self.thread {
+            thread.thread().unpark();
+        }
         if let Some(thread) = self.thread.take() {
             let _ = thread.join();
         }
@@ -139,7 +151,11 @@ fn run(
             }
         }
         let Some(request) = queue.pop() else {
-            std::thread::sleep(POLL);
+            if outbox.is_empty() {
+                std::thread::park_timeout(IDLE);
+            } else {
+                std::thread::sleep(POLL);
+            }
             continue;
         };
         let made = request

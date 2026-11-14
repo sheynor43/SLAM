@@ -708,3 +708,56 @@ fn thumbnails_are_asked_for_and_handed_over_without_allocating_on_the_update_thr
     drop(kept);
     let _ = std::fs::remove_dir_all(&root);
 }
+
+#[test]
+fn the_menu_cursor_link_does_not_allocate_while_the_style_and_skin_change() {
+    use std::path::Path;
+    use std::sync::Arc;
+    use std::time::Duration;
+
+    use slam_app::menu_cursor::spawn;
+    use slam_app::settings::Settings;
+    use slam_render::hal::Limits;
+    use slam_render::upload::TextureLoaderConfig;
+    use slam_ui::cursor::CursorStyle;
+
+    let limits = Limits {
+        max_texture_size: 4096,
+        max_uniform_block_size: 16384,
+        max_uniform_buffer_slots: 12,
+        max_texture_slots: 16,
+    };
+    let (link, _uploads, _shown, thread) = spawn(&TextureLoaderConfig::new(limits)).unwrap();
+
+    // Through the shell: the skin style asks the loader on the first tick.
+    let mut settings = Settings::default();
+    settings.general.menu_cursor = CursorStyle::Skin;
+    let mut state = ShellState::new(Theme::default(), 1280.0, 720.0, 1.0)
+        .with_settings(settings)
+        .with_skin_cursor(link);
+    let mut snapshot = ShellSnapshot::default();
+    state.tick(0, &[], &mut snapshot);
+    assert_no_alloc(|| {
+        for now in 1..200 {
+            state.tick(now, &[], &mut snapshot);
+        }
+    });
+    drop(state);
+    thread.join().unwrap();
+
+    // The link on its own, through changes of the wish with the loader answering between.
+    let (mut link, _uploads, shown, thread) = spawn(&TextureLoaderConfig::new(limits)).unwrap();
+    let skin: Arc<Path> = Arc::from(Path::new("/nonexistent/slam-skin"));
+    let wishes = [Some(None), Some(Some(&skin)), None, Some(None), None];
+    for (i, wish) in wishes.iter().enumerate() {
+        assert_no_alloc(|| {
+            for _ in 0..5 {
+                link.tick(*wish);
+            }
+        });
+        std::thread::sleep(Duration::from_millis(50));
+        shown.set(link.seq().wrapping_add(i as u32));
+    }
+    drop(link);
+    thread.join().unwrap();
+}

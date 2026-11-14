@@ -146,6 +146,10 @@ pub struct Thumbnails {
     /// Textures that left the cache, with the snapshot they were last in; released once
     /// the draw thread has drawn a later one.
     releasing: [Option<(TextureHandle, u32)>; RELEASING],
+    /// The worker thread, woken by each request.
+    wake: Option<std::thread::Thread>,
+    /// Releases the ring did not take, retried every tick.
+    overflow: [Option<TextureHandle>; CAPACITY],
 }
 
 impl Thumbnails {
@@ -166,6 +170,8 @@ impl Thumbnails {
             next_id: 0,
             ticks: 0,
             releasing: [None; RELEASING],
+            overflow: [None; CAPACITY],
+            wake: None,
         }
     }
 
@@ -232,6 +238,9 @@ impl Thumbnails {
             }
             self.next_id = id.wrapping_add(1);
             self.in_flight += 1;
+            if let Some(wake) = &self.wake {
+                wake.unpark();
+            }
             self.entries[at] = Entry {
                 key,
                 state: State::Loading(id),
@@ -302,11 +311,27 @@ impl Thumbnails {
         if let Some(slot) = self.releasing.iter_mut().find(|slot| slot.is_none()) {
             *slot = Some((handle, seq));
         } else {
-            let _ = self.releases.push(handle);
+            self.release_now(handle);
+        }
+    }
+
+    /// Hands `handle` to the release ring; a full ring keeps it for the next ticks.
+    fn release_now(&mut self, handle: TextureHandle) {
+        if self.releases.push(handle).is_err()
+            && let Some(slot) = self.overflow.iter_mut().find(|s| s.is_none())
+        {
+            *slot = Some(handle);
         }
     }
 
     fn flush_releases(&mut self) {
+        for slot in &mut self.overflow {
+            if let Some(handle) = *slot
+                && self.releases.push(handle).is_ok()
+            {
+                *slot = None;
+            }
+        }
         let shown = self.shown.load(Ordering::Acquire);
         for slot in &mut self.releasing {
             if let Some((handle, seq)) = *slot
@@ -409,8 +434,10 @@ pub fn link(
     let (releases, releases_rx) = rtrb::RingBuffer::new(RELEASE_RING);
     let shown = Arc::new(AtomicU32::new(0));
     let worker = worker::spawn(make::Maker::new(cache, aspect, limits), requests_rx, out_tx)?;
+    let mut thumbnails = Thumbnails::new(requests, replies, releases, Arc::clone(&shown));
+    thumbnails.wake = worker.thread();
     Ok((
-        Thumbnails::new(requests, replies, releases, Arc::clone(&shown)),
+        thumbnails,
         ThumbBridge {
             made,
             releases: releases_rx,

@@ -538,3 +538,18 @@ fn the_bridge_queues_pixels_forwards_answers_and_releases() {
     bridge.poll(&mut loader);
     assert_eq!(loader.release(handle), Err(ReleaseError::Stale));
 }
+
+#[test]
+fn a_release_the_full_ring_refused_is_retried_not_lost() {
+    let mut rig = Rig::new(10);
+    let filler = rig.pool.load(Vec::new(), TextureKind::Standalone).unwrap();
+    let late = rig.pool.load(Vec::new(), TextureKind::Standalone).unwrap();
+    for _ in 0..RELEASE_RING {
+        rig.thumbnails.releases.push(filler).unwrap();
+    }
+    // The ring is full: the release waits in the overflow.
+    rig.thumbnails.release_now(late);
+    assert_eq!(rig.released().len(), RELEASE_RING);
+    rig.tick(Some(128), 0..0);
+    assert_eq!(rig.released(), vec![late]);
+}

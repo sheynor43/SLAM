@@ -1484,6 +1484,45 @@ fn a_pause_stops_the_clock_and_a_click_on_the_cursor_resumes_it_where_it_was() {
 }
 
 #[test]
+fn with_the_os_cursor_only_the_resume_target_is_drawn() {
+    const CURSOR: TextureId = TextureId(1);
+    const DISC: TextureId = TextureId(2);
+    let map = beatmap();
+    let mut d = Driver::new(&map, ModSet::default());
+    let mut view = view(&map);
+    let mut textures = FrameTextures::default();
+    textures.cursor.cursor = Some(SkinSprite::new(
+        AtlasRegion {
+            texture: CURSOR,
+            ..WHITE
+        },
+        1.0,
+        f32::MAX,
+    ));
+    textures.disc = Some(AtlasRegion {
+        texture: DISC,
+        ..WHITE
+    });
+    let mut batch = SpriteBatch::new();
+    let moved = d.mouse(Vec2::new(300.0, 300.0));
+    d.tick(&[moved]);
+    d.run_to(1500.0);
+    // Playing with the OS cursor: the scene calls `push_resume` alone, which draws nothing,
+    // while `push_cursor` would draw the skin's cursor.
+    view.push_resume(&mut batch, &layout(), &d.snapshot, d.now, &textures);
+    assert_eq!(batch.len(), 0);
+    view.push_cursor(&mut batch, &layout(), &d.snapshot, d.now, &textures);
+    assert!(batch.batches().iter().any(|b| b.texture == CURSOR));
+    batch.clear();
+    d.tap(ESCAPE);
+    d.tap(ESCAPE);
+    assert_eq!(d.state(), PlayState::Resuming);
+    view.push_resume(&mut batch, &layout(), &d.snapshot, d.now, &textures);
+    let drawn: Vec<TextureId> = batch.batches().iter().map(|b| b.texture).collect();
+    assert_eq!(drawn.first(), Some(&DISC), "the target is drawn: {drawn:?}");
+}
+
+#[test]
 fn while_resuming_the_overlay_cursor_follows_the_window_and_gameplay_cursor_hides() {
     const CURSOR: TextureId = TextureId(1);
     const DISC: TextureId = TextureId(2);

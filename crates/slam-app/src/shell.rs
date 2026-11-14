@@ -1819,7 +1819,11 @@ impl ShellState {
         let cursor_skin = (cursor_style == CursorStyle::Skin).then(|| self.menu_skin().cloned());
         snapshot.menu_cursor.style = cursor_style;
         snapshot.menu_cursor.skin = match &mut self.skin_cursor {
-            Some(link) => link.tick(cursor_skin.as_ref().map(Option::as_ref)),
+            Some(link) => {
+                let skin = link.tick(cursor_skin.as_ref().map(Option::as_ref));
+                snapshot.menu_cursor.seq = link.seq();
+                skin
+            }
             None => Default::default(),
         };
         let top: *const AppScreen = self.stack.top();
@@ -4461,9 +4465,13 @@ fn run_with<B: render::Backend>(
         (Some(skin_views), thread, fade)
     };
     // The skin's cursor for the menus; it ends once the update side drops its link.
+    let mut cursor_thread = None;
+    let mut cursor_shown = None;
     let cursor_uploads = match crate::menu_cursor::spawn(&TextureLoaderConfig::new(limits)) {
-        Ok((link, uploads, _thread)) => {
+        Ok((link, uploads, shown, thread)) => {
             state = state.with_skin_cursor(link);
+            cursor_thread = Some(thread);
+            cursor_shown = Some(shown);
             Some(uploads)
         }
         Err(e) => {
@@ -4688,7 +4696,8 @@ fn run_with<B: render::Backend>(
             window.pointer(),
             scale_for_cursor,
             cursor_uploads,
-        ),
+        )
+        .with_shown_opt(cursor_shown),
         _quit: crate::bench::QuitOnDrop(window.quit_handle()),
     };
     let (mut sink, source) = event_ring(1024);
@@ -4772,7 +4781,11 @@ fn run_with<B: render::Backend>(
             }
         }
     }
+    // Dropping the update state dropped the cursor link, which ends the loader thread.
     drop(shell);
+    if let Some(thread) = cursor_thread {
+        let _ = thread.join();
+    }
     if let Some(thread) = saver_thread {
         thread.finish();
     }

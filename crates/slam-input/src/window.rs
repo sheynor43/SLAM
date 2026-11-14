@@ -822,10 +822,17 @@ impl InputWindow {
             }
             SDL_EVENT_WINDOW_FOCUS_LOST => {
                 self.focused = false;
+                self.pointer.release_all();
                 self.relative.set_focused(false)
             }
-            SDL_EVENT_WINDOW_MOUSE_ENTER => self.relative.set_cursor_in_window(true),
-            SDL_EVENT_WINDOW_MOUSE_LEAVE => self.relative.set_cursor_in_window(false),
+            SDL_EVENT_WINDOW_MOUSE_ENTER => {
+                self.pointer.record_outside(false);
+                self.relative.set_cursor_in_window(true)
+            }
+            SDL_EVENT_WINDOW_MOUSE_LEAVE => {
+                self.pointer.record_outside(true);
+                self.relative.set_cursor_in_window(false)
+            }
             SDL_EVENT_WINDOW_ENTER_FULLSCREEN => self.relative.set_confined(true),
             SDL_EVENT_WINDOW_LEAVE_FULLSCREEN => self.relative.set_confined(false),
             SDL_EVENT_WINDOW_RESIZED => {

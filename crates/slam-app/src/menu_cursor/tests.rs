@@ -282,3 +282,154 @@ fn a_press_squeezes_the_slam_cursor_only_with_effects() {
     let squeezed = height(&draw(&mut view, &frame, 1_000_000_000));
     assert!(squeezed < rest, "{squeezed} {rest}");
 }
+
+// ---- Release protocol ----
+
+/// The loader thread's side, played by the test: real handles of a four-texture loader.
+struct Loader {
+    requests: TextureRequests,
+    commands: rtrb::Consumer<Command>,
+    replies: rtrb::Producer<Reply>,
+    /// Handles released so far.
+    released: Vec<TextureHandle>,
+    /// Loads that found no free handle.
+    starved: u32,
+}
+
+fn rig() -> (SkinCursorLink, Loader, CursorShown) {
+    let limits = slam_render::hal::Limits {
+        max_texture_size: 1024,
+        max_uniform_block_size: 16384,
+        max_uniform_buffer_slots: 12,
+        max_texture_slots: 16,
+    };
+    let (requests, _uploads) = texture_loader(&TextureLoaderConfig {
+        max_textures: MAX_CURSOR_TEXTURES,
+        request_capacity: 512,
+        ..TextureLoaderConfig::new(limits)
+    })
+    .unwrap();
+    let (commands, commands_rx) = rtrb::RingBuffer::new(RING);
+    let (replies_tx, replies) = rtrb::RingBuffer::new(RING);
+    let shown = CursorShown::default();
+    let link = SkinCursorLink::new(commands, replies, std::thread::current(), shown.0.clone());
+    (
+        link,
+        Loader {
+            requests,
+            commands: commands_rx,
+            replies: replies_tx,
+            released: Vec::new(),
+            starved: 0,
+        },
+        shown,
+    )
+}
+
+impl Loader {
+    /// Handles every command: a load answers with two images.
+    fn serve(&mut self) {
+        while let Ok(command) = self.commands.pop() {
+            match command {
+                Command::Release(handle) => {
+                    self.requests.release(handle).unwrap();
+                    self.released.push(handle);
+                }
+                Command::Load { generation, .. } => {
+                    let image = |requests: &mut TextureRequests| {
+                        requests
+                            .load(vec![0], TextureKind::Standalone)
+                            .ok()
+                            .map(|handle| SkinImage { handle, scale: 1.0 })
+                    };
+                    let cursor = image(&mut self.requests);
+                    let middle = image(&mut self.requests);
+                    if cursor.is_none() || middle.is_none() {
+                        self.starved += 1;
+                    }
+                    let skin = MenuCursorSkin {
+                        loaded: true,
+                        cursor,
+                        middle,
+                        config: CursorSkinConfig::default(),
+                    };
+                    self.replies.push(Reply { generation, skin }).ok().unwrap();
+                }
+            }
+        }
+    }
+}
+
+fn skin(name: &str) -> Arc<Path> {
+    Arc::from(Path::new(name))
+}
+
+#[test]
+fn the_old_cursor_stays_until_the_new_one_is_in_and_goes_after_the_draw_moved_on() {
+    let (mut link, mut loader, shown) = rig();
+    let (a, b) = (skin("a"), skin("b"));
+    link.tick(Some(Some(&a)));
+    loader.serve();
+    let first = link.tick(Some(Some(&a)));
+    assert!(first.loaded && first.cursor.is_some());
+    // A different skin: until its answer the first stays.
+    assert_eq!(link.tick(Some(Some(&b))), first);
+    assert_eq!(link.tick(Some(Some(&b))), first);
+    loader.serve();
+    let second = link.tick(Some(Some(&b)));
+    assert_ne!(second.cursor, first.cursor);
+    let swapped_at = link.seq();
+    // The draw thread may still be on a frame with the first images.
+    shown.set(swapped_at - 1);
+    link.tick(Some(Some(&b)));
+    loader.serve();
+    assert!(loader.released.is_empty());
+    assert_eq!(link.retiring(), 2);
+    shown.set(swapped_at);
+    link.tick(Some(Some(&b)));
+    loader.serve();
+    assert_eq!(
+        loader.released,
+        vec![first.cursor.unwrap().handle, first.middle.unwrap().handle]
+    );
+    assert_eq!(link.retiring(), 0);
+}
+
+#[test]
+fn going_back_to_the_os_cursor_releases_after_the_draw_too() {
+    let (mut link, mut loader, shown) = rig();
+    let a = skin("a");
+    link.tick(Some(Some(&a)));
+    loader.serve();
+    let loaded = link.tick(Some(Some(&a)));
+    assert!(loaded.cursor.is_some());
+    // The frame of this tick no longer has the images; the draw thread is not there yet.
+    assert_eq!(link.tick(None), MenuCursorSkin::default());
+    let left_at = link.seq();
+    loader.serve();
+    assert!(loader.released.is_empty());
+    shown.set(left_at);
+    link.tick(None);
+    loader.serve();
+    assert_eq!(loader.released.len(), 2);
+}
+
+#[test]
+fn rapid_skin_switching_never_runs_out_of_handles() {
+    let (mut link, mut loader, shown) = rig();
+    let skins: Vec<Arc<Path>> = (0..40).map(|i| skin(&format!("skin{i}"))).collect();
+    let mut last = MenuCursorSkin::default();
+    for (i, wish) in skins.iter().enumerate() {
+        // Several ticks per switch, the draw thread acknowledging one tick late.
+        for _ in 0..3 {
+            let shown_skin = link.tick(Some(Some(wish)));
+            if shown_skin.loaded {
+                last = shown_skin;
+            }
+            shown.set(link.seq().wrapping_sub(u32::from(i % 2 == 0)));
+            loader.serve();
+        }
+    }
+    assert_eq!(loader.starved, 0);
+    assert!(last.cursor.is_some() && last.middle.is_some());
+}

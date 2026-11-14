@@ -9,6 +9,7 @@
 
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicU32, Ordering};
 use std::thread::Thread;
 use std::time::Duration;
 
@@ -93,6 +94,9 @@ pub struct MenuCursorFrame {
     /// Whether gameplay draws its own cursor now, so that this one stays away.
     pub gameplay_cursor: bool,
     pub skin: MenuCursorSkin,
+    /// The update tick that made this frame; the draw thread acknowledges it through
+    /// [`CursorShown`] so that textures the frame left out can be released.
+    pub seq: u32,
 }
 
 impl Default for MenuCursorFrame {
@@ -101,6 +105,7 @@ impl Default for MenuCursorFrame {
             style: CursorStyle::Slam,
             gameplay_cursor: false,
             skin: MenuCursorSkin::default(),
+            seq: 0,
         }
     }
 }
@@ -224,26 +229,67 @@ fn run(
     }
 }
 
+/// The draw thread's acknowledgement: the newest snapshot it began drawing.
+#[derive(Clone, Debug, Default)]
+pub struct CursorShown(Arc<AtomicU32>);
+
+impl CursorShown {
+    /// Records that the snapshot `seq` is being drawn.
+    pub fn set(&self, seq: u32) {
+        self.0.store(seq, Ordering::Release);
+    }
+}
+
+/// Whether the draw thread, at `shown`, has got to snapshot `seq` or later.
+fn reached(shown: u32, seq: u32) -> bool {
+    shown.wrapping_sub(seq) < u32::MAX / 2
+}
+
+/// Images waiting to be let go of.
+const RETIRING: usize = 8;
+
+/// A texture the loader may free once `after` (`None`: at once) has been drawn.
+#[derive(Clone, Copy)]
+struct Retiring {
+    handle: TextureHandle,
+    after: Option<u32>,
+}
+
 /// The update thread's end. Neither blocks nor allocates (a skin folder's path is shared).
+///
+/// Textures are let go of by the draw thread's say (ADR-0066): the images a snapshot
+/// stopped showing are released only after the draw thread acknowledged a later snapshot,
+/// and the old cursor stays on until the new one's images have come in.
 pub struct SkinCursorLink {
     commands: rtrb::Producer<Command>,
     replies: rtrb::Consumer<Reply>,
     thread: Thread,
+    shown: Arc<AtomicU32>,
+    /// Tick counter: the `seq` of the frame of this tick.
+    seq: u32,
     /// The newest generation asked for; older answers are released unseen.
     generation: u32,
+    /// Whether a load was sent and its answer has not come: one at a time, so that the
+    /// loader never holds more than the shown images and one pair on their way.
+    loading: bool,
     /// The skin folder asked for last; `None` outer: nothing asked.
     asked: Option<Option<Arc<Path>>>,
     current: MenuCursorSkin,
-    /// Releases the full command ring did not take, retried on later ticks.
-    unsent: [Option<TextureHandle>; 8],
+    /// Images to release, retried until the command ring takes them.
+    retiring: [Option<Retiring>; RETIRING],
 }
 
 /// Starts the loader thread `slam-menu-cursor` with its own texture loader and returns the
-/// update thread's end, the draw thread's uploads and the thread's handle (joined by dropping
-/// the link and waiting).
+/// update thread's end, the draw thread's uploads and acknowledgement, and the thread's
+/// handle (it ends once the link is dropped; join it after that).
 pub fn spawn(
     config: &TextureLoaderConfig,
-) -> std::io::Result<(SkinCursorLink, TextureUploads, std::thread::JoinHandle<()>)> {
+) -> std::io::Result<(
+    SkinCursorLink,
+    TextureUploads,
+    CursorShown,
+    std::thread::JoinHandle<()>,
+)> {
     let config = TextureLoaderConfig {
         max_textures: MAX_CURSOR_TEXTURES,
         request_capacity: MAX_CURSOR_TEXTURES as usize,
@@ -256,40 +302,56 @@ pub fn spawn(
     let thread = std::thread::Builder::new()
         .name("slam-menu-cursor".into())
         .spawn(move || run(requests, commands_rx, replies_tx))?;
+    let shown = CursorShown::default();
     Ok((
-        SkinCursorLink {
-            commands,
-            replies,
-            thread: thread.thread().clone(),
-            generation: 0,
-            asked: None,
-            current: MenuCursorSkin::default(),
-            unsent: [None; 8],
-        },
+        SkinCursorLink::new(commands, replies, thread.thread().clone(), shown.0.clone()),
         uploads,
+        shown,
         thread,
     ))
 }
 
 impl SkinCursorLink {
+    fn new(
+        commands: rtrb::Producer<Command>,
+        replies: rtrb::Consumer<Reply>,
+        thread: Thread,
+        shown: Arc<AtomicU32>,
+    ) -> Self {
+        SkinCursorLink {
+            commands,
+            replies,
+            thread,
+            shown,
+            seq: 0,
+            generation: 0,
+            loading: false,
+            asked: None,
+            current: MenuCursorSkin::default(),
+            retiring: [None; RETIRING],
+        }
+    }
+
+    /// The `seq` the frame of the last [`tick`](Self::tick) must carry.
+    pub fn seq(&self) -> u32 {
+        self.seq
+    }
+
     /// Follows the wish: `Some(skin)` loads the cursor of that skin folder (`None` inside:
     /// the default skin), `None` lets go of the images. Returns what the draw thread shows.
     pub fn tick(&mut self, wanted: Option<Option<&Arc<Path>>>) -> MenuCursorSkin {
+        self.seq = self.seq.wrapping_add(1);
         while let Ok(reply) = self.replies.pop() {
+            self.loading = false;
             if reply.generation == self.generation && self.asked.is_some() {
                 self.retire_current();
                 self.current = reply.skin;
             } else {
-                self.release_images(reply.skin);
+                // Never shown: nothing to wait for.
+                self.retire_images(reply.skin, None);
             }
         }
-        for slot in &mut self.unsent {
-            if let Some(handle) = *slot
-                && self.commands.push(Command::Release(handle)).is_ok()
-            {
-                *slot = None;
-            }
-        }
+        self.flush();
         match wanted {
             None => {
                 if self.asked.take().is_some() {
@@ -304,7 +366,10 @@ impl SkinCursorLink {
                     .asked
                     .as_ref()
                     .is_some_and(|asked| asked.as_deref() == skin.map(|s| &**s));
-                if !same {
+                // A new load waits for the previous images to be let go of and for the
+                // answer in flight: the loader has room for the shown pair and one more.
+                let idle = !self.loading && self.retiring.iter().all(Option::is_none);
+                if !same && idle {
                     let generation = self.generation.wrapping_add(1);
                     let command = Command::Load {
                         generation,
@@ -312,6 +377,7 @@ impl SkinCursorLink {
                     };
                     if self.commands.push(command).is_ok() {
                         self.generation = generation;
+                        self.loading = true;
                         self.asked = Some(skin.cloned());
                         self.thread.unpark();
                     }
@@ -321,20 +387,40 @@ impl SkinCursorLink {
         self.current
     }
 
-    fn retire_current(&mut self) {
-        let old = std::mem::take(&mut self.current);
-        self.release_images(old);
-    }
-
-    fn release_images(&mut self, skin: MenuCursorSkin) {
-        for image in [skin.cursor, skin.middle].into_iter().flatten() {
-            if self.commands.push(Command::Release(image.handle)).is_err()
-                && let Some(slot) = self.unsent.iter_mut().find(|s| s.is_none())
+    /// Sends the releases whose snapshot the draw thread has got past.
+    fn flush(&mut self) {
+        let shown = self.shown.load(Ordering::Acquire);
+        for slot in &mut self.retiring {
+            if let Some(Retiring { handle, after }) = *slot
+                && after.is_none_or(|seq| reached(shown, seq))
+                && self.commands.push(Command::Release(handle)).is_ok()
             {
-                *slot = Some(image.handle);
+                *slot = None;
             }
         }
         self.thread.unpark();
+    }
+
+    /// The current images stop being shown with this tick's frame.
+    fn retire_current(&mut self) {
+        let old = std::mem::take(&mut self.current);
+        self.retire_images(old, Some(self.seq));
+    }
+
+    fn retire_images(&mut self, skin: MenuCursorSkin, after: Option<u32>) {
+        for image in [skin.cursor, skin.middle].into_iter().flatten() {
+            if let Some(slot) = self.retiring.iter_mut().find(|s| s.is_none()) {
+                *slot = Some(Retiring {
+                    handle: image.handle,
+                    after,
+                });
+            }
+        }
+    }
+
+    /// Images waiting for the draw thread to let go of them.
+    pub fn retiring(&self) -> usize {
+        self.retiring.iter().flatten().count()
     }
 }
 
@@ -345,6 +431,7 @@ pub struct MenuCursorView {
     pointer: PointerWatch,
     scale: WindowScale,
     uploads: Option<TextureUploads>,
+    shown: Option<CursorShown>,
     press: PressSqueeze,
     expand: ExpandTimes,
 }
@@ -356,9 +443,24 @@ impl MenuCursorView {
             pointer,
             scale,
             uploads,
+            shown: None,
             press: PressSqueeze::default(),
             expand: ExpandTimes::default(),
         }
+    }
+
+    /// As [`with_shown`](Self::with_shown); without one, nothing is acknowledged.
+    pub fn with_shown_opt(self, shown: Option<CursorShown>) -> Self {
+        match shown {
+            Some(shown) => self.with_shown(shown),
+            None => self,
+        }
+    }
+
+    /// Acknowledges each frame's `seq` through `shown` (of [`spawn`]).
+    pub fn with_shown(mut self, shown: CursorShown) -> Self {
+        self.shown = Some(shown);
+        self
     }
 
     /// Uploads the skin's cursor images that came in; once per frame before drawing.
@@ -381,6 +483,9 @@ impl MenuCursorView {
         now_ns: u64,
         frame: &MenuCursorFrame,
     ) {
+        if let Some(shown) = &self.shown {
+            shown.set(frame.seq);
+        }
         let now_ms = now_ns as f64 / 1e6;
         // The animations follow the buttons even when nothing is drawn, so that a cursor
         // coming back does not start mid-press.

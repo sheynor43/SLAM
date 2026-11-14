@@ -669,6 +669,10 @@ impl CursorView {
     }
 
     /// Draws SLAM's cursor in place of the skin's textures (ADR-0124); the trail stays.
+    ///
+    /// In gameplay SLAM's cursor does not expand on a click: the press squeeze of ADR-0124
+    /// belongs to the menus' cursor only, so gameplay passes no squeeze (the skin's
+    /// `CursorExpand` setting does not apply to it either).
     pub fn with_slam(mut self, slam: bool) -> Self {
         self.slam = slam;
         self
