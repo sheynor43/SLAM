@@ -118,6 +118,10 @@ pub struct General {
     /// 0.05 (ADR-0118).
     #[serde(serialize_with = "serialize_scale")]
     pub game_scale: f32,
+    /// Skew of the buttons and rows in degrees, `0..=slam_ui::theme::MAX_SKEW_DEGREES` in
+    /// whole degrees (ADR-0130). Applies live.
+    #[serde(serialize_with = "serialize_skew")]
+    pub skew: f32,
     /// What the main menu shows behind its content (ADR-0119).
     pub menu_background: MenuBackground,
     /// The cursor of the menus, the pause menu and the results (ADR-0124). Applies live.
@@ -136,6 +140,7 @@ impl Default for General {
             colour_scheme: ColourScheme::default(),
             menu_scale: 1.0,
             game_scale: 1.0,
+            skew: DEFAULT_SKEW_DEGREES,
             menu_background: MenuBackground::default(),
             menu_cursor: CursorStyle::Slam,
         }
@@ -162,6 +167,14 @@ fn serialize_colour_scheme<S: Serializer>(
 ) -> Result<S::Ok, S::Error> {
     serializer.serialize_str(scheme.name())
 }
+
+/// Writes the skew as a whole number of degrees.
+fn serialize_skew<S: Serializer>(skew: &f32, serializer: S) -> Result<S::Ok, S::Error> {
+    serializer.serialize_f64(f64::from(*skew).round())
+}
+
+/// The skew the buttons and rows have by default, in degrees (ADR-0130).
+pub const DEFAULT_SKEW_DEGREES: f32 = 10.0;
 
 /// Writes a scale as a two-decimal number, so that the file holds `1.05` and not the
 /// `f32`'s widened `1.0499999523162842`.

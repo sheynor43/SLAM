@@ -238,17 +238,17 @@ fn hit_testing_follows_the_scroll() {
     let sets: Vec<(u64, usize)> = (0..50).map(|k| (k, 1)).collect();
     let mut s = screen(&sets);
     let l = layout();
-    press(&mut s, I::Scroll { lines: 10.5 });
+    press(&mut s, I::Scroll { lines: 3.5 });
     // The shown scroll eases there (ADR-0121); hit tests follow what is shown.
     s.tick(1, &l);
     s.tick(1_000_000_000, &l);
     let scroll = s.snapshot().shown_scroll;
-    assert_eq!(scroll, 10.5);
+    assert_eq!(scroll, 3.5);
     assert_eq!(s.selected(), Some((0, 0)));
-    let (x, y) = centre_of(&l, 20, scroll);
-    assert_eq!(l.row_at(x, y, scroll, s.filter(), 0), Some(Row::Set(19)));
+    let (x, y) = centre_of(&l, 6, scroll);
+    assert_eq!(l.row_at(x, y, scroll, s.filter(), 0), Some(Row::Set(5)));
     click(&mut s, x, y);
-    assert_eq!(s.selected(), Some((19, 0)));
+    assert_eq!(s.selected(), Some((5, 0)));
 }
 
 #[test]
@@ -717,18 +717,88 @@ fn a_dragged_list_follows_the_hand_without_easing() {
 }
 
 #[test]
-fn the_leaning_backing_reaches_past_the_right_edge() {
+fn the_lean_is_half_the_buttons_skew() {
     let theme = Theme::default();
-    for (w, h) in [(1280.0, 720.0), (1920.0, 1080.0), (800.0, 1600.0)] {
-        let l = SongSelectLayout::new(w, h, &theme);
-        let b = l.backing(w, theme.song_margin * l.scale);
-        // The bottom right corner, sheared left by the lean about the middle.
-        let bottom = b.y + b.height;
-        let corner = b.x + b.width - (bottom - (b.y + b.height / 2.0)) * l.lean;
-        assert!(corner > w, "{w}x{h}: {corner}");
-        // The lean is half the buttons' skew.
-        let half = (theme.button_skew() * crate::song_select::LEAN_OF_SKEW).tan();
-        assert!((l.lean - half).abs() < 1e-6);
+    let l = SongSelectLayout::new(1280.0, 720.0, &theme);
+    let half = (theme.button_skew() * crate::song_select::LEAN_OF_SKEW).tan();
+    assert!((l.lean - half).abs() < 1e-6);
+}
+
+/// Sizes of lazer's song select at 1920x1080 (ADR-0130), in pixels.
+#[test]
+fn the_sizes_match_lazers_at_full_hd() {
+    let theme = Theme::default();
+    let l = SongSelectLayout::new(1920.0, 1080.0, &theme);
+    let near = |a: f32, b: f32| (a - b).abs() <= b * 0.06;
+    assert!(near(l.list.width, 720.0), "{}", l.list.width);
+    assert!(near(l.row_height, 92.0), "{}", l.row_height);
+    assert!(near(theme.song_title_size * l.scale, 28.0));
+    assert!(near(theme.song_detail_size * l.scale, 18.0));
+    assert!(near(theme.song_info_title_size * l.scale, 36.0));
+    assert!(near(theme.song_info_artist_size * l.scale, 20.0));
+    assert!(near(theme.song_info_detail_size * l.scale, 16.0));
+}
+
+/// The leaning list's reach, left of `list.x`, over all of its height.
+fn leftmost(l: &SongSelectLayout) -> f32 {
+    let top = l.header.y;
+    let bottom = l.hint.y + l.hint.height;
+    l.list.x + l.lean_x(top).min(l.lean_x(bottom))
+}
+
+#[test]
+fn the_panels_do_not_overlap_at_any_size_scale_or_skew() {
+    for (w, h) in [(1280.0, 720.0), (1920.0, 1080.0), (2560.0, 1440.0)] {
+        for ui_scale in [0.75, 1.0, 1.25, 1.5] {
+            for degrees in [0.0, 10.0, 20.0] {
+                let theme = Theme::new(Default::default(), ui_scale).with_skew(degrees);
+                let l = SongSelectLayout::new(w, h, &theme);
+                let at = format!("{w}x{h} scale {ui_scale} skew {degrees}");
+                assert!(l.header.y + l.header.height <= l.search.y, "{at}");
+                assert!(l.search.y + l.search.height <= l.list.y, "{at}");
+                assert!(l.list.y + l.list.height <= l.hint.y, "{at}");
+                assert!(
+                    l.list.height > l.row_height * 2.0,
+                    "{at}: {}",
+                    l.list.height
+                );
+                assert!(l.info.x + l.info.width <= leftmost(&l), "{at}");
+                assert!(l.list.x + l.list.width <= w, "{at}");
+            }
+        }
+    }
+}
+
+#[test]
+fn rows_hit_test_sanely_at_no_skew_and_at_the_largest() {
+    for degrees in [0.0, 20.0] {
+        let theme = Theme::default().with_skew(degrees);
+        let l = SongSelectLayout::new(1920.0, 1080.0, &theme);
+        let mut s = SongSelect::new();
+        put(&mut s, list(&[(1, 1), (2, 1), (3, 1)]));
+        let filter = SongFilter::for_list(&list(&[(1, 1), (2, 1), (3, 1)]));
+        for index in 0..3 {
+            let (cx, cy) = centre_of(&l, index, 0.0);
+            let x = cx + l.lean_x(cy);
+            assert_eq!(
+                l.row_at(x, cy, 0.0, &filter, 0).map(|r| match r {
+                    Row::Set(i) => i,
+                    Row::Difficulty { set, .. } => set,
+                }),
+                filter.row(0, index).map(|r| match r {
+                    Row::Set(i) => i,
+                    Row::Difficulty { set, .. } => set,
+                }),
+                "skew {degrees} row {index}"
+            );
+        }
+        // Left of the list at the row's height: no row.
+        let (_, cy) = centre_of(&l, 0, 0.0);
+        assert_eq!(
+            l.row_at(l.list.x - 10.0 + l.lean_x(cy), cy, 0.0, &filter, 0),
+            None
+        );
+        assert_eq!(l.lean == 0.0, degrees == 0.0);
     }
 }
 

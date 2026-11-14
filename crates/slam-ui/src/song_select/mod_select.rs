@@ -101,8 +101,8 @@ impl ModSelectLayout {
             column_x,
             tile_width,
             tiles_top: label_y + label_height + margin / 2.0,
-            tile_height: (theme.song_row_height - theme.song_row_gap) * scale,
-            pitch: theme.song_row_height * scale,
+            tile_height: theme.mod_tile_height * scale,
+            pitch: theme.mod_tile_pitch * scale,
         }
     }
 

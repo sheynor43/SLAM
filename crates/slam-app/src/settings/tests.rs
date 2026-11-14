@@ -97,6 +97,7 @@ fn round_trip_non_default() {
     s.general.colour_scheme = ColourScheme::Mono;
     s.general.menu_scale = 1.05;
     s.general.game_scale = 0.8;
+    s.general.skew = 14.0;
     s.general.menu_background = MenuBackground::Skin;
     s.general.transitions = TransitionStyle::Fancy;
     s.gameplay.pause_menu_style = PauseMenuStyle::Stable;
@@ -1646,4 +1647,26 @@ fn the_cursor_styles_default_read_by_name_and_round_trip() {
             .iter()
             .any(|w| w.starts_with("general.menu_cursor"))
     );
+}
+
+#[test]
+fn the_skew_defaults_snaps_to_degrees_and_falls_back() {
+    assert_eq!(Settings::default().general.skew, 10.0);
+    let loaded = file::from_toml_str("[general]\nskew = 7.4\n");
+    assert_eq!(loaded.settings.general.skew, 7.0);
+    let loaded = file::from_toml_str("[general]\nskew = 20.0\n");
+    assert_eq!(loaded.settings.general.skew, 20.0);
+    let loaded = file::from_toml_str("[general]\nskew = 45.0\n");
+    assert_eq!(loaded.settings.general.skew, 10.0);
+    assert!(
+        loaded
+            .warnings
+            .iter()
+            .any(|w| w.starts_with("general.skew"))
+    );
+    let mut settings = Settings::default();
+    settings.general.skew = 0.0;
+    let text = file::to_toml_string(&settings).unwrap();
+    assert!(text.contains("skew = 0.0"), "{text}");
+    assert_eq!(file::from_toml_str(&text).settings, settings);
 }

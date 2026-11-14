@@ -2396,6 +2396,17 @@ fn the_menu_scale_waits_for_the_settings_to_be_kept_and_the_scheme_does_not() {
 }
 
 #[test]
+fn the_skew_applies_live_like_the_scheme() {
+    let committed = Settings::default();
+    let mut live = committed.clone();
+    live.general.skew = 3.0;
+    let theme = interface_theme(&live, &committed);
+    assert!((theme.button_skew() - 3f32.to_radians()).abs() < 1e-6);
+    live.general.skew = 0.0;
+    assert_eq!(interface_theme(&live, &committed).button_skew(), 0.0);
+}
+
+#[test]
 fn stable_pause_menu_without_the_skins_buttons_is_slams() {
     use crate::settings::PauseMenuStyle;
     use slam_play::menu_overlay::MenuStyle;

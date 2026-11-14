@@ -281,21 +281,25 @@ impl SongSelectLayout {
             height: hint_height,
         };
         let row_height = theme.song_row_height * scale;
+        let lean = (theme.button_skew() * LEAN_OF_SKEW).tan();
+        // The list's lowest and highest rows lean left of its edge by this much; the info
+        // panel keeps clear of them.
+        let lean_reach = (hint.y + hint.height - header.y) / 2.0 * lean;
         // The two panels' backings are `margin / 2` larger on every side; keep them apart by
         // as much.
         let info = Rect {
             x: margin,
             y: header.y,
-            width: (x - margin - 3.0 * margin / 2.0).max(0.0),
+            width: (x - margin - 3.0 * margin / 2.0 - lean_reach).max(0.0),
             height: (hint.y - margin / 2.0 - header.y).max(0.0),
         };
         let search = Rect {
             x,
             y: header.y + header.height + margin / 2.0,
             width: panel,
-            height: row_height - theme.song_row_gap * scale,
+            height: theme.song_search_height * scale,
         };
-        let top = search.y + row_height;
+        let top = search.y + search.height + margin / 2.0;
         let list = Rect {
             x,
             y: top,
@@ -319,7 +323,7 @@ impl SongSelectLayout {
             row_height,
             indent: theme.song_indent * scale,
             scale,
-            lean: (theme.button_skew() * LEAN_OF_SKEW).tan(),
+            lean,
         }
     }
 
@@ -339,21 +343,6 @@ impl SongSelectLayout {
             y: self.info.y - inset,
             width: self.info.width + 2.0 * inset,
             height: self.info.height + 2.0 * inset,
-        }
-    }
-
-    /// The panel's backing on a window `width` wide, from the status line to the hints: its
-    /// right side reaches past the window's edge by more than the lean, so no empty wedge
-    /// shows at the bottom right (ADR-0121).
-    pub fn backing(&self, width: f32, margin: f32) -> Rect {
-        let inset = margin / 2.0;
-        let height = self.hint.y + self.hint.height + 2.0 * inset - self.header.y;
-        let overhang = height / 2.0 * self.lean + self.row_height;
-        Rect {
-            x: self.header.x - inset,
-            y: self.header.y - inset,
-            width: (width - self.header.x + inset) + overhang,
-            height,
         }
     }
 

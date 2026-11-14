@@ -4327,6 +4327,7 @@ fn interface_localizer(settings: &Settings) -> Result<Localizer, String> {
 pub fn interface_theme(live: &Settings, committed: &Settings) -> Theme {
     Theme::new(live.general.colour_scheme, committed.general.menu_scale)
         .with_effects(live.general.effects)
+        .with_skew(live.general.skew)
 }
 
 fn run_with<B: render::Backend>(
