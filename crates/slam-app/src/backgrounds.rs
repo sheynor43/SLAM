@@ -535,6 +535,12 @@ impl BackgroundFade {
 
     /// What to draw at `now_ns`, bottom first: the target fading in under the shown
     /// background fading out (lazer puts the new one behind, `Depth + 1`).
+    /// The images shown at `now_ns`, at most two while one fades into another.
+    pub fn visible(&self, now_ns: u64) -> [Option<TextureHandle>; 2] {
+        self.layers(now_ns)
+            .map(|layer| layer.map(|(handle, _)| handle))
+    }
+
     fn layers(&self, now_ns: u64) -> [Option<Layer>; 2] {
         let Some(from) = self.fade_from_ns else {
             return [self.shown.map(|h| (h, 1.0)), None];
@@ -551,6 +557,7 @@ impl BackgroundFade {
     /// Pushes the background covering a `width` x `height` window at `now_ns`, faded by
     /// `opacity` (the layer's) and darkened by [`BackgroundFade::set_dim`] (ADR-0098).
     /// Nothing for handles not ready, nor without a default: the theme shows.
+    #[allow(clippy::too_many_arguments)]
     pub fn push(
         &self,
         batch: &mut impl PushSprite,
@@ -558,6 +565,7 @@ impl BackgroundFade {
         height: f32,
         now_ns: u64,
         opacity: f32,
+        zoom: f32,
         region: impl Fn(TextureHandle) -> Option<AtlasRegion>,
     ) {
         let grey = grey_for_dim(self.dim);
@@ -569,6 +577,12 @@ impl BackgroundFade {
                 [region.size.width as f32, region.size.height as f32],
                 [width, height],
             );
+            // Grown `zoom` times about the window's middle (ADR-0123).
+            let size = [size[0] * zoom, size[1] * zoom];
+            let position = [
+                position[0] - size[0] * (1.0 - 1.0 / zoom) / 2.0,
+                position[1] - size[1] * (1.0 - 1.0 / zoom) / 2.0,
+            ];
             let mut sprite = Sprite::new(region.texture, region.uv, position, size);
             sprite.colour = Color {
                 r: grey,

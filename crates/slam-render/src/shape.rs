@@ -1,8 +1,8 @@
 //! Interface shapes (ADR-0116): rounded, optionally skewed rectangles, filled or
-//! outlined, tinting a texture region and lit by a drifting pattern of triangles, drawn
+//! outlined, tinting a texture region, with a sweeping sheen or a pulsing glow (ADR-0123), drawn
 //! by `shaders/ui_shape.wgsl` through a [`SpriteRenderer`](crate::sprite::SpriteRenderer)
 //! made with [`SHAPE_LAYOUT`]. A [`ShapeBatch`] also takes plain [`Sprite`]s (square
-//! corners, no pattern), so a screen draws everything but its text into one batch, in
+//! corners, no effects), so a screen draws everything but its text into one batch, in
 //! order.
 
 use std::mem::size_of;
@@ -25,7 +25,8 @@ pub struct ShapeVertex {
     pub local: [f32; 2],
     /// Half the shape's width and height in pixels.
     pub half_size: [f32; 2],
-    /// Corner radius, outline width (0: filled), pattern strength, pattern phase.
+    /// Corner radius; outline width (0: filled; negative: glow width); sheen strength or
+    /// glow pulse depth; phase in cycles.
     pub params: [f32; 4],
 }
 
@@ -91,15 +92,19 @@ pub struct Shape {
     pub texture: TextureId,
     pub uv: UvRect,
     pub blend: Blend,
-    /// How much the triangle pattern lightens, 0 to 1 (0: none).
-    pub pattern: f32,
-    /// Drift of the pattern, in triangle rows; screens advance it with time.
-    pub pattern_phase: f32,
+    /// A fill's sheen strength, or a glow's pulse depth, 0 to 1 (0: none).
+    pub sheen: f32,
+    /// Where the sheen's sweep or the glow's pulse is, in cycles; the batch's drift is
+    /// added (ADR-0123).
+    pub phase: f32,
+    /// Width in pixels of a soft glow outside the edge: then the shape is only that glow,
+    /// pulsing by `sheen` (0: none).
+    pub glow: f32,
 }
 
 impl Shape {
     /// A filled, unskewed, square-cornered shape tinting `uv` of `texture` (the white
-    /// texel for a plain fill) with `colour`, without pattern.
+    /// texel for a plain fill) with `colour`, without effects.
     pub const fn new(
         texture: TextureId,
         uv: UvRect,
@@ -117,8 +122,9 @@ impl Shape {
             texture,
             uv,
             blend: Blend::Alpha,
-            pattern: 0.0,
-            pattern_phase: 0.0,
+            sheen: 0.0,
+            phase: 0.0,
+            glow: 0.0,
         }
     }
 
@@ -147,8 +153,8 @@ impl Shape {
 pub struct ShapeBatch {
     vertices: Vec<ShapeVertex>,
     batches: Vec<Batch>,
-    /// Added to every shape's pattern phase: the drift the frame is at.
-    pattern_drift: f32,
+    /// Added to every shape's phase: the cycles the frame is at.
+    drift: f32,
 }
 
 impl ShapeBatch {
@@ -161,16 +167,16 @@ impl ShapeBatch {
         Self {
             vertices: Vec::with_capacity(quads * 4),
             batches: Vec::with_capacity(quads),
-            pattern_drift: 0.0,
+            drift: 0.0,
         }
     }
 
-    /// Sets the drift, in triangle rows, added to the pattern phase of the shapes
-    /// recorded from now on: the frame sets it from the interface time, so screens need
-    /// no clock. Kept by [`ShapeBatch::clear`].
-    pub fn set_pattern_drift(&mut self, rows: f32) {
+    /// Sets the cycles added to the phase of the shapes recorded from now on: the frame
+    /// sets it from the interface time, so screens need no clock. Kept by
+    /// [`ShapeBatch::clear`].
+    pub fn set_drift(&mut self, cycles: f32) {
         // Wrapped, so that a long session keeps the shader's precision.
-        self.pattern_drift = rows.rem_euclid(1024.0);
+        self.drift = cycles.rem_euclid(1024.0);
     }
 
     /// Forgets the quads, keeping the memory.
@@ -207,18 +213,25 @@ impl ShapeBatch {
         let half = [w * 0.5, h * 0.5];
         let centre = [shape.position[0] + half[0], shape.position[1] + half[1]];
         let radius = shape.radius.clamp(0.0, half[0].min(half[1]));
-        let outline = shape.outline.max(0.0);
+        let glow = shape.glow.max(0.0);
+        let edge = if glow > 0.0 {
+            -glow
+        } else {
+            shape.outline.max(0.0)
+        };
         let Color { r, g, b, a } = shape.colour;
         let tan = shape.skew.tan();
         let UvRect { u0, v0, u1, v1 } = shape.uv;
-        // The quad reaches EDGE_MARGIN past the shape; the texture coordinates go on at
-        // the same rate, so the shape's own edges still take the region's edges.
-        let (mx, my) = (EDGE_MARGIN / w, EDGE_MARGIN / h);
+        // The quad reaches EDGE_MARGIN (and the glow) past the shape; the texture
+        // coordinates go on at the same rate, so the shape's own edges still take the
+        // region's edges.
+        let margin = EDGE_MARGIN + glow;
+        let (mx, my) = (margin / w, margin / h);
         let params = [
             radius,
-            outline,
-            shape.pattern.clamp(0.0, 1.0),
-            shape.pattern_phase + self.pattern_drift,
+            edge,
+            shape.sheen.clamp(0.0, 1.0),
+            shape.phase + self.drift,
         ];
         for (fx, fy) in [(0.0, 0.0), (1.0, 0.0), (1.0, 1.0), (0.0, 1.0)] {
             let tx = if fx == 0.0 { -mx } else { 1.0 + mx };
@@ -235,7 +248,7 @@ impl ShapeBatch {
         }
     }
 
-    /// Records `sprite` as a plain quad: square corners, no pattern, its own rotation and
+    /// Records `sprite` as a plain quad: square corners, no effects, its own rotation and
     /// texture coordinates, like [`SpriteBatch::push`](crate::sprite::SpriteBatch::push).
     pub fn push(&mut self, sprite: &Sprite) {
         self.extend(sprite.texture, sprite.blend, 1);
@@ -380,15 +393,30 @@ mod tests {
     }
 
     #[test]
-    fn the_drift_adds_to_the_pattern_phase() {
+    fn the_drift_adds_to_the_phase() {
         let mut batch = ShapeBatch::new();
-        batch.set_pattern_drift(1026.5);
+        batch.set_drift(1026.5);
         batch.clear();
         batch.push_shape(&Shape {
-            pattern_phase: 0.25,
+            phase: 0.25,
             ..shape([0.0, 0.0], [4.0, 4.0])
         });
         assert_eq!(batch.vertices()[0].params[3], 2.75);
+    }
+
+    #[test]
+    fn a_glow_reaches_past_the_shape_and_marks_itself_negative() {
+        let mut batch = ShapeBatch::new();
+        batch.push_shape(&Shape {
+            glow: 6.0,
+            outline: 2.0,
+            sheen: 0.4,
+            ..shape([10.0, 10.0], [20.0, 10.0])
+        });
+        let v = batch.vertices();
+        assert!(close(v[0].position, [3.0, 3.0]));
+        assert_eq!(v[0].params[1], -6.0);
+        assert_eq!(v[0].params[2], 0.4);
     }
 
     #[test]
@@ -419,7 +447,8 @@ mod tests {
             batch.push_shape(&Shape {
                 radius: 3.0,
                 skew: 0.2,
-                pattern: 0.5,
+                sheen: 0.5,
+                glow: 4.0,
                 ..shape([0.0, 0.0], [10.0, 10.0])
             });
             batch.push(&Sprite::new(

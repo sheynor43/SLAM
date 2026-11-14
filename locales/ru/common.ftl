@@ -178,6 +178,7 @@ settings-input-sensitivity-hint = Включите высокоточную мы
 settings-layout-language = Язык
 settings-general-intro = Заставка при запуске
 settings-general-colour-scheme = Цветовая схема
+settings-general-effects = Визуальные эффекты (свечение, размытие, движение)
 settings-general-colour-scheme-pink = Розовая
 settings-general-colour-scheme-blue = Синяя
 settings-general-colour-scheme-green = Зелёная

@@ -1,16 +1,18 @@
 //! Interface shapes (ADR-0116) through the OpenGL backend on a headless window, checked by
-//! reading the frame back: rounded corners, the skew, outlines and the pattern. Needs Mesa
+//! reading the frame back: rounded corners, the skew, outlines, the sheen and the glow. Needs Mesa
 //! with llvmpipe: `cargo test -p slam-engine --test gl_shapes -- --ignored`.
 
 use slam_engine::gl::SdlGlSurface;
 use slam_input::InputWindow;
-use slam_render::atlas::Atlas;
+use slam_render::atlas::{Atlas, UvRect};
+use slam_render::blur::Blur;
 use slam_render::gl::{GlDebug, GlDevice};
 use slam_render::shaders;
 use slam_render::shape::{SHAPE_LAYOUT, Shape, ShapeBatch};
-use slam_render::sprite::{DEFAULT_SLOTS, Projection, SpriteRenderer};
+use slam_render::sprite::{DEFAULT_SLOTS, Projection, Sprite, SpriteBatch, SpriteRenderer};
+use slam_render::textures::TextureId;
 use slam_render::textures::Textures;
-use slam_render::{Color, Device, Extent, TextureFormat};
+use slam_render::{Color, Device, Extent, TextureDesc, TextureFormat, TextureUsage};
 
 const W: u32 = 96;
 const H: u32 = 64;
@@ -32,7 +34,7 @@ impl Frame {
 // One test per binary: SDL is process-global.
 #[test]
 #[ignore = "needs Mesa with llvmpipe"]
-fn draws_rounded_skewed_outlined_and_patterned_shapes() {
+fn draws_rounded_skewed_outlined_shining_and_glowing_shapes() {
     let mut window =
         InputWindow::new_headless_opengl("SLAM shape test", W as i32, H as i32).expect("window");
     let surface = SdlGlSurface(window.create_gl_context().expect("GL context"));
@@ -64,12 +66,17 @@ fn draws_rounded_skewed_outlined_and_patterned_shapes() {
             outline: 3.0,
             ..shape([4.0, 34.0], [30.0, 26.0])
         });
-        // Patterned, grey: 50x26 at (42, 34).
+        // Shining, grey: 30x26 at (42, 34), the sheen's band in its middle.
         batch.push_shape(&Shape {
-            pattern: 1.0,
-            pattern_phase: 0.3,
+            sheen: 1.0,
+            phase: 0.5,
             colour: Color::rgb(0.25, 0.25, 0.25),
-            ..shape([42.0, 34.0], [50.0, 26.0])
+            ..shape([42.0, 34.0], [30.0, 26.0])
+        });
+        // Glowing: 6x10 at (80, 40), 6 px of glow, no pulse.
+        batch.push_shape(&Shape {
+            glow: 6.0,
+            ..shape([80.0, 40.0], [6.0, 10.0])
         });
 
         let size = d.begin_frame(Color::rgb(0.0, 0.0, 0.0));
@@ -102,15 +109,69 @@ fn draws_rounded_skewed_outlined_and_patterned_shapes() {
         assert_eq!(frame.red(19, 47), 0);
         assert_eq!(frame.red(19, 35), 255);
 
-        // Patterned: some triangles lighten the grey, the rest keep it.
-        let reds: Vec<u8> = (44..90)
-            .flat_map(|x| (36..58).map(move |y| (x, y)))
-            .map(|(x, y)| frame.red(x, y))
-            .collect();
-        let base = reds.iter().copied().min().expect("pixels");
-        assert!((60..=70).contains(&base), "pattern base {base}");
-        assert!(reds.iter().any(|&r| r > base + 40), "no lit triangle");
-        assert!(reds.iter().filter(|&&r| r == base).count() > reds.len() / 3);
+        // Shining: the middle is lit, the sides keep the grey.
+        assert!(frame.red(57, 47) > 200, "{}", frame.red(57, 47));
+        assert!(
+            (60..=70).contains(&frame.red(44, 47)),
+            "{}",
+            frame.red(44, 47)
+        );
+        assert!(
+            (60..=70).contains(&frame.red(70, 47)),
+            "{}",
+            frame.red(70, 47)
+        );
+        // Glowing: nothing inside, bright just outside, fading further out.
+        assert_eq!(frame.red(83, 45), 0);
+        let near = frame.red(87, 45);
+        let far = frame.red(90, 45);
+        assert!(near > 100 && far < near && far > 0, "{near} {far}");
+        assert_eq!(frame.red(93, 45), 0);
+
+        // The blur (ADR-0123): an image white on top and black below, blurred and drawn
+        // over the whole window, stays white on top, black below, and grey between.
+        let mut source = vec![0u8; 16 * 16 * 4];
+        for (i, px) in source.chunks_mut(4).enumerate() {
+            let white = i / 16 < 8;
+            px.copy_from_slice(&if white { [255; 4] } else { [0, 0, 0, 255] });
+        }
+        let halves = d
+            .create_texture(
+                &TextureDesc {
+                    size: Extent::new(16, 16),
+                    format: TextureFormat::Rgba8,
+                    usage: TextureUsage::SAMPLED,
+                },
+                Some(&source),
+            )
+            .expect("texture");
+        let mut blur = Blur::new(&mut d).expect("blur");
+        let size = d.begin_frame(Color::rgb(0.0, 0.0, 0.0));
+        blur.run(&mut d, &halves, UvRect::FULL, Extent::new(32, 32), 6.0)
+            .expect("blur run");
+        d.begin_pass(None, None);
+        let blurred = blur.result(&d).expect("a result");
+        let mut sprites = SpriteRenderer::new(&mut d, DEFAULT_SLOTS).expect("sprites");
+        let mut over = SpriteBatch::with_capacity(1);
+        over.push(&Sprite::new(
+            TextureId(0),
+            UvRect::FULL,
+            [0.0, 0.0],
+            [W as f32, H as f32],
+        ));
+        sprites
+            .draw(&mut d, &over, &Projection::pixels(size), |_| Some(blurred))
+            .expect("draw");
+        let frame = Frame(d.read_frame(size));
+        d.present().expect("present");
+        let column = |y| frame.red(W / 2, y);
+        assert!(column(2) > 240, "top {}", column(2));
+        assert!(column(H - 3) < 15, "bottom {}", column(H - 3));
+        let middle = column(H / 2);
+        assert!((60..=200).contains(&middle), "edge {middle}");
+        sprites.destroy(&mut d);
+        blur.destroy(&mut d);
+        d.destroy_texture(halves);
 
         renderer.destroy(&mut d);
         for texture in textures.drain() {

@@ -754,6 +754,7 @@ fn host(name: &str, with_track: bool) -> HostFixture {
             1.0,
             slam_ui::theme::ColourScheme::Pink,
         ),
+        effects: true,
     };
     HostFixture {
         host,

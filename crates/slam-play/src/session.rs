@@ -630,6 +630,11 @@ impl PlaySession {
         self.menu.set_style(style, scheme, stable);
     }
 
+    /// Turns the menus' glow and sheen on or off (ADR-0123).
+    pub fn set_menu_effects(&mut self, effects: bool) {
+        self.menu.set_effects(effects);
+    }
+
     /// Game time the clock starts at: 0, or earlier for the first object's fade-in and the
     /// beatmap's lead-in ([`earliest_start_time`]).
     pub fn start_time(&self) -> f64 {

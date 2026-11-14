@@ -174,6 +174,7 @@ settings-input-sensitivity-hint = Enable high precision mouse to adjust sensitiv
 settings-layout-language = Language
 settings-general-intro = Startup intro
 settings-general-colour-scheme = Colour scheme
+settings-general-effects = Visual effects (glow, blur, motion)
 settings-general-colour-scheme-pink = Pink
 settings-general-colour-scheme-blue = Blue
 settings-general-colour-scheme-green = Green

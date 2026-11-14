@@ -628,6 +628,10 @@ impl PlayScene {
             self.text.transform_from(0, &layer, layer_tint);
             self.cursor.transform_from(0, &layer, layer_tint);
         }
+        // The menus' glows pulse and sheens sweep with the frame's time (ADR-0123).
+        let speed = f64::from(slam_ui::theme::Theme::default().effect_speed);
+        let cycles = (now_ns as f64 / 1e9 * speed).rem_euclid(1024.0);
+        self.menu_shapes.set_drift(cycles as f32);
         if let Some(white) = textures.white {
             self.menu.push_shapes(
                 &mut self.menu_shapes,

@@ -1,5 +1,6 @@
-// Interface shape (ADR-0116): a rounded rectangle, filled or outlined, optionally
-// skewed, tinting a texture region and lit by a pattern of triangles. The skew is in the
+// Interface shape (ADR-0116, ADR-0123): a rounded rectangle, filled or outlined, optionally
+// skewed, tinting a texture region, with a band of light sweeping across it; or the soft,
+// pulsing glow around such a rectangle. The skew is in the
 // geometry (`src/shape.rs` shears the corners); `local` stays unsheared, so the distance
 // below is that of a plain rounded rectangle. Colour is straight alpha (ADR-0020).
 
@@ -58,34 +59,6 @@ fn hash(p: vec3<f32>) -> f32 {
     return fract((q.x + q.y) * q.z);
 }
 
-// Brightening in [0, 1] of the triangle under `p` (pixels): rows of triangles a cell
-// high, every other row shifted half a cell, drifting up with `phase` (cells). Few are lit
-// (about one in six, at different strengths), each drawn smaller than its cell, so the lit
-// ones stand apart instead of merging into a texture.
-fn triangles(p: vec2<f32>, cell: f32, phase: f32) -> f32 {
-    let g = vec2<f32>(p.x / cell, p.y / cell + phase);
-    let row = floor(g.y);
-    let fy = fract(g.y);
-    let q = g.x + 0.5 * row;
-    let column = floor(q);
-    let fx = fract(q);
-    let upper = fx + fy > 1.0;
-    let h = hash(vec3<f32>(column, row, select(0.0, 1.0, upper)));
-    let lit = max(h - 0.83, 0.0) / 0.17;
-    if (lit <= 0.0) {
-        return 0.0;
-    }
-    // Inside the triangle shrunk by `inset` from each side of its half of the cell.
-    let inset = 0.14;
-    var inside: bool;
-    if (upper) {
-        inside = fx < 1.0 - inset && fy < 1.0 - inset && fx + fy > 1.0 + inset;
-    } else {
-        inside = fx > inset && fy > inset && fx + fy < 1.0 - inset;
-    }
-    return select(0.0, 0.35 + 0.65 * lit, inside);
-}
-
 @fragment
 fn fs_main(
     @location(0) colour: vec4<f32>,
@@ -95,20 +68,37 @@ fn fs_main(
     @location(4) params: vec4<f32>,
 ) -> @location(0) vec4<f32> {
     let radius = params.x;
-    let outline = params.y;
-    let pattern = params.z;
+    // Positive: an outline that wide; negative: a glow that wide outside the edge.
+    let edge = params.y;
+    // A fill's sheen strength, a glow's pulse depth.
+    let amount = params.z;
+    // Cycles of the sheen's sweep or the glow's pulse.
+    let phase = params.w;
     let d = rounded_box(local, half_size, radius);
     let aa = max(fwidth(d), 1e-4);
-    var coverage = clamp(0.5 - d / aa, 0.0, 1.0);
-    if (outline > 0.0) {
-        coverage = coverage * clamp(0.5 + (d + outline) / aa, 0.0, 1.0);
+    let texel = colour * textureSample(shape_texture, shape_sampler, uv);
+    if (edge < 0.0) {
+        let width = -edge;
+        let outside = clamp(0.5 + d / aa, 0.0, 1.0);
+        let fall = 1.0 - clamp(d / width, 0.0, 1.0);
+        let pulse = 1.0 - amount * 0.5 * (1.0 + sin(6.2831853 * phase));
+        // The colour alone: the quad reaches past the texture's region by the glow, where
+        // the atlas holds other images or nothing.
+        return vec4<f32>(colour.rgb, colour.a * outside * fall * fall * pulse);
     }
-    var out = colour * textureSample(shape_texture, shape_sampler, uv);
-    if (pattern > 0.0) {
-        // About the height of a button, smaller on small shapes, never huge on panels.
-        let cell = clamp(half_size.y * 1.3, 10.0, 34.0);
-        let light = triangles(local + half_size, cell, params.w) * pattern;
-        out = vec4<f32>(mix(out.rgb, vec3<f32>(1.0, 1.0, 1.0), light), out.a);
+    var coverage = clamp(0.5 - d / aa, 0.0, 1.0);
+    if (edge > 0.0) {
+        coverage = coverage * clamp(0.5 + (d + edge) / aa, 0.0, 1.0);
+    }
+    var out = texel;
+    if (amount > 0.0) {
+        // A band leaning like the skew, from left of the shape to right of it once a cycle,
+        // out of sight for the rest.
+        let span = 2.0 * half_size.x + 1.2 * half_size.y;
+        let across = (local.x + 0.6 * local.y) / span + 0.5;
+        let centre = fract(phase) * 1.8 - 0.4;
+        let band = exp(-pow((across - centre) / 0.07, 2.0));
+        out = vec4<f32>(mix(out.rgb, vec3<f32>(1.0, 1.0, 1.0), band * amount), out.a);
     }
     return vec4<f32>(out.rgb, out.a * coverage);
 }

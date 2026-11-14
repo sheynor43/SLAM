@@ -471,6 +471,8 @@ pub struct MenuSnapshot {
     pub style: MenuStyle,
     /// The colour scheme of SLAM's style (ADR-0117).
     pub scheme: ColourScheme,
+    /// Whether SLAM's style glows and shines (ADR-0123).
+    pub effects: bool,
     /// The display sizes of the skin's stable buttons (continue, retry, back) the stable
     /// style lays out (ADR-0122).
     pub stable_sizes: [[f32; 2]; 3],
@@ -493,6 +495,7 @@ impl Default for MenuSnapshot {
             ui_scale: 1.0,
             style: MenuStyle::default(),
             scheme: ColourScheme::default(),
+            effects: true,
             stable_sizes: [[0.0; 2]; 3],
         }
     }
@@ -531,6 +534,11 @@ impl GameplayMenu {
         self.state.style = style;
         self.state.scheme = scheme;
         self.state.stable_sizes = stable;
+    }
+
+    /// Turns SLAM's style's glow and sheen on or off (ADR-0123).
+    pub fn set_effects(&mut self, effects: bool) {
+        self.state.effects = effects;
     }
 
     pub fn is_visible(&self) -> bool {
@@ -1143,7 +1151,7 @@ fn push_slam(
     layout: &MenuLayout,
     width: f32,
 ) {
-    let theme = Theme::new(menu.scheme, 1.0);
+    let theme = Theme::new(menu.scheme, 1.0).with_effects(menu.effects);
     let full = slam_ui::menu::Rect {
         x: 0.0,
         y: 0.0,

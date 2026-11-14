@@ -240,11 +240,22 @@ pub struct Theme {
     pub button_skew_degrees: f32,
     /// Width of the outline of a hovered or selected element.
     pub outline_width: f32,
-    /// Strength of the triangle pattern on buttons and rows, and on panels (0 to 1).
-    pub button_pattern: f32,
-    pub panel_pattern: f32,
-    /// Triangle rows the pattern drifts per second.
-    pub pattern_speed: f32,
+    /// Whether the effects are on (ADR-0123): glow, sheen, the background's blur and motion.
+    pub effects: bool,
+    /// Strength of the sheen sweeping a selected button (0 to 1).
+    pub button_sheen: f32,
+    /// Sweeps of the sheen, and pulses of the glow, per second.
+    pub effect_speed: f32,
+    /// Width of the glow around a selected button, its alpha and how deep it pulses.
+    pub glow_width: f32,
+    pub glow_alpha: f32,
+    pub glow_pulse: f32,
+    /// How far the main menu's background zooms in and back, as a part of its size, and
+    /// the seconds of one such drift (ADR-0123).
+    pub background_motion: f32,
+    pub background_motion_seconds: f32,
+    /// Blur of the menus' background, in pixels of the window (ADR-0123).
+    pub background_blur: f32,
     /// Dim over the main menu's background (ADR-0119), 0 to 1.
     pub menu_background_dim: f32,
     /// Backing of the main menu's title and buttons, so they read over the background.
@@ -379,13 +390,24 @@ impl Theme {
             panel_radius: 14.0,
             button_skew_degrees: 10.0,
             outline_width: 2.0,
-            button_pattern: 0.1,
-            panel_pattern: 0.035,
-            pattern_speed: 0.08,
+            effects: true,
+            button_sheen: 0.35,
+            effect_speed: 0.3,
+            glow_width: 14.0,
+            glow_alpha: 0.55,
+            glow_pulse: 0.35,
+            background_motion: 0.06,
+            background_motion_seconds: 40.0,
+            background_blur: 12.0,
             menu_background_dim: 0.5,
             menu_panel_fill: alpha(p.panel, 0.62),
             menu_panel_pad: 28.0,
         }
+    }
+
+    /// The same theme with the effects on or off (ADR-0123).
+    pub fn with_effects(self, effects: bool) -> Theme {
+        Theme { effects, ..self }
     }
 
     /// The same theme at another interface scale: the in-game overlays take the game's.

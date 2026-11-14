@@ -46,25 +46,62 @@ pub(crate) fn button(
     seed: f32,
     opacity: f32,
 ) {
+    push_button(
+        shapes,
+        white,
+        rect,
+        theme,
+        scale,
+        faded(fill, opacity),
+        highlighted,
+        seed,
+        opacity,
+    );
+}
+
+/// [`button`] with `fill` faded already and the highlight faded by `fade`: with the
+/// effects on (ADR-0123), a highlighted button glows, pulsing, and a sheen sweeps it.
+#[allow(clippy::too_many_arguments)]
+fn push_button(
+    shapes: &mut ShapeBatch,
+    white: AtlasRegion,
+    rect: &Rect,
+    theme: &Theme,
+    scale: f32,
+    fill: Color,
+    highlighted: bool,
+    seed: f32,
+    fade: f32,
+) {
     let shape = Shape {
         radius: theme.button_radius * scale,
         skew: theme.button_skew(),
-        pattern: theme.button_pattern,
-        pattern_phase: seed,
+        phase: seed,
         ..Shape::new(
             white.texture,
             white.uv,
             [rect.x, rect.y],
             [rect.width, rect.height],
-            faded(fill, opacity),
+            fill,
         )
     };
-    shapes.push_shape(&shape);
+    let effects = highlighted && theme.effects;
+    if effects {
+        shapes.push_shape(&Shape {
+            glow: theme.glow_width * scale,
+            sheen: theme.glow_pulse,
+            colour: faded(theme.accent, theme.glow_alpha * fade),
+            ..shape
+        });
+    }
+    shapes.push_shape(&Shape {
+        sheen: if effects { theme.button_sheen } else { 0.0 },
+        ..shape
+    });
     if highlighted {
         shapes.push_shape(&Shape {
             outline: theme.outline_width * scale,
-            pattern: 0.0,
-            colour: faded(theme.accent, opacity),
+            colour: faded(theme.accent, fade),
             ..shape
         });
     }
@@ -83,8 +120,6 @@ pub(crate) fn panel(
 ) {
     shapes.push_shape(&Shape {
         radius: theme.panel_radius * scale,
-        pattern: theme.panel_pattern,
-        pattern_phase: rect.x * 0.013,
         ..Shape::new(
             white.texture,
             white.uv,
@@ -154,37 +189,21 @@ pub fn draw(
             highlighted,
             seed,
             fade,
-        } => {
-            // `colour` is faded already; only the outline takes `fade` here.
-            let shape = Shape {
-                radius: theme.button_radius * scale,
-                skew: theme.button_skew(),
-                pattern: theme.button_pattern,
-                pattern_phase: seed,
-                ..Shape::new(
-                    white.texture,
-                    white.uv,
-                    [rect.x, rect.y],
-                    [rect.width, rect.height],
-                    colour,
-                )
-            };
-            shapes.push_shape(&shape);
-            if highlighted {
-                shapes.push_shape(&Shape {
-                    outline: theme.outline_width * scale,
-                    pattern: 0.0,
-                    colour: faded(theme.accent, fade),
-                    ..shape
-                });
-            }
-        }
+        } => push_button(
+            shapes,
+            white,
+            rect,
+            theme,
+            scale,
+            colour,
+            highlighted,
+            seed,
+            fade,
+        ),
         Look::Panel => panel(shapes, white, rect, theme, scale, colour, 1.0),
         Look::LeaningPanel { lean } => shapes.push_shape(&Shape {
             radius: theme.panel_radius * scale,
             skew: lean.atan(),
-            pattern: theme.panel_pattern,
-            pattern_phase: rect.x * 0.013,
             ..Shape::new(
                 white.texture,
                 white.uv,
@@ -281,8 +300,21 @@ mod look_tests {
             fade: 0.25,
         };
         draw(&mut shapes, white, &rect, Color::WHITE, look, &theme, 1.0);
-        assert_eq!(shapes.len(), 2);
-        let outline = shapes.vertices()[4].colour[3];
+        // The glow under it, the button, the outline.
+        assert_eq!(shapes.len(), 3);
+        let glow = shapes.vertices()[0].colour[3];
+        assert!(
+            (glow - theme.accent.a * theme.glow_alpha * 0.25).abs() < 1e-6,
+            "{glow}"
+        );
+        assert!(shapes.vertices()[0].params[1] < 0.0, "a glow");
+        let outline = shapes.vertices()[8].colour[3];
         assert!((outline - theme.accent.a * 0.25).abs() < 1e-6, "{outline}");
+        // Without the effects: no glow and no sheen.
+        shapes.clear();
+        let flat = theme.with_effects(false);
+        draw(&mut shapes, white, &rect, Color::WHITE, look, &flat, 1.0);
+        assert_eq!(shapes.len(), 2);
+        assert_eq!(shapes.vertices()[0].params[2], 0.0);
     }
 }

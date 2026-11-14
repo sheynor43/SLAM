@@ -236,6 +236,13 @@ fn from_table(mut table: Table) -> Loaded {
         &mut settings.general.intro,
         |_| Ok(()),
     );
+    cx.field(
+        &mut general,
+        "general",
+        "effects",
+        &mut settings.general.effects,
+        |_| Ok(()),
+    );
     let mut scheme: Option<String> = None;
     cx.opt(&mut general, "general", "colour_scheme", &mut scheme);
     if let Some(name) = scheme {

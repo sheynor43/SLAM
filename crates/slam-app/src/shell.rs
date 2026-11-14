@@ -32,9 +32,10 @@ use slam_play::{
     Bindings, LiveInput, Offsets, PlaySession, PlaySnapshot, PlayState, PlayfieldLayout,
 };
 use slam_render::atlas::{Atlas, AtlasRegion};
+use slam_render::blur::Blur;
 use slam_render::shape::{SHAPE_LAYOUT, ShapeBatch};
 use slam_render::sprite::{DEFAULT_SLOTS, Projection, SpriteBatch, SpriteRenderer};
-use slam_render::textures::Textures;
+use slam_render::textures::{TextureId, Textures};
 use slam_render::upload::{TextureLoaderConfig, TextureState, TextureUploads, texture_loader};
 use slam_render::{Color, Device, Extent, TextureFormat, shaders};
 use slam_text::{FontRegistry, GlyphAtlasConfig, GlyphCache, glyph_atlas};
@@ -2167,6 +2168,8 @@ struct PlayHost {
         f32,
         slam_ui::theme::ColourScheme,
     ),
+    /// Whether the interface effects are on (ADR-0123).
+    effects: bool,
 }
 
 /// What a play takes from the settings on the update thread.
@@ -2279,8 +2282,10 @@ impl PlayHost {
             settings.gameplay.pause_menu_scale,
             settings.general.colour_scheme,
         );
+        self.effects = settings.general.effects;
         if let Some(game) = &mut self.game {
             style_menu(&mut game.session, self.pause_menu, game.stable_pause);
+            game.session.set_menu_effects(self.effects);
         }
         let audio = &mut self.audio;
         audio.volumes.sync(
@@ -2880,6 +2885,7 @@ impl PlayHost {
         let mut session = session;
         let stable_pause = scene.stable_pause_sizes();
         style_menu(&mut session, self.pause_menu, stable_pause);
+        session.set_menu_effects(self.effects);
         self.loader.free(Trash::Other(Box::new((beatmap, mods))));
         // The caller checked for a free slot.
         let _ = self.scenes.push((id, scene));
@@ -3122,6 +3128,96 @@ struct Resources<D: Device> {
     /// Draws outlined MSDF glyphs (ADR-0114).
     outline_renderer: SpriteRenderer<D>,
     white: AtlasRegion,
+    /// The menus' backgrounds blurred, up to two while one fades into another (ADR-0123).
+    blurs: [BlurSlot<D>; 2],
+    /// The last blur that failed, not tried again.
+    blur_failed: Option<BlurKey>,
+}
+
+/// A background blurred into a render target, and which image at which window size.
+struct BlurSlot<D: Device> {
+    blur: Blur<D>,
+    image: Option<slam_render::upload::TextureHandle>,
+    window: Extent,
+    /// The blur's width the image was blurred with.
+    radius: f32,
+}
+
+/// What a blur is of: the image, the window and the blur's width. One that failed is not
+/// tried again until one of them changes.
+type BlurKey = (slam_render::upload::TextureHandle, Extent, f32);
+
+/// Texture ids the blurred backgrounds are drawn by: past any the registry hands out.
+const BLUR_TEXTURES: [TextureId; 2] = [TextureId(u32::MAX - 1), TextureId(u32::MAX - 2)];
+
+/// Blurs the background images `wanted` that are not blurred at the `window`'s size yet
+/// (ADR-0123), at a quarter of the window, `blur` window pixels wide. Draws into render
+/// targets only when an image or the size changes; then targets the window again.
+#[allow(clippy::too_many_arguments)]
+fn blur_backgrounds<D: Device>(
+    device: &mut D,
+    textures: &Textures<D::Texture>,
+    slots: &mut [BlurSlot<D>; 2],
+    failed: &mut Option<BlurKey>,
+    uploads: &TextureUploads,
+    wanted: [Option<slam_render::upload::TextureHandle>; 2],
+    window: Extent,
+    blur: f32,
+) {
+    let mut drew = false;
+    let max_side = device.limits().max_texture_size;
+    for image in wanted.into_iter().flatten() {
+        if slots
+            .iter()
+            .any(|s| s.image == Some(image) && s.window == window && s.radius == blur)
+            || *failed == Some((image, window, blur))
+        {
+            continue;
+        }
+        let TextureState::Ready(region) = uploads.get(image) else {
+            continue;
+        };
+        let Some(texture) = textures.get(region.texture) else {
+            continue;
+        };
+        // Its own slot at another size, or one showing nothing wanted.
+        let index = slots
+            .iter()
+            .position(|s| s.image == Some(image))
+            .or_else(|| {
+                slots
+                    .iter()
+                    .position(|s| s.image.is_none_or(|old| !wanted.contains(&Some(old))))
+            });
+        let Some(slot) = index.and_then(|i| slots.get_mut(i)) else {
+            continue;
+        };
+        let height = (window.height / 4).clamp(1, max_side);
+        let scale = height as f32 / region.size.height.max(1) as f32;
+        let width = ((region.size.width as f32 * scale).round() as u32).clamp(1, max_side);
+        drew = true;
+        slot.image = None;
+        if slot
+            .blur
+            .run(
+                device,
+                texture,
+                region.uv,
+                Extent::new(width, height),
+                blur / 4.0,
+            )
+            .is_ok()
+        {
+            slot.image = Some(image);
+            slot.window = window;
+            slot.radius = blur;
+        } else {
+            *failed = Some((image, window, blur));
+        }
+    }
+    if drew {
+        device.begin_pass(None, None);
+    }
 }
 
 /// The draw thread's side. The device and its resources exist between `start` and `stop`.
@@ -3227,6 +3323,13 @@ impl<B: render::Backend> Draw<ShellSnapshot> for View<B> {
             self.glyphs.process(&mut device, &mut textures);
             std::thread::sleep(Duration::from_millis(1));
         }
+        let blur_slot = |device: &mut B::Device| BlurSlot {
+            blur: Blur::new(device).expect("blur"),
+            image: None,
+            window: Extent::new(0, 0),
+            radius: 0.0,
+        };
+        let blurs = [blur_slot(&mut device), blur_slot(&mut device)];
         self.resources = Some(Resources {
             device,
             textures,
@@ -3234,6 +3337,8 @@ impl<B: render::Backend> Draw<ShellSnapshot> for View<B> {
             text_renderer,
             outline_renderer,
             white,
+            blurs,
+            blur_failed: None,
         });
     }
 
@@ -3334,18 +3439,64 @@ impl<B: render::Backend> Draw<ShellSnapshot> for View<B> {
             uploads.process(&mut r.device, &mut r.textures);
             fade.set_dim(snapshot.background_dim);
             fade.advance(snapshot.background, info.wait.woke_ns, |h| uploads.get(h));
+            // Only where a background shows, and not in a minimised window.
+            let shows_background = snapshot
+                .layers
+                .iter()
+                .flatten()
+                .any(|layer| match layer.view {
+                    ScreenView::Menu(_) => snapshot.menu_background,
+                    ScreenView::SongSelect(_) => true,
+                    _ => false,
+                });
+            if self.theme.effects && shows_background && size.width > 0 && size.height > 0 {
+                blur_backgrounds(
+                    &mut r.device,
+                    &r.textures,
+                    &mut r.blurs,
+                    &mut r.blur_failed,
+                    uploads,
+                    fade.visible(info.wait.woke_ns),
+                    size,
+                    self.theme.background_blur * self.theme.scale(size.height as f32),
+                );
+            }
         }
+        // The blurred image of each background shown, if any: drawn in its place.
+        let effects = self.theme.effects;
+        let blurred = |image| {
+            let slot = r.blurs.iter().position(|s| s.image == Some(image))?;
+            effects.then_some(BLUR_TEXTURES[slot])
+        };
+        let in_place = |region: AtlasRegion, image| match blurred(image) {
+            Some(texture) => AtlasRegion {
+                texture,
+                uv: slam_render::atlas::UvRect::FULL,
+                ..region
+            },
+            None => region,
+        };
+        // The main menu's background drifts in and back out (ADR-0123).
+        let zoom = if effects {
+            let t =
+                info.wait.woke_ns as f64 / 1e9 / f64::from(self.theme.background_motion_seconds);
+            1.0 + self.theme.background_motion
+                * 0.5
+                * (1.0 - (t * std::f64::consts::TAU).cos()) as f32
+        } else {
+            1.0
+        };
         let (width, height) = (size.width as f32, size.height as f32);
         self.fps
             .frame(info.wait.woke_ns, width, height, snapshot.fps, gameplay);
         self.shapes.clear();
         self.text.clear();
         self.outlines.clear();
-        // The interface's patterns drift with the frame's time (ADR-0116), wrapped in f64
-        // before it narrows to f32.
-        let rows = (info.wait.woke_ns as f64 / 1e9 * f64::from(self.theme.pattern_speed))
+        // The sheens sweep and the glows pulse with the frame's time (ADR-0123), wrapped in
+        // f64 before it narrows to f32.
+        let cycles = (info.wait.woke_ns as f64 / 1e9 * f64::from(self.theme.effect_speed))
             .rem_euclid(1024.0);
-        self.shapes.set_pattern_drift(rows as f32);
+        self.shapes.set_drift(cycles as f32);
         self.menu
             .set_title_hidden(snapshot.intro.is_some_and(|i| i.hides_menu_title()));
         // Where each layer's sprites end: layers are drawn one after another, shapes then
@@ -3366,8 +3517,9 @@ impl<B: render::Backend> Draw<ShellSnapshot> for View<B> {
                             height,
                             info.wait.woke_ns,
                             layer.pose.opacity,
+                            zoom,
                             |h| match uploads.get(h) {
-                                TextureState::Ready(region) => Some(region),
+                                TextureState::Ready(region) => Some(in_place(region, h)),
                                 _ => None,
                             },
                         );
@@ -3392,8 +3544,9 @@ impl<B: render::Backend> Draw<ShellSnapshot> for View<B> {
                             height,
                             info.wait.woke_ns,
                             layer.pose.opacity,
+                            1.0,
                             |h| match uploads.get(h) {
-                                TextureState::Ready(region) => Some(region),
+                                TextureState::Ready(region) => Some(in_place(region, h)),
                                 _ => None,
                             },
                         );
@@ -3492,7 +3645,14 @@ impl<B: render::Backend> Draw<ShellSnapshot> for View<B> {
         r.outline_renderer.begin_frame();
         let gpu_textures = &r.textures;
         let projection = Projection::pixels(size);
-        let texture = |id| gpu_textures.get(id);
+        let blur_results = [
+            r.blurs[0].blur.result(&r.device),
+            r.blurs[1].blur.result(&r.device),
+        ];
+        let texture = |id: TextureId| match BLUR_TEXTURES.iter().position(|b| *b == id) {
+            Some(slot) => blur_results[slot],
+            None => gpu_textures.get(id),
+        };
         // A failed draw or present loses one frame; the next one tries again.
         let shapes = r
             .renderer
@@ -3585,8 +3745,12 @@ impl<B: render::Backend> Draw<ShellSnapshot> for View<B> {
             renderer,
             text_renderer,
             outline_renderer,
+            blurs,
             ..
         } = self.resources.take().expect("started");
+        for slot in blurs {
+            slot.blur.destroy(&mut device);
+        }
         retire(&mut self.scene, &mut self.scene_trash, &mut device);
         renderer.destroy(&mut device);
         text_renderer.destroy(&mut device);
@@ -3968,6 +4132,7 @@ fn interface_localizer(settings: &Settings) -> Result<Localizer, String> {
 /// scale changes when the settings are kept, not under the slider dragging it.
 pub fn interface_theme(live: &Settings, committed: &Settings) -> Theme {
     Theme::new(live.general.colour_scheme, committed.general.menu_scale)
+        .with_effects(live.general.effects)
 }
 
 fn run_with<B: render::Backend>(
@@ -4251,6 +4416,7 @@ fn run_with<B: render::Backend>(
                 settings.gameplay.pause_menu_scale,
                 settings.general.colour_scheme,
             ),
+            effects: settings.general.effects,
         }
     });
 

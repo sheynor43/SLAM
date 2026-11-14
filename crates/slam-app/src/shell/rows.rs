@@ -225,6 +225,8 @@ pub enum Row {
     Intro,
     /// The interface colour scheme (ADR-0117).
     ColourScheme,
+    /// Whether the interface effects are on; applies live (ADR-0123).
+    Effects,
     /// The scale of the menus (ADR-0118).
     MenuScale,
     /// The scale of the HUD and the pause and fail menus (ADR-0118).
@@ -263,7 +265,7 @@ pub enum Row {
 const _: () = assert!(Row::ALL.len() <= slam_ui::settings_screen::MAX_ROWS);
 
 impl Row {
-    pub const ALL: [Row; 65] = [
+    pub const ALL: [Row; 66] = [
         Row::MasterVolume,
         Row::MusicVolume,
         Row::MenuMusic,
@@ -300,6 +302,7 @@ impl Row {
         Row::Renderer,
         Row::Intro,
         Row::ColourScheme,
+        Row::Effects,
         Row::MenuScale,
         Row::GameScale,
         Row::MenuBackground,
@@ -389,6 +392,7 @@ impl Row {
             | Row::Renderer
             | Row::Intro
             | Row::ColourScheme
+            | Row::Effects
             | Row::MenuScale
             | Row::GameScale
             | Row::MenuBackground => 3,
@@ -450,6 +454,7 @@ impl Row {
             Row::Language => "settings-layout-language",
             Row::Intro => "settings-general-intro",
             Row::ColourScheme => "settings-general-colour-scheme",
+            Row::Effects => "settings-general-effects",
             Row::MenuScale => "settings-general-menu-scale",
             Row::GameScale => "settings-general-game-scale",
             Row::MenuBackground => "settings-general-menu-background",
@@ -898,6 +903,9 @@ impl Rows {
             Row::Intro => RowKind::Toggle {
                 value: s.general.intro,
             },
+            Row::Effects => RowKind::Toggle {
+                value: s.general.effects,
+            },
             Row::HitsoundDelay => choice(
                 HitsoundDelay::ALL.len(),
                 HitsoundDelay::ALL
@@ -1131,6 +1139,7 @@ impl Rows {
                 }
             },
             (Row::Intro, RowValue::Toggle(v)) => settings.general.intro = v,
+            (Row::Effects, RowValue::Toggle(v)) => settings.general.effects = v,
             (Row::MenuScale, RowValue::Slider(v)) => {
                 settings.general.menu_scale = scale_from_percent(v);
             }
@@ -1779,6 +1788,7 @@ mod tests {
             (Row::KeyOverlay, false),
             (Row::HudAnimations, true),
             (Row::Intro, true),
+            (Row::Effects, true),
             (Row::AlwaysPlayFirstComboBreak, true),
             (Row::DisableWinKey, true),
             (Row::CursorTrail, true),

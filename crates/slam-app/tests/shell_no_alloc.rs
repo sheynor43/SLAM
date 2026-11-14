@@ -498,7 +498,7 @@ fn background_and_detail_changes_do_not_allocate_on_the_update_or_draw_thread() 
             state.tick(now, input, &mut snapshot);
             fade.advance(snapshot.background, now, failed);
             batch.clear();
-            fade.push(&mut batch, 1280.0, 720.0, now, 1.0, |_| None);
+            fade.push(&mut batch, 1280.0, 720.0, now, 1.0, 1.02, |_| None);
         });
         loader.poll();
         reader.poll();

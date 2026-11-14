@@ -1245,6 +1245,29 @@ fn intro_defaults_on_and_reads_a_bool() {
 }
 
 #[test]
+fn effects_defaults_on_and_reads_a_bool() {
+    assert!(Settings::default().general.effects);
+    let missing = file::from_toml_str("[general]\nlanguage = \"en\"\n");
+    assert_eq!(missing.status, LoadStatus::Ok, "{:?}", missing.warnings);
+    assert!(missing.settings.general.effects);
+    let off = file::from_toml_str("[general]\neffects = false\n");
+    assert_eq!(off.status, LoadStatus::Ok, "{:?}", off.warnings);
+    assert!(!off.settings.general.effects);
+    let bad = file::from_toml_str("[general]\neffects = \"yes\"\n");
+    assert_eq!(bad.status, LoadStatus::Recovered);
+    assert!(bad.settings.general.effects);
+    assert!(
+        bad.warnings
+            .iter()
+            .any(|w| w.starts_with("general.effects"))
+    );
+    let mut settings = Settings::default();
+    settings.general.effects = false;
+    let text = file::to_toml_string(&settings).unwrap();
+    assert_eq!(file::from_toml_str(&text).settings, settings);
+}
+
+#[test]
 fn language_survives_a_write_and_read() {
     let mut settings = Settings::default();
     settings.general.language = Some("ru".to_owned());

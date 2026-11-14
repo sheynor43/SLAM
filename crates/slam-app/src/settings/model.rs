@@ -98,6 +98,8 @@ pub struct General {
     pub language: Option<String>,
     /// Whether the startup intro plays (ADR-0114). Read at start.
     pub intro: bool,
+    /// Whether the interface effects (glow, blur, motion) are on (ADR-0123). Applies live.
+    pub effects: bool,
     /// The interface colour scheme (ADR-0117).
     #[serde(serialize_with = "serialize_colour_scheme")]
     pub colour_scheme: ColourScheme,
@@ -117,6 +119,7 @@ impl Default for General {
         General {
             language: None,
             intro: true,
+            effects: true,
             colour_scheme: ColourScheme::default(),
             menu_scale: 1.0,
             game_scale: 1.0,

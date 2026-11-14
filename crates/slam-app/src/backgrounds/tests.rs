@@ -9,6 +9,7 @@ use super::*;
 use crate::songs::SongFile;
 
 const MS: u64 = 1_000_000;
+const SECOND: u64 = 1_000 * MS;
 
 const LIMITS: Limits = Limits {
     max_texture_size: 4096,
@@ -576,4 +577,33 @@ fn grey_follows_the_dim() {
     assert_eq!(grey_for_dim(1.0), 0.0);
     assert_eq!(grey_for_dim(2.0), 0.0);
     assert_eq!(grey_for_dim(-1.0), 1.0);
+}
+
+#[test]
+fn a_zoomed_background_grows_about_the_middle_and_shows_as_visible() {
+    let mut requests = requests();
+    let h = handles(&mut requests, 1);
+    let shown = Arc::new(AtomicU32::new(0));
+    let mut fade = BackgroundFade::new(Arc::clone(&shown), None);
+    let target = BackgroundTarget {
+        generation: 1,
+        handle: Some(h[0]),
+    };
+    fade.advance(target, 0, |_| ready());
+    fade.advance(target, SECOND, |_| ready());
+    assert_eq!(fade.visible(SECOND), [Some(h[0]), None]);
+    let TextureState::Ready(region) = ready() else {
+        unreachable!("ready")
+    };
+    let mut batch = slam_render::sprite::SpriteBatch::new();
+    fade.push(&mut batch, 800.0, 600.0, SECOND, 1.0, 1.25, |_| {
+        Some(region)
+    });
+    let v = batch.vertices();
+    let (left, right) = (v[0].position[0], v[1].position[0]);
+    let (top, bottom) = (v[0].position[1], v[2].position[1]);
+    // Centred on the window's middle, larger than it.
+    assert!(((left + right) / 2.0 - 400.0).abs() < 1e-3);
+    assert!(((top + bottom) / 2.0 - 300.0).abs() < 1e-3);
+    assert!(right - left >= 800.0 * 1.25 - 1e-3 && bottom - top >= 600.0 * 1.25 - 1e-3);
 }
