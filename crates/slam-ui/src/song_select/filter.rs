@@ -121,9 +121,11 @@ pub(crate) fn with_term_pairs<R>(query: &SearchQuery, f: impl FnOnce(&[(&str, &s
         let mut len = 0;
         let mut spans = [(0, 0); MAX_TERMS];
         for (span, term) in spans.iter_mut().zip(terms) {
-            let swapped = crate::layout_swap::swap_into(term, &mut buf[len..]);
-            *span = (len, len + swapped.len());
-            len += swapped.len();
+            let swapped = crate::layout_swap::swap_into(term, &mut buf[len..]).len();
+            // Shifted punctuation swaps to capitals; the texts searched are lowercase.
+            lower_in_place(&mut buf[len..len + swapped]);
+            *span = (len, len + swapped);
+            len += swapped;
         }
         let text = std::str::from_utf8(&buf[..len]).unwrap_or("");
         let mut pairs = [("", ""); MAX_TERMS];
@@ -132,6 +134,28 @@ pub(crate) fn with_term_pairs<R>(query: &SearchQuery, f: impl FnOnce(&[(&str, &s
         }
         f(&pairs[..terms.len()])
     })
+}
+
+/// Lowercases the UTF-8 text in `bytes` where the lowercase letter takes as many bytes
+/// (ASCII and Cyrillic do); other characters are kept. Does not allocate.
+fn lower_in_place(bytes: &mut [u8]) {
+    let mut at = 0;
+    while at < bytes.len() {
+        let Some(c) = std::str::from_utf8(&bytes[at..])
+            .ok()
+            .and_then(|s| s.chars().next())
+        else {
+            return;
+        };
+        let width = c.len_utf8();
+        let mut lower = c.to_lowercase();
+        if let (Some(l), None) = (lower.next(), lower.next())
+            && l.len_utf8() == width
+        {
+            l.encode_utf8(&mut bytes[at..at + width]);
+        }
+        at += width;
+    }
 }
 
 /// The lowercased `fields` joined by `'\n'`: what a plain-word search over them looks in.

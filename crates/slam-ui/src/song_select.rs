@@ -429,6 +429,13 @@ pub fn ease_scroll(shown: f32, target: f32, elapsed_ns: u64) -> f32 {
 /// the rows cut at both ends. A theme with a taller area is cut to this many rows.
 pub const MAX_VISIBLE_ROWS: usize = 16;
 
+/// Rows the snapshot also carries above and below those: the ones a set opening or closing
+/// slides into view (ADR-0136).
+pub const ROW_PAD: usize = 16;
+
+/// All the rows the snapshot carries.
+const WINDOW_ROWS: usize = MAX_VISIBLE_ROWS + 2 * ROW_PAD;
+
 /// What the draw side needs; cloning copies an `Arc` and some fixed-size data, no
 /// allocation.
 #[derive(Clone, Debug)]
@@ -443,7 +450,10 @@ pub struct SongSelectSnapshot {
     pub row_count: usize,
     /// Flat index of the first of `rows`.
     pub first_row: usize,
-    rows: [Row; MAX_VISIBLE_ROWS],
+    /// Flat index of the first of `window`: up to [`ROW_PAD`] before `first_row`.
+    window_start: usize,
+    /// The rows from `window_start`: `rows` and up to [`ROW_PAD`] on either side.
+    window: [Row; WINDOW_ROWS],
     /// Rows scrolled off the top: where the list goes.
     pub scroll: f32,
     /// Rows scrolled off the top as shown, easing towards `scroll` (ADR-0121).
@@ -573,7 +583,19 @@ impl SongSelectSnapshot {
     /// The rows that are in or near the list area, from flat index `first_row`.
     pub fn rows(&self) -> &[Row] {
         let len = self.row_count.saturating_sub(self.first_row);
-        &self.rows[..len.min(MAX_VISIBLE_ROWS)]
+        let start = self.first_row - self.window_start;
+        &self.window[start..start + len.min(MAX_VISIBLE_ROWS)]
+    }
+
+    /// The row at flat index `index`, if the snapshot carries it: [`rows`](Self::rows)
+    /// and up to [`ROW_PAD`] rows on either side.
+    pub fn row_at(&self, index: usize) -> Option<Row> {
+        if index >= self.row_count {
+            return None;
+        }
+        self.window
+            .get(index.checked_sub(self.window_start)?)
+            .copied()
     }
 }
 
@@ -930,8 +952,9 @@ impl SongSelect {
         let row_count = self.filter.row_count(self.set);
         let first_row = self.first_row();
         // Every slot `rows` returns is filled, however many rows the view shows.
-        let mut rows = [Row::Set(0); MAX_VISIBLE_ROWS];
-        for (slot, index) in rows.iter_mut().zip(first_row..row_count) {
+        let window_start = first_row.saturating_sub(ROW_PAD);
+        let mut window = [Row::Set(0); WINDOW_ROWS];
+        for (slot, index) in window.iter_mut().zip(window_start..row_count) {
             if let Some(row) = self.filter.row(self.set, index) {
                 *slot = row;
             }
@@ -942,7 +965,8 @@ impl SongSelect {
             query: self.query,
             row_count,
             first_row,
-            rows,
+            window_start,
+            window,
             scroll: self.scroll,
             shown_scroll: self.shown,
             hovered: self.hovered,

@@ -1,7 +1,7 @@
 //! The settings screen's Feedback section: links to the project page and to pre-filled
-//! issue forms. The shell only records which link was pressed; the URL is built and handed
-//! to the system's opener on a short-lived thread, so the update tick never reads files or
-//! spawns processes.
+//! issue forms. The update tick records which link was pressed and, on that click only,
+//! starts a short-lived thread; the thread builds the URL and runs the system's opener, so
+//! the tick itself never reads files or waits on a process.
 
 use std::fmt::Write as _;
 use std::sync::{Mutex, PoisonError};

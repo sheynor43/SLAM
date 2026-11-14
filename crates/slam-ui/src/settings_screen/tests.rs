@@ -1445,7 +1445,7 @@ fn searchable_ru() -> SettingsScreen {
         "громкость музыки музыка",
         "подсветка",
         "гамма",
-        "скин",
+        "скин жёсткость",
     ]));
     s
 }
@@ -1464,4 +1464,8 @@ fn search_reads_the_other_keyboard_layout() {
     assert_eq!(s.snapshot().hidden[..5], [true, false, true, true, true]);
     type_str(&mut s, " vol");
     assert_eq!(s.snapshot().hidden[..5], [true, false, true, true, true]);
+    // Shifted keys swap to capitals, which the lowercase texts still match.
+    let mut s = searchable_ru();
+    type_str(&mut s, ":~cnrjcnm");
+    assert_eq!(s.snapshot().hidden[..5], [true, true, true, true, false]);
 }

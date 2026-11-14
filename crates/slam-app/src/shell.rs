@@ -4180,7 +4180,6 @@ fn open_audio(
         .device
         .as_ref()
         .and_then(|_| slam_audio::devices(backend).ok());
-    crate::feedback::set_audio(format!("{backend:?}"));
     let device = pick_device(settings.device.as_deref(), listed.as_deref());
     // The device's own rate spares the system a resampler and lets WASAPI LowLatency
     // and Exclusive open (ADR-0102).
@@ -4253,6 +4252,8 @@ fn open_audio(
         volumes: AppliedVolumes::new(volumes),
         sample_rate,
     };
+    // Once the output is open: a failed open keeps the last backend that did.
+    crate::feedback::set_audio(format!("{backend:?}"));
     Ok((audio, stream))
 }
 

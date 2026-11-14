@@ -939,7 +939,6 @@ impl SongSelectView {
                     theme.disabled_text,
                 );
             }
-            let rows = snapshot.rows();
             // Thumbnails are pushed after the rows: their shapes wait here.
             let mut thumb_shapes: [Option<Shape>; 2 * MAX_VISIBLE_ROWS] =
                 [None; 2 * MAX_VISIBLE_ROWS];
@@ -954,11 +953,7 @@ impl SongSelectView {
             let rows_to_draw =
                 visible.start.saturating_sub(reach)..(visible.end + reach).min(snapshot.row_count);
             for index in rows_to_draw {
-                let Some(row) = index
-                    .checked_sub(snapshot.first_row)
-                    .and_then(|i| rows.get(i))
-                    .copied()
-                else {
+                let Some(row) = snapshot.row_at(index) else {
                     continue;
                 };
                 let slot_count = self.slots.len();
@@ -1248,8 +1243,6 @@ impl SongSelectView {
     }
 }
 
-/// Appends a tile's detail after its acronym: " 1.05x", " AR9.4", " AR10" (lazer's
-/// `ToStandardFormattedString(1)` drops a zero decimal).
 /// The expanded set and when it changed, so its difficulties slide out from under its row
 /// and the rows below follow, while the set that closed slides shut (ADR-0136).
 #[derive(Clone, Copy, Debug, Default)]
@@ -1316,10 +1309,13 @@ impl Expansion {
             let index = list.sets.iter().position(|s| s.key == old)?;
             Some((index, count))
         });
+        // No further than the snapshot carries rows past the window, so nothing slides in
+        // from where there is no row to draw.
+        let cap = |count: usize| count.min(super::ROW_PAD);
         ExpansionFrame {
             t,
-            open: open.map(|(index, s)| (index, s.difficulties.len())),
-            closed,
+            open: open.map(|(index, s)| (index, cap(s.difficulties.len()))),
+            closed: closed.map(|(index, count)| (index, cap(count))),
         }
     }
 }
@@ -1364,6 +1360,8 @@ impl ExpansionFrame {
     }
 }
 
+/// Appends a tile's detail after its acronym: " 1.05x", " AR9.4", " AR10" (lazer's
+/// `ToStandardFormattedString(1)` drops a zero decimal).
 fn push_detail(text: &mut String, detail: TileDetail) {
     // Writing to a `String` cannot fail.
     let _ = match detail {
