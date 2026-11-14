@@ -28,7 +28,7 @@ use slam_ui::screen::TransitionStyle;
 use slam_ui::theme::{ColourScheme, MAX_SKEW_DEGREES, UI_SCALE_RANGE};
 
 /// Sections, in order; the keys of their names are in [`SECTION_KEYS`].
-const SECTION_KEYS: [&str; 8] = [
+const SECTION_KEYS: [&str; 9] = [
     "settings-section-audio",
     "settings-section-offset",
     "settings-section-keys",
@@ -37,6 +37,7 @@ const SECTION_KEYS: [&str; 8] = [
     "settings-section-frame",
     "settings-section-gameplay",
     "settings-section-library",
+    "settings-section-feedback",
 ];
 /// The indices of the sections, in the order they show; [`SECTION_KEYS`] has their names in
 /// the same order. A new row goes to the section of its `Row::section` arm, and shows among
@@ -50,6 +51,7 @@ mod section {
     pub const FRAME: usize = 5;
     pub const GAMEPLAY: usize = 6;
     pub const LIBRARY: usize = 7;
+    pub const FEEDBACK: usize = 8;
 }
 
 /// The index of the skin row.
@@ -307,13 +309,19 @@ pub enum Row {
     HudAnimations,
     PauseMenuScale,
     SongsFolder,
+    /// Opens the project page.
+    FeedbackHome,
+    /// Opens the bug report form, filled in.
+    FeedbackBug,
+    /// Opens the feature request form.
+    FeedbackFeature,
 }
 
 // The screen ignores rows past its capacity.
 const _: () = assert!(Row::ALL.len() <= slam_ui::settings_screen::MAX_ROWS);
 
 impl Row {
-    pub const ALL: [Row; 81] = [
+    pub const ALL: [Row; 84] = [
         Row::MasterVolume,
         Row::MusicVolume,
         Row::MenuMusic,
@@ -395,7 +403,21 @@ impl Row {
         Row::HudAnimations,
         Row::PauseMenuScale,
         Row::SongsFolder,
+        Row::FeedbackHome,
+        Row::FeedbackBug,
+        Row::FeedbackFeature,
     ];
+
+    /// The page a Feedback row opens.
+    pub fn feedback(self) -> Option<crate::feedback::Kind> {
+        use crate::feedback::Kind;
+        match self {
+            Row::FeedbackHome => Some(Kind::Github),
+            Row::FeedbackBug => Some(Kind::Bug),
+            Row::FeedbackFeature => Some(Kind::Feature),
+            _ => None,
+        }
+    }
 
     /// The key a key row edits.
     pub fn key_slot(self) -> Option<KeySlot> {
@@ -503,6 +525,7 @@ impl Row {
             | Row::HudAnimations
             | Row::PauseMenuScale => section::GAMEPLAY,
             Row::SongsFolder => section::LIBRARY,
+            Row::FeedbackHome | Row::FeedbackBug | Row::FeedbackFeature => section::FEEDBACK,
         }
     }
 
@@ -588,6 +611,9 @@ impl Row {
             Row::PauseMenuScale => "settings-gameplay-pause-menu-scale",
             Row::Skin => "settings-gameplay-skin",
             Row::SongsFolder => "settings-library-songs-folder",
+            Row::FeedbackHome => "settings-feedback-home",
+            Row::FeedbackBug => "settings-feedback-bug",
+            Row::FeedbackFeature => "settings-feedback-feature",
         }
     }
 
@@ -959,7 +985,11 @@ impl Rows {
             };
         }
         match row {
-            Row::ResetKeys | Row::SongsFolder => RowKind::Button,
+            Row::ResetKeys
+            | Row::SongsFolder
+            | Row::FeedbackHome
+            | Row::FeedbackBug
+            | Row::FeedbackFeature => RowKind::Button,
             Row::NotFullscreenNote => RowKind::Note,
             Row::MasterVolume => percent(s.audio.master_volume),
             Row::MusicVolume => percent(s.audio.music_volume),
@@ -1661,6 +1691,9 @@ impl Rows {
                     Row::ResetKeys => text("settings-keys-reset-button"),
                     // The placeholder of an empty folder.
                     Row::SongsFolder => text("settings-library-songs-folder-none"),
+                    Row::FeedbackHome => text("settings-feedback-home-button"),
+                    Row::FeedbackBug => text("settings-feedback-bug-button"),
+                    Row::FeedbackFeature => text("settings-feedback-feature-button"),
                     _ => String::new(),
                 };
                 // Lazer shows the stereo separation at zero as "Disabled".
@@ -2571,9 +2604,37 @@ mod tests {
     }
 
     #[test]
+    fn the_feedback_rows_are_buttons_in_the_last_section() {
+        let (rows, s) = rows();
+        let localizer = Localizer::builtin().unwrap();
+        localizer.set_language("en").unwrap();
+        let labels = rows.labels(&localizer);
+        assert_eq!(labels.sections[SECTIONS - 1], "Feedback");
+        for (row, button, kind) in [
+            (
+                Row::FeedbackHome,
+                "Open GitHub",
+                crate::feedback::Kind::Github,
+            ),
+            (Row::FeedbackBug, "Report a bug", crate::feedback::Kind::Bug),
+            (
+                Row::FeedbackFeature,
+                "Suggest a feature",
+                crate::feedback::Kind::Feature,
+            ),
+        ] {
+            assert_eq!(row.section(), SECTIONS - 1);
+            assert_eq!(rows.specs(&s)[index(row)].kind, RowKind::Button);
+            assert_eq!(labels.rows[index(row)].button, button);
+            assert_eq!(row.feedback(), Some(kind));
+        }
+        assert_eq!(Row::SongsFolder.feedback(), None);
+    }
+
+    #[test]
     fn the_songs_folder_row_is_a_button_in_its_own_section() {
         let (rows, s) = rows();
-        assert_eq!(Row::SongsFolder.section(), SECTIONS - 1);
+        assert_eq!(Row::SongsFolder.section(), SECTIONS - 2);
         assert_eq!(
             rows.specs(&s)[index(Row::SongsFolder)].kind,
             RowKind::Button
@@ -2585,7 +2646,7 @@ mod tests {
         assert_eq!(row.label, "Songs folder");
         assert_eq!(row.button, "Not selected");
         assert!(row.shows_value);
-        assert_eq!(labels.sections[SECTIONS - 1], "Library");
+        assert_eq!(labels.sections[SECTIONS - 2], "Library");
         // Only this row shows a value.
         assert_eq!(labels.rows.iter().filter(|r| r.shows_value).count(), 1);
     }

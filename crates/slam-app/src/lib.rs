@@ -7,6 +7,7 @@ pub mod click;
 pub mod default_skin;
 pub mod details;
 pub mod displays;
+pub mod feedback;
 pub mod gpu;
 pub mod hud_layouts;
 pub mod i18n;

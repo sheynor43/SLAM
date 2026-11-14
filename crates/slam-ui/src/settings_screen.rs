@@ -26,7 +26,7 @@ pub use view::{KeyLabels, RowLabels, SettingsLabels, SettingsView};
 /// Most rows; more are ignored.
 pub const MAX_ROWS: usize = 96;
 /// Most sections; rows of later ones go into the last.
-pub const MAX_SECTIONS: usize = 8;
+pub const MAX_SECTIONS: usize = 9;
 
 /// A mouse button, as the screen names it; the application converts to and from its own.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]

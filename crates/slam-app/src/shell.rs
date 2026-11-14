@@ -332,6 +332,9 @@ pub struct ShellState {
     /// The settings screen opened: its device list is to be made again (ADR-0089), not yet
     /// taken by [`ShellState::take_device_list_request`].
     device_list_request: bool,
+    /// A Feedback row was pressed: the page to open, not yet taken by
+    /// [`ShellState::take_feedback_request`].
+    feedback_request: Option<crate::feedback::Kind>,
     /// The settings in force: what the file said, then what the settings screen committed.
     settings: Settings,
     /// The options of the settings screen's dropdowns, fixed for the run.
@@ -451,6 +454,7 @@ impl ShellState {
             retry_request: false,
             track_stop: false,
             device_list_request: false,
+            feedback_request: None,
             settings: Settings::default(),
             rows: Rows::new(&Settings::default()),
             editing: None,
@@ -670,6 +674,11 @@ impl ShellState {
         if self.editing.is_some() {
             self.device_list_request = true;
         }
+    }
+
+    /// The page a Feedback row asked to open, once; the caller opens it off the update tick.
+    pub fn take_feedback_request(&mut self) -> Option<crate::feedback::Kind> {
+        self.feedback_request.take()
     }
 
     pub fn take_device_list_request(&mut self) -> Option<&crate::settings::Audio> {
@@ -1612,6 +1621,12 @@ impl ShellState {
             {
                 self.pick_folder();
             }
+            Some(SettingsAction::Pressed { row })
+                if Row::ALL.get(row).and_then(|row| row.feedback()).is_some() =>
+            {
+                self.ui_sounds.push(crate::menu_sounds::MenuSound::Click);
+                self.feedback_request = Row::ALL.get(row).and_then(|row| row.feedback());
+            }
             Some(
                 action @ (SettingsAction::KeyCaptured { .. }
                 | SettingsAction::KeyCleared { .. }
@@ -2458,6 +2473,9 @@ impl PlayHost {
         self.ui_sounds.follow_skin(now_ns, mode, skin.as_ref());
         self.ui_sounds
             .play(now_ns, noted, mode, &mut self.audio.mixer);
+        if let Some(kind) = state.take_feedback_request() {
+            crate::feedback::open(kind);
+        }
         if let Some(link) = &mut self.output {
             if let Some(settings) = state.take_device_list_request() {
                 // A full ring drops it: the screen keeps the list it has.
@@ -3436,6 +3454,7 @@ impl<B: render::Backend> Draw<ShellSnapshot> for View<B> {
         // failing now is a driver fault the shell does not recover from.
         let surface = self.surface.take().expect("surface is set before start");
         let mut device = surface.create_device().expect("render device");
+        crate::feedback::set_driver(format!("{}, {}", B::NAME, B::driver_info(&device)));
         let renderer = SpriteRenderer::with_layout(
             &mut device,
             DEFAULT_SLOTS,
@@ -4155,6 +4174,7 @@ fn open_audio(
         .device
         .as_ref()
         .and_then(|_| slam_audio::devices(backend).ok());
+    crate::feedback::set_audio(format!("{backend:?}"));
     let device = pick_device(settings.device.as_deref(), listed.as_deref());
     // The device's own rate spares the system a resampler and lets WASAPI LowLatency
     // and Exclusive open (ADR-0102).

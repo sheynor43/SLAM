@@ -1,0 +1,56 @@
+name: Bug report
+description: Something does not work as it should
+labels: ["bug"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for the report. The first four fields are filled in for you when you open this form from Settings, Feedback in the client; otherwise please fill them in by hand.
+  - type: input
+    id: version
+    attributes:
+      label: Client version
+      placeholder: slam-0.1.0
+    validations:
+      required: true
+  - type: input
+    id: os
+    attributes:
+      label: Operating system
+      placeholder: Windows 11 (x86_64)
+    validations:
+      required: true
+  - type: input
+    id: gpu
+    attributes:
+      label: Renderer and GPU
+      placeholder: OpenGL 3.3, GPU name and driver
+  - type: input
+    id: audio
+    attributes:
+      label: Audio backend
+      placeholder: WASAPI, PipeWire, ...
+  - type: textarea
+    id: description
+    attributes:
+      label: What happened
+      description: A clear description of the problem.
+    validations:
+      required: true
+  - type: textarea
+    id: steps
+    attributes:
+      label: Steps to reproduce
+      placeholder: |
+        1. ...
+        2. ...
+  - type: textarea
+    id: expected
+    attributes:
+      label: Expected behaviour
+  - type: textarea
+    id: logs
+    attributes:
+      label: Logs
+      description: Relevant lines of the log file, or a beatmap or replay name if the problem is tied to one.
+      render: shell
