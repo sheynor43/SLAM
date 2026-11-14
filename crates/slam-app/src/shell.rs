@@ -88,7 +88,7 @@ use language::{LanguageSwap, LanguageViews};
 use live::{AppliedUpdateRate, AppliedVolumes, Volumes};
 use output::{DeviceList, DeviceViews, OutputLink, Request};
 mod keybinds;
-mod language;
+pub(crate) mod language;
 mod menu_music;
 mod mod_settings;
 mod ui_sounds;

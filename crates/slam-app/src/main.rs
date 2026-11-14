@@ -79,6 +79,17 @@ fn main() -> ExitCode {
                 }
             }
         }
+        Some("ui-preview") => {
+            let result = screenshot::preview::Options::parse(args)
+                .and_then(|options| screenshot::preview::run(&options));
+            match result {
+                Ok(()) => ExitCode::SUCCESS,
+                Err(e) => {
+                    eprintln!("{e}\n{}", screenshot::preview::USAGE);
+                    ExitCode::FAILURE
+                }
+            }
+        }
         Some("replay-stats") => {
             let result =
                 replay_stats::Options::parse(args).and_then(|options| replay_stats::run(&options));
@@ -123,7 +134,7 @@ fn run_shell(args: Vec<String>) -> ExitCode {
 
 fn usage() -> String {
     format!(
-        "{}\n{}\n{}\n{}\n{}\n{}\n{}\n{}",
+        "{}\n{}\n{}\n{}\n{}\n{}\n{}\n{}\n{}",
         shell::USAGE,
         bench::USAGE,
         click::USAGE,
@@ -131,6 +142,7 @@ fn usage() -> String {
         play::USAGE,
         replay_stats::USAGE,
         screenshot::USAGE,
+        screenshot::preview::USAGE,
         i18n::USAGE
     )
 }

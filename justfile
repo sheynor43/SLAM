@@ -66,3 +66,7 @@ corpus FILTER="":
 # Проверка локализации встроенных языков: just i18n check
 i18n *ARGS:
     cargo run -p slam-app -- i18n {{ARGS}}
+
+# Рисует экраны интерфейса с тестовыми данными в PNG без окна: target/tmp/ui-preview
+ui-preview:
+    cargo run -p slam-app -- ui-preview --out target/tmp/ui-preview --any-renderer
