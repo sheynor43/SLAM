@@ -108,4 +108,9 @@ impl Dirs {
     pub fn replays(&self) -> PathBuf {
         self.data.join("replays")
     }
+
+    /// Where local scores are saved, a file per beatmap (ADR-0125).
+    pub fn scores(&self) -> PathBuf {
+        self.data.join("scores")
+    }
 }

@@ -106,13 +106,22 @@ pub enum Trash {
     TrackCommand(PlayError),
 }
 
-fn log(trash: Trash, replays: Option<&Path>) {
+fn log(trash: Trash, replays: Option<&Path>, scores: Option<&Path>) {
     match trash {
         Trash::Session(session) => log_hit_errors(&session),
-        Trash::Replay(job) => match replays {
-            Some(dir) => crate::replays::save(&job, dir),
-            None => tracing::warn!("replay not saved: no data folder"),
-        },
+        Trash::Replay(job) => {
+            let replay = match replays {
+                Some(dir) => crate::replays::save(&job, dir),
+                None => {
+                    tracing::warn!("replay not saved: no data folder");
+                    None
+                }
+            };
+            // The score of a passed attempt follows its replay (ADR-0125).
+            if let Some(dir) = scores {
+                crate::scores::save_passed(&job, replay, dir);
+            }
+        }
         Trash::Music(MusicEvent::Failed { error, .. }) => tracing::warn!("track: {error}"),
         Trash::TrackCommand(error) => tracing::warn!("track: {error}"),
         _ => {}
@@ -135,6 +144,8 @@ pub struct LoaderConfig {
     pub localizer: Arc<Localizer>,
     /// Where replays of finished plays are saved; `None` saves none.
     pub replays: Option<PathBuf>,
+    /// Where local scores of passed plays are saved (ADR-0125); `None` saves none.
+    pub scores: Option<PathBuf>,
     /// Where user HUD layouts live; `None` knows only the built-in ones.
     pub hud_layouts: Option<LayoutStore>,
 }
@@ -222,7 +233,7 @@ pub fn spawn(mut config: LoaderConfig) -> std::io::Result<(LoaderLink, SceneTras
             while !flag.load(Ordering::Relaxed) {
                 let mut idle = true;
                 while let Ok(trash) = trash_rx.pop() {
-                    log(trash, config.replays.as_deref());
+                    log(trash, config.replays.as_deref(), config.scores.as_deref());
                     idle = false;
                 }
                 while scene_rx.pop().is_ok() {
@@ -281,7 +292,7 @@ pub fn spawn(mut config: LoaderConfig) -> std::io::Result<(LoaderLink, SceneTras
             }
             // Replays of the last plays are still saved when the game closes.
             while let Ok(trash) = trash_rx.pop() {
-                log(trash, config.replays.as_deref());
+                log(trash, config.replays.as_deref(), config.scores.as_deref());
             }
         })?;
     Ok((
@@ -343,6 +354,7 @@ mod tests {
             registry: Arc::new(FontRegistry::with_builtin()),
             localizer: Arc::new(Localizer::builtin().unwrap()),
             replays: None,
+            scores: None,
             hud_layouts: None,
         }
     }

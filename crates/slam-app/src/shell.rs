@@ -514,10 +514,12 @@ impl ShellState {
     /// allocates.
     fn beatmap_details(&mut self, now_ns: u64) -> Option<BeatmapDetails> {
         let selected = self.song_select.selected();
-        let statistics = self
+        let read = self
             .details
             .as_mut()
-            .and_then(|details| details.tick(now_ns, &self.files, selected));
+            .map(|details| details.tick(now_ns, &self.files, selected))
+            .unwrap_or_default();
+        let (statistics, scores) = (read.statistics, read.scores);
         let (set, difficulty) = selected?;
         let file = self.files.get(set)?.get(difficulty)?;
         let base = Difficulty {
@@ -546,6 +548,7 @@ impl ShellState {
                 sliders: s.sliders,
                 spinners: s.spinners,
             }),
+            scores,
         })
     }
 
@@ -4273,6 +4276,10 @@ fn run_with<B: render::Backend>(
             }
         };
         let (picker, reader) = crate::details::link();
+        let reader = match Dirs::detect() {
+            Some(dirs) => reader.with_scores(dirs.scores()),
+            None => reader,
+        };
         state = state.with_details(picker);
         let (link, skin_views, thread) = crate::songs::spawn(
             settings.paths.songs.clone(),
@@ -4341,6 +4348,7 @@ fn run_with<B: render::Backend>(
         registry: Arc::clone(&registry),
         localizer: Arc::clone(&localizer),
         replays: Dirs::detect().map(|dirs| dirs.replays()),
+        scores: Dirs::detect().map(|dirs| dirs.scores()),
         hud_layouts: Dirs::detect().map(|dirs| crate::hud_layouts::LayoutStore::in_data_dir(&dirs)),
     })
     .map_err(|e| e.to_string())?;

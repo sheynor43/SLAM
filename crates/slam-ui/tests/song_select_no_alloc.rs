@@ -137,6 +137,8 @@ fn labels() -> SongSelectLabels {
             approach_rate: "AR".into(),
             overall_difficulty: "OD".into(),
             drain_rate: "HP".into(),
+            scores: "Локальные рекорды".into(),
+            no_scores: "Рекордов нет".into(),
         },
     }
 }
@@ -558,7 +560,23 @@ fn rows_scrolled_part_way_stay_inside_the_list() {
 
 #[test]
 fn changing_details_push_without_allocating_once_warm() {
-    use slam_ui::song_select::{BeatmapDetails, DetailStats};
+    use slam_ui::song_select::{
+        BeatmapDetails, DetailStats, LocalScores, MAX_LOCAL_SCORES, ScoreMods, ScoreRow,
+    };
+
+    let scores = |i: u32| LocalScores {
+        rows: std::array::from_fn(|n| {
+            (n < (i as usize % 4) * 4).then(|| ScoreRow {
+                total_score: 1_000_000 + u64::from(i) * 7919 + n as u64,
+                accuracy: 0.9 + n as f64 / 1000.0,
+                max_combo: 100 + n as u32,
+                rank: *b"SH",
+                mods: ScoreMods::from_acronyms(["HD", "DT"]),
+                date_ms: 1_700_000_000_000 + i64::from(i) * 86_400_000,
+            })
+        }),
+    };
+    assert_eq!(scores(0).rows.len(), MAX_LOCAL_SCORES);
 
     let mut rig = Rig::new();
     let mut screen = SongSelect::new();
@@ -577,6 +595,7 @@ fn changing_details_push_without_allocating_once_warm() {
             sliders: 300,
             spinners: 2,
         }),
+        scores: Some(scores(i)),
     };
     let snapshots: Vec<_> = (0..6)
         .map(|i| {

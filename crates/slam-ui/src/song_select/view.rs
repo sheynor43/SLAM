@@ -15,12 +15,13 @@ use slam_render::shape::ShapeBatch;
 use slam_render::sprite::SpriteBatch;
 use slam_text::{FontRegistry, Glyph, GlyphCache, GlyphKey, push_layout};
 
+use super::info_panel::InfoPanel;
 use super::mod_select::{
     CustomisationState, MAX_COLUMNS, MAX_SETTING_ROWS, SettingRowKind, TileDetail, TileDetails,
 };
 use super::{
-    BeatmapDetails, DetailStats, ModColumns, ModSelectSnapshot, Row, SearchQuery, SongList,
-    SongSelectLayout, SongSelectSnapshot, SongSelectStatus, can_choose_folder,
+    ModColumns, ModSelectSnapshot, Row, SearchQuery, SongList, SongSelectLayout,
+    SongSelectSnapshot, SongSelectStatus, can_choose_folder,
 };
 use crate::menu::Rect;
 use crate::menu::view::{Frame, Line, Typesetter};
@@ -33,7 +34,7 @@ const ELLIPSIS: char = '\u{2026}';
 /// The ellipsis as text.
 pub(crate) const ELLIPSIS_STR: &str = "\u{2026}";
 /// Bytes reserved up front in every text buffer.
-const TEXT_CAPACITY: usize = 256;
+pub(super) const TEXT_CAPACITY: usize = 256;
 /// How much of its colour a dimmed element keeps: the mod tiles under the expanded settings
 /// panel, an inactive panel header.
 const DIMMED: f32 = 0.35;
@@ -83,13 +84,10 @@ pub struct DetailLabels {
     pub approach_rate: String,
     pub overall_difficulty: String,
     pub drain_rate: String,
+    /// The title of the local scores list, and the line shown when there are none.
+    pub scores: String,
+    pub no_scores: String,
 }
-
-/// What the details' values are made of; asked for up front.
-const DETAIL_CHARS: &str = "0123456789.:-() \u{b7}";
-
-/// Separates the details of one line.
-const DETAIL_SEPARATOR: &str = "  \u{b7}  ";
 
 impl std::fmt::Debug for SongSelectLabels {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
@@ -167,11 +165,8 @@ pub struct SongSelectView {
     slots: Vec<RowSlot>,
     /// Widths of the ellipsis at the title and detail sizes.
     ellipsis: [f32; 2],
-    detail_labels: DetailLabels,
-    /// Length, BPM and objects; then the difficulty: for the details they were written for.
-    detail_lines: [Line; 2],
-    details_for: Option<Option<BeatmapDetails>>,
-    detail_charset: Line,
+    /// The statistics and local scores on the left.
+    info: InfoPanel,
 }
 
 impl std::fmt::Debug for SongSelectView {
@@ -294,14 +289,7 @@ impl SongSelectView {
             mod_columns: labels.mod_columns,
             slots: Vec::new(),
             ellipsis: [0.0; 2],
-            detail_labels: labels.details.clone(),
-            detail_lines: std::array::from_fn(|_| {
-                let mut line = Line::new("");
-                line.text.reserve(TEXT_CAPACITY);
-                line
-            }),
-            details_for: None,
-            detail_charset: Line::new(DETAIL_CHARS),
+            info: InfoPanel::new(&labels.details),
             theme,
         };
         view.scanning.text.reserve(TEXT_CAPACITY);
@@ -341,11 +329,7 @@ impl SongSelectView {
             self.type_setter
                 .lay_out(line, self.theme.song_detail_size * scale);
         }
-        self.type_setter.lay_out(
-            &mut self.detail_charset,
-            self.theme.song_detail_size * scale,
-        );
-        self.details_for = None;
+        self.info.lay_out(&mut self.type_setter, &self.theme, scale);
         for line in [&mut self.search_placeholder, &mut self.search_no_matches] {
             self.type_setter
                 .lay_out(line, self.theme.song_title_size * scale);
@@ -413,8 +397,7 @@ impl SongSelectView {
             .iter()
             .chain(self.mod_tiles.iter().flatten())
             .chain([&self.customise_title, &self.value_charset])
-            .chain(&self.detail_lines)
-            .chain([&self.detail_charset])
+            .chain(self.info.lines())
             .chain(self.setting_lines.iter().map(|(_, line)| line))
             .chain(self.value_slots.iter().map(|slot| &slot.line));
         let rows = self
@@ -521,7 +504,13 @@ impl SongSelectView {
 
         self.refresh_selected(&snapshot.mods);
         self.refresh_search(&snapshot.query);
-        self.refresh_details(&snapshot.details);
+        self.info.refresh(
+            &mut self.type_setter,
+            &self.theme,
+            &self.layout,
+            self.ellipsis,
+            snapshot,
+        );
         let shift = pose.offset * width;
         let opacity = pose.opacity;
         let theme = &self.theme;
@@ -751,7 +740,13 @@ impl SongSelectView {
             }
             return;
         }
-        // The panel's backing, from the status line to the hints.
+        // The info panel's backing on the left.
+        rect(
+            &layout.info_backing(theme.song_margin * layout.scale),
+            theme.song_panel_fill,
+            Look::Panel,
+        );
+        // The list panel's backing, from the status line to the hints.
         // Its right side reaches past the window's edge (ADR-0121).
         rect(
             &layout.backing(width, theme.song_margin * layout.scale),
@@ -782,14 +777,9 @@ impl SongSelectView {
                 theme.text,
             );
         }
-        // The selected difficulty's details, over the search line; the status line takes
-        // the first one's place.
-        let line_height = layout.details.height / 2.0;
-        let from = usize::from(status_line.is_some());
-        for (i, line) in self.detail_lines.iter().enumerate().skip(from) {
-            let centre = layout.details.y + line_height * (i as f32 + 0.5);
-            left(line, lean(layout.details.x, centre), centre, theme.text);
-        }
+        // The selected difficulty's statistics and local scores, on the left.
+        self.info
+            .push(layout, theme, snapshot, &mut rect, &mut left);
         // The search line.
         let search = leaned(&layout.search);
         rect(&search, theme.song_search_fill, Look::Round);
@@ -961,47 +951,6 @@ impl SongSelectView {
         }
     }
 
-    /// Writes the details' two lines unless they already show `details`.
-    fn refresh_details(&mut self, details: &Option<BeatmapDetails>) {
-        if self.details_for == Some(*details) {
-            return;
-        }
-        self.details_for = Some(*details);
-        let labels = &self.detail_labels;
-        let [stats_line, difficulty_line] = &mut self.detail_lines;
-        stats_line.text.clear();
-        difficulty_line.text.clear();
-        if let Some(d) = details {
-            if let Some(s) = d.stats {
-                write_stats(&mut stats_line.text, labels, &s);
-            }
-            let values = [
-                (&labels.circle_size, d.circle_size),
-                (&labels.approach_rate, d.approach_rate),
-                (&labels.overall_difficulty, d.overall_difficulty),
-                (&labels.drain_rate, d.drain_rate),
-            ];
-            for (i, (label, value)) in values.into_iter().enumerate() {
-                if i > 0 {
-                    difficulty_line.text.push_str(DETAIL_SEPARATOR);
-                }
-                let _ = write!(difficulty_line.text, "{label} ");
-                push_difficulty(&mut difficulty_line.text, value);
-            }
-        }
-        let scale = self.layout.scale;
-        let avail = self.layout.details.width;
-        for line in &mut self.detail_lines {
-            fit(
-                &mut self.type_setter,
-                line,
-                self.theme.song_detail_size * scale,
-                avail,
-                self.ellipsis[1],
-            );
-        }
-    }
-
     /// Lays the query out unless it already shows it.
     fn refresh_search(&mut self, query: &SearchQuery) {
         if self.search_for == Some(*query) {
@@ -1057,115 +1006,6 @@ fn push_detail(text: &mut String, detail: TileDetail) {
         TileDetail::ApproachRate(tenths) if tenths % 10 == 0 => write!(text, " AR{}", tenths / 10),
         TileDetail::ApproachRate(tenths) => write!(text, " AR{:.1}", f64::from(tenths) / 10.0),
     };
-}
-
-// Ported from osu!lazer 2026.1005.0-lazer: osu.Game/Extensions/TimeDisplayExtensions.cs (ToFormattedDuration)
-/// `mm:ss`, `hh:mm:ss` from an hour, `dd:hh:mm:ss` from a day; seconds cut, as `TimeSpan`.
-fn push_duration(text: &mut String, ms: u64) {
-    let seconds = ms / 1000;
-    let (days, hours, minutes, seconds) = (
-        seconds / 86_400,
-        seconds / 3600 % 24,
-        seconds / 60 % 60,
-        seconds % 60,
-    );
-    let _ = if days > 0 {
-        write!(text, "{days:02}:{hours:02}:{minutes:02}:{seconds:02}")
-    } else if hours > 0 {
-        write!(text, "{hours:02}:{minutes:02}:{seconds:02}")
-    } else {
-        write!(text, "{minutes:02}:{seconds:02}")
-    };
-}
-
-/// Formats into a fixed buffer, so that reading a float's digits does not allocate.
-struct StackText {
-    bytes: [u8; 32],
-    len: usize,
-}
-
-impl std::fmt::Write for StackText {
-    fn write_str(&mut self, s: &str) -> std::fmt::Result {
-        let end = self.len + s.len();
-        let slot = self.bytes.get_mut(self.len..end).ok_or(std::fmt::Error)?;
-        slot.copy_from_slice(s.as_bytes());
-        self.len = end;
-        Ok(())
-    }
-}
-
-/// A difficulty value as lazer's `float.ToString("0.##")`: .NET rounds the float to 7
-/// significant digits first, then those digits to two decimals half away from zero, and
-/// drops trailing zeros.
-fn push_difficulty(text: &mut String, value: f32) {
-    let mut digits = StackText {
-        bytes: [0; 32],
-        len: 0,
-    };
-    // "d.dddddde-N": seven significant digits, correctly rounded.
-    if !value.is_finite() || write!(digits, "{:.6e}", value.abs()).is_err() {
-        return;
-    }
-    let written = std::str::from_utf8(&digits.bytes[..digits.len]).unwrap_or("");
-    let Some((mantissa, exponent)) = written.split_once('e') else {
-        return;
-    };
-    let Ok(exponent) = exponent.parse::<i32>() else {
-        return;
-    };
-    let significand = mantissa
-        .bytes()
-        .filter(u8::is_ascii_digit)
-        .fold(0_i64, |n, d| n * 10 + i64::from(d - b'0'));
-    // The value is `significand * 10^(exponent - 6)`; in hundredths, `10^(exponent - 4)`.
-    let shift = exponent - 4;
-    let hundredths = if shift >= 0 {
-        significand.saturating_mul(10_i64.saturating_pow(shift as u32))
-    } else if shift > -18 {
-        let divisor = 10_i64.pow((-shift) as u32);
-        let (q, r) = (significand / divisor, significand % divisor);
-        q + i64::from(2 * r >= divisor)
-    } else {
-        0
-    };
-    if value < 0.0 && hundredths != 0 {
-        text.push('-');
-    }
-    let (whole, part) = (hundredths / 100, hundredths % 100);
-    let _ = write!(text, "{whole}");
-    match part {
-        0 => {}
-        p if p % 10 == 0 => {
-            let _ = write!(text, ".{}", p / 10);
-        }
-        p => {
-            let _ = write!(text, ".{p:02}");
-        }
-    }
-}
-
-// Ported from osu!lazer 2026.1005.0-lazer: osu.Game/Screens/Select/BeatmapTitleWedge.cs (updateLengthAndBpmStatistics)
-/// "Length 03:25 · BPM 150-200 (180) · Circles 512 · Sliders 300 · Spinners 2".
-fn write_stats(text: &mut String, labels: &DetailLabels, s: &DetailStats) {
-    let _ = write!(text, "{} ", labels.length);
-    push_duration(text, s.length_ms);
-    let _ = write!(text, "{DETAIL_SEPARATOR}{} ", labels.bpm);
-    let _ = if s.bpm_minimum == s.bpm_maximum {
-        write!(text, "{}", s.bpm_minimum)
-    } else {
-        write!(
-            text,
-            "{}-{} ({})",
-            s.bpm_minimum, s.bpm_maximum, s.bpm_most_common
-        )
-    };
-    for (label, count) in [
-        (&labels.circles, s.circles),
-        (&labels.sliders, s.sliders),
-        (&labels.spinners, s.spinners),
-    ] {
-        let _ = write!(text, "{DETAIL_SEPARATOR}{label} {count}");
-    }
 }
 
 #[cfg(test)]
@@ -1227,76 +1067,5 @@ mod tests {
         let mut short = Line::new("short");
         fit_tail(&mut type_setter, &mut short, 20.0, avail, ellipsis);
         assert_eq!(short.text, "short");
-    }
-
-    #[test]
-    fn durations_as_lazer_formats_them() {
-        let cases = [
-            (0, "00:00"),
-            (59_999, "00:59"),
-            (205_000, "03:25"),
-            (3_600_000, "01:00:00"),
-            (90_061_000, "01:01:01:01"),
-        ];
-        for (ms, text) in cases {
-            let mut s = String::new();
-            push_duration(&mut s, ms);
-            assert_eq!(s, text, "{ms}");
-        }
-    }
-
-    #[test]
-    fn difficulty_values_keep_two_decimals_at_most() {
-        let cases = [
-            (4.0, "4"),
-            (9.3, "9.3"),
-            (7.666_667, "7.67"),
-            (8.005, "8.01"),
-            (10.0, "10"),
-            (0.05, "0.05"),
-            (-0.5, "-0.5"),
-            // The float rounds to 2.675000 at seven digits before the decimals: EZ on CS 5.35.
-            (5.35f32 * 0.5, "2.68"),
-            // HR on CS 4.25: 5.5249996 to 5.525000.
-            (4.25f32 * 1.3, "5.53"),
-            (12345.678, "12345.68"),
-        ];
-        for (value, text) in cases {
-            let mut s = String::new();
-            push_difficulty(&mut s, value);
-            assert_eq!(s, text, "{value}");
-        }
-    }
-
-    #[test]
-    fn stats_show_one_bpm_or_the_range_and_the_most_common() {
-        let labels = DetailLabels {
-            length: "Length".into(),
-            bpm: "BPM".into(),
-            circles: "Circles".into(),
-            sliders: "Sliders".into(),
-            spinners: "Spinners".into(),
-            ..DetailLabels::default()
-        };
-        let mut stats = DetailStats {
-            length_ms: 205_400,
-            bpm_minimum: 180,
-            bpm_maximum: 180,
-            bpm_most_common: 180,
-            circles: 512,
-            sliders: 300,
-            spinners: 2,
-        };
-        let mut s = String::new();
-        write_stats(&mut s, &labels, &stats);
-        assert_eq!(
-            s,
-            "Length 03:25  \u{b7}  BPM 180  \u{b7}  Circles 512  \u{b7}  Sliders 300  \u{b7}  Spinners 2"
-        );
-        stats.bpm_minimum = 150;
-        stats.bpm_maximum = 200;
-        s.clear();
-        write_stats(&mut s, &labels, &stats);
-        assert!(s.contains("BPM 150-200 (180)"), "{s}");
     }
 }

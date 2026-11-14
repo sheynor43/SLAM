@@ -183,6 +183,7 @@ pub struct FinishedAttempt {
     mods: ModSet,
     score: i64,
     score_without_mods: i64,
+    accuracy: f64,
     rank: ScoreRank,
     statistics: Statistics,
     maximum_statistics: Statistics,
@@ -197,6 +198,7 @@ impl FinishedAttempt {
             mods,
             score: 0,
             score_without_mods: 0,
+            accuracy: 1.0,
             rank: ScoreRank::F,
             statistics: Statistics::default(),
             maximum_statistics: Statistics::default(),
@@ -221,6 +223,11 @@ impl FinishedAttempt {
     /// Total score without the mods' multiplier.
     pub fn score_without_mods(&self) -> i64 {
         self.score_without_mods
+    }
+
+    /// Accuracy, 0..=1.
+    pub fn accuracy(&self) -> f64 {
+        self.accuracy
     }
 
     pub fn rank(&self) -> ScoreRank {
@@ -1142,6 +1149,7 @@ impl PlaySession {
         std::mem::swap(&mut attempt.recorder, &mut self.recorder);
         attempt.score = self.score.total_score();
         attempt.score_without_mods = self.score.total_score_without_mods();
+        attempt.accuracy = self.score.accuracy();
         attempt.rank = self.score.rank(&self.initial.mods);
         attempt.statistics = *self.score.statistics();
         attempt.maximum_statistics = *self.score.maximum_statistics();

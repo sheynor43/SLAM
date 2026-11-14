@@ -15,6 +15,7 @@ pub mod menu_sounds;
 pub mod play;
 pub mod replay_stats;
 pub mod replays;
+pub mod scores;
 pub mod screenshot;
 pub mod settings;
 pub mod shell;
