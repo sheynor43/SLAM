@@ -9,8 +9,11 @@ use super::*;
 /// The rate of the test mixers and outputs.
 const SAMPLE_RATE: u32 = slam_audio::DEFAULT_SAMPLE_RATE;
 
+/// A shell whose transitions last `TRANSITION_NS`: the default style is random.
 fn state() -> ShellState {
-    ShellState::new(Theme::default(), 1280.0, 720.0, 1.0)
+    let mut settings = crate::settings::Settings::default();
+    settings.general.transitions = slam_ui::screen::TransitionStyle::Simple;
+    ShellState::new(Theme::default(), 1280.0, 720.0, 1.0).with_settings(settings)
 }
 
 fn key(scancode: u16) -> InputEvent {

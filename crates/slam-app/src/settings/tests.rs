@@ -99,7 +99,7 @@ fn round_trip_non_default() {
     s.general.game_scale = 0.8;
     s.general.skew = 14.0;
     s.general.menu_background = MenuBackground::Skin;
-    s.general.transitions = TransitionStyle::Fancy;
+    s.general.transitions = TransitionStyle::Iris;
     s.gameplay.pause_menu_style = PauseMenuStyle::Stable;
     s.gameplay.pause_menu_scale = 1.25;
     s.general.menu_cursor = CursorStyle::System;
@@ -1556,10 +1556,17 @@ fn bad_pause_menu_settings_fall_back_with_a_warning() {
 }
 
 #[test]
-fn transitions_default_to_simple_and_read_by_name() {
+fn the_old_fancy_transition_reads_as_band_without_a_warning() {
+    let loaded = file::from_toml_str("[general]\ntransitions = \"fancy\"\n");
+    assert_eq!(loaded.status, LoadStatus::Ok, "{:?}", loaded.warnings);
+    assert_eq!(loaded.settings.general.transitions, TransitionStyle::Band);
+}
+
+#[test]
+fn transitions_default_to_random_and_read_by_name() {
     assert_eq!(
         Settings::default().general.transitions,
-        TransitionStyle::Simple
+        TransitionStyle::Random
     );
     for style in TransitionStyle::ALL {
         let loaded =
@@ -1569,7 +1576,7 @@ fn transitions_default_to_simple_and_read_by_name() {
     }
     let bad = file::from_toml_str("[general]\ntransitions = \"wild\"\n");
     assert_eq!(bad.status, LoadStatus::Recovered);
-    assert_eq!(bad.settings.general.transitions, TransitionStyle::Simple);
+    assert_eq!(bad.settings.general.transitions, TransitionStyle::Random);
     assert!(
         bad.warnings
             .iter()

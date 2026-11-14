@@ -2156,11 +2156,11 @@ mod tests {
         assert_eq!(s.gameplay.pause_menu_style, PauseMenuStyle::Stable);
         rows.apply(&mut s, index(Row::PauseMenuScale), RowValue::Slider(150.0));
         assert_eq!(s.gameplay.pause_menu_scale, 1.5);
-        assert_eq!(s.general.transitions, TransitionStyle::Simple);
+        assert_eq!(s.general.transitions, TransitionStyle::Random);
         rows.apply(&mut s, index(Row::Transitions), RowValue::Choice(2));
-        assert_eq!(s.general.transitions, TransitionStyle::Fancy);
-        rows.apply(&mut s, index(Row::Transitions), RowValue::Choice(7));
-        assert_eq!(s.general.transitions, TransitionStyle::Fancy);
+        assert_eq!(s.general.transitions, TransitionStyle::Band);
+        rows.apply(&mut s, index(Row::Transitions), RowValue::Choice(8));
+        assert_eq!(s.general.transitions, TransitionStyle::Band);
         assert_eq!(Row::Transitions.section(), 3);
         assert!(matches!(
             rows.specs(&s)[index(Row::Transitions)].kind,
