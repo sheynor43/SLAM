@@ -399,6 +399,42 @@ pub struct Theme {
     pub cursor_ripple_ms: f32,
     pub cursor_ripple_size: f32,
     pub cursor_ripple_alpha: f32,
+    /// The volume overlay (ADR-0145): diameters of the master meter's ring and of the
+    /// others' (reference pixels), the padding of a meter's card, the gap between cards and
+    /// their margin from the edge, the label's text size and the value's (a part of the
+    /// ring's diameter); the gauges' thickness as parts of the ring's diameter: the arc's
+    /// stroke, the column's width, the bar's height; the track's opacity.
+    pub volume_ring_master: f32,
+    pub volume_ring: f32,
+    pub volume_card_pad: f32,
+    pub volume_gap: f32,
+    pub volume_margin: f32,
+    pub volume_label_size: f32,
+    pub volume_value_size: f32,
+    pub volume_stroke: f32,
+    pub volume_column: f32,
+    pub volume_bar: f32,
+    pub volume_track_alpha: f32,
+    /// The shade behind the meters, from the edge (`volume_backdrop` there, clear at
+    /// `volume_backdrop_depth` reference pixels inwards).
+    pub volume_backdrop: Color,
+    pub volume_backdrop_depth: f32,
+    /// Milliseconds of the slide in (OutBack) and out (OutCubic), of the value catching up
+    /// (OutQuint) and of a meter's selection (OutExpo), and the scale of the selected one.
+    pub volume_in_ms: f32,
+    pub volume_out_ms: f32,
+    pub volume_value_ms: f32,
+    pub volume_select_ms: f32,
+    pub volume_select_scale: f32,
+    /// The meters' colours in [`crate::volume::Meter::ALL`] order: the master's is the
+    /// scheme's accent.
+    pub volume_tints: [Color; 4],
+    /// Sparks of a change: milliseconds one lives at most, its speed (reference pixels per
+    /// second) and size (reference pixels) at most, and how many a full-strength burst sends.
+    pub volume_spark_ms: f32,
+    pub volume_spark_speed: f32,
+    pub volume_spark_size: f32,
+    pub volume_sparks: u32,
 }
 
 /// The extras of SLAM's menu cursor, each switched in the settings (ADR-0136).
@@ -710,6 +746,39 @@ impl Theme {
             cursor_ripple_ms: 450.0,
             cursor_ripple_size: 1.4,
             cursor_ripple_alpha: 0.6,
+            volume_ring_master: 110.0,
+            volume_ring: 84.0,
+            volume_card_pad: 10.0,
+            volume_gap: 10.0,
+            volume_margin: 12.0,
+            volume_label_size: 13.0,
+            volume_value_size: 0.26,
+            volume_stroke: 0.11,
+            volume_column: 0.26,
+            volume_bar: 0.14,
+            volume_track_alpha: 0.2,
+            volume_backdrop: Color {
+                a: 0.75,
+                ..Color::rgb(0.0, 0.0, 0.0)
+            },
+            volume_backdrop_depth: 300.0,
+            volume_in_ms: 250.0,
+            volume_out_ms: 200.0,
+            volume_value_ms: 400.0,
+            volume_select_ms: 500.0,
+            volume_select_scale: 1.04,
+            // Lazer's `BlueDarker` for the effects and the music, a lighter and a violet one
+            // so that the four differ.
+            volume_tints: [
+                Color::rgb(0.35, 0.78, 0.88),
+                Color::rgb(0.133, 0.6, 0.733),
+                p.accent,
+                Color::rgb(0.55, 0.45, 0.95),
+            ],
+            volume_spark_ms: 650.0,
+            volume_spark_speed: 150.0,
+            volume_spark_size: 4.0,
+            volume_sparks: 12,
         }
     }
 

@@ -12,6 +12,7 @@ use slam_ui::cursor::CursorStyle;
 use slam_ui::i18n::BUILTIN_LANGUAGES;
 use slam_ui::screen::TransitionStyle;
 use slam_ui::theme::{ColourScheme, UI_SCALE_RANGE};
+use slam_ui::volume::{Edge, MeterStyle};
 use toml::{Table, Value};
 
 use super::keys;
@@ -322,6 +323,31 @@ fn from_table(mut table: Table) -> Loaded {
             Some(scheme) => settings.general.colour_scheme = scheme,
             None => cx.warn(format!(
                 "general.colour_scheme: unknown value \"{name}\", using the default"
+            )),
+        }
+    }
+    let mut volume_overlay: Option<String> = None;
+    cx.opt(
+        &mut general,
+        "general",
+        "volume_overlay",
+        &mut volume_overlay,
+    );
+    if let Some(name) = volume_overlay {
+        match Edge::from_name(&name) {
+            Some(edge) => settings.general.volume_overlay = edge,
+            None => cx.warn(format!(
+                "general.volume_overlay: unknown value \"{name}\", using the default"
+            )),
+        }
+    }
+    let mut volume_meter: Option<String> = None;
+    cx.opt(&mut general, "general", "volume_meter", &mut volume_meter);
+    if let Some(name) = volume_meter {
+        match MeterStyle::from_name(&name) {
+            Some(style) => settings.general.volume_meter = style,
+            None => cx.warn(format!(
+                "general.volume_meter: unknown value \"{name}\", using the default"
             )),
         }
     }
@@ -875,10 +901,7 @@ fn from_table(mut table: Table) -> Loaded {
     cx.unknown(&input, "input");
 
     let mut hotkeys = cx.section(&mut table, "hotkeys");
-    for (name, slot) in [
-        ("toggle_fps", KeySlot::ToggleFps),
-        ("toggle_settings", KeySlot::ToggleSettings),
-    ] {
+    for (name, slot) in KeySlot::HOTKEY_NAMES {
         let mut value: Option<String> = None;
         cx.opt(&mut hotkeys, "hotkeys", name, &mut value);
         let Some(value) = value else { continue };
@@ -895,18 +918,12 @@ fn from_table(mut table: Table) -> Loaded {
                 }
             }
         };
-        match slot {
-            KeySlot::ToggleFps => settings.hotkeys.toggle_fps = combo,
-            _ => settings.hotkeys.toggle_settings = combo,
-        }
+        settings.set_hotkey(slot, combo);
     }
     cx.unknown(&hotkeys, "hotkeys");
     // A hotkey on a gameplay or menu key, or on another hotkey's, would do both: the other
     // wins, as the settings screen cannot write it so.
-    for (name, slot) in [
-        ("toggle_fps", KeySlot::ToggleFps),
-        ("toggle_settings", KeySlot::ToggleSettings),
-    ] {
+    for (name, slot) in KeySlot::HOTKEY_NAMES {
         let Some(combo) = settings.key(slot) else {
             continue;
         };

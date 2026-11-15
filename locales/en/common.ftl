@@ -191,6 +191,8 @@ settings-input-sensitivity-hint = Enable high precision mouse to adjust sensitiv
 settings-layout-language = Language
 settings-general-intro = Startup intro
 settings-general-colour-scheme = Colour scheme
+settings-general-volume-overlay = Volume overlay
+settings-general-volume-meter = Volume meter
 settings-general-effects = Visual effects (glow, motion)
 settings-general-parallax-enabled = Menu parallax
 settings-general-parallax = Parallax strength
@@ -216,6 +218,13 @@ settings-general-colour-scheme-blue = Blue
 settings-general-colour-scheme-green = Green
 settings-general-colour-scheme-orange = Orange
 settings-general-colour-scheme-mono = Mono
+settings-general-volume-overlay-left = Left
+settings-general-volume-overlay-right = Right
+settings-general-volume-overlay-top = Top
+settings-general-volume-overlay-bottom = Bottom
+settings-general-volume-meter-arc = Arc
+settings-general-volume-meter-column = Column
+settings-general-volume-meter-bar = Bar
 settings-general-menu-scale = Menu scale
 settings-general-game-scale = HUD scale
 settings-general-skew = Skew
@@ -297,6 +306,11 @@ settings-keys-right-2 = Right button (2)
 settings-keys-smoke-1 = Smoke (1)
 settings-keys-smoke-2 = Smoke (2)
 settings-keys-toggle-fps = Toggle FPS counter
+settings-keys-volume-up = Volume up
+settings-keys-volume-down = Volume down
+settings-keys-volume-previous = Previous volume meter
+settings-keys-volume-next = Next volume meter
+settings-keys-toggle-mute = Mute
 settings-keys-toggle-settings = Toggle settings
 settings-keys-reset = Key bindings
 settings-keys-reset-button = Reset to defaults
@@ -356,3 +370,11 @@ fatal-error-message-no-log =
     { $error }
 
     The log could not be saved; run SLAM from a terminal to see it.
+
+## Volume overlay
+volume-meter-hitsounds = HITSOUNDS
+volume-meter-effects = EFFECTS
+volume-meter-master = MASTER
+volume-meter-music = MUSIC
+volume-meter-max = MAX
+volume-meter-muted = MUTED

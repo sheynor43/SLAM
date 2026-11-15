@@ -93,10 +93,12 @@ enum Scene {
     Cursor,
     /// The FPS counter in each of its modes, one per corner (ADR-0138).
     Fps,
+    /// The volume overlay at an edge, a meter selected and sparks flying (ADR-0145).
+    Volume(slam_ui::volume::Edge, slam_ui::volume::MeterStyle),
 }
 
 /// The names of the PNGs and what they show, in the order they are drawn.
-const SCENES: [(&str, Scene); 7] = [
+const SCENES: [(&str, Scene); 13] = [
     ("menu-play", Scene::Menu(0)),
     ("menu-settings", Scene::Menu(1)),
     ("song-select", Scene::SongSelect { effects: true }),
@@ -107,6 +109,48 @@ const SCENES: [(&str, Scene); 7] = [
     ("settings", Scene::Settings),
     ("cursor", Scene::Cursor),
     ("fps", Scene::Fps),
+    (
+        "volume-arc-left",
+        Scene::Volume(
+            slam_ui::volume::Edge::Left,
+            slam_ui::volume::MeterStyle::Arc,
+        ),
+    ),
+    (
+        "volume-arc-bottom",
+        Scene::Volume(
+            slam_ui::volume::Edge::Bottom,
+            slam_ui::volume::MeterStyle::Arc,
+        ),
+    ),
+    (
+        "volume-column-left",
+        Scene::Volume(
+            slam_ui::volume::Edge::Left,
+            slam_ui::volume::MeterStyle::Column,
+        ),
+    ),
+    (
+        "volume-column-top",
+        Scene::Volume(
+            slam_ui::volume::Edge::Top,
+            slam_ui::volume::MeterStyle::Column,
+        ),
+    ),
+    (
+        "volume-bar-right",
+        Scene::Volume(
+            slam_ui::volume::Edge::Right,
+            slam_ui::volume::MeterStyle::Bar,
+        ),
+    ),
+    (
+        "volume-bar-bottom",
+        Scene::Volume(
+            slam_ui::volume::Edge::Bottom,
+            slam_ui::volume::MeterStyle::Bar,
+        ),
+    ),
 ];
 
 /// Draws the previews, named. Opens SDL video: one call at a time in a process, on its
@@ -269,6 +313,19 @@ impl State {
                     view.push_text(&mut self.text, &mut self.glyphs);
                 }
             }
+            Scene::Volume(edge, style) => {
+                let frame = sample_volume(edge, style);
+                self.views.volume.push(
+                    &mut self.shapes,
+                    &mut self.text,
+                    &mut self.glyphs,
+                    &frame,
+                    width,
+                    height,
+                    VOLUME_NOW,
+                    white,
+                );
+            }
             Scene::Cursor => {
                 // At rest, pressed with a ring, turned, spun part-way, and with a trail.
                 let mut trailing = CursorMotion::REST;
@@ -312,6 +369,28 @@ impl State {
         }
         draw_layer(device, gpu, &self.shapes, &self.text, size)
     }
+}
+
+/// When the volume previews are drawn: well after the overlay showed.
+const VOLUME_NOW: u64 = 10_000_000_000;
+
+/// The volume overlay shown with the hitsounds empty, the music full, the master just
+/// raised with a quick run of notches (sparks still flying) and the effects selected.
+fn sample_volume(
+    edge: slam_ui::volume::Edge,
+    style: slam_ui::volume::MeterStyle,
+) -> slam_ui::volume::VolumeFrame {
+    const MS: u64 = 1_000_000;
+    let mut mixer = slam_ui::volume::VolumeMixer::new();
+    let mut levels = [0.0, 0.62, 0.7, 1.0];
+    mixer.show(MS);
+    for k in 0..6 {
+        mixer.adjust(&mut levels, 1.0, false, VOLUME_NOW - 260 * MS + k * 40 * MS);
+    }
+    mixer.step_meter(false, VOLUME_NOW - 30 * MS);
+    let mut frame = mixer.frame(edge, style, &levels);
+    frame.since_ns = 0;
+    frame
 }
 
 /// A counter that has watched a 240 Hz game with a few slow frames and ticks, and the
