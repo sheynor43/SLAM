@@ -396,14 +396,20 @@ impl DropdownView {
     /// Lays the options out, each cut with an ellipsis to fit the box. Allocates only when
     /// an option is cut again.
     fn lay_out(&mut self) {
-        let size = self.theme.widget_text_size * self.scale;
+        let face = self.theme.caption_face(self.scale);
         let pad = self.theme.widget_pad * self.scale;
-        self.type_setter.lay_out(&mut self.ellipsis, size);
+        self.type_setter.lay_out_face(&mut self.ellipsis, face);
         let ellipsis = self.ellipsis.layout.width();
         let avail = (self.width - 2.0 * pad).max(0.0);
         for (option, label) in self.options.iter_mut().zip(&self.labels) {
             option.text.clone_from(label);
-            crate::song_select::view::fit(&mut self.type_setter, option, size, avail, ellipsis);
+            crate::song_select::view::fit_face(
+                &mut self.type_setter,
+                option,
+                face,
+                avail,
+                ellipsis,
+            );
         }
     }
 
@@ -488,6 +494,21 @@ mod tests {
         view.width = 2000.0;
         view.lay_out();
         assert_eq!(view.options[0].text, long);
+    }
+
+    #[test]
+    fn options_use_the_condensed_caption_face() {
+        let registry = Arc::new(FontRegistry::with_builtin());
+        let text = "Ranked and approved maps only";
+        let mut view = DropdownView::new(registry, Theme::default(), &[text]);
+        view.scale = 1.0;
+        view.width = 2000.0;
+        view.lay_out();
+        let condensed = view.options[0].layout.width();
+        let mut plain = Line::new(text);
+        let size = view.theme.caption_size;
+        view.type_setter.lay_out(&mut plain, size);
+        assert!(condensed < plain.layout.width());
     }
 
     #[test]

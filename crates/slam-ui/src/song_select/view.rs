@@ -27,7 +27,7 @@ use super::{
     SongSelectSnapshot, SongSelectStatus, Thumbs, can_choose_folder,
 };
 use crate::menu::Rect;
-use crate::menu::view::{Frame, Line, Typesetter};
+use crate::menu::view::{Face, Frame, Line, Typesetter};
 use crate::screen::Pose;
 use crate::theme::{Theme, faded};
 use crate::widgets::Look;
@@ -187,8 +187,9 @@ pub struct SongSelectView {
     mods_selected_for: Option<([u16; MAX_COLUMNS], TileDetails)>,
     mod_columns: ModColumns,
     slots: Vec<RowSlot>,
-    /// Widths of the ellipsis at the title and detail sizes.
-    ellipsis: [f32; 2],
+    /// Widths of the ellipsis at the title and detail sizes and in the caption and note
+    /// faces.
+    ellipsis: [f32; 4],
     /// The statistics and local scores on the left.
     info: InfoPanel,
     /// When each thumbnail seen was first drawn; replaced round-robin.
@@ -276,7 +277,23 @@ pub(crate) fn fit(
     avail: f32,
     ellipsis: f32,
 ) {
-    type_setter.lay_out(line, size);
+    let face = Face {
+        size,
+        weight: type_setter.weight(),
+        width: slam_text::NORMAL_WIDTH,
+    };
+    fit_face(type_setter, line, face, avail, ellipsis);
+}
+
+/// [`fit`] in `face`; `ellipsis` is measured in the same face.
+pub(crate) fn fit_face(
+    type_setter: &mut Typesetter,
+    line: &mut Line,
+    face: Face,
+    avail: f32,
+    ellipsis: f32,
+) {
+    type_setter.lay_out_face(line, face);
     let total = line.layout.width();
     if total <= avail {
         return;
@@ -294,7 +311,7 @@ pub(crate) fn fit(
     }
     line.text.truncate(cut);
     line.text.push(ELLIPSIS);
-    type_setter.lay_out(line, size);
+    type_setter.lay_out_face(line, face);
 }
 
 /// Like [`fit`], but keeps the end of the text and cuts its start: the search line shows
@@ -378,7 +395,7 @@ impl SongSelectView {
             mods_selected_for: None,
             mod_columns: labels.mod_columns,
             slots: Vec::new(),
-            ellipsis: [0.0; 2],
+            ellipsis: [0.0; 4],
             info: InfoPanel::new(&labels.details),
             fades: [None; FADES],
             expansion: Expansion::default(),
@@ -462,6 +479,12 @@ impl SongSelectView {
             self.type_setter.lay_out(&mut probe, size * scale);
             *width = probe.layout.width();
         }
+        self.type_setter
+            .lay_out_face(&mut probe, self.theme.caption_face(scale));
+        self.ellipsis[2] = probe.layout.width();
+        self.type_setter
+            .lay_out_face(&mut probe, self.theme.note_face(scale));
+        self.ellipsis[3] = probe.layout.width();
         let count = self.layout.viewport_rows().ceil() as usize + 2;
         self.slots.clear();
         self.slots.resize_with(count, RowSlot::new);
@@ -514,7 +537,7 @@ impl SongSelectView {
         type_setter: &mut Typesetter,
         theme: &Theme,
         layout: &SongSelectLayout,
-        ellipsis: [f32; 2],
+        ellipsis: [f32; 4],
         generation: u64,
         list: &SongList,
         row: Row,
@@ -559,20 +582,29 @@ impl SongSelectView {
             }
         }
         let scale = layout.scale;
-        fit(
-            type_setter,
-            &mut slot.primary,
-            theme.song_title_size * scale,
-            avail,
-            ellipsis[0],
-        );
         if matches!(row, Row::Set(_)) {
             fit(
                 type_setter,
-                &mut slot.secondary,
-                theme.song_detail_size * scale,
+                &mut slot.primary,
+                theme.song_title_size * scale,
                 avail,
-                ellipsis[1],
+                ellipsis[0],
+            );
+            // The mapper is a note (lazer: 14 SemiBold).
+            fit_face(
+                type_setter,
+                &mut slot.secondary,
+                theme.note_face(scale),
+                avail,
+                ellipsis[3],
+            );
+        } else {
+            fit_face(
+                type_setter,
+                &mut slot.primary,
+                theme.caption_face(scale),
+                avail,
+                ellipsis[2],
             );
         }
         slot.holds = Some((generation, row));
@@ -624,7 +656,7 @@ impl SongSelectView {
             &mut self.type_setter,
             &self.theme,
             &self.layout,
-            self.ellipsis,
+            [self.ellipsis[0], self.ellipsis[1]],
             snapshot,
         );
         let shift = pose.offset * width;

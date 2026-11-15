@@ -19,7 +19,7 @@ pub use msdf::{
     generate_glyph,
 };
 pub use registry::{
-    FamilyId, FontError, FontId, FontRegistry, HEADING_FAMILY, ResolvedFace, UI_FAMILY,
-    match_weight,
+    FamilyId, FontError, FontId, FontRegistry, HEADING_FAMILY, NORMAL_WIDTH, ResolvedFace,
+    UI_FAMILY, match_weight,
 };
 pub use render::{TextStats, push_layout};
