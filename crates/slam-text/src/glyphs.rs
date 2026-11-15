@@ -299,6 +299,7 @@ impl Slot {
         key: GlyphKey {
             font: FontId(0),
             weight: 0,
+            width: 0,
             glyph_id: 0,
         },
         entry: Entry::Vacant,
@@ -420,8 +421,10 @@ impl GlyphCache {
 
     /// Slot of `key`, or the vacant slot where it would go.
     fn find(&self, key: GlyphKey) -> usize {
-        let packed =
-            (u64::from(key.font.0) << 32) | (u64::from(key.weight) << 16) | u64::from(key.glyph_id);
+        let packed = ((u64::from(key.font.0) << 32)
+            | (u64::from(key.weight) << 16)
+            | u64::from(key.glyph_id))
+            ^ (u64::from(key.width) << 48);
         let mask = self.table.len() - 1;
         let mut i = (packed.wrapping_mul(0x9E37_79B9_7F4A_7C15) >> self.shift) as usize;
         loop {
@@ -450,6 +453,28 @@ mod tests {
         let stats = rig.cache.process(&mut rig.device, &mut rig.textures);
         assert_eq!((stats.results, stats.outstanding), (1, 0));
         assert!(matches!(rig.settle(a), Glyph::Ready { .. }));
+    }
+
+    #[test]
+    fn keys_differing_only_in_width_are_separate_glyphs() {
+        let mut rig = Rig::new(16, 8);
+        let normal = key_of(&rig.registry, 400, 'W');
+        let narrow = GlyphKey {
+            width: 75,
+            ..normal
+        };
+        assert_eq!(rig.cache.glyph(normal), Glyph::Pending);
+        assert_eq!(rig.cache.glyph(narrow), Glyph::Pending);
+        rig.pump();
+        let stats = rig.cache.process(&mut rig.device, &mut rig.textures);
+        assert_eq!(stats.results, 2);
+        let (Glyph::Ready { region: a, .. }, Glyph::Ready { region: b, .. }) =
+            (rig.settle(normal), rig.settle(narrow))
+        else {
+            panic!("both glyphs are drawn");
+        };
+        assert_ne!(a, b);
+        assert!(b.size.width < a.size.width);
     }
 
     #[test]
@@ -497,6 +522,7 @@ mod tests {
         let missing = GlyphKey {
             font: FontId(9999),
             weight: 400,
+            width: 100,
             glyph_id: 1,
         };
         assert_eq!(rig.settle(missing), Glyph::Empty);

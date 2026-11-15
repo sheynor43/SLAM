@@ -22,6 +22,10 @@ static EXO2: &[u8] = include_bytes!(concat!(
 ));
 
 const WGHT: Tag = Tag::new(b"wght");
+const WDTH: Tag = Tag::new(b"wdth");
+
+/// The normal width, in percent of the `wdth` axis.
+pub const NORMAL_WIDTH: u16 = 100;
 
 /// Identifier of one registered face (stable for the lifetime of the registry).
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord)]
@@ -42,7 +46,7 @@ pub enum FontError {
     NoFamilyName,
 }
 
-/// A face chosen for a family and a requested weight.
+/// A face chosen for a family, a requested weight and width.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct ResolvedFace {
     /// The chosen face.
@@ -50,6 +54,9 @@ pub struct ResolvedFace {
     /// Weight actually used: the clamped `wght` axis value for variable faces,
     /// the face's own weight class for static ones.
     pub weight: u16,
+    /// Width actually used, in percent: the clamped `wdth` axis value for faces with
+    /// one, [`NORMAL_WIDTH`] for the others, whatever was asked.
+    pub width: u16,
 }
 
 /// Font bytes: either program-lifetime data or shared ownership.
@@ -95,6 +102,8 @@ struct FaceEntry {
     italic: bool,
     /// Range of the `wght` axis, if the face has one.
     wght_axis: Option<(f32, f32)>,
+    /// Range of the `wdth` axis, if the face has one.
+    wdth_axis: Option<(f32, f32)>,
 }
 
 struct Family {
@@ -131,6 +140,13 @@ impl FontRegistry {
     /// [`FontId`] keeps meaning the same face within one registry id.
     pub fn id(&self) -> u64 {
         self.id
+    }
+
+    /// Whether the face has a `wdth` variation axis.
+    pub fn is_width_variable(&self, font: FontId) -> bool {
+        self.faces
+            .get(font.0 as usize)
+            .is_some_and(|e| e.wdth_axis.is_some())
     }
 
     /// Whether the face has a `wght` variation axis.
@@ -179,14 +195,18 @@ impl FontRegistry {
                 .axes()
                 .get_by_tag(WGHT)
                 .map(|a| (a.min_value(), a.max_value()));
+            let wdth_axis = face
+                .axes()
+                .get_by_tag(WDTH)
+                .map(|a| (a.min_value(), a.max_value()));
             let attrs = face.attributes();
             let weight = (attrs.weight.value().round() as i64).clamp(1, 1000) as u16;
             let italic = !matches!(attrs.style, skrifa::attribute::Style::Normal);
             let font = Font::new(data.blob(), index).ok_or(FontError::InvalidFont)?;
-            parsed.push((index, name, weight, italic, wght_axis, font));
+            parsed.push((index, name, weight, italic, wght_axis, wdth_axis, font));
         }
         let mut ids = Vec::with_capacity(parsed.len());
-        for (index, name, weight, italic, wght_axis, font) in parsed {
+        for (index, name, weight, italic, wght_axis, wdth_axis, font) in parsed {
             let family = self.family_or_insert(&name);
             let id = FontId(self.faces.len() as u32);
             self.faces.push(FaceEntry {
@@ -196,6 +216,7 @@ impl FontRegistry {
                 weight,
                 italic,
                 wght_axis,
+                wdth_axis,
             });
             self.families[family.0 as usize].faces.push(id);
             ids.push(id);
@@ -246,6 +267,20 @@ impl FontRegistry {
     /// is used with the weight clamped to the axis range; otherwise the nearest
     /// static face by the CSS font-matching rules.
     pub fn resolve(&self, family: FamilyId, weight: u16) -> Option<ResolvedFace> {
+        self.resolve_width(family, weight, NORMAL_WIDTH)
+    }
+
+    /// [`FontRegistry::resolve`] at `width` percent of the normal width: faces with a
+    /// `wdth` axis take it clamped to the axis, the others ignore it.
+    pub fn resolve_width(&self, family: FamilyId, weight: u16, width: u16) -> Option<ResolvedFace> {
+        let mut face = self.resolve_weight(family, weight)?;
+        if let Some((lo, hi)) = self.faces[face.font.0 as usize].wdth_axis {
+            face.width = f32::from(width).clamp(lo, hi).round() as u16;
+        }
+        Some(face)
+    }
+
+    fn resolve_weight(&self, family: FamilyId, weight: u16) -> Option<ResolvedFace> {
         let fam = self.families.get(family.0 as usize)?;
         let any_upright = fam.faces.iter().any(|f| !self.faces[f.0 as usize].italic);
         let mut candidates = fam
@@ -262,6 +297,7 @@ impl FontRegistry {
             return Some(ResolvedFace {
                 font,
                 weight: w as u16,
+                width: NORMAL_WIDTH,
             });
         }
         let first = candidates.next()?;
@@ -277,6 +313,7 @@ impl FontRegistry {
         Some(ResolvedFace {
             font: best,
             weight: self.faces[best.0 as usize].weight,
+            width: NORMAL_WIDTH,
         })
     }
 
@@ -291,20 +328,21 @@ impl FontRegistry {
         self.faces.get(font.0 as usize).map(|e| &e.font)
     }
 
-    /// The face at the location of `face`: the `wght` axis set for variable
-    /// faces. Builds a new instance (allocates); layout code caches it.
+    /// The face at the location of `face`: the `wght` and `wdth` axes set for faces
+    /// with them. Builds a new instance (allocates); layout code caches it.
     pub fn instance(&self, face: ResolvedFace) -> Option<Font> {
         let e = self.faces.get(face.font.0 as usize)?;
-        if e.wght_axis.is_some() {
-            Some(
-                e.font
-                    .instance_builder()
-                    .variations([(WGHT, f32::from(face.weight))])
-                    .build(),
-            )
-        } else {
-            Some(e.font.clone())
+        let weight = e.wght_axis.map(|_| (WGHT, f32::from(face.weight)));
+        let width = e.wdth_axis.map(|_| (WDTH, f32::from(face.width)));
+        if weight.is_none() && width.is_none() {
+            return Some(e.font.clone());
         }
+        Some(
+            e.font
+                .instance_builder()
+                .variations(weight.into_iter().chain(width))
+                .build(),
+        )
     }
 }
 

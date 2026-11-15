@@ -67,6 +67,52 @@ fn variable_weight_changes_advances_and_clamps() {
 }
 
 #[test]
+fn width_axis_narrows_text_and_clamps() {
+    let (reg, mut style) = setup();
+    let normal = lay(&reg, "Visual effects", &style);
+    assert_eq!(normal.glyphs()[0].width, 100);
+    style.width = 75;
+    let narrow = lay(&reg, "Visual effects", &style);
+    assert_eq!(narrow.glyphs()[0].width, 75);
+    assert!(
+        narrow.width() < normal.width() * 0.95,
+        "{} vs {}",
+        narrow.width(),
+        normal.width()
+    );
+    // Nunito Sans's wdth axis is 75..=125; Exo 2 has none and ignores the width.
+    assert_eq!(reg.resolve_width(style.family, 400, 10).unwrap().width, 75);
+    assert_eq!(
+        reg.resolve_width(style.family, 400, 500).unwrap().width,
+        125
+    );
+    let exo = reg.family(HEADING_FAMILY).unwrap();
+    assert_eq!(reg.resolve_width(exo, 400, 75).unwrap().width, 100);
+    let mut heading = TextStyle::new(exo, 400, 20.0);
+    let wide = lay(&reg, "Visual effects", &heading).width();
+    heading.width = 75;
+    assert_eq!(lay(&reg, "Visual effects", &heading).width(), wide);
+}
+
+#[test]
+fn switching_width_back_and_forth_does_not_allocate_once_warm() {
+    let (reg, mut style) = setup();
+    let mut ctx = LayoutContext::new();
+    let mut out = Layout::new();
+    for width in [100, 80] {
+        style.width = width;
+        ctx.layout_into(&reg, "Volume overlay", &style, &mut out);
+    }
+    let (_, stats) = count_allocs(|| {
+        for width in [100, 80, 100, 80] {
+            style.width = width;
+            ctx.layout_into(&reg, "Volume overlay", &style, &mut out);
+        }
+    });
+    assert_eq!(stats.total(), 0, "{stats}");
+}
+
+#[test]
 fn width_is_sum_of_advances_and_kerning_applies() {
     let (reg, style) = setup();
     let l = lay(&reg, "llll", &style);

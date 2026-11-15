@@ -12,6 +12,7 @@ fn key(reg: &FontRegistry, weight: u16, c: char) -> GlyphKey {
     GlyphKey {
         font: face.font,
         weight,
+        width: face.width,
         glyph_id: gid.to_u32() as u16,
     }
 }
@@ -37,6 +38,26 @@ fn bright_count(b: &GlyphBitmap) -> usize {
 }
 
 use slam_render::Extent;
+
+#[test]
+fn a_narrow_glyph_is_a_narrower_bitmap_under_another_key() {
+    let reg = FontRegistry::with_builtin();
+    let normal = key(&reg, 400, 'W');
+    let narrow = GlyphKey {
+        width: 75,
+        ..normal
+    };
+    assert_ne!(normal, narrow);
+    let a = generate_glyph(&reg, normal).unwrap().unwrap();
+    let b = generate_glyph(&reg, narrow).unwrap().unwrap();
+    assert!(
+        b.image.size.width < a.image.size.width,
+        "{} vs {}",
+        b.image.size.width,
+        a.image.size.width
+    );
+    assert_eq!(b.image.size.height, a.image.size.height);
+}
 
 #[test]
 fn ring_glyph_has_hole_and_correct_bounds() {
@@ -117,6 +138,7 @@ fn unknown_font_is_an_error() {
     let k = GlyphKey {
         font: FontId(9999),
         weight: 400,
+        width: 100,
         glyph_id: 1,
     };
     assert!(matches!(

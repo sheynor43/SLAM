@@ -118,6 +118,7 @@ pub fn key_of(registry: &FontRegistry, weight: u16, c: char) -> GlyphKey {
     GlyphKey {
         font: face.font,
         weight: face.weight,
+        width: face.width,
         glyph_id: font.charmap().map(c).unwrap().to_u32() as u16,
     }
 }
