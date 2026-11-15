@@ -292,15 +292,15 @@ impl SliderView {
         self.value_line.text.clear();
         self.value_line.text.reserve(text.len());
         self.value_line.text.push_str(text);
-        let size = self.theme.widget_text_size * self.scale;
-        self.type_setter.lay_out(&mut self.value_line, size);
+        let face = self.theme.caption_face(self.scale);
+        self.type_setter.lay_out_face(&mut self.value_line, face);
         self.shown = None;
         self
     }
 
     fn lay_out_charset(&mut self) {
-        let size = self.theme.widget_text_size * self.scale;
-        self.type_setter.lay_out(&mut self.charset, size);
+        let face = self.theme.caption_face(self.scale);
+        self.type_setter.lay_out_face(&mut self.charset, face);
     }
 
     /// Asks `glyphs` for every glyph a value can show. Returns how many are not ready yet.
@@ -323,8 +323,8 @@ impl SliderView {
         self.value_line.text.clear();
         if value == 0.0 && !self.zero_text.is_empty() {
             self.value_line.text.push_str(&self.zero_text);
-            let size = self.theme.widget_text_size * self.scale;
-            self.type_setter.lay_out(&mut self.value_line, size);
+            let face = self.theme.caption_face(self.scale);
+            self.type_setter.lay_out_face(&mut self.value_line, face);
             return;
         }
         let _ = write!(
@@ -342,8 +342,8 @@ impl SliderView {
             self.value_line.text.truncate(len);
         }
         self.value_line.text.push_str(&self.unit);
-        let size = self.theme.widget_text_size * self.scale;
-        self.type_setter.lay_out(&mut self.value_line, size);
+        let face = self.theme.caption_face(self.scale);
+        self.type_setter.lay_out_face(&mut self.value_line, face);
     }
 
     /// Writes the slider into `shapes` and its value text into `text`. Allocation-free once

@@ -7,11 +7,18 @@ use harfrust::Font;
 use skrifa::raw::{FileRef, types::NameId};
 use skrifa::{FontRef, MetadataProvider, Tag};
 
-/// Family name of the built-in UI font (Nunito Sans).
-pub const UI_FAMILY: &str = "Nunito Sans";
+/// Family name of the built-in UI font (Onest, ADR-0147).
+pub const UI_FAMILY: &str = "Onest";
+/// Family name of the built-in font that follows the UI font in the fallback chain
+/// (Nunito Sans: wider Latin coverage and a `wdth` axis).
+pub const FALLBACK_FAMILY: &str = "Nunito Sans";
 /// Family name of the built-in heading font (Exo 2).
 pub const HEADING_FAMILY: &str = "Exo 2";
 
+static ONEST: &[u8] = include_bytes!(concat!(
+    env!("CARGO_MANIFEST_DIR"),
+    "/../../assets/fonts/onest/Onest-VariableFont.ttf"
+));
 static NUNITO_SANS: &[u8] = include_bytes!(concat!(
     env!("CARGO_MANIFEST_DIR"),
     "/../../assets/fonts/nunito-sans/NunitoSans-VariableFont.ttf"
@@ -156,17 +163,19 @@ impl FontRegistry {
             .is_some_and(|e| e.wght_axis.is_some())
     }
 
-    /// Registry with the built-in fonts ([`UI_FAMILY`], [`HEADING_FAMILY`]);
-    /// the fallback chain is `[UI_FAMILY]`.
+    /// Registry with the built-in fonts ([`UI_FAMILY`], [`FALLBACK_FAMILY`],
+    /// [`HEADING_FAMILY`]); the fallback chain is `[UI_FAMILY, FALLBACK_FAMILY]`.
     pub fn with_builtin() -> Self {
         let mut reg = Self::new();
         // The built-in fonts are validated by tests; a failure here would only
         // leave the registry without them.
+        let _ = reg.add_static_font(ONEST);
         let _ = reg.add_static_font(NUNITO_SANS);
         let _ = reg.add_static_font(EXO2);
-        if let Some(ui) = reg.family(UI_FAMILY) {
-            reg.fallback = vec![ui];
-        }
+        reg.fallback = [UI_FAMILY, FALLBACK_FAMILY]
+            .into_iter()
+            .filter_map(|name| reg.family(name))
+            .collect();
         reg
     }
 

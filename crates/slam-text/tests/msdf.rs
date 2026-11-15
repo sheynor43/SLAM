@@ -1,11 +1,15 @@
 use skrifa::{FontRef, MetadataProvider};
 use slam_text::{
-    DISTANCE_RANGE, EM_PX, FontId, FontRegistry, GlyphBitmap, GlyphError, GlyphKey, PADDING,
-    UI_FAMILY, generate_glyph,
+    DISTANCE_RANGE, EM_PX, FALLBACK_FAMILY, FontId, FontRegistry, GlyphBitmap, GlyphError,
+    GlyphKey, PADDING, UI_FAMILY, generate_glyph,
 };
 
 fn key(reg: &FontRegistry, weight: u16, c: char) -> GlyphKey {
-    let face = reg.resolve(reg.family(UI_FAMILY).unwrap(), weight).unwrap();
+    key_in(reg, UI_FAMILY, weight, c)
+}
+
+fn key_in(reg: &FontRegistry, family: &str, weight: u16, c: char) -> GlyphKey {
+    let face = reg.resolve(reg.family(family).unwrap(), weight).unwrap();
     let (data, index) = reg.face_data(face.font).unwrap();
     let font = FontRef::from_index(data, index).unwrap();
     let gid = font.charmap().map(c).unwrap();
@@ -42,7 +46,8 @@ use slam_render::Extent;
 #[test]
 fn a_narrow_glyph_is_a_narrower_bitmap_under_another_key() {
     let reg = FontRegistry::with_builtin();
-    let normal = key(&reg, 400, 'W');
+    // The UI font (Onest) has no `wdth` axis; Nunito Sans has.
+    let normal = key_in(&reg, FALLBACK_FAMILY, 400, 'W');
     let narrow = GlyphKey {
         width: 75,
         ..normal

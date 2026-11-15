@@ -14,7 +14,7 @@ use super::{
     SettingsScreen, SettingsSnapshot,
 };
 use crate::menu::Rect;
-use crate::menu::view::{Frame, Line, Typesetter};
+use crate::menu::view::{Face, Frame, Line, Typesetter};
 use crate::screen::Pose;
 use crate::song_select::{QUERY_CAPACITY, SearchQuery};
 use crate::theme::{Theme, faded};
@@ -264,10 +264,20 @@ const MIN_FIT: f32 = 0.7;
 
 /// Lays `line` out at `size`, smaller if that is wider than `width`, down to [`MIN_FIT`].
 fn lay_out_fitted(type_setter: &mut Typesetter, line: &mut Line, size: f32, width: f32) {
-    type_setter.lay_out(line, size);
+    let face = Face {
+        size,
+        weight: type_setter.weight(),
+        width: slam_text::NORMAL_WIDTH,
+    };
+    lay_out_fitted_face(type_setter, line, face, width);
+}
+
+/// [`lay_out_fitted`] in `face`.
+fn lay_out_fitted_face(type_setter: &mut Typesetter, line: &mut Line, face: Face, width: f32) {
+    type_setter.lay_out_face(line, face);
     let laid = line.layout.width();
     if laid > width && laid > 0.0 && width > 0.0 {
-        type_setter.lay_out(line, size * (width / laid).max(MIN_FIT));
+        type_setter.lay_out_face(line, face.scaled((width / laid).max(MIN_FIT)));
     }
 }
 
@@ -422,6 +432,14 @@ impl SettingsView {
             .map(|line| (line.text.as_str(), line.layout.width()))
     }
 
+    /// The width of line `line` of row `row`'s hint as laid out, if it exists.
+    pub fn hint_width(&self, row: usize, line: usize) -> Option<f32> {
+        self.hints
+            .get(row)
+            .and_then(|lines| lines.get(line))
+            .map(|line| line.layout.width())
+    }
+
     fn lay_out(&mut self) {
         let Frame { width, height } = self.frame;
         self.layout = SettingsLayout::new(width, height, &self.theme);
@@ -431,15 +449,22 @@ impl SettingsView {
         // In the panel a long name may not fit its column: it shrinks, down to a floor, and
         // past that ends with an ellipsis.
         let label = self.layout.label(0).width - pad;
+        let caption = self.theme.caption_face(scale);
         let mut probe = Line::new(&ELLIPSIS.to_string());
-        self.type_setter.lay_out(&mut probe, text * MIN_FIT);
+        self.type_setter
+            .lay_out_face(&mut probe, caption.scaled(MIN_FIT));
         let ellipsis = probe.layout.width();
         for (line, whole) in self.labels.iter_mut().zip(&self.label_texts) {
             line.text.clone_from(whole);
-            lay_out_fitted(&mut self.type_setter, line, text, label);
+            lay_out_fitted_face(&mut self.type_setter, line, caption, label);
             if line.layout.width() > label {
-                let size = text * MIN_FIT;
-                crate::song_select::view::fit(&mut self.type_setter, line, size, label, ellipsis);
+                crate::song_select::view::fit_face(
+                    &mut self.type_setter,
+                    line,
+                    caption.scaled(MIN_FIT),
+                    label,
+                    ellipsis,
+                );
             }
         }
         let tab = self.layout.tabs[0].width - pad;
@@ -461,11 +486,20 @@ impl SettingsView {
         for line in self.keys.all_mut() {
             self.type_setter.lay_out(line, text);
         }
-        let hint = self.theme.settings_marker_size * scale;
-        for line in self.hints.iter_mut().flatten() {
-            self.type_setter.lay_out(line, hint);
-        }
+        let note = self.theme.note_face(scale);
         let widget = self.layout.widget(0).width - pad;
+        // A hint shares the widget column with a toggle, which keeps the right end; it
+        // shrinks to fit the rest, down to a floor.
+        let toggle = (self.theme.widget_toggle_width + self.theme.widget_pad) * scale;
+        for (lines, view) in self.hints.iter_mut().zip(&self.views) {
+            let room = match view {
+                RowView::Toggle(_) => widget - toggle,
+                _ => widget,
+            };
+            for line in lines {
+                lay_out_fitted_face(&mut self.type_setter, line, note, room.max(0.0));
+            }
+        }
         for view in &mut self.views {
             if let RowView::Button(line) = view {
                 lay_out_fitted(&mut self.type_setter, line, text, widget);
@@ -473,7 +507,8 @@ impl SettingsView {
         }
         if let Some(value) = &mut self.value {
             let mut probe = Line::new(&ELLIPSIS.to_string());
-            self.type_setter.lay_out(&mut probe, text);
+            self.type_setter
+                .lay_out_face(&mut probe, self.theme.caption_face(scale));
             value.ellipsis = probe.layout.width();
         }
         self.lay_out_value();
@@ -485,7 +520,7 @@ impl SettingsView {
         let Some(value) = &mut self.value else {
             return;
         };
-        let size = self.theme.widget_text_size * self.layout.scale;
+        let face = self.theme.caption_face(self.layout.scale);
         // Only the width is used, which is the same for every slot, so the row's position
         // (which hiding rows changes) does not matter.
         let avail = self.layout.widget(0).width - 2.0 * self.theme.widget_pad * self.layout.scale;
@@ -499,7 +534,7 @@ impl SettingsView {
             value.line.text.push(ELLIPSIS);
         }
         value.line.text.push_str(&value.seen[start..]);
-        self.type_setter.lay_out(&mut value.line, size);
+        self.type_setter.lay_out_face(&mut value.line, face);
         let total = value.line.layout.width();
         if total <= avail {
             return;
@@ -522,7 +557,7 @@ impl SettingsView {
         // already).
         value.line.text.replace_range(..cut, "");
         value.line.text.insert(0, ELLIPSIS);
-        self.type_setter.lay_out(&mut value.line, size);
+        self.type_setter.lay_out_face(&mut value.line, face);
     }
 
     /// Exchanges `view` with the view of the dropdown row `row`; returns whether `row` is a

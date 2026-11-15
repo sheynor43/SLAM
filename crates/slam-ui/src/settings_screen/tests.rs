@@ -1469,3 +1469,35 @@ fn search_reads_the_other_keyboard_layout() {
     type_str(&mut s, ":~cnrjcnm");
     assert_eq!(s.snapshot().hidden[..5], [true, true, true, true, false]);
 }
+
+#[test]
+fn a_long_hint_beside_a_toggle_stays_left_of_it() {
+    use slam_text::FontRegistry;
+    let registry = Arc::new(FontRegistry::with_builtin());
+    let rows = [toggle(0, false)];
+    let labels = SettingsLabels {
+        sections: vec!["A".to_owned()],
+        rows: vec![RowLabels {
+            hint: "A hint long enough to run under the toggle at the end of the widget column"
+                .to_owned(),
+            ..RowLabels::default()
+        }],
+        ..SettingsLabels::default()
+    };
+    let theme = theme();
+    let mut view = SettingsView::new(registry, theme, &rows, &labels);
+    let (width, height) = (1280.0, theme.reference_height);
+    view.lay_out_for(width, height);
+    let layout = SettingsLayout::new(width, height, &theme);
+    let widget = layout.widget(0);
+    let toggle = ToggleLayout::new(layout.row(0), &theme, layout.scale);
+    let pad = theme.widget_pad * layout.scale;
+    let hint = view.hint_width(0, 0).expect("the row has a hint");
+    // The hint starts a pad into the widget column.
+    assert!(
+        widget.x + pad + hint <= toggle.track.x,
+        "{} + {hint} past {}",
+        widget.x + pad,
+        toggle.track.x
+    );
+}

@@ -125,16 +125,18 @@ The full licence text is in assets/default-skin/LICENCE.md. Commercial use is
 not permitted; a commercial fork must replace the default skin.
 
 ================================================================================
-Nunito Sans (https://github.com/Fonthausen/NunitoSans), Exo 2
+Onest (https://github.com/googlefonts/onest), Nunito Sans
+(https://github.com/Fonthausen/NunitoSans), Exo 2
 (https://github.com/googlefonts/Exo-2.0), via https://github.com/google/fonts
 ================================================================================
 
 Files: assets/fonts/ (variable TrueType fonts, font data unmodified).
 
+Copyright 2021 The Onest Project Authors.
 Copyright 2016 The Nunito Sans Project Authors.
 Copyright 2013 The Exo 2 Project Authors.
 
 Licensed under the SIL Open Font License, Version 1.1:
 https://openfontlicense.org/open-font-license-official-text/
-The full licence texts are in assets/fonts/nunito-sans/OFL.txt and
-assets/fonts/exo2/OFL.txt.
+The full licence texts are in assets/fonts/onest/OFL.txt,
+assets/fonts/nunito-sans/OFL.txt and assets/fonts/exo2/OFL.txt.

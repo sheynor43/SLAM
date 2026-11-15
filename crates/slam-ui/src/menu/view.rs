@@ -38,6 +38,25 @@ impl Line {
     }
 }
 
+/// Size, weight and width of a text (ADR-0146): the caption and note styles are small and
+/// condensed so long labels fit.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub(crate) struct Face {
+    pub(crate) size: f32,
+    pub(crate) weight: u16,
+    pub(crate) width: u16,
+}
+
+impl Face {
+    /// The same face at `factor` times the size.
+    pub(crate) fn scaled(self, factor: f32) -> Face {
+        Face {
+            size: self.size * factor,
+            ..self
+        }
+    }
+}
+
 /// Fonts and the layout context shared by the views.
 pub(crate) struct Typesetter {
     registry: Arc<FontRegistry>,
@@ -59,7 +78,23 @@ impl Typesetter {
     }
 
     pub(crate) fn lay_out(&mut self, line: &mut Line, size: f32) {
-        let style = TextStyle::new(self.family, self.weight, size);
+        let face = Face {
+            size,
+            weight: self.weight,
+            width: slam_text::NORMAL_WIDTH,
+        };
+        self.lay_out_face(line, face);
+    }
+
+    /// The default font weight.
+    pub(crate) fn weight(&self) -> u16 {
+        self.weight
+    }
+
+    /// Lays `line` out in `face`: its own weight and width instead of the default ones.
+    pub(crate) fn lay_out_face(&mut self, line: &mut Line, face: Face) {
+        let mut style = TextStyle::new(self.family, face.weight, face.size);
+        style.width = face.width;
         self.context
             .layout_into(&self.registry, &line.text, &style, &mut line.layout);
     }
@@ -257,5 +292,39 @@ impl MenuView {
                 glyphs,
             );
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_face_reaches_the_layout() {
+        let registry = Arc::new(FontRegistry::with_builtin());
+        let mut type_setter = Typesetter::new(Arc::clone(&registry), 700);
+        let mut line = Line::new("Hit error meter colour scheme");
+        type_setter.lay_out(&mut line, 16.0);
+        let bold = line.layout.width();
+        assert_eq!(line.layout.glyphs()[0].weight, 700);
+        let face = Face {
+            size: 16.0,
+            weight: 600,
+            width: slam_text::NORMAL_WIDTH,
+        };
+        type_setter.lay_out_face(&mut line, face);
+        assert_eq!(line.layout.glyphs()[0].weight, 600);
+        assert!(line.layout.width() < bold);
+        // A face with a `wdth` axis narrows by width.
+        let mut narrow = Typesetter::new(registry, 600);
+        narrow.family = narrow
+            .registry
+            .family(slam_text::FALLBACK_FAMILY)
+            .expect("built-in");
+        narrow.lay_out_face(&mut line, face);
+        let normal = line.layout.width();
+        narrow.lay_out_face(&mut line, Face { width: 80, ..face });
+        assert_eq!(line.layout.glyphs()[0].width, 80);
+        assert!(line.layout.width() < normal);
     }
 }

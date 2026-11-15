@@ -110,8 +110,13 @@ impl Device for TestDevice {
 
 /// Key of `c` in the UI family at `weight`.
 pub fn key_of(registry: &FontRegistry, weight: u16, c: char) -> GlyphKey {
+    key_in(registry, UI_FAMILY, weight, c)
+}
+
+/// Key of `c` in `family` at `weight`.
+pub fn key_in(registry: &FontRegistry, family: &str, weight: u16, c: char) -> GlyphKey {
     let face = registry
-        .resolve(registry.family(UI_FAMILY).unwrap(), weight)
+        .resolve(registry.family(family).unwrap(), weight)
         .unwrap();
     let (data, index) = registry.face_data(face.font).unwrap();
     let font = FontRef::from_index(data, index).unwrap();
