@@ -432,6 +432,14 @@ impl SettingsView {
             .map(|line| (line.text.as_str(), line.layout.width()))
     }
 
+    /// The width of line `line` of row `row`'s hint as laid out, if it exists.
+    pub fn hint_width(&self, row: usize, line: usize) -> Option<f32> {
+        self.hints
+            .get(row)
+            .and_then(|lines| lines.get(line))
+            .map(|line| line.layout.width())
+    }
+
     fn lay_out(&mut self) {
         let Frame { width, height } = self.frame;
         self.layout = SettingsLayout::new(width, height, &self.theme);
@@ -479,10 +487,19 @@ impl SettingsView {
             self.type_setter.lay_out(line, text);
         }
         let note = self.theme.note_face(scale);
-        for line in self.hints.iter_mut().flatten() {
-            self.type_setter.lay_out_face(line, note);
-        }
         let widget = self.layout.widget(0).width - pad;
+        // A hint shares the widget column with a toggle, which keeps the right end; it
+        // shrinks to fit the rest, down to a floor.
+        let toggle = (self.theme.widget_toggle_width + self.theme.widget_pad) * scale;
+        for (lines, view) in self.hints.iter_mut().zip(&self.views) {
+            let room = match view {
+                RowView::Toggle(_) => widget - toggle,
+                _ => widget,
+            };
+            for line in lines {
+                lay_out_fitted_face(&mut self.type_setter, line, note, room.max(0.0));
+            }
+        }
         for view in &mut self.views {
             if let RowView::Button(line) = view {
                 lay_out_fitted(&mut self.type_setter, line, text, widget);
