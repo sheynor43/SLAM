@@ -37,7 +37,7 @@ mod bench {
         let mut group = c.benchmark_group("msdf");
         group.sample_size(10);
         for (name, family, weight) in [
-            ("nunito_sans_400", UI_FAMILY, 400),
+            ("onest_400", UI_FAMILY, 400),
             ("exo2_700", HEADING_FAMILY, 700),
         ] {
             let set = keys(&registry, family, weight);

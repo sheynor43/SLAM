@@ -300,25 +300,31 @@ mod tests {
     use super::*;
 
     #[test]
-    fn a_condensed_face_lays_out_narrower() {
-        let mut type_setter = Typesetter::new(Arc::new(FontRegistry::with_builtin()), 600);
+    fn a_face_reaches_the_layout() {
+        let registry = Arc::new(FontRegistry::with_builtin());
+        let mut type_setter = Typesetter::new(Arc::clone(&registry), 700);
         let mut line = Line::new("Hit error meter colour scheme");
-        let normal = Face {
+        type_setter.lay_out(&mut line, 16.0);
+        let bold = line.layout.width();
+        assert_eq!(line.layout.glyphs()[0].weight, 700);
+        let face = Face {
             size: 16.0,
             weight: 600,
             width: slam_text::NORMAL_WIDTH,
         };
-        type_setter.lay_out_face(&mut line, normal);
-        let wide = line.layout.width();
-        type_setter.lay_out_face(
-            &mut line,
-            Face {
-                width: 80,
-                ..normal
-            },
-        );
-        assert!(line.layout.width() < wide);
-        type_setter.lay_out(&mut line, 16.0);
-        assert!(line.layout.width() > 0.0);
+        type_setter.lay_out_face(&mut line, face);
+        assert_eq!(line.layout.glyphs()[0].weight, 600);
+        assert!(line.layout.width() < bold);
+        // A face with a `wdth` axis narrows by width.
+        let mut narrow = Typesetter::new(registry, 600);
+        narrow.family = narrow
+            .registry
+            .family(slam_text::FALLBACK_FAMILY)
+            .expect("built-in");
+        narrow.lay_out_face(&mut line, face);
+        let normal = line.layout.width();
+        narrow.lay_out_face(&mut line, Face { width: 80, ..face });
+        assert_eq!(line.layout.glyphs()[0].width, 80);
+        assert!(line.layout.width() < normal);
     }
 }

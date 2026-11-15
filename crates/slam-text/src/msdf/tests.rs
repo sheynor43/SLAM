@@ -19,7 +19,7 @@ use super::shape::{Contour, Shape};
 use super::solver::{solve_cubic, solve_quadratic};
 use super::union::resolve_union;
 use super::vector::{Point2, Vector2, median};
-use crate::{FontRegistry, UI_FAMILY};
+use crate::{FALLBACK_FAMILY, FontRegistry, UI_FAMILY};
 
 const FIELDS: &str = include_str!("../../tests/data/msdfgen-fields.txt");
 const CORRECTED: &str = include_str!("../../tests/data/msdfgen-corrected.txt");
@@ -652,7 +652,7 @@ fn distance_to_polylines(polylines: &[Vec<Point2>], q: Point2) -> f64 {
 #[test]
 fn overlapping_glyph_sign_matches_nonzero_fill() {
     let registry = FontRegistry::with_builtin();
-    for (family, chars) in [(UI_FAMILY, ['1', 'x']), ("Exo 2", ['x', 'k'])] {
+    for (family, chars) in [(FALLBACK_FAMILY, ['1', 'x']), ("Exo 2", ['x', 'k'])] {
         check_glyph_sign(&registry, family, &chars);
     }
 }
@@ -793,6 +793,7 @@ fn error_correction_reduces_glyph_artifacts() {
     let (mut total_before, mut total_after, mut corrected) = (0, 0, 0);
     for (family, chars) in [
         (UI_FAMILY, ['A', '4', 'V', 'W', 'M', 'x', '1', 'Ж']),
+        (FALLBACK_FAMILY, ['A', '4', 'V', 'W', 'M', 'x', '1', 'Ж']),
         ("Exo 2", ['A', '4', 'V', 'W', 'M', 'x', 'k', 'Ж']),
     ] {
         for c in chars {

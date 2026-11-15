@@ -1,7 +1,7 @@
 use slam_testkit::{count_allocs, install_counting_allocator};
 use slam_text::{
-    Align, FontError, FontRegistry, HEADING_FAMILY, Layout, LayoutContext, TextStyle, UI_FAMILY,
-    match_weight,
+    Align, FALLBACK_FAMILY, FontError, FontRegistry, HEADING_FAMILY, Layout, LayoutContext,
+    TextStyle, UI_FAMILY, match_weight,
 };
 
 install_counting_allocator!();
@@ -36,7 +36,13 @@ fn builtin_families_resolve() {
     assert!(reg.family("exo 2").is_some());
     assert_eq!(reg.family(HEADING_FAMILY), reg.family("EXO 2"));
     assert!(reg.family("Nope").is_none());
-    assert_eq!(reg.fallback(), &[reg.family(UI_FAMILY).unwrap()]);
+    assert_eq!(
+        reg.fallback(),
+        &[
+            reg.family(UI_FAMILY).unwrap(),
+            reg.family(FALLBACK_FAMILY).unwrap()
+        ]
+    );
     assert!(FontRegistry::new().family(UI_FAMILY).is_none());
 }
 
@@ -58,9 +64,12 @@ fn variable_weight_changes_advances_and_clamps() {
     let l700 = lay(&reg, "Hello world", &style);
     assert!(l700.width() > w400 + 1.0, "{} vs {w400}", l700.width());
     assert_eq!(l700.glyphs()[0].weight, 700);
-    // Nunito Sans wght axis is 200..=1000, Exo 2 is 100..=900.
-    assert_eq!(reg.resolve(style.family, 50).unwrap().weight, 200);
-    assert_eq!(reg.resolve(style.family, 2000).unwrap().weight, 1000);
+    // Onest wght axis is 100..=900, Nunito Sans 200..=1000, Exo 2 100..=900.
+    assert_eq!(reg.resolve(style.family, 50).unwrap().weight, 100);
+    assert_eq!(reg.resolve(style.family, 2000).unwrap().weight, 900);
+    let nunito = reg.family(FALLBACK_FAMILY).unwrap();
+    assert_eq!(reg.resolve(nunito, 50).unwrap().weight, 200);
+    assert_eq!(reg.resolve(nunito, 2000).unwrap().weight, 1000);
     let exo = reg.family(HEADING_FAMILY).unwrap();
     assert_eq!(reg.resolve(exo, 50).unwrap().weight, 100);
     assert_eq!(reg.resolve(exo, 1000).unwrap().weight, 900);
@@ -69,6 +78,8 @@ fn variable_weight_changes_advances_and_clamps() {
 #[test]
 fn width_axis_narrows_text_and_clamps() {
     let (reg, mut style) = setup();
+    // Onest has no wdth axis; Nunito Sans has.
+    style.family = reg.family(FALLBACK_FAMILY).unwrap();
     let normal = lay(&reg, "Visual effects", &style);
     assert_eq!(normal.glyphs()[0].width, 100);
     style.width = 75;
@@ -97,6 +108,7 @@ fn width_axis_narrows_text_and_clamps() {
 #[test]
 fn switching_width_back_and_forth_does_not_allocate_once_warm() {
     let (reg, mut style) = setup();
+    style.family = reg.family(FALLBACK_FAMILY).unwrap();
     let mut ctx = LayoutContext::new();
     let mut out = Layout::new();
     for width in [100, 80] {
@@ -251,7 +263,7 @@ fn alignment_offsets() {
 #[test]
 fn fallback_uses_second_family_and_notdef_from_primary() {
     let mut reg = FontRegistry::with_builtin();
-    let ui = reg.family(UI_FAMILY).unwrap();
+    let ui = reg.family(FALLBACK_FAMILY).unwrap();
     let exo = reg.family(HEADING_FAMILY).unwrap();
     let ui_font = reg.resolve(ui, 400).unwrap().font;
     let exo_font = reg.resolve(exo, 400).unwrap().font;
@@ -336,4 +348,17 @@ fn warm_relayout_does_not_allocate() {
     assert_eq!(stats.total(), 0, "shorter text: {stats}");
     let (_, stats) = count_allocs(|| ctx.layout_into(&reg, "12:34 1234", &style, &mut out));
     assert_eq!(stats.total(), 0, "digits: {stats}");
+}
+
+#[test]
+fn ui_font_falls_back_to_nunito_sans_for_missing_glyphs() {
+    let (reg, style) = setup();
+    let nunito = reg.family(FALLBACK_FAMILY).unwrap();
+    let nunito_font = reg.resolve(nunito, 400).unwrap().font;
+    let onest_font = reg.resolve(style.family, 400).unwrap().font;
+    // Onest has no U+221E; Nunito Sans has.
+    let l = lay(&reg, "a\u{221E}Ж", &style);
+    let fonts: Vec<_> = l.glyphs().iter().map(|g| g.font).collect();
+    assert_eq!(fonts, [onest_font, nunito_font, onest_font]);
+    assert!(l.glyphs().iter().all(|g| g.glyph_id != 0));
 }

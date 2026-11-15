@@ -440,7 +440,7 @@ impl GlyphCache {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::test_support::{LIMITS, Rig, key_of};
+    use crate::test_support::{LIMITS, Rig, key_in, key_of};
     use slam_testkit::count_allocs;
 
     #[test]
@@ -458,7 +458,8 @@ mod tests {
     #[test]
     fn keys_differing_only_in_width_are_separate_glyphs() {
         let mut rig = Rig::new(16, 8);
-        let normal = key_of(&rig.registry, 400, 'W');
+        // The UI font (Onest) has no `wdth` axis; Nunito Sans has.
+        let normal = key_in(&rig.registry, crate::FALLBACK_FAMILY, 400, 'W');
         let narrow = GlyphKey {
             width: 75,
             ..normal

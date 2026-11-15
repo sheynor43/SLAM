@@ -218,7 +218,9 @@ pub struct Theme {
     pub note_size: f32,
     /// Font weight of captions and notes.
     pub caption_weight: u16,
-    /// Font width of captions and notes (100 is normal, 75 the most condensed).
+    /// Font width of captions and notes (100 is normal). The built-in UI font (Onest) has
+    /// no width axis, so captions are kept small by size and weight (ADR-0147); fonts with
+    /// a `wdth` axis narrow below 100.
     pub caption_width: u16,
     /// Padding between a widget's edge and its text.
     pub widget_pad: f32,
@@ -610,7 +612,7 @@ impl Theme {
             caption_size: 16.0,
             note_size: 14.0,
             caption_weight: 600,
-            caption_width: 80,
+            caption_width: 100,
             widget_pad: 12.0,
             widget_toggle_width: 52.0,
             widget_toggle_height: 28.0,
@@ -843,11 +845,11 @@ pub fn faded(colour: Color, opacity: f32) -> Color {
 #[cfg(test)]
 mod tests {
     #[test]
-    fn caption_tokens_are_small_and_condensed() {
+    fn caption_tokens_are_small_and_lighter() {
         let theme = Theme::new(ColourScheme::default(), 1.0);
         assert!(theme.caption_size < theme.widget_text_size);
         assert!(theme.note_size < theme.caption_size);
-        assert!(theme.caption_width < 100);
+        assert!(theme.caption_weight < theme.font_weight);
         let face = theme.caption_face(2.0);
         assert_eq!(face.size, theme.caption_size * 2.0);
         assert_eq!(theme.note_face(2.0).size, theme.note_size * 2.0);

@@ -497,18 +497,19 @@ mod tests {
     }
 
     #[test]
-    fn options_use_the_condensed_caption_face() {
+    fn options_use_the_caption_face() {
         let registry = Arc::new(FontRegistry::with_builtin());
         let text = "Ranked and approved maps only";
         let mut view = DropdownView::new(registry, Theme::default(), &[text]);
         view.scale = 1.0;
         view.width = 2000.0;
         view.lay_out();
-        let condensed = view.options[0].layout.width();
+        let caption = view.options[0].layout.width();
         let mut plain = Line::new(text);
         let size = view.theme.caption_size;
         view.type_setter.lay_out(&mut plain, size);
-        assert!(condensed < plain.layout.width());
+        // The caption face is lighter than the default one.
+        assert!(caption < plain.layout.width());
     }
 
     #[test]
