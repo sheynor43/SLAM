@@ -31,7 +31,7 @@
 - версию SLAM и ОС;
 - что делали, что ожидали и что произошло;
 - карту, если ошибка связана с ней (ссылку на osu.ppy.sh или файл);
-- лог: запустите из терминала с переменной `RUST_LOG=info` (Linux: `RUST_LOG=info ./SLAM-…AppImage`, Windows cmd: `set RUST_LOG=info` и затем `slam.exe`) и приложите вывод.
+- лог `slam.log` (прошлые запуски — `slam.1.log`…`slam.4.log`) из папки `logs`: Windows — `%APPDATA%\SLAM\logs`, Linux — `~/.local/share/slam/logs`, портативный режим — `logs` рядом с `slam.exe`. Если SLAM остановился с ошибкой, окно ошибки показывает, где лежит лог.
 
 Issue можно писать на русском или английском.
 

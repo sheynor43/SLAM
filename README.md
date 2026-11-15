@@ -31,7 +31,7 @@ Or open an [issue](https://github.com/sheynor43/SLAM/issues/new) with:
 - the SLAM version and your OS;
 - what you did, what you expected and what happened;
 - the beatmap, if the bug is related to one (an osu.ppy.sh link or the file);
-- the log: run SLAM from a terminal with `RUST_LOG=info` (Linux: `RUST_LOG=info ./SLAM-…AppImage`; Windows cmd: `set RUST_LOG=info`, then `slam.exe`) and attach the output.
+- the log `slam.log` (the previous runs are `slam.1.log`…`slam.4.log`) from the `logs` folder: Windows — `%APPDATA%\SLAM\logs`, Linux — `~/.local/share/slam/logs`, portable mode — `logs` next to `slam.exe`. If SLAM stops with an error, the error window shows where the log is.
 
 Issues are welcome in English or Russian.
 

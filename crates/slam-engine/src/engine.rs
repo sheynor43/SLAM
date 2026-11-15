@@ -57,6 +57,8 @@ type DrawHandle<U, D> = JoinHandle<DrawLoop<<U as Update>::Snapshot, D, SystemTi
 /// Running update and draw threads. Dropping it stops and joins them.
 pub struct Engine<U: Update, D: Draw<U::Snapshot>> {
     stop: Arc<AtomicBool>,
+    /// Set by whichever thread ends first, normally or by a panic.
+    ended: Arc<AtomicBool>,
     update_rate: UpdateRateControl,
     draw_rate: DrawRateControl,
     counters: Arc<EngineCounters>,
@@ -144,6 +146,7 @@ impl<U: Update, D: Draw<U::Snapshot>> Engine<U, D> {
         let mut draw_loop = DrawLoop::new(draw, reader, limiter);
 
         let stop = Arc::new(AtomicBool::new(false));
+        let ended = Arc::new(AtomicBool::new(false));
         // The loops start with these rates; each thread compares the shared ones
         // against them, so a change made before the thread first runs is not lost.
         let (initial_update, initial_draw) = (config.update_hz.to_bits(), encode_mode(config.draw));
@@ -151,6 +154,7 @@ impl<U: Update, D: Draw<U::Snapshot>> Engine<U, D> {
         draw_rate.mode.store(initial_draw, Ordering::Relaxed);
         let mut engine = Self {
             stop: Arc::clone(&stop),
+            ended: Arc::clone(&ended),
             update_rate: update_rate.clone(),
             draw_rate: draw_rate.clone(),
             counters: Arc::clone(&counters),
@@ -160,9 +164,11 @@ impl<U: Update, D: Draw<U::Snapshot>> Engine<U, D> {
         };
         engine.update = Some({
             let (stop, counters) = (Arc::clone(&stop), Arc::clone(&counters));
+            let ended = EndedOnDrop(Arc::clone(&ended));
             std::thread::Builder::new()
                 .name("slam-update".into())
                 .spawn(move || {
+                    let _ended = ended;
                     let mut applied = initial_update;
                     let mut scheduled_ticks = 0;
                     while !stop.load(Ordering::Acquire) {
@@ -186,8 +192,10 @@ impl<U: Update, D: Draw<U::Snapshot>> Engine<U, D> {
                 })?
         });
         // On failure `engine` is dropped, which stops the update thread.
+        let ended = EndedOnDrop(ended);
         engine.draw = Some(std::thread::Builder::new().name("slam-draw".into()).spawn(
             move || {
+                let _ended = ended;
                 let mut applied = initial_draw;
                 draw_loop.start();
                 while !stop.load(Ordering::Acquire) {
@@ -248,6 +256,14 @@ impl<U: Update, D: Draw<U::Snapshot>> Engine<U, D> {
     /// A handle that changes the draw rate from any thread.
     pub fn draw_rate(&self) -> &DrawRateControl {
         &self.draw_rate
+    }
+
+    /// Becomes true once the update or the draw thread has ended, normally (after a stop)
+    /// or by a panic: a running engine whose flag is set has lost a thread, and
+    /// [`Engine::shutdown`] resumes its panic. Polled off the hot paths, e.g. by a
+    /// watcher that closes the window.
+    pub fn ended(&self) -> Arc<AtomicBool> {
+        Arc::clone(&self.ended)
     }
 
     /// Stops both threads and returns their state. A panic in either thread is
@@ -375,6 +391,15 @@ fn decode_mode(bits: u64) -> LimiterMode {
         LimiterMode::Unlimited
     } else {
         LimiterMode::Hz(f64::from_bits(bits))
+    }
+}
+
+/// Sets the flag when dropped: at the end of a thread, also while it unwinds.
+struct EndedOnDrop(Arc<AtomicBool>);
+
+impl Drop for EndedOnDrop {
+    fn drop(&mut self) {
+        self.0.store(true, Ordering::Release);
     }
 }
 

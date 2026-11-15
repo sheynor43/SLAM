@@ -6,23 +6,19 @@
 
 use std::process::ExitCode;
 
-use slam_app::{bench, click, i18n, play, replay_stats, screenshot, shell};
+use slam_app::settings::Dirs;
+use slam_app::{bench, click, i18n, logging, play, replay_stats, screenshot, shell};
 
 fn main() -> ExitCode {
     attach_parent_console();
-    // `info` unless RUST_LOG says otherwise: the startup lines (render backend, audio mode,
-    // library scan) are what a bug report needs.
-    tracing_subscriber::fmt()
-        .with_env_filter(
-            tracing_subscriber::EnvFilter::builder()
-                .with_default_directive(tracing_subscriber::filter::LevelFilter::INFO.into())
-                .from_env_lossy(),
-        )
-        .init();
-    let mut args = std::env::args().skip(1);
+    let args: Vec<String> = std::env::args().skip(1).collect();
+    if logging::starts_the_game(&args) {
+        return run_game(args);
+    }
+    logging::init_console();
+    let mut args = args.into_iter();
     // Developer commands only so far; their console output is not localised.
     match args.next().as_deref() {
-        None => run_shell(Vec::new()),
         Some("--help" | "-h") => {
             print_usage();
             ExitCode::SUCCESS
@@ -109,9 +105,6 @@ fn main() -> ExitCode {
                 ExitCode::FAILURE
             }
         },
-        Some(flag) if flag.starts_with("--") => {
-            run_shell(std::iter::once(flag.to_owned()).chain(args).collect())
-        }
         _ => {
             eprint_usage();
             ExitCode::from(2)
@@ -119,17 +112,31 @@ fn main() -> ExitCode {
     }
 }
 
-fn run_shell(args: Vec<String>) -> ExitCode {
-    match shell::parse_songs(args)
-        .map(shell::load_settings)
-        .and_then(shell::run)
-    {
-        Ok(()) => ExitCode::SUCCESS,
+/// Runs the game with its log in `logs/slam.log` (ADR-0143). A panic of the main thread
+/// or an error that ends the game is shown in the error dialog.
+fn run_game(args: Vec<String>) -> ExitCode {
+    let dirs = Dirs::detect();
+    let log = logging::init_with_file(dirs.as_ref().map(logging::log_dir).as_deref());
+    logging::install_panic_hook();
+    logging::log_start(&args);
+    let songs = match shell::parse_songs(args) {
+        Ok(songs) => songs,
         Err(e) => {
             eprintln!("{e}\n{}", shell::USAGE);
-            ExitCode::FAILURE
+            return ExitCode::FAILURE;
         }
-    }
+    };
+    let ended = std::panic::catch_unwind(move || {
+        logging::debug_panic();
+        shell::run(shell::load_settings(songs))
+    });
+    let error = match ended {
+        Ok(Ok(())) => return ExitCode::SUCCESS,
+        Ok(Err(e)) => e,
+        Err(payload) => logging::panic_message(payload.as_ref()).to_owned(),
+    };
+    logging::report_fatal(&error, dirs.as_ref(), log.as_deref());
+    ExitCode::FAILURE
 }
 
 fn usage() -> String {

@@ -20,6 +20,7 @@ mod dialog;
 mod displays;
 mod event;
 mod gl;
+mod message_box;
 mod mode;
 #[cfg(windows)]
 mod native;
@@ -41,6 +42,7 @@ pub use dialog::{FolderCallback, FolderDialog, FolderPick};
 pub use displays::{Display, Displays, DisplaysCallback};
 pub use event::{InputEvent, InputKind, MouseButton, TextChunk};
 pub use gl::{ContextPriority, GlContext, PriorityOutcome, PriorityRequest};
+pub use message_box::show_error_box;
 pub use mode::{
     DEFAULT_POSITION, DEFAULT_WINDOWED_SIZE, MAX_DISPLAY, MAX_SIDE, MIN_WINDOWED_SIZE,
     POSITION_RANGE, WindowMode, WindowScale, WindowSettings, WindowState, clamp_position,
