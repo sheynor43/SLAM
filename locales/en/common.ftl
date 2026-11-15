@@ -344,3 +344,15 @@ settings-gameplay-cursor-style = Gameplay cursor
 settings-option-cursor-slam = SLAM
 settings-option-cursor-skin = From the skin
 settings-option-cursor-system = System
+
+fatal-error-title = SLAM has stopped
+fatal-error-message =
+    SLAM stopped because of an error:
+    { $error }
+
+    The log is saved in { $log }. Please attach it when you report the bug.
+fatal-error-message-no-log =
+    SLAM stopped because of an error:
+    { $error }
+
+    The log could not be saved; run SLAM from a terminal to see it.

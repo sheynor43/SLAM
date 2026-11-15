@@ -89,6 +89,8 @@ jobs:
           dir="SLAM-${GITHUB_REF_NAME//\//-}-windows-x64"
           mkdir "$dir"
           cp target/release/slam.exe "$dir/"
+          # Symbols for the panic backtraces in logs/slam.log (ADR-0143).
+          cp target/release/slam.pdb "$dir/"
           cp LICENSE THIRD_PARTY_NOTICES "$dir/"
           cp assets/default-skin/LICENCE.md "$dir/DEFAULT_SKIN_LICENCE.md"
           cp assets/default-skin/README.md "$dir/DEFAULT_SKIN_README.md"

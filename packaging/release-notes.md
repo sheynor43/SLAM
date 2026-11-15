@@ -62,9 +62,9 @@ The quickest way is **Settings → Feedback**: it opens a form with the version 
 - the SLAM version and your OS;
 - what you did, what you expected and what happened;
 - the beatmap, if the problem is tied to one (a link or the file);
-- the log: run SLAM from a terminal with `RUST_LOG=info` and attach the output.
-  - Linux: `RUST_LOG=info ./SLAM-*.AppImage`
-  - Windows (cmd): `set RUST_LOG=info` then `slam.exe`
+- the log `slam.log` from the `logs` folder (if SLAM stops with an error, the error window shows where it is):
+  - Windows: `%APPDATA%\SLAM\logs` (portable mode: `logs` next to `slam.exe`)
+  - Linux: `~/.local/share/slam/logs`
 
 ---
 
@@ -130,7 +130,7 @@ The quickest way is **Settings → Feedback**: it opens a form with the version 
 - версию SLAM и ОС;
 - что делали, что ожидали и что произошло;
 - карту, если ошибка связана с ней (ссылку или файл);
-- лог: запустите SLAM из терминала с `RUST_LOG=info` и приложите вывод.
-  - Linux: `RUST_LOG=info ./SLAM-*.AppImage`
-  - Windows (cmd): `set RUST_LOG=info`, затем `slam.exe`
+- лог `slam.log` из папки `logs` (если SLAM остановился с ошибкой, окно ошибки показывает, где он):
+  - Windows: `%APPDATA%\SLAM\logs` (портативный режим: `logs` рядом с `slam.exe`)
+  - Linux: `~/.local/share/slam/logs`
 

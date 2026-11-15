@@ -4910,18 +4910,21 @@ fn run_with<B: render::Backend>(
     sink.set_notify(engine.waker().as_notify());
 
     // The update thread must not take the window's lock: a watcher closes the window
-    // once the menu quits.
+    // once the menu quits, or once an engine thread is gone (a panic, resumed by
+    // `shutdown` below and shown in the error dialog, ADR-0143).
     let closed = Arc::new(AtomicBool::new(false));
     let watcher = {
-        let (quit, exited, closed) = (
+        let (quit, exited, ended, closed) = (
             window.quit_handle(),
             Arc::clone(&exited),
+            engine.ended(),
             Arc::clone(&closed),
         );
         std::thread::spawn(move || {
             while !closed.load(Ordering::Relaxed) {
+                let quit_wanted = exited.load(Ordering::Relaxed) || ended.load(Ordering::Acquire);
                 // A full event queue refuses the request: try again.
-                if exited.load(Ordering::Relaxed) && quit.request() {
+                if quit_wanted && quit.request() {
                     return;
                 }
                 std::thread::sleep(Duration::from_millis(10));

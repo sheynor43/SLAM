@@ -502,7 +502,7 @@ themes/  fonts/  locales/  plugins/
 replays/
 scores/<md5>.json          локальные рекорды до хранилища (ADR-0125)
 cache/                     миниатюры, MSDF, звёзды с модами, распакованный дефолтный скин
-logs/
+logs/                      slam.log и четыре прошлых запуска (ADR-0143)
 ```
 
 ## 18. Тестирование и бюджеты производительности
@@ -542,7 +542,7 @@ logs/
 - **Платформы**: Windows 10+ x64, Linux x64 (X11 и Wayland; драйвер выбирает SDL или настройка `video_driver`, [ADR-0097](adr/0097-linux-video-driver.md)). macOS — позже (Metal-бэкенд, CoreAudio).
 - **Сборка**: Rust stable (версия закреплена в `rust-toolchain.toml`); C++-компилятор для Luau и signalsmith-stretch (MSVC на Windows, gcc/clang на Linux; для кросс-проверки Windows на Linux — MinGW-w64).
 - **SDL3** (`sdl3-sys`): на Linux собирается из исходников и линкуется статически (нужен CMake). X11 и Wayland подгружаются во время работы, но поддержка попадает в сборку, только если при сборке есть их заголовки (`libx11-dev`, `libwayland-dev`, `libxkbcommon-dev` и т. п.); без них CMake SDL отказывается конфигурироваться (сборка падает). CI ставит эти пакеты перед сборкой. На Windows используется SDL3 из системы (pkg-config).
-- **Упаковка**: Windows — установщик + портативный архив; Linux — AppImage (Flatpak позже: его песочница мешает импорту из других клиентов). Альфа: только портативный `.zip` и AppImage, собираются по тегу `v*`; дефолтный скин встроен в бинарник и распаковывается в `cache/default-skin/<хеш>/` ([ADR-0068](adr/0068-alpha-release-packaging.md)).
+- **Упаковка**: Windows — установщик + портативный архив; Linux — AppImage (Flatpak позже: его песочница мешает импорту из других клиентов). Альфа: только портативный `.zip` и AppImage, собираются по тегу `v*`; дефолтный скин встроен в бинарник и распаковывается в `cache/default-skin/<хеш>/` ([ADR-0068](adr/0068-alpha-release-packaging.md)). Главный поток `slam.exe` на Windows резервирует 8 МиБ стека, как на Linux ([ADR-0144](adr/0144-windows-main-thread-stack.md)).
 - **Версии**: minor растёт с каждым закрытым этапом ROADMAP (M2 → `0.1.0-alpha`), patch — промежуточные релизы внутри этапа, тег `v<версия>` ([ADR-0106](adr/0106-version-per-milestone.md)).
 - **Лицензии** ([ADR-0107](adr/0107-license-gpl3-and-mcosu.md), заменяет ADR-0012): код — `GPL-3.0-or-later` (выпуски до `v0.1.0-alpha` — `MIT OR Apache-2.0`); дефолтный скин — CC-BY-NC 4.0 (osu-resources), отдельная папка с атрибуцией; коммерческим форкам нужно заменить скин. Портированный код лазера — с уведомлением MIT в `THIRD_PARTY_NOTICES`; код McOsu — с сохранённой строкой авторских прав. Зависимости — только с лицензиями, совместимыми с GPL-3.0 (GPL/LGPL разрешены, AGPL и GPL-2.0-only запрещены). Поведение stable — только из открытых источников, без декомпиляции. Название не использует бренд «osu!».
 

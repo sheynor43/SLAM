@@ -348,3 +348,15 @@ settings-gameplay-cursor-style = Курсор в игре
 settings-option-cursor-slam = SLAM
 settings-option-cursor-skin = Из скина
 settings-option-cursor-system = Системный
+
+fatal-error-title = SLAM остановился
+fatal-error-message =
+    SLAM остановился из-за ошибки:
+    { $error }
+
+    Лог сохранён в { $log }. Приложите его к сообщению об ошибке.
+fatal-error-message-no-log =
+    SLAM остановился из-за ошибки:
+    { $error }
+
+    Лог сохранить не удалось; запустите SLAM из терминала, чтобы его увидеть.

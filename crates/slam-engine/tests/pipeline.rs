@@ -254,6 +254,82 @@ fn shutdown_resumes_an_update_panic() {
 }
 
 #[test]
+fn a_panicking_thread_sets_the_ended_flag() {
+    let (_sink, source) = event_ring(64);
+    let engine = Engine::spawn(
+        config(1000.0, LimiterMode::Hz(1000.0)),
+        Panics,
+        Counter::default(),
+        0,
+        source,
+    )
+    .unwrap();
+    let ended = engine.ended();
+    let start = std::time::Instant::now();
+    while !ended.load(Ordering::Acquire) {
+        assert!(
+            start.elapsed() < Duration::from_secs(5),
+            "the flag was never set"
+        );
+        std::thread::sleep(Duration::from_millis(1));
+    }
+    let resumed = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| engine.shutdown()));
+    assert!(resumed.is_err());
+}
+
+struct DrawPanics;
+
+impl Draw<Snap> for DrawPanics {
+    fn frame(&mut self, _: &FrameInfo, _: &Snap) {
+        panic!("frame failed");
+    }
+}
+
+#[test]
+fn a_panicking_draw_thread_sets_the_ended_flag() {
+    let (_sink, source) = event_ring(64);
+    let engine = Engine::spawn(
+        config(1000.0, LimiterMode::Hz(1000.0)),
+        Recorder::default(),
+        DrawPanics,
+        0,
+        source,
+    )
+    .unwrap();
+    let ended = engine.ended();
+    let start = std::time::Instant::now();
+    while !ended.load(Ordering::Acquire) {
+        assert!(
+            start.elapsed() < Duration::from_secs(5),
+            "the flag was never set"
+        );
+        std::thread::sleep(Duration::from_millis(1));
+    }
+    // Update stops normally; the draw panic is resumed.
+    let resumed = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| engine.shutdown()));
+    let payload = resumed.err().expect("the draw panic is resumed");
+    assert_eq!(payload.downcast_ref::<&str>(), Some(&"frame failed"));
+}
+
+#[test]
+fn a_running_engine_has_not_ended_until_it_stops() {
+    let (_sink, source) = event_ring(64);
+    let engine = Engine::spawn(
+        config(1000.0, LimiterMode::Hz(1000.0)),
+        Recorder::default(),
+        Counter::default(),
+        0,
+        source,
+    )
+    .unwrap();
+    let ended = engine.ended();
+    std::thread::sleep(Duration::from_millis(20));
+    assert!(!ended.load(Ordering::Acquire));
+    let _ = engine.shutdown();
+    assert!(ended.load(Ordering::Acquire));
+}
+
+#[test]
 fn invalid_rates_are_rejected() {
     for hz in [0.0, 0.5, 5e-324, -1.0, 8000.5, f64::NAN, f64::INFINITY] {
         let (_sink, source) = event_ring(64);

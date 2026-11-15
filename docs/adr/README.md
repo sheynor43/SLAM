@@ -146,6 +146,8 @@
 | [0140](0140-countdown-and-break-service-elements.md) | Отсчёт перед первым объектом по wiki (пять долей, `go` кончается на объекте), стрелки и section-pass/fail — порт McOsu, пропуск только интро | Принято |
 | [0141](0141-skip-button-pointer-and-gameplay-keys.md) | Кнопка пропуска нажимается мышью и игровыми клавишами при курсоре над ней; прямоугольник — из раскладки HUD на update-стороне | Принято |
 | [0142](0142-service-element-settings-and-break-countdown.md) | Выключатели стрелок, отсчёта и звуков; в перерыве — section-pass/fail, отсчёт как в лазере (порт `BreakOverlay`), отсчёт в стиле SLAM или ничего | Принято |
+| [0143](0143-log-file-and-fatal-error-dialog.md) | Лог в `logs/slam.log` с ротацией на пять запусков, паника с бэктрейсом в лог, окно фатальной ошибки через SDL | Принято |
+| [0144](0144-windows-main-thread-stack.md) | Стек главного потока `slam.exe` на Windows — 8 МиБ, как на Linux (`/STACK` в `build.rs`) | Принято |
 
 ## Шаблон
 
