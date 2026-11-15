@@ -2,30 +2,22 @@
 
 ## English
 
-### What's new in 0.1.1
-A refreshed interface and the first part of the "Skins" milestone: the gameplay HUD now comes from your skin.
+### What's new in 0.1.2
+**Fixed: SLAM did not start on Windows.** 0.1.1 showed a black window for a second and closed: the game ran out of the main thread's stack while starting, which on Windows is eight times smaller than on Linux. Fixed.
 
-**Skins and HUD**
-- Score, accuracy and combo are drawn with the skin's digits and roll smoothly; the health bar comes from the skin too. HUD animations can be turned off.
-- Built-in HUD layouts with a song progress bar, a key overlay and a skinned skip button. Choosing a layout in the settings comes later.
-- An image in a skin that can't be decoded counts as missing (the default one is used) instead of breaking the skin.
+**When something goes wrong**
+- SLAM now keeps a log of the last five runs in the `logs` folder (see "Reporting a bug" below), so there is no need to run it from a terminal to report a problem.
+- If SLAM stops with an error, a window shows the error and where the log is.
 
-**Interface**
-- New look: rounded, slanted buttons with layered gradients, outlined triangles and shadows; colour schemes; separate interface and gameplay scale.
-- Song select at lazer's proportions: beatmap thumbnails, a statistics panel and local scores on the left, star ratings (calculated in the background and cached), and difficulties sorted by stars that slide open under their set.
-- Search also understands text typed in the other keyboard layout (Russian ↔ English).
-- Menu background, menu sounds, parallax, blur, glow and shadows, each with its own strength (0–200 %) and an off switch.
-- Screen transitions: none, simple, band, slices, iris, shards, shutter or random.
-- Menu and gameplay cursors: SLAM's own arrow (spin at rest, trail, press rings, all optional), the skin's, or the system cursor.
-- Settings are one continuous list that remembers where you were, with a new **Skin** section.
-- Pause menu styles, including one like stable's.
-- A startup intro with its own sound (can be turned off).
-- FPS counter modes, from a single figure up to a panel with the draw, update, audio and input threads and frame-time graphs.
-- **Feedback** section in the settings: opens a pre-filled bug report or suggestion form in the browser.
+**Skins**
+- The skin's countdown before the first note (`ready`, `count3`…`go` with their sounds), warning arrows before a break ends and `section-pass`/`section-fail` in breaks.
+- The skip button can be clicked with the mouse or pressed with the gameplay keys while the cursor is over it.
+- Gameplay settings to turn the arrows, the countdown and its sounds off, and to choose what breaks show: the skin's pass/fail, the time left as in lazer, SLAM's own countdown or nothing.
 
 **Known limitations**
 - Hot-reloading skins, skin profiles, `.osk` import and choosing HUD layouts in the settings are not done yet.
 - The skin's score and accuracy sit 10–13 px further right than in lazer and stable at 1920×1080.
+- The countdown's timing follows the osu! wiki and has not been compared with stable yet.
 - Search keys `star`, `bpm`, `length`, `divisor`, `status` and dates are accepted but do not filter yet.
 - Spinners follow lazer's rules, not stable's.
 - The new interface effects have not been checked on Direct3D 11 yet; if something looks wrong, try OpenGL.
@@ -70,30 +62,22 @@ The quickest way is **Settings → Feedback**: it opens a form with the version 
 
 ## Русский
 
-### Что нового в 0.1.1
-Обновлённый интерфейс и первая часть этапа «Скины»: игровой HUD теперь берётся из скина.
+### Что нового в 0.1.2
+**Исправлено: SLAM не запускался на Windows.** 0.1.1 на секунду показывал чёрное окно и закрывался: при запуске игре не хватало стека главного потока, а на Windows он в восемь раз меньше, чем на Linux. Исправлено.
 
-**Скины и HUD**
-- Счёт, точность и комбо рисуются цифрами скина и плавно прокручиваются; полоска здоровья — тоже из скина. Анимации HUD можно выключить.
-- Встроенные раскладки HUD с прогрессом песни, оверлеем клавиш и кнопкой пропуска из скина. Выбор раскладки в настройках появится позже.
-- Изображение скина, которое не удалось декодировать, считается отсутствующим (берётся стандартное), а не ломает скин.
+**Если что-то пошло не так**
+- SLAM ведёт лог пяти последних запусков в папке `logs` (см. «Как сообщить об ошибке» ниже): запускать игру из терминала, чтобы сообщить о проблеме, больше не нужно.
+- Если SLAM остановился с ошибкой, окно показывает ошибку и путь к логу.
 
-**Интерфейс**
-- Новый вид: скруглённые наклонные кнопки со слоями градиента, контурными треугольниками и тенями; цветовые схемы; отдельный масштаб меню и игры.
-- Выбор песни в пропорциях лазера: миниатюры карт, панель характеристик и локальные рекорды слева, звёздный рейтинг (считается в фоне и кешируется), сложности по звёздам, плавно раскрываются под своим сетом.
-- Поиск понимает текст, набранный в другой раскладке (русская ↔ английская).
-- Фон и звуки меню, параллакс, размытие, свечение и тени — у каждого своя сила (0–200 %) и выключатель.
-- Переходы между экранами: нет, простой, полоса, полосы, круг, осколки, створки или случайный.
-- Курсор меню и игры: свой курсор-стрелка SLAM (вращение в покое, шлейф, кольца нажатий — всё отключаемо), из скина или системный.
-- Настройки — один сплошной список, который помнит место; новый раздел **Скин**.
-- Стили меню паузы, в том числе как в stable.
-- Заставка при запуске со своим звуком (можно выключить).
-- Режимы счётчика FPS: от одного числа до панели с потоками отрисовки, update, звука и ввода и графиками времени кадра.
-- Раздел **Связь** в настройках: открывает в браузере заполненную форму сообщения об ошибке или предложения.
+**Скины**
+- Отсчёт скина перед первой нотой (`ready`, `count3`…`go` со звуками), стрелки-предупреждения перед концом перерыва и `section-pass`/`section-fail` в перерывах.
+- Кнопку пропуска можно нажать мышью или игровыми клавишами, когда курсор над ней.
+- В настройках игры: выключатели стрелок, отсчёта и его звуков и выбор, что показывать в перерывах: pass/fail скина, оставшееся время как в лазере, отсчёт SLAM или ничего.
 
 **Известные ограничения**
 - Горячей перезагрузки скинов, профилей скина, импорта `.osk` и выбора раскладки HUD в настройках пока нет.
 - Счёт и точность скина при 1920×1080 стоят на 10–13 px правее, чем в лазере и stable.
+- Тайминг отсчёта взят из wiki osu! и ещё не сверен со stable.
 - Ключи поиска `star`, `bpm`, `length`, `divisor`, `status` и даты принимаются, но пока не фильтруют.
 - Спиннеры работают по правилам лазера, а не stable.
 - Новые эффекты интерфейса ещё не проверены на Direct3D 11; если что-то выглядит не так, попробуйте OpenGL.
