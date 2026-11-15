@@ -19,7 +19,7 @@ use std::sync::Arc;
 use super::keybinds;
 use crate::displays::{DisplayLists, DisplayViews};
 use crate::settings::{
-    DrawRate, FpsScreens, HitsoundDelay, InputSettings, KeyOverlayAnimation, KeySlot,
+    BreakDisplay, DrawRate, FpsScreens, HitsoundDelay, InputSettings, KeyOverlayAnimation, KeySlot,
     MenuBackground, MenuSounds, PauseMenuStyle, RendererChoice, Settings, Thumbnails, Timing,
     skins,
 };
@@ -303,6 +303,14 @@ pub enum Row {
     /// Height of the song list's thumbnails (ADR-0127).
     SongSelectThumbnails,
     AlwaysPlayFirstComboBreak,
+    /// Shows the skin's warning arrows before a break ends (ADR-0142).
+    WarningArrows,
+    /// Shows the skin's countdown before the first object (ADR-0142).
+    Countdown,
+    /// Plays the countdown's and the sections' sounds (ADR-0142).
+    ServiceSounds,
+    /// What a break shows besides the warning arrows (ADR-0142).
+    BreakDisplay,
     DisableWinKey,
     SnakingIn,
     SnakingOut,
@@ -323,7 +331,7 @@ pub enum Row {
 const _: () = assert!(Row::ALL.len() <= slam_ui::settings_screen::MAX_ROWS);
 
 impl Row {
-    pub const ALL: [Row; 85] = [
+    pub const ALL: [Row; 89] = [
         Row::MasterVolume,
         Row::MusicVolume,
         Row::MenuMusic,
@@ -398,6 +406,10 @@ impl Row {
         Row::SongSelectDim,
         Row::SongSelectThumbnails,
         Row::AlwaysPlayFirstComboBreak,
+        Row::WarningArrows,
+        Row::Countdown,
+        Row::ServiceSounds,
+        Row::BreakDisplay,
         Row::DisableWinKey,
         Row::SnakingIn,
         Row::SnakingOut,
@@ -521,6 +533,10 @@ impl Row {
             | Row::SongSelectDim
             | Row::SongSelectThumbnails
             | Row::AlwaysPlayFirstComboBreak
+            | Row::WarningArrows
+            | Row::Countdown
+            | Row::ServiceSounds
+            | Row::BreakDisplay
             | Row::DisableWinKey
             | Row::SnakingIn
             | Row::SnakingOut
@@ -602,6 +618,10 @@ impl Row {
             Row::BeatmapColours => "settings-gameplay-beatmap-colours",
             Row::BeatmapHitsounds => "settings-gameplay-beatmap-hitsounds",
             Row::AlwaysPlayFirstComboBreak => "settings-gameplay-always-play-first-combo-break",
+            Row::WarningArrows => "settings-gameplay-warning-arrows",
+            Row::Countdown => "settings-gameplay-countdown",
+            Row::ServiceSounds => "settings-gameplay-service-sounds",
+            Row::BreakDisplay => "settings-gameplay-break-display",
             Row::DisableWinKey => WIN_KEY_LABEL,
             Row::SnakingIn => "settings-gameplay-snaking-in",
             Row::SnakingOut => "settings-gameplay-snaking-out",
@@ -729,6 +749,16 @@ fn pause_menu_style_key(style: PauseMenuStyle) -> &'static str {
         PauseMenuStyle::Slam => "settings-option-pause-menu-style-slam",
         PauseMenuStyle::Lazer => "settings-option-pause-menu-style-lazer",
         PauseMenuStyle::Stable => "settings-option-pause-menu-style-stable",
+    }
+}
+
+/// The Fluent key of a break display option.
+fn break_display_key(display: BreakDisplay) -> &'static str {
+    match display {
+        BreakDisplay::Section => "settings-option-break-display-section",
+        BreakDisplay::Lazer => "settings-option-break-display-lazer",
+        BreakDisplay::Slam => "settings-option-break-display-slam",
+        BreakDisplay::Off => "settings-option-break-display-off",
     }
 }
 
@@ -1216,6 +1246,21 @@ impl Rows {
             Row::AlwaysPlayFirstComboBreak => RowKind::Toggle {
                 value: s.gameplay.always_play_first_combo_break,
             },
+            Row::WarningArrows => RowKind::Toggle {
+                value: s.gameplay.warning_arrows,
+            },
+            Row::Countdown => RowKind::Toggle {
+                value: s.gameplay.countdown,
+            },
+            Row::ServiceSounds => RowKind::Toggle {
+                value: s.gameplay.service_sounds,
+            },
+            Row::BreakDisplay => choice(
+                BreakDisplay::ALL.len(),
+                BreakDisplay::ALL
+                    .iter()
+                    .position(|d| *d == s.gameplay.break_display),
+            ),
             Row::DisableWinKey => RowKind::Toggle {
                 value: s.gameplay.disable_win_key,
             },
@@ -1326,6 +1371,14 @@ impl Rows {
             (Row::BeatmapHitsounds, RowValue::Toggle(v)) => settings.gameplay.beatmap_hitsounds = v,
             (Row::AlwaysPlayFirstComboBreak, RowValue::Toggle(v)) => {
                 settings.gameplay.always_play_first_combo_break = v
+            }
+            (Row::WarningArrows, RowValue::Toggle(v)) => settings.gameplay.warning_arrows = v,
+            (Row::Countdown, RowValue::Toggle(v)) => settings.gameplay.countdown = v,
+            (Row::ServiceSounds, RowValue::Toggle(v)) => settings.gameplay.service_sounds = v,
+            (Row::BreakDisplay, RowValue::Choice(i)) => {
+                if let Some(display) = BreakDisplay::ALL.get(i) {
+                    settings.gameplay.break_display = *display;
+                }
             }
             (Row::DisableWinKey, RowValue::Toggle(v)) => settings.gameplay.disable_win_key = v,
             (Row::SnakingIn, RowValue::Toggle(v)) => settings.gameplay.snaking_in = v,
@@ -1636,6 +1689,10 @@ impl Rows {
                     Row::PauseMenuStyle => PauseMenuStyle::ALL
                         .iter()
                         .map(|style| text(pause_menu_style_key(*style)))
+                        .collect(),
+                    Row::BreakDisplay => BreakDisplay::ALL
+                        .iter()
+                        .map(|display| text(break_display_key(*display)))
                         .collect(),
                     Row::KeyOverlayAnimation => KeyOverlayAnimation::ALL
                         .iter()
@@ -2095,6 +2152,9 @@ mod tests {
             (Row::Intro, true),
             (Row::Effects, true),
             (Row::AlwaysPlayFirstComboBreak, true),
+            (Row::WarningArrows, true),
+            (Row::Countdown, true),
+            (Row::ServiceSounds, true),
             (Row::DisableWinKey, true),
             (Row::CursorTrail, true),
             (Row::AutoCursorSize, false),
@@ -2328,6 +2388,8 @@ mod tests {
         rows.apply(&mut s, index(Row::GameScale), RowValue::Slider(10.0));
         assert_eq!(s.general.menu_scale, 1.25);
         assert_eq!(s.general.game_scale, 0.75);
+        rows.apply(&mut s, index(Row::BreakDisplay), RowValue::Choice(2));
+        assert_eq!(s.gameplay.break_display, BreakDisplay::Slam);
         rows.apply(&mut s, index(Row::PauseMenuStyle), RowValue::Choice(2));
         assert_eq!(s.gameplay.pause_menu_style, PauseMenuStyle::Stable);
         rows.apply(&mut s, index(Row::PauseMenuScale), RowValue::Slider(150.0));

@@ -40,7 +40,7 @@ use slam_render::{Color, Device, Extent, Limits, shaders};
 use slam_skin::{Skin, SkinChain};
 use slam_text::{FontRegistry, GlyphAtlasConfig, GlyphCache, glyph_atlas};
 use slam_ui::cursor::{CursorStyle, MAX_CURSOR_SHAPES};
-use slam_ui::hud_layout::{Builtin, LayoutElement};
+use slam_ui::hud_layout::{Builtin, ComponentKind, LayoutElement};
 use slam_ui::i18n::{FluentArgs, Localizer};
 use slam_ui::theme::Theme;
 
@@ -84,6 +84,8 @@ pub struct PlaySettings {
     /// Play the combo break sound on the first break of a play even when the break happens while
     /// the combo is already low (lazer's `OsuSetting.AlwaysPlayFirstComboBreak`, on by default).
     pub always_play_first_combo_break: bool,
+    /// The countdown, warning arrows, their sounds and the break display (ADR-0142).
+    pub service: slam_play::service::ServiceOptions,
     pub mods: ModSet,
     /// How dark the background is, 0 ..= 1 (lazer's `DimLevel`).
     pub dim: f64,
@@ -124,6 +126,7 @@ impl Default for PlaySettings {
             beatmap_colours: true,
             beatmap_hitsounds: true,
             always_play_first_combo_break: true,
+            service: slam_play::service::ServiceOptions::default(),
             mods: ModSet::default(),
             dim: BackgroundSettings::default().dim_level,
             hud_layout: Builtin::Stable.layout().gameplay,
@@ -307,7 +310,8 @@ pub fn prepare(
         },
     )
     .with_fail_sound(fail_sound)
-    .with_combo_break_sound(combo_break);
+    .with_combo_break_sound(combo_break)
+    .with_service_sounds(service_samples(sample_skins, &mut cache));
     let circle_mods = CircleMods::new(mods);
     let windows = slam_osu::hit_windows::HitWindows::new(beatmap.difficulty.overall_difficulty);
     let cursor_scale = CursorScale::new(
@@ -391,6 +395,8 @@ pub fn prepare(
         .iter()
         .map(|element| element.scaled_by(settings.game_scale))
         .collect();
+    let break_countdown =
+        slam_play::break_countdown::BreakCountdownView::new(Arc::clone(&registry));
     let hud = HudView::new(
         registry,
         labels,
@@ -428,9 +434,19 @@ pub fn prepare(
         cursor_style: settings.cursor_style,
         cursor_theme: Theme::new(settings.cursor_scheme, 1.0),
         menu,
-        menu_shapes: ShapeBatch::with_capacity(MAX_MENU_SPRITES),
-        menu_text: SpriteBatch::with_capacity(MAX_GLYPH_SPRITES + MAX_FPS_GLYPHS),
+        menu_shapes: ShapeBatch::with_capacity(
+            MAX_MENU_SPRITES + slam_play::break_countdown::MAX_BREAK_SHAPES,
+        ),
+        menu_text: SpriteBatch::with_capacity(
+            MAX_GLYPH_SPRITES + MAX_FPS_GLYPHS + slam_play::break_countdown::MAX_BREAK_GLYPHS,
+        ),
         stats: PlayfieldStats::default(),
+        break_countdown,
+        service: settings.service,
+        skip_element: hud_layout
+            .iter()
+            .find(|e| e.component == ComponentKind::SkipButton)
+            .cloned(),
     };
     Ok(Prepared {
         audio: loaded.audio,
@@ -495,6 +511,12 @@ pub struct PlayScene {
     menu_text: SpriteBatch,
     /// The playfield batch's figures of the last frame, for the console report.
     stats: PlayfieldStats,
+    /// The layout's skip button as drawn, for clicks on the update side (ADR-0141).
+    skip_element: Option<LayoutElement>,
+    /// The time left in a break (ADR-0142).
+    break_countdown: slam_play::break_countdown::BreakCountdownView,
+    /// Which service elements the play shows (ADR-0142).
+    service: slam_play::service::ServiceOptions,
 }
 
 /// What the last frame drew of the playfield batch (background, objects, HUD shapes).
@@ -638,6 +660,13 @@ impl PlayScene {
             now_ns,
             &textures,
         );
+        // The countdown, warning arrows and section pass or fail (ADR-0140), under the HUD.
+        slam_play::service::ServiceView::new(width, height).push(
+            &mut self.batch,
+            &snapshot.service,
+            time,
+            &textures.service,
+        );
         self.hud.push_shapes(
             &mut self.batch,
             snapshot,
@@ -681,6 +710,26 @@ impl PlayScene {
         let speed = f64::from(slam_ui::theme::Theme::default().effect_speed);
         let cycles = (now_ns as f64 / 1e9 * speed).rem_euclid(1024.0);
         self.menu_shapes.set_drift(cycles as f32);
+        // The time left in a break, under the menus (ADR-0142).
+        self.break_countdown
+            .update(width, height, &snapshot.service, time);
+        if let Some(white) = textures.white {
+            self.break_countdown.push_shapes(
+                &mut self.menu_shapes,
+                &snapshot.service,
+                time,
+                white,
+                snapshot.menu.scheme,
+                snapshot.menu.effects,
+            );
+        }
+        self.break_countdown.push_text(
+            &mut self.menu_text,
+            &snapshot.service,
+            time,
+            &mut self.glyphs,
+            snapshot.menu.scheme,
+        );
         if let Some(white) = textures.white {
             self.menu.push_shapes(
                 &mut self.menu_shapes,
@@ -780,6 +829,18 @@ impl PlayScene {
         self.textures.stable_pause_sizes()
     }
 
+    /// Which service elements the play shows, for
+    /// [`slam_play::session::PlaySession::set_service_options`] (ADR-0142).
+    pub fn service_options(&self) -> slam_play::service::ServiceOptions {
+        self.service
+    }
+
+    /// The skip button's layout element (with the game scale) and `play-skip` frame size,
+    /// for [`slam_play::session::PlaySession::set_skip_button`] (ADR-0141).
+    pub fn skip_button(&self) -> (Option<&LayoutElement>, Option<[f32; 2]>) {
+        (self.skip_element.as_ref(), self.textures.skip_size())
+    }
+
     /// Whether every image of the play is uploaded (or failed) and every glyph drawn so far
     /// is ready: the next frame draws everything the scene has. For screenshots; walks the
     /// handles and glyphs.
@@ -815,4 +876,24 @@ impl<D: Device> SceneGpu<D> {
             device.destroy_texture(texture);
         }
     }
+}
+
+/// The skin's sounds of the countdown and the section pass or fail (ADR-0140).
+fn service_samples(
+    skins: SampleSkins<'_>,
+    cache: &mut SampleCache,
+) -> slam_play::gameplay_sounds::ServiceSamples {
+    let effect =
+        |name: &str, cache: &mut SampleCache| slam_play::hitsounds::effect(name, skins, cache);
+    let mut samples = slam_play::gameplay_sounds::ServiceSamples::default();
+    for (slot, name) in samples
+        .countdown
+        .iter_mut()
+        .zip(slam_play::service::COUNTDOWN_SAMPLES)
+    {
+        *slot = effect(name, cache);
+    }
+    samples.section_pass = effect("sectionpass", cache);
+    samples.section_fail = effect("sectionfail", cache);
+    samples
 }

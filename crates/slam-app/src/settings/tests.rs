@@ -17,8 +17,9 @@ use super::dirs::{Os, resolve};
 use super::file::{self, LoadStatus};
 use super::keys;
 use super::model::{
-    Combo, DrawRate, FpsScreens, Frame, HitsoundDelay, InputSettings, KeyOverlayAnimation, KeySlot,
-    MenuBackground, MenuSounds, Mods, PauseMenuStyle, RendererChoice, Settings, Window,
+    BreakDisplay, Combo, DrawRate, FpsScreens, Frame, HitsoundDelay, InputSettings,
+    KeyOverlayAnimation, KeySlot, MenuBackground, MenuSounds, Mods, PauseMenuStyle, RendererChoice,
+    Settings, Window,
 };
 
 fn temp_dir(tag: &str) -> PathBuf {
@@ -1562,6 +1563,33 @@ fn the_pause_menu_settings_default_and_read_by_name() {
     assert!(text.contains("pause_menu_style = \"lazer\""), "{text}");
     assert!(text.contains("pause_menu_scale = 0.75\n"), "{text}");
     assert_eq!(file::from_toml_str(&text).settings, settings);
+}
+
+#[test]
+fn the_service_element_settings_default_and_round_trip() {
+    let d = Settings::default();
+    assert!(d.gameplay.warning_arrows && d.gameplay.countdown && d.gameplay.service_sounds);
+    assert_eq!(d.gameplay.break_display, BreakDisplay::Section);
+    let loaded = file::from_toml_str(
+        "[gameplay]\nwarning_arrows = false\ncountdown = false\nservice_sounds = false\n\
+         break_display = \"lazer\"\n",
+    );
+    assert_eq!(loaded.status, LoadStatus::Ok, "{:?}", loaded.warnings);
+    let g = &loaded.settings.gameplay;
+    assert!(!g.warning_arrows && !g.countdown && !g.service_sounds);
+    assert_eq!(g.break_display, BreakDisplay::Lazer);
+    for display in BreakDisplay::ALL {
+        assert_eq!(BreakDisplay::from_name(display.name()), Some(display));
+    }
+    let mut settings = Settings::default();
+    settings.gameplay.break_display = BreakDisplay::Off;
+    settings.gameplay.countdown = false;
+    let text = file::to_toml_string(&settings).unwrap();
+    assert!(text.contains("break_display = \"off\""), "{text}");
+    assert_eq!(file::from_toml_str(&text).settings, settings);
+    let bad = file::from_toml_str("[gameplay]\nbreak_display = \"fancy\"\n");
+    assert_eq!(bad.status, LoadStatus::Recovered);
+    assert_eq!(bad.settings.gameplay.break_display, BreakDisplay::Section);
 }
 
 #[test]

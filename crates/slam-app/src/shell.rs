@@ -982,6 +982,11 @@ impl ShellState {
         }
     }
 
+    /// The pointer's last position in window points.
+    pub fn cursor_points(&self) -> [f32; 2] {
+        self.cursor.map(|c| c / self.pixels_per_point)
+    }
+
     /// Follows the pointer and the modifier keys while the play has the input, so that the
     /// screen under it knows where they are when the play goes.
     pub fn follow_pointer(&mut self, events: &[InputEvent]) {
@@ -2635,7 +2640,8 @@ impl PlayHost {
                     {
                         let title = state.last_title().to_owned();
                         let map = state.last_file().cloned();
-                        self.start(id, *prepared, title, map);
+                        let pointer = state.cursor_points();
+                        self.start(id, *prepared, title, map, pointer);
                         state.finish_loading(now_ns, Some(id));
                     }
                 }
@@ -2769,6 +2775,9 @@ impl PlayHost {
             .replace_samples(&mut sounds, &mut self.audio.mixer);
         game.stable_pause = scene.stable_pause_sizes();
         style_menu(&mut game.session, self.pause_menu, game.stable_pause);
+        let (skip_element, skip_size) = scene.skip_button();
+        game.session.set_skip_button(skip_element, skip_size);
+        game.session.set_service_options(scene.service_options());
         if let Err(rtrb::PushError::Full((_, scene))) = self.scenes.push((game.id, scene)) {
             // Room was checked above; the update thread is the only producer.
             self.loader.free(Trash::Other(Box::new(scene)));
@@ -3008,7 +3017,16 @@ impl PlayHost {
 
     /// Starts `prepared` as play `id` of the beatmap file `map` on its opened track, with
     /// the offset the file last had. Navigation.
-    fn start(&mut self, id: u64, prepared: Prepared, title: String, map: Option<PathBuf>) {
+    /// Starts the prepared play; `pointer` is the mouse in window points, for the skip
+    /// button before the first motion (ADR-0141).
+    fn start(
+        &mut self,
+        id: u64,
+        prepared: Prepared,
+        title: String,
+        map: Option<PathBuf>,
+        pointer: [f32; 2],
+    ) {
         let Prepared {
             beatmap,
             mods,
@@ -3050,6 +3068,10 @@ impl PlayHost {
         let mut session = session;
         let stable_pause = scene.stable_pause_sizes();
         style_menu(&mut session, self.pause_menu, stable_pause);
+        let (skip_element, skip_size) = scene.skip_button();
+        session.set_skip_button(skip_element, skip_size);
+        session.set_service_options(scene.service_options());
+        session.set_pointer(slam_osu::Vec2::new(pointer[0], pointer[1]));
         session.set_menu_effects(self.effects);
         self.loader.free(Trash::Other(Box::new((beatmap, mods))));
         // The caller checked for a free slot.
@@ -4677,6 +4699,7 @@ fn run_with<B: render::Backend>(
                 beatmap_colours: options.beatmap_colours,
                 beatmap_hitsounds: options.beatmap_hitsounds,
                 always_play_first_combo_break: options.always_play_first_combo_break,
+                service: options.service,
                 dim: options.dim,
                 snaking: options.snaking(),
                 hit_lighting: options.hit_lighting,

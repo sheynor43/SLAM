@@ -234,6 +234,11 @@ impl LiveInput {
         self.layout
     }
 
+    /// The bindings.
+    pub fn bindings(&self) -> &Bindings {
+        &self.bindings
+    }
+
     /// Changes the bindings. Inputs already held keep the actions they pressed until released.
     pub fn set_bindings(&mut self, bindings: Bindings) {
         self.bindings = bindings;

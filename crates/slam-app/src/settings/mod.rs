@@ -14,7 +14,7 @@ pub mod stable;
 pub use dirs::{Dirs, Os};
 pub use file::{CURRENT_VERSION, LoadStatus, Loaded, load, load_or_create, save};
 pub use model::{
-    Audio, BINDING_SLOTS, BindingEntry, Combo, DrawRate, FpsScreens, Frame, Gameplay,
+    Audio, BINDING_SLOTS, BindingEntry, BreakDisplay, Combo, DrawRate, FpsScreens, Frame, Gameplay,
     HitsoundDelay, Hotkeys, HudSettings, InputSettings, KeyOverlayAnimation, KeySlot,
     MenuBackground, MenuSounds, Mods, Paths, PauseMenuStyle, RendererChoice,
     STABLE_HITSOUND_DELAY_MS, Settings, SkinSettings, Thumbnails, Timing, corner_from_name,

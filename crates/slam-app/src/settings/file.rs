@@ -16,9 +16,9 @@ use toml::{Table, Value};
 
 use super::keys;
 use super::model::{
-    BindingEntry, Combo, DrawRate, FpsScreens, HitsoundDelay, InputSettings, KeyOverlayAnimation,
-    KeySlot, MenuBackground, MenuSounds, PauseMenuStyle, RendererChoice, Settings, Thumbnails,
-    Timing, Window, corner_from_name, parse_size, window_mode_from_name,
+    BindingEntry, BreakDisplay, Combo, DrawRate, FpsScreens, HitsoundDelay, InputSettings,
+    KeyOverlayAnimation, KeySlot, MenuBackground, MenuSounds, PauseMenuStyle, RendererChoice,
+    Settings, Thumbnails, Timing, Window, corner_from_name, parse_size, window_mode_from_name,
 };
 
 /// The schema version this build writes.
@@ -586,6 +586,42 @@ fn from_table(mut table: Table) -> Loaded {
         &mut settings.gameplay.always_play_first_combo_break,
         |_| Ok(()),
     );
+    cx.field(
+        &mut gameplay,
+        "gameplay",
+        "warning_arrows",
+        &mut settings.gameplay.warning_arrows,
+        |_| Ok(()),
+    );
+    cx.field(
+        &mut gameplay,
+        "gameplay",
+        "countdown",
+        &mut settings.gameplay.countdown,
+        |_| Ok(()),
+    );
+    cx.field(
+        &mut gameplay,
+        "gameplay",
+        "service_sounds",
+        &mut settings.gameplay.service_sounds,
+        |_| Ok(()),
+    );
+    let mut break_display: Option<String> = None;
+    cx.opt(
+        &mut gameplay,
+        "gameplay",
+        "break_display",
+        &mut break_display,
+    );
+    if let Some(name) = break_display {
+        match BreakDisplay::from_name(&name) {
+            Some(display) => settings.gameplay.break_display = display,
+            None => cx.warn(format!(
+                "gameplay.break_display: unknown value \"{name}\", using the default"
+            )),
+        }
+    }
     cx.field(
         &mut gameplay,
         "gameplay",
