@@ -1453,3 +1453,48 @@ fn pressing_a_feedback_row_asks_to_open_its_page_once() {
     s.tick(LATER, &[key(KEY_DOWN), key(KEY_ENTER)], &mut snap);
     assert_eq!(s.take_feedback_request(), Some(Kind::Feature));
 }
+
+#[test]
+fn the_volume_overlay_moves_the_open_settings_sliders_and_edits() {
+    use slam_ui::settings_screen::RowWidget;
+    let mut s = state();
+    let mut snap = ShellSnapshot::default();
+    opened(&mut s, &mut snap);
+    let alt = key(KEY_LEFT_ALT);
+    let wheel = |y| InputEvent {
+        time_ns: 0,
+        kind: InputKind::MouseWheel { y },
+    };
+    s.tick(LATER, &[alt, wheel(1.0)], &mut snap);
+    s.tick(LATER + 300_000_000, &[wheel(-1.0)], &mut snap);
+    assert!((edited(&s).audio.master_volume - 0.99).abs() < 1e-9);
+    assert!((s.settings().audio.master_volume - 0.99).abs() < 1e-9);
+    let row = Row::ALL
+        .iter()
+        .position(|r| *r == Row::MasterVolume)
+        .unwrap();
+    match &settings_screen(&s).snapshot().widgets[row] {
+        RowWidget::Slider(slider) => assert!((slider.value() - 99.0).abs() < 1e-9),
+        other => panic!("{other:?}"),
+    }
+}
+
+#[test]
+fn the_volume_overlay_keeps_the_screens_edits_of_other_volumes() {
+    let mut s = state();
+    let mut snap = ShellSnapshot::default();
+    opened(&mut s, &mut snap);
+    // Edited on the screen, not yet committed.
+    s.editing.as_mut().unwrap().audio.hitsound_volume = 0.3;
+    s.editing.as_mut().unwrap().audio.master_volume = 0.5;
+    let wheel = |y| InputEvent {
+        time_ns: 0,
+        kind: InputKind::MouseWheel { y },
+    };
+    s.tick(LATER, &[key(KEY_LEFT_ALT), wheel(1.0)], &mut snap);
+    s.tick(LATER + 300_000_000, &[wheel(1.0)], &mut snap);
+    // The master starts from the screen's 50 %, the hitsounds keep their edit.
+    assert_eq!(edited(&s).audio.master_volume, 0.51);
+    assert_eq!(edited(&s).audio.hitsound_volume, 0.3);
+    assert_eq!(s.settings().audio.hitsound_volume, 1.0);
+}

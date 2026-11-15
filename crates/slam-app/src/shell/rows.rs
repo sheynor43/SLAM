@@ -26,6 +26,7 @@ use crate::settings::{
 use slam_ui::cursor::CursorStyle;
 use slam_ui::screen::TransitionStyle;
 use slam_ui::theme::{ColourScheme, MAX_SKEW_DEGREES, UI_SCALE_RANGE};
+use slam_ui::volume::{Edge, MeterStyle};
 
 /// Sections, in order; the keys of their names are in [`SECTION_KEYS`].
 const SECTION_KEYS: [&str; 9] = [
@@ -224,6 +225,11 @@ pub enum Row {
     SmokeKey2,
     ToggleFpsKey,
     ToggleSettingsKey,
+    VolumeUpKey,
+    VolumeDownKey,
+    VolumePreviousKey,
+    VolumeNextKey,
+    ToggleMuteKey,
     ResetKeys,
     /// The interface language, applied as it is picked (ADR-0088, ADR-0091).
     Language,
@@ -243,6 +249,10 @@ pub enum Row {
     Intro,
     /// The interface colour scheme (ADR-0117).
     ColourScheme,
+    /// The window edge the volume overlay stands at (ADR-0145).
+    VolumeOverlay,
+    /// How the volume overlay's meters show their level (ADR-0145).
+    VolumeMeter,
     /// Whether the interface effects are on; applies live (ADR-0123).
     Effects,
     /// Whether the menus' parallax is on; applies live (ADR-0136).
@@ -331,7 +341,7 @@ pub enum Row {
 const _: () = assert!(Row::ALL.len() <= slam_ui::settings_screen::MAX_ROWS);
 
 impl Row {
-    pub const ALL: [Row; 89] = [
+    pub const ALL: [Row; 96] = [
         Row::MasterVolume,
         Row::MusicVolume,
         Row::MenuMusic,
@@ -355,6 +365,11 @@ impl Row {
         Row::SmokeKey2,
         Row::ToggleFpsKey,
         Row::ToggleSettingsKey,
+        Row::VolumeUpKey,
+        Row::VolumeDownKey,
+        Row::VolumePreviousKey,
+        Row::VolumeNextKey,
+        Row::ToggleMuteKey,
         Row::ResetKeys,
         Row::Language,
         Row::ScreenMode,
@@ -367,6 +382,8 @@ impl Row {
         Row::Renderer,
         Row::Intro,
         Row::ColourScheme,
+        Row::VolumeOverlay,
+        Row::VolumeMeter,
         Row::Effects,
         Row::ParallaxEnabled,
         Row::Parallax,
@@ -445,6 +462,11 @@ impl Row {
             Row::SmokeKey2 => KeySlot::Play(Actions::SMOKE, 1),
             Row::ToggleFpsKey => KeySlot::ToggleFps,
             Row::ToggleSettingsKey => KeySlot::ToggleSettings,
+            Row::VolumeUpKey => KeySlot::VolumeUp,
+            Row::VolumeDownKey => KeySlot::VolumeDown,
+            Row::VolumePreviousKey => KeySlot::VolumePrevious,
+            Row::VolumeNextKey => KeySlot::VolumeNext,
+            Row::ToggleMuteKey => KeySlot::ToggleMute,
             _ => return None,
         })
     }
@@ -480,6 +502,11 @@ impl Row {
             | Row::SmokeKey2
             | Row::ToggleFpsKey
             | Row::ToggleSettingsKey
+            | Row::VolumeUpKey
+            | Row::VolumeDownKey
+            | Row::VolumePreviousKey
+            | Row::VolumeNextKey
+            | Row::ToggleMuteKey
             | Row::ResetKeys => section::KEYS,
             Row::Language
             | Row::ScreenMode
@@ -492,6 +519,8 @@ impl Row {
             | Row::Renderer
             | Row::Intro
             | Row::ColourScheme
+            | Row::VolumeOverlay
+            | Row::VolumeMeter
             | Row::Effects
             | Row::ParallaxEnabled
             | Row::Parallax
@@ -574,10 +603,17 @@ impl Row {
             Row::SmokeKey2 => "settings-keys-smoke-2",
             Row::ToggleFpsKey => "settings-keys-toggle-fps",
             Row::ToggleSettingsKey => "settings-keys-toggle-settings",
+            Row::VolumeUpKey => "settings-keys-volume-up",
+            Row::VolumeDownKey => "settings-keys-volume-down",
+            Row::VolumePreviousKey => "settings-keys-volume-previous",
+            Row::VolumeNextKey => "settings-keys-volume-next",
+            Row::ToggleMuteKey => "settings-keys-toggle-mute",
             Row::ResetKeys => "settings-keys-reset",
             Row::Language => "settings-layout-language",
             Row::Intro => "settings-general-intro",
             Row::ColourScheme => "settings-general-colour-scheme",
+            Row::VolumeOverlay => "settings-general-volume-overlay",
+            Row::VolumeMeter => "settings-general-volume-meter",
             Row::Effects => "settings-general-effects",
             Row::Parallax => "settings-general-parallax",
             Row::ParallaxEnabled => "settings-general-parallax-enabled",
@@ -1078,6 +1114,18 @@ impl Rows {
                     .iter()
                     .position(|c| *c == s.general.colour_scheme),
             ),
+            Row::VolumeOverlay => choice(
+                Edge::ALL.len(),
+                Edge::ALL
+                    .iter()
+                    .position(|e| *e == s.general.volume_overlay),
+            ),
+            Row::VolumeMeter => choice(
+                MeterStyle::ALL.len(),
+                MeterStyle::ALL
+                    .iter()
+                    .position(|m| *m == s.general.volume_meter),
+            ),
             Row::Transitions => choice(
                 TransitionStyle::ALL.len(),
                 TransitionStyle::ALL
@@ -1317,7 +1365,12 @@ impl Rows {
             | Row::SmokeKey1
             | Row::SmokeKey2
             | Row::ToggleFpsKey
-            | Row::ToggleSettingsKey => RowKind::Button,
+            | Row::ToggleSettingsKey
+            | Row::VolumeUpKey
+            | Row::VolumeDownKey
+            | Row::VolumePreviousKey
+            | Row::VolumeNextKey
+            | Row::ToggleMuteKey => RowKind::Button,
         }
     }
 
@@ -1441,6 +1494,16 @@ impl Rows {
             (Row::ColourScheme, RowValue::Choice(i)) => {
                 if let Some(scheme) = ColourScheme::ALL.get(i) {
                     settings.general.colour_scheme = *scheme;
+                }
+            }
+            (Row::VolumeOverlay, RowValue::Choice(i)) => {
+                if let Some(edge) = Edge::ALL.get(i) {
+                    settings.general.volume_overlay = *edge;
+                }
+            }
+            (Row::VolumeMeter, RowValue::Choice(i)) => {
+                if let Some(style) = MeterStyle::ALL.get(i) {
+                    settings.general.volume_meter = *style;
                 }
             }
             (Row::Transitions, RowValue::Choice(i)) => {
@@ -1701,6 +1764,14 @@ impl Rows {
                     Row::ColourScheme => ColourScheme::ALL
                         .iter()
                         .map(|scheme| text(scheme.label_key()))
+                        .collect(),
+                    Row::VolumeOverlay => Edge::ALL
+                        .iter()
+                        .map(|edge| text(edge.label_key()))
+                        .collect(),
+                    Row::VolumeMeter => MeterStyle::ALL
+                        .iter()
+                        .map(|style| text(style.label_key()))
                         .collect(),
                     Row::Transitions => TransitionStyle::ALL
                         .iter()
@@ -2371,6 +2442,28 @@ mod tests {
         assert_eq!(s.general.colour_scheme, ColourScheme::Mono);
         rows.apply(&mut s, index(Row::ColourScheme), RowValue::Choice(9));
         assert_eq!(s.general.colour_scheme, ColourScheme::Mono);
+        assert_eq!(
+            rows.specs(&s)[index(Row::VolumeOverlay)].kind,
+            RowKind::Dropdown {
+                options: 4,
+                selected: 0
+            }
+        );
+        rows.apply(&mut s, index(Row::VolumeOverlay), RowValue::Choice(1));
+        assert_eq!(s.general.volume_overlay, Edge::Right);
+        rows.apply(&mut s, index(Row::VolumeOverlay), RowValue::Choice(9));
+        assert_eq!(s.general.volume_overlay, Edge::Right);
+        assert_eq!(
+            rows.specs(&s)[index(Row::VolumeMeter)].kind,
+            RowKind::Dropdown {
+                options: 3,
+                selected: 0
+            }
+        );
+        rows.apply(&mut s, index(Row::VolumeMeter), RowValue::Choice(2));
+        assert_eq!(s.general.volume_meter, MeterStyle::Bar);
+        rows.apply(&mut s, index(Row::VolumeMeter), RowValue::Choice(9));
+        assert_eq!(s.general.volume_meter, MeterStyle::Bar);
         rows.apply(&mut s, index(Row::Skew), RowValue::Slider(14.4));
         assert_eq!(s.general.skew, 14.0);
         rows.apply(&mut s, index(Row::Skew), RowValue::Slider(99.0));

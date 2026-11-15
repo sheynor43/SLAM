@@ -13,6 +13,21 @@ pub fn ease_out_quint(t: f32) -> f32 {
     1.0 - inv * inv * inv * inv * inv
 }
 
+// Ported from osu-framework 2026.921.1: osu.Framework/Graphics/Transforms/DefaultEasingFunction.cs (OutExpo)
+/// Exponential ease-out: very fast start, long soft stop. `t` is clamped to `0 ..= 1`.
+pub fn ease_out_expo(t: f32) -> f32 {
+    let t = f64::from(t.clamp(0.0, 1.0));
+    (-(2f64.powf(-10.0 * t)) + 1.0 + 2f64.powi(-10) * t) as f32
+}
+
+// Ported from osu-framework 2026.921.1: osu.Framework/Graphics/Transforms/DefaultEasingFunction.cs (OutBack)
+/// Back ease-out: overshoots a little past 1 and settles there. `t` is clamped to `0 ..= 1`.
+pub fn ease_out_back(t: f32) -> f32 {
+    const BACK: f64 = 1.70158;
+    let t = f64::from(t.clamp(0.0, 1.0)) - 1.0;
+    (t * t * ((BACK + 1.0) * t + BACK) + 1.0) as f32
+}
+
 // Ported from osu-framework 2026.921.1: osu.Framework/Graphics/Transforms/DefaultEasingFunction.cs (OutElastic)
 /// Elastic ease-out: overshoots and settles, ending exactly at 1. `t` is clamped to `0 ..= 1`.
 pub fn ease_out_elastic(t: f32) -> f32 {
@@ -86,6 +101,19 @@ mod tests {
             .map(|i| ease_out_elastic_quarter(i as f32 / 100.0))
             .fold(0.0, f32::max);
         assert!(quarter > 1.0, "{quarter}");
+    }
+
+    #[test]
+    fn expo_and_back_end_at_1_and_back_overshoots() {
+        assert!(ease_out_expo(0.0).abs() < 1e-6);
+        assert!((ease_out_expo(1.0) - 1.0).abs() < 1e-6);
+        assert!(ease_out_expo(0.2) > 0.7);
+        assert!(ease_out_back(0.0).abs() < 1e-6);
+        assert!((ease_out_back(1.0) - 1.0).abs() < 1e-6);
+        let peak = (1..100)
+            .map(|i| ease_out_back(i as f32 / 100.0))
+            .fold(0.0, f32::max);
+        assert!(peak > 1.05 && peak < 1.15, "{peak}");
     }
 
     #[test]
