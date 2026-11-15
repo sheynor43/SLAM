@@ -1,6 +1,6 @@
 //! Embeds the default skin (ADR-0068): generates the table of its files and a hash of their
 //! content, so a new skin version unpacks into a new folder. On MSVC targets also gives
-//! `slam.exe` its icon.
+//! `slam.exe` its icon; on Windows sets its main thread stack.
 
 use std::fmt::Write as _;
 use std::path::Path;
@@ -16,6 +16,21 @@ fn fnv1a(hash: &mut u64, bytes: &[u8]) {
 fn main() {
     embed_default_skin();
     embed_icon();
+    main_thread_stack();
+}
+
+/// 8 MiB main thread stack on Windows, as on Linux (ADR-0144): the linker's default of 1 MiB
+/// overflows while the shell starts (#369).
+fn main_thread_stack() {
+    const STACK: u32 = 8 * 1024 * 1024;
+    if std::env::var("CARGO_CFG_TARGET_OS").as_deref() != Ok("windows") {
+        return;
+    }
+    match std::env::var("CARGO_CFG_TARGET_ENV").as_deref() {
+        Ok("msvc") => println!("cargo::rustc-link-arg-bin=slam=/STACK:{STACK}"),
+        Ok("gnu") => println!("cargo::rustc-link-arg-bin=slam=-Wl,--stack,{STACK}"),
+        _ => {}
+    }
 }
 
 /// Only MSVC targets compile the icon: the Windows clippy check on Linux targets GNU and has no
