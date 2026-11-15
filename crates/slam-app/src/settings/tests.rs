@@ -12,6 +12,7 @@ use slam_play::{BackgroundSettings, FpsCorner};
 use slam_ui::cursor::CursorStyle;
 use slam_ui::screen::TransitionStyle;
 use slam_ui::theme::ColourScheme;
+use slam_ui::volume::{Edge, MeterStyle};
 
 use super::dirs::{Os, resolve};
 use super::file::{self, LoadStatus};
@@ -1497,6 +1498,52 @@ fn the_interface_settings_default_and_read_by_name() {
     assert_eq!((g.menu_scale, g.game_scale), (1.25, 0.8));
     assert_eq!(g.menu_background, MenuBackground::None);
     assert_eq!(loaded.settings.audio.menu_sounds, MenuSounds::Skin);
+}
+
+#[test]
+fn the_volume_overlay_setting_round_trips_and_falls_back() {
+    assert_eq!(Settings::default().general.volume_overlay, Edge::Left);
+    let loaded = file::from_toml_str("[general]\nvolume_overlay = \"right\"\n");
+    assert_eq!(loaded.status, LoadStatus::Ok, "{:?}", loaded.warnings);
+    assert_eq!(loaded.settings.general.volume_overlay, Edge::Right);
+    let text = file::to_toml_string(&loaded.settings).unwrap();
+    assert!(text.contains("volume_overlay = \"right\""), "{text}");
+    assert_eq!(file::from_toml_str(&text).settings, loaded.settings);
+
+    let loaded = file::from_toml_str("[general]\nvolume_overlay = \"middle\"\n");
+    assert_eq!(loaded.status, LoadStatus::Recovered);
+    assert_eq!(loaded.settings.general.volume_overlay, Edge::Left);
+    assert!(
+        loaded
+            .warnings
+            .iter()
+            .any(|w| w.starts_with("general.volume_overlay")),
+        "{:?}",
+        loaded.warnings
+    );
+}
+
+#[test]
+fn the_volume_meter_setting_round_trips_and_falls_back() {
+    assert_eq!(Settings::default().general.volume_meter, MeterStyle::Arc);
+    let loaded = file::from_toml_str("[general]\nvolume_meter = \"column\"\n");
+    assert_eq!(loaded.status, LoadStatus::Ok, "{:?}", loaded.warnings);
+    assert_eq!(loaded.settings.general.volume_meter, MeterStyle::Column);
+    let text = file::to_toml_string(&loaded.settings).unwrap();
+    assert!(text.contains("volume_meter = \"column\""), "{text}");
+    assert_eq!(file::from_toml_str(&text).settings, loaded.settings);
+
+    let loaded = file::from_toml_str("[general]\nvolume_meter = \"dots\"\n");
+    assert_eq!(loaded.status, LoadStatus::Recovered);
+    assert_eq!(loaded.settings.general.volume_meter, MeterStyle::Arc);
+    assert!(
+        loaded
+            .warnings
+            .iter()
+            .any(|w| w.starts_with("general.volume_meter")),
+        "{:?}",
+        loaded.warnings
+    );
 }
 
 #[test]

@@ -16,6 +16,7 @@ use slam_play::{BackgroundSettings, FpsCorner, FpsMode};
 use slam_ui::cursor::CursorStyle;
 use slam_ui::screen::TransitionStyle;
 use slam_ui::theme::ColourScheme;
+use slam_ui::volume::{Edge, MeterStyle};
 
 use super::keys;
 use crate::backend::Renderer;
@@ -129,6 +130,12 @@ pub struct General {
     /// The interface colour scheme (ADR-0117).
     #[serde(serialize_with = "serialize_colour_scheme")]
     pub colour_scheme: ColourScheme,
+    /// The window edge the volume overlay stands at (ADR-0145).
+    #[serde(serialize_with = "serialize_volume_overlay")]
+    pub volume_overlay: Edge,
+    /// How the volume overlay's meters show their level (ADR-0145).
+    #[serde(serialize_with = "serialize_volume_meter")]
+    pub volume_meter: MeterStyle,
     /// Scale of the menus, in `slam_ui::theme::UI_SCALE_RANGE` in steps of 0.05 (ADR-0118).
     #[serde(serialize_with = "serialize_scale")]
     pub menu_scale: f32,
@@ -165,6 +172,8 @@ impl Default for General {
             cursor_ripple: true,
             transitions: TransitionStyle::default(),
             colour_scheme: ColourScheme::default(),
+            volume_overlay: Edge::Left,
+            volume_meter: MeterStyle::Arc,
             menu_scale: 1.0,
             game_scale: 1.0,
             skew: DEFAULT_SKEW_DEGREES,
@@ -193,6 +202,17 @@ fn serialize_colour_scheme<S: Serializer>(
     serializer: S,
 ) -> Result<S::Ok, S::Error> {
     serializer.serialize_str(scheme.name())
+}
+
+fn serialize_volume_overlay<S: Serializer>(edge: &Edge, serializer: S) -> Result<S::Ok, S::Error> {
+    serializer.serialize_str(edge.name())
+}
+
+fn serialize_volume_meter<S: Serializer>(
+    style: &MeterStyle,
+    serializer: S,
+) -> Result<S::Ok, S::Error> {
+    serializer.serialize_str(style.name())
 }
 
 /// Writes the skew as a whole number of degrees.
@@ -1178,6 +1198,14 @@ impl Combo {
 
 /// O, lazer's key for `ToggleSettings` with Ctrl.
 const KEY_O: u16 = 18;
+/// The arrows lazer's volume keys take with Alt (SDL scancodes), and M, which mute takes
+/// with Ctrl: lazer's Ctrl+F4 raises the approach rate on the song select (ADR-0056,
+/// ADR-0145).
+const KEY_RIGHT: u16 = 79;
+const KEY_LEFT: u16 = 80;
+const KEY_DOWN: u16 = 81;
+const KEY_UP: u16 = 82;
+const KEY_M: u16 = 16;
 
 /// Keys of the whole window, outside the gameplay bindings (ADR-0060, ADR-0095).
 #[derive(Clone, Copy, Debug, PartialEq, Serialize)]
@@ -1193,6 +1221,29 @@ pub struct Hotkeys {
     /// written, an empty name when unbound: left out it would come back as Ctrl+O.
     #[serde(serialize_with = "serialize_combo")]
     pub toggle_settings: Option<Combo>,
+    /// The volume overlay (ADR-0145), as lazer's `IncreaseVolume` (Alt+Up),
+    /// `DecreaseVolume` (Alt+Down), `PreviousVolumeMeter` (Alt+Left), `NextVolumeMeter`
+    /// (Alt+Right) and `ToggleMute` (Ctrl+M here: Ctrl+F4 is the song select's, ADR-0056).
+    /// Always written, an empty name when unbound: left out it would come back as the
+    /// default.
+    #[serde(serialize_with = "serialize_combo")]
+    pub volume_up: Option<Combo>,
+    /// Always written, an empty name when unbound: left out it would come back as the
+    /// default.
+    #[serde(serialize_with = "serialize_combo")]
+    pub volume_down: Option<Combo>,
+    /// Always written, an empty name when unbound: left out it would come back as the
+    /// default.
+    #[serde(serialize_with = "serialize_combo")]
+    pub volume_previous: Option<Combo>,
+    /// Always written, an empty name when unbound: left out it would come back as the
+    /// default.
+    #[serde(serialize_with = "serialize_combo")]
+    pub volume_next: Option<Combo>,
+    /// Always written, an empty name when unbound: left out it would come back as the
+    /// default.
+    #[serde(serialize_with = "serialize_combo")]
+    pub toggle_mute: Option<Combo>,
 }
 
 impl Default for Hotkeys {
@@ -1202,6 +1253,26 @@ impl Default for Hotkeys {
             toggle_settings: Some(Combo {
                 mods: Mods::CTRL,
                 input: Input::Key(KEY_O),
+            }),
+            volume_up: Some(Combo {
+                mods: Mods::ALT,
+                input: Input::Key(KEY_UP),
+            }),
+            volume_down: Some(Combo {
+                mods: Mods::ALT,
+                input: Input::Key(KEY_DOWN),
+            }),
+            volume_previous: Some(Combo {
+                mods: Mods::ALT,
+                input: Input::Key(KEY_LEFT),
+            }),
+            volume_next: Some(Combo {
+                mods: Mods::ALT,
+                input: Input::Key(KEY_RIGHT),
+            }),
+            toggle_mute: Some(Combo {
+                mods: Mods::CTRL,
+                input: Input::Key(KEY_M),
             }),
         }
     }
@@ -1230,11 +1301,35 @@ pub enum KeySlot {
     Play(Actions, usize),
     ToggleFps,
     ToggleSettings,
+    VolumeUp,
+    VolumeDown,
+    VolumePrevious,
+    VolumeNext,
+    ToggleMute,
 }
 
 impl KeySlot {
     /// The hotkey slots.
-    pub const HOTKEYS: [KeySlot; 2] = [KeySlot::ToggleFps, KeySlot::ToggleSettings];
+    pub const HOTKEYS: [KeySlot; 7] = [
+        KeySlot::ToggleFps,
+        KeySlot::ToggleSettings,
+        KeySlot::VolumeUp,
+        KeySlot::VolumeDown,
+        KeySlot::VolumePrevious,
+        KeySlot::VolumeNext,
+        KeySlot::ToggleMute,
+    ];
+
+    /// The hotkeys with their names in settings files, in [`KeySlot::HOTKEYS`] order.
+    pub const HOTKEY_NAMES: [(&'static str, KeySlot); 7] = [
+        ("toggle_fps", KeySlot::ToggleFps),
+        ("toggle_settings", KeySlot::ToggleSettings),
+        ("volume_up", KeySlot::VolumeUp),
+        ("volume_down", KeySlot::VolumeDown),
+        ("volume_previous", KeySlot::VolumePrevious),
+        ("volume_next", KeySlot::VolumeNext),
+        ("toggle_mute", KeySlot::ToggleMute),
+    ];
 
     /// Whether it is a hotkey, which takes modifiers.
     pub fn is_hotkey(self) -> bool {
@@ -1271,6 +1366,11 @@ impl Settings {
             KeySlot::Play(action, n) => self.input.slot(action, n).map(Combo::plain),
             KeySlot::ToggleFps => self.hotkeys.toggle_fps,
             KeySlot::ToggleSettings => self.hotkeys.toggle_settings,
+            KeySlot::VolumeUp => self.hotkeys.volume_up,
+            KeySlot::VolumeDown => self.hotkeys.volume_down,
+            KeySlot::VolumePrevious => self.hotkeys.volume_previous,
+            KeySlot::VolumeNext => self.hotkeys.volume_next,
+            KeySlot::ToggleMute => self.hotkeys.toggle_mute,
         }
     }
 
@@ -1279,6 +1379,11 @@ impl Settings {
             KeySlot::Play(..) => None,
             KeySlot::ToggleFps => Some(&mut self.hotkeys.toggle_fps),
             KeySlot::ToggleSettings => Some(&mut self.hotkeys.toggle_settings),
+            KeySlot::VolumeUp => Some(&mut self.hotkeys.volume_up),
+            KeySlot::VolumeDown => Some(&mut self.hotkeys.volume_down),
+            KeySlot::VolumePrevious => Some(&mut self.hotkeys.volume_previous),
+            KeySlot::VolumeNext => Some(&mut self.hotkeys.volume_next),
+            KeySlot::ToggleMute => Some(&mut self.hotkeys.toggle_mute),
         }
     }
 
@@ -1332,6 +1437,14 @@ impl Settings {
                 Input::Key(MENU_KEYS_FIRST..=MENU_KEYS_LAST)
                     | Input::Key(KEY_TAB | KEY_BACKSPACE | KEY_DELETE)
             ) || slam_play::hotkeys::is_gameplay_hotkey(input))
+    }
+
+    /// Sets hotkey `slot` to `combo` as the file says it, without checks; a gameplay slot
+    /// is left alone.
+    pub(crate) fn set_hotkey(&mut self, slot: KeySlot, combo: Option<Combo>) {
+        if let Some(hotkey) = self.hotkey_mut(slot) {
+            *hotkey = combo;
+        }
     }
 
     /// Puts `combo` into `slot` and takes it out of every other slot. Returns `false` and

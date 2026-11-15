@@ -1026,6 +1026,16 @@ impl SettingsScreen {
         }
     }
 
+    /// Shows `value` in slider row `row`, changed from outside the screen (the volume
+    /// overlay, ADR-0145), unless the slider is being dragged. Anything else is left alone.
+    pub fn set_slider(&mut self, row: usize, value: f64) {
+        if let Some(RowWidget::Slider(s)) = self.widgets[..self.len].get_mut(row)
+            && !s.is_dragging()
+        {
+            s.set(value);
+        }
+    }
+
     /// Asks whether to take `key` for key row `row` although the key row `other` (if on the
     /// screen) has it. The screen answers with [`SettingsAction::ConflictResolved`].
     pub fn ask_conflict(&mut self, row: usize, key: KeyValue, other: Option<usize>) {
