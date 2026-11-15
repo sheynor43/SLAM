@@ -63,6 +63,10 @@ use slam_ui::song_select::{
 };
 use slam_ui::song_select::{MAX_VISIBLE_ROWS, RowThumb, Thumbs};
 use slam_ui::theme::{CursorFx, Theme};
+use slam_ui::volume::{
+    Levels, MAX_VOLUME_GLYPHS, MAX_VOLUME_SHAPES, VolumeFrame, VolumeLayout, VolumeMixer,
+    VolumeView,
+};
 use slam_ui::widgets::DropdownView;
 
 use crate::backend::{self as render, Opened, WindowKind, WithBackend};
@@ -126,11 +130,12 @@ const MAX_SHAPES: usize = 1024
     + 2 * MAX_LAYERS
     + slam_ui::curtain::MAX_SPRITES
     + 1
-    + crate::menu_cursor::MAX_MENU_CURSOR_SHAPES;
+    + crate::menu_cursor::MAX_MENU_CURSOR_SHAPES
+    + MAX_VOLUME_SHAPES;
 /// Outlined glyphs of the startup intro's title (ADR-0114).
 const MAX_INTRO_OUTLINES: usize = 64;
 /// Glyph sprites of one frame: the texts of up to two layers and the FPS counter.
-const MAX_GLYPH_SPRITES: usize = 8192 + MAX_FPS_GLYPHS;
+const MAX_GLYPH_SPRITES: usize = 8192 + MAX_FPS_GLYPHS + MAX_VOLUME_GLYPHS;
 /// How long the draw thread waits for the glyphs before the first frame.
 const GLYPH_WARM_TIMEOUT: Duration = Duration::from_secs(1);
 /// How long the window must stay still before a size, display or position it reported
@@ -290,6 +295,8 @@ pub struct ShellSnapshot {
     pub intro: Option<IntroSnapshot>,
     /// The menu cursor drawn over everything (ADR-0124).
     pub menu_cursor: crate::menu_cursor::MenuCursorFrame,
+    /// The volume overlay over the screens and the play (ADR-0145).
+    pub volume: VolumeFrame,
 }
 
 /// The update logic without the window: input to navigation to snapshot.
@@ -347,6 +354,8 @@ pub struct ShellState {
     editing: Option<Settings>,
     /// Settings to write to the file, not yet taken by [`ShellState::take_save_request`].
     save_request: Option<Box<Settings>>,
+    /// The volume overlay (ADR-0145): it changes the audio levels of `settings`.
+    volume: VolumeMixer,
     /// The mods the next play takes: they outlast a play and the results, and are not saved.
     selected_mods: ModSet,
     /// The panel's mods with default settings, by column and tile: a toggle clones one
@@ -463,6 +472,7 @@ impl ShellState {
             rows: Rows::new(&Settings::default()),
             editing: None,
             save_request: None,
+            volume: VolumeMixer::new(),
             // An empty set is always compatible; the capacity keeps a toggle from allocating.
             selected_mods: ModSet::new(Vec::with_capacity(SELECTED_MODS_CAPACITY))
                 .unwrap_or_default(),
@@ -1188,6 +1198,179 @@ impl ShellState {
         self.save_request = Some(Box::new(self.settings.clone()));
     }
 
+    /// Hides the volume overlay once it waited, saves what it changed then, and puts it
+    /// into the snapshot (ADR-0145). The save allocates: once per use of the overlay.
+    fn tick_volume(&mut self, now_ns: u64, snapshot: &mut ShellSnapshot) {
+        let layout = self.volume_layout();
+        let [x, y] = self.cursor;
+        self.volume.hover(x, y, &layout, now_ns);
+        self.volume.tick(now_ns);
+        if self.volume.take_save() {
+            self.save_settings();
+        }
+        let edge = self.live_settings().general.volume_overlay;
+        let style = self.live_settings().general.volume_meter;
+        snapshot.volume = self.volume.frame(edge, style, &self.volume_levels());
+    }
+
+    /// Whether the sound is muted by the volume overlay (ADR-0145).
+    pub fn volume_muted(&self) -> bool {
+        self.volume.muted()
+    }
+
+    /// Whether the volume overlay changed a level that is not saved yet; forgets it. For
+    /// the window closing (ADR-0145).
+    pub fn take_volume_unsaved(&mut self) -> bool {
+        self.volume.take_unsaved()
+    }
+
+    /// Watches the input for the volume overlay while the play has it (ADR-0145): the
+    /// play has no use for the wheel or the volume hotkeys.
+    pub fn watch_volume(&mut self, events: &[InputEvent], now_ns: u64) {
+        for event in events {
+            self.volume_input(event.kind, now_ns);
+        }
+    }
+
+    /// Where the volume overlay's meters are in the window (ADR-0145).
+    fn volume_layout(&self) -> VolumeLayout {
+        let edge = self.live_settings().general.volume_overlay;
+        let style = self.live_settings().general.volume_meter;
+        VolumeLayout::new(edge, style, self.size[0], self.size[1], &self.theme)
+    }
+
+    /// The levels the volume overlay shows, in `Meter::ALL` order: the settings screen's
+    /// edits while it is open, so that the overlay starts from what its sliders show.
+    fn volume_levels(&self) -> Levels {
+        let audio = &self.live_settings().audio;
+        [
+            audio.hitsound_volume,
+            audio.effects_volume,
+            audio.master_volume,
+            audio.music_volume,
+        ]
+    }
+
+    /// Takes the levels the volume overlay changed from `before`: into the settings in
+    /// force, the ones being edited and the open settings screen's sliders. Only the meters
+    /// that changed are written, so the screen's unsaved edits of the others stay. Applied
+    /// to the sound by the next tick's settings sync; saved when the overlay hides.
+    fn set_volume_levels(&mut self, before: Levels, levels: Levels) {
+        fn level(audio: &mut crate::settings::Audio, meter: usize) -> &mut f64 {
+            match meter {
+                0 => &mut audio.hitsound_volume,
+                1 => &mut audio.effects_volume,
+                2 => &mut audio.master_volume,
+                _ => &mut audio.music_volume,
+            }
+        }
+        const ROWS: [Row; 4] = [
+            Row::HitsoundVolume,
+            Row::EffectsVolume,
+            Row::MasterVolume,
+            Row::MusicVolume,
+        ];
+        for meter in 0..levels.len() {
+            if levels[meter] == before[meter] {
+                continue;
+            }
+            *level(&mut self.settings.audio, meter) = levels[meter];
+            if let Some(editing) = &mut self.editing {
+                *level(&mut editing.audio, meter) = levels[meter];
+            }
+            if let Some(panel) = &mut self.panel
+                && let Some(index) = Row::ALL.iter().position(|r| *r == ROWS[meter])
+            {
+                panel.screen.set_slider(index, levels[meter] * 100.0);
+            }
+        }
+    }
+
+    /// The volume overlay's share of the input (ADR-0145), as lazer's: Alt + wheel
+    /// anywhere, the wheel over a shown meter, the volume hotkeys; the pointer over it is
+    /// only watched. Returns whether it took `kind`.
+    fn volume_input(&mut self, kind: InputKind, now_ns: u64) -> bool {
+        self.track_modifiers(kind);
+        // A key row that listens takes every key, the volume ones too.
+        let listening = self
+            .panel
+            .as_ref()
+            .filter(|p| p.motion.is_open())
+            .and_then(|p| p.screen.listening_row())
+            .is_some();
+        if listening {
+            return false;
+        }
+        match kind {
+            InputKind::MouseMove { x, y } => {
+                self.cursor = [x * self.pixels_per_point, y * self.pixels_per_point];
+                let layout = self.volume_layout();
+                self.volume
+                    .pointer(self.cursor[0], self.cursor[1], &layout, now_ns);
+                false
+            }
+            InputKind::MouseWheel { y } => {
+                let amount = f64::from(y);
+                // Whole notches from a wheel, fractions from a touchpad.
+                let precise = amount.fract() != 0.0;
+                let before = self.volume_levels();
+                let mut levels = before;
+                let taken = if self.mods().contains(Mods::ALT) {
+                    self.volume.adjust(&mut levels, amount, precise, now_ns);
+                    true
+                } else {
+                    let layout = self.volume_layout();
+                    let [x, y] = self.cursor;
+                    self.volume
+                        .wheel_over(&mut levels, amount, precise, x, y, &layout, now_ns)
+                };
+                if levels != before {
+                    self.set_volume_levels(before, levels);
+                }
+                taken
+            }
+            InputKind::Key {
+                scancode,
+                down: true,
+            }
+            | InputKind::KeyRepeat { scancode } => {
+                let repeat = matches!(kind, InputKind::KeyRepeat { .. });
+                let pressed = InputKind::Key {
+                    scancode,
+                    down: true,
+                };
+                let step = match self.hotkey(pressed) {
+                    Some(KeySlot::VolumeUp) => 1.0,
+                    Some(KeySlot::VolumeDown) => -1.0,
+                    // Only the volume itself repeats while held, as lazer's.
+                    Some(KeySlot::VolumePrevious) if !repeat => {
+                        return self.volume.step_meter(false, now_ns);
+                    }
+                    Some(KeySlot::VolumeNext) if !repeat => {
+                        return self.volume.step_meter(true, now_ns);
+                    }
+                    Some(KeySlot::ToggleMute) if !repeat => {
+                        self.volume.toggle_mute(now_ns);
+                        return true;
+                    }
+                    Some(KeySlot::VolumePrevious | KeySlot::VolumeNext) => {
+                        return self.volume.visible();
+                    }
+                    Some(KeySlot::ToggleMute) => return true,
+                    _ => return false,
+                };
+                let before = self.volume_levels();
+                let mut levels = before;
+                self.volume.adjust(&mut levels, step, false, now_ns);
+                if levels != before {
+                    self.set_volume_levels(before, levels);
+                }
+                true
+            }
+            _ => false,
+        }
+    }
+
     /// Notes a modifier key going down or up.
     fn track_modifiers(&mut self, kind: InputKind) {
         track(&mut self.modifiers, kind);
@@ -1657,6 +1840,10 @@ impl ShellState {
             if let InputKind::WindowMode(_) = event.kind {
                 continue;
             }
+            // Before the intro and the screens: lazer takes the volume keys first.
+            if self.volume_input(event.kind, now_ns) {
+                continue;
+            }
             if self.intro_input(event.kind, now_ns) {
                 continue;
             }
@@ -1805,6 +1992,7 @@ impl ShellState {
         self.receive_songs();
         self.receive_displays();
         let navigated = self.handle(events, now_ns);
+        self.tick_volume(now_ns, snapshot);
         self.note_ui_sounds(events);
         if self.intro.is_some_and(|intro| intro.is_done(now_ns)) {
             self.intro = None;
@@ -2442,7 +2630,7 @@ impl PlayHost {
 
     /// Hands changed settings to the audio thread and to the next play (ADR-0048). Does
     /// not block; allocates only to ask for another output (ADR-0089).
-    fn apply_settings(&mut self, settings: &Settings) {
+    fn apply_settings(&mut self, settings: &Settings, muted: bool) {
         self.pause_menu = (
             settings.gameplay.pause_menu_style,
             settings.gameplay.pause_menu_scale,
@@ -2455,7 +2643,7 @@ impl PlayHost {
         }
         let audio = &mut self.audio;
         audio.volumes.sync(
-            Volumes::of(&settings.audio),
+            Volumes::of(&settings.audio).muted(muted),
             &mut audio.mixer,
             &mut audio.player,
             &mut audio.previews,
@@ -3211,7 +3399,7 @@ impl Shell {
         self.mouse.set_relative(input.high_precision_mouse);
         self.mouse.set_sensitivity(input.sensitivity);
         if let Some(host) = &mut self.host {
-            host.apply_settings(settings);
+            host.apply_settings(settings, self.state.volume_muted());
         }
         let theme = interface_theme(self.state.live_settings(), self.state.settings());
         if self
@@ -3277,6 +3465,7 @@ impl Update for Shell {
                 host.tick_game(now, events, &mut snapshot.play);
                 self.state.follow_pointer(events);
                 self.state.watch_hotkeys(events);
+                self.state.watch_volume(events, now);
                 self.state.tick(now, &[], snapshot)
             }
             Some(host) if playing => {
@@ -3456,6 +3645,8 @@ struct View<B: render::Backend> {
     surface_size: Arc<AtomicU64>,
     /// The FPS counter over every screen (ADR-0060).
     fps: FpsOverlay,
+    /// The volume overlay over every screen (ADR-0145).
+    volume: VolumeView,
     /// Views laid out in a language switched to (ADR-0091).
     languages: Option<LanguageViews>,
     /// The curtain over a language switch and the views it waits for.
@@ -3626,6 +3817,7 @@ impl<B: render::Backend> Draw<ShellSnapshot> for View<B> {
             std::mem::swap(&mut self.results, &mut views.results);
             std::mem::swap(&mut self.settings, &mut views.settings);
             self.fps.swap_view(&mut views.fps);
+            std::mem::swap(&mut self.volume, &mut views.volume);
             self.theme = views.theme;
             languages.give_back(views);
         }
@@ -3637,6 +3829,7 @@ impl<B: render::Backend> Draw<ShellSnapshot> for View<B> {
                 &self.results,
                 &self.settings,
                 &self.fps,
+                &self.volume,
             )
         });
         self.glyphs.process(&mut r.device, &mut r.textures);
@@ -3927,6 +4120,17 @@ impl<B: render::Backend> Draw<ShellSnapshot> for View<B> {
             info.wait.woke_ns,
             r.white,
         );
+        // Over the curtain too, so a change under a language switch shows (ADR-0145).
+        self.volume.push(
+            &mut self.shapes,
+            &mut self.text,
+            &mut self.glyphs,
+            &snapshot.volume,
+            width,
+            height,
+            info.wait.woke_ns,
+            r.white,
+        );
         self.fps.push(
             &mut self.shapes,
             &self.theme,
@@ -4077,6 +4281,7 @@ impl<B: render::Backend> View<B> {
             &self.results,
             &self.settings,
             &self.fps,
+            &self.volume,
         )
     }
 }
@@ -4089,12 +4294,14 @@ fn glyphs_pending(
     results: &ResultsView,
     settings: &SettingsView,
     fps: &FpsOverlay,
+    volume: &VolumeView,
 ) -> usize {
     menu.request_glyphs(glyphs)
         + song_select.request_glyphs(glyphs)
         + results.request_glyphs(glyphs)
         + settings.request_glyphs(glyphs)
         + fps.request_glyphs(glyphs)
+        + volume.request_glyphs(glyphs)
 }
 
 /// The backend `name` names if this build has it, else the first available one.
@@ -4509,8 +4716,11 @@ fn run_with<B: render::Backend>(
         results,
         settings: settings_view,
         fps: fps_view,
+        volume: mut volume_view,
         ..
     } = language::interface_views(&registry, theme, &localizer, state.rows(), &settings);
+    // Its first showing would otherwise lay out and grow its lines in a frame (ADR-0145).
+    volume_view.lay_out_for(pixels_w as f32, pixels_h as f32);
     let (language_link, language_views, _language) = match language::spawn(
         Arc::clone(&registry),
         Arc::clone(&localizer),
@@ -4876,6 +5086,7 @@ fn run_with<B: render::Backend>(
             .with_audio_meter(audio_meter),
             fps_view,
         ),
+        volume: volume_view,
         languages: language_views,
         swap: LanguageSwap::default(),
         backgrounds,
@@ -4957,6 +5168,10 @@ fn run_with<B: render::Backend>(
     drop(thumb_worker);
     // A place the window was given just before closing waits no longer.
     if shell.window_save_at.take().is_some() {
+        shell.state.save_settings();
+    }
+    // Neither does a volume the overlay changed before it hid (ADR-0145).
+    if shell.state.take_volume_unsaved() {
         shell.state.save_settings();
     }
     // Closing the window saves, as leaving the settings screen does.

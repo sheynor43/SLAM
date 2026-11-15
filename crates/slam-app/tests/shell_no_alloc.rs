@@ -182,6 +182,34 @@ fn song_select_ticks_and_new_lists_do_not_allocate() {
             state.tick(now, &input, &mut snapshot);
         }
     });
+    // The volume overlay (ADR-0145): Alt + wheel shows it and changes levels, Alt+arrows
+    // walk its meters and step, the wheel over a meter changes that one; sparks fill their
+    // ring. It does not hide within the loop, so nothing is saved.
+    let alt = |down| {
+        event(InputKind::Key {
+            scancode: 226,
+            down,
+        })
+    };
+    let volume: Vec<InputEvent> = [
+        alt(true),
+        event(InputKind::MouseWheel { y: 1.0 }),
+        event(InputKind::MouseWheel { y: -1.0 }),
+        key(79),
+        key(81),
+        event(InputKind::KeyRepeat { scancode: 82 }),
+        alt(false),
+        event(InputKind::MouseMove { x: 40.0, y: 360.0 }),
+        event(InputKind::MouseWheel { y: 0.5 }),
+    ]
+    .into();
+    assert_no_alloc(|| {
+        let start = 4 * TRANSITION_NS;
+        for now in start..start + 50 {
+            state.tick(now, &volume, &mut snapshot);
+        }
+    });
+    assert!(snapshot.volume.visible);
     // The mod select: F1, toggles that drop conflicts, Backspace, the Control hotkeys, F1
     // again. The selection has
     // room reserved, so toggling allocates nothing.

@@ -1021,12 +1021,12 @@ fn the_host_blocks_the_windows_key_while_playing() {
     // Switched off in the pause: playing on does not block.
     let mut settings = Settings::default();
     settings.gameplay.disable_win_key = false;
-    fixture.host.apply_settings(&settings);
+    fixture.host.apply_settings(&settings, false);
     snapshot.state = PlayState::Playing;
     fixture.host.follow_play(&snapshot);
     assert!(!block.is_blocked());
     settings.gameplay.disable_win_key = true;
-    fixture.host.apply_settings(&settings);
+    fixture.host.apply_settings(&settings, false);
     fixture.host.follow_play(&snapshot);
     assert!(block.is_blocked());
 }
@@ -1236,7 +1236,7 @@ fn changed_settings_reach_the_audio_and_the_next_play() {
     settings.timing.global_offset_ms = -12.0;
     settings.gameplay.mouse_buttons = !settings.gameplay.mouse_buttons;
     settings.input.clear(Actions::SMOKE, 0);
-    fixture.host.apply_settings(&settings);
+    fixture.host.apply_settings(&settings, false);
     let host = &fixture.host;
     assert_eq!(
         host.audio.volumes,
@@ -1256,27 +1256,27 @@ fn a_changed_output_is_asked_of_the_output_thread_once() {
     let mut settings = Settings::default();
     // Volumes alone keep the output.
     settings.audio.master_volume = 0.5;
-    fixture.host.apply_settings(&settings);
+    fixture.host.apply_settings(&settings, false);
     assert!(ends.requests.pop().is_err());
     settings.audio.device = Some("hdmi".into());
-    fixture.host.apply_settings(&settings);
+    fixture.host.apply_settings(&settings, false);
     assert!(fixture.host.switching);
     assert!(matches!(
         ends.requests.pop(),
         Ok(Request::Open(a)) if a.device.as_deref() == Some("hdmi")
     ));
     // Asked once, however long it takes.
-    fixture.host.apply_settings(&settings);
+    fixture.host.apply_settings(&settings, false);
     assert!(ends.requests.pop().is_err());
     // An output that did not open is not asked for again until the settings change.
     assert!(ends.opened.push(output::Opened::Lost).is_ok());
     let mut s = state();
     fixture.host.advance(1, &mut s);
     assert!(!fixture.host.switching);
-    fixture.host.apply_settings(&settings);
+    fixture.host.apply_settings(&settings, false);
     assert!(ends.requests.pop().is_err());
     settings.audio.buffer_frames *= 2;
-    fixture.host.apply_settings(&settings);
+    fixture.host.apply_settings(&settings, false);
     assert!(matches!(ends.requests.pop(), Ok(Request::Open(_))));
 }
 
@@ -1526,10 +1526,10 @@ fn a_full_ring_asks_for_the_output_again() {
     {}
     let mut settings = Settings::default();
     settings.audio.device = Some("hdmi".into());
-    fixture.host.apply_settings(&settings);
+    fixture.host.apply_settings(&settings, false);
     assert!(!fixture.host.switching);
     while ends.requests.pop().is_ok() {}
-    fixture.host.apply_settings(&settings);
+    fixture.host.apply_settings(&settings, false);
     assert!(fixture.host.switching);
     assert!(matches!(ends.requests.pop(), Ok(Request::Open(_))));
 }
@@ -2533,4 +2533,122 @@ fn the_parallax_follows_its_own_switch_not_the_effects() {
     let mut s = ShellState::new(Theme::default(), 1280.0, 720.0, 1.0).with_settings(settings);
     s.tick(0, &[], &mut snap);
     assert_eq!(snap.parallax, 0.0);
+}
+
+fn wheel(y: f32) -> InputEvent {
+    mouse(InputKind::MouseWheel { y })
+}
+
+const MS: u64 = 1_000_000;
+
+#[test]
+fn alt_wheel_shows_the_volume_overlay_then_changes_the_master_volume() {
+    let mut s = state();
+    let mut snap = ShellSnapshot::default();
+    s.tick(0, &[], &mut snap);
+    assert!(!snap.volume.visible);
+    // The first notch only shows it, on the master meter.
+    s.tick(MS, &[key(KEY_LEFT_ALT), wheel(1.0)], &mut snap);
+    assert!(snap.volume.visible);
+    assert_eq!(snap.volume.selected, slam_ui::volume::Meter::Master);
+    assert_eq!(s.settings().audio.master_volume, 1.0);
+    s.tick(300 * MS, &[wheel(-1.0)], &mut snap);
+    assert!((s.settings().audio.master_volume - 0.99).abs() < 1e-9);
+    assert!((snap.volume.levels[2] - 0.99).abs() < 1e-6);
+    // Nothing is saved while it shows; once it hides, once.
+    assert!(s.take_save_request().is_none());
+    s.tick(800 * MS, &[key_up(KEY_LEFT_ALT)], &mut snap);
+    assert!(s.take_save_request().is_none());
+    s.tick(1400 * MS, &[], &mut snap);
+    assert!(!snap.volume.visible);
+    let saved = s.take_save_request().expect("saved on hiding");
+    assert!((saved.audio.master_volume - 0.99).abs() < 1e-9);
+    assert!(s.take_save_request().is_none());
+}
+
+#[test]
+fn the_wheel_without_alt_is_left_to_the_screens() {
+    let mut s = state();
+    let mut snap = ShellSnapshot::default();
+    s.tick(MS, &[wheel(1.0)], &mut snap);
+    assert!(!snap.volume.visible);
+    assert_eq!(s.settings().audio.master_volume, 1.0);
+}
+
+#[test]
+fn volume_hotkeys_change_and_cycle_the_meters_and_repeat() {
+    let mut s = state();
+    let mut snap = ShellSnapshot::default();
+    let alt = key(KEY_LEFT_ALT);
+    s.tick(MS, &[alt, key(KEY_DOWN)], &mut snap);
+    assert!(snap.volume.visible);
+    // Alt+Right walks to the music meter; Alt+Down lowers it, held it repeats.
+    s.tick(300 * MS, &[key(KEY_RIGHT)], &mut snap);
+    assert_eq!(snap.volume.selected, slam_ui::volume::Meter::Music);
+    s.tick(600 * MS, &[key(KEY_DOWN)], &mut snap);
+    let repeat = mouse(InputKind::KeyRepeat { scancode: KEY_DOWN });
+    s.tick(900 * MS, &[repeat], &mut snap);
+    assert!((s.settings().audio.music_volume - 0.98).abs() < 1e-9);
+    assert_eq!(s.settings().audio.master_volume, 1.0);
+    // The menu did not take the arrows meanwhile.
+    assert!(matches!(s.stack().top(), AppScreen::Menu(_)));
+}
+
+#[test]
+fn ctrl_m_mutes_without_changing_the_level() {
+    let mut s = state();
+    let mut snap = ShellSnapshot::default();
+    s.tick(MS, &[key(KEY_LEFT_CTRL), key(16)], &mut snap);
+    assert!(s.volume_muted());
+    assert!(snap.volume.muted && snap.volume.visible);
+    assert_eq!(s.settings().audio.master_volume, 1.0);
+    s.tick(2 * MS, &[key(16)], &mut snap);
+    assert!(!s.volume_muted());
+}
+
+#[test]
+fn the_volume_overlay_works_while_a_play_has_the_input() {
+    let mut s = state();
+    let mut snap = ShellSnapshot::default();
+    s.watch_volume(&[key(KEY_LEFT_ALT), wheel(1.0)], MS);
+    s.watch_volume(&[wheel(-2.0)], 300 * MS);
+    assert!((s.settings().audio.master_volume - 0.98).abs() < 1e-9);
+    s.tick(400 * MS, &[], &mut snap);
+    assert!(snap.volume.visible);
+}
+
+#[test]
+fn the_wheel_over_a_shown_meter_changes_it() {
+    let mut s = state();
+    let mut snap = ShellSnapshot::default();
+    s.tick(
+        MS,
+        &[key(KEY_LEFT_ALT), wheel(1.0), key_up(KEY_LEFT_ALT)],
+        &mut snap,
+    );
+    let layout = s.volume_layout();
+    let [x, y] = layout.meters[slam_ui::volume::Meter::Effects.index()]
+        .card
+        .centre();
+    s.tick(
+        300 * MS,
+        &[mouse(InputKind::MouseMove { x, y }), wheel(-1.0)],
+        &mut snap,
+    );
+    assert_eq!(snap.volume.selected, slam_ui::volume::Meter::Effects);
+    assert!((s.settings().audio.effects_volume - 0.99).abs() < 1e-9);
+    // The pointer over it keeps it up.
+    s.tick(5000 * MS, &[], &mut snap);
+    assert!(snap.volume.visible);
+}
+
+#[test]
+fn the_volume_overlay_stands_at_the_edge_the_settings_say() {
+    let mut s = state();
+    let mut settings = s.settings().clone();
+    settings.general.volume_overlay = slam_ui::volume::Edge::Bottom;
+    s = s.with_settings(settings);
+    let mut snap = ShellSnapshot::default();
+    s.tick(MS, &[], &mut snap);
+    assert_eq!(snap.volume.edge, slam_ui::volume::Edge::Bottom);
 }

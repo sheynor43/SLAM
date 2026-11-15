@@ -73,6 +73,20 @@ impl Volumes {
             hitsound_delay_ms: settings.hitsound_delay.ms(),
         }
     }
+
+    /// The same gains, silent while `muted` (the volume overlay's mute, ADR-0145): the
+    /// master gain and the tracks, which take it themselves, go to 0; the levels stay.
+    pub fn muted(self, muted: bool) -> Volumes {
+        if !muted {
+            return self;
+        }
+        Volumes {
+            master: 0.0,
+            music: 0.0,
+            menu_music: 0.0,
+            ..self
+        }
+    }
 }
 
 /// The gains the mixer and the music player were last given.
@@ -262,6 +276,24 @@ mod tests {
             Ok::<(), ()>(())
         }));
         assert_eq!(sent, 0);
+    }
+
+    #[test]
+    fn mute_silences_the_master_and_the_tracks_but_not_the_group_levels() {
+        let audio = Audio {
+            master_volume: 0.5,
+            hitsound_volume: 0.75,
+            effects_volume: 0.25,
+            ..Audio::default()
+        };
+        let volumes = Volumes::of(&audio);
+        assert_eq!(volumes.muted(false), volumes);
+        let muted = volumes.muted(true);
+        assert_eq!(
+            (muted.master, muted.music, muted.menu_music),
+            (0.0, 0.0, 0.0)
+        );
+        assert_eq!((muted.hitsounds, muted.effects), (0.75, 0.25));
     }
 
     #[test]

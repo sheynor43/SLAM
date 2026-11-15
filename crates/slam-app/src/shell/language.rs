@@ -16,6 +16,7 @@ use slam_ui::results::{ResultsLabels, ResultsView, StatKind};
 use slam_ui::settings_screen::SettingsView;
 use slam_ui::song_select::{DetailLabels, SongSelectLabels, SongSelectView};
 use slam_ui::theme::Theme;
+use slam_ui::volume::{Meter, VolumeLabels, VolumeView};
 
 use super::rows::Rows;
 use super::{mod_columns, mod_settings, results_label_key};
@@ -33,6 +34,8 @@ pub struct InterfaceViews {
     pub results: ResultsView,
     pub settings: SettingsView,
     pub fps: FpsView,
+    /// The volume overlay (ADR-0145).
+    pub volume: VolumeView,
     /// The theme they were laid out with: the draw side's from the swap on.
     pub theme: Theme,
     /// The switch ([`AppliedLanguage::switches`]) they were laid out for.
@@ -120,8 +123,19 @@ pub fn interface_views(
             &rows.labels(localizer),
         ),
         fps: FpsView::new(Arc::clone(registry), &fps),
+        volume: VolumeView::new(Arc::clone(registry), theme, &volume_labels(localizer)),
         theme,
         switch: 0,
+    }
+}
+
+/// The volume overlay's texts in the localizer's language (ADR-0145).
+pub fn volume_labels(localizer: &Localizer) -> VolumeLabels {
+    let text = |key: &str| localizer.format(key, None).into_owned();
+    VolumeLabels {
+        meters: Meter::ALL.map(|m| text(m.label_key())),
+        max: text("volume-meter-max"),
+        muted: text("volume-meter-muted"),
     }
 }
 
@@ -133,6 +147,7 @@ impl InterfaceViews {
         self.song_select.lay_out_for(width, height);
         self.results.lay_out_for(width, height);
         self.settings.lay_out_for_panel(width, height);
+        self.volume.lay_out_for(width, height);
     }
 }
 

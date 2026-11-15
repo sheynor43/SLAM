@@ -195,6 +195,8 @@ settings-input-sensitivity-hint = Включите высокоточную мы
 settings-layout-language = Язык
 settings-general-intro = Заставка при запуске
 settings-general-colour-scheme = Цветовая схема
+settings-general-volume-overlay = Оверлей громкости
+settings-general-volume-meter = Шкала громкости
 settings-general-effects = Визуальные эффекты (свечение, движение)
 settings-general-parallax-enabled = Параллакс меню
 settings-general-parallax = Сила параллакса
@@ -220,6 +222,13 @@ settings-general-colour-scheme-blue = Синяя
 settings-general-colour-scheme-green = Зелёная
 settings-general-colour-scheme-orange = Оранжевая
 settings-general-colour-scheme-mono = Монохромная
+settings-general-volume-overlay-left = Слева
+settings-general-volume-overlay-right = Справа
+settings-general-volume-overlay-top = Сверху
+settings-general-volume-overlay-bottom = Снизу
+settings-general-volume-meter-arc = Дуга
+settings-general-volume-meter-column = Столбик
+settings-general-volume-meter-bar = Полоса
 settings-general-menu-scale = Масштаб меню
 settings-general-game-scale = Масштаб HUD
 settings-general-skew = Скос
@@ -301,6 +310,11 @@ settings-keys-right-2 = Правая кнопка (2)
 settings-keys-smoke-1 = Дым (1)
 settings-keys-smoke-2 = Дым (2)
 settings-keys-toggle-fps = Показать/скрыть счётчик FPS
+settings-keys-volume-up = Громче
+settings-keys-volume-down = Тише
+settings-keys-volume-previous = Предыдущая шкала громкости
+settings-keys-volume-next = Следующая шкала громкости
+settings-keys-toggle-mute = Выключить звук
 settings-keys-toggle-settings = Открыть/закрыть настройки
 settings-keys-reset = Привязки клавиш
 settings-keys-reset-button = Сбросить по умолчанию
@@ -360,3 +374,11 @@ fatal-error-message-no-log =
     { $error }
 
     Лог сохранить не удалось; запустите SLAM из терминала, чтобы его увидеть.
+
+## Volume overlay
+volume-meter-hitsounds = ХИТСАУНДЫ
+volume-meter-effects = ЭФФЕКТЫ
+volume-meter-master = ОБЩАЯ
+volume-meter-music = МУЗЫКА
+volume-meter-max = МАКС
+volume-meter-muted = БЕЗ ЗВУКА
