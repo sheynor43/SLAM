@@ -153,6 +153,23 @@ impl AppliedUpdateRate {
     }
 }
 
+/// The service elements the settings turn on (ADR-0142).
+fn service_options(gameplay: &crate::settings::Gameplay) -> slam_play::service::ServiceOptions {
+    use crate::settings::BreakDisplay as Setting;
+    use slam_play::service::BreakDisplay;
+    slam_play::service::ServiceOptions {
+        warning_arrows: gameplay.warning_arrows,
+        countdown: gameplay.countdown,
+        sounds: gameplay.service_sounds,
+        break_display: match gameplay.break_display {
+            Setting::Section => BreakDisplay::Section,
+            Setting::Lazer => BreakDisplay::Lazer,
+            Setting::Slam => BreakDisplay::Slam,
+            Setting::Off => BreakDisplay::Off,
+        },
+    }
+}
+
 /// What the next play takes from the settings, prepared on the loader thread.
 pub fn play_options(settings: &Settings) -> PlayOptions {
     PlayOptions {
@@ -161,6 +178,7 @@ pub fn play_options(settings: &Settings) -> PlayOptions {
         beatmap_colours: settings.gameplay.beatmap_colours,
         beatmap_hitsounds: settings.gameplay.beatmap_hitsounds,
         always_play_first_combo_break: settings.gameplay.always_play_first_combo_break,
+        service: service_options(&settings.gameplay),
         snaking_in: settings.gameplay.snaking_in,
         snaking_out: settings.gameplay.snaking_out,
         hit_lighting: settings.gameplay.hit_lighting,
@@ -356,6 +374,9 @@ mod tests {
         settings.gameplay.beatmap_colours = false;
         settings.gameplay.beatmap_hitsounds = false;
         settings.gameplay.always_play_first_combo_break = false;
+        settings.gameplay.warning_arrows = false;
+        settings.gameplay.service_sounds = false;
+        settings.gameplay.break_display = crate::settings::BreakDisplay::Slam;
         settings.hud.layout = "my-hud".into();
         settings.gameplay.snaking_in = true;
         settings.gameplay.snaking_out = true;
@@ -377,6 +398,12 @@ mod tests {
                 beatmap_colours: false,
                 beatmap_hitsounds: false,
                 always_play_first_combo_break: false,
+                service: slam_play::service::ServiceOptions {
+                    warning_arrows: false,
+                    countdown: true,
+                    sounds: false,
+                    break_display: slam_play::service::BreakDisplay::Slam,
+                },
                 snaking_in: true,
                 snaking_out: true,
                 hit_lighting: false,

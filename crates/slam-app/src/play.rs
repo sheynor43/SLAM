@@ -98,6 +98,7 @@ impl Options {
             beatmap_colours: self.beatmap_colours,
             beatmap_hitsounds: self.beatmap_hitsounds,
             always_play_first_combo_break: self.always_play_first_combo_break,
+            service: slam_play::service::ServiceOptions::default(),
             mods: self.mods.clone(),
             dim: self.dim,
             ..PlaySettings::default()

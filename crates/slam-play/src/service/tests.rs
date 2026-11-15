@@ -108,7 +108,7 @@ fn each_countdown_step_sounds_once() {
     let mut played = Vec::new();
     let mut time = 7_000.0;
     while time < 10_000.0 {
-        let (_, sounds) = tracker.update(time, 1.0, false);
+        let (_, sounds) = tracker.update(time, 1.0, false, None);
         played.extend(sounds.into_iter().flatten());
         time += 1.0;
     }
@@ -120,13 +120,13 @@ fn each_countdown_step_sounds_once() {
 fn countdown_steps_skipped_over_stay_quiet() {
     let mut tracker = ServiceTracker::new(&beatmap(1, 0, &[10_000], &[]), 0.0);
     // A seek lands late in `count3`: it stays quiet, `count2` sounds.
-    let (_, sounds) = tracker.update(8_400.0, 1.0, false);
+    let (_, sounds) = tracker.update(8_400.0, 1.0, false, None);
     assert_eq!(sounds, [None, None]);
-    let (_, sounds) = tracker.update(8_500.0, 1.0, false);
+    let (_, sounds) = tracker.update(8_500.0, 1.0, false, None);
     assert_eq!(sounds[0], Some(ServiceSound::Countdown(2)));
     // A restart starts over: the steps sound again.
     tracker.reset();
-    let (_, sounds) = tracker.update(7_500.0, 1.0, false);
+    let (_, sounds) = tracker.update(7_500.0, 1.0, false, None);
     assert_eq!(sounds[0], Some(ServiceSound::Countdown(0)));
 }
 
@@ -149,19 +149,25 @@ fn arrows_blink_seven_times_before_the_next_object() {
 fn arrows_need_a_long_enough_gap() {
     // From the end of an object the gap counts a second later: 2000 ms is not enough.
     let mut tracker = ServiceTracker::new(&beatmap(0, 0, &[1_500, 3_500, 6_500], &[]), 0.0);
-    assert_eq!(tracker.update(2_000.0, 1.0, false).0.arrows_before, None);
     assert_eq!(
-        tracker.update(4_000.0, 1.0, false).0.arrows_before,
+        tracker.update(2_000.0, 1.0, false, None).0.arrows_before,
+        None
+    );
+    assert_eq!(
+        tracker.update(4_000.0, 1.0, false, None).0.arrows_before,
         Some(6_500.0)
     );
     // Before the first object the gap counts from 0.
     tracker.reset();
     assert_eq!(
-        tracker.update(0.0, 1.0, false).0.arrows_before,
+        tracker.update(0.0, 1.0, false, None).0.arrows_before,
         Some(1_500.0)
     );
     // After the last object there are none.
-    assert_eq!(tracker.update(7_000.0, 1.0, false).0.arrows_before, None);
+    assert_eq!(
+        tracker.update(7_000.0, 1.0, false, None).0.arrows_before,
+        None
+    );
 }
 
 /// A play with circles at 1000 and 11 000 and a break in between.
@@ -173,9 +179,9 @@ fn break_map() -> Beatmap {
 fn section_starts_in_the_middle_of_the_gap() {
     let mut tracker = ServiceTracker::new(&break_map(), 0.0);
     // Halfway between 1000 and 11 000.
-    assert_eq!(tracker.update(5_999.0, 1.0, false).0.section, None);
+    assert_eq!(tracker.update(5_999.0, 1.0, false, None).0.section, None);
     assert_eq!(
-        tracker.update(6_001.0, 1.0, false).0.section,
+        tracker.update(6_001.0, 1.0, false, None).0.section,
         Some(Section {
             start: 6_000.0,
             pass: true
@@ -189,7 +195,7 @@ fn section_passes_from_half_health() {
     let pass = |health| {
         let mut tracker = ServiceTracker::new(&break_map(), 0.0);
         tracker
-            .update(6_500.0, health, false)
+            .update(6_500.0, health, false, None)
             .0
             .section
             .map(|s| s.pass)
@@ -197,17 +203,17 @@ fn section_passes_from_half_health() {
     assert_eq!(pass(0.5), Some(true));
     assert_eq!(pass(0.49), Some(false));
     // No section once the play failed.
-    assert_eq!(tracker.update(6_500.0, 0.0, true).0.section, None);
+    assert_eq!(tracker.update(6_500.0, 0.0, true, None).0.section, None);
 }
 
 #[test]
 fn section_needs_a_long_break() {
     let short = beatmap(0, 0, &[1_000, 11_000], &[(5_000, 7_000)]);
     let mut tracker = ServiceTracker::new(&short, 0.0);
-    assert_eq!(tracker.update(6_500.0, 1.0, false).0.section, None);
+    assert_eq!(tracker.update(6_500.0, 1.0, false, None).0.section, None);
     let none = beatmap(0, 0, &[1_000, 11_000], &[]);
     let mut tracker = ServiceTracker::new(&none, 0.0);
-    assert_eq!(tracker.update(6_500.0, 1.0, false).0.section, None);
+    assert_eq!(tracker.update(6_500.0, 1.0, false, None).0.section, None);
 }
 
 #[test]
@@ -217,15 +223,15 @@ fn section_sound_plays_once_by_the_health_then() {
     for ms in 6_000..8_000 {
         // Health drops below half after the pass sound came due.
         let health = if ms < 6_100 { 1.0 } else { 0.2 };
-        let (_, sounds) = tracker.update(f64::from(ms), health, false);
+        let (_, sounds) = tracker.update(f64::from(ms), health, false, None);
         played.extend(sounds.into_iter().flatten());
     }
     assert_eq!(played, [ServiceSound::SectionPass]);
 
     let mut tracker = ServiceTracker::new(&break_map(), 0.0);
-    assert_eq!(tracker.update(6_129.0, 0.2, false).1, [None, None]);
+    assert_eq!(tracker.update(6_129.0, 0.2, false, None).1, [None, None]);
     assert_eq!(
-        tracker.update(6_130.0, 0.2, false).1,
+        tracker.update(6_130.0, 0.2, false, None).1,
         [None, Some(ServiceSound::SectionFail)]
     );
 }
@@ -233,7 +239,7 @@ fn section_sound_plays_once_by_the_health_then() {
 #[test]
 fn section_sound_skipped_over_stays_quiet() {
     let mut tracker = ServiceTracker::new(&break_map(), 0.0);
-    assert_eq!(tracker.update(8_000.0, 1.0, false).1, [None, None]);
+    assert_eq!(tracker.update(8_000.0, 1.0, false, None).1, [None, None]);
 }
 
 #[test]
@@ -280,7 +286,7 @@ fn view_draws_the_mirrored_arrows_and_the_countdown_centred() {
     let state = ServiceState {
         countdown: Countdown::new(1, 0, 10_000.0, 500.0, 0.0),
         arrows_before: Some(10_000.0),
-        section: None,
+        ..ServiceState::default()
     };
     let view = ServiceView::new(1024.0, 768.0);
     let mut batch = SpriteBatch::with_capacity(MAX_SERVICE_SPRITES);
@@ -312,10 +318,10 @@ fn countdown_with_a_negative_offset_ends_after_the_first_object() {
 fn arrows_gap_must_exceed_a_second() {
     // Before the first object: a gap of exactly 1000 ms is not enough.
     let mut tracker = ServiceTracker::new(&beatmap(0, 0, &[1_000], &[]), 0.0);
-    assert_eq!(tracker.update(0.0, 1.0, false).0.arrows_before, None);
+    assert_eq!(tracker.update(0.0, 1.0, false, None).0.arrows_before, None);
     let mut tracker = ServiceTracker::new(&beatmap(0, 0, &[1_001], &[]), 0.0);
     assert_eq!(
-        tracker.update(0.0, 1.0, false).0.arrows_before,
+        tracker.update(0.0, 1.0, false, None).0.arrows_before,
         Some(1_001.0)
     );
 }
@@ -326,7 +332,7 @@ fn section_in_a_short_gap_starts_2880_ms_before_the_next_object() {
     let map = beatmap(0, 0, &[1_000, 6_000, 7_000], &[(1_200, 5_800)]);
     let mut tracker = ServiceTracker::new(&map, 0.0);
     assert_eq!(
-        tracker.update(3_500.0, 1.0, false).0.section,
+        tracker.update(3_500.0, 1.0, false, None).0.section,
         Some(Section {
             start: 3_120.0,
             pass: true
@@ -339,11 +345,11 @@ fn section_needs_more_than_2880_ms() {
     // A gap of exactly 2880 ms.
     let map = beatmap(0, 0, &[1_000, 3_880, 5_000], &[(1_000, 3_880)]);
     let mut tracker = ServiceTracker::new(&map, 0.0);
-    assert_eq!(tracker.update(1_500.0, 1.0, false).0.section, None);
+    assert_eq!(tracker.update(1_500.0, 1.0, false, None).0.section, None);
     // A long gap with a break of exactly 2880 ms.
     let map = beatmap(0, 0, &[1_000, 11_000, 12_000], &[(5_000, 7_880)]);
     let mut tracker = ServiceTracker::new(&map, 0.0);
-    assert_eq!(tracker.update(6_500.0, 1.0, false).0.section, None);
+    assert_eq!(tracker.update(6_500.0, 1.0, false, None).0.section, None);
 }
 
 #[test]
@@ -356,8 +362,109 @@ fn section_takes_the_break_that_has_started() {
         &[(1_500, 4_000), (5_000, 20_500)],
     );
     let mut tracker = ServiceTracker::new(&map, 0.0);
-    assert!(tracker.update(11_500.0, 1.0, false).0.section.is_some());
+    assert!(
+        tracker
+            .update(11_500.0, 1.0, false, None)
+            .0
+            .section
+            .is_some()
+    );
     // In the first, short break the section does not show (it has not started anyway).
     let mut tracker = ServiceTracker::new(&map, 0.0);
-    assert_eq!(tracker.update(3_000.0, 1.0, false).0.section, None);
+    assert_eq!(tracker.update(3_000.0, 1.0, false, None).0.section, None);
+}
+
+#[test]
+fn options_turn_the_elements_off() {
+    let map = beatmap(1, 0, &[10_000, 21_000, 22_000], &[(10_500, 20_500)]);
+    let off = ServiceOptions {
+        warning_arrows: false,
+        countdown: false,
+        sounds: true,
+        break_display: BreakDisplay::Off,
+    };
+    let mut tracker = ServiceTracker::with_options(&map, 0.0, off);
+    let (state, sounds) = tracker.update(7_500.0, 1.0, false, None);
+    assert_eq!(state.countdown, None);
+    assert_eq!(sounds, [None, None]);
+    assert_eq!(tracker.update(0.0, 1.0, false, None).0.arrows_before, None);
+    assert_eq!(tracker.update(16_000.0, 1.0, false, None).0.section, None);
+    // Turned back on mid-play.
+    tracker.set_options(ServiceOptions::default());
+    assert!(
+        tracker
+            .update(16_100.0, 1.0, false, None)
+            .0
+            .section
+            .is_some()
+    );
+}
+
+#[test]
+fn without_sounds_the_images_stay() {
+    let quiet = ServiceOptions {
+        sounds: false,
+        ..ServiceOptions::default()
+    };
+    let mut tracker = ServiceTracker::with_options(&beatmap(1, 0, &[10_000], &[]), 0.0, quiet);
+    let (state, sounds) = tracker.update(7_500.0, 1.0, false, None);
+    assert!(state.countdown.is_some());
+    assert_eq!(sounds, [None, None]);
+}
+
+#[test]
+fn the_time_left_shows_the_break_period_until_it_has_faded_out() {
+    let lazer = ServiceOptions {
+        break_display: BreakDisplay::Lazer,
+        ..ServiceOptions::default()
+    };
+    let mut tracker = ServiceTracker::with_options(&break_map(), 0.0, lazer);
+    let period = Period {
+        start: 1_500.0,
+        end: 10_500.0 - BREAK_FADE_DURATION,
+    };
+    let (state, _) = tracker.update(5_000.0, 1.0, false, Some(period));
+    assert_eq!(state.break_period, Some(period));
+    assert_eq!(state.break_display, BreakDisplay::Lazer);
+    // No section with the time left.
+    assert_eq!(state.section, None);
+    // The tracker has left the period; it shows while fading out.
+    assert_eq!(
+        tracker
+            .update(period.end + 100.0, 1.0, false, None)
+            .0
+            .break_period,
+        Some(period)
+    );
+    assert_eq!(
+        tracker
+            .update(period.end + BREAK_FADE_DURATION + 1.0, 1.0, false, None)
+            .0
+            .break_period,
+        None
+    );
+    // With the section display the period is not shown.
+    let mut tracker = ServiceTracker::new(&break_map(), 0.0);
+    assert_eq!(
+        tracker
+            .update(5_000.0, 1.0, false, Some(period))
+            .0
+            .break_period,
+        None
+    );
+}
+
+#[test]
+fn a_section_turned_on_mid_break_does_not_sound_late() {
+    let lazer = ServiceOptions {
+        break_display: BreakDisplay::Lazer,
+        ..ServiceOptions::default()
+    };
+    let mut tracker = ServiceTracker::with_options(&break_map(), 0.0, lazer);
+    // The pass sound comes due at 6020 while the time left shows: silent.
+    assert_eq!(tracker.update(6_050.0, 1.0, false, None).1, [None, None]);
+    tracker.set_options(ServiceOptions::default());
+    let (state, sounds) = tracker.update(6_100.0, 1.0, false, None);
+    assert!(state.section.is_some());
+    assert_eq!(sounds, [None, None]);
 }

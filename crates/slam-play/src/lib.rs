@@ -1,6 +1,7 @@
 //! Gameplay presentation: playfield layout, hit object and cursor drawables, live input, hitsounds, gameplay screen.
 
 pub mod background;
+pub mod break_countdown;
 pub mod circles;
 pub mod combo_counter;
 pub mod cursor;

@@ -45,6 +45,8 @@ pub struct PlayOptions {
     pub beatmap_colours: bool,
     pub beatmap_hitsounds: bool,
     pub always_play_first_combo_break: bool,
+    /// The countdown, warning arrows, sounds and break display (ADR-0142).
+    pub service: slam_play::service::ServiceOptions,
     /// Sliders snake in as they appear (ADR-0085).
     pub snaking_in: bool,
     /// Sliders snake out behind the ball (ADR-0085).
@@ -260,6 +262,7 @@ pub fn spawn(mut config: LoaderConfig) -> std::io::Result<(LoaderLink, SceneTras
                     config.settings.beatmap_hitsounds = options.beatmap_hitsounds;
                     config.settings.always_play_first_combo_break =
                         options.always_play_first_combo_break;
+                    config.settings.service = options.service;
                     config.settings.hud_layout =
                         resolve(config.hud_layouts.as_ref(), &options.hud_layout).gameplay;
                     config.settings.game_scale = options.game_scale;
@@ -333,6 +336,7 @@ mod tests {
             beatmap_colours: true,
             beatmap_hitsounds: true,
             always_play_first_combo_break: true,
+            service: slam_play::service::ServiceOptions::default(),
             snaking_in: false,
             snaking_out: false,
             hit_lighting: true,

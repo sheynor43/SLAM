@@ -795,6 +795,14 @@ pub struct Gameplay {
     /// Play the combo break sound on the first break of a play even when the break happens while
     /// the combo is already low (lazer's `OsuSetting.AlwaysPlayFirstComboBreak`, on by default).
     pub always_play_first_combo_break: bool,
+    /// Shows the skin's warning arrows before a break ends (ADR-0142).
+    pub warning_arrows: bool,
+    /// Shows the skin's countdown before the first object, with its sounds (ADR-0142).
+    pub countdown: bool,
+    /// Plays the countdown's and the sections' sounds (ADR-0142).
+    pub service_sounds: bool,
+    /// What a break shows besides the warning arrows (ADR-0142).
+    pub break_display: BreakDisplay,
     /// Block the Windows key while playing (lazer's `OsuSetting.GameplayDisableWinKey`, on by
     /// default; ADR-0094); on Linux, every shortcut of the desktop. Other platforms ignore it.
     pub disable_win_key: bool,
@@ -843,6 +851,10 @@ impl Default for Gameplay {
             beatmap_colours: true,
             beatmap_hitsounds: true,
             always_play_first_combo_break: true,
+            warning_arrows: true,
+            countdown: true,
+            service_sounds: true,
+            break_display: BreakDisplay::default(),
             disable_win_key: true,
             mouse_buttons: true,
             snaking_in: false,
@@ -893,6 +905,45 @@ impl PauseMenuStyle {
     /// The value called `name`.
     pub fn from_name(name: &str) -> Option<PauseMenuStyle> {
         PauseMenuStyle::ALL.into_iter().find(|s| s.name() == name)
+    }
+}
+
+/// What a break shows besides the warning arrows (ADR-0142).
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum BreakDisplay {
+    /// The skin's section pass or fail (stable), the default.
+    #[default]
+    Section,
+    /// The time left, as lazer's break overlay shows it.
+    Lazer,
+    /// The time left, on a panel of SLAM's theme.
+    Slam,
+    /// Nothing.
+    Off,
+}
+
+impl BreakDisplay {
+    pub const ALL: [BreakDisplay; 4] = [
+        BreakDisplay::Section,
+        BreakDisplay::Lazer,
+        BreakDisplay::Slam,
+        BreakDisplay::Off,
+    ];
+
+    /// The name in the settings file.
+    pub fn name(self) -> &'static str {
+        match self {
+            BreakDisplay::Section => "section",
+            BreakDisplay::Lazer => "lazer",
+            BreakDisplay::Slam => "slam",
+            BreakDisplay::Off => "off",
+        }
+    }
+
+    /// The value called `name`.
+    pub fn from_name(name: &str) -> Option<BreakDisplay> {
+        BreakDisplay::ALL.into_iter().find(|d| d.name() == name)
     }
 }
 

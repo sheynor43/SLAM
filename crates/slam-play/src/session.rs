@@ -1077,6 +1077,12 @@ impl PlaySession {
         at.x >= left && at.x <= right && at.y >= top && at.y <= bottom
     }
 
+    /// Turns the countdown, warning arrows, their sounds and the break display on and off
+    /// (ADR-0142).
+    pub fn set_service_options(&mut self, options: crate::service::ServiceOptions) {
+        self.service.set_options(options);
+    }
+
     /// Where the mouse is before the first motion this play sees, in window points: for
     /// the skip button (ADR-0141).
     pub fn set_pointer(&mut self, at: Vec2) {
@@ -1207,9 +1213,16 @@ impl PlaySession {
         }
 
         // The service elements go by the step's health, after its fail (ADR-0140).
-        let (service, sounds) =
-            self.service
-                .update(step_time, self.health.health(), self.health.has_failed());
+        let period = self
+            .breaks
+            .update(step_time, self.score.has_completed(step_time))
+            .period;
+        let (service, sounds) = self.service.update(
+            step_time,
+            self.health.health(),
+            self.health.has_failed(),
+            period,
+        );
         self.service_state = service;
         for sound in sounds.into_iter().flatten() {
             self.sounds.play_service(sound, sink);

@@ -2777,6 +2777,7 @@ impl PlayHost {
         style_menu(&mut game.session, self.pause_menu, game.stable_pause);
         let (skip_element, skip_size) = scene.skip_button();
         game.session.set_skip_button(skip_element, skip_size);
+        game.session.set_service_options(scene.service_options());
         if let Err(rtrb::PushError::Full((_, scene))) = self.scenes.push((game.id, scene)) {
             // Room was checked above; the update thread is the only producer.
             self.loader.free(Trash::Other(Box::new(scene)));
@@ -3069,6 +3070,7 @@ impl PlayHost {
         style_menu(&mut session, self.pause_menu, stable_pause);
         let (skip_element, skip_size) = scene.skip_button();
         session.set_skip_button(skip_element, skip_size);
+        session.set_service_options(scene.service_options());
         session.set_pointer(slam_osu::Vec2::new(pointer[0], pointer[1]));
         session.set_menu_effects(self.effects);
         self.loader.free(Trash::Other(Box::new((beatmap, mods))));
@@ -4697,6 +4699,7 @@ fn run_with<B: render::Backend>(
                 beatmap_colours: options.beatmap_colours,
                 beatmap_hitsounds: options.beatmap_hitsounds,
                 always_play_first_combo_break: options.always_play_first_combo_break,
+                service: options.service,
                 dim: options.dim,
                 snaking: options.snaking(),
                 hit_lighting: options.hit_lighting,

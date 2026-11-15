@@ -84,6 +84,8 @@ pub struct PlaySettings {
     /// Play the combo break sound on the first break of a play even when the break happens while
     /// the combo is already low (lazer's `OsuSetting.AlwaysPlayFirstComboBreak`, on by default).
     pub always_play_first_combo_break: bool,
+    /// The countdown, warning arrows, their sounds and the break display (ADR-0142).
+    pub service: slam_play::service::ServiceOptions,
     pub mods: ModSet,
     /// How dark the background is, 0 ..= 1 (lazer's `DimLevel`).
     pub dim: f64,
@@ -124,6 +126,7 @@ impl Default for PlaySettings {
             beatmap_colours: true,
             beatmap_hitsounds: true,
             always_play_first_combo_break: true,
+            service: slam_play::service::ServiceOptions::default(),
             mods: ModSet::default(),
             dim: BackgroundSettings::default().dim_level,
             hud_layout: Builtin::Stable.layout().gameplay,
@@ -392,6 +395,8 @@ pub fn prepare(
         .iter()
         .map(|element| element.scaled_by(settings.game_scale))
         .collect();
+    let break_countdown =
+        slam_play::break_countdown::BreakCountdownView::new(Arc::clone(&registry));
     let hud = HudView::new(
         registry,
         labels,
@@ -429,9 +434,15 @@ pub fn prepare(
         cursor_style: settings.cursor_style,
         cursor_theme: Theme::new(settings.cursor_scheme, 1.0),
         menu,
-        menu_shapes: ShapeBatch::with_capacity(MAX_MENU_SPRITES),
-        menu_text: SpriteBatch::with_capacity(MAX_GLYPH_SPRITES + MAX_FPS_GLYPHS),
+        menu_shapes: ShapeBatch::with_capacity(
+            MAX_MENU_SPRITES + slam_play::break_countdown::MAX_BREAK_SHAPES,
+        ),
+        menu_text: SpriteBatch::with_capacity(
+            MAX_GLYPH_SPRITES + MAX_FPS_GLYPHS + slam_play::break_countdown::MAX_BREAK_GLYPHS,
+        ),
         stats: PlayfieldStats::default(),
+        break_countdown,
+        service: settings.service,
         skip_element: hud_layout
             .iter()
             .find(|e| e.component == ComponentKind::SkipButton)
@@ -502,6 +513,10 @@ pub struct PlayScene {
     stats: PlayfieldStats,
     /// The layout's skip button as drawn, for clicks on the update side (ADR-0141).
     skip_element: Option<LayoutElement>,
+    /// The time left in a break (ADR-0142).
+    break_countdown: slam_play::break_countdown::BreakCountdownView,
+    /// Which service elements the play shows (ADR-0142).
+    service: slam_play::service::ServiceOptions,
 }
 
 /// What the last frame drew of the playfield batch (background, objects, HUD shapes).
@@ -695,6 +710,26 @@ impl PlayScene {
         let speed = f64::from(slam_ui::theme::Theme::default().effect_speed);
         let cycles = (now_ns as f64 / 1e9 * speed).rem_euclid(1024.0);
         self.menu_shapes.set_drift(cycles as f32);
+        // The time left in a break, under the menus (ADR-0142).
+        self.break_countdown
+            .update(width, height, &snapshot.service, time);
+        if let Some(white) = textures.white {
+            self.break_countdown.push_shapes(
+                &mut self.menu_shapes,
+                &snapshot.service,
+                time,
+                white,
+                snapshot.menu.scheme,
+                snapshot.menu.effects,
+            );
+        }
+        self.break_countdown.push_text(
+            &mut self.menu_text,
+            &snapshot.service,
+            time,
+            &mut self.glyphs,
+            snapshot.menu.scheme,
+        );
         if let Some(white) = textures.white {
             self.menu.push_shapes(
                 &mut self.menu_shapes,
@@ -792,6 +827,12 @@ impl PlayScene {
     /// pause menu needs them (ADR-0122).
     pub fn stable_pause_sizes(&self) -> Option<[[f32; 2]; 3]> {
         self.textures.stable_pause_sizes()
+    }
+
+    /// Which service elements the play shows, for
+    /// [`slam_play::session::PlaySession::set_service_options`] (ADR-0142).
+    pub fn service_options(&self) -> slam_play::service::ServiceOptions {
+        self.service
     }
 
     /// The skip button's layout element (with the game scale) and `play-skip` frame size,

@@ -6,7 +6,7 @@
 //! sprites at the frame's time.
 
 use slam_osu::beatmap::Beatmap;
-use slam_osu::breaks::Break;
+use slam_osu::breaks::{BREAK_FADE_DURATION, Break, Period};
 use slam_osu::objects::PLAYFIELD_SIZE;
 use slam_render::sprite::{Sprite, SpriteBatch};
 use slam_ui::hud_layout::unit_scale;
@@ -170,6 +170,42 @@ pub fn arrows_visible(next: f64, time: f64) -> bool {
     })
 }
 
+/// What a break shows besides the warning arrows (ADR-0142).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum BreakDisplay {
+    /// The skin's `section-pass` or `section-fail` (stable).
+    #[default]
+    Section,
+    /// The time left, as lazer's break overlay shows it.
+    Lazer,
+    /// The time left, on a panel of SLAM's theme.
+    Slam,
+    /// Nothing.
+    Off,
+}
+
+/// Which service elements are on (ADR-0142).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ServiceOptions {
+    pub warning_arrows: bool,
+    /// The countdown before the first object.
+    pub countdown: bool,
+    /// The sounds of the countdown and the sections.
+    pub sounds: bool,
+    pub break_display: BreakDisplay,
+}
+
+impl Default for ServiceOptions {
+    fn default() -> Self {
+        ServiceOptions {
+            warning_arrows: true,
+            countdown: true,
+            sounds: true,
+            break_display: BreakDisplay::Section,
+        }
+    }
+}
+
 /// What the service elements show, for the snapshot.
 #[derive(Debug, Clone, Copy, PartialEq, Default)]
 pub struct ServiceState {
@@ -177,6 +213,10 @@ pub struct ServiceState {
     /// The next object's start while the warning arrows may blink before it.
     pub arrows_before: Option<f64>,
     pub section: Option<Section>,
+    /// The break whose time left shows, with [`ServiceState::break_display`]: lazer's
+    /// period (ending [`BREAK_FADE_DURATION`] before the break), kept while it fades out.
+    pub break_period: Option<Period>,
+    pub break_display: BreakDisplay,
 }
 
 /// A sound of the service elements to play.
@@ -203,11 +243,24 @@ pub struct ServiceTracker {
     step_reached: Option<usize>,
     /// The start of the last section whose sound came due.
     section_sounded: Option<f64>,
+    options: ServiceOptions,
+    /// The last break period seen, shown until it has faded out.
+    last_period: Option<Period>,
 }
 
 impl ServiceTracker {
-    /// The tracker of `beatmap`'s play with its clock starting at `clock_start`. Allocates.
+    /// The tracker of `beatmap`'s play with its clock starting at `clock_start`, with every
+    /// element on. Allocates.
     pub fn new(beatmap: &Beatmap, clock_start: f64) -> ServiceTracker {
+        ServiceTracker::with_options(beatmap, clock_start, ServiceOptions::default())
+    }
+
+    /// [`ServiceTracker::new`] with `options`. Allocates.
+    pub fn with_options(
+        beatmap: &Beatmap,
+        clock_start: f64,
+        options: ServiceOptions,
+    ) -> ServiceTracker {
         let objects = &beatmap.hit_objects;
         ServiceTracker {
             countdown: Countdown::of_beatmap(beatmap, clock_start),
@@ -220,28 +273,38 @@ impl ServiceTracker {
             breaks: beatmap.breaks.clone(),
             step_reached: None,
             section_sounded: None,
+            options,
+            last_period: None,
         }
+    }
+
+    /// Turns elements on and off from the next update (the settings changed).
+    pub fn set_options(&mut self, options: ServiceOptions) {
+        self.options = options;
     }
 
     /// Forgets the sounds played: the play starts over.
     pub fn reset(&mut self) {
         self.step_reached = None;
         self.section_sounded = None;
+        self.last_period = None;
     }
 
     /// The state at `time` with `health` (0..=1), `failed` telling whether the play has
-    /// failed, and the sounds that come due, at most two (a countdown step and a section).
-    /// Allocation-free.
+    /// failed and `period` the break period the break tracker is in, and the sounds that
+    /// come due, at most two (a countdown step and a section). Allocation-free.
     pub fn update(
         &mut self,
         time: f64,
         health: f64,
         failed: bool,
+        period: Option<Period>,
     ) -> (ServiceState, [Option<ServiceSound>; 2]) {
         // Gameplay time never goes back within an attempt; a restart calls `reset`.
         let mut sounds = [None, None];
 
-        if let Some(countdown) = self.countdown
+        let countdown = self.countdown.filter(|_| self.options.countdown);
+        if let Some(countdown) = countdown
             && let Some((index, started)) = countdown.step_at(time)
             && self.step_reached.is_none_or(|reached| index > reached)
         {
@@ -252,12 +315,16 @@ impl ServiceTracker {
         }
 
         let (arrows_before, section) = self.gap_state(time, health, failed);
+        let arrows_before = arrows_before.filter(|_| self.options.warning_arrows);
+        // A section's sound comes due once whatever shows, so that turning the section on
+        // in a pause does not sound it late.
+        let show_section = self.options.break_display == BreakDisplay::Section;
         if let Some(section) = section {
             let due = section.start + section.sound_delay();
             if time >= due && self.section_sounded != Some(section.start) {
                 self.section_sounded = Some(section.start);
                 // After a seek far into the section it stays quiet.
-                if time - section.start <= SECTION_FADE_END {
+                if show_section && time - section.start <= SECTION_FADE_END {
                     sounds[1] = Some(if section.pass {
                         ServiceSound::SectionPass
                     } else {
@@ -266,11 +333,30 @@ impl ServiceTracker {
                 }
             }
         }
+        let section = section.filter(|_| show_section);
+        if period.is_some() {
+            self.last_period = period;
+        }
+        // Lazer's overlay fades out over the fade duration after the period.
+        let break_period = self
+            .last_period
+            .filter(|p| time <= p.end + BREAK_FADE_DURATION && time >= p.start)
+            .filter(|_| {
+                matches!(
+                    self.options.break_display,
+                    BreakDisplay::Lazer | BreakDisplay::Slam
+                )
+            });
+        if !self.options.sounds {
+            sounds = [None, None];
+        }
         (
             ServiceState {
-                countdown: self.countdown,
+                countdown,
                 arrows_before,
                 section,
+                break_period,
+                break_display: self.options.break_display,
             },
             sounds,
         )

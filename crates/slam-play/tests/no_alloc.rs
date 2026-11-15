@@ -94,11 +94,71 @@ fn service_elements_do_not_allocate() {
     let mut drawn = 0;
     assert_no_alloc(|| {
         for ms in (0..16_000).step_by(3) {
-            let (state, _) = tracker.update(f64::from(ms), 0.7, false);
+            let (state, _) = tracker.update(f64::from(ms), 0.7, false, None);
             batch.clear();
             view.push(&mut batch, &state, f64::from(ms) + 1.5, &textures);
             drawn |= batch.len();
         }
     });
     assert!(drawn > 0);
+}
+
+#[test]
+fn the_break_countdown_does_not_allocate() {
+    use slam_osu::breaks::Period;
+    use slam_play::break_countdown::{BreakCountdownView, MAX_BREAK_GLYPHS, MAX_BREAK_SHAPES};
+    use slam_play::service::{BreakDisplay, ServiceState};
+    use std::sync::Arc;
+
+    let registry = Arc::new(slam_text::FontRegistry::with_builtin());
+    let limits = slam_render::Limits {
+        max_texture_size: 4096,
+        max_uniform_block_size: 16384,
+        max_uniform_buffer_slots: 8,
+        max_texture_slots: 8,
+    };
+    let mut glyphs = slam_text::glyph_atlas(
+        Arc::clone(&registry),
+        &slam_text::GlyphAtlasConfig::new(limits),
+    )
+    .unwrap();
+    let mut view = BreakCountdownView::new(Arc::clone(&registry));
+    view.request_glyphs(&mut glyphs, 1920.0, 1080.0);
+    let white = slam_render::atlas::AtlasRegion {
+        texture: slam_render::textures::TextureId(1),
+        origin: slam_render::Origin { x: 0, y: 0 },
+        size: slam_render::Extent {
+            width: 4,
+            height: 4,
+        },
+        uv: slam_render::atlas::UvRect::FULL,
+    };
+    let mut shapes = slam_render::shape::ShapeBatch::with_capacity(MAX_BREAK_SHAPES);
+    let mut text = slam_render::sprite::SpriteBatch::with_capacity(MAX_BREAK_GLYPHS);
+    let period = Period {
+        start: 1_000.0,
+        end: 20_000.0,
+    };
+    for display in [BreakDisplay::Lazer, BreakDisplay::Slam] {
+        let state = ServiceState {
+            break_period: Some(period),
+            break_display: display,
+            ..ServiceState::default()
+        };
+        // The first frame lays out the first number.
+        view.update(1920.0, 1080.0, &state, 1_000.0);
+        let mut drawn = 0;
+        assert_no_alloc(|| {
+            for ms in (1_000..20_300).step_by(5) {
+                let time = f64::from(ms);
+                shapes.clear();
+                text.clear();
+                view.update(1920.0, 1080.0, &state, time);
+                view.push_shapes(&mut shapes, &state, time, white, Default::default(), true);
+                view.push_text(&mut text, &state, time, &mut glyphs, Default::default());
+                drawn |= shapes.len();
+            }
+        });
+        assert!(drawn > 0);
+    }
 }
