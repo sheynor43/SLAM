@@ -836,6 +836,7 @@ fn glyph_bitmap_rows_are_top_first() {
         super::GlyphKey {
             font: face.font,
             weight: 700,
+            width: 100,
             glyph_id,
         },
     )

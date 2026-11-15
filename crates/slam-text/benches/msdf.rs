@@ -26,6 +26,7 @@ mod bench {
             .map(|gid| GlyphKey {
                 font: face.font,
                 weight: face.weight,
+                width: face.width,
                 glyph_id: gid.to_u32() as u16,
             })
             .collect()

@@ -30,6 +30,9 @@ pub struct TextStyle {
     pub family: FamilyId,
     /// Requested weight (CSS scale, 100..=900 typical).
     pub weight: u16,
+    /// Requested width in percent of the normal (`wdth` axis; 100 normal, 75 condensed);
+    /// faces without the axis ignore it.
+    pub width: u16,
     /// Font size in pixels per em.
     pub size: f32,
     /// Multiplier of the natural line height; 1.0 is the font's own.
@@ -46,6 +49,7 @@ impl TextStyle {
         Self {
             family,
             weight,
+            width: crate::registry::NORMAL_WIDTH,
             size,
             line_height: 1.0,
             align: Align::Left,
@@ -55,13 +59,15 @@ impl TextStyle {
 }
 
 /// A glyph placed by the layout. Glyph images are keyed by
-/// `(font, weight, glyph_id)`; the pixel size is not part of the key.
+/// `(font, weight, width, glyph_id)`; the pixel size is not part of the key.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct PositionedGlyph {
     /// Face the glyph comes from.
     pub font: FontId,
     /// Effective weight of the face (see [`ResolvedFace::weight`]).
     pub weight: u16,
+    /// Effective width of the face (see [`ResolvedFace::width`]).
+    pub width: u16,
     /// Glyph index in the face.
     pub glyph_id: u16,
     /// Pen x of the glyph origin in pixels, relative to the layout's left edge.
@@ -140,6 +146,7 @@ impl Layout {
 struct Shaped {
     font: FontId,
     weight: u16,
+    width: u16,
     glyph_id: u16,
     cluster: u32,
     advance: f32,
@@ -148,16 +155,20 @@ struct Shaped {
     space: bool,
 }
 
-/// A face instance at one weight, cached by the context.
+/// A face instance at one weight and width, cached by the context.
 struct CachedFace {
     font: FontId,
     weight: u16,
+    width: u16,
     face: Font,
 }
 
+/// A shape plan of a face at a (weight, width) for a script.
+type CachedPlan = (FontId, (u16, u16), Option<harfrust::Script>, ShapePlan);
+
 #[derive(Default)]
 struct Scratch {
-    plans: Vec<(FontId, u16, Option<harfrust::Script>, ShapePlan)>,
+    plans: Vec<CachedPlan>,
     buffer: Buffer,
     breaks: Vec<(u32, bool)>,
     shaped: Vec<Shaped>,
@@ -202,11 +213,9 @@ impl LayoutContext {
 
     /// Makes sure the instance for `resolved` is cached.
     fn ensure_face(&mut self, registry: &FontRegistry, resolved: ResolvedFace) -> bool {
-        if self
-            .faces
-            .iter()
-            .any(|c| c.font == resolved.font && c.weight == resolved.weight)
-        {
+        if self.faces.iter().any(|c| {
+            c.font == resolved.font && c.weight == resolved.weight && c.width == resolved.width
+        }) {
             return true;
         }
         let Some(face) = registry.instance(resolved) else {
@@ -215,6 +224,7 @@ impl LayoutContext {
         self.faces.push(CachedFace {
             font: resolved.font,
             weight: resolved.weight,
+            width: resolved.width,
             face,
         });
         true
@@ -244,7 +254,7 @@ impl LayoutContext {
         }
 
         // Candidate faces: the style's family, then the fallback chain.
-        let Some(primary) = registry.resolve(style.family, style.weight) else {
+        let Some(primary) = registry.resolve_width(style.family, style.weight, style.width) else {
             return;
         };
         if !self.ensure_face(registry, primary) {
@@ -257,7 +267,7 @@ impl LayoutContext {
             if n == MAX_FACES {
                 break;
             }
-            let Some(r) = registry.resolve(family, style.weight) else {
+            let Some(r) = registry.resolve_width(family, style.weight, style.width) else {
                 continue;
             };
             if resolved[..n].iter().flatten().any(|x| x.font == r.font)
@@ -275,7 +285,7 @@ impl LayoutContext {
         for (slot, r) in slots.iter_mut().zip(resolved.iter().flatten()) {
             let Some(cached) = faces
                 .iter()
-                .find(|c| c.font == r.font && c.weight == r.weight)
+                .find(|c| c.font == r.font && c.weight == r.weight && c.width == r.width)
             else {
                 return;
             };
@@ -504,6 +514,7 @@ impl Scratch {
             out.glyphs.push(PositionedGlyph {
                 font: g.font,
                 weight: g.weight,
+                width: g.width,
                 glyph_id: g.glyph_id,
                 x: pen + g.x_off,
                 y: baseline - g.y_off,
@@ -567,15 +578,16 @@ impl Scratch {
         let script = buf.script();
         let font = slot.resolved.font;
         let weight = slot.resolved.weight;
+        let width = slot.resolved.width;
         let pi = match self
             .plans
             .iter()
-            .position(|(f, w, s, _)| *f == font && *w == weight && *s == script)
+            .position(|(f, w, s, _)| *f == font && *w == (weight, width) && *s == script)
         {
             Some(p) => p,
             None => {
                 let plan = ShapePlan::new(slot.face, Direction::LeftToRight, script, None, &[]);
-                self.plans.push((font, weight, script, plan));
+                self.plans.push((font, (weight, width), script, plan));
                 self.plans.len() - 1
             }
         };
@@ -592,6 +604,7 @@ impl Scratch {
             self.shaped.push(Shaped {
                 font,
                 weight,
+                width,
                 glyph_id: info.glyph_id as u16,
                 cluster,
                 advance: pos.x_advance as f32 * slot.scale,

@@ -42,13 +42,16 @@ pub const PADDING: u32 = 2;
 pub const MAX_GLYPH_SIDE: u32 = 512;
 
 const WGHT: Tag = Tag::new(b"wght");
+const WDTH: Tag = Tag::new(b"wdth");
 
-/// One glyph of one face at one weight.
+/// One glyph of one face at one weight and width.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub struct GlyphKey {
     pub font: FontId,
     /// Effective weight; used as the `wght` coordinate of variable faces.
     pub weight: u16,
+    /// Effective width in percent; used as the `wdth` coordinate of faces with the axis.
+    pub width: u16,
     pub glyph_id: u16,
 }
 
@@ -58,6 +61,7 @@ impl GlyphKey {
         Self {
             font: glyph.font,
             weight: glyph.weight,
+            width: glyph.width,
             glyph_id: glyph.glyph_id,
         }
     }
@@ -98,8 +102,14 @@ pub fn generate_glyph(
         .face_data(key.font)
         .ok_or(GlyphError::UnknownFont)?;
     let face = FontRef::from_index(data, index).map_err(|_| GlyphError::InvalidFont)?;
-    let location: Location = if registry.is_weight_variable(key.font) {
-        face.axes().location([(WGHT, f32::from(key.weight))])
+    let weight = registry
+        .is_weight_variable(key.font)
+        .then(|| (WGHT, f32::from(key.weight)));
+    let width = registry
+        .is_width_variable(key.font)
+        .then(|| (WDTH, f32::from(key.width)));
+    let location: Location = if weight.is_some() || width.is_some() {
+        face.axes().location(weight.into_iter().chain(width))
     } else {
         Location::default()
     };
