@@ -8,7 +8,7 @@
 //! [`HudValues`].
 
 use slam_audio::{ClockError, GameClock, MusicSnapshot, PositionSnapshot, TrackControl};
-use slam_input::InputEvent;
+use slam_input::{InputEvent, InputKind, MouseButton};
 use slam_osu::breaks::BreakTracker;
 use slam_osu::hit_events::{HitErrorSummary, HitEvents};
 use slam_osu::judgement::{HitResult, JudgementLog, Statistics};
@@ -25,6 +25,7 @@ use slam_render::upload::{
 };
 use slam_render::{Color, Extent};
 use slam_skin::{AnimationOptions, ImageCheck, SIXTY_FRAME_TIME, SkinChain, TextureFile};
+use slam_ui::hud_layout::LayoutElement;
 
 use crate::circles::{
     CircleTextures, HitCircles, LiveCircles, OBJECT_SIZE, PieceTextures, SkinSprite,
@@ -40,7 +41,7 @@ use crate::health_bar::{HealthTextures, MAX_FILL_FRAMES, MarkerTextures};
 use crate::hit_error::{HitErrorRing, HitErrorTargets, MeterTextures, disc_image, gradient_image};
 use crate::hotkeys::{GlobalAction, Hotkeys};
 use crate::hud::{HudTextures, MAX_SKIP_FRAMES, SkipTextures};
-use crate::input::{ClockTime, GameTime, LiveInput};
+use crate::input::{ClockTime, GameTime, Input, LiveInput};
 use crate::judgements::{
     JudgementRing, JudgementTextures, JudgementView, MAX_JUDGEMENT_FRAMES, PIECE_SLOTS, PieceKind,
     PieceSprites, PopupTargets, piece_sources,
@@ -408,6 +409,11 @@ pub struct PlaySession {
     service: ServiceTracker,
     service_state: ServiceState,
     skip: IntroSkip,
+    /// The skip button's layout element and `play-skip` frame size (ADR-0141); `None`: only
+    /// the skip keys skip.
+    skip_button: Option<(LayoutElement, Option<[f32; 2]>)>,
+    /// The mouse's last position in window points, from the events.
+    pointer: Option<Vec2>,
     /// Skip the intro as soon as it can be (a quick restart).
     auto_skip: bool,
     /// A seek the clock still has to take; retried every tick until it does.
@@ -574,6 +580,8 @@ impl PlaySession {
             service: ServiceTracker::new(beatmap, start_time),
             service_state: ServiceState::default(),
             skip,
+            skip_button: None,
+            pointer: None,
             auto_skip: false,
             pending_seek: None,
             run: false,
@@ -801,6 +809,9 @@ impl PlaySession {
             // prioritised `GlobalActionContainer` gets them before `RulesetInputManager`.
             let action = self.hotkeys.on_event(event);
             self.menu.follow_pointer(event);
+            if let InputKind::MouseMove { x, y } = event.kind {
+                self.pointer = Some(Vec2::new(x, y));
+            }
             if self.input.is_suspended() {
                 let target = self.resume_target;
                 let resuming = self.phase == Phase::Resuming;
@@ -828,6 +839,10 @@ impl PlaySession {
             }
             if taken {
                 continue;
+            }
+            // A press of the skip button keeps whatever global action its key also has.
+            if self.presses_skip_button(event) {
+                skip_requested = true;
             }
             match action {
                 Some(GlobalAction::Back | GlobalAction::PauseGameplay) => {
@@ -1007,6 +1022,65 @@ impl PlaySession {
             // Nothing resumes from under the panel.
             let _ = self.input.follow_suspended(events, |_, _| false);
         }
+    }
+
+    /// Places the skip button for clicks (ADR-0141): the gameplay layout's `skip_button`
+    /// element as drawn (with the game scale), and the size of a `play-skip` frame in
+    /// display units (`None`: the plain button). A hidden element or `None` leaves skipping
+    /// to the skip keys. Allocates; call it off the hot path.
+    pub fn set_skip_button(
+        &mut self,
+        element: Option<&LayoutElement>,
+        skin_size: Option<[f32; 2]>,
+    ) {
+        self.skip_button = element
+            .filter(|e| e.visible && e.alpha > 0.0)
+            .map(|e| (e.clone(), skin_size));
+    }
+
+    /// Whether `event` presses the skip button: a press of the left or right mouse button,
+    /// or of an input bound to a gameplay button, with the pointer over it, while the intro
+    /// can be skipped (ADR-0141). Unlike McOsu, any press counts (not only the first of
+    /// several held keys) and the mouse buttons count with gameplay's mouse buttons off.
+    // Ported from McOsu db2add2: src/App/Osu/Osu.cpp (update: m_bSkipScheduled), src/App/Osu/OsuHUD.cpp (getSkipClickRect)
+    fn presses_skip_button(&self, event: &InputEvent) -> bool {
+        if self.phase != Phase::Playing || !self.skip.is_available(self.last_time) {
+            return false;
+        }
+        let input = match event.kind {
+            InputKind::MouseButton {
+                button: MouseButton::Left | MouseButton::Right,
+                down: true,
+            } => return self.pointer_on_skip_button(),
+            InputKind::MouseButton { button, down: true } => Input::Mouse(button),
+            InputKind::Key {
+                scancode,
+                down: true,
+            } => Input::Key(scancode),
+            _ => return false,
+        };
+        self.binds_gameplay(input) && self.pointer_on_skip_button()
+    }
+
+    fn binds_gameplay(&self, input: Input) -> bool {
+        let actions = self.input.bindings().actions_of(input);
+        actions.contains(Actions::LEFT) || actions.contains(Actions::RIGHT)
+    }
+
+    fn pointer_on_skip_button(&self) -> bool {
+        let (Some((element, skin_size)), Some(at)) = (&self.skip_button, self.pointer) else {
+            return false;
+        };
+        let [width, height] = self.input.layout().window_size();
+        let [left, top, right, bottom] =
+            crate::hud::skip_button_area(element, width, height, *skin_size);
+        at.x >= left && at.x <= right && at.y >= top && at.y <= bottom
+    }
+
+    /// Where the mouse is before the first motion this play sees, in window points: for
+    /// the skip button (ADR-0141).
+    pub fn set_pointer(&mut self, at: Vec2) {
+        self.pointer = Some(at);
     }
 
     /// Whether gameplay takes input and time: playing, failing or passed.
@@ -1974,7 +2048,7 @@ impl PlayTextures {
         let gradient = requests.load_pixels(gradient_image(), TextureKind::Atlas)?;
         let triangle = requests.load_pixels(triangle_image(), TextureKind::Atlas)?;
         let ring = requests.load_pixels(ring_image(), TextureKind::Atlas)?;
-        let hud = HudRequests::request(skins, requests)?;
+        let hud = HudRequests::request(skins, requests, limits)?;
         let mut pause = [None; PAUSE_IMAGES.len()];
         let mut pause_sizes = [None; 3];
         for (index, (slot, name)) in pause.iter_mut().zip(PAUSE_IMAGES).enumerate() {
@@ -2025,6 +2099,11 @@ impl PlayTextures {
             pause_sizes,
             service,
         })
+    }
+
+    /// The display size of a `play-skip` frame, if the skins have one (ADR-0141).
+    pub fn skip_size(&self) -> Option<[f32; 2]> {
+        self.hud.skip_size
     }
 
     /// The display sizes of stable's three pause buttons when the skins have them all:
@@ -2425,6 +2504,8 @@ struct HudRequests {
     /// The frames of `play-skip` and their length.
     skip: Vec<Requested>,
     skip_frame_length: f64,
+    /// The display size of the first frame, if it decodes.
+    skip_size: Option<[f32; 2]>,
     score: FontRequests,
     /// `None` when the combo font is the score font.
     combo: Option<FontRequests>,
@@ -2437,6 +2518,7 @@ impl HudRequests {
     fn request(
         skins: &SkinChain,
         requests: &mut TextureRequests,
+        limits: ImageLimits,
     ) -> Result<HudRequests, RequestError> {
         let setting = |key: &str, default: &str| {
             skins
@@ -2486,8 +2568,10 @@ impl HudRequests {
         let skip_frame_length = skip_animation
             .as_ref()
             .map_or(SIXTY_FRAME_TIME, |a| a.value.frame_length_ms);
-        let skip = skip_animation
-            .map_or_else(Vec::new, |a| a.value.frames)
+        let skip_frames = skip_animation.map_or_else(Vec::new, |a| a.value.frames);
+        // The update side places the button for clicks by its first frame (ADR-0141).
+        let skip_size = skip_frames.first().and_then(|f| image_size(f, limits));
+        let skip = skip_frames
             .iter()
             .take(MAX_SKIP_FRAMES)
             .map(|f| request_file(requests, f))
@@ -2498,6 +2582,7 @@ impl HudRequests {
             key_text,
             skip,
             skip_frame_length,
+            skip_size,
             score,
             combo,
             combo_overlap,

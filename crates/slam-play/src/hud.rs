@@ -384,6 +384,33 @@ pub struct HudTextures {
     pub skip: SkipTextures,
 }
 
+/// The window box of the skip button `element` places on a window of `width` × `height`
+/// units, as [`HudView`] draws it: `skin_size` is the size of a `play-skip` frame in display
+/// units (`None`: the plain button). A rotated element gives the box around it; an
+/// attachment (ADR-0112) is not followed. Returned as `[left, top, right, bottom]`
+/// (ADR-0141).
+pub fn skip_button_area(
+    element: &LayoutElement,
+    width: f32,
+    height: f32,
+    skin_size: Option<[f32; 2]>,
+) -> [f32; 4] {
+    let scale = unit_scale(width, height) / LAZER_PIXELS_PER_UNIT;
+    let [w, h] = skin_size.unwrap_or(SKIP_BUTTON);
+    let size = [w * scale, h * scale];
+    let map = element.transform(width, height, size);
+    let corners = [[0.0, 0.0], [size[0], 0.0], [0.0, size[1]], size].map(|c| map.apply(c));
+    corners.iter().fold(
+        [
+            f32::INFINITY,
+            f32::INFINITY,
+            f32::NEG_INFINITY,
+            f32::NEG_INFINITY,
+        ],
+        |[l, t, r, b], [x, y]| [l.min(*x), t.min(*y), r.max(*x), b.max(*y)],
+    )
+}
+
 /// The most frames of the skip button drawn.
 pub const MAX_SKIP_FRAMES: usize = 32;
 
@@ -1280,6 +1307,30 @@ impl HudView {
 mod tests {
     use super::*;
     use slam_ui::hud_layout::Anchor;
+
+    #[test]
+    fn the_skip_button_area_is_where_it_is_drawn() {
+        let layout = slam_ui::hud_layout::Builtin::Stable.layout().gameplay;
+        let element = layout
+            .iter()
+            .find(|e| e.component == ComponentKind::SkipButton)
+            .unwrap();
+        // At 1024×768 a skin pixel is a window pixel; the button sits in the bottom right.
+        assert_eq!(
+            skip_button_area(element, 1024.0, 768.0, Some([193.0, 147.0])),
+            [831.0, 621.0, 1024.0, 768.0]
+        );
+        // The plain button, and the game scale growing it about its corner.
+        assert_eq!(
+            skip_button_area(element, 1024.0, 768.0, None),
+            [844.0, 720.0, 1024.0, 768.0]
+        );
+        let doubled = element.scaled_by(2.0);
+        assert_eq!(
+            skip_button_area(&doubled, 1024.0, 768.0, None),
+            [664.0, 672.0, 1024.0, 768.0]
+        );
+    }
 
     #[test]
     fn score_has_six_digits_at_least() {

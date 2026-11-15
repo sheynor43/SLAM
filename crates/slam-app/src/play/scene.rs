@@ -40,7 +40,7 @@ use slam_render::{Color, Device, Extent, Limits, shaders};
 use slam_skin::{Skin, SkinChain};
 use slam_text::{FontRegistry, GlyphAtlasConfig, GlyphCache, glyph_atlas};
 use slam_ui::cursor::{CursorStyle, MAX_CURSOR_SHAPES};
-use slam_ui::hud_layout::{Builtin, LayoutElement};
+use slam_ui::hud_layout::{Builtin, ComponentKind, LayoutElement};
 use slam_ui::i18n::{FluentArgs, Localizer};
 use slam_ui::theme::Theme;
 
@@ -432,6 +432,10 @@ pub fn prepare(
         menu_shapes: ShapeBatch::with_capacity(MAX_MENU_SPRITES),
         menu_text: SpriteBatch::with_capacity(MAX_GLYPH_SPRITES + MAX_FPS_GLYPHS),
         stats: PlayfieldStats::default(),
+        skip_element: hud_layout
+            .iter()
+            .find(|e| e.component == ComponentKind::SkipButton)
+            .cloned(),
     };
     Ok(Prepared {
         audio: loaded.audio,
@@ -496,6 +500,8 @@ pub struct PlayScene {
     menu_text: SpriteBatch,
     /// The playfield batch's figures of the last frame, for the console report.
     stats: PlayfieldStats,
+    /// The layout's skip button as drawn, for clicks on the update side (ADR-0141).
+    skip_element: Option<LayoutElement>,
 }
 
 /// What the last frame drew of the playfield batch (background, objects, HUD shapes).
@@ -786,6 +792,12 @@ impl PlayScene {
     /// pause menu needs them (ADR-0122).
     pub fn stable_pause_sizes(&self) -> Option<[[f32; 2]; 3]> {
         self.textures.stable_pause_sizes()
+    }
+
+    /// The skip button's layout element (with the game scale) and `play-skip` frame size,
+    /// for [`slam_play::session::PlaySession::set_skip_button`] (ADR-0141).
+    pub fn skip_button(&self) -> (Option<&LayoutElement>, Option<[f32; 2]>) {
+        (self.skip_element.as_ref(), self.textures.skip_size())
     }
 
     /// Whether every image of the play is uploaded (or failed) and every glyph drawn so far

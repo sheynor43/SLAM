@@ -4091,3 +4091,155 @@ fn the_countdown_shows_and_sounds_each_step_once() {
     // The beatmap has no break: the effects are the five steps.
     assert_eq!(sink.effects, 5);
 }
+
+/// A session of `map` with the stable layout's skip button and no `play-skip`: at 640×480 a
+/// plain button of 112.5×30 in the bottom right corner (ADR-0141).
+fn skip_button_session(map: &Beatmap, track: &Track) -> PlaySession {
+    let layout = slam_ui::hud_layout::Builtin::Stable.layout().gameplay;
+    let element = layout
+        .iter()
+        .find(|e| e.component == slam_ui::hud_layout::ComponentKind::SkipButton);
+    let mut session = session(map, track);
+    session.set_skip_button(element, None);
+    session
+}
+
+fn pointer_at(time_ns: u64, x: f32, y: f32) -> InputEvent {
+    press(time_ns, InputKind::MouseMove { x, y })
+}
+
+/// Whether `press` after moving the pointer to (`x`, `y`) skips the intro of a late map.
+fn skips_with(x: f32, y: f32, press_kind: InputKind) -> bool {
+    let map = delayed(29000.0);
+    let track = Track::default();
+    let session = skip_button_session(&map, &track);
+    let events = [
+        pointer_at(T0 + 90 * MS, x, y),
+        press(T0 + 100 * MS, press_kind),
+    ];
+    let (_, track, _) = run_presses_with(session, track, &events, T0 + 200 * MS);
+    track.commands.last() == Some(&Command::Seek(27000 * 48))
+}
+
+fn mouse(button: MouseButton) -> InputKind {
+    InputKind::MouseButton { button, down: true }
+}
+
+fn key(scancode: u16) -> InputKind {
+    InputKind::Key {
+        scancode,
+        down: true,
+    }
+}
+
+#[test]
+fn a_click_on_the_skip_button_skips() {
+    assert!(skips_with(600.0, 470.0, mouse(MouseButton::Left)));
+    assert!(skips_with(528.0, 451.0, mouse(MouseButton::Right)));
+    // Beside the button nothing happens.
+    assert!(!skips_with(520.0, 470.0, mouse(MouseButton::Left)));
+    assert!(!skips_with(600.0, 440.0, mouse(MouseButton::Left)));
+}
+
+#[test]
+fn gameplay_keys_press_the_skip_button() {
+    // Z and X are the gameplay buttons by default; C (smoke) and A are not.
+    assert!(skips_with(600.0, 470.0, key(29)));
+    assert!(skips_with(600.0, 470.0, key(27)));
+    assert!(!skips_with(600.0, 470.0, key(6)));
+    assert!(!skips_with(600.0, 470.0, key(4)));
+    // Off the button a gameplay key does not skip.
+    assert!(!skips_with(100.0, 100.0, key(29)));
+}
+
+#[test]
+fn without_the_button_only_the_skip_keys_skip() {
+    let map = delayed(29000.0);
+    let events = [
+        pointer_at(T0 + 90 * MS, 600.0, 470.0),
+        press(T0 + 100 * MS, mouse(MouseButton::Left)),
+    ];
+    let (_, track) = run_presses(&map, &events, T0 + 200 * MS);
+    assert_ne!(track.commands.last(), Some(&Command::Seek(27000 * 48)));
+}
+
+#[test]
+fn the_skip_button_takes_the_pointer_from_before_the_play() {
+    let map = delayed(29000.0);
+    let track = Track::default();
+    let mut session = skip_button_session(&map, &track);
+    session.set_pointer(Vec2::new(600.0, 470.0));
+    let events = [press(T0 + 100 * MS, mouse(MouseButton::Left))];
+    let (_, track, _) = run_presses_with(session, track, &events, T0 + 200 * MS);
+    assert_eq!(track.commands.last(), Some(&Command::Seek(27000 * 48)));
+}
+
+#[test]
+fn the_skip_button_clicks_with_gameplay_mouse_buttons_off() {
+    let map = delayed(29000.0);
+    let track = Track::default();
+    let layout = slam_ui::hud_layout::Builtin::Stable.layout().gameplay;
+    let element = layout
+        .iter()
+        .find(|e| e.component == slam_ui::hud_layout::ComponentKind::SkipButton);
+    let mut input = LiveInput::new(Bindings::default(), common::layout());
+    input.set_mouse_buttons_disabled(true);
+    let mods = mods(vec![slam_osu::mods::Mod::NoFail]);
+    let (sounds, _) = hitsounds(&map, &[]);
+    let mut session = PlaySession::new(
+        &map,
+        &mods,
+        &track,
+        input,
+        GameplaySounds::new(&map, sounds, SoundSettings::for_mods(&mods)),
+        Offsets::default(),
+    );
+    session.set_skip_button(element, None);
+    let events = [
+        pointer_at(T0 + 90 * MS, 600.0, 470.0),
+        press(T0 + 100 * MS, mouse(MouseButton::Left)),
+    ];
+    let (_, track, _) = run_presses_with(session, track, &events, T0 + 200 * MS);
+    assert_eq!(track.commands.last(), Some(&Command::Seek(27000 * 48)));
+}
+
+#[test]
+fn a_hidden_skip_button_does_not_click() {
+    let map = delayed(29000.0);
+    let track = Track::default();
+    let layout = slam_ui::hud_layout::Builtin::Stable.layout().gameplay;
+    let mut element = layout
+        .into_iter()
+        .find(|e| e.component == slam_ui::hud_layout::ComponentKind::SkipButton)
+        .unwrap();
+    element.visible = false;
+    let mut session = session(&map, &track);
+    session.set_skip_button(Some(&element), None);
+    let events = [
+        pointer_at(T0 + 90 * MS, 600.0, 470.0),
+        press(T0 + 100 * MS, mouse(MouseButton::Left)),
+    ];
+    let (_, track, _) = run_presses_with(session, track, &events, T0 + 200 * MS);
+    assert_ne!(track.commands.last(), Some(&Command::Seek(27000 * 48)));
+}
+
+#[test]
+fn the_skip_button_does_not_click_after_the_skip_period() {
+    // Gameplay starts at 28 s: the skip period ends at 27 s, 27 s after `T0`.
+    let map = delayed(29000.0);
+    let track = Track::default();
+    let session = skip_button_session(&map, &track);
+    let at = T0 + 27_500 * MS;
+    let events = [
+        pointer_at(at - 10 * MS, 600.0, 470.0),
+        press(at, mouse(MouseButton::Left)),
+    ];
+    let (ticks, track, _) = run_presses_with(session, track, &events, at + 100 * MS);
+    assert!(ticks.iter().all(|&(time, _)| time < 27_700.0));
+    assert!(
+        !track
+            .commands
+            .iter()
+            .any(|c| matches!(c, Command::Seek(f) if *f > 0))
+    );
+}
