@@ -39,6 +39,7 @@ use slam_osu::rules::OsuRules;
 use slam_osu::{Beatmap, Mod, ModSet, SliderPath, Vec2};
 
 use crate::hitsounds::{Hitsounds, Sound};
+use crate::service::{COUNTDOWN_STEPS, ServiceSound};
 
 /// Width of the playfield in osu!pixels.
 const PLAYFIELD_WIDTH: f32 = 512.0;
@@ -323,9 +324,20 @@ pub struct GameplaySounds {
     fail_voice: VoiceId,
     /// The skin's `combobreak`, if it has one.
     combo_break: Option<Arc<Sample>>,
+    /// The skin's countdown and section sounds (ADR-0140).
+    service: ServiceSamples,
     /// Gameplay time of the first combo break that sounded or would have (lazer's
     /// `firstBreakTime`).
     first_break_time: Option<f64>,
+}
+
+/// The skin's sounds of the service elements (ADR-0140).
+#[derive(Debug, Clone, Default)]
+pub struct ServiceSamples {
+    /// `readys`, `count3s`, `count2s`, `count1s`, `gos`.
+    pub countdown: [Option<Arc<Sample>>; COUNTDOWN_STEPS],
+    pub section_pass: Option<Arc<Sample>>,
+    pub section_fail: Option<Arc<Sample>>,
 }
 
 impl GameplaySounds {
@@ -414,6 +426,7 @@ impl GameplaySounds {
             fail: None,
             fail_voice: VoiceId::NONE,
             combo_break: None,
+            service: ServiceSamples::default(),
             first_break_time: None,
         }
     }
@@ -432,6 +445,29 @@ impl GameplaySounds {
         self
     }
 
+    /// Plays `samples` for the countdown and the section pass or fail (ADR-0140); missing
+    /// ones are silent.
+    pub fn with_service_sounds(mut self, samples: ServiceSamples) -> Self {
+        self.service = samples;
+        self
+    }
+
+    /// Plays a sound of the service elements under the effects volume; it plays out.
+    pub fn play_service(&mut self, sound: ServiceSound, sink: &mut impl VoiceSink) {
+        let sample = match sound {
+            ServiceSound::Countdown(step) => {
+                self.service.countdown.get(step).and_then(Option::as_ref)
+            }
+            ServiceSound::SectionPass => self.service.section_pass.as_ref(),
+            ServiceSound::SectionFail => self.service.section_fail.as_ref(),
+        };
+        if let Some(sample) = sample
+            && sink.play_voice(sample, EFFECT).is_err()
+        {
+            self.failed += 1;
+        }
+    }
+
     /// Takes the samples and settings of `other`, sounds made for the same beatmap and mods
     /// with another skin or other settings (ADR-0096), and gives it these to free off the
     /// update thread. The looping voices stop first; the state of the attempt stays: what
@@ -447,6 +483,7 @@ impl GameplaySounds {
         std::mem::swap(&mut self.settings, &mut other.settings);
         std::mem::swap(&mut self.fail, &mut other.fail);
         std::mem::swap(&mut self.combo_break, &mut other.combo_break);
+        std::mem::swap(&mut self.service, &mut other.service);
         stopped
     }
 

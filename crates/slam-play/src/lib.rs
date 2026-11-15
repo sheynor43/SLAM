@@ -25,6 +25,7 @@ pub mod offset;
 pub mod playfield;
 pub mod resume;
 pub mod ring;
+pub mod service;
 pub mod session;
 pub mod shake;
 pub mod slider_body;

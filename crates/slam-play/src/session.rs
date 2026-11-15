@@ -54,6 +54,9 @@ use crate::menu_overlay::{
 use crate::offset::{self, OffsetPanel};
 use crate::playfield::PlayfieldLayout;
 use crate::resume::ResumeView;
+use crate::service::{
+    COUNTDOWN_IMAGES, COUNTDOWN_STEPS, ServiceState, ServiceTextures, ServiceTracker,
+};
 use crate::shake::ObjectShakes;
 use crate::sliders::{
     AnimationSprites, BallStyle, HitSliders, LiveSliders, MAX_ANIMATION_FRAMES,
@@ -306,6 +309,8 @@ pub struct PlaySnapshot {
     pub exit_progress: f32,
     /// Times the play was restarted.
     pub restarts: u32,
+    /// The countdown, warning arrows and section pass or fail (ADR-0140).
+    pub service: ServiceState,
     /// The pause or fail menu.
     pub menu: MenuSnapshot,
     /// When the play failed: the fail animation runs from then on.
@@ -334,6 +339,7 @@ impl Default for PlaySnapshot {
             // Lazer's `BreakTracker` starts in a break.
             is_break_time: true,
             health: 1.0,
+            service: ServiceState::default(),
             hud: HudValues::default(),
             keys: KeyValues::default(),
             resume_target: Vec2::ZERO,
@@ -397,6 +403,10 @@ pub struct PlaySession {
     offset_adjustable: bool,
     offset_panel: OffsetPanel,
     breaks: BreakTracker,
+    /// The countdown, warning arrows and section pass or fail, and their state after the
+    /// last step.
+    service: ServiceTracker,
+    service_state: ServiceState,
     skip: IntroSkip,
     /// Skip the intro as soon as it can be (a quick restart).
     auto_skip: bool,
@@ -561,6 +571,8 @@ impl PlaySession {
             offset_adjustable: true,
             offset_panel: OffsetPanel::new(offsets.beatmap_ms),
             breaks,
+            service: ServiceTracker::new(beatmap, start_time),
+            service_state: ServiceState::default(),
             skip,
             auto_skip: false,
             pending_seek: None,
@@ -1120,6 +1132,15 @@ impl PlaySession {
             }
         }
 
+        // The service elements go by the step's health, after its fail (ADR-0140).
+        let (service, sounds) =
+            self.service
+                .update(step_time, self.health.health(), self.health.has_failed());
+        self.service_state = service;
+        for sound in sounds.into_iter().flatten() {
+            self.sounds.play_service(sound, sink);
+        }
+
         // Ported from osu!lazer 2026.1005.0-lazer: osu.Game/Screens/Play/Player.cs (checkScoreCompleted, progressToResults)
         // The score processor completes on its update at the step's time; a fail in the same
         // step (on the last judgement) comes first and there are no results. Without
@@ -1356,6 +1377,8 @@ impl PlaySession {
         self.mods = self.initial.mods.clone();
         self.log = JudgementLog::with_capacity(self.rules.max_judgements());
         self.skip = self.initial.skip;
+        self.service.reset();
+        self.service_state = ServiceState::default();
         // A stop that did not queue is retried by the sounds' next update.
         self.sounds.reset(sink);
         // The old player's fail animation goes with it (`OnExiting`).
@@ -1447,6 +1470,7 @@ impl PlaySession {
         snapshot.cursor_expand = self.expand.times();
         snapshot.skip_available = false;
         snapshot.health = self.health.health();
+        snapshot.service = ServiceState::default();
         snapshot.hud = HudValues::of(&self.score);
         let (presses, held) = self.input.keys();
         snapshot.keys = KeyValues {
@@ -1477,6 +1501,7 @@ impl PlaySession {
     /// Fills the fields every gameplay tick writes alike.
     fn fill(&self, snapshot: &mut PlaySnapshot, now_ns: u64) {
         snapshot.health = self.health.health();
+        snapshot.service = self.service_state;
         snapshot.hud = HudValues::of(&self.score);
         let (presses, held) = self.input.keys();
         snapshot.keys = KeyValues {
@@ -1752,7 +1777,22 @@ pub struct PlayTextures {
     /// The display sizes of stable's three pause buttons, read when requested: the update
     /// side lays them out without the uploads.
     pause_sizes: [Option<[f32; 2]>; 3],
+    /// The service elements' images, in [`SERVICE_IMAGES`] order (ADR-0140).
+    service: [Option<Requested>; SERVICE_IMAGES.len()],
 }
+
+/// The skin images of the service elements (ADR-0140): the countdown's steps, the warning
+/// arrow, the section pass and fail.
+pub const SERVICE_IMAGES: [&str; COUNTDOWN_STEPS + 3] = [
+    COUNTDOWN_IMAGES[0],
+    COUNTDOWN_IMAGES[1],
+    COUNTDOWN_IMAGES[2],
+    COUNTDOWN_IMAGES[3],
+    COUNTDOWN_IMAGES[4],
+    "play-warningarrow",
+    "section-pass",
+    "section-fail",
+];
 
 /// The skin images of stable's pause and fail menus (ADR-0122): the backgrounds, then the
 /// buttons in the order the pause menu shows them.
@@ -1951,6 +1991,18 @@ impl PlayTextures {
                 *slot = Some(request_file_as(requests, &found.value, kind)?);
             }
         }
+        let mut service = [None; SERVICE_IMAGES.len()];
+        for (slot, name) in service.iter_mut().zip(SERVICE_IMAGES) {
+            if let Some(found) = skins.texture(name) {
+                // The countdown and the sections can be large: kept out of the atlas.
+                let kind = if name == "play-warningarrow" {
+                    TextureKind::Atlas
+                } else {
+                    TextureKind::Standalone
+                };
+                *slot = Some(request_file_as(requests, &found.value, kind)?);
+            }
+        }
         Ok(PlayTextures {
             requested,
             white,
@@ -1971,6 +2023,7 @@ impl PlayTextures {
             ring,
             pause,
             pause_sizes,
+            service,
         })
     }
 
@@ -2117,6 +2170,19 @@ impl PlayTextures {
                 _ => None,
             });
         }
+        let service = self.service.map(|requested| {
+            requested.and_then(|r| match uploads.get(r.handle) {
+                TextureState::Ready(region) => Some(SkinSprite::new(region, r.scale, f32::MAX)),
+                _ => None,
+            })
+        });
+        let [ready, three, two, one, go, arrow, pass, fail] = service;
+        frame.service = ServiceTextures {
+            countdown: [ready, three, two, one, go],
+            warning_arrow: arrow,
+            section_pass: pass,
+            section_fail: fail,
+        };
         // The spinners' counters are in the score font too.
         frame.spinners.score_digits = frame.hud.score.digits;
         frame
@@ -2169,6 +2235,7 @@ impl PlayTextures {
             + usize::from(self.lighting.is_some())
             + self.hud.found()
             + self.pause.iter().flatten().count()
+            + self.service.iter().flatten().count()
     }
 }
 
@@ -2509,6 +2576,8 @@ pub struct FrameTextures {
     pub hud: HudTextures,
     /// Stable's pause and fail menus' images (ADR-0122).
     pub pause: PauseTextures,
+    /// The countdown's, warning arrows' and sections' images (ADR-0140).
+    pub service: ServiceTextures,
 }
 
 /// The images of stable's pause and fail menus, in [`PAUSE_IMAGES`] order; missing or not

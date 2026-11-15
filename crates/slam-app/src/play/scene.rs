@@ -307,7 +307,8 @@ pub fn prepare(
         },
     )
     .with_fail_sound(fail_sound)
-    .with_combo_break_sound(combo_break);
+    .with_combo_break_sound(combo_break)
+    .with_service_sounds(service_samples(sample_skins, &mut cache));
     let circle_mods = CircleMods::new(mods);
     let windows = slam_osu::hit_windows::HitWindows::new(beatmap.difficulty.overall_difficulty);
     let cursor_scale = CursorScale::new(
@@ -638,6 +639,13 @@ impl PlayScene {
             now_ns,
             &textures,
         );
+        // The countdown, warning arrows and section pass or fail (ADR-0140), under the HUD.
+        slam_play::service::ServiceView::new(width, height).push(
+            &mut self.batch,
+            &snapshot.service,
+            time,
+            &textures.service,
+        );
         self.hud.push_shapes(
             &mut self.batch,
             snapshot,
@@ -815,4 +823,24 @@ impl<D: Device> SceneGpu<D> {
             device.destroy_texture(texture);
         }
     }
+}
+
+/// The skin's sounds of the countdown and the section pass or fail (ADR-0140).
+fn service_samples(
+    skins: SampleSkins<'_>,
+    cache: &mut SampleCache,
+) -> slam_play::gameplay_sounds::ServiceSamples {
+    let effect =
+        |name: &str, cache: &mut SampleCache| slam_play::hitsounds::effect(name, skins, cache);
+    let mut samples = slam_play::gameplay_sounds::ServiceSamples::default();
+    for (slot, name) in samples
+        .countdown
+        .iter_mut()
+        .zip(slam_play::service::COUNTDOWN_SAMPLES)
+    {
+        *slot = effect(name, cache);
+    }
+    samples.section_pass = effect("sectionpass", cache);
+    samples.section_fail = effect("sectionfail", cache);
+    samples
 }

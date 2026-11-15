@@ -73,6 +73,11 @@ pub struct Beatmap {
     /// `AudioLeadIn` from `[General]`: how long before the first object, in ms, the play
     /// should start at least ([`crate::lead_in::earliest_start_time`]).
     pub audio_lead_in: f64,
+    /// `Countdown` from `[General]`: 0 none, 1 normal, 2 half speed, 3 double speed
+    /// (shown by `slam-play`, ADR-0140).
+    pub countdown: i32,
+    /// `CountdownOffset` from `[General]`: how many beats earlier the countdown ends.
+    pub countdown_offset: i32,
     /// Control points.
     pub control_points: ControlPoints,
     /// Breaks sorted by start, then end time.
@@ -177,6 +182,8 @@ impl Beatmap {
             difficulty_without_mods,
             stack_leniency: file.general.stack_leniency,
             audio_lead_in: file.general.audio_lead_in,
+            countdown: file.general.countdown,
+            countdown_offset: file.general.countdown_offset,
             control_points,
             breaks,
             hit_objects,

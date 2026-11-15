@@ -4047,3 +4047,47 @@ fn overlay_keys_count_while_playing_and_start_over_on_a_retry() {
         slam_play::key_overlay::KeyValues::default()
     );
 }
+
+#[test]
+fn the_countdown_shows_and_sounds_each_step_once() {
+    let mut map = beatmap();
+    map.countdown = 1;
+    // Room for the countdown before the first object.
+    map.audio_lead_in = 10_000.0;
+    let track = Track::default();
+    let mods = mods(vec![slam_osu::mods::Mod::NoFail]);
+    let (hitsounds, _) = hitsounds(&map, &[]);
+    let sample = || {
+        Some(Arc::new(
+            Sample::from_interleaved(vec![0.1; 2 * 10], RATE, 2).unwrap(),
+        ))
+    };
+    let service = slam_play::gameplay_sounds::ServiceSamples {
+        countdown: std::array::from_fn(|_| sample()),
+        section_pass: None,
+        section_fail: None,
+    };
+    let session = PlaySession::new(
+        &map,
+        &mods,
+        &track,
+        LiveInput::new(Bindings::default(), layout()),
+        GameplaySounds::new(&map, hitsounds, SoundSettings::for_mods(&mods))
+            .with_service_sounds(service),
+        Offsets::default(),
+    );
+    let first = map.hit_objects[0].start_time;
+    let end = end_ns(&map, session.start_time());
+    let mut steps_seen = [false; slam_play::service::COUNTDOWN_STEPS];
+    let (_, _, sink) = run_with(&map, session, track, MS, end, |snapshot| {
+        if let Some(countdown) = snapshot.service.countdown
+            && let Some((step, _)) = countdown.step_at(snapshot.time)
+        {
+            steps_seen[step] = true;
+            assert!(snapshot.time < first);
+        }
+    });
+    assert_eq!(steps_seen, [true; slam_play::service::COUNTDOWN_STEPS]);
+    // The beatmap has no break: the effects are the five steps.
+    assert_eq!(sink.effects, 5);
+}
