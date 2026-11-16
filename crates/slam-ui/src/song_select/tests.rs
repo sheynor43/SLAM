@@ -536,9 +536,14 @@ fn a_small_move_is_still_a_click() {
     );
     assert_eq!(press(&mut s, I::PointerRelease), None);
     assert_eq!(s.selected(), Some((4, 0)));
-    // A sideways drag does not block the click either, as lazer's (only the scroll axis).
+}
+
+#[test]
+fn a_sideways_drag_over_a_row_drags_its_text_and_does_not_select() {
+    let (mut s, l) = long_list();
     let (x, y) = centre_of(&l, 8, 0.0);
     press(&mut s, I::PointerPress { x, y });
+    assert_eq!(s.snapshot().text.drag, None);
     press(
         &mut s,
         I::PointerMove {
@@ -546,8 +551,59 @@ fn a_small_move_is_still_a_click() {
             y: y + 2.0,
         },
     );
-    press(&mut s, I::PointerRelease);
-    assert_eq!(s.selected(), Some((7, 0)));
+    let drag = s.snapshot().text.drag.expect("a text drag");
+    assert_eq!((drag.press, drag.dx), ([x, y], -40.0));
+    press(
+        &mut s,
+        I::PointerMove {
+            x: x - 60.0,
+            y: y + 3.0,
+        },
+    );
+    assert_eq!(s.snapshot().text.drag.map(|d| d.dx), Some(-60.0));
+    // The list did not scroll, and the release is no click.
+    assert_eq!(s.snapshot().scroll, 0.0);
+    assert_eq!(press(&mut s, I::PointerRelease), None);
+    assert_eq!(s.snapshot().text.drag, None);
+    assert_eq!(s.selected(), Some((0, 0)));
+}
+
+#[test]
+fn a_vertical_drag_still_scrolls_and_starts_no_text_drag() {
+    let (mut s, l) = long_list();
+    let (x, y) = centre_of(&l, 5, 0.0);
+    press(&mut s, I::PointerPress { x, y });
+    press(
+        &mut s,
+        I::PointerMove {
+            x: x + 3.0,
+            y: y - 12.0,
+        },
+    );
+    press(
+        &mut s,
+        I::PointerMove {
+            x: x - 40.0,
+            y: y - 12.0 - l.row_height,
+        },
+    );
+    assert_eq!(s.snapshot().text.drag, None);
+    assert!(s.snapshot().scroll > 0.5);
+    assert_eq!(press(&mut s, I::PointerRelease), None);
+    assert_eq!(s.selected(), Some((0, 0)));
+}
+
+#[test]
+fn the_pointer_and_the_sideways_wheel_reach_the_snapshot() {
+    let (mut s, l) = long_list();
+    press(&mut s, I::PointerMove { x: 120.0, y: 90.0 });
+    s.scroll_text(1.5);
+    s.scroll_text(-0.5);
+    let text = s.snapshot().text;
+    assert_eq!((text.pointer, text.wheel), ([120.0, 90.0], 1.0));
+    // The wheel for the marquees does not scroll the list.
+    s.tick(0, &l);
+    assert_eq!(s.snapshot().scroll, 0.0);
 }
 
 #[test]

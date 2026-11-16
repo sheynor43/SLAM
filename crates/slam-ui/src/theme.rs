@@ -224,6 +224,14 @@ pub struct Theme {
     pub caption_width: u16,
     /// Padding between a widget's edge and its text.
     pub widget_pad: f32,
+    /// Speed of a marquee text that does not fit, reference px per second (ADR-0148).
+    pub marquee_speed: f32,
+    /// How long a marquee text stays at each end, and after input, ms.
+    pub marquee_pause_ms: u32,
+    /// Width of the faded edge of a marquee text, reference px.
+    pub marquee_fade: f32,
+    /// How far one wheel notch moves a marquee text, reference px.
+    pub marquee_wheel_step: f32,
     /// Size of a toggle's track.
     pub widget_toggle_width: f32,
     pub widget_toggle_height: f32,
@@ -650,13 +658,17 @@ impl Theme {
             caption_weight: 600,
             caption_width: 100,
             widget_pad: 12.0,
+            marquee_speed: 50.0,
+            marquee_pause_ms: 1000,
+            marquee_fade: 12.0,
+            marquee_wheel_step: 40.0,
             widget_toggle_width: 52.0,
             widget_toggle_height: 28.0,
             widget_knob_pad: 3.0,
             widget_track_height: 6.0,
             widget_knob_width: 14.0,
             widget_knob_height: 26.0,
-            widget_value_width: 84.0,
+            widget_value_width: 96.0,
             widget_value_gap: 16.0,
             widget_accent_fill: alpha(p.accent, 0.85),
             widget_popup_fill: alpha(p.raised, 0.97),

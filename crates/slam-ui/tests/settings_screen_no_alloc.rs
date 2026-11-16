@@ -77,7 +77,14 @@ fn labels() -> SettingsLabels {
         sections: vec!["Audio".into(), "Frame".into(), "Keys".into()],
         rows: vec![
             row("Master", "%", &[]),
-            row("Colours", "", &[]),
+            RowLabels {
+                hint: "A hint line that is far too long for the column it stands in".into(),
+                ..row(
+                    "Colours and a name too long to fit its column at all",
+                    "",
+                    &[],
+                )
+            },
             row("Rate", "", &["60 Hz", "144 Hz", "Unlimited"]),
             row("Left (1)", "", &[]),
             row("Left (2)", "", &[]),
@@ -124,6 +131,12 @@ fn settings_input_does_not_allocate() {
         }
         std::hint::black_box(screen.snapshot());
     });
+}
+
+/// A clock that steps 137 ms per call: texts that ride move on every frame.
+fn next_now() -> u64 {
+    static NOW: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+    NOW.fetch_add(137_000_000, std::sync::atomic::Ordering::Relaxed)
 }
 
 /// Listening, capture, the conflict question and the button, on the keys section (row 3 is
@@ -216,6 +229,7 @@ fn the_view_pushes_without_allocating_once_warm() {
             &screen.snapshot(),
             pose,
             white,
+            next_now(),
         );
     };
     // Warm: every section and an open list, at each size.
@@ -292,6 +306,14 @@ fn the_view_pushes_without_allocating_once_warm() {
                 screen.input(SettingsInput::Back, &layout);
                 screen.input(SettingsInput::PrevSection, &layout);
             }
+            // Texts that ride: wheel, then a sideways drag over a name, between frames.
+            screen.scroll_text(1.0);
+            screen.input(SettingsInput::PointerMove { x: 300.0, y: 200.0 }, &layout);
+            screen.input(SettingsInput::PointerPress { x: 100.0, y: 150.0 }, &layout);
+            screen.input(SettingsInput::PointerMove { x: 130.0, y: 152.0 }, &layout);
+            frame(&screen, 1280.0, 720.0, &mut glyphs);
+            screen.input(SettingsInput::PointerMove { x: 160.0, y: 152.0 }, &layout);
+            screen.input(SettingsInput::PointerRelease, &layout);
             frame(&screen, 1280.0, 720.0, &mut glyphs);
         }
     });
@@ -350,6 +372,7 @@ fn a_swapped_in_dropdown_view_draws_without_allocating() {
             &screen.snapshot(),
             pose,
             white,
+            next_now(),
         );
     };
     // Warm at a scale other than 1.0, the Frame section's dropdown open.
@@ -455,6 +478,7 @@ fn hints_and_disabled_rows_draw_without_allocating() {
             &screen.snapshot(),
             pose,
             white,
+            next_now(),
         );
     };
     for _ in 0..3 {
@@ -528,7 +552,7 @@ fn search_and_scroll_do_not_allocate() {
 }
 
 #[test]
-fn a_name_too_long_for_its_column_ends_with_an_ellipsis() {
+fn a_name_too_long_for_its_column_is_kept_whole_to_ride() {
     let registry = Arc::new(FontRegistry::with_builtin());
     let theme = Theme::default();
     let specs = rows();
@@ -540,11 +564,14 @@ fn a_name_too_long_for_its_column_ends_with_an_ellipsis() {
     let layout = SettingsLayout::new(640.0, 480.0, &theme);
     let column = layout.label(0).width;
     let (shown, width) = view.shown_label(0).unwrap();
-    assert!(shown.ends_with('\u{2026}'), "{shown}");
-    assert!(width <= column, "{width} > {column}");
-    // A wide window shows it whole again.
+    // Not cut: it shrinks to its floor and the rest rides (ADR-0148).
+    assert_eq!(shown, long);
+    assert!(width > column, "{width} <= {column}");
+    // A wide window shows it whole in its column.
     view.lay_out_for(3840.0, 2160.0);
-    assert_eq!(view.shown_label(0).unwrap().0, long);
+    let (shown, width) = view.shown_label(0).unwrap();
+    assert_eq!(shown, long);
+    assert!(width <= SettingsLayout::new(3840.0, 2160.0, &theme).label(0).width);
 }
 
 /// Wheel scrolling, category clicks, the easing tick and the frames drawn along the way
@@ -620,6 +647,7 @@ fn the_continuous_list_scrolls_and_draws_without_allocating() {
             &screen.snapshot(),
             pose,
             white,
+            next_now(),
         );
         shapes.len()
     };

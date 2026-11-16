@@ -26,6 +26,7 @@ use super::{
     MAX_VISIBLE_ROWS, ModColumns, ModSelectSnapshot, Row, SearchQuery, SongList, SongSelectLayout,
     SongSelectSnapshot, SongSelectStatus, Thumbs, can_choose_folder,
 };
+use crate::marquee::{Marquee, MarqueeParams, ScrollTracker, push_marquee};
 use crate::menu::Rect;
 use crate::menu::view::{Face, Frame, Line, Typesetter};
 use crate::screen::Pose;
@@ -34,8 +35,6 @@ use crate::widgets::Look;
 use crate::widgets::ToggleLayout;
 
 const ELLIPSIS: char = '\u{2026}';
-/// The ellipsis as text.
-pub(crate) const ELLIPSIS_STR: &str = "\u{2026}";
 /// Bytes reserved up front in every text buffer.
 pub(super) const TEXT_CAPACITY: usize = 256;
 /// How much of its colour a dimmed element keeps: the mod tiles under the expanded settings
@@ -110,6 +109,11 @@ struct RowSlot {
     holds: Option<(u64, Row)>,
     primary: Line,
     secondary: Line,
+    /// Room of the text that rides (the mapper of a set, the name of a difficulty), as
+    /// filled.
+    avail: f32,
+    /// The ride of that text (ADR-0148).
+    marquee: Marquee,
 }
 
 impl RowSlot {
@@ -123,6 +127,8 @@ impl RowSlot {
             holds: None,
             primary: line(),
             secondary: line(),
+            avail: 0.0,
+            marquee: Marquee::default(),
         }
     }
 }
@@ -199,6 +205,8 @@ pub struct SongSelectView {
     expansion: Expansion,
     /// The thumbnails were on at the last frame: the row texts are cut for it.
     thumbs_on: bool,
+    /// Applies the snapshot's sideways wheel and drags to the rows' marquees.
+    scroll_tracker: ScrollTracker,
 }
 
 impl std::fmt::Debug for SongSelectView {
@@ -401,6 +409,7 @@ impl SongSelectView {
             expansion: Expansion::default(),
             fade_next: 0,
             thumbs_on: false,
+            scroll_tracker: ScrollTracker::default(),
             theme,
         };
         view.scanning.text.reserve(TEXT_CAPACITY);
@@ -542,6 +551,7 @@ impl SongSelectView {
         list: &SongList,
         row: Row,
         text_shift: f32,
+        now_ns: u64,
     ) -> bool {
         if slot.holds == Some((generation, row)) {
             return true;
@@ -590,23 +600,13 @@ impl SongSelectView {
                 avail,
                 ellipsis[0],
             );
-            // The mapper is a note (lazer: 14 SemiBold).
-            fit_face(
-                type_setter,
-                &mut slot.secondary,
-                theme.note_face(scale),
-                avail,
-                ellipsis[3],
-            );
+            // The mapper is a note (lazer: 14 SemiBold); too long, it rides.
+            type_setter.lay_out_face(&mut slot.secondary, theme.note_face(scale));
         } else {
-            fit_face(
-                type_setter,
-                &mut slot.primary,
-                theme.caption_face(scale),
-                avail,
-                ellipsis[2],
-            );
+            type_setter.lay_out_face(&mut slot.primary, theme.caption_face(scale));
         }
+        slot.avail = avail;
+        slot.marquee.restart(now_ns);
         slot.holds = Some((generation, row));
         true
     }
@@ -678,10 +678,45 @@ impl SongSelectView {
             let colour = faded(colour, opacity * row_alpha.get());
             crate::widgets::draw(shapes, white, &moved, colour, look, theme, scale);
         };
+        let params = MarqueeParams::new(theme, scale);
+        let now_ns = thumbs.now_ns;
+        // The rows' marquees take the sideways wheel and drags first, by the windows of
+        // the last frame; then the windows are cleared for this frame's rows to set.
+        self.scroll_tracker.apply(
+            &snapshot.text,
+            now_ns,
+            &params,
+            self.slots.iter_mut().map(|slot| &mut slot.marquee),
+        );
+        for slot in &mut self.slots {
+            slot.marquee.place(Rect::default());
+        }
+        let target = std::cell::RefCell::new((&mut *text, &mut *glyphs));
         let mut left = |line: &Line, x: f32, centre_y: f32, colour: Color| {
             let position = [x + shift, centre_y - line.layout.height() / 2.0];
             let colour = faded(colour, opacity * row_alpha.get());
+            let (text, glyphs) = &mut *target.borrow_mut();
             push_layout(text, &line.layout, position, colour, glyphs);
+        };
+        // Draws a text that rides in `avail` pixels from `x`, centred on `centre_y`.
+        let ride = |line: &Line,
+                    marquee: &mut Marquee,
+                    avail: f32,
+                    x: f32,
+                    centre_y: f32,
+                    colour: Color| {
+            let height = line.layout.height();
+            let rect = Rect {
+                x: x + shift,
+                y: centre_y - height / 2.0,
+                width: avail,
+                height,
+            };
+            let colour = faded(colour, opacity * row_alpha.get());
+            let (text, glyphs) = &mut *target.borrow_mut();
+            push_marquee(
+                text, line, &rect, 0.0, colour, glyphs, marquee, &params, now_ns,
+            );
         };
 
         if snapshot.mods.open {
@@ -1005,10 +1040,12 @@ impl SongSelectView {
                     list,
                     row,
                     text_shift,
+                    now_ns,
                 ) {
                     continue;
                 }
-                let row_text = &*slot;
+                let (primary_line, secondary_line) = (&slot.primary, &slot.secondary);
+                let (avail, marquee) = (slot.avail, &mut slot.marquee);
                 let indent = match row {
                     Row::Set(_) => 0.0,
                     Row::Difficulty { .. } => layout.indent,
@@ -1136,22 +1173,27 @@ impl SongSelectView {
                     }
                 }
                 if matches!(row, Row::Set(_)) {
-                    let (top, bottom) = (
-                        row_text.primary.layout.height(),
-                        row_text.secondary.layout.height(),
-                    );
+                    let (top, bottom) =
+                        (primary_line.layout.height(), secondary_line.layout.height());
                     let start = area.y + (area.height - top - bottom) / 2.0;
                     let (primary, secondary) = (start + top / 2.0, start + top + bottom / 2.0);
-                    if inside(&row_text.primary, primary) {
-                        left(&row_text.primary, x, primary, theme.text);
+                    if inside(primary_line, primary) {
+                        left(primary_line, x, primary, theme.text);
                     }
-                    if inside(&row_text.secondary, secondary) {
-                        left(&row_text.secondary, x, secondary, theme.disabled_text);
+                    if inside(secondary_line, secondary) {
+                        ride(
+                            secondary_line,
+                            marquee,
+                            avail,
+                            x,
+                            secondary,
+                            theme.disabled_text,
+                        );
                     }
                 } else {
                     let centre = area.y + area.height / 2.0;
-                    if inside(&row_text.primary, centre) {
-                        left(&row_text.primary, x, centre, theme.text);
+                    if inside(primary_line, centre) {
+                        ride(primary_line, marquee, avail, x, centre, theme.text);
                     }
                 }
                 let centre = area.y + area.height / 2.0;
@@ -1159,10 +1201,10 @@ impl SongSelectView {
                 match row {
                     Row::Difficulty { .. } => {
                         if let Some(stars) = stars
-                            && inside(&row_text.secondary, centre)
+                            && inside(secondary_line, centre)
                         {
                             // The star pill, in the colour of the rating.
-                            let line = &row_text.secondary;
+                            let line = secondary_line;
                             let width = super::info_panel::star_pill_width(line, theme, scale);
                             super::info_panel::push_star_pill(
                                 &mut rect,

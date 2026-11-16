@@ -235,6 +235,8 @@ impl CustomisationLayout {
                 width: self.value_width,
                 height: bounds.height,
             },
+            // `control_rect` is already inset by the row's padding.
+            value_pad: 0.0,
             scale: self.scale,
         }
     }

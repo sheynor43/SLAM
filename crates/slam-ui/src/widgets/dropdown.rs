@@ -11,7 +11,8 @@ use slam_render::shape::ShapeBatch;
 use slam_render::sprite::SpriteBatch;
 use slam_text::{FontRegistry, Glyph, GlyphCache, GlyphKey};
 
-use super::{Look, draw, push_left};
+use super::{Look, draw};
+use crate::marquee::{Marquee, MarqueeParams, push_marquee};
 use crate::menu::Rect;
 use crate::menu::view::{Line, Typesetter};
 use crate::theme::{Theme, faded};
@@ -335,13 +336,12 @@ pub struct DropdownView {
     theme: Theme,
     type_setter: Typesetter,
     scale: f32,
-    /// The box's width the options are fitted to (cut with an ellipsis when wider).
-    width: f32,
-    /// The options' whole texts; `options` holds them as fitted.
-    labels: Vec<String>,
     options: Vec<Line>,
-    /// The ellipsis cut options end with, laid out at the text size.
-    ellipsis: Line,
+    /// The ride of each option in the open list (ADR-0148).
+    rides: Vec<Marquee>,
+    /// The ride of the selected option in the box, and the option it is for.
+    header: Marquee,
+    header_for: Option<usize>,
 }
 
 impl std::fmt::Debug for DropdownView {
@@ -363,19 +363,10 @@ impl DropdownView {
         let mut view = DropdownView {
             type_setter: Typesetter::new(registry, theme.font_weight),
             scale: 1.0,
-            width: f32::INFINITY,
-            labels: options.iter().map(|o| o.as_ref().to_owned()).collect(),
-            // Room for the ellipsis, so cutting does not grow the text.
-            options: options
-                .iter()
-                .map(|o| {
-                    let mut line = Line::new(o.as_ref());
-                    line.text
-                        .reserve(crate::song_select::view::ELLIPSIS_STR.len());
-                    line
-                })
-                .collect(),
-            ellipsis: Line::new(crate::song_select::view::ELLIPSIS_STR),
+            options: options.iter().map(|o| Line::new(o.as_ref())).collect(),
+            rides: vec![Marquee::default(); options.len()],
+            header: Marquee::default(),
+            header_for: None,
             theme,
         };
         view.lay_out();
@@ -393,24 +384,25 @@ impl DropdownView {
         self.theme = *theme;
     }
 
-    /// Lays the options out, each cut with an ellipsis to fit the box. Allocates only when
-    /// an option is cut again.
+    /// Lays the options out whole; one wider than the box rides (ADR-0148).
     fn lay_out(&mut self) {
         let face = self.theme.caption_face(self.scale);
-        let pad = self.theme.widget_pad * self.scale;
-        self.type_setter.lay_out_face(&mut self.ellipsis, face);
-        let ellipsis = self.ellipsis.layout.width();
-        let avail = (self.width - 2.0 * pad).max(0.0);
-        for (option, label) in self.options.iter_mut().zip(&self.labels) {
-            option.text.clone_from(label);
-            crate::song_select::view::fit_face(
-                &mut self.type_setter,
-                option,
-                face,
-                avail,
-                ellipsis,
-            );
+        for option in &mut self.options {
+            self.type_setter.lay_out_face(option, face);
         }
+    }
+
+    /// The marquees, read-only, in the order of [`DropdownView::marquees_mut`]: the box's,
+    /// then the options'. For tests.
+    #[doc(hidden)]
+    pub fn marquees(&self) -> impl Iterator<Item = &Marquee> {
+        std::iter::once(&self.header).chain(self.rides.iter())
+    }
+
+    /// The marquees of the box and of the options, in a fixed order: for the owner's
+    /// [`crate::marquee::ScrollTracker`].
+    pub fn marquees_mut(&mut self) -> impl Iterator<Item = &mut Marquee> {
+        std::iter::once(&mut self.header).chain(self.rides.iter_mut())
     }
 
     /// Asks `glyphs` for every glyph of every option. Returns how many are not ready yet.
@@ -434,11 +426,21 @@ impl DropdownView {
         layout: &DropdownLayout,
         opacity: f32,
         white: AtlasRegion,
+        now_ns: u64,
     ) {
-        if layout.scale != self.scale || layout.bounds.width != self.width {
+        if layout.scale != self.scale {
             self.scale = layout.scale;
-            self.width = layout.bounds.width;
             self.lay_out();
+        }
+        let params = MarqueeParams::new(&self.theme, layout.scale);
+        // Only what is drawn takes the pointer.
+        self.header.place(Rect::default());
+        for ride in &mut self.rides {
+            ride.place(Rect::default());
+        }
+        if self.header_for != Some(state.selected) {
+            self.header_for = Some(state.selected);
+            self.header.restart(now_ns);
         }
         let layout = &layout.scrolled(state.scroll);
         let theme = &self.theme;
@@ -453,7 +455,17 @@ impl DropdownView {
         draw(shapes, white, &layout.bounds, boxed, Look::Round, theme, s);
         let colour = faded(theme.text, opacity);
         if let Some(line) = self.options.get(state.selected) {
-            push_left(text, line, &layout.bounds, pad, colour, glyphs);
+            push_marquee(
+                text,
+                line,
+                &layout.bounds,
+                pad,
+                colour,
+                glyphs,
+                &mut self.header,
+                &params,
+                now_ns,
+            );
         }
         if !state.open {
             return;
@@ -461,14 +473,21 @@ impl DropdownView {
         let popup = faded(theme.widget_popup_fill, opacity);
         draw(shapes, white, &layout.list(), popup, Look::Panel, theme, s);
         let first = layout.first();
-        let shown = self.options.iter().enumerate().skip(first);
-        for (i, line) in shown.take(layout.visible().min(layout.count)) {
+        let shown = self
+            .options
+            .iter()
+            .zip(&mut self.rides)
+            .enumerate()
+            .skip(first);
+        for (i, (line, ride)) in shown.take(layout.visible().min(layout.count)) {
             let rect = layout.option(i);
             if i == state.highlight {
                 let hover = faded(theme.button_hover_fill, opacity);
                 draw(shapes, white, &rect, hover, Look::Round, theme, s);
             }
-            push_left(text, line, &rect, pad, colour, glyphs);
+            push_marquee(
+                text, line, &rect, pad, colour, glyphs, ride, &params, now_ns,
+            );
         }
     }
 }
@@ -479,21 +498,15 @@ mod tests {
     use crate::theme::ColourScheme;
 
     #[test]
-    fn options_wider_than_the_box_end_with_an_ellipsis_and_come_back_whole() {
+    fn options_wider_than_the_box_are_not_cut() {
         let registry = Arc::new(FontRegistry::with_builtin());
         let long = "0: Xiaomi Corporation - Mi Monitor - DP-2 (1920x1080)";
         let mut view = DropdownView::new(registry, Theme::default(), &[long, "Default"]);
         view.scale = 1.0;
-        view.width = 200.0;
-        view.lay_out();
-        let cut = &view.options[0];
-        assert!(cut.text.ends_with('\u{2026}'), "{}", cut.text);
-        let pad = view.theme.widget_pad;
-        assert!(cut.layout.width() <= 200.0 - 2.0 * pad + 0.5);
-        assert_eq!(view.options[1].text, "Default");
-        view.width = 2000.0;
         view.lay_out();
         assert_eq!(view.options[0].text, long);
+        assert_eq!(view.options[1].text, "Default");
+        assert_eq!(view.marquees_mut().count(), 3);
     }
 
     #[test]
@@ -502,7 +515,6 @@ mod tests {
         let text = "Ranked and approved maps only";
         let mut view = DropdownView::new(registry, Theme::default(), &[text]);
         view.scale = 1.0;
-        view.width = 2000.0;
         view.lay_out();
         let caption = view.options[0].layout.width();
         let mut plain = Line::new(text);

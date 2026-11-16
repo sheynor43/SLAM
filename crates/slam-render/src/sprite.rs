@@ -281,6 +281,26 @@ impl SpriteBatch {
         }
     }
 
+    /// Records a quad like [`push_quad`](Self::push_quad) with its own colour at each
+    /// corner (straight alpha, interpolated across the quad).
+    pub fn push_quad_colours(
+        &mut self,
+        texture: TextureId,
+        blend: Blend,
+        corners: [[f32; 2]; 4],
+        uv: [[f32; 2]; 4],
+        colours: [Color; 4],
+    ) {
+        self.extend(texture, blend, 1);
+        for ((position, uv), Color { r, g, b, a }) in corners.into_iter().zip(uv).zip(colours) {
+            self.vertices.push(SpriteVertex {
+                position,
+                colour: [r, g, b, a],
+                uv,
+            });
+        }
+    }
+
     /// Accounts for `quads` quads of `sprite`'s texture and blend.
     fn extend_batch(&mut self, sprite: &Sprite, quads: u32) {
         self.extend(sprite.texture, sprite.blend, quads);
@@ -965,6 +985,25 @@ mod tests {
         assert!(v.iter().all(|v| v.colour == [1.0, 0.0, 0.0, 1.0]));
         batch.push_quad(TextureId(4), Blend::Additive, corners, uv, RED);
         assert_eq!(batch.batches().len(), 2);
+    }
+
+    #[test]
+    fn a_quad_with_corner_colours_keeps_each_colour() {
+        let mut batch = SpriteBatch::new();
+        let corners = [[0.0, 0.0], [4.0, 0.0], [4.0, 2.0], [0.0, 2.0]];
+        let uv = [[0.0, 0.0], [1.0, 0.0], [1.0, 1.0], [0.0, 1.0]];
+        let clear = Color { a: 0.0, ..RED };
+        batch.push_quad_colours(
+            TextureId(3),
+            Blend::Alpha,
+            corners,
+            uv,
+            [clear, RED, RED, clear],
+        );
+        let alphas: Vec<f32> = batch.vertices().iter().map(|v| v.colour[3]).collect();
+        assert_eq!(alphas, [0.0, 1.0, 1.0, 0.0]);
+        assert_eq!(positions(&batch), corners);
+        assert_eq!(batch.batches().len(), 1);
     }
 
     fn assert_close(actual: &[[f32; 2]], expected: &[[f32; 2]]) {

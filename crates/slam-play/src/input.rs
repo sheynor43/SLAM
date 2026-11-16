@@ -1211,7 +1211,7 @@ mod tests {
     fn wheel(t: f64) -> InputEvent {
         InputEvent {
             time_ns: ms(t),
-            kind: InputKind::MouseWheel { y: -1.0 },
+            kind: InputKind::MouseWheel { x: 0.0, y: -1.0 },
         }
     }
 

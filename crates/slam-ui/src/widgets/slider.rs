@@ -51,6 +51,9 @@ pub struct SliderLayout {
     pub hit: Rect,
     /// Where the value text goes (right aligned).
     pub value: Rect,
+    /// How far the value text stays from the right end of `value`, so it does not touch
+    /// the edge of the row's plate.
+    pub value_pad: f32,
     pub scale: f32,
 }
 
@@ -81,6 +84,7 @@ impl SliderLayout {
                 width: value_width,
                 height: bounds.height,
             },
+            value_pad: theme.widget_pad * scale,
             scale,
         }
     }
@@ -398,7 +402,7 @@ impl SliderView {
             text,
             &self.value_line,
             &layout.value,
-            0.0,
+            layout.value_pad,
             faded(theme.text, opacity),
             glyphs,
         );

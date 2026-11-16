@@ -333,7 +333,7 @@ fn published_lists_reach_the_song_select_and_keys_move_through_them() {
     s.tick(TRANSITION_NS + 3, &[key(KEY_END)], &mut snap);
     assert_eq!(s.song_select().selected(), Some((1, 0)));
     // The wheel scrolls without moving the selection.
-    let wheel = mouse(InputKind::MouseWheel { y: -3.0 });
+    let wheel = mouse(InputKind::MouseWheel { x: 0.0, y: -3.0 });
     s.tick(TRANSITION_NS + 4, &[wheel], &mut snap);
     assert_eq!(s.song_select().selected(), Some((1, 0)));
 
@@ -2536,7 +2536,7 @@ fn the_parallax_follows_its_own_switch_not_the_effects() {
 }
 
 fn wheel(y: f32) -> InputEvent {
-    mouse(InputKind::MouseWheel { y })
+    mouse(InputKind::MouseWheel { x: 0.0, y })
 }
 
 const MS: u64 = 1_000_000;
@@ -2651,4 +2651,100 @@ fn the_volume_overlay_stands_at_the_edge_the_settings_say() {
     let mut snap = ShellSnapshot::default();
     s.tick(MS, &[], &mut snap);
     assert_eq!(snap.volume.edge, slam_ui::volume::Edge::Bottom);
+}
+
+fn wheel_xy(x: f32, y: f32) -> InputEvent {
+    mouse(InputKind::MouseWheel { x, y })
+}
+
+fn shift(down: bool) -> InputEvent {
+    mouse(InputKind::Key {
+        scancode: KEY_LEFT_SHIFT,
+        down,
+    })
+}
+
+/// A shell on a song select with a list long enough to scroll.
+fn scrolling_song_select() -> (ShellState, ShellSnapshot) {
+    let (mut producer, link) = crate::songs::link();
+    let mut s = state().with_songs(link);
+    let mut snap = ShellSnapshot::default();
+    let names: Vec<String> = (0..40).map(|i| format!("set{i}")).collect();
+    let sets = songs(
+        &names
+            .iter()
+            .map(|n| (n.as_str(), &["Easy"][..]))
+            .collect::<Vec<_>>(),
+    );
+    producer
+        .push(crate::songs::publish(
+            &sets,
+            SongSelectStatus::Ready,
+            Arc::from(""),
+        ))
+        .unwrap();
+    s.tick(0, &[key(KEY_ENTER)], &mut snap);
+    s.tick(TRANSITION_NS, &[], &mut snap);
+    assert_eq!(*s.stack().top(), AppScreen::SongSelect);
+    (s, snap)
+}
+
+#[test]
+fn the_horizontal_wheel_and_shift_wheel_move_the_song_select_texts_not_the_list() {
+    let (mut s, mut snap) = scrolling_song_select();
+    let text = |s: &ShellState| s.song_select().snapshot().text.wheel;
+    let scroll = |s: &ShellState| s.song_select().snapshot().scroll;
+    // A horizontal wheel: right is towards the end of a text.
+    s.tick(2 * TRANSITION_NS, &[wheel_xy(2.0, 0.0)], &mut snap);
+    assert_eq!((text(&s), scroll(&s)), (2.0, 0.0));
+    s.tick(2 * TRANSITION_NS, &[wheel_xy(-0.5, 0.0)], &mut snap);
+    assert_eq!((text(&s), scroll(&s)), (1.5, 0.0));
+    // Shift + wheel down (negative y) is towards the end; wheel up towards the start.
+    s.tick(
+        2 * TRANSITION_NS,
+        &[shift(true), wheel_xy(0.0, -1.0)],
+        &mut snap,
+    );
+    assert_eq!((text(&s), scroll(&s)), (2.5, 0.0));
+    s.tick(2 * TRANSITION_NS, &[wheel_xy(0.0, 2.0)], &mut snap);
+    assert_eq!((text(&s), scroll(&s)), (0.5, 0.0));
+    // Without Shift the vertical wheel scrolls the list and leaves the texts.
+    s.tick(
+        2 * TRANSITION_NS,
+        &[shift(false), wheel_xy(0.0, -2.0)],
+        &mut snap,
+    );
+    assert_eq!(text(&s), 0.5);
+    assert!(scroll(&s) > 0.0);
+}
+
+#[test]
+fn a_diagonal_wheel_without_shift_moves_the_texts_and_scrolls_the_list() {
+    let (mut s, mut snap) = scrolling_song_select();
+    s.tick(2 * TRANSITION_NS, &[wheel_xy(1.0, -2.0)], &mut snap);
+    let song = s.song_select().snapshot();
+    assert_eq!(song.text.wheel, 1.0);
+    assert!(song.scroll > 0.0);
+}
+
+#[test]
+fn alt_wheel_is_still_the_volume_with_a_sideways_wheel_about() {
+    let (mut s, mut snap) = scrolling_song_select();
+    s.tick(
+        2 * TRANSITION_NS,
+        &[key(KEY_LEFT_ALT), wheel_xy(0.0, 1.0)],
+        &mut snap,
+    );
+    assert!(snap.volume.visible);
+    assert_eq!(s.song_select().snapshot().text.wheel, 0.0);
+    assert_eq!(s.song_select().snapshot().scroll, 0.0);
+    // A purely horizontal event does not touch the volume.
+    let before = s.settings().audio.master_volume;
+    s.tick(
+        2 * TRANSITION_NS + 400 * MS,
+        &[wheel_xy(1.0, 0.0)],
+        &mut snap,
+    );
+    assert_eq!(s.settings().audio.master_volume, before);
+    assert_eq!(s.song_select().snapshot().text.wheel, 1.0);
 }

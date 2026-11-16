@@ -102,8 +102,15 @@ fn widget_views_push_without_allocating_once_warm() {
     let mut glyphs = glyph_atlas(Arc::clone(&registry), &GlyphAtlasConfig::new(LIMITS)).unwrap();
     let toggle_view = ToggleView::new(theme);
     let mut slider_view = SliderView::new(Arc::clone(&registry), theme, 2, " ms");
-    let mut dropdown_view =
-        DropdownView::new(Arc::clone(&registry), theme, &["One", "Two", "Three"]);
+    let mut dropdown_view = DropdownView::new(
+        Arc::clone(&registry),
+        theme,
+        &[
+            "One",
+            "Two",
+            "A very long option name that cannot fit the box",
+        ],
+    );
     let mut keybind_view = KeyBindView::new(Arc::clone(&registry), theme, "Press a key", "Z");
 
     let tl = ToggleLayout::new(BOUNDS, &theme, 1.0);
@@ -122,12 +129,24 @@ fn widget_views_push_without_allocating_once_warm() {
         SpriteBatch::with_capacity(1024),
     );
 
+    let clock = std::cell::Cell::new(0_u64);
     let mut frame = |slider: &Slider, dropdown: &Dropdown, keybind: &KeyBind, glyphs: &mut _| {
         shapes.clear();
         text.clear();
         toggle_view.push(&mut shapes, &toggle, &tl, 0.5, white());
         slider_view.push(&mut shapes, &mut text, glyphs, slider, &sl, 0.5, white());
-        dropdown_view.push(&mut shapes, &mut text, glyphs, dropdown, &dl, 0.5, white());
+        let now = clock.get();
+        clock.set(now + 137_000_000);
+        dropdown_view.push(
+            &mut shapes,
+            &mut text,
+            glyphs,
+            dropdown,
+            &dl,
+            0.5,
+            white(),
+            now,
+        );
         keybind_view.push(&mut shapes, &mut text, glyphs, keybind, &kl, 0.5, white());
     };
 

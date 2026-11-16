@@ -7,6 +7,7 @@ pub mod hud_layout;
 pub mod i18n;
 pub mod intro;
 pub mod layout_swap;
+pub mod marquee;
 pub mod menu;
 pub mod results;
 pub mod screen;
