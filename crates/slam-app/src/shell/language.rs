@@ -36,6 +36,8 @@ pub struct InterfaceViews {
     pub fps: FpsView,
     /// The volume overlay (ADR-0145).
     pub volume: VolumeView,
+    /// The replay toast (ADR-0154).
+    pub toast: slam_ui::toast::ToastView,
     /// The theme they were laid out with: the draw side's from the swap on.
     pub theme: Theme,
     /// The switch ([`AppliedLanguage::switches`]) they were laid out for.
@@ -139,6 +141,16 @@ pub fn interface_views(
         ),
         fps: FpsView::new(Arc::clone(registry), &fps),
         volume: VolumeView::new(Arc::clone(registry), theme, &volume_labels(localizer)),
+        toast: slam_ui::toast::ToastView::new(
+            Arc::clone(registry),
+            theme,
+            &slam_ui::toast::ToastLabels {
+                title: localizer.format("toast-replay-saved", None).into_owned(),
+                hint: localizer
+                    .format("toast-replay-saved-hint", None)
+                    .into_owned(),
+            },
+        ),
         theme,
         switch: 0,
     }
@@ -163,6 +175,7 @@ impl InterfaceViews {
         self.results.lay_out_for(width, height);
         self.settings.lay_out_for_panel(width, height);
         self.volume.lay_out_for(width, height);
+        self.toast.lay_out_for(width, height);
     }
 }
 

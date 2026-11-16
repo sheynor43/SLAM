@@ -15,5 +15,6 @@ pub mod settings_screen;
 pub mod song_select;
 pub mod star_colour;
 pub mod theme;
+pub mod toast;
 pub mod volume;
 pub mod widgets;

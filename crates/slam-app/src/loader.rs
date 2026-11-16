@@ -105,6 +105,8 @@ pub enum Trash {
     Session(Box<PlaySession>),
     /// An attempt that passed, or failed and was kept: its replay is saved.
     Replay(ReplayJob),
+    /// The path of a saved replay the toast no longer shows (ADR-0154).
+    Path(PathBuf),
     /// A failed preparation's message, logged when it failed.
     Message(String),
     /// A track that failed to open.
@@ -113,7 +115,9 @@ pub enum Trash {
     TrackCommand(PlayError),
 }
 
-fn log(trash: Trash, replays: Option<&Path>, scores: Option<&Path>) {
+/// Logs and frees `trash`, saving a finished play's replay and score; returns the path of a
+/// replay it saved.
+fn log(trash: Trash, replays: Option<&Path>, scores: Option<&Path>) -> Option<PathBuf> {
     match trash {
         Trash::Session(session) => log_hit_errors(&session),
         // Autoplay keeps neither a replay nor a score, as in lazer (ADR-0153).
@@ -126,15 +130,21 @@ fn log(trash: Trash, replays: Option<&Path>, scores: Option<&Path>) {
                     None
                 }
             };
+            let saved = replay
+                .as_ref()
+                .zip(replays)
+                .map(|(name, dir)| dir.join(name));
             // The score of a passed attempt follows its replay (ADR-0125).
             if let Some(dir) = scores {
                 crate::scores::save_passed(&job, replay, dir);
             }
+            return saved;
         }
         Trash::Music(MusicEvent::Failed { error, .. }) => tracing::warn!("track: {error}"),
         Trash::TrackCommand(error) => tracing::warn!("track: {error}"),
         _ => {}
     }
+    None
 }
 
 /// The results screen shows the average and the unstable rate; the median is only here
@@ -164,9 +174,23 @@ pub struct LoaderLink {
     requests: rtrb::Producer<LoadRequest>,
     results: rtrb::Consumer<LoadResult>,
     trash: rtrb::Producer<Trash>,
+    /// The paths of replays the loader saved (ADR-0154).
+    saved: rtrb::Consumer<PathBuf>,
 }
 
 impl LoaderLink {
+    /// The path of a replay the loader saved since the last call, if any; the newest when
+    /// several were, the older ones freed back on the loader. Does not allocate.
+    pub fn saved_replay(&mut self) -> Option<PathBuf> {
+        let mut newest = None;
+        while let Ok(path) = self.saved.pop() {
+            if let Some(older) = newest.replace(path) {
+                self.free(Trash::Path(older));
+            }
+        }
+        newest
+    }
+
     /// Asks for a play of `map` with samples at `sample_rate`; `false` if too many
     /// requests wait.
     pub fn request(
@@ -231,6 +255,7 @@ pub fn spawn(mut config: LoaderConfig) -> std::io::Result<(LoaderLink, SceneTras
     let (requests, mut request_rx) = rtrb::RingBuffer::new(RING);
     let (mut result_tx, results) = rtrb::RingBuffer::new(RING);
     let (trash, mut trash_rx) = rtrb::RingBuffer::<Trash>::new(TRASH);
+    let (mut saved_tx, saved) = rtrb::RingBuffer::<PathBuf>::new(RING);
     let (scene_trash, mut scene_rx) = rtrb::RingBuffer::<PlayScene>::new(TRASH);
     let stop = Arc::new(AtomicBool::new(false));
     let flag = Arc::clone(&stop);
@@ -242,7 +267,12 @@ pub fn spawn(mut config: LoaderConfig) -> std::io::Result<(LoaderLink, SceneTras
             while !flag.load(Ordering::Relaxed) {
                 let mut idle = true;
                 while let Ok(trash) = trash_rx.pop() {
-                    log(trash, config.replays.as_deref(), config.scores.as_deref());
+                    if let Some(path) =
+                        log(trash, config.replays.as_deref(), config.scores.as_deref())
+                    {
+                        // Full: the update thread is gone or far behind; no toast then.
+                        let _ = saved_tx.push(path);
+                    }
                     idle = false;
                 }
                 while scene_rx.pop().is_ok() {
@@ -312,6 +342,7 @@ pub fn spawn(mut config: LoaderConfig) -> std::io::Result<(LoaderLink, SceneTras
             requests,
             results,
             trash,
+            saved,
         },
         SceneTrash { trash: scene_trash },
         LoaderThread {
@@ -581,5 +612,33 @@ mod tests {
             link.free(Trash::Prepared(prepared));
         }
         drop(thread);
+    }
+
+    #[test]
+    fn the_newest_saved_replay_is_taken_and_older_ones_go_back() {
+        let (requests, _request_rx) = rtrb::RingBuffer::new(RING);
+        let (_result_tx, results) = rtrb::RingBuffer::new(RING);
+        let (trash, mut trash_rx) = rtrb::RingBuffer::<Trash>::new(TRASH);
+        let (mut saved_tx, saved) = rtrb::RingBuffer::<PathBuf>::new(RING);
+        let mut link = LoaderLink {
+            requests,
+            results,
+            trash,
+            saved,
+        };
+        assert_eq!(link.saved_replay(), None);
+        for name in ["a.osr", "b.osr", "c.osr"] {
+            saved_tx.push(PathBuf::from(name)).unwrap();
+        }
+        assert_eq!(link.saved_replay(), Some(PathBuf::from("c.osr")));
+        let mut freed = Vec::new();
+        while let Ok(trash) = trash_rx.pop() {
+            match trash {
+                Trash::Path(path) => freed.push(path),
+                _ => panic!("not a path"),
+            }
+        }
+        assert_eq!(freed, [PathBuf::from("a.osr"), PathBuf::from("b.osr")]);
+        assert_eq!(link.saved_replay(), None);
     }
 }

@@ -19,6 +19,7 @@ pub mod parallax;
 pub mod play;
 pub mod replay_stats;
 pub mod replays;
+pub mod reveal;
 pub mod scores;
 pub mod screenshot;
 pub mod settings;

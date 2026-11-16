@@ -317,6 +317,8 @@ pub struct ShellSnapshot {
     pub menu_cursor: crate::menu_cursor::MenuCursorFrame,
     /// The volume overlay over the screens and the play (ADR-0145).
     pub volume: VolumeFrame,
+    /// The replay toast (ADR-0154).
+    pub toast: slam_ui::toast::ToastFrame,
 }
 
 /// The update logic without the window: input to navigation to snapshot.
@@ -376,6 +378,9 @@ pub struct ShellState {
     save_request: Option<Box<Settings>>,
     /// The volume overlay (ADR-0145): it changes the audio levels of `settings`.
     volume: VolumeMixer,
+    /// The toast of the last saved replay and its file (ADR-0154).
+    toast: slam_ui::toast::Toast,
+    toast_path: Option<PathBuf>,
     /// The mods the next play takes: they outlast a play and the results, and are not saved.
     selected_mods: ModSet,
     /// The panel's mods with default settings, by column and tile: a toggle clones one
@@ -494,6 +499,8 @@ impl ShellState {
             editing: None,
             save_request: None,
             volume: VolumeMixer::new(),
+            toast: slam_ui::toast::Toast::new(&theme),
+            toast_path: None,
             // An empty set is always compatible; the capacity keeps a toggle from allocating.
             selected_mods: ModSet::new(Vec::with_capacity(SELECTED_MODS_CAPACITY))
                 .unwrap_or_default(),
@@ -1232,6 +1239,44 @@ impl ShellState {
         let edge = self.live_settings().general.volume_overlay;
         let style = self.live_settings().general.volume_meter;
         snapshot.volume = self.volume.frame(edge, style, &self.volume_levels());
+        self.toast.tick(now_ns);
+        snapshot.toast = self.toast.frame();
+    }
+
+    /// Shows the toast for the replay saved at `path` (ADR-0154); returns the path it
+    /// showed before, for the loader to free. Does not allocate.
+    pub fn replay_saved(&mut self, path: PathBuf, now_ns: u64) -> Option<PathBuf> {
+        self.toast.show(now_ns);
+        self.toast_path.replace(path)
+    }
+
+    /// Where the replay toast is in the window (ADR-0154).
+    fn toast_layout(&self) -> slam_ui::toast::ToastLayout {
+        slam_ui::toast::ToastLayout::new(self.size[0], self.size[1], &self.theme)
+    }
+
+    /// The replay toast's part of the input (ADR-0154): it follows the pointer and takes a
+    /// press on it, showing the file. Returns whether it took the event.
+    fn toast_input(&mut self, kind: InputKind, now_ns: u64) -> bool {
+        let layout = self.toast_layout();
+        let [x, y] = self.cursor;
+        match kind {
+            InputKind::MouseMove { .. } => {
+                self.toast.pointer(x, y, &layout, now_ns);
+                false
+            }
+            InputKind::MouseButton {
+                button: MouseButton::Left,
+                down: true,
+            } if self.toast.press(x, y, &layout, now_ns) => {
+                // One copy per click, as opening a link (ADR-0154).
+                if let Some(path) = &self.toast_path {
+                    crate::reveal::reveal(path.clone());
+                }
+                true
+            }
+            _ => false,
+        }
     }
 
     // Ported from osu!lazer 2026.1005.0-lazer: osu.Game/Overlays/Mods/Input/ClassicModHotkeyHandler.cs (HandleModHotkeyPressed)
@@ -1297,6 +1342,8 @@ impl ShellState {
     pub fn watch_volume(&mut self, events: &[InputEvent], now_ns: u64) {
         for event in events {
             self.volume_input(event.kind, now_ns);
+            // The results take their own clicks; the toast still shows the file.
+            self.toast_input(event.kind, now_ns);
         }
     }
 
@@ -1948,6 +1995,10 @@ impl ShellState {
             }
             // Before the intro and the screens: lazer takes the volume keys first.
             if self.volume_input(event.kind, now_ns) {
+                continue;
+            }
+            // The toast is over every screen (ADR-0154); the volume overlay set the cursor.
+            if self.toast_input(event.kind, now_ns) {
                 continue;
             }
             if let InputKind::MouseWheel { x, y } = event.kind
@@ -2790,6 +2841,11 @@ impl PlayHost {
     /// when a play is asked for, starts or ends; logs and frees on the loader thread.
     fn advance(&mut self, now_ns: u64, state: &mut ShellState) {
         self.end_game(now_ns, state);
+        if let Some(path) = self.loader.saved_replay()
+            && let Some(older) = state.replay_saved(path, now_ns)
+        {
+            self.loader.free(Trash::Path(older));
+        }
         self.switch_output();
         let live = !(self.switching || self.no_output);
         self.audio_feed.follow(live.then(|| self.audio.reading()));
@@ -3762,6 +3818,8 @@ struct View<B: render::Backend> {
     fps: FpsOverlay,
     /// The volume overlay over every screen (ADR-0145).
     volume: VolumeView,
+    /// The replay toast over every screen (ADR-0154).
+    toast: slam_ui::toast::ToastView,
     /// Views laid out in a language switched to (ADR-0091).
     languages: Option<LanguageViews>,
     /// The curtain over a language switch and the views it waits for.
@@ -3933,6 +3991,7 @@ impl<B: render::Backend> Draw<ShellSnapshot> for View<B> {
             std::mem::swap(&mut self.settings, &mut views.settings);
             self.fps.swap_view(&mut views.fps);
             std::mem::swap(&mut self.volume, &mut views.volume);
+            std::mem::swap(&mut self.toast, &mut views.toast);
             self.theme = views.theme;
             languages.give_back(views);
         }
@@ -3945,6 +4004,7 @@ impl<B: render::Backend> Draw<ShellSnapshot> for View<B> {
                 &self.settings,
                 &self.fps,
                 &self.volume,
+                &self.toast,
             )
         });
         self.glyphs.process(&mut r.device, &mut r.textures);
@@ -4253,6 +4313,17 @@ impl<B: render::Backend> Draw<ShellSnapshot> for View<B> {
             info.wait.woke_ns,
             r.white,
         );
+        // The replay toast, over every screen too (ADR-0154).
+        self.toast.push(
+            &mut self.shapes,
+            &mut self.text,
+            &mut self.glyphs,
+            &snapshot.toast,
+            width,
+            height,
+            info.wait.woke_ns,
+            r.white,
+        );
         self.fps.push(
             &mut self.shapes,
             &self.theme,
@@ -4404,11 +4475,13 @@ impl<B: render::Backend> View<B> {
             &self.settings,
             &self.fps,
             &self.volume,
+            &self.toast,
         )
     }
 }
 
 /// Asks `glyphs` for every glyph of the screens' texts; how many are not ready yet.
+#[allow(clippy::too_many_arguments)]
 fn glyphs_pending(
     glyphs: &mut GlyphCache,
     menu: &MenuView,
@@ -4417,6 +4490,7 @@ fn glyphs_pending(
     settings: &SettingsView,
     fps: &FpsOverlay,
     volume: &VolumeView,
+    toast: &slam_ui::toast::ToastView,
 ) -> usize {
     menu.request_glyphs(glyphs)
         + song_select.request_glyphs(glyphs)
@@ -4424,6 +4498,7 @@ fn glyphs_pending(
         + settings.request_glyphs(glyphs)
         + fps.request_glyphs(glyphs)
         + volume.request_glyphs(glyphs)
+        + toast.request_glyphs(glyphs)
 }
 
 /// The backend `name` names if this build has it, else the first available one.
@@ -4842,10 +4917,12 @@ fn run_with<B: render::Backend>(
         settings: settings_view,
         fps: fps_view,
         volume: mut volume_view,
+        toast: mut toast_view,
         ..
     } = language::interface_views(&registry, theme, &localizer, state.rows(), &settings);
     // Its first showing would otherwise lay out and grow its lines in a frame (ADR-0145).
     volume_view.lay_out_for(pixels_w as f32, pixels_h as f32);
+    toast_view.lay_out_for(pixels_w as f32, pixels_h as f32);
     let (language_link, language_views, _language) = match language::spawn(
         Arc::clone(&registry),
         Arc::clone(&localizer),
@@ -5212,6 +5289,7 @@ fn run_with<B: render::Backend>(
             fps_view,
         ),
         volume: volume_view,
+        toast: toast_view,
         languages: language_views,
         swap: LanguageSwap::default(),
         backgrounds,
