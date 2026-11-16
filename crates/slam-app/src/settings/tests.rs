@@ -1482,6 +1482,53 @@ fn song_select_dim_out_of_range_or_nan_falls_back() {
 }
 
 #[test]
+fn song_select_row_heights_default_and_round_trip() {
+    let defaults = Settings::default();
+    assert_eq!(defaults.song_select.set_height, 72.0);
+    assert_eq!(defaults.song_select.difficulty_height, 45.0);
+    let loaded = file::from_toml_str("[song_select]\nset_height = 90\ndifficulty_height = 40\n");
+    assert_eq!(loaded.status, LoadStatus::Ok, "{:?}", loaded.warnings);
+    assert_eq!(loaded.settings.song_select.set_height, 90.0);
+    assert_eq!(loaded.settings.song_select.difficulty_height, 40.0);
+    let missing = file::from_toml_str("[gameplay]\ndim = 0.2\n");
+    assert_eq!(missing.settings.song_select.set_height, 72.0);
+    assert_eq!(missing.settings.song_select.difficulty_height, 45.0);
+}
+
+#[test]
+fn song_select_row_heights_out_of_range_or_nan_fall_back() {
+    for text in ["200", "10", "nan"] {
+        let loaded = file::from_toml_str(&format!("[song_select]\nset_height = {text}\n"));
+        assert_eq!(loaded.status, LoadStatus::Recovered, "{text}");
+        assert_eq!(loaded.settings.song_select.set_height, 72.0, "{text}");
+        assert!(
+            loaded
+                .warnings
+                .iter()
+                .any(|w| w.starts_with("song_select.set_height")),
+            "{text}: {:?}",
+            loaded.warnings
+        );
+    }
+    for text in ["200", "10", "nan"] {
+        let loaded = file::from_toml_str(&format!("[song_select]\ndifficulty_height = {text}\n"));
+        assert_eq!(loaded.status, LoadStatus::Recovered, "{text}");
+        assert_eq!(
+            loaded.settings.song_select.difficulty_height, 45.0,
+            "{text}"
+        );
+        assert!(
+            loaded
+                .warnings
+                .iter()
+                .any(|w| w.starts_with("song_select.difficulty_height")),
+            "{text}: {:?}",
+            loaded.warnings
+        );
+    }
+}
+
+#[test]
 fn the_interface_settings_default_and_read_by_name() {
     let d = Settings::default();
     assert_eq!(d.general.colour_scheme, ColourScheme::Pink);

@@ -310,6 +310,10 @@ pub enum Row {
     FpsMode,
     Dim,
     SongSelectDim,
+    /// Height of a set row in the song list (ADR-0149).
+    SongSelectSetHeight,
+    /// Height of a difficulty row in the song list (ADR-0149).
+    SongSelectDifficultyHeight,
     /// Height of the song list's thumbnails (ADR-0127).
     SongSelectThumbnails,
     AlwaysPlayFirstComboBreak,
@@ -341,7 +345,7 @@ pub enum Row {
 const _: () = assert!(Row::ALL.len() <= slam_ui::settings_screen::MAX_ROWS);
 
 impl Row {
-    pub const ALL: [Row; 96] = [
+    pub const ALL: [Row; 98] = [
         Row::MasterVolume,
         Row::MusicVolume,
         Row::MenuMusic,
@@ -421,6 +425,8 @@ impl Row {
         Row::FpsMode,
         Row::Dim,
         Row::SongSelectDim,
+        Row::SongSelectSetHeight,
+        Row::SongSelectDifficultyHeight,
         Row::SongSelectThumbnails,
         Row::AlwaysPlayFirstComboBreak,
         Row::WarningArrows,
@@ -560,6 +566,8 @@ impl Row {
             | Row::FpsMode => section::FRAME,
             Row::Dim
             | Row::SongSelectDim
+            | Row::SongSelectSetHeight
+            | Row::SongSelectDifficultyHeight
             | Row::SongSelectThumbnails
             | Row::AlwaysPlayFirstComboBreak
             | Row::WarningArrows
@@ -649,6 +657,8 @@ impl Row {
             Row::FpsMode => "settings-frame-fps-mode",
             Row::Dim => "settings-gameplay-dim",
             Row::SongSelectDim => "settings-song-select-dim",
+            Row::SongSelectSetHeight => "settings-song-select-set-height",
+            Row::SongSelectDifficultyHeight => "settings-song-select-difficulty-height",
             Row::SongSelectThumbnails => "settings-song-select-thumbnails",
             Row::BeatmapSkins => "settings-gameplay-beatmap-skins",
             Row::BeatmapColours => "settings-gameplay-beatmap-colours",
@@ -1082,6 +1092,18 @@ impl Rows {
             Row::EffectsVolume => percent(s.audio.effects_volume),
             Row::Dim => percent(s.gameplay.dim),
             Row::SongSelectDim => percent(s.song_select.background_dim),
+            Row::SongSelectSetHeight => RowKind::Slider {
+                min: 48.0,
+                max: 120.0,
+                step: 1.0,
+                value: f64::from(s.song_select.set_height).round(),
+            },
+            Row::SongSelectDifficultyHeight => RowKind::Slider {
+                min: 30.0,
+                max: 90.0,
+                step: 1.0,
+                value: f64::from(s.song_select.difficulty_height).round(),
+            },
             Row::PositionalHitsoundsLevel => percent(f64::from(s.audio.positional_hitsounds_level)),
             Row::CursorSize => RowKind::Slider {
                 min: CURSOR_SIZE_RANGE.0,
@@ -1397,6 +1419,12 @@ impl Rows {
             (Row::Dim, RowValue::Slider(v)) => settings.gameplay.dim = percent(v),
             (Row::SongSelectDim, RowValue::Slider(v)) => {
                 settings.song_select.background_dim = percent(v);
+            }
+            (Row::SongSelectSetHeight, RowValue::Slider(v)) => {
+                settings.song_select.set_height = v.round().clamp(48.0, 120.0) as f32;
+            }
+            (Row::SongSelectDifficultyHeight, RowValue::Slider(v)) => {
+                settings.song_select.difficulty_height = v.round().clamp(30.0, 90.0) as f32;
             }
             (Row::PositionalHitsoundsLevel, RowValue::Slider(v)) => {
                 settings.audio.positional_hitsounds_level = percent(v).clamp(0.0, 1.0) as f32;
@@ -1939,6 +1967,8 @@ pub fn round_for_save(settings: &mut Settings) {
         round_to(f64::from(settings.audio.positional_hitsounds_level), 2) as f32;
     settings.input.sensitivity = InputSettings::clean_sensitivity(settings.input.sensitivity);
     settings.timing.global_offset_ms = settings.timing.global_offset_ms.round();
+    settings.song_select.set_height = settings.song_select.set_height.round();
+    settings.song_select.difficulty_height = settings.song_select.difficulty_height.round();
 }
 
 #[cfg(test)]
@@ -2723,7 +2753,7 @@ mod tests {
     fn the_thumbnails_row_chooses_the_height_and_is_labelled_in_both_languages() {
         let (rows, mut s) = rows();
         let at = index(Row::SongSelectThumbnails);
-        assert_eq!(at, index(Row::SongSelectDim) + 1);
+        assert_eq!(at, index(Row::SongSelectDim) + 3);
         assert_eq!(s.song_select.thumbnails, Thumbnails::H128);
         assert_eq!(
             rows.specs(&s)[at].kind,
@@ -2921,6 +2951,45 @@ mod tests {
         s.song_select.background_dim = 0.30000000000000004;
         round_for_save(&mut s);
         assert_eq!(s.song_select.background_dim, 0.3);
+    }
+
+    #[test]
+    fn the_row_height_sliders_follow_the_song_select_dim() {
+        assert_eq!(
+            index(Row::SongSelectSetHeight),
+            index(Row::SongSelectDim) + 1
+        );
+        assert_eq!(
+            index(Row::SongSelectDifficultyHeight),
+            index(Row::SongSelectDim) + 2
+        );
+        assert_eq!(
+            Row::SongSelectSetHeight.section(),
+            Row::SongSelectDim.section()
+        );
+        let rows = Rows::new(&Settings::default());
+        let mut s = Settings::default();
+        rows.apply(
+            &mut s,
+            index(Row::SongSelectSetHeight),
+            RowValue::Slider(80.4),
+        );
+        rows.apply(
+            &mut s,
+            index(Row::SongSelectDifficultyHeight),
+            RowValue::Slider(500.0),
+        );
+        assert_eq!(s.song_select.set_height, 80.0);
+        assert_eq!(s.song_select.difficulty_height, 90.0);
+        assert_eq!(
+            rows.specs(&s)[index(Row::SongSelectSetHeight)].kind,
+            RowKind::Slider {
+                min: 48.0,
+                max: 120.0,
+                step: 1.0,
+                value: 80.0
+            }
+        );
     }
 
     #[test]

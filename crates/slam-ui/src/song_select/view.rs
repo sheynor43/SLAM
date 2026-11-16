@@ -203,6 +203,7 @@ pub struct SongSelectView {
     fade_next: usize,
     /// The set whose difficulties are opening, and the one closing (ADR-0136).
     expansion: Expansion,
+    shift: Shift,
     /// The thumbnails were on at the last frame: the row texts are cut for it.
     thumbs_on: bool,
     /// Applies the snapshot's sideways wheel and drags to the rows' marquees.
@@ -231,7 +232,8 @@ pub(crate) struct ThumbGeometry {
 impl ThumbGeometry {
     pub(crate) fn new(theme: &Theme, layout: &SongSelectLayout) -> ThumbGeometry {
         let inset = theme.song_thumbnail_inset * layout.scale;
-        let row = layout.row_height - theme.song_row_gap * layout.scale;
+        // Only set rows carry a thumbnail.
+        let row = theme.song_set_height * layout.scale;
         let height = (row - 2.0 * inset).max(0.0);
         let width = height * theme.song_thumbnail_aspect;
         ThumbGeometry {
@@ -407,6 +409,7 @@ impl SongSelectView {
             info: InfoPanel::new(&labels.details),
             fades: [None; FADES],
             expansion: Expansion::default(),
+            shift: Shift::default(),
             fade_next: 0,
             thumbs_on: false,
             scroll_tracker: ScrollTracker::default(),
@@ -564,7 +567,13 @@ impl SongSelectView {
         let Some(set_row) = list.sets.get(set) else {
             return false;
         };
-        let mut avail = (layout.list.width - indent - 2.0 * pad - text_shift).max(0.0);
+        // The text fits the row shifted as it is when not selected (ADR-0149), so it does
+        // not change as the row slides.
+        let most_shift = match row {
+            Row::Set(_) => theme.song_set_shift,
+            Row::Difficulty { .. } => theme.song_difficulty_shift,
+        } * layout.scale;
+        let mut avail = (layout.list.width - indent - most_shift - 2.0 * pad - text_shift).max(0.0);
         slot.holds = None;
         slot.primary.text.clear();
         slot.secondary.text.clear();
@@ -664,7 +673,6 @@ impl SongSelectView {
         let theme = &self.theme;
         let layout = &self.layout;
         let pad = theme.song_text_pad * layout.scale;
-        let gap = theme.song_row_gap * layout.scale;
         let list = &*snapshot.list;
 
         let scale = layout.scale;
@@ -970,7 +978,7 @@ impl SongSelectView {
         );
         if list.sets.is_empty() {
             if snapshot.status == SongSelectStatus::Ready {
-                let y = layout.list.y + layout.row_height / 2.0;
+                let y = layout.list.y + theme.song_set_height * scale / 2.0;
                 left(&self.empty, lean(layout.list.x, y), y, theme.disabled_text);
             }
             if can_choose_folder(list, snapshot.status) {
@@ -998,7 +1006,7 @@ impl SongSelectView {
             }
         } else {
             if snapshot.row_count == 0 {
-                let y = layout.list.y + layout.row_height / 2.0;
+                let y = layout.list.y + theme.song_set_height * scale / 2.0;
                 left(
                     &self.search_no_matches,
                     lean(layout.list.x, y),
@@ -1015,7 +1023,11 @@ impl SongSelectView {
                 .expansion
                 .track(list, snapshot.selected, thumbs.now_ns, theme);
             // Rows pulled in from past the window's ends while the list moves.
-            let visible = layout.visible_rows(snapshot.shown_scroll, snapshot.row_count);
+            let geometry = &snapshot.geometry;
+            let slide = self
+                .shift
+                .track(list, snapshot.selected, thumbs.now_ns, theme);
+            let visible = layout.visible_rows(geometry, snapshot.shown_scroll);
             let reach = expansion.reach();
             let rows_to_draw =
                 visible.start.saturating_sub(reach)..(visible.end + reach).min(snapshot.row_count);
@@ -1052,14 +1064,19 @@ impl SongSelectView {
                 };
                 let (shift_rows, alpha) = expansion.offset(row);
                 row_alpha.set(alpha);
-                let y = layout.row_y(index, snapshot.shown_scroll) + shift_rows * layout.row_height;
+                // The expansion moves rows by whole difficulty rows.
+                let y = layout.row_y(geometry, index, snapshot.shown_scroll)
+                    + shift_rows * layout.difficulty_pitch * scale;
+                let height = layout.plate_height(geometry, index);
                 // The list leans along the rows' skew (ADR-0121).
-                let lean = layout.lean_x(y + (layout.row_height - gap) / 2.0);
+                let lean = layout.lean_x(y + height / 2.0);
+                // Rows that are not selected start further right (ADR-0149).
+                let moved = slide.of(row) * scale;
                 let area = Rect {
-                    x: layout.list.x + indent + lean,
+                    x: layout.list.x + indent + moved + lean,
                     y,
-                    width: layout.list.width - indent,
-                    height: layout.row_height - gap,
+                    width: (layout.list.width - indent - moved).max(0.0),
+                    height,
                 };
                 // Rows scrolled part-way out are cut at the list's edges, and their texts
                 // show only whole, so nothing spills over the search line or the hints.
@@ -1073,10 +1090,13 @@ impl SongSelectView {
                     let half = line.layout.height() / 2.0;
                     centre_y - half >= top_edge && centre_y + half <= bottom_edge
                 };
-                let selected = matches!(
-                    row,
-                    Row::Difficulty { set, difficulty } if snapshot.selected == Some((set, difficulty))
-                );
+                // The selected set's row is lit as the selected difficulty's (ADR-0149).
+                let selected = match row {
+                    Row::Difficulty { set, difficulty } => {
+                        snapshot.selected == Some((set, difficulty))
+                    }
+                    Row::Set(set) => snapshot.selected.is_some_and(|(s, _)| s == set),
+                };
                 // The selection is the row's wash, outline and glow, not a fill (ADR-0136).
                 let fill = if !selected && snapshot.hovered == Some(row) {
                     theme.button_hover_fill
@@ -1390,6 +1410,115 @@ impl Expansion {
             t,
             open: open.map(|(index, s)| (index, cap(s.difficulties.len()))),
             closed: closed.map(|(index, count)| (index, cap(count))),
+        }
+    }
+}
+
+/// How far right the rows that are not selected start, sliding when the selection changes
+/// (ADR-0149, lazer's `Panel.updateXOffset`): the set and the difficulty selected before and
+/// when it changed, by key and by index into their set.
+#[derive(Debug, Default)]
+struct Shift {
+    set: Option<u64>,
+    difficulty: Option<(u64, usize)>,
+    old_set: Option<u64>,
+    old_difficulty: Option<(u64, usize)>,
+    /// When the set and the difficulty last changed; 0 before any change (no slide).
+    set_start_ns: u64,
+    difficulty_start_ns: u64,
+}
+
+/// One frame of a [`Shift`]: the selection by index and the slides' progress.
+#[derive(Clone, Copy, Debug)]
+struct ShiftFrame {
+    set: Option<usize>,
+    difficulty: Option<(usize, usize)>,
+    old_set: Option<usize>,
+    old_difficulty: Option<(usize, usize)>,
+    set_t: f32,
+    difficulty_t: f32,
+    set_shift: f32,
+    difficulty_shift: f32,
+}
+
+impl Shift {
+    fn track(
+        &mut self,
+        list: &SongList,
+        selected: Option<(usize, usize)>,
+        now_ns: u64,
+        theme: &Theme,
+    ) -> ShiftFrame {
+        let set_key = selected.and_then(|(set, _)| Some(list.sets.get(set)?.key));
+        let difficulty = selected.zip(set_key).map(|((_, d), key)| (key, d));
+        // The first selection is there at once.
+        if set_key != self.set {
+            self.old_set = self.set;
+            self.set_start_ns = if self.set.is_some() { now_ns.max(1) } else { 0 };
+            self.set = set_key;
+        }
+        if difficulty != self.difficulty {
+            self.old_difficulty = self.difficulty;
+            self.difficulty_start_ns = if self.difficulty.is_some() {
+                now_ns.max(1)
+            } else {
+                0
+            };
+            self.difficulty = difficulty;
+        }
+        let duration = (theme.song_shift_ms.max(0.0) * 1e6) as u64;
+        let t = |start: u64| {
+            if start == 0 {
+                1.0
+            } else {
+                ease_out_quint(progress(start, now_ns, duration))
+            }
+        };
+        let (set_t, difficulty_t) = (t(self.set_start_ns), t(self.difficulty_start_ns));
+        let index = |key: u64| list.sets.iter().position(|s| s.key == key);
+        // Only while a slide runs is the list searched for the old keys.
+        let old_set = self.old_set.filter(|_| set_t < 1.0).and_then(index);
+        let old_difficulty = self
+            .old_difficulty
+            .filter(|_| difficulty_t < 1.0)
+            .and_then(|(key, d)| Some((index(key)?, d)));
+        ShiftFrame {
+            set: selected.map(|(set, _)| set),
+            difficulty: selected,
+            old_set,
+            old_difficulty,
+            set_t,
+            difficulty_t,
+            set_shift: theme.song_set_shift,
+            difficulty_shift: theme.song_difficulty_shift,
+        }
+    }
+}
+
+impl ShiftFrame {
+    /// How far right `row` starts, in reference pixels.
+    fn of(&self, row: Row) -> f32 {
+        match row {
+            Row::Set(set) => {
+                let full = self.set_shift;
+                if self.set == Some(set) {
+                    full * (1.0 - self.set_t)
+                } else if self.old_set == Some(set) {
+                    full * self.set_t
+                } else {
+                    full
+                }
+            }
+            Row::Difficulty { set, difficulty } => {
+                let full = self.difficulty_shift;
+                if self.difficulty == Some((set, difficulty)) {
+                    full * (1.0 - self.difficulty_t)
+                } else if self.old_difficulty == Some((set, difficulty)) {
+                    full * self.difficulty_t
+                } else {
+                    full
+                }
+            }
         }
     }
 }

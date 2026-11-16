@@ -92,7 +92,9 @@ fn keyboard_navigation_table() {
 fn page_moves_by_visible_rows() {
     let sets: Vec<(u64, usize)> = (0..100).map(|k| (k, 1)).collect();
     let mut s = screen(&sets);
-    let page = layout().viewport_rows() as usize;
+    // A page is as many set rows as the list shows.
+    let l = layout();
+    let page = (l.viewport() / l.set_pitch) as usize;
     press(&mut s, I::PageDown);
     assert_eq!(s.selected(), Some((page, 0)));
     press(&mut s, I::PageUp);
@@ -191,11 +193,18 @@ fn row_mapping_expands_the_selected_set() {
     assert_eq!(l.row(1, 6), None);
 }
 
-fn centre_of(layout: &SongSelectLayout, index: usize, scroll: f32) -> (f32, f32) {
+/// The centre of row `index` of `s` scrolled by `scroll`.
+fn centre_of(layout: &SongSelectLayout, s: &SongSelect, index: usize, scroll: f32) -> (f32, f32) {
+    let geometry = s.geometry();
     (
         layout.list.x + layout.list.width / 2.0,
-        layout.row_y(index, scroll) + layout.row_height / 2.0,
+        layout.row_y(&geometry, index, scroll) + layout.plate_height(&geometry, index) / 2.0,
     )
+}
+
+/// A set row's pitch in physical pixels: the long lists are sets of one difficulty.
+fn set_row(l: &SongSelectLayout) -> f32 {
+    l.set_pitch * l.scale
 }
 
 #[test]
@@ -203,11 +212,11 @@ fn pointer_selects_and_second_press_activates() {
     let mut s = screen(&[(1, 2), (2, 3), (3, 1)]);
     let l = layout();
     // set 0 is expanded: its difficulties are rows 1 and 2, set 1 is row 3
-    let (x, y) = centre_of(&l, 3, 0.0);
+    let (x, y) = centre_of(&l, &s, 3, 0.0);
     assert_eq!(click(&mut s, x, y), None);
     assert_eq!(s.selected(), Some((1, 0)));
     // its second difficulty is row 3 again (set 1 is now row 1, difficulties 2 to 4)
-    let (x, y) = centre_of(&l, 3, 0.0);
+    let (x, y) = centre_of(&l, &s, 3, 0.0);
     assert_eq!(click(&mut s, x, y), None);
     assert_eq!(s.selected(), Some((1, 1)));
     assert_eq!(
@@ -225,7 +234,7 @@ fn pointer_selects_and_second_press_activates() {
 #[test]
 fn pointer_move_only_hovers() {
     let mut s = screen(&[(1, 2), (2, 3)]);
-    let (x, y) = centre_of(&layout(), 3, 0.0);
+    let (x, y) = centre_of(&layout(), &s, 3, 0.0);
     press(&mut s, I::PointerMove { x, y });
     assert_eq!(s.snapshot().hovered, Some(Row::Set(1)));
     assert_eq!(s.selected(), Some((0, 0)));
@@ -243,9 +252,9 @@ fn hit_testing_follows_the_scroll() {
     s.tick(1, &l);
     s.tick(1_000_000_000, &l);
     let scroll = s.snapshot().shown_scroll;
-    assert_eq!(scroll, 3.5);
+    assert_eq!(scroll, 3.5 * l.set_pitch);
     assert_eq!(s.selected(), Some((0, 0)));
-    let (x, y) = centre_of(&l, 6, scroll);
+    let (x, y) = centre_of(&l, &s, 6, scroll);
     assert_eq!(l.row_at(x, y, scroll, s.filter(), 0), Some(Row::Set(5)));
     click(&mut s, x, y);
     assert_eq!(s.selected(), Some((5, 0)));
@@ -259,39 +268,97 @@ fn scroll_is_clamped() {
     let sets: Vec<(u64, usize)> = (0..50).map(|k| (k, 1)).collect();
     let mut s = screen(&sets);
     press(&mut s, I::Scroll { lines: 1000.0 });
-    let max = 51.0 - layout().viewport_rows();
+    let max = s.geometry().max_scroll(layout().viewport());
+    assert!(max > 0.0);
     assert!((s.snapshot().scroll - max).abs() < 1e-3);
     press(&mut s, I::Scroll { lines: -2000.0 });
     assert_eq!(s.snapshot().scroll, 0.0);
 }
 
 #[test]
-fn keyboard_keeps_the_selection_visible() {
+fn keyboard_centres_the_selection() {
     let sets: Vec<(u64, usize)> = (0..50).map(|k| (k, 2)).collect();
     let mut s = screen(&sets);
     let l = layout();
+    let viewport = l.viewport();
     for _ in 0..80 {
         press(&mut s, I::Down);
         let snap = s.snapshot();
-        let row = s.selected_row() as f32;
-        assert!(row >= snap.scroll && row + 1.0 <= snap.scroll + l.viewport_rows() + 1e-3);
+        let g = snap.geometry;
+        let row = s.selected_row();
+        let centre = g.top(row) + g.plate(row) / 2.0;
+        // In the middle unless the list's end is in the way (ADR-0149).
+        let max = g.max_scroll(viewport);
+        if snap.scroll > 0.0 && snap.scroll < max {
+            assert!((centre - snap.scroll - viewport / 2.0).abs() < 1e-2);
+        }
+        assert!(centre >= snap.scroll && centre <= snap.scroll + viewport);
     }
     press(&mut s, I::Home);
     assert_eq!(s.snapshot().scroll, 0.0);
     // the wheel moves away, then a key brings the selection back
     press(&mut s, I::Scroll { lines: 30.0 });
     press(&mut s, I::Down);
-    assert!(s.snapshot().scroll < 3.0);
+    assert!(s.snapshot().scroll < 3.0 * l.set_pitch);
+}
+
+#[test]
+fn a_click_centres_the_clicked_row() {
+    let sets: Vec<(u64, usize)> = (0..50).map(|k| (k, 3)).collect();
+    let mut s = screen(&sets);
+    let l = layout();
+    press(&mut s, I::Scroll { lines: 20.0 });
+    s.tick(1, &l);
+    s.tick(1_000_000_000, &l);
+    let scroll = s.snapshot().shown_scroll;
+    // A set row below the middle of the list.
+    let index = s.geometry().index_at(scroll + l.viewport() * 0.8).unwrap();
+    let Some(Row::Set(set)) = s.row_at_index(index) else {
+        panic!("row {index} is a set row");
+    };
+    let (x, y) = centre_of(&l, &s, index, scroll);
+    click(&mut s, x, y);
+    assert_eq!(s.selected(), Some((set, 0)));
+    s.tick(2_000_000_000, &l);
+    let snap = s.snapshot();
+    let row = s.selected_row();
+    let centre = snap.geometry.top(row) + snap.geometry.plate(row) / 2.0;
+    assert!((centre - snap.shown_scroll - l.viewport() / 2.0).abs() < 0.1);
+    // The wheel scrolls away from it and does not come back.
+    press(&mut s, I::Scroll { lines: 2.0 });
+    s.tick(3_000_000_000, &l);
+    assert!(s.snapshot().scroll > snap.scroll + l.set_pitch);
+}
+
+#[test]
+fn the_shown_scroll_eases_to_the_centre() {
+    let sets: Vec<(u64, usize)> = (0..50).map(|k| (k, 1)).collect();
+    let mut s = screen(&sets);
+    let l = layout();
+    s.tick(1, &l);
+    press(&mut s, I::End);
+    let target = s.snapshot().scroll;
+    assert!(target > 0.0);
+    s.tick(1 + 16 * MS, &l);
+    let shown = s.snapshot().shown_scroll;
+    assert!(shown > 0.0 && shown < target, "{shown} of {target}");
+    s.tick(2_000_000_000, &l);
+    assert_eq!(s.snapshot().shown_scroll, target);
 }
 
 #[test]
 fn visible_rows_cover_the_list_area() {
     let l = layout();
-    let rows = l.visible_rows(0.0, 1000);
+    let sets: Vec<(u64, usize)> = (0..1000).map(|k| (k, 1)).collect();
+    let s = screen(&sets);
+    let g = s.geometry();
+    let rows = l.visible_rows(&g, 0.0);
     assert_eq!(rows.start, 0);
-    assert!(rows.end as f32 >= l.viewport_rows());
-    assert_eq!(l.visible_rows(0.0, 3), 0..3);
-    assert_eq!(l.visible_rows(5.5, 1000).start, 5);
+    assert!(g.top(rows.end) >= l.viewport());
+    let few = screen(&[(1, 1), (2, 1)]);
+    assert_eq!(l.visible_rows(&few.geometry(), 0.0), 0..3);
+    // Scrolled into the middle of row 5 (two rows of set 0 come first).
+    assert_eq!(l.visible_rows(&g, g.top(5) + 1.0).start, 5);
 }
 
 const MOD_COLUMNS: ModColumns = [&["EZ", "NF"], &["HR", "SD"], &["DA"]];
@@ -410,9 +477,9 @@ fn the_panel_does_not_open_while_loading() {
 fn choose_folder_button_sits_in_the_second_list_row() {
     let l = layout();
     let b = l.choose_folder;
-    assert!((b.y - (l.list.y + l.row_height)).abs() < 1e-3);
+    assert!((b.y - (l.list.y + set_row(&l))).abs() < 1e-3);
     assert!((b.x - l.list.x).abs() < 1e-3 && (b.width - l.list.width).abs() < 1e-3);
-    assert!(b.height > 0.0 && b.height < l.row_height);
+    assert!(b.height > 0.0 && b.height < set_row(&l));
     assert!(b.y + b.height <= l.list.y + l.list.height);
 }
 
@@ -485,11 +552,11 @@ fn long_list() -> (SongSelect, SongSelectLayout) {
 /// Drags from the centre of row `from` by `rows` row heights upwards, one tick of `step`
 /// ms per row height, starting at `now`; returns the time after the last tick.
 fn drag_up(s: &mut SongSelect, l: &SongSelectLayout, from: usize, rows: usize, now: u64) -> u64 {
-    let (x, y) = centre_of(l, from, 0.0);
+    let (x, y) = centre_of(l, s, from, 0.0);
     press(s, I::PointerPress { x, y });
     let mut now = now;
     for i in 1..=rows {
-        let y = y - i as f32 * l.row_height;
+        let y = y - i as f32 * set_row(l);
         press(s, I::PointerMove { x, y });
         now += 16 * MS;
         s.tick(now, l);
@@ -500,7 +567,7 @@ fn drag_up(s: &mut SongSelect, l: &SongSelectLayout, from: usize, rows: usize, n
 #[test]
 fn dragging_scrolls_and_does_not_select() {
     let (mut s, l) = long_list();
-    let (x, y) = centre_of(&l, 5, 0.0);
+    let (x, y) = centre_of(&l, &s, 5, 0.0);
     press(&mut s, I::PointerPress { x, y });
     // Up to the click distance nothing moves.
     press(&mut s, I::PointerMove { x, y: y - 9.0 });
@@ -513,10 +580,10 @@ fn dragging_scrolls_and_does_not_select() {
         &mut s,
         I::PointerMove {
             x,
-            y: start - 3.0 * l.row_height,
+            y: start - 3.0 * set_row(&l),
         },
     );
-    assert!((s.snapshot().scroll - 3.0).abs() < 1e-4);
+    assert!((s.snapshot().scroll - 3.0 * l.set_pitch).abs() < 1e-3);
     // The release is no click: the selection stays.
     assert_eq!(press(&mut s, I::PointerRelease), None);
     assert_eq!(s.selected(), Some((0, 0)));
@@ -525,7 +592,7 @@ fn dragging_scrolls_and_does_not_select() {
 #[test]
 fn a_small_move_is_still_a_click() {
     let (mut s, l) = long_list();
-    let (x, y) = centre_of(&l, 5, 0.0);
+    let (x, y) = centre_of(&l, &s, 5, 0.0);
     press(&mut s, I::PointerPress { x, y });
     press(
         &mut s,
@@ -541,7 +608,7 @@ fn a_small_move_is_still_a_click() {
 #[test]
 fn a_sideways_drag_over_a_row_drags_its_text_and_does_not_select() {
     let (mut s, l) = long_list();
-    let (x, y) = centre_of(&l, 8, 0.0);
+    let (x, y) = centre_of(&l, &s, 6, 0.0);
     press(&mut s, I::PointerPress { x, y });
     assert_eq!(s.snapshot().text.drag, None);
     press(
@@ -571,7 +638,7 @@ fn a_sideways_drag_over_a_row_drags_its_text_and_does_not_select() {
 #[test]
 fn a_vertical_drag_still_scrolls_and_starts_no_text_drag() {
     let (mut s, l) = long_list();
-    let (x, y) = centre_of(&l, 5, 0.0);
+    let (x, y) = centre_of(&l, &s, 5, 0.0);
     press(&mut s, I::PointerPress { x, y });
     press(
         &mut s,
@@ -584,7 +651,7 @@ fn a_vertical_drag_still_scrolls_and_starts_no_text_drag() {
         &mut s,
         I::PointerMove {
             x: x - 40.0,
-            y: y - 12.0 - l.row_height,
+            y: y - 12.0 - set_row(&l),
         },
     );
     assert_eq!(s.snapshot().text.drag, None);
@@ -609,7 +676,7 @@ fn the_pointer_and_the_sideways_wheel_reach_the_snapshot() {
 #[test]
 fn a_release_off_the_pressed_row_does_not_click() {
     let (mut s, l) = long_list();
-    let (x, y) = centre_of(&l, 5, 0.0);
+    let (x, y) = centre_of(&l, &s, 5, 0.0);
     press(&mut s, I::PointerPress { x, y });
     // Leaves the list sideways without scrolling: the press drags, but does not block.
     press(&mut s, I::PointerMove { x: 1.0, y });
@@ -662,8 +729,13 @@ fn a_held_still_release_does_not_fling() {
 #[test]
 fn the_fling_stops_at_the_end_of_the_list() {
     let (mut s, l) = long_list();
-    let max = 51.0 - l.viewport_rows();
-    press(&mut s, I::Scroll { lines: max - 1.0 });
+    let max = s.geometry().max_scroll(l.viewport());
+    press(
+        &mut s,
+        I::Scroll {
+            lines: max / l.set_pitch - 1.0,
+        },
+    );
     let mut now = drag_up(&mut s, &l, 8, 4, 0);
     press(&mut s, I::PointerRelease);
     for _ in 0..600 {
@@ -674,7 +746,7 @@ fn the_fling_stops_at_the_end_of_the_list() {
     assert!((s.snapshot().scroll - max).abs() < 1e-3);
     // Dragging past the start stops there too.
     press(&mut s, I::Scroll { lines: -1000.0 });
-    let (x, y) = centre_of(&l, 2, 0.0);
+    let (x, y) = centre_of(&l, &s, 2, 0.0);
     press(&mut s, I::PointerPress { x, y });
     press(&mut s, I::PointerMove { x, y: y + 400.0 });
     assert_eq!(s.snapshot().scroll, 0.0);
@@ -687,7 +759,7 @@ fn a_press_or_the_keyboard_stops_the_fling() {
     press(&mut s, I::PointerRelease);
     now += 16 * MS;
     s.tick(now, &l);
-    let (x, y) = centre_of(&l, 3, 0.0);
+    let (x, y) = centre_of(&l, &s, 3, 0.0);
     press(&mut s, I::PointerPress { x, y });
     let stopped = s.snapshot().scroll;
     now += 16 * MS;
@@ -761,7 +833,7 @@ fn a_dragged_list_follows_the_hand_without_easing() {
     let sets: Vec<(u64, usize)> = (0..50).map(|k| (k, 1)).collect();
     let mut s = screen(&sets);
     let l = layout();
-    let (x, y) = centre_of(&l, 5, 0.0);
+    let (x, y) = centre_of(&l, &s, 5, 0.0);
     press(&mut s, I::PointerPress { x, y });
     // The first move past the threshold starts the drag; the next one scrolls.
     press(&mut s, I::PointerMove { x, y: y - 20.0 });
@@ -787,7 +859,13 @@ fn the_sizes_match_lazers_at_full_hd() {
     let l = SongSelectLayout::new(1920.0, 1080.0, &theme);
     let near = |a: f32, b: f32| (a - b).abs() <= b * 0.06;
     assert!(near(l.list.width, 720.0), "{}", l.list.width);
-    assert!(near(l.row_height, 92.0), "{}", l.row_height);
+    // Lazer's 72 and 45 at 768.
+    assert!(
+        near(l.set_pitch * l.scale, 105.0),
+        "{}",
+        l.set_pitch * l.scale
+    );
+    assert!(near(l.difficulty_pitch * l.scale, 67.5));
     assert!(near(theme.song_title_size * l.scale, 28.0));
     assert!(near(theme.song_detail_size * l.scale, 18.0));
     assert!(near(theme.song_info_title_size * l.scale, 36.0));
@@ -813,11 +891,7 @@ fn the_panels_do_not_overlap_at_any_size_scale_or_skew() {
                 assert!(l.header.y + l.header.height <= l.search.y, "{at}");
                 assert!(l.search.y + l.search.height <= l.list.y, "{at}");
                 assert!(l.list.y + l.list.height <= l.hint.y, "{at}");
-                assert!(
-                    l.list.height > l.row_height * 2.0,
-                    "{at}: {}",
-                    l.list.height
-                );
+                assert!(l.list.height > set_row(&l) * 2.0, "{at}: {}", l.list.height);
                 assert!(l.info.x + l.info.width <= leftmost(&l), "{at}");
                 assert!(l.list.x + l.list.width <= w, "{at}");
             }
@@ -834,7 +908,7 @@ fn rows_hit_test_sanely_at_no_skew_and_at_the_largest() {
         put(&mut s, list(&[(1, 1), (2, 1), (3, 1)]));
         let filter = SongFilter::for_list(&list(&[(1, 1), (2, 1), (3, 1)]));
         for index in 0..3 {
-            let (cx, cy) = centre_of(&l, index, 0.0);
+            let (cx, cy) = centre_of(&l, &s, index, 0.0);
             let x = cx + l.lean_x(cy);
             assert_eq!(
                 l.row_at(x, cy, 0.0, &filter, 0).map(|r| match r {
@@ -849,7 +923,7 @@ fn rows_hit_test_sanely_at_no_skew_and_at_the_largest() {
             );
         }
         // Left of the list at the row's height: no row.
-        let (_, cy) = centre_of(&l, 0, 0.0);
+        let (_, cy) = centre_of(&l, &s, 0, 0.0);
         assert_eq!(
             l.row_at(l.list.x - 10.0 + l.lean_x(cy), cy, 0.0, &filter, 0),
             None
@@ -939,7 +1013,7 @@ mod thumbnails {
         let theme = Theme::default();
         let layout = SongSelectLayout::new(1280.0, 720.0, &theme);
         let g = ThumbGeometry::new(&theme, &layout);
-        let row = layout.row_height - theme.song_row_gap * layout.scale;
+        let row = theme.song_set_height * layout.scale;
         assert!(g.height > 0.0 && g.height < row);
         assert!((g.height + 2.0 * g.inset - row).abs() < 1e-3);
         assert!((g.width / g.height - theme.song_thumbnail_aspect).abs() < 1e-3);
@@ -1023,8 +1097,8 @@ fn a_refreshed_list_keeps_the_scroll_and_the_hover() {
     s.tick(1, &l);
     s.tick(1_000_000_000, &l);
     let scroll = s.snapshot().scroll;
-    assert_eq!(scroll, 20.0);
-    let (x, y) = centre_of(&l, 23, scroll);
+    assert_eq!(scroll, 20.0 * l.set_pitch);
+    let (x, y) = centre_of(&l, &s, 23, scroll);
     press(&mut s, I::PointerMove { x, y });
     let hovered = s.snapshot().hovered;
     assert!(hovered.is_some());
@@ -1054,7 +1128,7 @@ fn a_refresh_reordering_the_pressed_row_does_not_click_another() {
     assert_eq!(s.selected(), Some((0, 2)));
     let l = layout();
     // Row 0 is the set, rows 1 to 3 its difficulties: press the middle one (key 11).
-    let (x, y) = centre_of(&l, 2, 0.0);
+    let (x, y) = centre_of(&l, &s, 2, 0.0);
     assert_eq!(press(&mut s, I::PointerMove { x, y }), None);
     assert_eq!(press(&mut s, I::PointerPress { x, y }), None);
     // Stars arrive: the selected key 12 now sits where key 11 was.
@@ -1075,7 +1149,7 @@ fn a_refresh_keeps_a_pressed_row_that_stays_put() {
     let mut s = SongSelect::new();
     put(&mut s, keyed_list(&[(10, None), (11, None), (12, None)]));
     let l = layout();
-    let (x, y) = centre_of(&l, 2, 0.0);
+    let (x, y) = centre_of(&l, &s, 2, 0.0);
     assert_eq!(press(&mut s, I::PointerPress { x, y }), None);
     put_refresh(
         &mut s,

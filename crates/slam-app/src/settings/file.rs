@@ -797,6 +797,22 @@ fn from_table(mut table: Table) -> Loaded {
         &mut settings.song_select.background_dim,
         0.0..=1.0,
     );
+    for (key, slot, range) in [
+        (
+            "set_height",
+            &mut settings.song_select.set_height,
+            48.0_f64..=120.0,
+        ),
+        (
+            "difficulty_height",
+            &mut settings.song_select.difficulty_height,
+            30.0_f64..=90.0,
+        ),
+    ] {
+        let mut height = f64::from(*slot);
+        cx.float(&mut song_select, "song_select", key, &mut height, range);
+        *slot = height.round() as f32;
+    }
     let mut thumbnails: Option<String> = None;
     cx.opt(
         &mut song_select,

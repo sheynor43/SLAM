@@ -337,7 +337,7 @@ fn requests_in_flight_are_capped() {
     assert_eq!(rig.serve().len(), MAX_IN_FLIGHT);
     // Answered: the rest follow.
     rig.tick(Some(128), 10..28);
-    assert_eq!(rig.serve().len(), 16 - MAX_IN_FLIGHT);
+    assert_eq!(rig.serve().len(), 18 - MAX_IN_FLIGHT);
 }
 
 #[test]
