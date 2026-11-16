@@ -528,7 +528,8 @@ impl SongSelectView {
         self.ellipsis[3] = probe.layout.width();
         // A tile's name and description, cut to the room right of its switch (ADR-0152).
         let tile = self.layout.mods.tile_rect(0, 0);
-        let room = (tile.width - tile.height - self.theme.widget_pad * scale).max(0.0);
+        let room =
+            (tile.width - tile.height - mod_text_gap(&self.theme, tile.height, scale)).max(0.0);
         for (lines, texts) in self.mod_names.iter_mut().zip(&self.mod_texts) {
             for ((name, desc), (name_text, desc_text)) in lines.iter_mut().zip(texts) {
                 name.text.clone_from(name_text);
@@ -1318,7 +1319,8 @@ impl SongSelectView {
                         .get(column)
                         .and_then(|names| names.get(index))
                     {
-                        let text_x = area.x + area.height;
+                        // Clear of the switch's leaning top corner.
+                        let text_x = area.x + area.height + mod_text_gap(theme, area.height, scale);
                         // Dark on an active tile's bright wash, as lazer's active panels.
                         let ink = Color {
                             a: 1.0,
@@ -1552,6 +1554,12 @@ impl SongSelectView {
         let size = self.theme.song_detail_size * self.layout.scale;
         self.type_setter.lay_out(line, size);
     }
+}
+
+/// The room between a mod tile's switch and its texts: the switch leans with the tile, so its
+/// top corner reaches right by half its height times the skew; then a little padding.
+fn mod_text_gap(theme: &Theme, tile_height: f32, scale: f32) -> f32 {
+    theme.button_skew().tan() * tile_height / 2.0 + theme.widget_pad * scale * 0.5
 }
 
 /// `colour` darkened as osu-framework's `Color4.Darken`: each channel divided by
