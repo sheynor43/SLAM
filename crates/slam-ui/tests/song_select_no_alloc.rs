@@ -561,7 +561,8 @@ fn rows_scrolled_part_way_stay_inside_the_list() {
         screen.set_status(SongSelectStatus::Ready);
         screen.input(SongSelectInput::Scroll { lines }, &layout);
         let snapshot = screen.snapshot();
-        assert_eq!(snapshot.scroll, lines);
+        // A notch scrolls by a set row (ADR-0149).
+        assert_eq!(snapshot.scroll, lines * layout.set_pitch);
         rig.frame(&snapshot);
         let mut counts = (0, 0);
         // Shapes reach their edge margin past their rectangles (ADR-0116).

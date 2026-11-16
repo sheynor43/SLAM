@@ -4710,6 +4710,8 @@ pub fn interface_theme(live: &Settings, committed: &Settings) -> Theme {
     } else {
         0.0
     };
+    theme.song_set_height = live.song_select.set_height;
+    theme.song_difficulty_height = live.song_select.difficulty_height;
     theme
 }
 

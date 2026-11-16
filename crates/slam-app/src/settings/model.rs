@@ -738,6 +738,11 @@ impl Default for HudSettings {
 pub struct SongSelect {
     /// Dim of the song select's background, 0 ..= 1 (ADR-0098).
     pub background_dim: f64,
+    /// Height of a set row in the song list, in theme reference pixels, 48..=120
+    /// (ADR-0149: lazer's 72).
+    pub set_height: f32,
+    /// Height of a difficulty row, 30..=90 (ADR-0149: lazer's 45).
+    pub difficulty_height: f32,
     /// Height of the beatmap thumbnails in the song list (ADR-0127).
     pub thumbnails: Thumbnails,
 }
@@ -746,6 +751,8 @@ impl Default for SongSelect {
     fn default() -> SongSelect {
         SongSelect {
             background_dim: 0.7,
+            set_height: 72.0,
+            difficulty_height: 45.0,
             thumbnails: Thumbnails::default(),
         }
     }

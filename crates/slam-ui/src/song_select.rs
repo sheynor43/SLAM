@@ -15,9 +15,11 @@ use crate::marquee::TextScroll;
 use crate::menu::Rect;
 use crate::theme::Theme;
 use drag::{ListDrag, Release};
+pub use geometry::RowGeometry;
 
 pub mod drag;
 pub mod filter;
+pub mod geometry;
 pub mod info_panel;
 pub mod mod_select;
 pub mod query;
@@ -266,8 +268,12 @@ pub struct SongSelectLayout {
     pub choose_folder: Rect,
     /// The mod select panel.
     pub mods: ModSelectLayout,
-    /// Pitch of the rows.
-    pub row_height: f32,
+    /// Pitch of a set row in theme reference pixels: plate and gap (ADR-0149).
+    pub set_pitch: f32,
+    /// Pitch of a difficulty row in theme reference pixels.
+    pub difficulty_pitch: f32,
+    /// Gap between rows in theme reference pixels.
+    pub gap: f32,
     /// Extra left offset of difficulty rows.
     pub indent: f32,
     /// Pixels per reference unit.
@@ -296,7 +302,8 @@ impl SongSelectLayout {
             width: panel,
             height: hint_height,
         };
-        let row_height = theme.song_row_height * scale;
+        let gap = theme.song_row_gap;
+        let set_pitch = theme.song_set_height + gap;
         let lean = (theme.button_skew() * LEAN_OF_SKEW).tan();
         // The list's lowest and highest rows lean left of its edge by this much; the info
         // panel keeps clear of them.
@@ -330,9 +337,9 @@ impl SongSelectLayout {
         };
         let choose_folder = Rect {
             x,
-            y: list.y + row_height,
+            y: list.y + set_pitch * scale,
             width: panel,
-            height: row_height - theme.song_row_gap * scale,
+            height: theme.song_set_height * scale,
         };
         SongSelectLayout {
             header,
@@ -342,7 +349,9 @@ impl SongSelectLayout {
             hint,
             choose_folder,
             mods: ModSelectLayout::new(width, height, theme),
-            row_height,
+            set_pitch,
+            difficulty_pitch: theme.song_difficulty_height + gap,
+            gap,
             indent: theme.song_indent * scale,
             scale,
             lean,
@@ -363,30 +372,46 @@ impl SongSelectLayout {
         r.contains_skewed(x - shift, y, self.lean.atan())
     }
 
-    /// A row's height in theme reference pixels, the unit of the list's drag.
-    pub fn reference_row_height(&self) -> f32 {
-        self.row_height / self.scale
+    /// The list area's height in theme reference pixels, the unit of the scroll.
+    pub fn viewport(&self) -> f32 {
+        self.list.height / self.scale
     }
 
-    /// How many rows fit the list area (fractional).
+    /// The rows of `filter` with the visible set at position `selected_set` expanded.
+    pub fn geometry(&self, filter: &SongFilter, selected_set: usize) -> RowGeometry {
+        RowGeometry::new(
+            self.set_pitch,
+            self.difficulty_pitch,
+            self.gap,
+            filter,
+            selected_set,
+        )
+    }
+
+    /// The most rows the list area can show at once: as many as the shorter pitch fits.
     pub fn viewport_rows(&self) -> f32 {
-        self.list.height / self.row_height
+        self.viewport() / self.set_pitch.min(self.difficulty_pitch).max(1.0)
     }
 
-    /// Top of row `index` when the list is scrolled by `scroll` rows.
-    pub fn row_y(&self, index: usize, scroll: f32) -> f32 {
-        self.list.y + (index as f32 - scroll) * self.row_height
+    /// Top of row `index` in physical pixels when the list is scrolled by `scroll`
+    /// reference pixels.
+    pub fn row_y(&self, geometry: &RowGeometry, index: usize, scroll: f32) -> f32 {
+        self.list.y + (geometry.top(index) - scroll) * self.scale
     }
 
-    /// Flat indices of the rows that touch the list area, out of `total`.
-    pub fn visible_rows(&self, scroll: f32, total: usize) -> Range<usize> {
-        let first = scroll.max(0.0).floor() as usize;
-        let last = (scroll.max(0.0) + self.viewport_rows()).ceil() as usize;
-        first.min(total)..last.min(total)
+    /// Height of row `index`'s plate in physical pixels.
+    pub fn plate_height(&self, geometry: &RowGeometry, index: usize) -> f32 {
+        geometry.plate(index) * self.scale
     }
 
-    /// The row under the point, with the list scrolled by `scroll` rows and the visible set
-    /// at position `selected_set` expanded.
+    /// Flat indices of the rows that touch the list area.
+    pub fn visible_rows(&self, geometry: &RowGeometry, scroll: f32) -> Range<usize> {
+        geometry.visible(scroll, self.viewport())
+    }
+
+    /// The row under the point, with the list scrolled by `scroll` reference pixels and the
+    /// visible set at position `selected_set` expanded. The whole width of the list counts,
+    /// whatever the row's shift (ADR-0149).
     pub fn row_at(
         &self,
         x: f32,
@@ -398,11 +423,10 @@ impl SongSelectLayout {
         if !self.list.contains(x - self.lean_x(y), y) {
             return None;
         }
-        let index = (y - self.list.y) / self.row_height + scroll;
-        if index < 0.0 {
-            return None;
-        }
-        filter.row(selected_set, index.floor() as usize)
+        let index = self
+            .geometry(filter, selected_set)
+            .index_at((y - self.list.y) / self.scale + scroll)?;
+        filter.row(selected_set, index)
     }
 }
 
@@ -416,9 +440,15 @@ pub const SCROLL_EASE_NS: f64 = 70_000_000.0;
 /// The shown scroll `elapsed_ns` after `shown`, easing exponentially towards `target`;
 /// within a thousandth of a row it lands.
 pub fn ease_scroll(shown: f32, target: f32, elapsed_ns: u64) -> f32 {
+    ease_scroll_within(shown, target, elapsed_ns, 1e-3)
+}
+
+/// [`ease_scroll`] that lands within `land` of `target`: the song list scrolls in reference
+/// pixels (ADR-0149) and lands within a twentieth of one.
+pub fn ease_scroll_within(shown: f32, target: f32, elapsed_ns: u64, land: f32) -> f32 {
     let keep = (-(elapsed_ns as f64) / SCROLL_EASE_NS).exp() as f32;
     let next = target + (shown - target) * keep;
-    if (next - target).abs() < 1e-3 {
+    if (next - target).abs() < land {
         target
     } else {
         next
@@ -426,9 +456,13 @@ pub fn ease_scroll(shown: f32, target: f32, elapsed_ns: u64) -> f32 {
 }
 
 /// How many rows the snapshot carries: more than the list area shows at any window size
-/// (its height in rows is the same at every size: about 11 with the default theme) plus
+/// (its height in reference pixels is the same at every size: about 13 difficulty rows
+/// with the default theme, 19 at the shortest difficulty height the settings allow) plus
 /// the rows cut at both ends. A theme with a taller area is cut to this many rows.
-pub const MAX_VISIBLE_ROWS: usize = 16;
+pub const MAX_VISIBLE_ROWS: usize = 24;
+
+/// How far the list lands from its target, in reference pixels.
+const SCROLL_LAND: f32 = 0.05;
 
 /// Rows the snapshot also carries above and below those: the ones a set opening or closing
 /// slides into view (ADR-0136).
@@ -455,10 +489,12 @@ pub struct SongSelectSnapshot {
     window_start: usize,
     /// The rows from `window_start`: `rows` and up to [`ROW_PAD`] on either side.
     window: [Row; WINDOW_ROWS],
-    /// Rows scrolled off the top: where the list goes.
+    /// Reference pixels scrolled off the top: where the list goes (ADR-0149).
     pub scroll: f32,
-    /// Rows scrolled off the top as shown, easing towards `scroll` (ADR-0121).
+    /// Reference pixels scrolled off the top as shown, easing towards `scroll` (ADR-0121).
     pub shown_scroll: f32,
+    /// Where the rows are.
+    pub geometry: RowGeometry,
     pub hovered: Option<Row>,
     /// The pointer is over the "choose folder" button, which is shown.
     pub folder_hovered: bool,
@@ -611,6 +647,7 @@ pub struct SongSelect {
     /// Positions among the visible sets, and among the visible difficulties of that set.
     set: usize,
     difficulty: usize,
+    /// Reference pixels scrolled off the top (ADR-0149).
     scroll: f32,
     /// The scroll shown: eases towards `scroll` (ADR-0121), and the rows under the pointer
     /// are those shown.
@@ -630,8 +667,12 @@ pub struct SongSelect {
     scanning_text: Arc<str>,
     generation: u64,
     mods: ModSelect,
-    /// Rows that fit the list area at the last input; keeps the selection in view.
+    /// The list area's height in reference pixels at the last input or tick; centres the
+    /// selection.
     viewport: f32,
+    /// Set and difficulty pitches and the gap at the last input or tick, in reference
+    /// pixels.
+    pitches: (f32, f32, f32),
     details: Option<BeatmapDetails>,
     /// A play was refused for want of an audio output (#317).
     no_audio: bool,
@@ -679,7 +720,8 @@ impl SongSelect {
             scanning_text: Arc::from(""),
             generation: 0,
             mods: ModSelect::default(),
-            viewport: 10.0,
+            viewport: 600.0,
+            pitches: (75.0, 48.0, 3.0),
             details: None,
             no_audio: false,
             text: TextScroll::default(),
@@ -736,8 +778,23 @@ impl SongSelect {
     /// The flat index of the first row of the snapshot: the first one the shown scroll
     /// touches.
     pub fn first_row(&self) -> usize {
-        let row_count = self.filter.row_count(self.set);
-        (self.shown.max(0.0).floor() as usize).min(row_count)
+        let geometry = self.geometry();
+        geometry
+            .index_at(self.shown.max(0.0))
+            .unwrap_or(0)
+            .min(geometry.total)
+    }
+
+    /// Where the rows are, with the pitches of the last input or tick.
+    pub fn geometry(&self) -> RowGeometry {
+        let (set, difficulty, gap) = self.pitches;
+        RowGeometry::new(set, difficulty, gap, &self.filter, self.set)
+    }
+
+    /// Takes the list area's size and the row pitches from `layout`.
+    fn measure(&mut self, layout: &SongSelectLayout) {
+        self.viewport = layout.viewport();
+        self.pitches = (layout.set_pitch, layout.difficulty_pitch, layout.gap);
     }
 
     /// The row at flat index `index` of the filtered column (ADR-0127: the rows around the view).
@@ -781,7 +838,9 @@ impl SongSelect {
         let row = self.filter.row(self.set, self.first_row())?;
         let (Row::Set(set) | Row::Difficulty { set, .. }) = row;
         let key = self.list.sets.get(set)?.key;
-        Some((key, self.viewport.ceil() as usize + 1))
+        let (set, difficulty, _) = self.pitches;
+        let rows = self.viewport / set.min(difficulty).max(1.0);
+        Some((key, rows.ceil() as usize + 1))
     }
 
     /// Replaces the list, keeping the selected set by its key when it is still visible
@@ -848,7 +907,7 @@ impl SongSelect {
         } else {
             self.hovered = None;
             self.clamp_scroll();
-            self.ensure_visible();
+            self.centre_selection();
         }
         old
     }
@@ -908,7 +967,7 @@ impl SongSelect {
         self.difficulty = difficulty;
         self.hovered = None;
         self.clamp_scroll();
-        self.ensure_visible();
+        self.centre_selection();
     }
 
     /// Appends a typed character to the query.
@@ -985,6 +1044,7 @@ impl SongSelect {
             window,
             scroll: self.scroll,
             shown_scroll: self.shown,
+            geometry: self.geometry(),
             hovered: self.hovered,
             folder_hovered: self.folder_hovered,
             status: self.status,
@@ -1006,27 +1066,23 @@ impl SongSelect {
     /// fling of the list) to
     /// `now_ns`, a monotonic clock in nanoseconds. Does not allocate.
     pub fn tick(&mut self, now_ns: u64, layout: &SongSelectLayout) {
-        self.viewport = layout.viewport_rows();
+        self.measure(layout);
         if self.mods.is_open() {
             self.mods.tick(now_ns, &layout.mods);
         }
-        let per_row = layout.reference_row_height();
         let elapsed = now_ns.saturating_sub(self.shown_ns);
         self.shown_ns = now_ns;
         if std::mem::take(&mut self.rehover) {
             self.update_hover(layout);
         }
-        if let Some(scroll) =
-            self.drag
-                .tick(now_ns, self.scroll * per_row, self.max_scroll() * per_row)
-        {
+        if let Some(scroll) = self.drag.tick(now_ns, self.scroll, self.max_scroll()) {
             // Dragged and flung, the list follows the hand as it is.
-            self.scroll = scroll / per_row;
+            self.scroll = scroll;
             self.clamp_scroll();
             self.shown = self.scroll;
             self.update_hover(layout);
         } else if self.shown != self.scroll {
-            self.shown = ease_scroll(self.shown, self.scroll, elapsed);
+            self.shown = ease_scroll_within(self.shown, self.scroll, elapsed, SCROLL_LAND);
             self.update_hover(layout);
         }
     }
@@ -1041,25 +1097,26 @@ impl SongSelect {
     }
 
     fn max_scroll(&self) -> f32 {
-        (self.filter.row_count(self.set) as f32 - self.viewport).max(0.0)
+        self.geometry().max_scroll(self.viewport)
     }
 
     fn clamp_scroll(&mut self) {
         self.scroll = self.scroll.clamp(0.0, self.max_scroll());
     }
 
-    /// Scrolls the least that shows the selected row.
-    fn ensure_visible(&mut self) {
+    /// Scrolls so that the selected row is in the middle of the list, as lazer's
+    /// `ScrollToSelection` (ADR-0149); the shown scroll eases there. A set without
+    /// difficulties centres its own row.
+    fn centre_selection(&mut self) {
         if self.filter.set_count() == 0 {
             return;
         }
-        let row = self.selected_row() as f32;
-        if row < self.scroll {
-            // Show the set's own row too.
-            self.scroll = self.set as f32;
-        } else if row + 1.0 > self.scroll + self.viewport {
-            self.scroll = row + 1.0 - self.viewport;
-        }
+        let row = if self.filter.difficulty_count(self.set) == 0 {
+            self.set
+        } else {
+            self.selected_row()
+        };
+        self.scroll = self.geometry().centred(row, self.viewport);
         self.clamp_scroll();
     }
 
@@ -1132,8 +1189,8 @@ impl SongSelect {
         if loading {
             return None;
         }
-        self.viewport = layout.viewport_rows();
-        let page = (self.viewport as usize).max(1);
+        self.measure(layout);
+        let page = ((self.viewport / self.pitches.0.max(1.0)) as usize).max(1);
         let last = self.filter.set_count().saturating_sub(1);
         let mut action = None;
         let mut moved = true;
@@ -1178,7 +1235,8 @@ impl SongSelect {
             }
             I::Scroll { lines } => {
                 self.drag.stop();
-                self.scroll += lines;
+                // A notch scrolls by a set row.
+                self.scroll += lines * self.pitches.0;
                 self.clamp_scroll();
                 moved = false;
             }
@@ -1189,7 +1247,7 @@ impl SongSelect {
                 self.begin_text_drag(x, y);
                 let offset = self.drag.moved(x, y, layout.scale);
                 if offset != 0.0 {
-                    self.scroll += offset / layout.reference_row_height();
+                    self.scroll += offset;
                     self.clamp_scroll();
                     // Dragged, the list follows the hand as it is (ADR-0121).
                     self.shown = self.scroll;
@@ -1219,7 +1277,7 @@ impl SongSelect {
         }
         if moved {
             self.drag.stop();
-            self.ensure_visible();
+            self.centre_selection();
         }
         self.clamp_scroll();
         self.update_hover(layout);
@@ -1270,7 +1328,7 @@ impl SongSelect {
         pressed: Option<Pressed>,
         layout: &SongSelectLayout,
     ) -> Option<SongSelectAction> {
-        self.viewport = layout.viewport_rows();
+        self.measure(layout);
         match pressed? {
             Pressed::ChooseFolder => Some(SongSelectAction::ChooseFolder),
             Pressed::Row(Row::Set(set)) => {
@@ -1279,6 +1337,8 @@ impl SongSelect {
                 {
                     self.select_set(position);
                 }
+                // A click centres what it selected (ADR-0149).
+                self.centre_selection();
                 None
             }
             Pressed::Row(Row::Difficulty { difficulty, .. }) => {
@@ -1289,6 +1349,7 @@ impl SongSelect {
                     None
                 };
                 self.difficulty = position;
+                self.centre_selection();
                 action
             }
         }

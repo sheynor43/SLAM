@@ -2390,6 +2390,24 @@ fn going_in_and_out_of_screens_and_moving_the_selection_make_sounds() {
 }
 
 #[test]
+fn the_song_row_heights_reach_the_theme() {
+    let mut live = Settings::default();
+    live.song_select.set_height = 90.0;
+    live.song_select.difficulty_height = 40.0;
+    let theme = interface_theme(&live, &Settings::default());
+    assert_eq!(theme.song_set_height, 90.0);
+    assert_eq!(theme.song_difficulty_height, 40.0);
+    // The defaults are the theme's own, lazer's 72 and 45 (ADR-0149).
+    let defaults = Settings::default();
+    let theme = interface_theme(&defaults, &defaults);
+    assert_eq!(theme.song_set_height, Theme::default().song_set_height);
+    assert_eq!(
+        theme.song_difficulty_height,
+        Theme::default().song_difficulty_height
+    );
+}
+
+#[test]
 fn the_menu_scale_waits_for_the_settings_to_be_kept_and_the_scheme_does_not() {
     let committed = Settings::default();
     let mut live = committed.clone();

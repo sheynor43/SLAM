@@ -375,8 +375,10 @@ fn the_selection_stays_in_view_after_filtering() {
     type_text(&mut s, "t1");
     let snap = s.snapshot();
     assert_eq!(snap.row_count, 20 + 1);
-    assert!(snap.scroll + 12.0 >= s.selected_row() as f32);
-    assert!(s.selected_row() as f32 >= snap.scroll);
+    let row = s.selected_row();
+    let (top, plate) = (snap.geometry.top(row), snap.geometry.plate(row));
+    let viewport = SongSelectLayout::new(1280.0, 720.0, &Theme::default()).viewport();
+    assert!(top >= snap.scroll && top + plate <= snap.scroll + viewport);
 }
 
 #[test]
@@ -448,7 +450,8 @@ fn play_and_pointer_use_indices_into_the_list() {
         .unwrap();
     let (x, y) = (
         layout.list.x + layout.list.width / 2.0,
-        layout.row_y(at, 0.0) + layout.row_height / 2.0,
+        layout.row_y(&s.geometry(), at, s.snapshot().shown_scroll)
+            + layout.plate_height(&s.geometry(), at) / 2.0,
     );
     assert_eq!(press(&mut s, I::PointerMove { x, y }), None);
     assert_eq!(
@@ -494,8 +497,9 @@ fn snapshot_rows_cover_the_list_area() {
     press(&mut s, I::Scroll { lines: 7.5 });
     s.tick(1_000_000_000, &layout);
     let snap = s.snapshot();
+    // Set 0 has two rows: 7.5 set rows down is in row 7.
     assert_eq!(snap.first_row, 7);
-    let shown = layout.visible_rows(snap.shown_scroll, snap.row_count);
+    let shown = layout.visible_rows(&snap.geometry, snap.shown_scroll);
     assert!(shown.start >= snap.first_row);
     assert!(shown.end <= snap.first_row + snap.rows().len());
     assert_eq!(snap.rows()[0], Row::Set(6), "set 0 is expanded");

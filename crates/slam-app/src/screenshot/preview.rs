@@ -544,7 +544,11 @@ fn sample_song_select(theme: &Theme, size: Extent) -> SongSelect {
     // are one each, the selected set has its row and its difficulties.
     let (selected_set, selected_difficulty) = screen.selected().unwrap_or((0, 0));
     let hovered = selected_set + 1 + selected_difficulty + 2;
-    let y = layout.row_y(hovered, 0.0) + layout.row_height / 2.0;
+    // The selection centres the list: let it get there first.
+    screen.tick(NOW_NS, &layout);
+    let snap = screen.snapshot();
+    let y = layout.row_y(&snap.geometry, hovered, snap.shown_scroll)
+        + layout.plate_height(&snap.geometry, hovered) / 2.0;
     let x = layout.list.x + layout.list.width / 2.0 + layout.lean_x(y);
     screen.input(SongSelectInput::PointerMove { x, y }, &layout);
     screen.tick(NOW_NS, &layout);

@@ -807,8 +807,9 @@ impl SettingsView {
             return;
         }
 
-        // An open list covers rows below or above it, whose texts would show through (all
-        // texts are drawn over all rectangles): those rows are left out.
+        // An open list covers the widget column of rows below or above it. Its shapes are
+        // drawn last, over theirs, but all texts are drawn over all shapes: those rows keep
+        // their labels (left of the list) and shapes-only widgets, not the widgets' texts.
         let open_list = (0..snapshot.len).find_map(|i| match &snapshot.widgets[i] {
             RowWidget::Dropdown(d) if d.is_open() && !snapshot.hidden[i] => {
                 Some((usize::from(snapshot.slots[i]), d.count()))
@@ -825,9 +826,14 @@ impl SettingsView {
                 continue;
             };
             let fraction = layout.fraction(slot);
-            if fraction <= 0.0
-                || open_list.is_some_and(|(open, count)| layout.covered_by_list(open, count, slot))
-            {
+            // A header is a short text at the left of its row: shown unless it reaches the
+            // list.
+            let reaches_list = open_list.is_some_and(|(open, count)| {
+                layout.covered_by_list(open, count, slot)
+                    && layout.row(slot).x + pad + self.headers[section].layout.width()
+                        > layout.widget(slot).x
+            });
+            if fraction <= 0.0 || reaches_list {
                 continue;
             }
             push_left(
@@ -843,18 +849,21 @@ impl SettingsView {
             let (_, _, restart) = self.meta[i];
             let slot = usize::from(snapshot.slots[i]);
             any |= !snapshot.hidden[i];
-            if snapshot.hidden[i]
-                || !visible.contains(&slot)
-                || open_list.is_some_and(|(open, count)| layout.covered_by_list(open, count, slot))
-            {
+            if snapshot.hidden[i] || !visible.contains(&slot) {
                 continue;
             }
+            let covered =
+                open_list.is_some_and(|(open, count)| layout.covered_by_list(open, count, slot));
             let fraction = layout.fraction(slot);
             if fraction <= 0.0 {
                 continue;
             }
             // A row partly scrolled out fades by the part that is out: nothing clips it.
             let opacity = opacity * fraction;
+            // A note runs the whole row, under the list too.
+            if covered && matches!(self.views[i], RowView::Note) {
+                continue;
+            }
             if matches!(self.views[i], RowView::Note) {
                 // The whole row, left-aligned; there is no theme token for a warning.
                 push_left(
@@ -915,6 +924,16 @@ impl SettingsView {
                 );
             }
             let widget = layout.widget(slot);
+            if covered {
+                // Only a toggle is all shapes, which the list hides where it lies over it.
+                if let (RowView::Toggle(view), RowWidget::Toggle(toggle)) =
+                    (&mut self.views[i], &snapshot.widgets[i])
+                {
+                    let bounds = ToggleLayout::new(layout.row(slot), &theme, layout.scale);
+                    view.push(shapes, toggle, &bounds, widget_opacity, white);
+                }
+                continue;
+            }
             match (&mut self.views[i], &snapshot.widgets[i]) {
                 (RowView::Key, RowWidget::Key(key)) => {
                     let colour = if key.is_listening() {
