@@ -1,6 +1,6 @@
 # Эталонная версия osu!lazer
 
-SLAM сверяет правила геймплея, формулы и обработку форматов с конкретной версией osu!lazer. Исходники лежат в `../slam-refs/` (вне репозитория, только чтение, клон без истории).
+SLAM сверяет правила геймплея, формулы и обработку форматов с конкретной версией osu!lazer. 
 
 | Репозиторий | Тег | Коммит | Путь |
 |---|---|---|---|
@@ -12,23 +12,6 @@ SLAM сверяет правила геймплея, формулы и обра�
 - Версия `osu-framework` взята из `osu.Game/osu.Game.csproj` (`ppy.osu.Framework` `2026.921.1`), тег совпадает точно.
 - Версия `osu-resources` взята оттуда же (`ppy.osu.Game.Resources` `2026.918.0`). Это источник дефолтного скина (`osu.Game.Resources/Skins/Legacy`), лицензия CC-BY-NC 4.0 (`LICENCE.md`).
 - Метка в портированном коде: `// Ported from osu!lazer 2026.1005.0-lazer: <path>`.
-
-## Восстановление
-
-```sh
-git clone --depth 1 --branch 2026.1005.0-lazer https://github.com/ppy/osu ../slam-refs/osu
-git clone --depth 1 --branch 2026.921.1 https://github.com/ppy/osu-framework ../slam-refs/osu-framework
-git clone --depth 1 --branch 2026.918.0 https://github.com/ppy/osu-resources ../slam-refs/osu-resources
-```
-
-## Правило обновления
-
-Обновление эталона — отдельная задача (своя ветка и сессия):
-
-1. Клонировать новые теги, обновить таблицу выше.
-2. Просмотреть изменения в портированных файлах (по меткам `Ported from osu!lazer`) и перенести их.
-3. Прогнать корпус реплеев (`just corpus`), разобрать все расхождения.
-4. Только после зелёного корпуса слить изменения.
 
 ## Прочие эталоны
 

@@ -48,36 +48,3 @@ SLAM — свободная программа под лицензией GNU Gen
 Дефолтный скин в `assets/default-skin/` взят из [osu-resources](https://github.com/ppy/osu-resources) и распространяется по лицензии CC-BY-NC 4.0, а не GPL, — его нельзя использовать в коммерческих целях. Коммерческим форкам нужно заменить скин. Атрибуция — в [`assets/default-skin/README.md`](assets/default-skin/README.md).
 
 Часть логики геймплея портирована из [osu!lazer](https://github.com/ppy/osu) (MIT), см. `THIRD_PARTY_NOTICES`. Поведение osu!stable, которого нет в лазере, берётся из [McOsu](https://github.com/McKay42/McOsu) (GPL-3.0).
-
-## Разработка
-
-### Окружение (Arch Linux)
-
-```sh
-./scripts/setup-arch.sh          # установить пакеты (нужен sudo): rustup, just, cargo-deny, gh, ...
-./scripts/setup-arch.sh --check  # только проверить, ничего не устанавливая
-ln -sf ../../scripts/pre-commit .git/hooks/pre-commit
-```
-
-Версия Rust закреплена в `rust-toolchain.toml`, rustup поставит её сам.
-
-### Команды
-
-Через [`just`](https://github.com/casey/just) (полный список — `just --list`):
-
-| Команда | Что делает |
-|---|---|
-| `just check` | fmt + clippy + тесты, как в CI. Запускать перед каждым коммитом |
-| `just test [args]` | тесты с коротким выводом (полный лог — `target/test-output.log`) |
-| `just fmt` | отформатировать код |
-| `just clippy` | линтер с `-D warnings` |
-| `just deny` | проверка лицензий и уязвимостей зависимостей |
-| `just bench` | бенчмарки |
-| `just clean` | удалить сборочные артефакты из `target/`, кроме базы бенчмарков |
-| `just run` | запустить клиент (release) |
-| `just corpus` | прогнать корпус реплеев (`SLAM_CORPUS`, по умолчанию `../slam-corpus`) |
-
-### Справочные данные вне репозитория
-
-- Исходники osu!lazer для сверки правил геймплея — `../slam-refs/` (версия и команды клонирования — в [`docs/LAZER_REFERENCE.md`](docs/LAZER_REFERENCE.md)).
-- Корпусы реплеев для проверки паритета — `../slam-corpus/` (или путь из `SLAM_CORPUS`).

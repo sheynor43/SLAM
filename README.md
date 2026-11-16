@@ -49,36 +49,3 @@ SLAM is free software, licensed under the GNU General Public License v3.0 or lat
 The default skin in `assets/default-skin/` comes from [osu-resources](https://github.com/ppy/osu-resources) and is licensed under CC-BY-NC 4.0, not the GPL, so it may not be used commercially. Commercial forks need to replace it. Attribution is in [`assets/default-skin/README.md`](assets/default-skin/README.md).
 
 Parts of the gameplay logic are ported from [osu!lazer](https://github.com/ppy/osu) (MIT), see `THIRD_PARTY_NOTICES`. Behaviour of osu!stable that lazer does not reproduce is taken from [McOsu](https://github.com/McKay42/McOsu) (GPL-3.0).
-
-## Development
-
-### Environment (Arch Linux)
-
-```sh
-./scripts/setup-arch.sh          # install packages (needs sudo): rustup, just, cargo-deny, gh, ...
-./scripts/setup-arch.sh --check  # only check, install nothing
-ln -sf ../../scripts/pre-commit .git/hooks/pre-commit
-```
-
-The Rust version is pinned in `rust-toolchain.toml`; rustup installs it automatically.
-
-### Commands
-
-Run through [`just`](https://github.com/casey/just) (full list: `just --list`):
-
-| Command | What it does |
-|---|---|
-| `just check` | fmt + clippy + tests, as in CI. Run before every commit |
-| `just test [args]` | tests with short output (full log in `target/test-output.log`) |
-| `just fmt` | format the code |
-| `just clippy` | lints with `-D warnings` |
-| `just deny` | license and vulnerability checks of dependencies |
-| `just bench` | benchmarks |
-| `just clean` | remove build artifacts from `target/`, except the benchmark baseline |
-| `just run` | run the client (release) |
-| `just corpus` | run the replay corpus (`SLAM_CORPUS`, default `../slam-corpus`) |
-
-### Reference data outside the repository
-
-- osu!lazer sources for checking gameplay rules: `../slam-refs/` (version and clone commands in [`docs/LAZER_REFERENCE.md`](docs/LAZER_REFERENCE.md)).
-- Replay corpora for parity checks: `../slam-corpus/` (or the path in `SLAM_CORPUS`).
