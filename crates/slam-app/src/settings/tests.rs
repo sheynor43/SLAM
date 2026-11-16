@@ -1869,3 +1869,37 @@ fn the_look_strengths_are_held_to_zero_to_two_and_bad_types_default() {
     let ok = file::from_toml_str("[general]\nparallax = 1.8\n");
     assert_eq!(ok.settings.general.parallax, 1.8);
 }
+
+#[test]
+fn the_difficulty_info_setting_round_trips_and_falls_back() {
+    use slam_ui::song_select::DifficultyInfo;
+    assert_eq!(
+        Settings::default().song_select.difficulty_info,
+        DifficultyInfo::Stars
+    );
+    let loaded = file::from_toml_str("[song_select]\ndifficulty_info = \"stars_and_pp\"\n");
+    assert_eq!(loaded.status, LoadStatus::Ok, "{:?}", loaded.warnings);
+    assert_eq!(
+        loaded.settings.song_select.difficulty_info,
+        DifficultyInfo::StarsAndPp
+    );
+    let text = file::to_toml_string(&loaded.settings).unwrap();
+    assert!(
+        text.contains("difficulty_info = \"stars_and_pp\""),
+        "{text}"
+    );
+    assert_eq!(file::from_toml_str(&text).settings, loaded.settings);
+
+    let loaded = file::from_toml_str("[song_select]\ndifficulty_info = \"bpm\"\n");
+    assert_eq!(loaded.status, LoadStatus::Recovered);
+    assert_eq!(
+        loaded.settings.song_select.difficulty_info,
+        DifficultyInfo::Stars
+    );
+    assert!(
+        loaded
+            .warnings
+            .iter()
+            .any(|w| w.starts_with("song_select.difficulty_info"))
+    );
+}

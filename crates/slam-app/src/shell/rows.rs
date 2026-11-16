@@ -25,6 +25,7 @@ use crate::settings::{
 };
 use slam_ui::cursor::CursorStyle;
 use slam_ui::screen::TransitionStyle;
+use slam_ui::song_select::DifficultyInfo;
 use slam_ui::theme::{ColourScheme, MAX_SKEW_DEGREES, UI_SCALE_RANGE};
 use slam_ui::volume::{Edge, MeterStyle};
 
@@ -314,6 +315,8 @@ pub enum Row {
     SongSelectSetHeight,
     /// Height of a difficulty row in the song list (ADR-0149).
     SongSelectDifficultyHeight,
+    /// What a difficulty row shows beside its name (ADR-0151).
+    SongSelectDifficultyInfo,
     /// Height of the song list's thumbnails (ADR-0127).
     SongSelectThumbnails,
     AlwaysPlayFirstComboBreak,
@@ -345,7 +348,7 @@ pub enum Row {
 const _: () = assert!(Row::ALL.len() <= slam_ui::settings_screen::MAX_ROWS);
 
 impl Row {
-    pub const ALL: [Row; 98] = [
+    pub const ALL: [Row; 99] = [
         Row::MasterVolume,
         Row::MusicVolume,
         Row::MenuMusic,
@@ -427,6 +430,7 @@ impl Row {
         Row::SongSelectDim,
         Row::SongSelectSetHeight,
         Row::SongSelectDifficultyHeight,
+        Row::SongSelectDifficultyInfo,
         Row::SongSelectThumbnails,
         Row::AlwaysPlayFirstComboBreak,
         Row::WarningArrows,
@@ -568,6 +572,7 @@ impl Row {
             | Row::SongSelectDim
             | Row::SongSelectSetHeight
             | Row::SongSelectDifficultyHeight
+            | Row::SongSelectDifficultyInfo
             | Row::SongSelectThumbnails
             | Row::AlwaysPlayFirstComboBreak
             | Row::WarningArrows
@@ -659,6 +664,7 @@ impl Row {
             Row::SongSelectDim => "settings-song-select-dim",
             Row::SongSelectSetHeight => "settings-song-select-set-height",
             Row::SongSelectDifficultyHeight => "settings-song-select-difficulty-height",
+            Row::SongSelectDifficultyInfo => "settings-song-select-difficulty-info",
             Row::SongSelectThumbnails => "settings-song-select-thumbnails",
             Row::BeatmapSkins => "settings-gameplay-beatmap-skins",
             Row::BeatmapColours => "settings-gameplay-beatmap-colours",
@@ -812,6 +818,15 @@ fn key_animation_key(animation: KeyOverlayAnimation) -> &'static str {
     match animation {
         KeyOverlayAnimation::Stable => "settings-option-key-overlay-animation-stable",
         KeyOverlayAnimation::Lazer => "settings-option-key-overlay-animation-lazer",
+    }
+}
+
+/// The Fluent key of a difficulty info option (ADR-0151).
+fn difficulty_info_key(info: DifficultyInfo) -> &'static str {
+    match info {
+        DifficultyInfo::Stars => "settings-song-select-difficulty-info-stars",
+        DifficultyInfo::Pp => "settings-song-select-difficulty-info-pp",
+        DifficultyInfo::StarsAndPp => "settings-song-select-difficulty-info-stars-and-pp",
     }
 }
 
@@ -1153,6 +1168,12 @@ impl Rows {
                 TransitionStyle::ALL
                     .iter()
                     .position(|t| *t == s.general.transitions),
+            ),
+            Row::SongSelectDifficultyInfo => choice(
+                DifficultyInfo::ALL.len(),
+                DifficultyInfo::ALL
+                    .iter()
+                    .position(|i| *i == s.song_select.difficulty_info),
             ),
             Row::SongSelectThumbnails => choice(
                 Thumbnails::ALL.len(),
@@ -1539,6 +1560,11 @@ impl Rows {
                     settings.general.transitions = *style;
                 }
             }
+            (Row::SongSelectDifficultyInfo, RowValue::Choice(i)) => {
+                if let Some(info) = DifficultyInfo::ALL.get(i) {
+                    settings.song_select.difficulty_info = *info;
+                }
+            }
             (Row::SongSelectThumbnails, RowValue::Choice(i)) => {
                 if let Some(thumbnails) = Thumbnails::ALL.get(i) {
                     settings.song_select.thumbnails = *thumbnails;
@@ -1804,6 +1830,10 @@ impl Rows {
                     Row::Transitions => TransitionStyle::ALL
                         .iter()
                         .map(|style| text(style.label_key()))
+                        .collect(),
+                    Row::SongSelectDifficultyInfo => DifficultyInfo::ALL
+                        .iter()
+                        .map(|i| text(difficulty_info_key(*i)))
                         .collect(),
                     Row::SongSelectThumbnails => Thumbnails::ALL
                         .iter()
@@ -2753,7 +2783,7 @@ mod tests {
     fn the_thumbnails_row_chooses_the_height_and_is_labelled_in_both_languages() {
         let (rows, mut s) = rows();
         let at = index(Row::SongSelectThumbnails);
-        assert_eq!(at, index(Row::SongSelectDim) + 3);
+        assert_eq!(at, index(Row::SongSelectDim) + 4);
         assert_eq!(s.song_select.thumbnails, Thumbnails::H128);
         assert_eq!(
             rows.specs(&s)[at].kind,
@@ -2779,6 +2809,39 @@ mod tests {
         localizer.set_language("ru").unwrap();
         let labels = rows.labels(&localizer);
         assert_eq!(labels.rows[at].options[0], "Выкл.");
+        assert!(!labels.rows[at].label.is_empty());
+    }
+
+    #[test]
+    fn the_difficulty_info_row_chooses_the_info_and_is_labelled_in_both_languages() {
+        let (rows, mut s) = rows();
+        let at = index(Row::SongSelectDifficultyInfo);
+        assert_eq!(at, index(Row::SongSelectDifficultyHeight) + 1);
+        assert_eq!(s.song_select.difficulty_info, DifficultyInfo::Stars);
+        assert_eq!(
+            rows.specs(&s)[at].kind,
+            RowKind::Dropdown {
+                options: 3,
+                selected: 0
+            }
+        );
+        rows.apply(&mut s, at, RowValue::Choice(1));
+        assert_eq!(s.song_select.difficulty_info, DifficultyInfo::Pp);
+        rows.apply(&mut s, at, RowValue::Choice(2));
+        assert_eq!(s.song_select.difficulty_info, DifficultyInfo::StarsAndPp);
+        // Out of range changes nothing.
+        rows.apply(&mut s, at, RowValue::Choice(9));
+        assert_eq!(s.song_select.difficulty_info, DifficultyInfo::StarsAndPp);
+        let localizer = Localizer::builtin().unwrap();
+        localizer.set_language("en").unwrap();
+        let labels = rows.labels(&localizer);
+        assert_eq!(
+            labels.rows[at].options,
+            ["Stars", "Max pp", "Stars and max pp"]
+        );
+        localizer.set_language("ru").unwrap();
+        let labels = rows.labels(&localizer);
+        assert_eq!(labels.rows[at].options[0], "Звёзды");
         assert!(!labels.rows[at].label.is_empty());
     }
 

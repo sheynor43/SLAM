@@ -45,6 +45,7 @@ fn list_of(count: u64) -> Arc<SongList> {
                         });
                         // Two rated, one not yet: pills, dots and the accent fallback.
                         row.stars = (d < 2).then_some(1.5 + d as f32 * 2.7);
+                        row.pp = row.stars.map(|s| s * s * 31.0);
                         row
                     })
                     .collect(),
@@ -115,6 +116,7 @@ fn labels() -> SongSelectLabels {
         choose_folder: "choose folder".into(),
         hint: "hint".into(),
         no_audio: "no audio".into(),
+        pp_suffix: "pp".into(),
         search_placeholder: "search...".into(),
         search_no_matches: "no matches".into(),
         mods_title: "Mods".into(),
@@ -161,7 +163,15 @@ impl Rig {
         let registry = Arc::new(FontRegistry::with_builtin());
         let glyphs = glyph_atlas(Arc::clone(&registry), &GlyphAtlasConfig::new(LIMITS)).unwrap();
         Rig {
-            view: SongSelectView::new(registry, Theme::default(), &labels()),
+            // Stars and pp: every text a difficulty row can show (ADR-0151).
+            view: SongSelectView::new(
+                registry,
+                Theme {
+                    song_difficulty_info: slam_ui::song_select::DifficultyInfo::StarsAndPp,
+                    ..Theme::default()
+                },
+                &labels(),
+            ),
             glyphs,
             shapes: ShapeBatch::with_capacity(256),
             text: SpriteBatch::with_capacity(8192),

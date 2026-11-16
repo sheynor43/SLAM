@@ -1,10 +1,12 @@
-//! The on-disk cache of star ratings, `cache/stars.bin` (ADR-0134).
+//! The on-disk cache of nomod star ratings and SS performance, `cache/stars.bin` (ADR-0134,
+//! ADR-0151).
 //!
 //! Key: an FNV-1a hash of a file's path, size and modification time, so an edited file
 //! gets a new entry. The header holds a format version and the calculator version
 //! ([`slam_osu::stars::CALCULATOR_VERSION`]): a cache of another version is ignored whole.
 //! Layout, little-endian: `"SLST"`, `u32` format, `u16` length and bytes of the calculator
-//! version, `u32` entry count, then per entry a `u64` key and the `f32` bits of the rating.
+//! version, `u32` entry count, then per entry a `u64` key and the `f32` bits of the stars and
+//! of the pp. A cache of format 1 (stars only) is ignored and rebuilt.
 //! A damaged or truncated file is ignored and rebuilt: nothing here is worth an error.
 
 use std::collections::HashMap;
@@ -13,13 +15,18 @@ use std::io::{self, Write};
 use std::path::Path;
 use std::time::UNIX_EPOCH;
 
+use slam_osu::stars::Rating;
+
 use crate::thumbnails::make::{fnv, fnv_start};
 
 const MAGIC: &[u8; 4] = b"SLST";
-const FORMAT: u32 = 1;
-const ENTRY: usize = 12;
-/// The value of a file the calculator could not rate; any negative value means it.
-pub const NOT_COMPUTABLE: f32 = -1.0;
+const FORMAT: u32 = 2;
+const ENTRY: usize = 16;
+/// The value of a file the calculator could not rate; any negative star value means it.
+pub const NOT_COMPUTABLE: Rating = Rating {
+    stars: -1.0,
+    pp: -1.0,
+};
 
 /// The key of the file at `path` as it is now; `None` when it cannot be read.
 pub fn file_key(path: &Path) -> Option<u64> {
@@ -43,7 +50,7 @@ pub fn key_of(path: &Path, size: u64, modified_ns: u64) -> u64 {
 /// Ratings by file key, for one calculator version.
 #[derive(Debug, Default)]
 pub struct StarCache {
-    entries: HashMap<u64, f32>,
+    entries: HashMap<u64, Rating>,
     dirty: bool,
     /// Keys added since the last save.
     unsaved: usize,
@@ -64,11 +71,11 @@ impl StarCache {
         }
     }
 
-    pub fn get(&self, key: u64) -> Option<f32> {
+    pub fn get(&self, key: u64) -> Option<Rating> {
         self.entries.get(&key).copied()
     }
 
-    pub fn insert(&mut self, key: u64, stars: f32) {
+    pub fn insert(&mut self, key: u64, stars: Rating) {
         match self.entries.insert(key, stars) {
             None => {
                 self.dirty = true;
@@ -114,7 +121,7 @@ impl StarCache {
     }
 }
 
-fn encode(entries: &HashMap<u64, f32>, version: &str) -> Vec<u8> {
+fn encode(entries: &HashMap<u64, Rating>, version: &str) -> Vec<u8> {
     let version = &version.as_bytes()[..version.len().min(usize::from(u16::MAX))];
     let mut out = Vec::with_capacity(16 + version.len() + entries.len() * ENTRY);
     out.extend_from_slice(MAGIC);
@@ -125,14 +132,15 @@ fn encode(entries: &HashMap<u64, f32>, version: &str) -> Vec<u8> {
     // Sorted: the same cache is the same bytes.
     let mut sorted: Vec<_> = entries.iter().collect();
     sorted.sort_unstable_by_key(|(key, _)| **key);
-    for (key, stars) in sorted {
+    for (key, rating) in sorted {
         out.extend_from_slice(&key.to_le_bytes());
-        out.extend_from_slice(&stars.to_bits().to_le_bytes());
+        out.extend_from_slice(&rating.stars.to_bits().to_le_bytes());
+        out.extend_from_slice(&rating.pp.to_bits().to_le_bytes());
     }
     out
 }
 
-fn decode(bytes: &[u8], version: &str) -> Option<HashMap<u64, f32>> {
+fn decode(bytes: &[u8], version: &str) -> Option<HashMap<u64, Rating>> {
     let rest = bytes.strip_prefix(MAGIC)?;
     let (format, rest) = rest.split_first_chunk::<4>()?;
     if u32::from_le_bytes(*format) != FORMAT {
@@ -152,11 +160,17 @@ fn decode(bytes: &[u8], version: &str) -> Option<HashMap<u64, f32>> {
     let (chunks, _) = body.as_chunks::<ENTRY>();
     for entry in chunks {
         let key = u64::from_le_bytes(entry[..8].try_into().ok()?);
-        let stars = f32::from_bits(u32::from_le_bytes(entry[8..].try_into().ok()?));
-        if !stars.is_finite() {
-            return None;
-        }
-        entries.insert(key, stars);
+        let float = |at: usize| {
+            let bytes: [u8; 4] = entry[at..at + 4].try_into().ok()?;
+            Some(f32::from_bits(u32::from_le_bytes(bytes))).filter(|v| v.is_finite())
+        };
+        entries.insert(
+            key,
+            Rating {
+                stars: float(8)?,
+                pp: float(12)?,
+            },
+        );
     }
     Some(entries)
 }
@@ -165,6 +179,13 @@ fn decode(bytes: &[u8], version: &str) -> Option<HashMap<u64, f32>> {
 mod tests {
     use super::*;
     use std::path::PathBuf;
+
+    fn r(stars: f32) -> Rating {
+        Rating {
+            stars,
+            pp: stars * 100.0,
+        }
+    }
 
     fn tmp(name: &str) -> PathBuf {
         let dir = std::env::temp_dir().join(format!("slam-stars-{}-{name}", std::process::id()));
@@ -177,15 +198,15 @@ mod tests {
     fn round_trips() {
         let path = tmp("round");
         let mut cache = StarCache::default();
-        cache.insert(1, 4.5);
-        cache.insert(u64::MAX, 0.0);
+        cache.insert(1, r(4.5));
+        cache.insert(u64::MAX, r(0.0));
         assert!(cache.is_dirty());
         cache.save(&path, "v1").unwrap();
         assert!(!cache.is_dirty());
         let loaded = StarCache::load(&path, "v1");
         assert_eq!(loaded.len(), 2);
-        assert_eq!(loaded.get(1), Some(4.5));
-        assert_eq!(loaded.get(u64::MAX), Some(0.0));
+        assert_eq!(loaded.get(1), Some(r(4.5)));
+        assert_eq!(loaded.get(u64::MAX), Some(r(0.0)));
         assert!(!path.with_extension("bin.tmp").exists());
     }
 
@@ -193,7 +214,7 @@ mod tests {
     fn another_calculator_version_is_ignored() {
         let path = tmp("version");
         let mut cache = StarCache::default();
-        cache.insert(1, 4.5);
+        cache.insert(1, r(4.5));
         cache.save(&path, "v1").unwrap();
         assert!(StarCache::load(&path, "v2").is_empty());
     }
@@ -202,8 +223,8 @@ mod tests {
     fn damage_is_ignored() {
         let path = tmp("damage");
         let mut cache = StarCache::default();
-        cache.insert(1, 4.5);
-        cache.insert(2, 5.5);
+        cache.insert(1, r(4.5));
+        cache.insert(2, r(5.5));
         cache.save(&path, "v1").unwrap();
         let good = fs::read(&path).unwrap();
         let mut bad: Vec<Vec<u8>> = vec![
@@ -227,6 +248,21 @@ mod tests {
     }
 
     #[test]
+    fn format_one_is_ignored() {
+        let path = tmp("format1");
+        let mut old = Vec::new();
+        old.extend_from_slice(MAGIC);
+        old.extend_from_slice(&1u32.to_le_bytes());
+        old.extend_from_slice(&2u16.to_le_bytes());
+        old.extend_from_slice(b"v1");
+        old.extend_from_slice(&1u32.to_le_bytes());
+        old.extend_from_slice(&7u64.to_le_bytes());
+        old.extend_from_slice(&4.5f32.to_bits().to_le_bytes());
+        fs::write(&path, old).unwrap();
+        assert!(StarCache::load(&path, "v1").is_empty());
+    }
+
+    #[test]
     fn keys_change_with_path_size_and_time() {
         let a = key_of(Path::new("/s/a.osu"), 10, 5);
         assert_eq!(a, key_of(Path::new("/s/a.osu"), 10, 5));
@@ -239,9 +275,9 @@ mod tests {
     fn counts_new_entries_since_the_last_save() {
         let path = tmp("unsaved");
         let mut cache = StarCache::default();
-        cache.insert(1, 1.0);
-        cache.insert(2, 2.0);
-        cache.insert(2, 2.5);
+        cache.insert(1, r(1.0));
+        cache.insert(2, r(2.0));
+        cache.insert(2, r(2.5));
         assert_eq!(cache.unsaved(), 2);
         cache.save(&path, "v").unwrap();
         assert_eq!(cache.unsaved(), 0);

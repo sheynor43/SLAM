@@ -4,6 +4,13 @@ use std::time::Instant;
 
 use super::*;
 
+fn rt(stars: f32) -> Rating {
+    Rating {
+        stars,
+        pp: stars * 100.0,
+    }
+}
+
 fn index(keys: &[u64]) -> HashMap<u64, usize> {
     keys.iter().enumerate().map(|(i, k)| (*k, i)).collect()
 }
@@ -79,8 +86,10 @@ fn collect(link: &mut StarsLink, want: usize) -> HashMap<PathBuf, f32> {
     let mut got = HashMap::new();
     while got.len() < want {
         assert!(start.elapsed() < Duration::from_secs(10), "timed out");
-        link.poll(|path, stars| {
-            got.insert(path, stars);
+        link.poll(|path, rating, mods| {
+            if mods.is_none() {
+                got.insert(path, rating.stars);
+            }
         });
         std::thread::sleep(Duration::from_millis(2));
     }
@@ -107,7 +116,7 @@ fn ratings_arrive_and_the_cache_spares_the_second_run() {
     };
     let make = |calls: &Arc<AtomicUsize>| -> Calculator {
         let calls = Arc::clone(calls);
-        Box::new(move |path| {
+        Box::new(move |path, _mods| {
             calls.fetch_add(1, Ordering::Relaxed);
             let digit = path
                 .file_stem()
@@ -116,7 +125,7 @@ fn ratings_arrive_and_the_cache_spares_the_second_run() {
                 .unwrap()
                 .parse::<f32>()
                 .unwrap();
-            Ok(digit + 0.5)
+            Ok(rt(digit + 0.5))
         })
     };
     let mut link =
@@ -148,9 +157,9 @@ fn unreadable_files_are_skipped_and_a_new_run_ignores_old_results() {
     let tmp = Tmp::new("skip");
     let good = tmp.file("1.osu");
     let missing = tmp.0.join("missing.osu");
-    let calc: Calculator = Box::new(|path| {
+    let calc: Calculator = Box::new(|path, _| {
         if path.exists() {
-            Ok(2.0)
+            Ok(rt(2.0))
         } else {
             Err(io::Error::other("gone"))
         }
@@ -166,7 +175,7 @@ fn unreadable_files_are_skipped_and_a_new_run_ignores_old_results() {
     // Results of the first run that arrive after the second started are dropped.
     link.start(Vec::new());
     std::thread::sleep(Duration::from_millis(50));
-    assert!(!link.poll(|_, _| panic!("stale rating")));
+    assert!(!link.poll(|_, _, _| panic!("stale rating")));
 }
 
 #[test]
@@ -178,12 +187,12 @@ fn a_panicking_calculator_neither_kills_the_worker_nor_is_asked_again() {
     let calls = Arc::new(AtomicUsize::new(0));
     let make = |calls: &Arc<AtomicUsize>| -> Calculator {
         let calls = Arc::clone(calls);
-        Box::new(move |path| {
+        Box::new(move |path, _mods| {
             calls.fetch_add(1, Ordering::Relaxed);
             if path.ends_with("bad.osu") {
                 panic!("rosu-pp blew up");
             }
-            Ok(4.0)
+            Ok(rt(4.0))
         })
     };
     let sets = || {
@@ -218,9 +227,9 @@ fn a_play_pauses_the_worker_until_it_ends() {
     focus.set_paused(true);
     let calls = Arc::new(AtomicUsize::new(0));
     let counter = Arc::clone(&calls);
-    let calc: Calculator = Box::new(move |_| {
+    let calc: Calculator = Box::new(move |_, _| {
         counter.fetch_add(1, Ordering::Relaxed);
-        Ok(1.0)
+        Ok(rt(1.0))
     });
     let mut link = StarsLink::spawn(None, calc, "t", Arc::clone(&focus)).unwrap();
     link.start(vec![StarSet {
@@ -229,7 +238,7 @@ fn a_play_pauses_the_worker_until_it_ends() {
     }]);
     std::thread::sleep(Duration::from_millis(200));
     assert_eq!(calls.load(Ordering::Relaxed), 0);
-    assert!(!link.poll(|_, _| panic!("rated during a play")));
+    assert!(!link.poll(|_, _, _| panic!("rated during a play")));
     focus.set_paused(false);
     link.wake();
     assert_eq!(collect(&mut link, 1)[&file], 1.0);
@@ -241,10 +250,10 @@ fn cancel_stops_the_run() {
     let files: Vec<PathBuf> = (0..50).map(|i| tmp.file(&format!("{i}.osu"))).collect();
     let calls = Arc::new(AtomicUsize::new(0));
     let counter = Arc::clone(&calls);
-    let calc: Calculator = Box::new(move |_| {
+    let calc: Calculator = Box::new(move |_, _| {
         counter.fetch_add(1, Ordering::Relaxed);
         std::thread::sleep(Duration::from_millis(20));
-        Ok(1.0)
+        Ok(rt(1.0))
     });
     let mut link = StarsLink::spawn(None, calc, "t", Arc::default()).unwrap();
     link.start(
@@ -274,7 +283,7 @@ fn cancel_stops_the_run() {
         last = now;
     }
     assert!(last < 50);
-    assert!(!link.poll(|_, _| panic!("stale rating")));
+    assert!(!link.poll(|_, _, _| panic!("stale rating")));
 }
 
 #[test]
@@ -287,14 +296,14 @@ fn transient_errors_are_not_cached_but_parse_failures_are() {
     let calls = Arc::new(AtomicUsize::new(0));
     let make = |calls: &Arc<AtomicUsize>| -> Calculator {
         let calls = Arc::clone(calls);
-        Box::new(move |path| {
+        Box::new(move |path, _mods| {
             calls.fetch_add(1, Ordering::Relaxed);
             if path.ends_with("busy.osu") {
                 Err(io::Error::from(io::ErrorKind::PermissionDenied))
             } else if path.ends_with("broken.osu") {
                 Err(io::Error::from(io::ErrorKind::InvalidData))
             } else {
-                Ok(3.0)
+                Ok(rt(3.0))
             }
         })
     };
@@ -315,4 +324,82 @@ fn transient_errors_are_not_cached_but_parse_failures_are() {
     link.start(sets());
     assert_eq!(collect(&mut link, 1).len(), 1);
     assert_eq!(calls.load(Ordering::Relaxed), 4);
+}
+
+#[test]
+fn mods_set_and_read_back_through_the_focus() {
+    let focus = StarFocus::default();
+    assert!(focus.mods().is_none());
+    let dt = RatingMods {
+        legacy: 64,
+        rate: 1.5,
+        ..RatingMods::NONE
+    };
+    focus.set_mods(&dt);
+    assert_eq!(focus.mods(), dt);
+    focus.set_mods(&RatingMods::NONE);
+    assert!(focus.mods().is_none());
+}
+
+#[test]
+fn the_sets_in_view_are_rated_with_the_selected_mods() {
+    let tmp = Tmp::new("mods");
+    let files: Vec<PathBuf> = (0..6).map(|i| tmp.file(&format!("{i}.osu"))).collect();
+    let focus = Arc::<StarFocus>::default();
+    let modded = Arc::new(AtomicUsize::new(0));
+    let counter = Arc::clone(&modded);
+    let calc: Calculator = Box::new(move |_, mods| {
+        if mods.is_none() {
+            Ok(rt(1.0))
+        } else {
+            counter.fetch_add(1, Ordering::Relaxed);
+            Ok(rt(mods.rate as f32))
+        }
+    });
+    let mut link = StarsLink::spawn(None, calc, "t", Arc::clone(&focus)).unwrap();
+    // Six sets of one file; the view holds the first, plus the margin of four.
+    link.start(
+        files
+            .iter()
+            .enumerate()
+            .map(|(i, f)| StarSet {
+                key: i as u64 + 1,
+                files: vec![f.clone()],
+            })
+            .collect(),
+    );
+    focus.set(1, 1);
+    collect(&mut link, 6);
+    let dt = RatingMods {
+        legacy: 64,
+        rate: 1.5,
+        ..RatingMods::NONE
+    };
+    focus.set_mods(&dt);
+    let start = Instant::now();
+    let mut got = HashMap::new();
+    while got.len() < 5 {
+        assert!(start.elapsed() < Duration::from_secs(10), "timed out");
+        link.poll(|path, rating, mods| {
+            assert_eq!(mods, Some(dt.key()));
+            got.insert(path, rating);
+        });
+        std::thread::sleep(Duration::from_millis(2));
+    }
+    assert_eq!(got[&files[0]].stars, 1.5);
+    // The last set is out of view: not rated with the mods.
+    std::thread::sleep(Duration::from_millis(100));
+    assert!(!link.poll(|_, _, _| panic!("rated out of view")));
+    assert_eq!(modded.load(Ordering::Relaxed), 5);
+    // Scrolling to it rates it; going back to the first set uses the cache.
+    focus.set(6, 1);
+    let start = Instant::now();
+    let mut last = None;
+    while last.is_none() {
+        assert!(start.elapsed() < Duration::from_secs(10), "timed out");
+        link.poll(|path, rating, _| last = Some((path, rating)));
+        std::thread::sleep(Duration::from_millis(2));
+    }
+    assert_eq!(last.unwrap().0, files[5]);
+    assert_eq!(modded.load(Ordering::Relaxed), 6);
 }

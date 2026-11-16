@@ -23,6 +23,7 @@ use crate::stars::{StarFocus, StarSet, StarsLink};
 use slam_library::scan::{
     BeatmapSetEntry, DifficultyEntry, ScanEvent, Scanner, sort_difficulties, sort_sets,
 };
+use slam_osu::stars::{Rating, RatingMods};
 use slam_ui::song_select::{
     DifficultyRow, SearchFields, SearchSource, SetRow, SongFilter, SongList, SongSelectStatus,
 };
@@ -212,6 +213,12 @@ impl SongsLink {
     /// (ADR-0134). Does not allocate.
     pub fn set_focus(&self, set_key: u64, span: usize) {
         self.focus.set(set_key, span);
+    }
+
+    /// Tells the star thread and the library thread the selected mods, for the ratings
+    /// shown (ADR-0151). Does not allocate.
+    pub fn set_rating_mods(&self, mods: &RatingMods) {
+        self.focus.set_mods(mods);
     }
 
     /// Tells the star thread and the library thread whether a play is on: the ratings wait
@@ -407,7 +414,7 @@ fn set_key(dir: &Path) -> u64 {
 }
 
 /// The published form of a scanned difficulty: its search fields lowercased (ADR-0099).
-fn difficulty_row(d: &DifficultyEntry, stars: Option<f32>) -> DifficultyRow {
+fn difficulty_row(d: &DifficultyEntry, rating: Option<Rating>) -> DifficultyRow {
     let m = &d.metadata;
     DifficultyRow {
         version: d.version.clone(),
@@ -428,7 +435,8 @@ fn difficulty_row(d: &DifficultyEntry, stars: Option<f32>) -> DifficultyRow {
         beatmap_id: m.beatmap_id,
         beatmap_set_id: m.beatmap_set_id,
         key: difficulty_key(&d.path),
-        stars,
+        stars: rating.map(|r| r.stars),
+        pp: rating.map(|r| r.pp),
     }
 }
 
@@ -440,8 +448,8 @@ fn difficulty_key(path: &Path) -> u64 {
     hasher.finish() | 1
 }
 
-/// The star ratings known so far, by difficulty file.
-pub type StarMap = HashMap<PathBuf, f32>;
+/// The ratings known so far, by difficulty file.
+pub type StarMap = HashMap<PathBuf, Rating>;
 
 /// Builds the published form of sorted `sets`, without star ratings.
 pub fn publish(
@@ -449,13 +457,15 @@ pub fn publish(
     status: SongSelectStatus,
     scanning_text: Arc<str>,
 ) -> Published {
-    publish_with_stars(sets, &StarMap::new(), status, scanning_text)
+    publish_with_stars(sets, &StarMap::new(), None, status, scanning_text)
 }
 
-/// Builds the published form of sorted `sets` with the star ratings in `stars`.
+/// Builds the published form of sorted `sets` with the nomod ratings in `stars`, or those
+/// in `modded` (the selected mods' ratings) where it has them (ADR-0151).
 pub fn publish_with_stars(
     sets: &[BeatmapSetEntry],
     stars: &StarMap,
+    modded: Option<&StarMap>,
     status: SongSelectStatus,
     scanning_text: Arc<str>,
 ) -> Published {
@@ -470,7 +480,13 @@ pub fn publish_with_stars(
                 difficulties: set
                     .difficulties
                     .iter()
-                    .map(|d| difficulty_row(d, stars.get(&d.path).copied()))
+                    .map(|d| {
+                        let rating = match modded {
+                            Some(modded) => modded.get(&d.path).or_else(|| stars.get(&d.path)),
+                            None => stars.get(&d.path),
+                        };
+                        difficulty_row(d, rating.copied())
+                    })
                     .collect(),
             })
             .collect(),
@@ -533,6 +549,10 @@ struct Library {
     dirty: bool,
     /// The star ratings that arrived, by file; the sets are sorted by them when published.
     star_map: StarMap,
+    /// The ratings with the selected mods that arrived, by file (ADR-0151).
+    mod_map: StarMap,
+    /// [`RatingMods::key`] of the mods `mod_map` is for.
+    mods_key: [u64; 4],
     /// Ratings arrived that the published list does not show yet.
     stars_pending: bool,
     /// The folder changed: the star run for the old one is to be dropped.
@@ -557,6 +577,8 @@ impl Library {
             picking: None,
             dirty: true,
             star_map: StarMap::new(),
+            mod_map: StarMap::new(),
+            mods_key: RatingMods::NONE.key(),
             stars_pending: false,
             cancel_stars: false,
         };
@@ -581,6 +603,7 @@ impl Library {
         };
         self.sets.clear();
         self.star_map.clear();
+        self.mod_map.clear();
         self.stars_pending = false;
         self.cancel_stars = true;
         let old = std::mem::replace(&mut self.folder_text, Arc::from(root.display().to_string()));
@@ -661,21 +684,58 @@ impl Library {
         stars.start(sets);
     }
 
-    /// Takes the ratings the star thread finished; they show with the next publication.
-    fn receive_stars(&mut self, stars: &mut StarsLink) {
-        let map = &mut self.star_map;
-        if stars.poll(|path, value| {
-            map.insert(path, value);
-        }) {
+    /// Follows the selected mods: ratings with other mods are dropped, and the list goes
+    /// back to the nomod ones until the new ones arrive (ADR-0151).
+    fn follow_mods(&mut self, mods: &RatingMods) {
+        let key = mods.key();
+        if key != self.mods_key {
+            self.mods_key = key;
+            self.mod_map.clear();
             self.stars_pending = true;
         }
+    }
+
+    /// Takes the ratings the star thread finished; they show with the next publication.
+    /// Ratings with mods other than the selected ones are dropped.
+    /// `focus` gives the selected mods: the worker may have seen newer ones than
+    /// [`Library::follow_mods`] did, so a batch for other mods looks again before it is
+    /// dropped (the worker read them before the push, which the pop synchronises with).
+    fn receive_stars(&mut self, stars: &mut StarsLink, focus: &StarFocus) {
+        let mut any = false;
+        let mut newer: Option<RatingMods> = None;
+        let library = self;
+        stars.poll(|path, value, mods| {
+            any = true;
+            match mods {
+                None => {
+                    library.star_map.insert(path, value);
+                }
+                Some(key) => {
+                    if key != library.mods_key {
+                        let now = *newer.get_or_insert_with(|| focus.mods());
+                        library.follow_mods(&now);
+                    }
+                    if key == library.mods_key {
+                        library.mod_map.insert(path, value);
+                    }
+                }
+            }
+        });
+        if any {
+            library.stars_pending = true;
+        }
+    }
+
+    /// The ratings with the selected mods, when mods are selected.
+    fn shown_mods(&self) -> Option<&StarMap> {
+        (self.mods_key != RatingMods::NONE.key()).then_some(&self.mod_map)
     }
 
     /// Sorts every set's difficulties by the ratings known (ADR-0134).
     fn sort_by_stars(&mut self) {
         let map = &self.star_map;
         for set in &mut self.sets {
-            sort_difficulties(&mut set.difficulties, |d| map.get(&d.path).copied());
+            sort_difficulties(&mut set.difficulties, |d| map.get(&d.path).map(|r| r.stars));
         }
     }
 
@@ -788,7 +848,8 @@ fn run(
             library.start_stars(stars);
         }
         if let Some(stars) = &mut ends.stars {
-            library.receive_stars(stars);
+            library.follow_mods(&ends.playing.mods());
+            library.receive_stars(stars, &ends.playing);
         }
         // Ratings republish the list, but not every time a few arrive, and not in a play.
         let stars_due = library.stars_pending
@@ -803,8 +864,13 @@ fn run(
                 SongSelectStatus::Scanning { sets } => Arc::from(scanning_text(sets)),
                 _ => Arc::clone(&no_text),
             };
-            let mut published =
-                publish_with_stars(&library.sets, &library.star_map, library.status, text);
+            let mut published = publish_with_stars(
+                &library.sets,
+                &library.star_map,
+                library.shown_mods(),
+                library.status,
+                text,
+            );
             published.folder = Arc::clone(&library.folder_text);
             published.change = library.change.take();
             // Only ratings are new: the view of the list stays (ADR-0135).
@@ -1357,20 +1423,53 @@ mod tests {
         assert_eq!(names(&library), ["b", "c", "a"]);
         // The ratings disagree with the OD.
         for (name, stars) in [("a", 1.0), ("b", 3.0), ("c", 2.0)] {
-            library
-                .star_map
-                .insert(PathBuf::from("s").join(format!("{name}.osu")), stars);
+            library.star_map.insert(
+                PathBuf::from("s").join(format!("{name}.osu")),
+                Rating {
+                    stars,
+                    pp: stars * 10.0,
+                },
+            );
         }
         library.sort_by_stars();
         assert_eq!(names(&library), ["a", "c", "b"]);
         let published = publish_with_stars(
             &library.sets,
             &library.star_map,
+            None,
             SongSelectStatus::Ready,
             Arc::from(""),
         );
         let rows = &published.list.sets[0].difficulties;
         assert_eq!(rows[0].stars, Some(1.0));
+        assert_eq!(rows[0].pp, Some(10.0));
+        // With mods: their ratings where known, the nomod ones elsewhere; the order stays.
+        let dt = RatingMods {
+            legacy: 64,
+            rate: 1.5,
+            ..RatingMods::NONE
+        };
+        library.follow_mods(&dt);
+        library.mod_map.insert(
+            PathBuf::from("s").join("b.osu"),
+            Rating {
+                stars: 9.0,
+                pp: 900.0,
+            },
+        );
+        let published = publish_with_stars(
+            &library.sets,
+            &library.star_map,
+            library.shown_mods(),
+            SongSelectStatus::Ready,
+            Arc::from(""),
+        );
+        let rows = &published.list.sets[0].difficulties;
+        assert_eq!(rows[0].stars, Some(1.0));
+        assert_eq!((rows[2].stars, rows[2].pp), (Some(9.0), Some(900.0)));
+        // Back to no mods: the modded ratings are gone.
+        library.follow_mods(&RatingMods::NONE);
+        assert!(library.mod_map.is_empty() && library.shown_mods().is_none());
         assert_eq!(published.files[0][0].path, PathBuf::from("s").join("a.osu"));
         assert!(rows.iter().all(|r| r.key != 0));
     }
@@ -1387,13 +1486,17 @@ mod tests {
         );
         let calls = Arc::new(AtomicUsize::new(0));
         let counter = Arc::clone(&calls);
-        let calculator: crate::stars::Calculator = Box::new(move |path| {
+        let calculator: crate::stars::Calculator = Box::new(move |path, _| {
             counter.fetch_add(1, Ordering::Relaxed);
             // Backwards: the lower the OD, the higher the rating.
-            Ok(match path.file_stem().and_then(|s| s.to_str()) {
+            let stars = match path.file_stem().and_then(|s| s.to_str()) {
                 Some("Easy") => 3.0,
                 Some("Mid") => 2.0,
                 _ => 1.0,
+            };
+            Ok(Rating {
+                stars,
+                pp: stars * 10.0,
             })
         });
         let (mut link, _views, _thread) = spawn_with(

@@ -100,8 +100,11 @@ pub struct DifficultyRow {
     /// Opaque identity chosen by the application; the selected difficulty follows it
     /// across [`SongSelect::set_list`] when the order within a set changes (0: none).
     pub key: u64,
-    /// The star rating without mods; `None` until calculated (ADR-0134).
+    /// The star rating shown: with the selected mods once calculated, else without mods;
+    /// `None` until calculated (ADR-0134, ADR-0151).
     pub stars: Option<f32>,
+    /// The pp of an SS, from the same calculation as [`DifficultyRow::stars`] (ADR-0151).
+    pub pp: Option<f32>,
 }
 
 impl DifficultyRow {
@@ -119,6 +122,7 @@ impl DifficultyRow {
             beatmap_set_id: -1,
             key: 0,
             stars: None,
+            pp: None,
         }
     }
 }
@@ -515,12 +519,61 @@ pub struct SongSelectSnapshot {
     pub text: TextScroll,
 }
 
+/// What a difficulty row shows beside its name (ADR-0151).
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash)]
+pub enum DifficultyInfo {
+    /// The star rating, as before.
+    #[default]
+    Stars,
+    /// The pp of an SS.
+    Pp,
+    /// Both.
+    StarsAndPp,
+}
+
+impl DifficultyInfo {
+    pub const ALL: [DifficultyInfo; 3] = [
+        DifficultyInfo::Stars,
+        DifficultyInfo::Pp,
+        DifficultyInfo::StarsAndPp,
+    ];
+
+    /// The name in settings files.
+    pub fn name(self) -> &'static str {
+        match self {
+            DifficultyInfo::Stars => "stars",
+            DifficultyInfo::Pp => "pp",
+            DifficultyInfo::StarsAndPp => "stars_and_pp",
+        }
+    }
+
+    pub fn from_name(name: &str) -> Option<DifficultyInfo> {
+        DifficultyInfo::ALL.into_iter().find(|i| i.name() == name)
+    }
+
+    pub fn stars(self) -> bool {
+        self != DifficultyInfo::Pp
+    }
+
+    pub fn pp(self) -> bool {
+        self != DifficultyInfo::Stars
+    }
+}
+
 /// Appends a star rating: "5.43" (ADR-0134); the pill draws the star before it as a shape,
 /// as the interface fonts have no "★" (ADR-0136). Does not allocate once `text` has the room.
 pub(crate) fn push_stars(text: &mut String, stars: f32) {
     use std::fmt::Write as _;
     // Writing to a `String` cannot fail.
     let _ = write!(text, "{stars:.2}");
+}
+
+/// Appends an SS performance, whole: "412pp", the suffix localised (ADR-0151). Does not
+/// allocate once `text` has the room.
+pub(crate) fn push_pp(text: &mut String, pp: f32, suffix: &str) {
+    use std::fmt::Write as _;
+    // Writing to a `String` cannot fail.
+    let _ = write!(text, "{:.0}{suffix}", pp.max(0.0));
 }
 
 impl SongSelectSnapshot {

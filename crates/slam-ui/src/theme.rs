@@ -154,6 +154,16 @@ pub struct Theme {
     pub song_set_height: f32,
     /// Height of a difficulty row's plate (ADR-0149: lazer's 45).
     pub song_difficulty_height: f32,
+    /// The star counter under a difficulty's name (ADR-0151, lazer's `StarCounter` at 0.4):
+    /// the size of a star, the space between stars, the gap under the name and how much of
+    /// the text colour an unreached star keeps, so it reads in every colour scheme.
+    pub difficulty_star_size: f32,
+    pub difficulty_star_spacing: f32,
+    pub difficulty_star_gap: f32,
+    pub difficulty_star_dim: f32,
+    /// What a difficulty row shows beside its name; the setting
+    /// `song_select.difficulty_info` (ADR-0151).
+    pub song_difficulty_info: crate::song_select::DifficultyInfo,
     /// How far right a set row that is not selected starts (ADR-0149: lazer's 100).
     pub song_set_shift: f32,
     /// How far right a difficulty row that is not selected starts (ADR-0149: lazer's 50).
@@ -619,6 +629,11 @@ impl Theme {
             song_margin: 24.0,
             song_set_height: 72.0,
             song_difficulty_height: 45.0,
+            song_difficulty_info: crate::song_select::DifficultyInfo::Stars,
+            difficulty_star_size: 10.0,
+            difficulty_star_spacing: 2.0,
+            difficulty_star_gap: 3.0,
+            difficulty_star_dim: 0.2,
             song_set_shift: 100.0,
             song_difficulty_shift: 50.0,
             song_shift_ms: 400.0,

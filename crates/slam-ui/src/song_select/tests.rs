@@ -1158,3 +1158,20 @@ fn a_refresh_keeps_a_pressed_row_that_stays_put() {
     assert_eq!(press(&mut s, I::PointerRelease), None);
     assert_eq!(s.selected(), Some((0, 1)));
 }
+
+#[test]
+fn difficulty_info_names_round_trip_and_pp_is_written_whole() {
+    for info in DifficultyInfo::ALL {
+        assert_eq!(DifficultyInfo::from_name(info.name()), Some(info));
+    }
+    assert_eq!(DifficultyInfo::from_name("bpm"), None);
+    assert!(DifficultyInfo::Stars.stars() && !DifficultyInfo::Stars.pp());
+    assert!(!DifficultyInfo::Pp.stars() && DifficultyInfo::Pp.pp());
+    assert!(DifficultyInfo::StarsAndPp.stars() && DifficultyInfo::StarsAndPp.pp());
+    let mut text = String::new();
+    super::push_pp(&mut text, 411.6, "pp");
+    assert_eq!(text, "412pp");
+    text.clear();
+    super::push_pp(&mut text, -3.0, "pp");
+    assert_eq!(text, "0pp");
+}

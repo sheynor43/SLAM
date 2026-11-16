@@ -2043,6 +2043,10 @@ impl ShellState {
         if let (Some(songs), Some((key, span))) = (&self.songs, self.song_select.view_focus()) {
             songs.set_focus(key, span);
         }
+        // The ratings shown are with the selected mods (ADR-0151).
+        if let Some(songs) = &self.songs {
+            songs.set_rating_mods(&slam_osu::stars::RatingMods::of(&self.selected_mods));
+        }
         // Not while a play is loading or running: stars wait for the way out (ADR-0135).
         if let Some(songs) = &self.songs {
             songs.set_playing(self.loading || self.playing() || self.gameplay_visible(now_ns));
@@ -4712,6 +4716,7 @@ pub fn interface_theme(live: &Settings, committed: &Settings) -> Theme {
     };
     theme.song_set_height = live.song_select.set_height;
     theme.song_difficulty_height = live.song_select.difficulty_height;
+    theme.song_difficulty_info = live.song_select.difficulty_info;
     theme
 }
 

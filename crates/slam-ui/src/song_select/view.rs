@@ -59,6 +59,8 @@ pub struct SongSelectLabels {
     pub hint: String,
     /// Shown instead of the hints after a play was refused for want of an audio output.
     pub no_audio: String,
+    /// Follows a difficulty's SS performance: "pp" in "412pp" (ADR-0151).
+    pub pp_suffix: String,
     /// Shown in the search line while the query is empty.
     pub search_placeholder: String,
     /// Shown instead of the rows when the query matches nothing.
@@ -109,6 +111,8 @@ struct RowSlot {
     holds: Option<(u64, Row)>,
     primary: Line,
     secondary: Line,
+    /// A difficulty's SS performance, "412pp" (ADR-0151).
+    pp: Line,
     /// Room of the text that rides (the mapper of a set, the name of a difficulty), as
     /// filled.
     avail: f32,
@@ -127,6 +131,7 @@ impl RowSlot {
             holds: None,
             primary: line(),
             secondary: line(),
+            pp: line(),
             avail: 0.0,
             marquee: Marquee::default(),
         }
@@ -174,6 +179,8 @@ pub struct SongSelectView {
     choose_folder: Line,
     hint: Line,
     no_audio: Line,
+    /// [`SongSelectLabels::pp_suffix`].
+    pp_suffix: String,
     /// The query, for the query it was laid out for.
     search: Line,
     search_for: Option<SearchQuery>,
@@ -375,6 +382,7 @@ impl SongSelectView {
             choose_folder: Line::new(&labels.choose_folder),
             hint: Line::new(&labels.hint),
             no_audio: Line::new(&labels.no_audio),
+            pp_suffix: labels.pp_suffix.clone(),
             search: Line::new(""),
             search_for: None,
             search_placeholder: Line::new(&labels.search_placeholder),
@@ -532,7 +540,7 @@ impl SongSelectView {
         let rows = self
             .slots
             .iter()
-            .flat_map(|slot| [&slot.primary, &slot.secondary]);
+            .flat_map(|slot| [&slot.primary, &slot.secondary, &slot.pp]);
         statics
             .into_iter()
             .chain(mods)
@@ -550,6 +558,7 @@ impl SongSelectView {
         theme: &Theme,
         layout: &SongSelectLayout,
         ellipsis: [f32; 4],
+        pp_suffix: &str,
         generation: u64,
         list: &SongList,
         row: Row,
@@ -577,6 +586,7 @@ impl SongSelectView {
         slot.holds = None;
         slot.primary.text.clear();
         slot.secondary.text.clear();
+        slot.pp.text.clear();
         match row {
             Row::Set(_) => {
                 let _ = write!(slot.primary.text, "{} - {}", set_row.artist, set_row.title);
@@ -590,13 +600,24 @@ impl SongSelectView {
                     return false;
                 };
                 slot.primary.text.push_str(&d.version);
+                let info = theme.song_difficulty_info;
                 // The star pill keeps the right end; its text is the second line.
-                if let Some(stars) = d.stars {
+                if info.stars()
+                    && let Some(stars) = d.stars
+                {
                     super::push_stars(&mut slot.secondary.text, stars);
                     type_setter.lay_out(&mut slot.secondary, theme.song_detail_size * layout.scale);
                     avail = (avail
                         - super::info_panel::pill_width(&slot.secondary, theme, layout.scale))
                     .max(0.0);
+                }
+                // The SS performance, left of the pill (ADR-0151).
+                if info.pp()
+                    && let Some(pp) = d.pp
+                {
+                    super::push_pp(&mut slot.pp.text, pp, pp_suffix);
+                    type_setter.lay_out_face(&mut slot.pp, theme.caption_face(layout.scale));
+                    avail = (avail - slot.pp.layout.width() - pad).max(0.0);
                 }
             }
         }
@@ -1048,6 +1069,7 @@ impl SongSelectView {
                     theme,
                     layout,
                     self.ellipsis,
+                    &self.pp_suffix,
                     snapshot.generation,
                     list,
                     row,
@@ -1056,7 +1078,8 @@ impl SongSelectView {
                 ) {
                     continue;
                 }
-                let (primary_line, secondary_line) = (&slot.primary, &slot.secondary);
+                let (primary_line, secondary_line, pp_line) =
+                    (&slot.primary, &slot.secondary, &slot.pp);
                 let (avail, marquee) = (slot.avail, &mut slot.marquee);
                 let indent = match row {
                     Row::Set(_) => 0.0,
@@ -1212,30 +1235,61 @@ impl SongSelectView {
                     }
                 } else {
                     let centre = area.y + area.height / 2.0;
-                    if inside(primary_line, centre) {
-                        ride(primary_line, marquee, avail, x, centre, theme.text);
+                    // With the stars shown, the name rises and the star counter goes under
+                    // it, as lazer's `PanelBeatmap` (ADR-0151).
+                    let counter = theme.song_difficulty_info.stars() && stars.is_some();
+                    let star = theme.difficulty_star_size * scale;
+                    let gap = theme.difficulty_star_gap * scale;
+                    let name_centre = if counter {
+                        let total = primary_line.layout.height() + gap + star;
+                        centre - total / 2.0 + primary_line.layout.height() / 2.0
+                    } else {
+                        centre
+                    };
+                    if inside(primary_line, name_centre) {
+                        ride(primary_line, marquee, avail, x, name_centre, theme.text);
+                    }
+                    if counter && let Some(stars) = stars {
+                        let star_centre =
+                            name_centre + primary_line.layout.height() / 2.0 + gap + star / 2.0;
+                        if star_centre - star / 2.0 >= top_edge
+                            && star_centre + star / 2.0 <= bottom_edge
+                        {
+                            push_star_counter(&mut rect, stars, x, star_centre, theme, scale);
+                        }
                     }
                 }
                 let centre = area.y + area.height / 2.0;
                 let right = area.x + area.width - pad;
                 match row {
                     Row::Difficulty { .. } => {
-                        if let Some(stars) = stars
-                            && inside(secondary_line, centre)
-                        {
+                        // The pill's text is empty when the setting hides the stars.
+                        let pill = match stars {
+                            Some(stars) if !secondary_line.text.is_empty() => Some(stars),
+                            _ => None,
+                        };
+                        let mut end = right;
+                        if let Some(stars) = pill {
                             // The star pill, in the colour of the rating.
                             let line = secondary_line;
                             let width = super::info_panel::star_pill_width(line, theme, scale);
-                            super::info_panel::push_star_pill(
-                                &mut rect,
-                                &mut left,
-                                line,
-                                stars,
-                                theme,
-                                scale,
-                                right - width,
-                                centre,
-                            );
+                            end -= width + pad;
+                            if inside(secondary_line, centre) {
+                                super::info_panel::push_star_pill(
+                                    &mut rect,
+                                    &mut left,
+                                    line,
+                                    stars,
+                                    theme,
+                                    scale,
+                                    right - width,
+                                    centre,
+                                );
+                            }
+                        }
+                        // The SS performance, left of the pill (ADR-0151).
+                        if !pp_line.text.is_empty() && inside(pp_line, centre) {
+                            left(pp_line, end - pp_line.layout.width(), centre, theme.text);
                         }
                     }
                     Row::Set(_) => {
@@ -1336,6 +1390,44 @@ impl SongSelectView {
         self.type_setter.lay_out(line, size);
     }
 }
+
+// Ported from osu!lazer 2026.1005.0-lazer: osu.Game/Graphics/UserInterface/StarCounter.cs
+/// Lazer's star counter: [`STAR_COUNT`] stars from `x`, centred on `centre_y`, each dim
+/// behind and filled in the rating's colour as far as the rating reaches it; a partly reached
+/// star is drawn smaller (ADR-0151).
+fn push_star_counter(
+    rect: &mut impl FnMut(&Rect, Color, Look),
+    stars: f32,
+    x: f32,
+    centre_y: f32,
+    theme: &Theme,
+    scale: f32,
+) {
+    let size = theme.difficulty_star_size * scale;
+    let pitch = size + theme.difficulty_star_spacing * scale;
+    let colour = crate::star_colour::for_stars(stars);
+    for i in 0..STAR_COUNT {
+        let cx = x + i as f32 * pitch + size / 2.0;
+        let at = |s: f32| Rect {
+            x: cx - s / 2.0,
+            y: centre_y - s / 2.0,
+            width: s,
+            height: s,
+        };
+        rect(
+            &at(size),
+            faded(theme.text, theme.difficulty_star_dim),
+            Look::Star,
+        );
+        let fill = (stars - i as f32).clamp(0.0, 1.0);
+        if fill > 0.0 {
+            rect(&at(size * fill), colour, Look::Star);
+        }
+    }
+}
+
+/// Stars of [`push_star_counter`], as lazer's `StarCounter` default.
+const STAR_COUNT: usize = 10;
 
 /// The expanded set and when it changed, so its difficulties slide out from under its row
 /// and the rows below follow, while the set that closed slides shut (ADR-0136).
