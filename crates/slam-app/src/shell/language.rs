@@ -81,7 +81,9 @@ pub fn interface_views(
         mod_column_titles: [
             text("song-select-mods-reduction"),
             text("song-select-mods-increase"),
+            text("song-select-mods-automation"),
             text("song-select-mods-conversion"),
+            text("song-select-mods-fun"),
         ],
         details: DetailLabels {
             length: text("song-select-details-length"),
@@ -96,6 +98,18 @@ pub fn interface_views(
             scores: text("song-select-scores"),
             no_scores: text("song-select-no-scores"),
         },
+        mod_texts: mod_columns().map(|column| {
+            column
+                .iter()
+                .map(|acronym| {
+                    let lower = acronym.to_ascii_lowercase();
+                    (
+                        text(&format!("song-select-mods-name-{lower}")),
+                        text(&format!("song-select-mods-desc-{lower}")),
+                    )
+                })
+                .collect()
+        }),
         mod_columns: mod_columns(),
     };
     let results = ResultsLabels {

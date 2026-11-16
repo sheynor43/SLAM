@@ -208,8 +208,26 @@ pub struct Theme {
     pub mod_tile_height: f32,
     pub mod_tile_pitch: f32,
     pub mod_column_gap: f32,
-    /// Fill over the screen under the mod select panel.
+    /// Fill over the screen under the mod select panel: the song list stays seen under it,
+    /// as in lazer (ADR-0152).
     pub mod_backdrop_fill: Color,
+    /// A column of the mod select panel: its plate, the height of its header in the
+    /// column's colour (lazer's 42) and the padding around its tiles (lazer's 7) (ADR-0152).
+    pub mod_column_fill: Color,
+    pub mod_column_header_height: f32,
+    pub mod_column_pad: f32,
+    /// How much an active mod tile darkens its column's colour (lazer's `Darken(0.3)` on the
+    /// panel, stronger here so the white text reads on every colour).
+    pub mod_tile_active_darken: f32,
+    /// Where the columns start, as a part of the window height: the lower part of the
+    /// window, as lazer's (ADR-0152).
+    pub mod_panel_top: f32,
+    /// The columns' slide from below when the panel opens and closes: lazer's 400 ms in,
+    /// 500 ms out, 30 ms more for each next column, 700 px (ADR-0152).
+    pub mod_panel_in_ms: f32,
+    pub mod_panel_out_ms: f32,
+    pub mod_column_stagger_ms: f32,
+    pub mod_panel_distance: f32,
     /// Margin around the results screen.
     pub results_margin: f32,
     /// Size of the beatmap line on top of the results.
@@ -336,10 +354,10 @@ pub struct Theme {
     /// Colours of the main menu's buttons, top to bottom (ADR-0136): the first is the
     /// scheme's accent.
     pub menu_button_tints: [Color; 3],
-    /// Colours of the mod select's columns, as lazer colours mod types (ADR-0136): difficulty
-    /// reduction, difficulty increase, conversion. An active mod's tile washes and is
-    /// outlined in its column's colour.
-    pub mod_column_tints: [Color; 3],
+    /// Colours of the mod select's columns, as lazer colours mod types (ADR-0136, ADR-0152):
+    /// difficulty reduction, difficulty increase, automation, conversion, fun. An active
+    /// mod's tile washes and is outlined in its column's colour.
+    pub mod_column_tints: [Color; 5],
     /// Colours of the settings' sections, in turn (ADR-0136).
     pub section_tints: [Color; 8],
     /// How strong a difficulty row's glow in its star colour is, as a part of the accent
@@ -660,16 +678,25 @@ impl Theme {
                 a: 0.16,
             },
             song_score_row_height: 30.0,
-            mod_tile_width: 150.0,
-            mod_tile_height: 48.0,
-            mod_tile_pitch: 52.0,
-            mod_column_gap: 32.0,
+            mod_tile_width: 210.0,
+            mod_tile_height: 40.0,
+            mod_tile_pitch: 45.0,
+            mod_column_gap: 10.0,
             mod_backdrop_fill: Color {
                 r: 0.0,
                 g: 0.0,
                 b: 0.0,
-                a: 0.8,
+                a: 0.55,
             },
+            mod_column_fill: alpha(p.panel, 0.94),
+            mod_column_header_height: 30.0,
+            mod_column_pad: 7.0,
+            mod_panel_top: 0.22,
+            mod_tile_active_darken: 1.2,
+            mod_panel_in_ms: 400.0,
+            mod_panel_out_ms: 500.0,
+            mod_column_stagger_ms: 30.0,
+            mod_panel_distance: 700.0,
             results_margin: 24.0,
             results_title_size: 24.0,
             results_rank_size: 160.0,
@@ -753,10 +780,13 @@ impl Theme {
                 Color::rgb(1.0, 0.50, 0.35),
                 Color::rgb(0.85, 0.45, 0.95),
             ],
+            // lazer: Lime1, Red1, Blue1, Purple1, Pink1.
             mod_column_tints: [
                 Color::rgb(0.70, 1.0, 0.40),
                 Color::rgb(1.0, 0.40, 0.40),
+                Color::rgb(0.40, 0.80, 1.0),
                 Color::rgb(0.55, 0.40, 1.0),
+                Color::rgb(1.0, 0.40, 0.67),
             ],
             difficulty_glow_scale: 1.0,
             star_pill_pad: 7.0,

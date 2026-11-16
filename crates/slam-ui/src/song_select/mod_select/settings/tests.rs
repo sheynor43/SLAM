@@ -63,7 +63,7 @@ fn rows() -> [SettingRow; 6] {
 }
 
 fn panel() -> ModSelect {
-    let mut panel = ModSelect::new([&["EZ", "HT"], &["HR"], &["DA"]]);
+    let mut panel = ModSelect::new([&["EZ", "HT"], &["HR"], &[], &["DA"], &[]]);
     panel.open();
     panel.set_setting_rows(&rows());
     panel
@@ -104,7 +104,7 @@ fn hovering_the_header_expands_when_a_setting_exists() {
     let l = layout();
     let mut p = panel();
     expand_by_hover(&mut p, &l);
-    let mut empty = ModSelect::new([&["EZ"], &[], &[]]);
+    let mut empty = ModSelect::new([&["EZ"], &[], &[], &[], &[]]);
     empty.open();
     empty.set_setting_rows(&[header()]);
     let (x, y) = header_point(&l);
@@ -375,7 +375,7 @@ fn clicks_change_rows_and_select_them() {
 #[test]
 fn the_wheel_scrolls_and_the_selection_stays_in_view() {
     let l = layout();
-    let mut p = ModSelect::new([&["EZ"], &[], &[]]);
+    let mut p = ModSelect::new([&["EZ"], &[], &[], &[], &[]]);
     p.open();
     let many: Vec<SettingRow> = (0..MAX_SETTING_ROWS).map(|_| toggle(false)).collect();
     p.set_setting_rows(&many);

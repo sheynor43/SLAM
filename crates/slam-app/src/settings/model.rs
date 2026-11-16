@@ -216,6 +216,41 @@ fn serialize_volume_meter<S: Serializer>(
     serializer.serialize_str(style.name())
 }
 
+// Ported from osu!lazer 2026.1005.0-lazer: osu.Game/Overlays/Mods/Input/ModSelectHotkeyStyle.cs
+/// How letter keys toggle mods on the mod select panel (ADR-0155).
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum ModHotkeyStyle {
+    /// Lazer's: each letter row is a column, each letter a mod by its place in it.
+    #[default]
+    Sequential,
+    /// Stable's: each mod has its own letter; a letter shared by two mods (D: DT, NC) goes
+    /// from one to the next, Shift backwards.
+    Classic,
+}
+
+impl ModHotkeyStyle {
+    pub const ALL: [ModHotkeyStyle; 2] = [ModHotkeyStyle::Sequential, ModHotkeyStyle::Classic];
+
+    /// The name in settings files.
+    pub fn name(self) -> &'static str {
+        match self {
+            ModHotkeyStyle::Sequential => "sequential",
+            ModHotkeyStyle::Classic => "classic",
+        }
+    }
+
+    pub fn from_name(name: &str) -> Option<ModHotkeyStyle> {
+        ModHotkeyStyle::ALL.into_iter().find(|s| s.name() == name)
+    }
+}
+
+fn serialize_mod_hotkeys<S: Serializer>(
+    style: &ModHotkeyStyle,
+    serializer: S,
+) -> Result<S::Ok, S::Error> {
+    serializer.serialize_str(style.name())
+}
+
 fn serialize_difficulty_info<S: Serializer>(
     info: &DifficultyInfo,
     serializer: S,
@@ -754,6 +789,9 @@ pub struct SongSelect {
     /// What a difficulty row shows beside its name (ADR-0151).
     #[serde(serialize_with = "serialize_difficulty_info")]
     pub difficulty_info: DifficultyInfo,
+    /// How letter keys toggle mods on the mod select panel (ADR-0155).
+    #[serde(serialize_with = "serialize_mod_hotkeys")]
+    pub mod_hotkeys: ModHotkeyStyle,
     /// Height of the beatmap thumbnails in the song list (ADR-0127).
     pub thumbnails: Thumbnails,
 }
@@ -765,6 +803,7 @@ impl Default for SongSelect {
             set_height: 72.0,
             difficulty_height: 45.0,
             difficulty_info: DifficultyInfo::Stars,
+            mod_hotkeys: ModHotkeyStyle::Sequential,
             thumbnails: Thumbnails::default(),
         }
     }

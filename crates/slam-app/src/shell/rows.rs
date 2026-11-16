@@ -18,6 +18,7 @@ use std::sync::Arc;
 
 use super::keybinds;
 use crate::displays::{DisplayLists, DisplayViews};
+use crate::settings::model::ModHotkeyStyle;
 use crate::settings::{
     BreakDisplay, DrawRate, FpsScreens, HitsoundDelay, InputSettings, KeyOverlayAnimation, KeySlot,
     MenuBackground, MenuSounds, PauseMenuStyle, RendererChoice, Settings, Thumbnails, Timing,
@@ -317,6 +318,8 @@ pub enum Row {
     SongSelectDifficultyHeight,
     /// What a difficulty row shows beside its name (ADR-0151).
     SongSelectDifficultyInfo,
+    /// How letter keys toggle mods (ADR-0155).
+    SongSelectModHotkeys,
     /// Height of the song list's thumbnails (ADR-0127).
     SongSelectThumbnails,
     AlwaysPlayFirstComboBreak,
@@ -348,7 +351,7 @@ pub enum Row {
 const _: () = assert!(Row::ALL.len() <= slam_ui::settings_screen::MAX_ROWS);
 
 impl Row {
-    pub const ALL: [Row; 99] = [
+    pub const ALL: [Row; 100] = [
         Row::MasterVolume,
         Row::MusicVolume,
         Row::MenuMusic,
@@ -431,6 +434,7 @@ impl Row {
         Row::SongSelectSetHeight,
         Row::SongSelectDifficultyHeight,
         Row::SongSelectDifficultyInfo,
+        Row::SongSelectModHotkeys,
         Row::SongSelectThumbnails,
         Row::AlwaysPlayFirstComboBreak,
         Row::WarningArrows,
@@ -573,6 +577,7 @@ impl Row {
             | Row::SongSelectSetHeight
             | Row::SongSelectDifficultyHeight
             | Row::SongSelectDifficultyInfo
+            | Row::SongSelectModHotkeys
             | Row::SongSelectThumbnails
             | Row::AlwaysPlayFirstComboBreak
             | Row::WarningArrows
@@ -665,6 +670,7 @@ impl Row {
             Row::SongSelectSetHeight => "settings-song-select-set-height",
             Row::SongSelectDifficultyHeight => "settings-song-select-difficulty-height",
             Row::SongSelectDifficultyInfo => "settings-song-select-difficulty-info",
+            Row::SongSelectModHotkeys => "settings-song-select-mod-hotkeys",
             Row::SongSelectThumbnails => "settings-song-select-thumbnails",
             Row::BeatmapSkins => "settings-gameplay-beatmap-skins",
             Row::BeatmapColours => "settings-gameplay-beatmap-colours",
@@ -1175,6 +1181,12 @@ impl Rows {
                     .iter()
                     .position(|i| *i == s.song_select.difficulty_info),
             ),
+            Row::SongSelectModHotkeys => choice(
+                ModHotkeyStyle::ALL.len(),
+                ModHotkeyStyle::ALL
+                    .iter()
+                    .position(|h| *h == s.song_select.mod_hotkeys),
+            ),
             Row::SongSelectThumbnails => choice(
                 Thumbnails::ALL.len(),
                 Thumbnails::ALL
@@ -1565,6 +1577,11 @@ impl Rows {
                     settings.song_select.difficulty_info = *info;
                 }
             }
+            (Row::SongSelectModHotkeys, RowValue::Choice(i)) => {
+                if let Some(style) = ModHotkeyStyle::ALL.get(i) {
+                    settings.song_select.mod_hotkeys = *style;
+                }
+            }
             (Row::SongSelectThumbnails, RowValue::Choice(i)) => {
                 if let Some(thumbnails) = Thumbnails::ALL.get(i) {
                     settings.song_select.thumbnails = *thumbnails;
@@ -1834,6 +1851,19 @@ impl Rows {
                     Row::SongSelectDifficultyInfo => DifficultyInfo::ALL
                         .iter()
                         .map(|i| text(difficulty_info_key(*i)))
+                        .collect(),
+                    Row::SongSelectModHotkeys => ModHotkeyStyle::ALL
+                        .iter()
+                        .map(|h| {
+                            text(match h {
+                                ModHotkeyStyle::Sequential => {
+                                    "settings-song-select-mod-hotkeys-sequential"
+                                }
+                                ModHotkeyStyle::Classic => {
+                                    "settings-song-select-mod-hotkeys-classic"
+                                }
+                            })
+                        })
                         .collect(),
                     Row::SongSelectThumbnails => Thumbnails::ALL
                         .iter()
@@ -2783,7 +2813,7 @@ mod tests {
     fn the_thumbnails_row_chooses_the_height_and_is_labelled_in_both_languages() {
         let (rows, mut s) = rows();
         let at = index(Row::SongSelectThumbnails);
-        assert_eq!(at, index(Row::SongSelectDim) + 4);
+        assert_eq!(at, index(Row::SongSelectDim) + 5);
         assert_eq!(s.song_select.thumbnails, Thumbnails::H128);
         assert_eq!(
             rows.specs(&s)[at].kind,
@@ -2810,6 +2840,35 @@ mod tests {
         let labels = rows.labels(&localizer);
         assert_eq!(labels.rows[at].options[0], "Выкл.");
         assert!(!labels.rows[at].label.is_empty());
+    }
+
+    #[test]
+    fn the_mod_hotkeys_row_chooses_the_style_in_both_languages() {
+        let (rows, mut s) = rows();
+        let at = index(Row::SongSelectModHotkeys);
+        assert_eq!(at, index(Row::SongSelectDifficultyInfo) + 1);
+        assert_eq!(
+            rows.specs(&s)[at].kind,
+            RowKind::Dropdown {
+                options: 2,
+                selected: 0
+            }
+        );
+        rows.apply(&mut s, at, RowValue::Choice(1));
+        assert_eq!(s.song_select.mod_hotkeys, ModHotkeyStyle::Classic);
+        rows.apply(&mut s, at, RowValue::Choice(5));
+        assert_eq!(s.song_select.mod_hotkeys, ModHotkeyStyle::Classic);
+        let localizer = Localizer::builtin().unwrap();
+        localizer.set_language("en").unwrap();
+        assert_eq!(
+            rows.labels(&localizer).rows[at].options,
+            ["Sequential (lazer)", "Classic (stable)"]
+        );
+        localizer.set_language("ru").unwrap();
+        assert_eq!(
+            rows.labels(&localizer).rows[at].options[1],
+            "Классические (stable)"
+        );
     }
 
     #[test]

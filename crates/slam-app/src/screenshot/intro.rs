@@ -227,13 +227,15 @@ pub(crate) fn settle<S>(
     }
 }
 
-/// Uploads and draws one layer: its `shapes`, then its `text`.
-pub(crate) fn draw_layer(
+/// Draws `shapes`, then `text`; in two layers when `split` gives where the second starts in
+/// them, as the game draws the song select's mod panel over the list's texts (ADR-0152).
+pub(crate) fn draw_layers(
     device: &mut Gl,
     gpu: &mut Gpu,
     shapes: &ShapeBatch,
     text: &SpriteBatch,
     size: Extent,
+    split: Option<(u32, u32)>,
 ) -> Result<(), String> {
     for renderer in [&mut gpu.shapes, &mut gpu.text, &mut gpu.outlines] {
         renderer.begin_frame();
@@ -246,17 +248,24 @@ pub(crate) fn draw_layer(
         .shapes
         .upload(device, shapes, &projection, texture)
         .map_err(err)?;
-    gpu.shapes
-        .draw_range(device, &uploaded, shapes, 0..shapes.len() as u32, texture)
-        .map_err(err)?;
-    let uploaded = gpu
+    let uploaded_text = gpu
         .text
         .upload(device, text, &projection, texture)
         .map_err(err)?;
-    gpu.text
-        .draw_range(device, &uploaded, text, 0..text.len() as u32, texture)
-        .map(drop)
-        .map_err(err)
+    let (shapes_at, text_at) = split.unwrap_or((shapes.len() as u32, text.len() as u32));
+    let ranges = [
+        (0..shapes_at, 0..text_at),
+        (shapes_at..shapes.len() as u32, text_at..text.len() as u32),
+    ];
+    for (shape_range, text_range) in ranges {
+        gpu.shapes
+            .draw_range(device, &uploaded, shapes, shape_range, texture)
+            .map_err(err)?;
+        gpu.text
+            .draw_range(device, &uploaded_text, text, text_range, texture)
+            .map_err(err)?;
+    }
+    Ok(())
 }
 
 /// The menu, then the intro over it, as the shell's frame draws them.

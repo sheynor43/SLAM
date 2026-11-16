@@ -32,7 +32,7 @@ pub use filter::{
 pub use mod_select::{
     CustomisationLayout, CustomisationSnapshot, CustomisationState, MAX_CHOICES, MAX_SETTING_ROWS,
     ModColumns, ModSelect, ModSelectAction, ModSelectLayout, ModSelectSnapshot, SettingRow,
-    SettingRowKind, SettingValue, TileDetail, TileDetails,
+    SettingRowKind, SettingValue, TileDetail, TileDetails, column_counts,
 };
 pub use view::{DetailLabels, SongSelectLabels, SongSelectView};
 
@@ -288,6 +288,13 @@ pub struct SongSelectLayout {
 }
 
 impl SongSelectLayout {
+    /// The layout with the mod select panel showing only the columns of `columns` that have
+    /// mods (ADR-0152).
+    pub fn with_mod_columns(mut self, columns: &ModColumns) -> SongSelectLayout {
+        self.mods.place(mod_select::column_counts(columns));
+        self
+    }
+
     pub fn new(width: f32, height: f32, theme: &Theme) -> SongSelectLayout {
         let scale = theme.scale(height);
         let margin = theme.song_margin * scale;
