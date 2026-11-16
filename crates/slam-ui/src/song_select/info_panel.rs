@@ -12,6 +12,7 @@ use super::{
     BeatmapDetails, DetailStats, LocalScores, MAX_LOCAL_SCORES, ScoreRow, SongSelectLayout,
     SongSelectSnapshot,
 };
+use crate::anim::{Towards, ease_out_quint, progress};
 use crate::menu::Rect;
 use crate::menu::view::{Line, Typesetter};
 use crate::theme::{Theme, faded};
@@ -243,6 +244,23 @@ pub(super) struct InfoPanel {
     details_for: Option<Option<BeatmapDetails>>,
     scores: Vec<ScoreLines>,
     scores_for: Option<Option<LocalScores>>,
+    /// The bars and colour moving to the selection's, and its texts fading in (ADR-0156).
+    motion: InfoMotion,
+}
+
+/// The info panel's animation state, kept by the draw side with the frame's time.
+#[derive(Clone, Copy, Debug, Default)]
+struct InfoMotion {
+    /// The difficulty the texts are for, by its key in the list; `None` before the first.
+    shown: Option<u64>,
+    /// When the texts of the shown difficulty started to fade in.
+    texts_since: u64,
+    /// CS, AR, OD, HP as parts of the bars.
+    bars: [Towards; 4],
+    /// The panel's colour, by channel.
+    colour: [Towards; 4],
+    /// Whether the bars and colour had a value to start from.
+    started: bool,
 }
 
 impl InfoPanel {
@@ -273,6 +291,7 @@ impl InfoPanel {
             details_for: None,
             scores: (0..MAX_LOCAL_SCORES).map(|_| ScoreLines::new()).collect(),
             scores_for: None,
+            motion: InfoMotion::default(),
         }
     }
 
@@ -427,16 +446,23 @@ impl InfoPanel {
     /// opacity), `left` draws a line left-aligned at `(x, centre_y)`.
     /// Two wedges after lazer's (ADR-0136): the difficulty's, outlined in its star colour,
     /// and the local scores' below it; each leans by the buttons' skew, and so does all on it.
+    #[allow(clippy::too_many_arguments)]
     pub(super) fn push(
-        &self,
+        &mut self,
         layout: &SongSelectLayout,
         theme: &Theme,
         snapshot: &SongSelectSnapshot,
         opacity: f32,
+        now_ns: u64,
         rect: &mut impl FnMut(&Rect, Color, Look),
         left: &mut impl FnMut(&Line, f32, f32, Color),
     ) {
         let scale = layout.scale;
+        let ms = |ms: f32| (ms.max(0.0) as f64 * 1e6) as u64;
+        let (move_ns, fade_ns) = (
+            ms(theme.song_info_transition_ms),
+            ms(theme.song_info_text_fade_ms),
+        );
         let mut parts = InfoLayout::new(&layout.info, theme, scale);
         let tan = theme.button_skew().tan();
         let inset = theme.song_margin * scale / 2.0;
@@ -448,6 +474,52 @@ impl InfoPanel {
             },
             (Some(_), stars) => crate::star_colour::glow_for(stars, theme.accent),
         };
+        // Another difficulty: its texts fade in, the bars and colour move to it (ADR-0156).
+        let key = snapshot.selected.and_then(|(set, difficulty)| {
+            let row = snapshot.list.sets.get(set)?.difficulties.get(difficulty)?;
+            Some(row.key)
+        });
+        let motion = &mut self.motion;
+        if key != motion.shown {
+            // The first difficulty shows at once.
+            motion.texts_since = if motion.shown.is_some() { now_ns } else { 0 };
+            motion.shown = key;
+        }
+        let texts = ease_out_quint(progress(motion.texts_since, now_ns, fade_ns));
+        let channels = [outline.r, outline.g, outline.b, outline.a];
+        let fractions = snapshot.details.map(|d| {
+            [
+                d.circle_size,
+                d.approach_rate,
+                d.overall_difficulty,
+                d.drain_rate,
+            ]
+            .map(|v| (v / BAR_MAXIMUM).clamp(0.0, 1.0))
+        });
+        if motion.started {
+            for (towards, to) in motion.colour.iter_mut().zip(channels) {
+                towards.aim(to, now_ns, move_ns, ease_out_quint);
+            }
+            if let Some(fractions) = fractions {
+                for (towards, to) in motion.bars.iter_mut().zip(fractions) {
+                    towards.aim(to, now_ns, move_ns, ease_out_quint);
+                }
+            }
+        } else {
+            motion.colour = channels.map(|c| Towards::rest(c, now_ns));
+            if let Some(fractions) = fractions {
+                motion.bars = fractions.map(|f| Towards::rest(f, now_ns));
+                motion.started = true;
+            }
+        }
+        let [r, g, b, a] = motion
+            .colour
+            .map(|towards| towards.at(now_ns, move_ns, ease_out_quint));
+        let outline = Color { r, g, b, a };
+        let shown_bars = motion
+            .bars
+            .map(|towards| towards.at(now_ns, move_ns, ease_out_quint));
+        let ink = |colour: Color| faded(colour, texts);
         // `rect` fades the fill with the layer; the outline is the look's, faded here, so it
         // leaves with the screen.
         let wedge_outline = faded(outline, opacity);
@@ -541,7 +613,12 @@ impl InfoPanel {
             rect(&bleed(&board), theme.song_panel_fill, board_look);
         }
         let centre = |r: &Rect| r.y + r.height / 2.0;
-        left(&self.name, parts.name.x, centre(&parts.name), theme.text);
+        left(
+            &self.name,
+            parts.name.x,
+            centre(&parts.name),
+            ink(theme.text),
+        );
         if let Some(stars) = stars {
             push_star_pill(
                 rect,
@@ -558,7 +635,7 @@ impl InfoPanel {
             &self.artist,
             parts.artist.x,
             centre(&parts.artist),
-            theme.song_hint_text,
+            ink(theme.song_hint_text),
         );
         let Some(details) = snapshot.details else {
             return;
@@ -568,12 +645,6 @@ impl InfoPanel {
         } else {
             theme.widget_accent_fill
         };
-        let values = [
-            details.circle_size,
-            details.approach_rate,
-            details.overall_difficulty,
-            details.drain_rate,
-        ];
         for (i, bar) in parts.bars.iter().enumerate() {
             left(
                 &self.bar_labels[i],
@@ -582,7 +653,7 @@ impl InfoPanel {
                 theme.song_hint_text,
             );
             rect(&bar.track, theme.song_bar_track_fill, Look::Pill);
-            let fraction = (values[i] / BAR_MAXIMUM).clamp(0.0, 1.0);
+            let fraction = shown_bars[i];
             rect(
                 &Rect {
                     width: bar.track.width * fraction,
@@ -597,15 +668,20 @@ impl InfoPanel {
                 value,
                 bar.value.x + bar.value.width - value.layout.width(),
                 centre(&bar.value),
-                theme.text,
+                ink(theme.text),
             );
         }
-        left(&self.stats, parts.stats.x, centre(&parts.stats), theme.text);
+        left(
+            &self.stats,
+            parts.stats.x,
+            centre(&parts.stats),
+            ink(theme.text),
+        );
         left(
             &self.counts,
             parts.counts.x,
             centre(&parts.counts),
-            theme.text,
+            ink(theme.text),
         );
         left(
             &self.scores_title,

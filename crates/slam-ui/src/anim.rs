@@ -67,6 +67,37 @@ pub fn progress(start_ns: u64, now_ns: u64, duration_ns: u64) -> f32 {
     }
 }
 
+/// Animation towards a target value.
+#[derive(Clone, Copy, Debug, Default)]
+pub(crate) struct Towards {
+    from: f32,
+    to: f32,
+    since_ns: u64,
+}
+
+impl Towards {
+    pub(crate) fn at(&self, now_ns: u64, duration_ns: u64, ease: fn(f32) -> f32) -> f32 {
+        let t = ease(progress(self.since_ns, now_ns, duration_ns));
+        self.from + (self.to - self.from) * t
+    }
+
+    pub(crate) fn aim(&mut self, to: f32, now_ns: u64, duration_ns: u64, ease: fn(f32) -> f32) {
+        if self.to != to {
+            self.from = self.at(now_ns, duration_ns, ease);
+            self.to = to;
+            self.since_ns = now_ns;
+        }
+    }
+
+    pub(crate) fn rest(value: f32, now_ns: u64) -> Towards {
+        Towards {
+            from: value,
+            to: value,
+            since_ns: now_ns,
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

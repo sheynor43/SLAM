@@ -108,7 +108,7 @@ impl Rig {
     }
 
     /// How many boxes and non-empty texts the panel draws for `details`.
-    fn drawn(&self, details: BeatmapDetails) -> (usize, usize) {
+    fn drawn(&mut self, details: BeatmapDetails) -> (usize, usize) {
         let mut screen = self.screen.clone();
         screen.set_details(Some(details));
         let snapshot = screen.snapshot();
@@ -119,6 +119,7 @@ impl Rig {
             &self.theme,
             &snapshot,
             1.0,
+            0,
             &mut |_, _, _| rects += 1,
             &mut |line, _, _, _| texts += usize::from(!line.text.is_empty()),
         );
@@ -126,7 +127,7 @@ impl Rig {
     }
 
     /// The outlines of the wedges drawn at `opacity`.
-    fn outlines(&self, details: BeatmapDetails, opacity: f32) -> Vec<Color> {
+    fn outlines(&mut self, details: BeatmapDetails, opacity: f32) -> Vec<Color> {
         let mut screen = self.screen.clone();
         screen.set_details(Some(details));
         let snapshot = screen.snapshot();
@@ -137,6 +138,7 @@ impl Rig {
             &self.theme,
             &snapshot,
             opacity,
+            0,
             &mut |_, _, look| {
                 if let Look::Wedge { outline, .. } = look {
                     found.push(outline);
@@ -382,7 +384,7 @@ fn difficulty_values_keep_two_decimals_at_most() {
 
 #[test]
 fn the_wedge_outline_fades_with_the_screen() {
-    let rig = Rig::new();
+    let mut rig = Rig::new();
     let shown = details(Some(LocalScores::default()));
     let full = rig.outlines(shown, 1.0);
     let leaving = rig.outlines(shown, 0.25);
@@ -398,7 +400,7 @@ fn the_wedge_outline_fades_with_the_screen() {
 
 #[test]
 fn the_wedges_run_off_the_left_edge_from_top_to_bottom() {
-    let rig = Rig::new();
+    let mut rig = Rig::new();
     let mut screen = rig.screen.clone();
     screen.set_details(Some(details(Some(LocalScores::default()))));
     let snapshot = screen.snapshot();
@@ -410,6 +412,7 @@ fn the_wedges_run_off_the_left_edge_from_top_to_bottom() {
         &rig.theme,
         &snapshot,
         1.0,
+        0,
         &mut |r, _, look| {
             if let Look::Wedge { lean, .. } = look {
                 assert_eq!(lean, tan);
@@ -445,6 +448,7 @@ fn the_difficulty_lines_keep_a_text_pad_from_the_leaning_edge() {
         &rig.theme,
         &snapshot,
         1.0,
+        0,
         &mut |r, _, look| {
             if let Look::Wedge { lean, .. } = look {
                 wedges.push((*r, lean));
@@ -469,4 +473,45 @@ fn the_difficulty_lines_keep_a_text_pad_from_the_leaning_edge() {
         assert!(right <= edge(y) - pad, "{right} vs edge {} at {y}", edge(y));
         assert!(left >= inset, "{left} at {y}");
     }
+}
+
+/// Another difficulty's values: the bars move to them over the theme's time (ADR-0156); the
+/// first one shows at once.
+#[test]
+fn the_bars_move_to_new_values_and_the_first_shows_at_once() {
+    let mut rig = Rig::new();
+    let ms = 1_000_000;
+    let push = |rig: &mut Rig, details: BeatmapDetails, now: u64| {
+        let mut screen = rig.screen.clone();
+        screen.set_details(Some(details));
+        let snapshot = screen.snapshot();
+        let layout = SongSelectLayout::new(1280.0, 768.0, &rig.theme);
+        rig.panel.push(
+            &layout,
+            &rig.theme,
+            &snapshot,
+            1.0,
+            now,
+            &mut |_, _, _| {},
+            &mut |_, _, _, _| {},
+        );
+    };
+    let duration = rig.theme.song_info_transition_ms as u64 * ms;
+    let at = |rig: &Rig, now: u64| {
+        rig.panel.motion.bars[0].at(now, duration, crate::anim::ease_out_quint)
+    };
+    push(&mut rig, details(None), 10 * ms);
+    assert_eq!(rig.panel.motion.texts_since, 0);
+    assert_eq!(at(&rig, 10 * ms), 0.4);
+    let harder = BeatmapDetails {
+        circle_size: 8.0,
+        ..details(None)
+    };
+    push(&mut rig, harder, 20 * ms);
+    let early = at(&rig, 21 * ms);
+    assert!(early > 0.4 && early < 0.8, "{early}");
+    assert_eq!(at(&rig, 20 * ms + duration), 0.8);
+    // The same values again change nothing.
+    push(&mut rig, harder, 30 * ms);
+    assert_eq!(at(&rig, 20 * ms + duration), 0.8);
 }

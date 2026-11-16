@@ -227,6 +227,10 @@ pub struct Theme {
     pub toast_in_ms: f32,
     pub toast_out_ms: f32,
     pub toast_show_ms: f32,
+    /// The song select's info panel on another difficulty (ADR-0156): how long its bars and
+    /// colour take to move, and its texts to fade in.
+    pub song_info_transition_ms: f32,
+    pub song_info_text_fade_ms: f32,
     /// Where the columns start, as a part of the window height: the lower part of the
     /// window, as lazer's (ADR-0152).
     pub mod_panel_top: f32,
@@ -700,6 +704,8 @@ impl Theme {
             mod_column_header_height: 30.0,
             mod_column_pad: 7.0,
             mod_panel_top: 0.22,
+            song_info_transition_ms: 400.0,
+            song_info_text_fade_ms: 250.0,
             toast_width: 300.0,
             toast_height: 56.0,
             toast_strip: 5.0,
