@@ -11,6 +11,7 @@
 use std::ops::Range;
 use std::sync::Arc;
 
+use crate::marquee::TextScroll;
 use crate::menu::Rect;
 use crate::theme::Theme;
 use drag::{ListDrag, Release};
@@ -474,6 +475,8 @@ pub struct SongSelectSnapshot {
     /// The "no audio output" message takes the hints' place, as
     /// [`SongSelect::set_no_audio`] set it.
     pub no_audio: bool,
+    /// The pointer, sideways wheel and text drags for the rows' marquees (ADR-0148).
+    pub text: TextScroll,
 }
 
 /// Appends a star rating: "5.43" (ADR-0134); the pill draws the star before it as a shape,
@@ -632,6 +635,11 @@ pub struct SongSelect {
     details: Option<BeatmapDetails>,
     /// A play was refused for want of an audio output (#317).
     no_audio: bool,
+    /// What the rows' marquees take from the pointer (ADR-0148).
+    text: TextScroll,
+    /// Where the held press went down on a row: a sideways move past the drag distance
+    /// turns it into a text drag.
+    text_press: Option<[f32; 2]>,
 }
 
 impl Default for SongSelect {
@@ -674,7 +682,15 @@ impl SongSelect {
             viewport: 10.0,
             details: None,
             no_audio: false,
+            text: TextScroll::default(),
+            text_press: None,
         }
+    }
+
+    /// Adds sideways wheel `notches` for the marquees under the pointer (positive: towards
+    /// the end of a text).
+    pub fn scroll_text(&mut self, notches: f32) {
+        self.text.wheel(notches);
     }
 
     /// Sets the selected difficulty's details for the next snapshots.
@@ -977,6 +993,7 @@ impl SongSelect {
             mods: self.mods.snapshot(),
             details: self.details,
             no_audio: self.no_audio,
+            text: self.text,
         }
     }
 
@@ -1167,7 +1184,9 @@ impl SongSelect {
             }
             I::PointerMove { x, y } => {
                 self.pointer = Some((x, y));
+                self.text.pointer([x, y]);
                 moved = false;
+                self.begin_text_drag(x, y);
                 let offset = self.drag.moved(x, y, layout.scale);
                 if offset != 0.0 {
                     self.scroll += offset / layout.reference_row_height();
@@ -1178,12 +1197,16 @@ impl SongSelect {
             }
             I::PointerPress { x, y } => {
                 self.pointer = Some((x, y));
+                self.text.pointer([x, y]);
                 moved = false;
                 self.drag.press(x, y);
                 self.pressed = self.pressed_at(x, y, layout);
+                self.text_press = matches!(self.pressed, Some(Pressed::Row(_))).then_some([x, y]);
             }
             I::PointerRelease => {
                 moved = false;
+                self.text_press = None;
+                self.text.end_drag();
                 let pressed = self.pressed.take();
                 if let Some(Release::Click { .. }) = self.drag.release()
                     && let Some((x, y)) = self.pointer
@@ -1201,6 +1224,24 @@ impl SongSelect {
         self.clamp_scroll();
         self.update_hover(layout);
         action
+    }
+
+    /// A press on a row that moves sideways past the drag distance, more than it moves
+    /// along the list, drags the row's text instead of the list; the release is no click.
+    fn begin_text_drag(&mut self, x: f32, y: f32) {
+        let Some(press) = self.text_press else {
+            return;
+        };
+        let (dx, dy) = ((x - press[0]).abs(), (y - press[1]).abs());
+        if dy > drag::CLICK_DRAG_DISTANCE {
+            // The list won.
+            self.text_press = None;
+        } else if dx > drag::CLICK_DRAG_DISTANCE && dx > dy {
+            self.text_press = None;
+            self.text.start_drag(press);
+            self.drag.cancel();
+            self.pressed = None;
+        }
     }
 
     fn update_hover(&mut self, layout: &SongSelectLayout) {

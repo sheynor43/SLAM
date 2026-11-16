@@ -139,7 +139,7 @@ fn wheel_scrolls_leave_the_reserve_to_buttons() {
     let (mut sink, source) = event_ring(CAPACITY);
     let wheel = |time_ns| InputEvent {
         time_ns,
-        kind: InputKind::MouseWheel { y: 1.0 },
+        kind: InputKind::MouseWheel { x: 0.0, y: 1.0 },
     };
     // Wheel scrolls fill the ring up to the reserve and no further.
     let mut queued = 0;

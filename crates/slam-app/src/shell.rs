@@ -1309,7 +1309,9 @@ impl ShellState {
                     .pointer(self.cursor[0], self.cursor[1], &layout, now_ns);
                 false
             }
-            InputKind::MouseWheel { y } => {
+            // A horizontal wheel has no volume to change.
+            InputKind::MouseWheel { y: 0.0, .. } => false,
+            InputKind::MouseWheel { y, .. } => {
                 let amount = f64::from(y);
                 // Whole notches from a wheel, fractions from a touchpad.
                 let precise = amount.fract() != 0.0;
@@ -1656,7 +1658,7 @@ impl ShellState {
                 }
             }
             // The wheel's positive notches go away from the user, towards the list's start.
-            InputKind::MouseWheel { y } => SongSelectInput::Scroll { lines: -y },
+            InputKind::MouseWheel { y, .. } => SongSelectInput::Scroll { lines: -y },
             _ => return None,
         }))
     }
@@ -1834,6 +1836,39 @@ impl ShellState {
         }
     }
 
+    /// The sideways share of a wheel event (ADR-0148): the horizontal wheel and Shift +
+    /// the vertical wheel move the texts under the pointer, on the settings panel when it
+    /// is open and the pointer is over it, else on the song select when it is the top
+    /// screen. A sideways event does not also scroll vertically: Shift + wheel and a
+    /// purely horizontal event are consumed; a diagonal one without Shift scrolls on by
+    /// its `y`. Returns whether the event is consumed.
+    fn text_wheel(&mut self, x: f32, y: f32, now_ns: u64) -> bool {
+        let shift = self.mods().contains(Mods::SHIFT);
+        // Shift + wheel down moves towards the end, as in browsers.
+        let notches = if shift { x - y } else { x };
+        let over_panel = self.panel.as_ref().filter(|p| p.motion.is_open()).map(|p| {
+            let width = self.settings_layout.width();
+            self.cursor[0] < width + p.motion.shift(now_ns, width)
+        });
+        let song_select = matches!(self.stack.top(), AppScreen::SongSelect);
+        let target = match (over_panel, &mut self.panel) {
+            (Some(true), Some(panel)) => {
+                if notches != 0.0 {
+                    panel.screen.scroll_text(notches);
+                }
+                true
+            }
+            _ if song_select => {
+                if notches != 0.0 {
+                    self.song_select.scroll_text(notches);
+                }
+                true
+            }
+            _ => false,
+        };
+        y == 0.0 || (shift && target)
+    }
+
     pub fn handle(&mut self, events: &[InputEvent], now_ns: u64) -> Navigated {
         for event in events {
             // The shell takes window modes from the window itself (`Shell::sync_window`).
@@ -1842,6 +1877,11 @@ impl ShellState {
             }
             // Before the intro and the screens: lazer takes the volume keys first.
             if self.volume_input(event.kind, now_ns) {
+                continue;
+            }
+            if let InputKind::MouseWheel { x, y } = event.kind
+                && self.text_wheel(x, y, now_ns)
+            {
                 continue;
             }
             if self.intro_input(event.kind, now_ns) {
@@ -4085,6 +4125,7 @@ impl<B: render::Backend> Draw<ShellSnapshot> for View<B> {
                 settings,
                 panel_pose(panel.openness),
                 r.white,
+                info.wait.woke_ns,
             );
             ends[layers] = (self.shapes.len() as u32, self.text.len() as u32, false);
             layers += 1;

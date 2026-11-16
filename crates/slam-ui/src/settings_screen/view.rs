@@ -13,6 +13,7 @@ use super::{
     Conflict, KeyValue, MAX_ROWS, MouseKey, RowKind, RowSpec, RowWidget, SettingsLayout,
     SettingsScreen, SettingsSnapshot,
 };
+use crate::marquee::{Marquee, MarqueeParams, ScrollTracker, push_marquee};
 use crate::menu::Rect;
 use crate::menu::view::{Face, Frame, Line, Typesetter};
 use crate::screen::Pose;
@@ -246,6 +247,11 @@ pub struct SettingsView {
     views: Vec<RowView>,
     /// Per row: the lines of its hint, empty without one.
     hints: Vec<Vec<Line>>,
+    /// The ride of each row's name, and of each line of its hint (ADR-0148).
+    label_rides: Vec<Marquee>,
+    hint_rides: Vec<Vec<Marquee>>,
+    /// Applies the snapshot's sideways wheel and drags to the marquees.
+    scroll_tracker: ScrollTracker,
     value: Option<ValueButton>,
     keys: KeyLines,
 }
@@ -400,8 +406,16 @@ impl SettingsView {
                         .collect()
                 })
                 .collect(),
+            label_rides: vec![Marquee::default(); rows.len()],
+            hint_rides: Vec::new(),
+            scroll_tracker: ScrollTracker::default(),
             theme,
         };
+        view.hint_rides = view
+            .hints
+            .iter()
+            .map(|lines| vec![Marquee::default(); lines.len()])
+            .collect();
         view.lay_out();
         view
     }
@@ -440,6 +454,49 @@ impl SettingsView {
             .map(|line| line.layout.width())
     }
 
+    /// Row `row`'s name ride, read-only. For tests.
+    #[doc(hidden)]
+    pub fn label_ride(&self, row: usize) -> Option<&Marquee> {
+        self.label_rides.get(row)
+    }
+
+    /// The ride of line `line` of row `row`'s hint, read-only. For tests.
+    #[doc(hidden)]
+    pub fn hint_ride(&self, row: usize, line: usize) -> Option<&Marquee> {
+        self.hint_rides.get(row)?.get(line)
+    }
+
+    /// The rides of the dropdown at `row` (its box's, then its options'), read-only. For
+    /// tests.
+    #[doc(hidden)]
+    pub fn dropdown_rides(&self, row: usize) -> Option<Vec<Marquee>> {
+        match self.views.get(row)? {
+            RowView::Dropdown(view) => Some(view.marquees().copied().collect()),
+            _ => None,
+        }
+    }
+
+    /// Forgets where the marquees were drawn, but for the dropdown of row `keep`: a text
+    /// not drawn again takes no input.
+    fn clear_ride_windows(&mut self, keep: Option<usize>) {
+        for ride in self
+            .label_rides
+            .iter_mut()
+            .chain(self.hint_rides.iter_mut().flatten())
+        {
+            ride.place(Rect::default());
+        }
+        for (i, view) in self.views.iter_mut().enumerate() {
+            if let RowView::Dropdown(view) = view
+                && keep != Some(i)
+            {
+                for ride in view.marquees_mut() {
+                    ride.place(Rect::default());
+                }
+            }
+        }
+    }
+
     fn lay_out(&mut self) {
         let Frame { width, height } = self.frame;
         self.layout = SettingsLayout::new(width, height, &self.theme);
@@ -447,25 +504,12 @@ impl SettingsView {
         let text = self.theme.widget_text_size * scale;
         let pad = 2.0 * self.theme.widget_pad * scale;
         // In the panel a long name may not fit its column: it shrinks, down to a floor, and
-        // past that ends with an ellipsis.
+        // past that it rides (ADR-0148).
         let label = self.layout.label(0).width - pad;
         let caption = self.theme.caption_face(scale);
-        let mut probe = Line::new(&ELLIPSIS.to_string());
-        self.type_setter
-            .lay_out_face(&mut probe, caption.scaled(MIN_FIT));
-        let ellipsis = probe.layout.width();
         for (line, whole) in self.labels.iter_mut().zip(&self.label_texts) {
             line.text.clone_from(whole);
             lay_out_fitted_face(&mut self.type_setter, line, caption, label);
-            if line.layout.width() > label {
-                crate::song_select::view::fit_face(
-                    &mut self.type_setter,
-                    line,
-                    caption.scaled(MIN_FIT),
-                    label,
-                    ellipsis,
-                );
-            }
         }
         let tab = self.layout.tabs[0].width - pad;
         for line in &mut self.tabs {
@@ -636,6 +680,7 @@ impl SettingsView {
         snapshot: &SettingsSnapshot,
         pose: Pose,
         white: AtlasRegion,
+        now_ns: u64,
     ) {
         let frame = Frame { width, height };
         if frame != self.frame {
@@ -668,6 +713,34 @@ impl SettingsView {
             .scrolled(snapshot.scroll);
         let (theme, opacity) = (self.theme, pose.opacity);
         let pad = theme.widget_pad * layout.scale;
+        let params = MarqueeParams::new(&theme, layout.scale);
+        // The marquees take the sideways wheel and drags first, by the windows of the last
+        // frame; then the windows are cleared for this frame's texts to set. An open list
+        // covers the rows: only its own texts take input then.
+        let open = snapshot.widgets[..snapshot.len.min(MAX_ROWS)]
+            .iter()
+            .position(|w| matches!(w, RowWidget::Dropdown(d) if d.is_open()));
+        if open.is_some() {
+            self.clear_ride_windows(open);
+        }
+        self.scroll_tracker.apply(
+            &snapshot.text,
+            now_ns,
+            &params,
+            self.label_rides
+                .iter_mut()
+                .chain(self.hint_rides.iter_mut().flatten())
+                .chain(
+                    self.views
+                        .iter_mut()
+                        .flat_map(|view| match view {
+                            RowView::Dropdown(view) => Some(view.marquees_mut()),
+                            _ => None,
+                        })
+                        .flatten(),
+                ),
+        );
+        self.clear_ride_windows(None);
 
         let search = layout.search();
         let field = faded(theme.button_fill, opacity);
@@ -815,13 +888,16 @@ impl SettingsView {
             } else {
                 theme.text
             };
-            push_left(
+            push_marquee(
                 text,
                 &self.labels[i],
                 &label,
                 pad,
                 faded(label_colour, opacity),
                 glyphs,
+                &mut self.label_rides[i],
+                &params,
+                now_ns,
             );
             let widget_opacity = if disabled {
                 opacity * DISABLED_OPACITY
@@ -900,7 +976,9 @@ impl SettingsView {
                     }
                     let bounds = layout.dropdown_at(slot, dropdown.count());
                     view.set_theme(&self.theme);
-                    view.push(shapes, text, glyphs, dropdown, &bounds, opacity, white);
+                    view.push(
+                        shapes, text, glyphs, dropdown, &bounds, opacity, white, now_ns,
+                    );
                 }
                 _ => {}
             }
@@ -909,19 +987,30 @@ impl SettingsView {
                 let lines = &self.hints[i];
                 let total: f32 = lines.iter().map(|l| l.layout.height()).sum();
                 let mut y = widget.y + (widget.height - total) / 2.0;
-                for line in lines {
+                // A toggle keeps the right end of the column.
+                let room = match self.views[i] {
+                    RowView::Toggle(_) => {
+                        widget.width - (theme.widget_toggle_width + theme.widget_pad) * layout.scale
+                    }
+                    _ => widget.width,
+                };
+                for (line, ride) in lines.iter().zip(&mut self.hint_rides[i]) {
                     let rect = Rect {
                         y,
                         height: line.layout.height(),
+                        width: room.max(0.0),
                         ..widget
                     };
-                    push_left(
+                    push_marquee(
                         text,
                         line,
                         &rect,
                         pad,
                         faded(theme.disabled_text, opacity),
                         glyphs,
+                        ride,
+                        &params,
+                        now_ns,
                     );
                     y += rect.height;
                 }
@@ -943,7 +1032,9 @@ impl SettingsView {
         {
             let bounds = layout.dropdown_at(usize::from(snapshot.slots[i]), dropdown.count());
             view.set_theme(&self.theme);
-            view.push(shapes, text, glyphs, dropdown, &bounds, opacity, white);
+            view.push(
+                shapes, text, glyphs, dropdown, &bounds, opacity, white, now_ns,
+            );
         }
     }
 

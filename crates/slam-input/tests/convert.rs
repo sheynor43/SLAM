@@ -145,10 +145,15 @@ fn motion_keeps_window_coordinates() {
 }
 
 fn wheel(timestamp: u64, y: f32) -> SDL_Event {
+    wheel_xy(timestamp, 0.0, y)
+}
+
+fn wheel_xy(timestamp: u64, x: f32, y: f32) -> SDL_Event {
     SDL_Event {
         wheel: SDL_MouseWheelEvent {
             r#type: SDL_EVENT_MOUSE_WHEEL,
             timestamp,
+            x,
             y,
             ..Default::default()
         },
@@ -159,14 +164,26 @@ fn wheel(timestamp: u64, y: f32) -> SDL_Event {
 fn wheel_keeps_vertical_notches() {
     assert_eq!(
         convert(&wheel(9, -1.0)),
-        Some((9, InputKind::MouseWheel { y: -1.0 }))
+        Some((9, InputKind::MouseWheel { x: 0.0, y: -1.0 }))
     );
     assert_eq!(
         convert(&wheel(9, 0.25)),
-        Some((9, InputKind::MouseWheel { y: 0.25 }))
+        Some((9, InputKind::MouseWheel { x: 0.0, y: 0.25 }))
     );
-    // Horizontal-only scrolls carry no vertical motion.
+    // A wheel event without motion carries nothing.
     assert_eq!(convert(&wheel(9, 0.0)), None);
+}
+
+#[test]
+fn wheel_keeps_horizontal_notches() {
+    assert_eq!(
+        convert(&wheel_xy(4, 1.5, 0.0)),
+        Some((4, InputKind::MouseWheel { x: 1.5, y: 0.0 }))
+    );
+    assert_eq!(
+        convert(&wheel_xy(4, -1.0, 2.0)),
+        Some((4, InputKind::MouseWheel { x: -1.0, y: 2.0 }))
+    );
 }
 
 #[test]

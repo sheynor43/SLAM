@@ -1501,3 +1501,79 @@ fn a_long_hint_beside_a_toggle_stays_left_of_it() {
         toggle.track.x
     );
 }
+
+#[test]
+fn a_long_label_is_not_cut() {
+    use slam_text::FontRegistry;
+    let registry = Arc::new(FontRegistry::with_builtin());
+    let long = "A setting name that is far too long for the label column of the panel at any size";
+    let labels = SettingsLabels {
+        sections: vec!["A".to_owned()],
+        rows: vec![RowLabels {
+            label: long.to_owned(),
+            ..RowLabels::default()
+        }],
+        ..SettingsLabels::default()
+    };
+    let mut view = SettingsView::new(registry, theme(), &[slider(0, 1.0)], &labels);
+    view.lay_out_for_panel(1280.0, 720.0);
+    let (shown, width) = view.shown_label(0).unwrap();
+    assert_eq!(shown, long);
+    // It overflows its column: the view rides it.
+    let panel = super::panel::panel_width(1280.0, 720.0, &theme());
+    let layout = SettingsLayout::new(panel, 720.0, &theme());
+    assert!(width > layout.label(0).width);
+}
+
+#[test]
+fn a_sideways_drag_over_a_label_drags_its_text_and_acts_on_nothing() {
+    let mut s = screen();
+    let l = layout();
+    let label = l.label(s.slot(0));
+    let (x, y) = (label.x + 20.0, label.y + label.height / 2.0);
+    assert_eq!(input(&mut s, SettingsInput::PointerPress { x, y }), None);
+    assert_eq!(s.snapshot().text.drag, None);
+    // A small move is no drag.
+    input(&mut s, SettingsInput::PointerMove { x: x + 5.0, y });
+    assert_eq!(s.snapshot().text.drag, None);
+    input(
+        &mut s,
+        SettingsInput::PointerMove {
+            x: x + 30.0,
+            y: y + 2.0,
+        },
+    );
+    let drag = s.snapshot().text.drag.expect("a text drag");
+    assert_eq!((drag.press, drag.dx), ([x, y], 30.0));
+    assert_eq!(s.snapshot().text.pointer, [x + 30.0, y + 2.0]);
+    assert_eq!(input(&mut s, SettingsInput::PointerRelease), None);
+    assert_eq!(s.snapshot().text.drag, None);
+    assert!(matches!(s.widget(0), Some(RowWidget::Slider(w)) if w.value() == 50.0));
+}
+
+#[test]
+fn a_vertical_move_from_a_label_starts_no_text_drag() {
+    let mut s = screen();
+    let l = layout();
+    let label = l.label(s.slot(0));
+    let (x, y) = (label.x + 20.0, label.y + label.height / 2.0);
+    input(&mut s, SettingsInput::PointerPress { x, y });
+    input(&mut s, SettingsInput::PointerMove { x, y: y + 15.0 });
+    input(
+        &mut s,
+        SettingsInput::PointerMove {
+            x: x + 40.0,
+            y: y + 15.0,
+        },
+    );
+    assert_eq!(s.snapshot().text.drag, None);
+    input(&mut s, SettingsInput::PointerRelease);
+}
+
+#[test]
+fn the_sideways_wheel_reaches_the_snapshot() {
+    let mut s = screen();
+    s.scroll_text(2.0);
+    s.scroll_text(-0.5);
+    assert_eq!(s.snapshot().text.wheel, 1.5);
+}

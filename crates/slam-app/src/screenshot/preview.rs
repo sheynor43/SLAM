@@ -304,6 +304,7 @@ impl State {
                     &screen.snapshot(),
                     Pose::SHOWN,
                     white,
+                    0,
                 );
             }
             Scene::Fps => {

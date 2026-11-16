@@ -36,9 +36,11 @@ pub enum InputKind {
         x: f32,
         y: f32,
     },
-    /// Vertical wheel scroll in notches, positive away from the user, as the OS reports it
-    /// (natural scrolling already applied). Fractional on precise touchpads.
+    /// Wheel scroll in notches, as the OS reports it (natural scrolling already applied),
+    /// fractional on precise touchpads: `y` vertical, positive away from the user; `x`
+    /// horizontal (tilt wheel, two-finger swipe), positive to the right (ADR-0148).
     MouseWheel {
+        x: f32,
         y: f32,
     },
     /// Alt+Enter or F11 switched the window to this mode (ADR-0070). The key press itself

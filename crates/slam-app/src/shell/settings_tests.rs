@@ -1463,7 +1463,7 @@ fn the_volume_overlay_moves_the_open_settings_sliders_and_edits() {
     let alt = key(KEY_LEFT_ALT);
     let wheel = |y| InputEvent {
         time_ns: 0,
-        kind: InputKind::MouseWheel { y },
+        kind: InputKind::MouseWheel { x: 0.0, y },
     };
     s.tick(LATER, &[alt, wheel(1.0)], &mut snap);
     s.tick(LATER + 300_000_000, &[wheel(-1.0)], &mut snap);
@@ -1489,7 +1489,7 @@ fn the_volume_overlay_keeps_the_screens_edits_of_other_volumes() {
     s.editing.as_mut().unwrap().audio.master_volume = 0.5;
     let wheel = |y| InputEvent {
         time_ns: 0,
-        kind: InputKind::MouseWheel { y },
+        kind: InputKind::MouseWheel { x: 0.0, y },
     };
     s.tick(LATER, &[key(KEY_LEFT_ALT), wheel(1.0)], &mut snap);
     s.tick(LATER + 300_000_000, &[wheel(1.0)], &mut snap);
@@ -1497,4 +1497,34 @@ fn the_volume_overlay_keeps_the_screens_edits_of_other_volumes() {
     assert_eq!(edited(&s).audio.master_volume, 0.51);
     assert_eq!(edited(&s).audio.hitsound_volume, 0.3);
     assert_eq!(s.settings().audio.hitsound_volume, 1.0);
+}
+
+#[test]
+fn the_sideways_wheel_over_the_panel_moves_its_texts_and_not_the_song_select() {
+    let mut s = state();
+    let mut snap = ShellSnapshot::default();
+    opened(&mut s, &mut snap);
+    let wheel = |x, y| InputEvent {
+        time_ns: 0,
+        kind: InputKind::MouseWheel { x, y },
+    };
+    let shift = |down| InputEvent {
+        time_ns: 0,
+        kind: InputKind::Key {
+            scancode: KEY_LEFT_SHIFT,
+            down,
+        },
+    };
+    // The cursor starts at the window's corner, over the panel.
+    s.tick(
+        LATER,
+        &[wheel(1.0, 0.0), shift(true), wheel(0.0, -1.0)],
+        &mut snap,
+    );
+    assert_eq!(settings_screen(&s).snapshot().text.wheel, 2.0);
+    assert_eq!(settings_screen(&s).scroll(), 0.0);
+    // Shift + wheel is consumed: no scroll of the list. A plain one scrolls it.
+    s.tick(LATER, &[shift(false), wheel(0.0, -1.0)], &mut snap);
+    assert_eq!(settings_screen(&s).snapshot().text.wheel, 2.0);
+    assert!(settings_screen(&s).scroll() > 0.0);
 }

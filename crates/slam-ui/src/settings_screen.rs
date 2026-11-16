@@ -8,6 +8,7 @@
 
 use std::sync::Arc;
 
+use crate::marquee::TextScroll;
 use crate::menu::Rect;
 use crate::song_select::filter::with_term_pairs;
 use crate::song_select::{SearchQuery, ease_scroll};
@@ -508,6 +509,8 @@ pub struct SettingsSnapshot {
     pub searching: bool,
     /// Lines scrolled off the top as shown, eased ([`SettingsLayout::scrolled`]).
     pub scroll: f32,
+    /// The pointer, sideways wheel and text drags for the marquees (ADR-0148).
+    pub text: TextScroll,
 }
 
 /// The screen's state on the update thread.
@@ -544,6 +547,11 @@ pub struct SettingsScreen {
     /// The scroll as shown (ADR-0121's easing).
     shown: f32,
     shown_ns: u64,
+    /// What the marquees take from the pointer (ADR-0148).
+    text: TextScroll,
+    /// Where the held press went down on a row's name: a sideways move past the drag
+    /// distance turns it into a text drag.
+    text_press: Option<[f32; 2]>,
 }
 
 impl SettingsScreen {
@@ -600,6 +608,8 @@ impl SettingsScreen {
             scroll: 0.0,
             shown: 0.0,
             shown_ns: 0,
+            text: TextScroll::default(),
+            text_press: None,
         };
         screen.recompute_slots();
         screen.focus = screen.first_shown().unwrap_or(0);
@@ -677,7 +687,14 @@ impl SettingsScreen {
             search: self.search,
             searching: self.searching(),
             scroll: self.shown,
+            text: self.text,
         }
+    }
+
+    /// Adds sideways wheel `notches` for the marquees under the pointer (positive: towards
+    /// the end of a text).
+    pub fn scroll_text(&mut self, notches: f32) {
+        self.text.wheel(notches);
     }
 
     /// Gives the search the text it looks in for each row, lowercased (a row without one
@@ -1240,7 +1257,9 @@ impl SettingsScreen {
         layout: &SettingsLayout,
     ) -> Option<SettingsAction> {
         self.visible_lines = layout.visible_rows();
-        let action = self.input_scrolled(input, &layout.scrolled(self.shown));
+        let layout = layout.scrolled(self.shown);
+        self.track_text(input, &layout);
+        let action = self.input_scrolled(input, &layout);
         if matches!(
             input,
             SettingsInput::Up
@@ -1255,6 +1274,50 @@ impl SettingsScreen {
         }
         self.scroll = self.scroll.clamp(0.0, self.max_scroll());
         action
+    }
+
+    /// Keeps the marquees' view of the pointer: where it is, and a press on a row's name
+    /// that moves sideways past the drag distance, more than it moves along the list,
+    /// becomes a text drag. Rows whose widget acts on the press itself (a toggle takes the
+    /// whole row, a button too) do not start one.
+    fn track_text(&mut self, input: SettingsInput, layout: &SettingsLayout) {
+        use crate::song_select::drag::CLICK_DRAG_DISTANCE as DISTANCE;
+        match input {
+            SettingsInput::PointerMove { x, y } => {
+                self.text.pointer([x, y]);
+                let Some(press) = self.text_press else {
+                    return;
+                };
+                let (dx, dy) = ((x - press[0]).abs(), (y - press[1]).abs());
+                if dy > DISTANCE {
+                    self.text_press = None;
+                } else if dx > DISTANCE && dx > dy {
+                    self.text_press = None;
+                    self.text.start_drag(press);
+                }
+            }
+            SettingsInput::PointerPress { x, y } => {
+                self.text.pointer([x, y]);
+                let free = self.conflict.is_none()
+                    && self.listening_row().is_none()
+                    && self.open_dropdown().is_none();
+                self.text_press = self
+                    .row_at(layout, x, y)
+                    .filter(|row| {
+                        free && layout.label(self.slot(*row)).contains(x, y)
+                            && !matches!(
+                                self.widgets[*row],
+                                RowWidget::Toggle(_) | RowWidget::Button
+                            )
+                    })
+                    .map(|_| [x, y]);
+            }
+            SettingsInput::PointerRelease => {
+                self.text_press = None;
+                self.text.end_drag();
+            }
+            _ => {}
+        }
     }
 
     fn input_scrolled(

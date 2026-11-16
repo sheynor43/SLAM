@@ -197,6 +197,13 @@ mod slider_tests {
         assert_eq!(s_fraction(), 0.5);
     }
 
+    #[test]
+    fn the_value_text_keeps_off_the_right_edge() {
+        let l = layout();
+        assert!(l.value_pad >= theme().widget_pad);
+        assert_eq!(l.value.x + l.value.width, BOUNDS.x + BOUNDS.width);
+    }
+
     fn s_fraction() -> f32 {
         Slider::new(0.0, 10.0, 1.0, 5.0).fraction()
     }

@@ -52,10 +52,16 @@ pub fn convert(event: &SDL_Event) -> Option<(u64, InputKind)> {
             ))
         } else if ty == SDL_EVENT_MOUSE_WHEEL {
             let wheel = &event.wheel;
-            if wheel.y == 0.0 {
+            if wheel.x == 0.0 && wheel.y == 0.0 {
                 return None;
             }
-            Some((wheel.timestamp, InputKind::MouseWheel { y: wheel.y }))
+            Some((
+                wheel.timestamp,
+                InputKind::MouseWheel {
+                    x: wheel.x,
+                    y: wheel.y,
+                },
+            ))
         } else {
             None
         }

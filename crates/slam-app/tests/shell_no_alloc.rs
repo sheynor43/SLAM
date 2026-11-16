@@ -164,9 +164,22 @@ fn song_select_ticks_and_new_lists_do_not_allocate() {
         .into_iter()
         .map(key)
         .chain([
-            event(InputKind::MouseWheel { y: -2.0 }),
+            event(InputKind::MouseWheel { x: 0.0, y: -2.0 }),
             event(InputKind::MouseMove { x: 900.0, y: 300.0 }),
-            event(InputKind::MouseWheel { y: 1.0 }),
+            event(InputKind::MouseWheel { x: 0.0, y: 1.0 }),
+            // Sideways: the horizontal wheel, Shift + wheel (225 is left Shift), and a
+            // diagonal one.
+            event(InputKind::MouseWheel { x: 1.5, y: 0.0 }),
+            event(InputKind::Key {
+                scancode: 225,
+                down: true,
+            }),
+            event(InputKind::MouseWheel { x: 0.0, y: -1.0 }),
+            event(InputKind::Key {
+                scancode: 225,
+                down: false,
+            }),
+            event(InputKind::MouseWheel { x: -0.5, y: 1.0 }),
         ])
         .collect();
     assert_no_alloc(|| {
@@ -193,14 +206,14 @@ fn song_select_ticks_and_new_lists_do_not_allocate() {
     };
     let volume: Vec<InputEvent> = [
         alt(true),
-        event(InputKind::MouseWheel { y: 1.0 }),
-        event(InputKind::MouseWheel { y: -1.0 }),
+        event(InputKind::MouseWheel { x: 0.0, y: 1.0 }),
+        event(InputKind::MouseWheel { x: 0.0, y: -1.0 }),
         key(79),
         key(81),
         event(InputKind::KeyRepeat { scancode: 82 }),
         alt(false),
         event(InputKind::MouseMove { x: 40.0, y: 360.0 }),
-        event(InputKind::MouseWheel { y: 0.5 }),
+        event(InputKind::MouseWheel { x: 0.0, y: 0.5 }),
     ]
     .into();
     assert_no_alloc(|| {
@@ -258,7 +271,7 @@ fn song_select_ticks_and_new_lists_do_not_allocate() {
     let settings: Vec<InputEvent> = [58, 9, 43, 79, 79, 81, 44, 76, 82, 80, 43, 43, 41, 41, 42]
         .into_iter()
         .map(key)
-        .chain([event(InputKind::MouseWheel { y: 1.0 })])
+        .chain([event(InputKind::MouseWheel { x: 0.0, y: 1.0 })])
         .collect();
     state.tick(3 * TRANSITION_NS + 300, &settings, &mut snapshot);
     assert_no_alloc(|| {
