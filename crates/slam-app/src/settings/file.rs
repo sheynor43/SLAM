@@ -11,6 +11,7 @@ use slam_play::input::{Bindings, MAX_BINDINGS};
 use slam_ui::cursor::CursorStyle;
 use slam_ui::i18n::BUILTIN_LANGUAGES;
 use slam_ui::screen::TransitionStyle;
+use slam_ui::song_select::DifficultyInfo;
 use slam_ui::theme::{ColourScheme, UI_SCALE_RANGE};
 use slam_ui::volume::{Edge, MeterStyle};
 use toml::{Table, Value};
@@ -812,6 +813,21 @@ fn from_table(mut table: Table) -> Loaded {
         let mut height = f64::from(*slot);
         cx.float(&mut song_select, "song_select", key, &mut height, range);
         *slot = height.round() as f32;
+    }
+    let mut difficulty_info: Option<String> = None;
+    cx.opt(
+        &mut song_select,
+        "song_select",
+        "difficulty_info",
+        &mut difficulty_info,
+    );
+    if let Some(name) = difficulty_info {
+        match DifficultyInfo::from_name(&name) {
+            Some(info) => settings.song_select.difficulty_info = info,
+            None => cx.warn(format!(
+                "song_select.difficulty_info: unknown value \"{name}\", using the default"
+            )),
+        }
     }
     let mut thumbnails: Option<String> = None;
     cx.opt(

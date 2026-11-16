@@ -15,6 +15,7 @@ use slam_play::input::{Binding, Bindings, Input, MAX_BINDINGS};
 use slam_play::{BackgroundSettings, FpsCorner, FpsMode};
 use slam_ui::cursor::CursorStyle;
 use slam_ui::screen::TransitionStyle;
+use slam_ui::song_select::DifficultyInfo;
 use slam_ui::theme::ColourScheme;
 use slam_ui::volume::{Edge, MeterStyle};
 
@@ -213,6 +214,13 @@ fn serialize_volume_meter<S: Serializer>(
     serializer: S,
 ) -> Result<S::Ok, S::Error> {
     serializer.serialize_str(style.name())
+}
+
+fn serialize_difficulty_info<S: Serializer>(
+    info: &DifficultyInfo,
+    serializer: S,
+) -> Result<S::Ok, S::Error> {
+    serializer.serialize_str(info.name())
 }
 
 /// Writes the skew as a whole number of degrees.
@@ -743,6 +751,9 @@ pub struct SongSelect {
     pub set_height: f32,
     /// Height of a difficulty row, 30..=90 (ADR-0149: lazer's 45).
     pub difficulty_height: f32,
+    /// What a difficulty row shows beside its name (ADR-0151).
+    #[serde(serialize_with = "serialize_difficulty_info")]
+    pub difficulty_info: DifficultyInfo,
     /// Height of the beatmap thumbnails in the song list (ADR-0127).
     pub thumbnails: Thumbnails,
 }
@@ -753,6 +764,7 @@ impl Default for SongSelect {
             background_dim: 0.7,
             set_height: 72.0,
             difficulty_height: 45.0,
+            difficulty_info: DifficultyInfo::Stars,
             thumbnails: Thumbnails::default(),
         }
     }

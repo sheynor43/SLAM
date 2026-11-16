@@ -154,6 +154,9 @@ pub struct Theme {
     pub song_set_height: f32,
     /// Height of a difficulty row's plate (ADR-0149: lazer's 45).
     pub song_difficulty_height: f32,
+    /// What a difficulty row shows beside its name; the setting
+    /// `song_select.difficulty_info` (ADR-0151).
+    pub song_difficulty_info: crate::song_select::DifficultyInfo,
     /// How far right a set row that is not selected starts (ADR-0149: lazer's 100).
     pub song_set_shift: f32,
     /// How far right a difficulty row that is not selected starts (ADR-0149: lazer's 50).
@@ -619,6 +622,7 @@ impl Theme {
             song_margin: 24.0,
             song_set_height: 72.0,
             song_difficulty_height: 45.0,
+            song_difficulty_info: crate::song_select::DifficultyInfo::Stars,
             song_set_shift: 100.0,
             song_difficulty_shift: 50.0,
             song_shift_ms: 400.0,
