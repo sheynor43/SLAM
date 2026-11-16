@@ -2,25 +2,30 @@
 
 ## English
 
-### What's new in 0.1.2
-**Fixed: SLAM did not start on Windows.** 0.1.1 showed a black window for a second and closed: the game ran out of the main thread's stack while starting, which on Windows is eight times smaller than on Linux. Fixed.
+### What's new in 0.1.3
+**Mods**
+- New mod select panel in lazer's style: columns by mod type in the lower part of the screen, each mod with its name and description; the song list stays visible behind it.
+- **Autoplay**, **Relax** and **Autopilot**. Autoplay moves the cursor smoothly from object to object, as stable does. Autoplay plays keep neither a replay nor a score.
+- Mod hotkeys can work as in lazer (by place in the column) or as in stable (a letter per mod: Q Easy, W No Fail, E Half Time, A Hard Rock, S Sudden Death, D Double Time, F Hidden, Z Relax, V Autoplay; press again for Daycore, Perfect, Nightcore or Traceable, Shift goes back): **Settings → Gameplay → Mod hotkeys**.
 
-**When something goes wrong**
-- SLAM now keeps a log of the last five runs in the `logs` folder (see "Reporting a bug" below), so there is no need to run it from a terminal to report a problem.
-- If SLAM stops with an error, a window shows the error and where the log is.
+**Song select**
+- Difficulty rows show a star counter, the star rating and the maximum pp with the selected mods (**Settings → Gameplay → Difficulty row shows**).
+- Set and difficulty rows look and move as in lazer: their heights can be set, the selected row is centred.
+- The info panel at the top left changes smoothly to another difficulty.
+- Long names that do not fit scroll back and forth.
 
-**Skins**
-- The skin's countdown before the first note (`ready`, `count3`…`go` with their sounds), warning arrows before a break ends and `section-pass`/`section-fail` in breaks.
-- The skip button can be clicked with the mouse or pressed with the gameplay keys while the cursor is over it.
-- Gameplay settings to turn the arrows, the countdown and its sounds off, and to choose what breaks show: the skin's pass/fail, the time left as in lazer, SLAM's own countdown or nothing.
+**Interface**
+- A volume overlay: Alt + mouse wheel anywhere, Alt+↑/↓, Ctrl+M to mute; its style and screen edge are in the settings.
+- A new interface font with Cyrillic, Onest; smaller captions and hints.
+- After a replay is saved, a notification appears; click it to show the file.
 
 **Known limitations**
 - Hot-reloading skins, skin profiles, `.osk` import and choosing HUD layouts in the settings are not done yet.
 - The skin's score and accuracy sit 10–13 px further right than in lazer and stable at 1920×1080.
-- The countdown's timing follows the osu! wiki and has not been compared with stable yet.
 - Search keys `star`, `bpm`, `length`, `divisor`, `status` and dates are accepted but do not filter yet.
 - Spinners follow lazer's rules, not stable's.
-- The new interface effects have not been checked on Direct3D 11 yet; if something looks wrong, try OpenGL.
+- With Autoplay or Relax the key overlay counts your own keys, not the game's presses.
+- The new interface has not been checked on Direct3D 11 yet; if something looks wrong, try OpenGL.
 
 ### Download
 - **Windows 10+ x64:** `SLAM-…-windows-x64.zip`
@@ -62,25 +67,30 @@ The quickest way is **Settings → Feedback**: it opens a form with the version 
 
 ## Русский
 
-### Что нового в 0.1.2
-**Исправлено: SLAM не запускался на Windows.** 0.1.1 на секунду показывал чёрное окно и закрывался: при запуске игре не хватало стека главного потока, а на Windows он в восемь раз меньше, чем на Linux. Исправлено.
+### Что нового в 0.1.3
+**Моды**
+- Новая панель модов в стиле лазера: колонки по типам модов в нижней части экрана, у каждого мода название и описание; список карт остаётся виден за ней.
+- **Autoplay**, **Relax** и **Autopilot**. Autoplay плавно ведёт курсор от объекта к объекту, как в stable. Игры с Autoplay не сохраняют ни реплей, ни рекорд.
+- Горячие клавиши модов работают как в лазере (по месту в колонке) или как в stable (у мода своя буква: Q Easy, W No Fail, E Half Time, A Hard Rock, S Sudden Death, D Double Time, F Hidden, Z Relax, V Autoplay; повторное нажатие — Daycore, Perfect, Nightcore или Traceable, Shift — назад): **Настройки → Игра → Клавиши модов**.
 
-**Если что-то пошло не так**
-- SLAM ведёт лог пяти последних запусков в папке `logs` (см. «Как сообщить об ошибке» ниже): запускать игру из терминала, чтобы сообщить о проблеме, больше не нужно.
-- Если SLAM остановился с ошибкой, окно показывает ошибку и путь к логу.
+**Выбор песни**
+- В строке сложности — счётчик звёзд, звёзды и максимум pp с выбранными модами (**Настройки → Игра → В строке сложности**).
+- Строки сетов и сложностей выглядят и двигаются как в лазере: их высоту можно настроить, выбранная строка встаёт по центру.
+- Панель сведений слева вверху плавно меняется при смене сложности.
+- Длинные названия, которые не помещаются, прокручиваются туда-обратно.
 
-**Скины**
-- Отсчёт скина перед первой нотой (`ready`, `count3`…`go` со звуками), стрелки-предупреждения перед концом перерыва и `section-pass`/`section-fail` в перерывах.
-- Кнопку пропуска можно нажать мышью или игровыми клавишами, когда курсор над ней.
-- В настройках игры: выключатели стрелок, отсчёта и его звуков и выбор, что показывать в перерывах: pass/fail скина, оставшееся время как в лазере, отсчёт SLAM или ничего.
+**Интерфейс**
+- Оверлей громкости: Alt + колесо мыши везде, Alt+↑/↓, Ctrl+M — выключить звук; вид и край экрана — в настройках.
+- Новый шрифт интерфейса с кириллицей, Onest; подписи и подсказки мельче.
+- После сохранения реплея появляется уведомление; по клику открывается файл.
 
 **Известные ограничения**
 - Горячей перезагрузки скинов, профилей скина, импорта `.osk` и выбора раскладки HUD в настройках пока нет.
 - Счёт и точность скина при 1920×1080 стоят на 10–13 px правее, чем в лазере и stable.
-- Тайминг отсчёта взят из wiki osu! и ещё не сверен со stable.
 - Ключи поиска `star`, `bpm`, `length`, `divisor`, `status` и даты принимаются, но пока не фильтруют.
 - Спиннеры работают по правилам лазера, а не stable.
-- Новые эффекты интерфейса ещё не проверены на Direct3D 11; если что-то выглядит не так, попробуйте OpenGL.
+- С Autoplay и Relax оверлей клавиш считает ваши клавиши, а не нажатия игры.
+- Новый интерфейс ещё не проверен на Direct3D 11; если что-то выглядит не так, попробуйте OpenGL.
 
 ### Скачать
 - **Windows 10+ x64:** `SLAM-…-windows-x64.zip`
