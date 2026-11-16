@@ -685,6 +685,10 @@ impl SongSelectView {
     /// `shapes` (tinting `white`, an opaque white image) and texts into `text` (drawn with
     /// the MSDF shader). Allocation-free while the same rows are in view; see the module
     /// docs.
+    ///
+    /// Returns where the mod select panel starts in `shapes` and `text` when it is drawn:
+    /// the caller draws from there as a layer of its own, so the list stays seen under the
+    /// panel and its texts do not cover the columns (ADR-0152).
     #[allow(clippy::too_many_arguments)]
     pub fn push(
         &mut self,
@@ -697,7 +701,7 @@ impl SongSelectView {
         pose: Pose,
         white: AtlasRegion,
         thumbs: Thumbs<'_>,
-    ) {
+    ) -> Option<(u32, u32)> {
         let frame = Frame { width, height };
         if frame != self.frame {
             self.frame = frame;
@@ -732,9 +736,6 @@ impl SongSelectView {
         let last_delay = shown_columns.saturating_sub(1) as f32 * self.theme.mod_column_stagger_ms;
         let panel_back = self.mods_slide.visibility(now, 0.0, &self.theme);
         let panel_columns = self.mods_slide.visibility(now, last_delay, &self.theme) > 0.0;
-        let panel_full = snapshot.mods.open
-            && panel_back >= 1.0
-            && self.mods_slide.visibility(now, last_delay, &self.theme) >= 1.0;
         self.info.refresh(
             &mut self.type_setter,
             &self.theme,
@@ -806,10 +807,9 @@ impl SongSelectView {
             );
         };
 
-        // The list fades out under the mod select panel as it slides in (ADR-0152); fully
-        // open, the panel is all there is.
-        if !panel_full {
-            layer.set(1.0 - panel_back);
+        // The list stays under the mod select panel, dimmed by its backdrop (ADR-0152).
+        {
+            layer.set(1.0);
             // Everything on the panel leans with it (ADR-0121).
             let lean = |x: f32, centre_y: f32| x + layout.lean_x(centre_y);
             let leaned = |r: &Rect| Rect {
@@ -1183,6 +1183,8 @@ impl SongSelectView {
                     shape_target.borrow_mut().push_shape(&shape);
                 }
             }
+            // The hint line gives way to the mod panel's own (ADR-0152).
+            layer.set(1.0 - panel_back);
             // The refused play's reason stands out from the hints it replaces.
             let (hint, colour) = if snapshot.no_audio {
                 (&self.no_audio, theme.text)
@@ -1206,7 +1208,14 @@ impl SongSelectView {
                 );
             }
         }
-        if panel_back > 0.0 || panel_columns {
+        let panel = panel_back > 0.0 || panel_columns;
+        let split = panel.then(|| {
+            (
+                shape_target.borrow().len() as u32,
+                target.borrow().0.len() as u32,
+            )
+        });
+        if panel {
             // The backdrop, title, hint and settings fade; the columns slide (ADR-0152).
             layer.set(panel_back);
             let full = Rect {
@@ -1294,7 +1303,8 @@ impl SongSelectView {
                     };
                     let (x, y) = centred(line, &switch);
                     if on {
-                        rect(&switch, faded(tint, dim), Look::Round);
+                        // Leaning with the tile, as lazer's sheared switch.
+                        rect(&switch, faded(tint, dim), Look::Strip);
                         let ink = Color {
                             a: 1.0,
                             ..theme.background
@@ -1496,6 +1506,7 @@ impl SongSelectView {
                 }
             }
         }
+        split
     }
 
     /// Lays the query out unless it already shows it.

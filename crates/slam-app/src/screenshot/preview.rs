@@ -24,7 +24,7 @@ use slam_ui::song_select::{
 };
 use slam_ui::theme::Theme;
 
-use super::intro::{Gl, Gpu, draw_layer, settle, with_headless_gl};
+use super::intro::{Gl, Gpu, draw_layers, settle, with_headless_gl};
 use super::{Frame, REFERENCE_RENDERER};
 use crate::settings::Settings;
 use crate::shell::language::{InterfaceViews, interface_views};
@@ -269,6 +269,7 @@ impl State {
         self.shapes.clear();
         self.text.clear();
         self.shapes.set_drift(DRIFT);
+        let mut split = None;
         let white = gpu.white;
         match scene {
             Scene::Menu(selected) => self.views.menu.push(
@@ -311,7 +312,7 @@ impl State {
                 for now_ns in [0, 5_000_000_000] {
                     self.shapes.clear();
                     self.text.clear();
-                    self.views.song_select.push(
+                    split = self.views.song_select.push(
                         &mut self.shapes,
                         &mut self.text,
                         &mut self.glyphs,
@@ -403,7 +404,7 @@ impl State {
                 }
             }
         }
-        draw_layer(device, gpu, &self.shapes, &self.text, size)
+        draw_layers(device, gpu, &self.shapes, &self.text, size, split)
     }
 }
 

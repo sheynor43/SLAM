@@ -208,7 +208,8 @@ pub struct Theme {
     pub mod_tile_height: f32,
     pub mod_tile_pitch: f32,
     pub mod_column_gap: f32,
-    /// Fill over the screen under the mod select panel.
+    /// Fill over the screen under the mod select panel: the song list stays seen under it,
+    /// as in lazer (ADR-0152).
     pub mod_backdrop_fill: Color,
     /// A column of the mod select panel: its plate, the height of its header in the
     /// column's colour (lazer's 42) and the padding around its tiles (lazer's 7) (ADR-0152).
@@ -685,7 +686,7 @@ impl Theme {
                 r: 0.0,
                 g: 0.0,
                 b: 0.0,
-                a: 0.8,
+                a: 0.55,
             },
             mod_column_fill: alpha(p.panel, 0.94),
             mod_column_header_height: 30.0,

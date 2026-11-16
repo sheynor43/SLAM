@@ -1903,3 +1903,27 @@ fn the_difficulty_info_setting_round_trips_and_falls_back() {
             .any(|w| w.starts_with("song_select.difficulty_info"))
     );
 }
+
+#[test]
+fn the_mod_hotkeys_setting_round_trips_and_falls_back() {
+    use crate::settings::model::ModHotkeyStyle;
+    assert_eq!(
+        Settings::default().song_select.mod_hotkeys,
+        ModHotkeyStyle::Sequential
+    );
+    let loaded = file::from_toml_str("[song_select]\nmod_hotkeys = \"classic\"\n");
+    assert_eq!(loaded.status, LoadStatus::Ok, "{:?}", loaded.warnings);
+    assert_eq!(
+        loaded.settings.song_select.mod_hotkeys,
+        ModHotkeyStyle::Classic
+    );
+    let text = file::to_toml_string(&loaded.settings).unwrap();
+    assert!(text.contains("mod_hotkeys = \"classic\""), "{text}");
+    assert_eq!(file::from_toml_str(&text).settings, loaded.settings);
+    let loaded = file::from_toml_str("[song_select]\nmod_hotkeys = \"qwerty\"\n");
+    assert_eq!(loaded.status, LoadStatus::Recovered);
+    assert_eq!(
+        loaded.settings.song_select.mod_hotkeys,
+        ModHotkeyStyle::Sequential
+    );
+}

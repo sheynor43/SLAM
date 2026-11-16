@@ -83,6 +83,7 @@ use crate::play::fps::{
 use crate::play::pack_size;
 use crate::play::scene::{CHANNELS, PlayScene, PlaySettings, Prepared, SceneGpu};
 use crate::replays::{ReplayBeatmap, ReplayJob};
+use crate::settings::model::ModHotkeyStyle;
 use crate::settings::saver::SaveLink;
 use crate::settings::{Combo, Dirs, InputSettings, KeySlot, MenuBackground, Mods, Settings};
 use crate::songs::{FolderChange, SkinViews, SongFiles, SongsLink};
@@ -201,6 +202,21 @@ fn tile_detail(m: &Mod) -> TileDetail {
         _ => TileDetail::None,
     }
 }
+
+// Ported from osu!lazer 2026.1005.0-lazer: osu.Game/Overlays/Mods/Input/ClassicModHotkeyHandler.cs (mod_type_lookup)
+/// Stable's mod keys (ADR-0155): Q W E, A S D F G, Z V; a key of two mods steps between
+/// them. Mods SLAM lacks (Flashlight, Blinds, Cinema) are left out.
+const CLASSIC_MOD_HOTKEYS: [(u16, &[&str]); 9] = [
+    (20, &["EZ"]),
+    (26, &["NF"]),
+    (8, &["HT", "DC"]),
+    (4, &["HR"]),
+    (22, &["SD", "PF"]),
+    (7, &["DT", "NC"]),
+    (9, &["HD", "TC"]),
+    (29, &["RX"]),
+    (25, &["AT"]),
+];
 
 /// The song select input of a mod hotkey.
 fn mod_hotkey(scancode: u16) -> Option<SongSelectInput> {
@@ -1218,6 +1234,53 @@ impl ShellState {
         snapshot.volume = self.volume.frame(edge, style, &self.volume_levels());
     }
 
+    // Ported from osu!lazer 2026.1005.0-lazer: osu.Game/Overlays/Mods/Input/ClassicModHotkeyHandler.cs (HandleModHotkeyPressed)
+    /// Stable's mod key `scancode` as the tile it toggles (ADR-0155): the key's only mod;
+    /// of two, the one after the selected one (Shift: before), none past either end, which
+    /// toggles the selected one off. The panel drops the other of the two, as they exclude
+    /// each other. Only the first three columns have keys, as in lazer. Does not allocate.
+    fn classic_mod_hotkey(&self, scancode: u16) -> Option<SongSelectInput> {
+        let (_, acronyms) = CLASSIC_MOD_HOTKEYS
+            .iter()
+            .find(|(code, _)| *code == scancode)?;
+        let columns = self.song_select.mods().columns();
+        // The key's mods in the panel, in column order, at most two.
+        let mut matching = [(0, 0, false); 2];
+        let mut count = 0;
+        let hotkey_columns = slam_ui::song_select::mod_select::HOTKEY_COLUMNS;
+        for (column, mods) in columns.iter().enumerate().take(hotkey_columns) {
+            for (index, acronym) in mods.iter().enumerate() {
+                if count < matching.len() && acronyms.contains(acronym) {
+                    let active = self.selected_mods.get(acronym).is_some();
+                    matching[count] = (column, index, active);
+                    count += 1;
+                }
+            }
+        }
+        let toggle =
+            |(column, index, _): (usize, usize, bool)| SongSelectInput::ModHotkey { column, index };
+        match count {
+            0 => None,
+            1 => Some(toggle(matching[0])),
+            _ => {
+                let matching = &matching[..count];
+                let shift = self.mods().contains(Mods::SHIFT);
+                let mut current = matching.iter().position(|m| m.2).map_or(-1, |i| i as isize);
+                if current < 0 && shift {
+                    current = count as isize;
+                }
+                let next = if shift { current - 1 } else { current + 1 };
+                let at = |i: isize| {
+                    usize::try_from(i)
+                        .ok()
+                        .and_then(|i| matching.get(i).copied())
+                };
+                // Selecting the next drops the current; past the end, the current goes off.
+                at(next).or_else(|| at(current)).map(toggle)
+            }
+        }
+    }
+
     /// Whether the sound is muted by the volume overlay (ADR-0145).
     pub fn volume_muted(&self) -> bool {
         self.volume.muted()
@@ -1636,9 +1699,11 @@ impl ShellState {
                 KEY_ENTER | KEY_KEYPAD_ENTER => SongSelectInput::Activate,
                 KEY_ESCAPE => SongSelectInput::Back,
                 code => {
-                    return mod_hotkey(code)
-                        .filter(|_| song_select)
-                        .map(ScreenInput::Common);
+                    let hotkey = match self.live_settings().song_select.mod_hotkeys {
+                        ModHotkeyStyle::Sequential => mod_hotkey(code),
+                        ModHotkeyStyle::Classic => self.classic_mod_hotkey(code),
+                    };
+                    return hotkey.filter(|_| song_select).map(ScreenInput::Common);
                 }
             },
             InputKind::MouseButton {
@@ -3993,7 +4058,8 @@ impl<B: render::Backend> Draw<ShellSnapshot> for View<B> {
             }
         }
         // The screens' layers and the settings panel's.
-        let mut ends = [(0_u32, 0_u32, false); MAX_LAYERS + 1];
+        // Two per screen (the song select's mod panel is a layer of its own), and the panel.
+        let mut ends = [(0_u32, 0_u32, false); 2 * MAX_LAYERS + 1];
         let mut layers = 0;
         for layer in snapshot.layers.iter().flatten() {
             // Where the screen's own quads start: its background is not scaled.
@@ -4060,7 +4126,7 @@ impl<B: render::Backend> Draw<ShellSnapshot> for View<B> {
                         self.shapes.transform_from(from, &background_map, [1.0; 4]);
                     }
                     layer_from = (self.shapes.len(), self.text.len());
-                    self.song_select.push(
+                    let split = self.song_select.push(
                         &mut self.shapes,
                         &mut self.text,
                         &mut self.glyphs,
@@ -4074,7 +4140,12 @@ impl<B: render::Backend> Draw<ShellSnapshot> for View<B> {
                             rows: &thumb_rows,
                             now_ns: info.wait.woke_ns,
                         },
-                    )
+                    );
+                    // The mod panel over the list's texts (ADR-0152).
+                    if let Some((shapes_at, text_at)) = split {
+                        ends[layers] = (shapes_at, text_at, false);
+                        layers += 1;
+                    }
                 }
                 ScreenView::Results(results) => self.results.push(
                     &mut self.shapes,

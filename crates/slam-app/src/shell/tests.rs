@@ -2803,3 +2803,41 @@ fn alt_wheel_is_still_the_volume_with_a_sideways_wheel_about() {
     assert_eq!(s.settings().audio.master_volume, before);
     assert_eq!(s.song_select().snapshot().text.wheel, 1.0);
 }
+
+/// Stable's mod keys (ADR-0155): one letter per mod, two mods on a letter stepped through,
+/// Shift backwards.
+#[test]
+fn classic_mod_hotkeys_follow_stable() {
+    const KEY_D: u16 = 7;
+    const KEY_S: u16 = 22;
+    let (s, mut snap, _producer) = in_song_select();
+    let mut settings = s.settings().clone();
+    settings.song_select.mod_hotkeys = crate::settings::model::ModHotkeyStyle::Classic;
+    let mut s = s.with_settings(settings);
+    s.tick(at(1), &[key(KEY_F1)], &mut snap);
+    // Q is Easy, A Hard Rock (they conflict: the newer wins), F Hidden.
+    s.tick(at(2), &[key(KEY_Q)], &mut snap);
+    assert_eq!(acronyms(&s), ["EZ"]);
+    s.tick(at(3), &[key(KEY_A), key(KEY_F)], &mut snap);
+    assert_eq!(acronyms(&s), ["HD", "HR"]);
+    // D: Double Time, then Nightcore, then neither.
+    s.tick(at(4), &[key(KEY_D)], &mut snap);
+    assert_eq!(acronyms(&s), ["DT", "HD", "HR"]);
+    s.tick(at(5), &[key(KEY_D)], &mut snap);
+    assert_eq!(acronyms(&s), ["HD", "HR", "NC"]);
+    s.tick(at(6), &[key(KEY_D)], &mut snap);
+    assert_eq!(acronyms(&s), ["HD", "HR"]);
+    // Shift + S from neither: the last of the two, Perfect; again, Sudden Death.
+    let shift = key(225);
+    s.tick(at(7), &[shift, key(KEY_S)], &mut snap);
+    assert_eq!(acronyms(&s), ["HD", "HR", "PF"]);
+    s.tick(at(8), &[key(KEY_S)], &mut snap);
+    assert_eq!(acronyms(&s), ["HD", "HR", "SD"]);
+    s.tick(at(9), &[key_up(225)], &mut snap);
+    // F again: Hidden off for Traceable, as they exclude each other.
+    s.tick(at(10), &[key(KEY_F)], &mut snap);
+    assert_eq!(acronyms(&s), ["HR", "SD", "TC"]);
+    // W is No Fail, which drops Sudden Death; a letter without a mod does nothing.
+    s.tick(at(11), &[key(KEY_W), key(KEY_L)], &mut snap);
+    assert_eq!(acronyms(&s), ["HR", "NF", "TC"]);
+}

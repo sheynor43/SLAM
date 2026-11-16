@@ -829,6 +829,21 @@ fn from_table(mut table: Table) -> Loaded {
             )),
         }
     }
+    let mut mod_hotkeys: Option<String> = None;
+    cx.opt(
+        &mut song_select,
+        "song_select",
+        "mod_hotkeys",
+        &mut mod_hotkeys,
+    );
+    if let Some(name) = mod_hotkeys {
+        match crate::settings::model::ModHotkeyStyle::from_name(&name) {
+            Some(style) => settings.song_select.mod_hotkeys = style,
+            None => cx.warn(format!(
+                "song_select.mod_hotkeys: unknown value \"{name}\", using the default"
+            )),
+        }
+    }
     let mut thumbnails: Option<String> = None;
     cx.opt(
         &mut song_select,
