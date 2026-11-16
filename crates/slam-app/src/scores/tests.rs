@@ -152,3 +152,16 @@ fn only_passed_ranks_are_kept() {
     }
     assert!(!is_kept(ScoreRank::F));
 }
+
+#[test]
+fn autoplay_plays_are_not_kept_but_relax_and_autopilot_ones_are() {
+    use slam_osu::{Mod, ModSet};
+    let set = |acronyms: &[&str]| {
+        ModSet::new(acronyms.iter().map(|a| Mod::from_acronym(a)).collect()).unwrap()
+    };
+    assert!(is_kept_play(&set(&[])));
+    assert!(!is_kept_play(&set(&["AT"])));
+    assert!(!is_kept_play(&set(&["HD", "AT"])));
+    assert!(is_kept_play(&set(&["RX"])));
+    assert!(is_kept_play(&set(&["AP"])));
+}

@@ -163,6 +163,19 @@ fn hit_area_contains(centre: Vec2, scale: f32, position: Vec2) -> bool {
     f64::from(distance) <= f64::from(corner_radius) * f64::from(corner_radius)
 }
 
+// Ported from osu!lazer 2026.1005.0-lazer: osu.Game.Rulesets.Osu/Mods/OsuModRelax.cs (RELAX_LENIENCY)
+/// How early before an object Relax starts looking at it, in milliseconds.
+pub const RELAX_LENIENCY: f64 = 12.0;
+
+/// What Relax wants at an update: see [`OsuRules::relax_wants`].
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct RelaxWants {
+    /// Release and press again: a circle or slider head can be hit.
+    pub hit: bool,
+    /// Keep a button down: a slider is followed or a spinner spun.
+    pub hold: bool,
+}
+
 /// The type of a top-level object.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum Kind {
@@ -426,6 +439,51 @@ impl OsuRules {
     /// done, without a judgement, so that the simulation ends.
     pub fn skipped_objects(&self) -> usize {
         self.skipped
+    }
+
+    // Ported from osu!lazer 2026.1005.0-lazer: osu.Game.Rulesets.Osu/Mods/OsuModRelax.cs (Update)
+    /// What Relax does at `time` with the cursor at `position` (ADR-0153), by the objects
+    /// alive after the last update: press anew for a hittable circle or slider head under the
+    /// cursor, hold in a slider's follow area or on a spinner that needs spins. Does not
+    /// allocate.
+    pub fn relax_wants(&self, time: f64, position: Vec2) -> RelaxWants {
+        let mut wants = RelaxWants::default();
+        let alive_time = self.time;
+        let hittable_under = |o: &ObjectState| {
+            hit_area_contains(o.position, o.scale, position)
+                && self.hit_windows.can_be_hit(time - o.start_time)
+        };
+        for i in self.live_range(alive_time) {
+            let o = &self.objects[i];
+            if !o.is_alive(alive_time) {
+                continue;
+            }
+            // Not yet close enough to the object.
+            if time < o.start_time - RELAX_LENIENCY {
+                break;
+            }
+            // Already hit, or beyond the hittable end time.
+            let is_hit = o.judged && o.result.is_some_and(HitResult::is_hit);
+            let has_duration = !matches!(o.kind, Kind::Circle);
+            if is_hit || (has_duration && time > o.end_time) {
+                continue;
+            }
+            match o.kind {
+                Kind::Circle => wants.hit |= hittable_under(o),
+                Kind::Slider(s) => {
+                    let slider = &self.sliders[s];
+                    let head_hit = slider
+                        .head_judgement()
+                        .is_some_and(|(_, result)| result.is_hit());
+                    if !head_hit {
+                        wants.hit |= hittable_under(o);
+                    }
+                    wants.hold |= slider.follow_area_contains(position, time);
+                }
+                Kind::Spinner(s) => wants.hold |= self.spinners[s].spins_required() > 0,
+            }
+        }
+        wants
     }
 
     /// The objects shaken by presses in the last update, in press order.

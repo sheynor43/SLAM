@@ -339,6 +339,12 @@ pub enum Mod {
         /// `restart`: restart the beatmap on failing (on by default).
         restart: bool,
     },
+    /// `AT`: the game plays the beatmap, from frames of [`crate::auto`] (ADR-0153).
+    Autoplay,
+    /// `RX`: the game presses the buttons (ADR-0153).
+    Relax,
+    /// `AP`: the game moves the cursor (ADR-0153).
+    Autopilot,
     /// Any other acronym: kept with its raw settings, has no effect. A set with such a mod
     /// is not [`supported`](ModSet::is_supported).
     Other {
@@ -390,6 +396,9 @@ impl Mod {
                 fail_on_slider_tail: false,
             },
             "PF" => Mod::Perfect { restart: true },
+            "AT" => Mod::Autoplay,
+            "RX" => Mod::Relax,
+            "AP" => Mod::Autopilot,
             _ => Mod::Other {
                 acronym: acronym.to_owned(),
                 settings: Vec::new(),
@@ -646,6 +655,10 @@ impl Mod {
             // `IRequiresApproachCircles` (Traceable) and `IHidesApproachCircles` (Hidden).
             Hidden { .. } => matches!(other, Traceable),
             Traceable => matches!(other, Hidden { .. }),
+            // Ported from osu!lazer 2026.1005.0-lazer: osu.Game.Rulesets.Osu/Mods/OsuModAutoplay.cs, OsuModRelax.cs, OsuModAutopilot.cs (IncompatibleMods)
+            Autoplay => matches!(other, Relax | Autopilot),
+            Relax => matches!(other, Autoplay | Autopilot),
+            Autopilot => matches!(other, Autoplay | Relax),
             // `ModRateAdjust` lists itself.
             HalfTime(_) | Daycore { .. } | DoubleTime(_) | Nightcore { .. } => rate_adjust(other),
             Classic(_) | Other { .. } => false,
@@ -680,6 +693,9 @@ impl GameplayMod for Mod {
             Mod::Mirror { .. } => "MR",
             Mod::SuddenDeath { .. } => "SD",
             Mod::Perfect { .. } => "PF",
+            Mod::Autoplay => "AT",
+            Mod::Relax => "RX",
+            Mod::Autopilot => "AP",
             Mod::Other { acronym, .. } => acronym,
         }
     }
@@ -862,6 +878,7 @@ impl GameplayMod for Mod {
                 Mod::Hidden { .. } if self.uses_default_configuration() => 1.06,
                 Mod::Classic(_) => 0.96,
                 Mod::DifficultyAdjust(_) => 0.5,
+                Mod::Relax | Mod::Autopilot => 0.1,
                 _ => 1.0,
             },
             MultiplierVersion::V2 => match self {
@@ -888,6 +905,7 @@ impl GameplayMod for Mod {
                         0.96
                     }
                 }
+                Mod::Relax | Mod::Autopilot => 0.1,
                 _ => 1.0,
             },
         }
@@ -1087,6 +1105,15 @@ impl ModSet {
     /// Whether SLAM implements every mod of the set.
     pub fn is_supported(&self) -> bool {
         self.mods.iter().all(Mod::is_supported)
+    }
+
+    /// Whether the set has an automation mod (Autoplay, Relax, Autopilot): the game makes
+    /// part of the input, so a recorded replay cannot be judged from its frames alone
+    /// (ADR-0153).
+    pub fn has_automation(&self) -> bool {
+        self.mods
+            .iter()
+            .any(|m| matches!(m, Mod::Autoplay | Mod::Relax | Mod::Autopilot))
     }
 
     /// The lazer `APIMod`s of the set.

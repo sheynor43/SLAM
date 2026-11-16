@@ -589,6 +589,10 @@ fn run_entry(dir: &Path, manifest_source: Source, entry: &RawEntry) -> Result<Ou
             unsupported.join(", ")
         )));
     }
+    // Relax replays carry no presses; the simulator does not make them (ADR-0153).
+    if mods.has_automation() {
+        return Ok(Outcome::Skipped("automation mods".to_owned()));
+    }
     let rules = rules_for(&beatmap, &mods);
     // Stable replays carry a ScoreV1 score, which SLAM does not compute.
     let compare_score_of = info

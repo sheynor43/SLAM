@@ -25,6 +25,21 @@ pub(crate) fn atan2(y: f64, x: f64) -> f64 {
     if r == 0.0 { r.copysign(y) } else { r }
 }
 
+/// .NET's `MathF.Asin(float)`, correctly rounded.
+pub(crate) fn asinf(x: f32) -> f32 {
+    pxfm::f_asinf(x)
+}
+
+/// .NET's `MathF.Sin(float)`, correctly rounded.
+pub(crate) fn sinf(x: f32) -> f32 {
+    pxfm::f_sinf(x)
+}
+
+/// .NET's `MathF.Cos(float)`, correctly rounded.
+pub(crate) fn cosf(x: f32) -> f32 {
+    pxfm::f_cosf(x)
+}
+
 /// .NET's `Math.Acos(double)`, correctly rounded.
 pub(crate) fn acos(x: f64) -> f64 {
     pxfm::f_acos(x)

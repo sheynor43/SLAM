@@ -182,6 +182,11 @@ impl SpinnerState {
     }
 
     /// The number of judgements the spinner produces: its ticks and itself.
+    /// Lazer's `SpinsRequired`.
+    pub(super) fn spins_required(&self) -> i32 {
+        self.spins_required
+    }
+
     pub(super) fn judgement_count(&self) -> usize {
         self.tick_count + 1
     }

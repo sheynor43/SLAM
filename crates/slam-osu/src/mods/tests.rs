@@ -806,3 +806,40 @@ fn a_selection_with_two_settings_of_one_mod_panics() {
         },
     ]);
 }
+
+// Ported from osu!lazer 2026.1005.0-lazer: osu.Game.Rulesets.Osu/Scoring/OsuScoreMultiplierCalculatorV1.cs, OsuScoreMultiplierCalculatorV2.cs
+#[test]
+fn relax_and_autopilot_multiply_by_a_tenth_and_autoplay_by_one() {
+    let difficulty = difficulty();
+    for version in [MultiplierVersion::V1, MultiplierVersion::V2] {
+        let context = MultiplierContext {
+            version,
+            difficulty_without_mods: &difficulty,
+        };
+        for (acronym, expected) in [("RX", 0.1), ("AP", 0.1), ("AT", 1.0)] {
+            let set = ModSet::new(vec![Mod::from_acronym(acronym)]).unwrap();
+            assert_eq!(set.score_multiplier(&context), expected, "{acronym}");
+        }
+    }
+}
+
+#[test]
+fn automation_mods_are_built_in_and_exclude_each_other() {
+    for acronym in ["AT", "RX", "AP"] {
+        let m = Mod::from_acronym(acronym);
+        assert!(m.is_supported(), "{acronym}");
+        assert_eq!(m.acronym(), acronym);
+        assert_eq!(m.mod_type(), ModType::Automation);
+        assert!(ModSet::new(vec![m]).unwrap().has_automation());
+    }
+    for pair in [["AT", "RX"], ["AT", "AP"], ["RX", "AP"]] {
+        let set = ModSet::new(pair.map(Mod::from_acronym).to_vec()).unwrap();
+        assert!(set.check_compatible().is_err(), "{pair:?}");
+    }
+    let fine = ModSet::new(vec![Mod::from_acronym("RX"), Mod::from_acronym("HD")]).unwrap();
+    assert!(fine.check_compatible().is_ok());
+    assert!(!ModSet::new(vec![Mod::HardRock]).unwrap().has_automation());
+    // Stable's bits come back as the mods.
+    let set = ModSet::from_legacy(legacy::RELAX | legacy::AUTOPILOT);
+    assert!(set.get("RX").is_some() && set.get("AP").is_some());
+}

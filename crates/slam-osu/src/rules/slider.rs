@@ -513,6 +513,12 @@ impl SliderState {
         }
     }
 
+    /// Whether `position` is in the follow area at `time`, the follow circle as large as the
+    /// slider's tracking makes it: Relax's test (ADR-0153).
+    pub(super) fn follow_area_contains(&self, position: Vec2, time: f64) -> bool {
+        self.follow_area_contains_with(position, self.tracking, time)
+    }
+
     // Ported from osu!lazer 2026.1005.0-lazer: osu.Game.Rulesets.Osu/Objects/Drawables/SliderInputManager.cs (IsMouseInFollowArea)
     /// Whether the cursor is in the follow area at `time`; `expanded` tests against the largest
     /// follow circle.
@@ -520,6 +526,10 @@ impl SliderState {
         let Some(mouse) = self.mouse else {
             return false;
         };
+        self.follow_area_contains_with(mouse, expanded, time)
+    }
+
+    fn follow_area_contains_with(&self, mouse: Vec2, expanded: bool, time: f64) -> bool {
         let radius = self.follow_radius(expanded);
         let follow_progress = ((time - self.start_time) / self.duration).clamp(0.0, 1.0);
         let follow_circle_position =
