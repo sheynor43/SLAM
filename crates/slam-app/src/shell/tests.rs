@@ -1751,8 +1751,13 @@ fn hotkeys_toggle_mods_by_key_row_and_sync_the_tiles() {
     // A selected mod's key deselects it.
     s.tick(at(5), &[key(KEY_W)], &mut snap);
     assert_eq!(acronyms(&s), ["HR", "NC"]);
-    // Keys past the column's last mod and other keys do nothing.
-    s.tick(at(6), &[key(KEY_L), key(KEY_Z)], &mut snap);
+    // Keys past the column's last mod do nothing.
+    s.tick(at(6), &[key(KEY_L)], &mut snap);
+    assert_eq!(acronyms(&s), ["HR", "NC"]);
+    // Z is the automation column's first mod, Autoplay (ADR-0152, ADR-0153); again, off.
+    s.tick(at(6), &[key(KEY_Z)], &mut snap);
+    assert_eq!(acronyms(&s), ["AT", "HR", "NC"]);
+    s.tick(at(6), &[key(KEY_Z)], &mut snap);
     assert_eq!(acronyms(&s), ["HR", "NC"]);
     // R is a hotkey here, not Retry; Daycore and Nightcore conflict.
     s.tick(at(7), &[key(KEY_R_HOTKEY)], &mut snap);

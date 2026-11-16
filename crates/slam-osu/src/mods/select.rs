@@ -28,7 +28,8 @@ pub fn mods_for(ty: ModType) -> &'static [&'static str] {
         ModType::DifficultyReduction => &["EZ", "NF", "HT", "DC"],
         ModType::DifficultyIncrease => &["HR", "SD", "PF", "DT", "NC", "HD", "TC"],
         ModType::Conversion => &["DA", "CL", "MR"],
-        ModType::Automation | ModType::Fun | ModType::System => &[],
+        ModType::Automation => &["AT", "RX", "AP"],
+        ModType::Fun | ModType::System => &[],
     }
 }
 
@@ -47,6 +48,7 @@ impl Mod {
             | SuddenDeath { .. }
             | Perfect { .. } => ModType::DifficultyIncrease,
             Classic(_) | DifficultyAdjust(_) | Mirror { .. } => ModType::Conversion,
+            Autoplay | Relax | Autopilot => ModType::Automation,
             Other { acronym, .. } => other_mod_type(acronym),
         }
     }

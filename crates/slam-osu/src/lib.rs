@@ -2,6 +2,7 @@
 
 #![warn(missing_docs)]
 
+pub mod auto;
 mod autoplay;
 pub mod beatmap;
 pub mod breaks;

@@ -116,6 +116,8 @@ pub enum Trash {
 fn log(trash: Trash, replays: Option<&Path>, scores: Option<&Path>) {
     match trash {
         Trash::Session(session) => log_hit_errors(&session),
+        // Autoplay keeps neither a replay nor a score, as in lazer (ADR-0153).
+        Trash::Replay(job) if !crate::scores::is_kept_play(job.attempt.mods()) => {}
         Trash::Replay(job) => {
             let replay = match replays {
                 Some(dir) => crate::replays::save(&job, dir),

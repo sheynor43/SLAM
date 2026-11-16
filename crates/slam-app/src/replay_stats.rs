@@ -86,6 +86,10 @@ pub fn simulate(map: &[u8], replay: &[u8]) -> Result<ReplayStats, String> {
     if !mods.is_supported() {
         return Err(format!("unsupported mods: {}", acronyms(&mods)));
     }
+    // The game makes part of the input of these (ADR-0153).
+    if mods.has_automation() {
+        return Err(format!("automation mods: {}", acronyms(&mods)));
+    }
     let beatmap = mods
         .playable_beatmap(file)
         .map_err(|e| format!("beatmap: {e}"))?;

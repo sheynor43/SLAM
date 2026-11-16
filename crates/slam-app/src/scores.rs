@@ -170,6 +170,11 @@ pub fn rows_of(records: &[Record]) -> LocalScores {
     scores
 }
 
+/// Whether a play with `mods` keeps its replay and score: not Autoplay's (ADR-0153).
+pub fn is_kept_play(mods: &slam_osu::ModSet) -> bool {
+    mods.get("AT").is_none()
+}
+
 /// Whether the attempt is saved as a score: lazer does not keep failed ones.
 pub fn is_kept(rank: ScoreRank) -> bool {
     rank != ScoreRank::F

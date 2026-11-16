@@ -4243,3 +4243,114 @@ fn the_skip_button_does_not_click_after_the_skip_period() {
             .any(|c| matches!(c, Command::Seek(f) if *f > 0))
     );
 }
+
+/// Autoplay plays without the player: the frames press every object perfectly, with ticks
+/// slower than the frames too (ADR-0153).
+#[test]
+fn autoplay_plays_the_map_perfectly_without_input() {
+    use slam_osu::judgement::HitResult;
+    let map = beatmap();
+    for step_ns in [MS, 7 * MS, 20 * MS] {
+        let track = Track::default();
+        let session = session_with_mods(
+            &map,
+            &track,
+            Offsets::default(),
+            mods(vec![slam_osu::mods::Mod::Autoplay]),
+        );
+        let end = end_ns(&map, session.start_time());
+        let mut cursors = Vec::new();
+        let (session, _, _) = run_events(&[], session, track, step_ns, end, |s| {
+            cursors.push(s.cursor);
+        });
+        let log = session.log().events();
+        assert!(!log.is_empty());
+        let short: Vec<_> = log
+            .iter()
+            .filter(|j| !j.max_result.is_bonus() && j.result != j.max_result)
+            .map(|j| (j.time, j.result))
+            .collect();
+        assert_eq!(short, [], "{step_ns} ns ticks");
+        assert!(log.iter().all(|j| j.result != HitResult::Miss));
+        // The game moved the cursor.
+        assert!(cursors.windows(2).any(|w| w[0] != w[1]));
+    }
+}
+
+/// Autopilot moves the cursor; without presses nothing is hit.
+#[test]
+fn autopilot_moves_the_cursor_but_leaves_the_presses_to_the_player() {
+    let map = beatmap();
+    let track = Track::default();
+    let session = session_with_mods(
+        &map,
+        &track,
+        Offsets::default(),
+        mods(vec![
+            slam_osu::mods::Mod::Autopilot,
+            slam_osu::mods::Mod::NoFail,
+        ]),
+    );
+    let end = end_ns(&map, session.start_time());
+    let first = map.hit_objects[0].stacked_position();
+    let mut near_first = false;
+    let (session, _, _) = run_events(&[], session, track, MS, end, |s| {
+        near_first |= s.cursor.distance(first) < 1.0;
+    });
+    assert!(near_first, "the cursor never reached the first object");
+    assert!(session.log().events().iter().all(|j| !j.result.is_hit()));
+}
+
+/// Relax presses for the player, who only moves the cursor over the objects; the player's
+/// own presses do not count (ADR-0153).
+#[test]
+fn relax_presses_while_the_player_moves() {
+    let map = beatmap();
+    let track = Track::default();
+    let session = session_with_mods(
+        &map,
+        &track,
+        Offsets::default(),
+        mods(vec![slam_osu::mods::Mod::Relax]),
+    );
+    let start_time = session.start_time();
+    let end = end_ns(&map, start_time);
+    // A player who moves along the objects (the Autoplay frames' cursor), never pressing.
+    let layout = common::layout();
+    let moves: Vec<InputEvent> = slam_osu::auto::generate(&map, &ModSet::default())
+        .into_iter()
+        .filter(|f| f.time >= start_time)
+        .map(|f| {
+            let window = layout.to_window(f.position);
+            InputEvent {
+                time_ns: T0 + ((f.time - start_time) * MS as f64) as u64,
+                kind: InputKind::MouseMove {
+                    x: window.x,
+                    y: window.y,
+                },
+            }
+        })
+        .collect();
+    let (session, _, _) = run_events(&moves, session, track, MS, end, |_| {});
+    let log = session.log().events();
+    assert!(!log.is_empty());
+    let missed: Vec<_> = log
+        .iter()
+        .filter(|j| !j.max_result.is_bonus() && j.result.is_miss())
+        .map(|j| (j.time, j.result))
+        .collect();
+    assert_eq!(missed, []);
+    // Without the cursor on the objects, Relax presses nothing that hits.
+    let track = Track::default();
+    let session = session_with_mods(
+        &map,
+        &track,
+        Offsets::default(),
+        mods(vec![
+            slam_osu::mods::Mod::Relax,
+            slam_osu::mods::Mod::NoFail,
+        ]),
+    );
+    let (session, _, _) = run_events(&[], session, track, MS, end, |_| {});
+    assert!(session.log().events().iter().all(|j| !j.result.is_hit()));
+}

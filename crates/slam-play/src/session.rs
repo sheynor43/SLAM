@@ -13,7 +13,7 @@ use slam_osu::breaks::BreakTracker;
 use slam_osu::hit_events::{HitErrorSummary, HitEvents};
 use slam_osu::judgement::{HitResult, JudgementLog, Statistics};
 use slam_osu::lead_in::{IntroSkip, earliest_start_time, gameplay_start_time};
-use slam_osu::replay::{Actions, InputFrame, ReplayRecorder, Rules};
+use slam_osu::replay::{ActionEvent, Actions, InputFrame, ReplayRecorder, Rules, StepInput};
 use slam_osu::rules::OsuRules;
 use slam_osu::scoring::{ScoreProcessor, ScoreRank};
 use slam_osu::{Beatmap, HealthProcessor, ModSet, Vec2};
@@ -27,6 +27,7 @@ use slam_render::{Color, Extent};
 use slam_skin::{AnimationOptions, ImageCheck, SIXTY_FRAME_TIME, SkinChain, TextureFile};
 use slam_ui::hud_layout::LayoutElement;
 
+use crate::auto::{AutoInput, AutoMode};
 use crate::circles::{
     CircleTextures, HitCircles, LiveCircles, OBJECT_SIZE, PieceTextures, SkinSprite,
 };
@@ -41,7 +42,7 @@ use crate::health_bar::{HealthTextures, MAX_FILL_FRAMES, MarkerTextures};
 use crate::hit_error::{HitErrorRing, HitErrorTargets, MeterTextures, disc_image, gradient_image};
 use crate::hotkeys::{GlobalAction, Hotkeys};
 use crate::hud::{HudTextures, MAX_SKIP_FRAMES, SkipTextures};
-use crate::input::{ClockTime, GameTime, Input, LiveInput};
+use crate::input::{ClockTime, GameTime, Input, LiveInput, MAX_LIVE_STEP_EVENTS};
 use crate::judgements::{
     JudgementRing, JudgementTextures, JudgementView, MAX_JUDGEMENT_FRAMES, PIECE_SLOTS, PieceKind,
     PieceSprites, PopupTargets, piece_sources,
@@ -423,6 +424,8 @@ pub struct PlaySession {
     started: bool,
     phase: Phase,
     input: LiveInput,
+    /// The input of an automation mod, if one is on (ADR-0153).
+    auto: Option<Box<AutoInput>>,
     hotkeys: Hotkeys,
     rules: OsuRules,
     /// The spins per minute of the alive spinners, counted after each step.
@@ -523,6 +526,14 @@ impl Speed {
     }
 }
 
+/// A blank event, to fill copies of a step's events.
+const NO_EVENT: ActionEvent = ActionEvent {
+    time: 0.0,
+    position: Vec2::ZERO,
+    action: Actions::NONE,
+    pressed: false,
+};
+
 impl PlaySession {
     /// A play of `beatmap` (with `mods` applied) on the track `track` controls. Call it off
     /// the hot paths.
@@ -588,6 +599,7 @@ impl PlaySession {
             started: false,
             phase: Phase::Playing,
             input,
+            auto: AutoInput::for_play(beatmap, mods).map(Box::new),
             hotkeys: Hotkeys::default(),
             initial: Initial {
                 rules: rules.clone(),
@@ -972,8 +984,17 @@ impl PlaySession {
         snapshot.clock =
             (!restart && !seek_sent && !self.clock.is_seeking() && self.phase != Phase::Results)
                 .then_some(time);
-        snapshot.cursor = self.input.position();
-        snapshot.cursor_path.clone_from(self.input.path());
+        // The automation mods move the cursor (ADR-0153).
+        match self.auto.as_deref().filter(|auto| auto.moves_cursor()) {
+            Some(auto) => {
+                snapshot.cursor = auto.position();
+                snapshot.cursor_path.clone_from(auto.path());
+            }
+            None => {
+                snapshot.cursor = self.input.position();
+                snapshot.cursor_path.clone_from(self.input.path());
+            }
+        }
         snapshot.cursor_expand = self.expand.times();
         snapshot.skip_available = self.phase == Phase::Playing
             && !seek_sent
@@ -1097,6 +1118,69 @@ impl PlaySession {
         )
     }
 
+    /// One update of the rules with `step`, and what follows it within the update: the
+    /// cursor expansion, health drain, shakes, the replay recorder, spinner rate, sounds and
+    /// popups. A step of an automation mod may make several (ADR-0153).
+    fn rules_step(&mut self, step: &StepInput<'_>, sink: &mut impl VoiceSink) {
+        self.expand.apply(step.events);
+        // Ported from osu!lazer 2026.1005.0-lazer: osu.Game/Screens/Play/Player.cs (LoadComponents)
+        // The health processor is a frame-stable component ahead of the playfield: it drains
+        // first, then takes the step's judgements as they come.
+        self.health.update(step.time);
+        let judged_before = self.log.events().len();
+        self.rules.update(step, &mut self.log);
+        for shake in self.rules.shakes() {
+            self.shakes.start(shake.index, shake.time);
+        }
+        // Ported from osu!lazer 2026.1005.0-lazer: osu.Game/Rulesets/UI/DrawableRuleset.cs (SetRecordTarget)
+        // Recording stops once the play completes (lazer's `SetRecordTarget(null)`); every
+        // judgement records an important frame.
+        if !self.passed {
+            let judged = self.log.events().len() > judged_before;
+            self.recorder.record_step(step, judged);
+        }
+        // Lazer's spinners count their rate after their children, in the playfield's update.
+        self.spm.update(&self.rules, step.time);
+        self.sounds.update(step.time, &self.log, &self.rules, sink);
+        for judgement in self.log.events_since(self.popups_seen) {
+            if let Some(shown) = self.popup_targets.shown(judgement) {
+                self.popups.push(shown);
+            }
+            if let Some(error) = self.hit_error_targets.error(judgement) {
+                self.hit_errors.push(error);
+            }
+        }
+        self.popups_seen = self.log.events().len();
+        // Per step, as lazer's frame-stable processors: drain, then the step's judgements.
+        // Ported from osu!lazer 2026.1005.0-lazer: osu.Game/Screens/Play/Player.cs (LoadComponents)
+        // Each judgement goes to the health processor, then to the score processor.
+        for (index, judgement) in self.log.events().iter().enumerate().skip(self.applied) {
+            let failed_before = self.health.has_failed();
+            self.health.apply(judgement, &mut self.mods);
+            let old_combo = self.score.statistics().combo;
+            self.score.apply(judgement, failed_before);
+            // Ported from osu!lazer 2026.1005.0-lazer: osu.Game/Screens/Play/Player.cs (createGameplayComponents)
+            // `ComboEffects` follows the score processor's combo, at the gameplay clock's time.
+            let new_combo = self.score.statistics().combo;
+            self.sounds
+                .combo_changed(old_combo, new_combo, step.time, sink);
+            // Ported from osu!lazer 2026.1005.0-lazer: osu.Game/Rulesets/Scoring/ScoreProcessor.cs (ApplyResultInternal)
+            // Judgements after the fail make no hit events.
+            if !failed_before {
+                self.hit_events.apply(judgement);
+            }
+            // Ported from osu!lazer 2026.1005.0-lazer: osu.Game/Rulesets/Scoring/HealthProcessor.cs (ApplyResultInternal)
+            // The judgement that fails still counts; later ones are `FailedAtJudgement`.
+            if self.failed_at.is_none() && self.health.has_failed() {
+                self.failed_at = Some(index + 1);
+            }
+        }
+        self.applied = self.log.events().len();
+        if self.health.has_failed() {
+            self.score.fail();
+        }
+    }
+
     /// One gameplay step with `events`: input, health drain, rules, sounds, then the new
     /// judgements to the health processor. While the clock is seeking, the events wait.
     fn step(
@@ -1111,37 +1195,40 @@ impl PlaySession {
             self.input.hold(events);
             return;
         }
-        let step = self.input.step(events, now_ns, time);
-        let step_time = step.time;
-        self.expand.apply(step.events);
-        // Ported from osu!lazer 2026.1005.0-lazer: osu.Game/Screens/Play/Player.cs (LoadComponents)
-        // The health processor is a frame-stable component ahead of the playfield: it drains
-        // first, then takes the step's judgements as they come.
-        self.health.update(step_time);
-        let judged_before = self.log.events().len();
-        self.rules.update(&step, &mut self.log);
-        for shake in self.rules.shakes() {
-            self.shakes.start(shake.index, shake.time);
-        }
-        // Ported from osu!lazer 2026.1005.0-lazer: osu.Game/Rulesets/UI/DrawableRuleset.cs (SetRecordTarget)
-        // Recording stops once the play completes (lazer's `SetRecordTarget(null)`); every
-        // judgement records an important frame.
-        if !self.passed {
-            let judged = self.log.events().len() > judged_before;
-            self.recorder.record_step(&step, judged);
-        }
-        // Lazer's spinners count their rate after their children, in the playfield's update.
-        self.spm.update(&self.rules, step_time);
-        self.sounds.update(step_time, &self.log, &self.rules, sink);
-        for judgement in self.log.events_since(self.popups_seen) {
-            if let Some(shown) = self.popup_targets.shown(judgement) {
-                self.popups.push(shown);
+        let live = self.input.step(events, now_ns, time);
+        // A copy, so that the step does not hold the live input while the session takes it.
+        let mut buffer = [NO_EVENT; MAX_LIVE_STEP_EVENTS];
+        let count = live.events.len().min(MAX_LIVE_STEP_EVENTS);
+        buffer[..count].copy_from_slice(&live.events[..count]);
+        let live = StepInput {
+            events: &buffer[..count],
+            ..live
+        };
+        let step_time = live.time;
+        // The automation mods drive the input instead (ADR-0153).
+        match self.auto.take() {
+            None => self.rules_step(&live, sink),
+            Some(mut auto) => {
+                match auto.mode() {
+                    AutoMode::Autoplay => {
+                        // Frame by frame up to the step's time, as lazer's frame-stable
+                        // replay playback.
+                        while let Some(step) = auto.next_step(step_time) {
+                            self.rules_step(&step, sink);
+                        }
+                    }
+                    AutoMode::Autopilot => {
+                        let step = auto.pilot(&live);
+                        self.rules_step(&step, sink);
+                    }
+                    AutoMode::Relax => {
+                        let step = auto.relax(&live, &self.rules);
+                        self.rules_step(&step, sink);
+                    }
+                }
+                self.auto = Some(auto);
             }
-            if let Some(error) = self.hit_error_targets.error(judgement) {
-                self.hit_errors.push(error);
-            }
         }
-        self.popups_seen = self.log.events().len();
         // Ported from McOsu db2add2: src/App/Osu/OsuBeatmap.cpp (keyPressed1, keyPressed2)
         // Ported from osu!lazer 2026.1005.0-lazer: osu.Game/Screens/Play/Player.cs (onBreakTimeChanged)
         // Presses count while playing, outside breaks (lazer's `IsBreakTime`, the intro
@@ -1163,33 +1250,6 @@ impl PlaySession {
             }
         }
         self.key_presses_seen = presses;
-        // Ported from osu!lazer 2026.1005.0-lazer: osu.Game/Screens/Play/Player.cs (LoadComponents)
-        // Each judgement goes to the health processor, then to the score processor.
-        for (index, judgement) in self.log.events().iter().enumerate().skip(self.applied) {
-            let failed_before = self.health.has_failed();
-            self.health.apply(judgement, &mut self.mods);
-            let old_combo = self.score.statistics().combo;
-            self.score.apply(judgement, failed_before);
-            // Ported from osu!lazer 2026.1005.0-lazer: osu.Game/Screens/Play/Player.cs (createGameplayComponents)
-            // `ComboEffects` follows the score processor's combo, at the gameplay clock's time.
-            let new_combo = self.score.statistics().combo;
-            self.sounds
-                .combo_changed(old_combo, new_combo, step_time, sink);
-            // Ported from osu!lazer 2026.1005.0-lazer: osu.Game/Rulesets/Scoring/ScoreProcessor.cs (ApplyResultInternal)
-            // Judgements after the fail make no hit events.
-            if !failed_before {
-                self.hit_events.apply(judgement);
-            }
-            // Ported from osu!lazer 2026.1005.0-lazer: osu.Game/Rulesets/Scoring/HealthProcessor.cs (ApplyResultInternal)
-            // The judgement that fails still counts; later ones are `FailedAtJudgement`.
-            if self.failed_at.is_none() && self.health.has_failed() {
-                self.failed_at = Some(index + 1);
-            }
-        }
-        self.applied = self.log.events().len();
-        if self.health.has_failed() {
-            self.score.fail();
-        }
         self.last_time = step_time;
 
         // Ported from osu!lazer 2026.1005.0-lazer: osu.Game/Screens/Play/Player.cs (onFail, PerformFail)
@@ -1402,8 +1462,12 @@ impl PlaySession {
     // Ported from osu!lazer 2026.1005.0-lazer: osu.Game/Screens/Play/Player.cs (Resume)
     // Ported from osu!lazer 2026.1005.0-lazer: osu.Game.Rulesets.Osu/UI/OsuResumeOverlay.cs (PopIn)
     fn resume(&mut self) {
-        // Breaks resume at once, and so does a hidden cursor (never moved).
-        if self.is_break_time(self.last_time) || !self.input.cursor_moved() {
+        // Breaks resume at once, and so does a hidden cursor (never moved), and a cursor the
+        // game moves (ADR-0153; lazer has no resume overlay with replay input).
+        if self.is_break_time(self.last_time)
+            || !self.input.cursor_moved()
+            || self.auto.as_deref().is_some_and(AutoInput::moves_cursor)
+        {
             self.complete_resume();
         } else {
             self.phase = Phase::Resuming;
@@ -1480,6 +1544,9 @@ impl PlaySession {
             )));
         }
         self.input.reset();
+        if let Some(auto) = &mut self.auto {
+            auto.reset();
+        }
         self.phase = Phase::Playing;
         self.pending_seek = Some(self.start_time);
         self.run = true;
@@ -1552,8 +1619,17 @@ impl PlaySession {
         snapshot.state = PlayState::Waiting;
         snapshot.time = self.start_time;
         snapshot.clock = None;
-        snapshot.cursor = self.input.position();
-        snapshot.cursor_path.clone_from(self.input.path());
+        // The automation mods move the cursor (ADR-0153).
+        match self.auto.as_deref().filter(|auto| auto.moves_cursor()) {
+            Some(auto) => {
+                snapshot.cursor = auto.position();
+                snapshot.cursor_path.clone_from(auto.path());
+            }
+            None => {
+                snapshot.cursor = self.input.position();
+                snapshot.cursor_path.clone_from(self.input.path());
+            }
+        }
         snapshot.cursor_expand = self.expand.times();
         snapshot.skip_available = false;
         snapshot.health = self.health.health();
