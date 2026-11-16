@@ -86,6 +86,8 @@ pub fn run(options: &Options) -> Result<(), String> {
 #[derive(Clone, Copy)]
 enum Scene {
     Menu(usize),
+    /// The mod select panel open over the song select, a few mods on (ADR-0152).
+    Mods,
     SongSelect {
         effects: bool,
     },
@@ -98,10 +100,11 @@ enum Scene {
 }
 
 /// The names of the PNGs and what they show, in the order they are drawn.
-const SCENES: [(&str, Scene); 13] = [
+const SCENES: [(&str, Scene); 14] = [
     ("menu-play", Scene::Menu(0)),
     ("menu-settings", Scene::Menu(1)),
     ("song-select", Scene::SongSelect { effects: true }),
+    ("mods", Scene::Mods),
     (
         "song-select-noeffects",
         Scene::SongSelect { effects: false },
@@ -295,6 +298,34 @@ impl State {
                     white,
                     Thumbs::OFF,
                 );
+            }
+            Scene::Mods => {
+                let mut screen = self.song_select.clone();
+                *screen.mods_mut() =
+                    slam_ui::song_select::ModSelect::new(crate::shell::mod_columns());
+                screen.mods_mut().open();
+                screen.mods_mut().set_active(1, 0, true);
+                screen.mods_mut().set_active(1, 5, true);
+                screen.mods_mut().set_active(3, 1, true);
+                // The first frame starts the slide, the second is drawn when it is over.
+                for now_ns in [0, 5_000_000_000] {
+                    self.shapes.clear();
+                    self.text.clear();
+                    self.views.song_select.push(
+                        &mut self.shapes,
+                        &mut self.text,
+                        &mut self.glyphs,
+                        width,
+                        height,
+                        &screen.snapshot(),
+                        Pose::SHOWN,
+                        white,
+                        Thumbs {
+                            now_ns,
+                            ..Thumbs::OFF
+                        },
+                    );
+                }
             }
             Scene::Settings => {
                 let mut screen = SettingsScreen::new(&self.rows.specs(&self.settings), SECTIONS);

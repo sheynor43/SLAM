@@ -138,6 +138,12 @@ fn labels() -> SongSelectLabels {
             "Conversion".into(),
             "Fun".into(),
         ],
+        mod_texts: MOD_COLUMNS.map(|column| {
+            column
+                .iter()
+                .map(|a| (format!("Mod {a}"), format!("What {a} does to the play")))
+                .collect()
+        }),
         mod_columns: MOD_COLUMNS,
         // The longest labels: Russian.
         details: slam_ui::song_select::DetailLabels {

@@ -236,11 +236,30 @@ fn a_column_plate_holds_its_header_and_tiles() {
             continue;
         }
         let plate = l.column_rect(column, count);
+        // The plate leans about its middle: its edges at a height.
+        let middle = plate.y + plate.height / 2.0;
+        let edges = |y: f32| {
+            let x = plate.x + (middle - y) * l.lean();
+            (x, x + plate.width)
+        };
         let header = l.column_titles[column];
-        assert!(plate.y <= header.y && plate.x <= header.x);
+        assert_eq!(plate.y, header.y);
+        let (left, right) = edges(header.y + header.height / 2.0);
+        assert!((header.x - left).abs() < 0.01 && (header.x + header.width - right).abs() < 0.01);
+        for index in 0..count {
+            let tile = l.tile_rect(column, index);
+            let (left, right) = edges(tile.y + tile.height / 2.0);
+            assert!(
+                tile.x >= left && tile.x + tile.width <= right,
+                "{column} {index}"
+            );
+        }
         let last = l.tile_rect(column, count - 1);
         assert!(plate.y + plate.height >= last.y + last.height);
-        assert!(plate.x + plate.width >= last.x + last.width);
         assert!(header.y + header.height <= l.tile_rect(column, 0).y);
     }
+    // The columns stand in the lower part of the window, and lean.
+    assert!(l.column_rect(0, 4).y > 720.0 * 0.2);
+    assert!(l.lean() > 0.0);
+    assert!(l.tile_rect(1, 0).x > l.tile_rect(1, 5).x);
 }

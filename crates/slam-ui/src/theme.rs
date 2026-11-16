@@ -215,6 +215,12 @@ pub struct Theme {
     pub mod_column_fill: Color,
     pub mod_column_header_height: f32,
     pub mod_column_pad: f32,
+    /// How much an active mod tile darkens its column's colour (lazer's `Darken(0.3)` on the
+    /// panel, stronger here so the white text reads on every colour).
+    pub mod_tile_active_darken: f32,
+    /// Where the columns start, as a part of the window height: the lower part of the
+    /// window, as lazer's (ADR-0152).
+    pub mod_panel_top: f32,
     /// The columns' slide from below when the panel opens and closes: lazer's 400 ms in,
     /// 500 ms out, 30 ms more for each next column, 700 px (ADR-0152).
     pub mod_panel_in_ms: f32,
@@ -671,24 +677,21 @@ impl Theme {
                 a: 0.16,
             },
             song_score_row_height: 30.0,
-            mod_tile_width: 150.0,
-            mod_tile_height: 48.0,
-            mod_tile_pitch: 52.0,
-            mod_column_gap: 32.0,
+            mod_tile_width: 210.0,
+            mod_tile_height: 40.0,
+            mod_tile_pitch: 45.0,
+            mod_column_gap: 10.0,
             mod_backdrop_fill: Color {
                 r: 0.0,
                 g: 0.0,
                 b: 0.0,
                 a: 0.8,
             },
-            mod_column_fill: Color {
-                r: 0.12,
-                g: 0.12,
-                b: 0.16,
-                a: 0.92,
-            },
-            mod_column_header_height: 42.0,
+            mod_column_fill: alpha(p.panel, 0.94),
+            mod_column_header_height: 30.0,
             mod_column_pad: 7.0,
+            mod_panel_top: 0.22,
+            mod_tile_active_darken: 1.2,
             mod_panel_in_ms: 400.0,
             mod_panel_out_ms: 500.0,
             mod_column_stagger_ms: 30.0,

@@ -74,6 +74,9 @@ pub struct SongSelectLabels {
     /// labels and the names of choice values. A key a row uses and this lacks draws nothing.
     pub setting_texts: Vec<(&'static str, String)>,
     pub mod_column_titles: [String; MAX_COLUMNS],
+    /// Each tile's mod name and description, by column, in the order of `mod_columns`
+    /// (ADR-0152); a tile without one shows its acronym only.
+    pub mod_texts: [Vec<(String, String)>; MAX_COLUMNS],
     /// The acronyms of the panel's columns: the same as [`super::ModSelect::new`] gets.
     pub mod_columns: ModColumns,
     /// The names before the selected difficulty's details.
@@ -195,6 +198,9 @@ pub struct SongSelectView {
     value_charset: Line,
     /// The acronym of every tile, by column.
     mod_tiles: Vec<Vec<Line>>,
+    /// Each tile's name and description, fitted to the tile; `mod_texts` keeps them whole.
+    mod_names: Vec<Vec<(Line, Line)>>,
+    mod_texts: [Vec<(String, String)>; MAX_COLUMNS],
     /// "Mods: HD DT" under the list, for the flags it was written for.
     mods_selected: Line,
     mods_selected_for: Option<([u16; MAX_COLUMNS], TileDetails)>,
@@ -412,6 +418,16 @@ impl SongSelectView {
                 .iter()
                 .map(|c| c.iter().map(|a| Line::new(a)).collect())
                 .collect(),
+            mod_names: labels
+                .mod_texts
+                .iter()
+                .map(|c| {
+                    c.iter()
+                        .map(|(name, desc)| (Line::new(name), Line::new(desc)))
+                        .collect()
+                })
+                .collect(),
+            mod_texts: labels.mod_texts.clone(),
             mods_selected: Line::new(""),
             mods_selected_for: None,
             mod_columns: labels.mod_columns,
@@ -491,7 +507,7 @@ impl SongSelectView {
         }
         for line in self.mod_tiles.iter_mut().flatten() {
             self.type_setter
-                .lay_out(line, self.theme.song_title_size * scale);
+                .lay_out_face(line, self.theme.caption_face(scale));
         }
         self.mods_selected_for = None;
         // The ellipsis widths and the row slots depend on the scale and the window.
@@ -510,6 +526,19 @@ impl SongSelectView {
         self.type_setter
             .lay_out_face(&mut probe, self.theme.note_face(scale));
         self.ellipsis[3] = probe.layout.width();
+        // A tile's name and description, cut to the room right of its switch (ADR-0152).
+        let tile = self.layout.mods.tile_rect(0, 0);
+        let room = (tile.width - tile.height - self.theme.widget_pad * scale).max(0.0);
+        for (lines, texts) in self.mod_names.iter_mut().zip(&self.mod_texts) {
+            for ((name, desc), (name_text, desc_text)) in lines.iter_mut().zip(texts) {
+                name.text.clone_from(name_text);
+                desc.text.clone_from(desc_text);
+                let caption = self.theme.caption_face(scale);
+                fit_face(&mut self.type_setter, name, caption, room, self.ellipsis[2]);
+                let note = self.theme.note_face(scale);
+                fit_face(&mut self.type_setter, desc, note, room, self.ellipsis[3]);
+            }
+        }
         let count = self.layout.viewport_rows().ceil() as usize + 2;
         self.slots.clear();
         self.slots.resize_with(count, RowSlot::new);
@@ -538,6 +567,12 @@ impl SongSelectView {
             .mod_column_titles
             .iter()
             .chain(self.mod_tiles.iter().flatten())
+            .chain(
+                self.mod_names
+                    .iter()
+                    .flatten()
+                    .flat_map(|(name, desc)| [name, desc]),
+            )
             .chain([&self.customise_title, &self.value_charset])
             .chain(self.info.lines())
             .chain(self.setting_lines.iter().map(|(_, line)| line))
@@ -1214,14 +1249,19 @@ impl SongSelectView {
                 // header in that colour, as lazer's `ModColumn`.
                 let tint = theme.mod_column_tints[column % theme.mod_column_tints.len()];
                 let count = self.mod_tiles[column].len();
+                let lean = panel.lean();
                 rect(
                     &down(panel.column_rect(column, count)),
                     faded(theme.mod_column_fill, dim),
-                    Look::Panel,
+                    Look::LeaningPanel { lean },
                 );
                 let header = down(panel.column_titles[column]);
-                rect(&header, faded(tint, dim), Look::Round);
-                let (x, y) = centred(titles, &header);
+                rect(&header, faded(tint, dim), Look::LeaningPanel { lean });
+                // The title from the left, as lazer's column headers.
+                let (x, y) = (
+                    header.x + 2.0 * theme.widget_pad * scale,
+                    header.y + header.height / 2.0,
+                );
                 let on_tint = Color {
                     a: 1.0,
                     ..theme.mod_column_fill
@@ -1230,7 +1270,11 @@ impl SongSelectView {
                 for (index, line) in self.mod_tiles[column].iter().enumerate() {
                     let area = down(panel.tile_rect(column, index));
                     let on = snapshot.mods.active[column] >> index & 1 != 0;
-                    let fill = if !on && snapshot.mods.hover == Some((column, index)) {
+                    // Ported from osu!lazer 2026.1005.0-lazer: osu.Game/Overlays/Mods/ModSelectPanel.cs (BackgroundColour, ForegroundColour)
+                    // On: the column's colour darkened, its switch in the colour itself.
+                    let fill = if on {
+                        darkened(tint, theme.mod_tile_active_darken)
+                    } else if snapshot.mods.hover == Some((column, index)) {
                         theme.button_hover_fill
                     } else {
                         theme.button_fill
@@ -1242,8 +1286,52 @@ impl SongSelectView {
                         tint,
                     };
                     rect(&area, faded(fill, dim), look);
-                    let (x, y) = centred(line, &area);
-                    left(line, x, y, faded(theme.text, dim));
+                    // The acronym in the switch on the left, in the column's colour; the
+                    // name and description beside it, as lazer's `ModPanel` (ADR-0152).
+                    let switch = Rect {
+                        width: area.height,
+                        ..area
+                    };
+                    let (x, y) = centred(line, &switch);
+                    if on {
+                        rect(&switch, faded(tint, dim), Look::Round);
+                        let ink = Color {
+                            a: 1.0,
+                            ..theme.background
+                        };
+                        left(line, x, y, faded(ink, dim));
+                    } else {
+                        left(line, x, y, faded(tint, dim));
+                    }
+                    if let Some((name, desc)) = self
+                        .mod_names
+                        .get(column)
+                        .and_then(|names| names.get(index))
+                    {
+                        let text_x = area.x + area.height;
+                        // Dark on an active tile's bright wash, as lazer's active panels.
+                        let ink = Color {
+                            a: 1.0,
+                            ..theme.background
+                        };
+                        let (name_ink, desc_ink) = if on {
+                            (ink, faded(ink, 0.75))
+                        } else {
+                            (theme.text, theme.disabled_text)
+                        };
+                        left(
+                            name,
+                            text_x,
+                            area.y + area.height * 0.34,
+                            faded(name_ink, dim),
+                        );
+                        left(
+                            desc,
+                            text_x,
+                            area.y + area.height * 0.72,
+                            faded(desc_ink, dim),
+                        );
+                    }
                 }
             }
             layer.set(panel_back);
@@ -1455,6 +1543,19 @@ impl SongSelectView {
     }
 }
 
+/// `colour` darkened as osu-framework's `Color4.Darken`: each channel divided by
+/// `1 + amount`, alpha kept.
+// Ported from osu-framework 2026.921.1: osu.Framework/Extensions/Color4Extensions/Color4Extensions.cs (Darken)
+fn darkened(colour: Color, amount: f32) -> Color {
+    let scale = 1.0 / (1.0 + amount);
+    Color {
+        r: colour.r * scale,
+        g: colour.g * scale,
+        b: colour.b * scale,
+        a: colour.a,
+    }
+}
+
 // Ported from osu!lazer 2026.1005.0-lazer: osu.Game/Graphics/UserInterface/StarCounter.cs
 /// Lazer's star counter: [`STAR_COUNT`] stars from `x`, centred on `centre_y`, each dim
 /// behind and filled in the rating's colour as far as the rating reaches it; a partly reached
@@ -1498,6 +1599,9 @@ const STAR_COUNT: usize = 10;
 /// panel is.
 #[derive(Clone, Copy, Debug, Default)]
 struct PanelSlide {
+    /// Whether a snapshot was followed yet: the first one shows the panel as it is, so a
+    /// view made while it is open (another language or scale) does not slide it in again.
+    seen: bool,
     open: bool,
     start_ns: u64,
     /// The visibility when the slide started.
@@ -1507,6 +1611,16 @@ struct PanelSlide {
 impl PanelSlide {
     /// Starts sliding the other way when `open` changes.
     fn follow(&mut self, open: bool, now_ns: u64, theme: &Theme) {
+        if !self.seen {
+            self.seen = true;
+            *self = PanelSlide {
+                seen: true,
+                open,
+                start_ns: now_ns,
+                from: if open { 1.0 } else { 0.0 },
+            };
+            return;
+        }
         if open != self.open {
             // Where the panel is now, so that a turn does not jump.
             self.from = self.visibility(now_ns, 0.0, theme);
