@@ -1235,8 +1235,28 @@ impl SongSelectView {
                     }
                 } else {
                     let centre = area.y + area.height / 2.0;
-                    if inside(primary_line, centre) {
-                        ride(primary_line, marquee, avail, x, centre, theme.text);
+                    // With the stars shown, the name rises and the star counter goes under
+                    // it, as lazer's `PanelBeatmap` (ADR-0151).
+                    let counter = theme.song_difficulty_info.stars() && stars.is_some();
+                    let star = theme.difficulty_star_size * scale;
+                    let gap = theme.difficulty_star_gap * scale;
+                    let name_centre = if counter {
+                        let total = primary_line.layout.height() + gap + star;
+                        centre - total / 2.0 + primary_line.layout.height() / 2.0
+                    } else {
+                        centre
+                    };
+                    if inside(primary_line, name_centre) {
+                        ride(primary_line, marquee, avail, x, name_centre, theme.text);
+                    }
+                    if counter && let Some(stars) = stars {
+                        let star_centre =
+                            name_centre + primary_line.layout.height() / 2.0 + gap + star / 2.0;
+                        if star_centre - star / 2.0 >= top_edge
+                            && star_centre + star / 2.0 <= bottom_edge
+                        {
+                            push_star_counter(&mut rect, stars, x, star_centre, theme, scale);
+                        }
                     }
                 }
                 let centre = area.y + area.height / 2.0;
@@ -1269,12 +1289,7 @@ impl SongSelectView {
                         }
                         // The SS performance, left of the pill (ADR-0151).
                         if !pp_line.text.is_empty() && inside(pp_line, centre) {
-                            left(
-                                pp_line,
-                                end - pp_line.layout.width(),
-                                centre,
-                                theme.disabled_text,
-                            );
+                            left(pp_line, end - pp_line.layout.width(), centre, theme.text);
                         }
                     }
                     Row::Set(_) => {
@@ -1375,6 +1390,44 @@ impl SongSelectView {
         self.type_setter.lay_out(line, size);
     }
 }
+
+// Ported from osu!lazer 2026.1005.0-lazer: osu.Game/Graphics/UserInterface/StarCounter.cs
+/// Lazer's star counter: [`STAR_COUNT`] stars from `x`, centred on `centre_y`, each dim
+/// behind and filled in the rating's colour as far as the rating reaches it; a partly reached
+/// star is drawn smaller (ADR-0151).
+fn push_star_counter(
+    rect: &mut impl FnMut(&Rect, Color, Look),
+    stars: f32,
+    x: f32,
+    centre_y: f32,
+    theme: &Theme,
+    scale: f32,
+) {
+    let size = theme.difficulty_star_size * scale;
+    let pitch = size + theme.difficulty_star_spacing * scale;
+    let colour = crate::star_colour::for_stars(stars);
+    for i in 0..STAR_COUNT {
+        let cx = x + i as f32 * pitch + size / 2.0;
+        let at = |s: f32| Rect {
+            x: cx - s / 2.0,
+            y: centre_y - s / 2.0,
+            width: s,
+            height: s,
+        };
+        rect(
+            &at(size),
+            faded(theme.text, theme.difficulty_star_dim),
+            Look::Star,
+        );
+        let fill = (stars - i as f32).clamp(0.0, 1.0);
+        if fill > 0.0 {
+            rect(&at(size * fill), colour, Look::Star);
+        }
+    }
+}
+
+/// Stars of [`push_star_counter`], as lazer's `StarCounter` default.
+const STAR_COUNT: usize = 10;
 
 /// The expanded set and when it changed, so its difficulties slide out from under its row
 /// and the rows below follow, while the set that closed slides shut (ADR-0136).

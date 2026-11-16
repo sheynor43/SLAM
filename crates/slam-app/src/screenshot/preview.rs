@@ -213,7 +213,11 @@ struct State {
 
 impl State {
     fn new(device: &mut Gl, size: Extent) -> Result<State, String> {
-        let theme = Theme::default();
+        // Every text a difficulty row can show (ADR-0151).
+        let theme = Theme {
+            song_difficulty_info: slam_ui::song_select::DifficultyInfo::StarsAndPp,
+            ..Theme::default()
+        };
         let registry = Arc::new(FontRegistry::with_builtin());
         let localizer = Localizer::builtin().map_err(|e| e.to_string())?;
         let settings = Settings::default();
@@ -518,6 +522,7 @@ fn sample_song_select(theme: &Theme, size: Extent) -> SongSelect {
                     });
                     row.key = (i * 10 + d) as u64 + 1;
                     row.stars = Some(stars);
+                    row.pp = Some(stars * stars * 31.0);
                     row.approach_rate = 7.0 + d as f32 * 0.6;
                     row.overall_difficulty = 6.0 + d as f32 * 0.5;
                     row
