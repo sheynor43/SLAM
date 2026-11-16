@@ -23,7 +23,9 @@ slam_testkit::install_counting_allocator!();
 const MOD_COLUMNS: ModColumns = [
     &["EZ", "NF", "HT", "DC"],
     &["HR", "SD", "PF"],
+    &["AT", "RX"],
     &["DA", "CL"],
+    &[],
 ];
 
 fn list_of(count: u64) -> Arc<SongList> {
@@ -129,7 +131,13 @@ fn labels() -> SongSelectLabels {
             ("setting-choice", "Choice".into()),
             ("value-a", "Value A".into()),
         ],
-        mod_column_titles: ["Reduction".into(), "Increase".into(), "Conversion".into()],
+        mod_column_titles: [
+            "Reduction".into(),
+            "Increase".into(),
+            "Automation".into(),
+            "Conversion".into(),
+            "Fun".into(),
+        ],
         mod_columns: MOD_COLUMNS,
         // The longest labels: Russian.
         details: slam_ui::song_select::DetailLabels {

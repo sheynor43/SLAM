@@ -4,11 +4,15 @@ use SongSelectInput as I;
 const COLUMNS: ModColumns = [
     &["EZ", "NF", "HT", "DC"],
     &["HR", "SD", "PF"],
+    &["AT", "RX"],
     &["DA", "CL"],
+    &[],
 ];
 
 fn layout() -> ModSelectLayout {
-    ModSelectLayout::new(1280.0, 720.0, &Theme::default())
+    let mut layout = ModSelectLayout::new(1280.0, 720.0, &Theme::default());
+    layout.place(column_counts(&COLUMNS));
+    layout
 }
 
 fn open_panel() -> ModSelect {
@@ -86,11 +90,21 @@ fn hotkeys_toggle_by_index_among_the_column() {
         ),
         None
     );
-    // The conversion column has no hotkeys.
+    // The automation column has hotkeys, as in lazer; the conversion column has none.
     assert_eq!(
         panel.input(
             I::ModHotkey {
                 column: 2,
+                index: 1
+            },
+            &l
+        ),
+        toggle(2, 1)
+    );
+    assert_eq!(
+        panel.input(
+            I::ModHotkey {
+                column: 3,
                 index: 0
             },
             &l
@@ -137,22 +151,25 @@ fn mouse_toggles_the_tile_under_the_cursor_and_hovers() {
     assert_eq!(panel.snapshot().hover, Some((1, 2)));
     assert_eq!(panel.input(I::PointerPress { x, y }, &l), toggle(1, 2));
     // Mouse works in the conversion column.
-    let [x, y] = l.tile_rect(2, 1).centre();
-    assert_eq!(panel.input(I::PointerPress { x, y }, &l), toggle(2, 1));
+    let [x, y] = l.tile_rect(3, 1).centre();
+    assert_eq!(panel.input(I::PointerPress { x, y }, &l), toggle(3, 1));
     // The gap between two tiles, a tile that does not exist, and the outside.
     let gap_y = r.y + r.height + 0.5;
-    assert_eq!(l.tile_at(r.x + 1.0, gap_y, [4, 3, 2]), None);
+    assert_eq!(l.tile_at(r.x + 1.0, gap_y, column_counts(&COLUMNS)), None);
     let [x, y] = l.tile_rect(1, 3).centre();
     assert_eq!(panel.input(I::PointerPress { x, y }, &l), None);
     assert_eq!(panel.snapshot().hover, None);
-    assert_eq!(l.tile_at(0.0, 0.0, [4, 3, 2]), None);
-    assert_eq!(l.tile_at(r.x + 1.0, r.y - 100.0, [4, 3, 2]), None);
+    assert_eq!(l.tile_at(0.0, 0.0, column_counts(&COLUMNS)), None);
+    assert_eq!(
+        l.tile_at(r.x + 1.0, r.y - 100.0, column_counts(&COLUMNS)),
+        None
+    );
 }
 
 #[test]
 fn tiles_fit_the_window_and_do_not_overlap() {
     let l = layout();
-    for column in 0..MAX_COLUMNS {
+    for column in (0..MAX_COLUMNS).filter(|&c| l.is_shown(c)) {
         let a = l.tile_rect(column, 6);
         assert!(a.y + a.height < l.hint.y);
         let b = l.tile_rect(column, 7);
@@ -174,7 +191,7 @@ fn flags_are_set_by_the_application() {
     assert_eq!(on, ["HT", "HR"]);
     panel.set_active(0, 2, false);
     assert!(!panel.is_active(0, 2));
-    assert_eq!(panel.snapshot().active, [0, 1, 0]);
+    assert_eq!(panel.snapshot().active, [0, 1, 0, 0, 0]);
 }
 
 #[test]
@@ -186,4 +203,44 @@ fn closing_clears_the_hover() {
     assert!(panel.snapshot().hover.is_some());
     panel.input(I::Back, &l);
     assert_eq!(panel.snapshot(), ModSelectSnapshot::default());
+}
+
+#[test]
+fn empty_columns_are_hidden_and_the_rest_centred() {
+    let l = layout();
+    assert!((0..4).all(|c| l.is_shown(c)) && !l.is_shown(4));
+    let first = l.column_rect(0, 4);
+    let last = l.column_rect(3, 2);
+    let left = first.x;
+    let right = 1280.0 - (last.x + last.width);
+    assert!((left - right).abs() < 0.01, "{left} vs {right}");
+    assert_eq!(l.column_titles[4], Rect::default());
+    // Nothing under the hidden column's place, even at x 0.
+    let mut all = ModSelectLayout::new(1280.0, 720.0, &Theme::default());
+    all.place([1, 1, 1, 1, 0]);
+    assert_eq!(
+        all.tile_at(0.0, all.tile_rect(0, 0).y + 1.0, [1, 1, 1, 1, 0]),
+        None
+    );
+    // Only two columns: they move to the middle.
+    all.place([2, 0, 0, 3, 0]);
+    assert!(all.tile_rect(0, 0).x > l.tile_rect(0, 0).x);
+    assert!(all.tile_rect(3, 0).x < l.tile_rect(3, 0).x);
+}
+
+#[test]
+fn a_column_plate_holds_its_header_and_tiles() {
+    let l = layout();
+    for (column, count) in column_counts(&COLUMNS).into_iter().enumerate() {
+        if count == 0 {
+            continue;
+        }
+        let plate = l.column_rect(column, count);
+        let header = l.column_titles[column];
+        assert!(plate.y <= header.y && plate.x <= header.x);
+        let last = l.tile_rect(column, count - 1);
+        assert!(plate.y + plate.height >= last.y + last.height);
+        assert!(plate.x + plate.width >= last.x + last.width);
+        assert!(header.y + header.height <= l.tile_rect(column, 0).y);
+    }
 }

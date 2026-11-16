@@ -535,7 +535,8 @@ fn sample_song_select(theme: &Theme, size: Extent) -> SongSelect {
     let mut screen = SongSelect::new();
     screen.set_list(list, filter);
     screen.set_status(SongSelectStatus::Ready);
-    let layout = SongSelectLayout::new(size.width as f32, size.height as f32, theme);
+    let layout = SongSelectLayout::new(size.width as f32, size.height as f32, theme)
+        .with_mod_columns(&crate::shell::mod_columns());
     // The second set, its third difficulty.
     for input in [
         SongSelectInput::Right,

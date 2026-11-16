@@ -16,12 +16,13 @@ pub use settings::{
     SettingRowKind, SettingValue,
 };
 
-/// Columns of the panel: lazer's difficulty reduction, difficulty increase and conversion.
-pub const MAX_COLUMNS: usize = 3;
+/// Columns of the panel, lazer's: difficulty reduction, difficulty increase, automation,
+/// conversion, fun (ADR-0152). A column without mods is not shown.
+pub const MAX_COLUMNS: usize = 5;
 /// Most tiles of a column; the active flags of a column are a `u16`.
 pub const MAX_COLUMN_MODS: usize = 16;
-/// The first columns have keyboard hotkeys; the rest (lazer's conversion column) do not.
-pub const HOTKEY_COLUMNS: usize = 2;
+/// The first columns have keyboard hotkeys, as in lazer; conversion and fun do not.
+pub const HOTKEY_COLUMNS: usize = 3;
 
 /// The acronyms of each column, in display order.
 pub type ModColumns = [&'static [&'static str]; MAX_COLUMNS];
@@ -46,63 +47,126 @@ pub enum ModSelectAction {
     },
 }
 
-/// Where the panel's texts and tiles are: a pure function of the window size and theme,
-/// shared by hit testing (update) and drawing.
+/// Where the panel's texts and tiles are: a function of the window size, the theme and
+/// which columns have mods ([`ModSelectLayout::place`]), shared by hit testing (update) and
+/// drawing.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct ModSelectLayout {
     pub title: Rect,
+    /// The columns' headers, in their colours; a column not shown has an empty one.
     pub column_titles: [Rect; MAX_COLUMNS],
     pub hint: Rect,
     /// The settings panel.
     pub customise: CustomisationLayout,
-    /// Left edge and width of the columns.
+    /// Left edge of each column.
     column_x: [f32; MAX_COLUMNS],
+    /// Which columns are shown: those with tiles.
+    shown: [bool; MAX_COLUMNS],
+    width: f32,
     tile_width: f32,
+    gap: f32,
+    header_y: f32,
+    header_height: f32,
+    pad: f32,
     tiles_top: f32,
     tile_height: f32,
     pitch: f32,
 }
 
 impl ModSelectLayout {
+    /// The layout with every column shown; [`ModSelectLayout::place`] hides the empty ones.
     pub fn new(width: f32, height: f32, theme: &Theme) -> ModSelectLayout {
         let scale = theme.scale(height);
         let margin = theme.song_margin * scale;
         let tile_width = theme.mod_tile_width * scale;
         let gap = theme.mod_column_gap * scale;
-        let total = tile_width * MAX_COLUMNS as f32 + gap * (MAX_COLUMNS - 1) as f32;
-        let left = (width - total) / 2.0;
         let title = Rect {
-            x: left,
+            x: 0.0,
             y: margin,
-            width: total,
+            width,
             height: theme.song_header_height * scale,
         };
-        let column_x: [f32; MAX_COLUMNS] =
-            std::array::from_fn(|i| left + i as f32 * (tile_width + gap));
         let label_height = theme.song_detail_size * scale * 1.5;
-        let label_y = title.y + title.height + margin / 2.0;
-        let column_titles = column_x.map(|x| Rect {
-            x,
-            y: label_y,
-            width: tile_width,
-            height: label_height,
-        });
+        let header_y = title.y + title.height + margin / 2.0;
+        let header_height = theme.mod_column_header_height * scale;
+        let pad = theme.mod_column_pad * scale;
         let hint = Rect {
-            x: left,
+            x: 0.0,
             y: height - margin - label_height,
-            width: total,
+            width,
             height: label_height,
         };
-        ModSelectLayout {
+        let mut layout = ModSelectLayout {
             title,
-            column_titles,
+            column_titles: [Rect::default(); MAX_COLUMNS],
             hint,
             customise: CustomisationLayout::new(width, height, theme),
-            column_x,
+            column_x: [0.0; MAX_COLUMNS],
+            shown: [false; MAX_COLUMNS],
+            width,
             tile_width,
-            tiles_top: label_y + label_height + margin / 2.0,
+            gap,
+            header_y,
+            header_height,
+            pad,
+            tiles_top: header_y + header_height + pad,
             tile_height: theme.mod_tile_height * scale,
             pitch: theme.mod_tile_pitch * scale,
+        };
+        layout.place([1; MAX_COLUMNS]);
+        layout
+    }
+
+    /// Shows the columns with tiles (`counts` per column), centred in the window. Does not
+    /// allocate.
+    pub fn place(&mut self, counts: [usize; MAX_COLUMNS]) {
+        let shown = counts.iter().filter(|&&n| n > 0).count();
+        let total = self.tile_width * shown as f32 + self.gap * shown.saturating_sub(1) as f32;
+        let left = (self.width - total) / 2.0;
+        let mut slot = 0;
+        for (column, &count) in counts.iter().enumerate() {
+            self.shown[column] = count > 0;
+            if count == 0 {
+                self.column_x[column] = 0.0;
+                self.column_titles[column] = Rect::default();
+                continue;
+            }
+            let x = left + slot as f32 * (self.tile_width + self.gap);
+            slot += 1;
+            self.column_x[column] = x;
+            self.column_titles[column] = Rect {
+                x,
+                y: self.header_y,
+                width: self.tile_width,
+                height: self.header_height,
+            };
+        }
+        let span = Rect {
+            x: left,
+            width: total,
+            ..self.title
+        };
+        self.title = span;
+        self.hint = Rect {
+            x: left,
+            width: total,
+            ..self.hint
+        };
+    }
+
+    /// Whether `column` is shown.
+    pub fn is_shown(&self, column: usize) -> bool {
+        self.shown.get(column).copied().unwrap_or(false)
+    }
+
+    /// The plate of `column` holding `count` tiles: its header and the tiles with padding.
+    pub fn column_rect(&self, column: usize, count: usize) -> Rect {
+        let tiles = count as f32 * self.pitch - (self.pitch - self.tile_height).max(0.0);
+        Rect {
+            x: self.column_x[column.min(MAX_COLUMNS - 1)] - self.pad,
+            y: self.header_y,
+            width: self.tile_width + 2.0 * self.pad,
+            height: self.header_height + self.pad + tiles.max(0.0) + self.pad,
         }
     }
 
@@ -118,8 +182,9 @@ impl ModSelectLayout {
 
     /// The tile under the point, with `counts` tiles in each column.
     pub fn tile_at(&self, x: f32, y: f32, counts: [usize; MAX_COLUMNS]) -> Option<(usize, usize)> {
-        let column = (0..MAX_COLUMNS)
-            .find(|&c| x >= self.column_x[c] && x < self.column_x[c] + self.tile_width)?;
+        let column = (0..MAX_COLUMNS).find(|&c| {
+            self.shown[c] && x >= self.column_x[c] && x < self.column_x[c] + self.tile_width
+        })?;
         let offset = y - self.tiles_top;
         if offset < 0.0 {
             return None;
@@ -128,6 +193,11 @@ impl ModSelectLayout {
         (index < counts[column] && self.tile_rect(column, index).contains(x, y))
             .then_some((column, index))
     }
+}
+
+/// The tiles of each column.
+pub fn column_counts(columns: &ModColumns) -> [usize; MAX_COLUMNS] {
+    columns.map(|c| c.len().min(MAX_COLUMN_MODS))
 }
 
 /// A setting of an active mod the selected mods line shows after its acronym, as lazer's
@@ -278,7 +348,7 @@ impl ModSelect {
     }
 
     fn counts(&self) -> [usize; MAX_COLUMNS] {
-        self.columns.map(|c| c.len())
+        column_counts(&self.columns)
     }
 
     /// Applies `input` while the panel is open: it takes every key. Closing and hovering are

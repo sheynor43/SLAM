@@ -81,7 +81,9 @@ pub fn interface_views(
         mod_column_titles: [
             text("song-select-mods-reduction"),
             text("song-select-mods-increase"),
+            text("song-select-mods-automation"),
             text("song-select-mods-conversion"),
+            text("song-select-mods-fun"),
         ],
         details: DetailLabels {
             length: text("song-select-details-length"),

@@ -172,11 +172,13 @@ const KEY_RIGHT_ALT: u16 = 230;
 /// The keys of the mod select's hotkeys, by key row, as lazer's sequential hotkey handler maps
 /// them: the top letter row is the first column, the home row the second (the third column,
 /// conversion, has none). Keys are USB HID scancodes.
-const MOD_HOTKEY_ROWS: [&[u16]; 2] = [
+const MOD_HOTKEY_ROWS: [&[u16]; 3] = [
     // Q W E R T Y U I O P
     &[20, 26, 8, 21, 23, 28, 24, 12, 18, 19],
     // A S D F G H J K L
     &[4, 22, 7, 9, 10, 11, 13, 14, 15],
+    // Z X C V B N M
+    &[29, 27, 6, 25, 5, 17, 16],
 ];
 
 /// The setting a selected mod shows after its acronym, as lazer's `ExtendedIconInformation`:
@@ -216,7 +218,9 @@ pub fn mod_columns() -> ModColumns {
     [
         mods_for(ModType::DifficultyReduction),
         mods_for(ModType::DifficultyIncrease),
+        mods_for(ModType::Automation),
         mods_for(ModType::Conversion),
+        mods_for(ModType::Fun),
     ]
 }
 
@@ -449,7 +453,8 @@ impl ShellState {
         ShellState {
             stack: ScreenStack::new(AppScreen::Menu(MainMenu::new())),
             layout: MenuLayout::new(width, height, &theme),
-            song_layout: SongSelectLayout::new(width, height, &theme),
+            song_layout: SongSelectLayout::new(width, height, &theme)
+                .with_mod_columns(&mod_columns()),
             results_layout: ResultsLayout::new(width, height, &theme),
             settings_layout: panel_layout(width, height, &theme),
             song_select,
@@ -1414,7 +1419,8 @@ impl ShellState {
     pub fn set_size(&mut self, width: f32, height: f32) {
         self.size = [width, height];
         self.layout = MenuLayout::new(width, height, &self.theme);
-        self.song_layout = SongSelectLayout::new(width, height, &self.theme);
+        self.song_layout =
+            SongSelectLayout::new(width, height, &self.theme).with_mod_columns(&mod_columns());
         self.results_layout = ResultsLayout::new(width, height, &self.theme);
         self.settings_layout = panel_layout(width, height, &self.theme);
     }

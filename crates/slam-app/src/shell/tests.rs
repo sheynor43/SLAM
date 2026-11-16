@@ -1744,10 +1744,10 @@ fn hotkeys_toggle_mods_by_key_row_and_sync_the_tiles() {
     // Easy, then Hard Rock, which it conflicts with: the added one wins.
     s.tick(at(3), &[key(KEY_Q), key(KEY_A)], &mut snap);
     assert_eq!(acronyms(&s), ["HR"]);
-    assert_eq!(song_view(&snap).mods.active, [0, 0b1, 0]);
+    assert_eq!(song_view(&snap).mods.active, [0, 0b1, 0, 0, 0]);
     s.tick(at(4), &[key(KEY_W), key(KEY_G)], &mut snap);
     assert_eq!(acronyms(&s), ["HR", "NC", "NF"]);
-    assert_eq!(song_view(&snap).mods.active, [0b10, 0b10001, 0]);
+    assert_eq!(song_view(&snap).mods.active, [0b10, 0b10001, 0, 0, 0]);
     // A selected mod's key deselects it.
     s.tick(at(5), &[key(KEY_W)], &mut snap);
     assert_eq!(acronyms(&s), ["HR", "NC"]);
@@ -1757,7 +1757,7 @@ fn hotkeys_toggle_mods_by_key_row_and_sync_the_tiles() {
     // R is a hotkey here, not Retry; Daycore and Nightcore conflict.
     s.tick(at(7), &[key(KEY_R_HOTKEY)], &mut snap);
     assert_eq!(acronyms(&s), ["DC", "HR"]);
-    assert_eq!(song_view(&snap).mods.active, [0b1000, 0b1, 0]);
+    assert_eq!(song_view(&snap).mods.active, [0b1000, 0b1, 0, 0, 0]);
     assert!(!s.is_loading());
 }
 
@@ -1769,7 +1769,7 @@ fn a_conflicting_mod_replaces_the_selected_one() {
     assert_eq!(acronyms(&s), ["DT"]);
     s.tick(at(2), &[key(KEY_E)], &mut snap);
     assert_eq!(acronyms(&s), ["HT"]);
-    assert_eq!(song_view(&snap).mods.active, [0b100, 0, 0]);
+    assert_eq!(song_view(&snap).mods.active, [0b100, 0, 0, 0, 0]);
 }
 
 #[test]
@@ -1779,7 +1779,7 @@ fn backspace_deselects_all_with_the_panel_open_or_closed() {
     assert_eq!(acronyms(&s), ["DT", "EZ"]);
     s.tick(at(2), &[key(KEY_BACKSPACE)], &mut snap);
     assert!(acronyms(&s).is_empty());
-    assert_eq!(song_view(&snap).mods.active, [0, 0, 0]);
+    assert_eq!(song_view(&snap).mods.active, [0, 0, 0, 0, 0]);
     assert!(song_view(&snap).mods.open);
     s.tick(at(3), &[key(KEY_Q), key(KEY_ESCAPE)], &mut snap);
     assert_eq!(acronyms(&s), ["EZ"]);
@@ -1793,7 +1793,7 @@ fn a_click_on_a_tile_toggles_it() {
     let (mut s, mut snap, _producer) = in_song_select();
     s.tick(at(1), &[key(KEY_F1)], &mut snap);
     // The conversion column has no hotkeys but takes the mouse.
-    let [x, y] = s.song_layout.mods.tile_rect(2, 0).centre();
+    let [x, y] = s.song_layout.mods.tile_rect(3, 0).centre();
     let click = [
         mouse(InputKind::MouseMove { x, y }),
         mouse(InputKind::MouseButton {
@@ -1803,7 +1803,7 @@ fn a_click_on_a_tile_toggles_it() {
     ];
     s.tick(at(2), &click, &mut snap);
     assert_eq!(acronyms(&s), ["DA"]);
-    assert_eq!(song_view(&snap).mods.hover, Some((2, 0)));
+    assert_eq!(song_view(&snap).mods.hover, Some((3, 0)));
 }
 
 #[test]
@@ -1846,7 +1846,7 @@ fn ctrl_up_and_down_change_the_mod_speed() {
     s.tick(at(1), &[key(KEY_LEFT_CTRL), key(KEY_UP)], &mut snap);
     assert_eq!(acronyms(&s), ["DT"]);
     // Double Time is the fourth tile of the second column.
-    assert_eq!(song_view(&snap).mods.active, [0, 0b1000, 0]);
+    assert_eq!(song_view(&snap).mods.active, [0, 0b1000, 0, 0, 0]);
     assert_eq!(detail(&snap, 1, 3), TileDetail::Speed(105));
     // The carousel stays while Control is held.
     assert_eq!(s.song_select().selected(), Some((0, 0)));
@@ -1890,7 +1890,7 @@ fn held_keys_repeat_the_walks_and_the_mod_steps_only() {
         &mut snap,
     );
     assert_eq!(detail(&snap, 1, 3), TileDetail::Speed(110));
-    assert_eq!(detail(&snap, 2, 0), TileDetail::ApproachRate(51));
+    assert_eq!(detail(&snap, 3, 0), TileDetail::ApproachRate(51));
     // The carousel stays while Control is held.
     assert_eq!(s.song_select().selected(), Some((0, 1)));
     // A held letter or F1 acts once.
@@ -1934,12 +1934,12 @@ fn ctrl_f3_and_f4_change_the_approach_rate() {
         &mut snap,
     );
     assert_eq!(acronyms(&s), ["DA"]);
-    assert_eq!(song_view(&snap).mods.active, [0, 0, 0b1]);
-    assert_eq!(detail(&snap, 2, 0), TileDetail::ApproachRate(52));
+    assert_eq!(song_view(&snap).mods.active, [0, 0, 0, 0b1, 0]);
+    assert_eq!(detail(&snap, 3, 0), TileDetail::ApproachRate(52));
     s.tick(at(2), &[key(KEY_F3), key(KEY_F3)], &mut snap);
     assert!(acronyms(&s).is_empty());
     s.tick(at(3), &[key(KEY_F3)], &mut snap);
-    assert_eq!(detail(&snap, 2, 0), TileDetail::ApproachRate(49));
+    assert_eq!(detail(&snap, 3, 0), TileDetail::ApproachRate(49));
     // Hard Rock and Difficulty Adjust do not go together: the hotkey does nothing.
     s.tick(
         at(4),
@@ -2005,6 +2005,43 @@ fn the_panel_shows_every_difficulty_increase_mod() {
     let columns = mod_columns();
     assert_eq!(columns[1], mods_for(ModType::DifficultyIncrease));
     assert!(columns[1].contains(&"TC"));
+}
+
+#[test]
+fn the_panel_columns_follow_lazer_and_the_third_hotkey_row_is_automation() {
+    let columns = mod_columns();
+    let types = [
+        ModType::DifficultyReduction,
+        ModType::DifficultyIncrease,
+        ModType::Automation,
+        ModType::Conversion,
+        ModType::Fun,
+    ];
+    for (column, ty) in types.into_iter().enumerate() {
+        assert_eq!(columns[column], mods_for(ty));
+    }
+    // Z: the automation column's first mod; Q and A as before.
+    assert_eq!(
+        super::mod_hotkey(29),
+        Some(SongSelectInput::ModHotkey {
+            column: 2,
+            index: 0
+        })
+    );
+    assert_eq!(
+        super::mod_hotkey(4),
+        Some(SongSelectInput::ModHotkey {
+            column: 1,
+            index: 0
+        })
+    );
+    // An empty column is not shown.
+    let layout = &SongSelectLayout::new(1280.0, 720.0, &Theme::default())
+        .with_mod_columns(&columns)
+        .mods;
+    for (column, mods) in columns.iter().enumerate() {
+        assert_eq!(layout.is_shown(column), !mods.is_empty());
+    }
 }
 
 fn customise(snap: &ShellSnapshot) -> slam_ui::song_select::CustomisationSnapshot {

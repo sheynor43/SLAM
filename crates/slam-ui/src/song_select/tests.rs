@@ -361,7 +361,7 @@ fn visible_rows_cover_the_list_area() {
     assert_eq!(l.visible_rows(&g, g.top(5) + 1.0).start, 5);
 }
 
-const MOD_COLUMNS: ModColumns = [&["EZ", "NF"], &["HR", "SD"], &["DA"]];
+const MOD_COLUMNS: ModColumns = [&["EZ", "NF"], &["HR", "SD"], &[], &["DA"], &[]];
 
 fn with_mods() -> SongSelect {
     let mut s = screen(&[(1, 2), (2, 3)]);
@@ -452,7 +452,7 @@ fn the_panel_turns_toggles_and_deselect_into_actions() {
     );
     // The application writes the flags back.
     s.mods_mut().set_active(1, 1, true);
-    assert_eq!(s.snapshot().mods.active, [0, 2, 0]);
+    assert_eq!(s.snapshot().mods.active, [0, 2, 0, 0, 0]);
     // A click on a tile toggles it.
     let [x, y] = layout().mods.tile_rect(0, 1).centre();
     assert_eq!(
