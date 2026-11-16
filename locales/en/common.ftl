@@ -413,3 +413,7 @@ volume-meter-master = MASTER
 volume-meter-music = MUSIC
 volume-meter-max = MAX
 volume-meter-muted = MUTED
+
+# The toast after a replay is saved (ADR-0154).
+toast-replay-saved = Replay saved
+toast-replay-saved-hint = Click to show the file

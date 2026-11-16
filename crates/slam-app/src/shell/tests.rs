@@ -2846,3 +2846,40 @@ fn classic_mod_hotkeys_follow_stable() {
     s.tick(at(11), &[key(KEY_W), key(KEY_L)], &mut snap);
     assert_eq!(acronyms(&s), ["HR", "NF", "TC"]);
 }
+
+/// A saved replay shows the toast; a click on it is the toast's, not the screen's under it
+/// (ADR-0154).
+#[test]
+fn a_saved_replay_shows_a_toast_that_takes_its_click() {
+    let mut s = state();
+    let mut snap = ShellSnapshot::default();
+    s.tick(0, &[], &mut snap);
+    assert!(!snap.toast.visible);
+    assert_eq!(s.replay_saved(PathBuf::from("/r/a.osr"), 1), None);
+    s.tick(2, &[], &mut snap);
+    assert!(snap.toast.visible);
+    // A second replay replaces the first, which goes back to be freed.
+    assert_eq!(
+        s.replay_saved(PathBuf::from("/r/b.osr"), 3),
+        Some(PathBuf::from("/r/a.osr"))
+    );
+    let [x, y] = slam_ui::toast::ToastLayout::new(1280.0, 720.0, &Theme::default())
+        .rect
+        .centre();
+    let click = [
+        mouse(InputKind::MouseMove { x, y }),
+        mouse(InputKind::MouseButton {
+            button: MouseButton::Left,
+            down: true,
+        }),
+    ];
+    s.tick(4, &click, &mut snap);
+    assert!(!snap.toast.visible);
+    // The main menu under it did not take the click.
+    assert!(matches!(s.stack().top(), AppScreen::Menu(_)));
+    // It goes by itself after its time.
+    s.replay_saved(PathBuf::from("/r/c.osr"), 10);
+    let show = (Theme::default().toast_show_ms as u64 + 1) * 1_000_000;
+    s.tick(10 + show, &[], &mut snap);
+    assert!(!snap.toast.visible);
+}

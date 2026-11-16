@@ -88,6 +88,8 @@ enum Scene {
     Menu(usize),
     /// The mod select panel open over the song select, a few mods on (ADR-0152).
     Mods,
+    /// The replay toast over the song select, hovered (ADR-0154).
+    Toast,
     SongSelect {
         effects: bool,
     },
@@ -100,11 +102,12 @@ enum Scene {
 }
 
 /// The names of the PNGs and what they show, in the order they are drawn.
-const SCENES: [(&str, Scene); 14] = [
+const SCENES: [(&str, Scene); 15] = [
     ("menu-play", Scene::Menu(0)),
     ("menu-settings", Scene::Menu(1)),
     ("song-select", Scene::SongSelect { effects: true }),
     ("mods", Scene::Mods),
+    ("toast", Scene::Toast),
     (
         "song-select-noeffects",
         Scene::SongSelect { effects: false },
@@ -327,6 +330,34 @@ impl State {
                         },
                     );
                 }
+            }
+            Scene::Toast => {
+                self.views.song_select.push(
+                    &mut self.shapes,
+                    &mut self.text,
+                    &mut self.glyphs,
+                    width,
+                    height,
+                    &self.song_select.snapshot(),
+                    Pose::SHOWN,
+                    white,
+                    Thumbs::OFF,
+                );
+                let frame = slam_ui::toast::ToastFrame {
+                    visible: true,
+                    since_ns: 1,
+                    hover: true,
+                };
+                self.views.toast.push(
+                    &mut self.shapes,
+                    &mut self.text,
+                    &mut self.glyphs,
+                    &frame,
+                    width,
+                    height,
+                    5_000_000_000,
+                    white,
+                );
             }
             Scene::Settings => {
                 let mut screen = SettingsScreen::new(&self.rows.specs(&self.settings), SECTIONS);
