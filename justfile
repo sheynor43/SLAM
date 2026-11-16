@@ -51,7 +51,7 @@ screenshots:
 screenshots-update:
     SLAM_UPDATE_SCREENSHOTS=1 cargo test -p slam-app --test screenshots -- --ignored
 
-# Скриншоты локального корпуса сторонних скинов (docs/SKIN_CORPUS.md); FILTER - подстрока имени скина; путь к корпусу: SLAM_SKIN_CORPUS, по умолчанию ../slam-skins
+# Скриншоты локального корпуса сторонних скинов (вне репозитория); FILTER - подстрока имени скина; путь к корпусу: SLAM_SKIN_CORPUS, по умолчанию ../slam-skins
 skin-corpus FILTER="":
     SLAM_SKIN_CORPUS_FILTER={{quote(FILTER)}} cargo test -p slam-app --test skin_corpus -- --ignored --nocapture
 

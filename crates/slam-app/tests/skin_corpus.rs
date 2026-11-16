@@ -1,4 +1,4 @@
-//! Screenshots of the local corpus of third-party stable skins (`docs/SKIN_CORPUS.md`,
+//! Screenshots of the local corpus of third-party stable skins (outside the repository,
 //! ADR-0111): the scene beatmap drawn with each skin of `SLAM_SKIN_CORPUS` (default
 //! `../slam-skins`) and compared with the references in its `reference` folder. Needs Mesa
 //! with llvmpipe: `just skin-corpus [FILTER]`.
@@ -88,13 +88,13 @@ fn shoot(entry: &Entry, root: &Path, map: &Path, checker: &mut Checker) -> &'sta
 fn corpus_skins_draw_as_the_references() {
     let root = corpus::corpus_root().unwrap_or_else(|| {
         panic!(
-            "skin corpus not found: set {} or create ../slam-skins (see docs/SKIN_CORPUS.md)",
+            "skin corpus not found: set {} or create ../slam-skins",
             corpus::ROOT_VAR
         )
     });
     let manifest = root.join("manifest.toml");
     let text = std::fs::read_to_string(&manifest)
-        .unwrap_or_else(|e| panic!("{}: {e} (see docs/SKIN_CORPUS.md)", manifest.display()));
+        .unwrap_or_else(|e| panic!("{}: {e}", manifest.display()));
     let entries =
         corpus::parse_manifest(&text).unwrap_or_else(|e| panic!("{}: {e}", manifest.display()));
     let filter = std::env::var("SLAM_SKIN_CORPUS_FILTER").unwrap_or_default();

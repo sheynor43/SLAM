@@ -1,4 +1,4 @@
-//! The manifest of the local corpus of third-party skins (`docs/SKIN_CORPUS.md`): skins that
+//! The manifest of the local corpus of third-party skins (outside the repository, ADR-0111): skins that
 //! live outside the repository, with their own references.
 
 use std::collections::HashSet;
