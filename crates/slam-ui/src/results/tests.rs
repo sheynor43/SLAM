@@ -305,3 +305,39 @@ fn the_last_info_row_stays_clear_of_the_hint_and_the_buttons() {
         }
     }
 }
+
+#[test]
+fn stable_look_moves_the_buttons_clear_of_the_panel() {
+    let theme = Theme::default();
+    for (w, h) in [(1280.0, 720.0), (1920.0, 1080.0), (1024.0, 768.0)] {
+        let slam = ResultsLayout::new_for(w, h, &theme, false);
+        assert_eq!(slam, ResultsLayout::new(w, h, &theme));
+        let stable = ResultsLayout::new_for(w, h, &theme, true);
+        let panel_right = stable::panel_right(w, h);
+        assert!(panel_right > 0.0 && panel_right < w);
+        for (i, button) in stable.buttons.iter().enumerate() {
+            assert!(
+                button.x >= panel_right,
+                "{w}x{h}: button {i} overlaps the panel"
+            );
+            assert!(button.x + button.width <= w && button.y + button.height <= h);
+            // The same height and place at the bottom as in SLAM's look.
+            assert_eq!(button.y, slam.buttons[i].y);
+            assert_eq!(button.height, slam.buttons[i].height);
+        }
+        assert!(stable.buttons[0].x + stable.buttons[0].width <= stable.buttons[1].x);
+        // Right-aligned to the margin.
+        let margin = theme.results_margin * stable.scale;
+        let last = stable.buttons[1];
+        assert!((w - margin - (last.x + last.width)).abs() < 1e-3);
+        // The hint stays above the buttons and over them.
+        assert!(stable.hint.x >= panel_right);
+        assert!(stable.hint.y + stable.hint.height <= stable.buttons[0].y);
+        // Hit testing follows the moved buttons.
+        let [x, y] = stable.buttons[0].centre();
+        assert_eq!(stable.button_at(x, y), Some(ResultsButton::Retry));
+        let [x, y] = slam.buttons[0].centre();
+        assert_eq!(stable.button_at(x, y), None);
+        assert_eq!(slam.button_at(x, y), Some(ResultsButton::Retry));
+    }
+}

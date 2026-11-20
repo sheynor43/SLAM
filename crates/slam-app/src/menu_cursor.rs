@@ -136,7 +136,7 @@ pub fn cursor_files(skins: &SkinChain) -> CursorFiles {
 }
 
 /// The skin chain of the menus: the chosen skin over the default one.
-fn menu_chain(user: Option<&Path>) -> Result<SkinChain, String> {
+pub(crate) fn menu_chain(user: Option<&Path>) -> Result<SkinChain, String> {
     let default_dir = crate::default_skin::dir()?;
     let default = Skin::load_default(&default_dir).map_err(|e| e.to_string())?;
     let user = user.and_then(|dir| {
@@ -232,6 +232,11 @@ fn run(
 pub struct CursorShown(Arc<AtomicU32>);
 
 impl CursorShown {
+    /// The shared counter, for the update thread's end of a loader link.
+    pub(crate) fn share(&self) -> Arc<AtomicU32> {
+        self.0.clone()
+    }
+
     /// Records that the snapshot `seq` is being drawn.
     pub fn set(&self, seq: u32) {
         self.0.store(seq, Ordering::Release);
@@ -239,7 +244,7 @@ impl CursorShown {
 }
 
 /// Whether the draw thread, at `shown`, has got to snapshot `seq` or later.
-fn reached(shown: u32, seq: u32) -> bool {
+pub(crate) fn reached(shown: u32, seq: u32) -> bool {
     shown.wrapping_sub(seq) < u32::MAX / 2
 }
 
