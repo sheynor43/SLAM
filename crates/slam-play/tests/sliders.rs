@@ -95,6 +95,7 @@ fn objects_with(
             visuals: CircleVisuals::new(map, circle_mods, settings, None, &chain),
             style: CircleStyle::new(circle_mods, &windows, &chain),
             config: CircleSkinConfig::new(&chain),
+            kiai: slam_play::kiai::KiaiFlash::default(),
         },
         HitSliders {
             visuals: SliderVisuals::new(map, circle_mods, settings, None, &chain),
