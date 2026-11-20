@@ -316,6 +316,7 @@ settings-gameplay-hit-lighting = Подсветка попаданий
 settings-gameplay-key-overlay = Оверлей клавиш
 settings-gameplay-pause-menu-style = Меню паузы
 settings-gameplay-pause-menu-scale = Масштаб меню паузы
+settings-gameplay-hold-to-confirm = Задержка подтверждения удержанием
 settings-option-pause-menu-style-slam = SLAM
 settings-option-pause-menu-style-lazer = lazer
 settings-option-pause-menu-style-stable = stable (из скина)

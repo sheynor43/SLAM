@@ -2749,6 +2749,9 @@ struct PlayHost {
         f32,
         slam_ui::theme::ColourScheme,
     ),
+    /// How long quick retry and quick exit are held, in nanoseconds
+    /// (`gameplay.hold_to_confirm_ms`). Applies live.
+    hold_ns: u64,
     /// Whether the interface effects are on (ADR-0123).
     effects: bool,
 }
@@ -2870,9 +2873,11 @@ impl PlayHost {
             settings.general.colour_scheme,
         );
         self.effects = settings.general.effects;
+        self.hold_ns = hold_ns(settings);
         if let Some(game) = &mut self.game {
             style_menu(&mut game.session, self.pause_menu, game.stable_pause);
             game.session.set_menu_effects(self.effects);
+            game.session.set_hold_ns(self.hold_ns);
         }
         let audio = &mut self.audio;
         audio.volumes.sync(
@@ -3204,6 +3209,7 @@ impl PlayHost {
         let (skip_element, skip_size) = scene.skip_button();
         game.session.set_skip_button(skip_element, skip_size);
         game.session.set_service_options(scene.service_options());
+        game.session.set_hold_ns(self.hold_ns);
         if let Err(rtrb::PushError::Full((_, scene))) = self.scenes.push((game.id, scene)) {
             // Room was checked above; the update thread is the only producer.
             self.loader.free(Trash::Other(Box::new(scene)));
@@ -3497,6 +3503,7 @@ impl PlayHost {
         let (skip_element, skip_size) = scene.skip_button();
         session.set_skip_button(skip_element, skip_size);
         session.set_service_options(scene.service_options());
+        session.set_hold_ns(self.hold_ns);
         session.set_pointer(slam_osu::Vec2::new(pointer[0], pointer[1]));
         session.set_menu_effects(self.effects);
         self.loader.free(Trash::Other(Box::new((beatmap, mods))));
@@ -5314,6 +5321,7 @@ fn run_with<B: render::Backend>(
                 settings.general.colour_scheme,
             ),
             effects: settings.general.effects,
+            hold_ns: hold_ns(&settings),
         }
     });
 
@@ -5515,3 +5523,8 @@ fn run_with<B: render::Backend>(
 mod settings_tests;
 #[cfg(test)]
 mod tests;
+
+/// The hold of quick retry and quick exit the settings ask for, in nanoseconds.
+fn hold_ns(settings: &Settings) -> u64 {
+    (settings.gameplay.hold_to_confirm_ms.max(0.0) * 1e6) as u64
+}

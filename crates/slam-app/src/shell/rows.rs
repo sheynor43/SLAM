@@ -340,6 +340,8 @@ pub enum Row {
     KeyOverlayAnimation,
     HudAnimations,
     PauseMenuScale,
+    /// How long quick retry and quick exit are held (lazer's `UIHoldActivationDelay`).
+    HoldToConfirm,
     SongsFolder,
     /// Opens the project page.
     FeedbackHome,
@@ -353,7 +355,7 @@ pub enum Row {
 const _: () = assert!(Row::ALL.len() <= slam_ui::settings_screen::MAX_ROWS);
 
 impl Row {
-    pub const ALL: [Row; 101] = [
+    pub const ALL: [Row; 102] = [
         Row::MasterVolume,
         Row::MusicVolume,
         Row::MenuMusic,
@@ -451,6 +453,7 @@ impl Row {
         Row::KeyOverlayAnimation,
         Row::HudAnimations,
         Row::PauseMenuScale,
+        Row::HoldToConfirm,
         Row::SongsFolder,
         Row::FeedbackHome,
         Row::FeedbackBug,
@@ -594,7 +597,8 @@ impl Row {
             | Row::KeyOverlay
             | Row::KeyOverlayAnimation
             | Row::HudAnimations
-            | Row::PauseMenuScale => section::GAMEPLAY,
+            | Row::PauseMenuScale
+            | Row::HoldToConfirm => section::GAMEPLAY,
             Row::SongsFolder => section::LIBRARY,
             Row::FeedbackHome | Row::FeedbackBug | Row::FeedbackFeature => section::FEEDBACK,
         }
@@ -697,6 +701,7 @@ impl Row {
             Row::AutoCursorSize => "settings-gameplay-auto-cursor-size",
             Row::PauseMenuStyle => "settings-gameplay-pause-menu-style",
             Row::PauseMenuScale => "settings-gameplay-pause-menu-scale",
+            Row::HoldToConfirm => "settings-gameplay-hold-to-confirm",
             Row::Skin => "settings-gameplay-skin",
             Row::SongsFolder => "settings-library-songs-folder",
             Row::FeedbackHome => "settings-feedback-home",
@@ -1290,6 +1295,12 @@ impl Rows {
                     .iter()
                     .position(|b| *b == s.audio.buffer_frames),
             ),
+            Row::HoldToConfirm => RowKind::Slider {
+                min: *crate::settings::model::Gameplay::HOLD_TO_CONFIRM_RANGE.start(),
+                max: *crate::settings::model::Gameplay::HOLD_TO_CONFIRM_RANGE.end(),
+                step: crate::settings::model::Gameplay::HOLD_TO_CONFIRM_STEP,
+                value: s.gameplay.hold_to_confirm_ms,
+            },
             Row::GlobalOffset => RowKind::Slider {
                 min: *Timing::OFFSET_RANGE.start(),
                 max: *Timing::OFFSET_RANGE.end(),
@@ -1473,6 +1484,12 @@ impl Rows {
             (Row::CursorSize, RowValue::Slider(v)) => {
                 settings.gameplay.cursor_size =
                     round_to(v, 2).clamp(CURSOR_SIZE_RANGE.0, CURSOR_SIZE_RANGE.1);
+            }
+            (Row::HoldToConfirm, RowValue::Slider(v)) => {
+                settings.gameplay.hold_to_confirm_ms = v.round().clamp(
+                    *crate::settings::model::Gameplay::HOLD_TO_CONFIRM_RANGE.start(),
+                    *crate::settings::model::Gameplay::HOLD_TO_CONFIRM_RANGE.end(),
+                );
             }
             (Row::GlobalOffset, RowValue::Slider(v)) => {
                 settings.timing.global_offset_ms = v.round();
@@ -1923,7 +1940,7 @@ impl Rows {
                     _ => Vec::new(),
                 };
                 let unit = match row {
-                    Row::GlobalOffset => text("settings-unit-ms"),
+                    Row::GlobalOffset | Row::HoldToConfirm => text("settings-unit-ms"),
                     Row::MasterVolume
                     | Row::MusicVolume
                     | Row::MenuMusicVolume

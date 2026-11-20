@@ -96,6 +96,7 @@ fn round_trip_non_default() {
     s.gameplay.hud_animations = false;
     s.gameplay.cursor_trail = false;
     s.gameplay.cursor_ripple = true;
+    s.gameplay.hold_to_confirm_ms = 0.0;
     s.gameplay.cursor_size = 0.65;
     s.gameplay.auto_cursor_size = true;
     s.general.colour_scheme = ColourScheme::Mono;
@@ -1929,4 +1930,16 @@ fn the_mod_hotkeys_setting_round_trips_and_falls_back() {
         loaded.settings.song_select.mod_hotkeys,
         ModHotkeyStyle::Sequential
     );
+}
+
+#[test]
+fn hold_to_confirm_defaults_to_lazers_200_ms_and_stays_in_range() {
+    assert_eq!(Settings::default().gameplay.hold_to_confirm_ms, 200.0);
+    let missing = file::from_toml_str("[gameplay]\ndim = 0.2\n");
+    assert_eq!(missing.settings.gameplay.hold_to_confirm_ms, 200.0);
+    let instant = file::from_toml_str("[gameplay]\nhold_to_confirm_ms = 0.0\n");
+    assert_eq!(instant.settings.gameplay.hold_to_confirm_ms, 0.0);
+    let long = file::from_toml_str("[gameplay]\nhold_to_confirm_ms = 2000.0\n");
+    // Out of range: the default stays.
+    assert_eq!(long.settings.gameplay.hold_to_confirm_ms, 200.0);
 }
