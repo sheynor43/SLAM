@@ -314,6 +314,15 @@ pub fn mod_icons(data: &ResultsData) -> impl Iterator<Item = usize> + '_ {
         })
 }
 
+/// The right edge of the panel (it is placed at the window's left).
+pub fn panel_right(width: f32, height: f32) -> f32 {
+    let m = Metrics::new(width, height);
+    // Independent of the file's density: the panel is 622x505 osu pixels at most as wide
+    // as the scale of its height or width allows.
+    let hard = [622.0, 505.0];
+    hard[0] * m.image_scale(hard, 317.0)
+}
+
 /// A number being drawn in a font: McOsu advances by the width of the score font's `0`
 /// for every digit.
 struct Pen<'a, 'b, F: FnMut(Item<'a>)> {

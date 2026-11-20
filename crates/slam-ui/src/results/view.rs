@@ -405,6 +405,10 @@ impl ResultsView {
         let opacity = pose.opacity;
         let theme = &self.theme;
         let layout = &self.layout;
+        let layout = &match stable {
+            Some(_) => layout.stable_buttons(width, height, theme),
+            None => *layout,
+        };
         let pad = theme.song_text_pad * layout.scale;
         let data = &*snapshot.data;
 

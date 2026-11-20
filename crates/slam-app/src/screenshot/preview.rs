@@ -2,7 +2,7 @@
 //! OpenGL of the screenshots and writes them as PNGs, to look at interface changes without
 //! opening a window. Developer command: its console output is not localised.
 
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 use slam_play::{
@@ -15,6 +15,7 @@ use slam_text::{FontRegistry, GlyphAtlasConfig, GlyphCache, glyph_atlas};
 use slam_ui::cursor::{CursorMotion, push_slam_cursor};
 use slam_ui::i18n::Localizer;
 use slam_ui::menu::MenuSnapshot;
+use slam_ui::results::{Rank, ResultsData, ResultsMods, ResultsSnapshot, ResultsStat, StatKind};
 use slam_ui::screen::Pose;
 use slam_ui::settings_screen::SettingsScreen;
 use slam_ui::song_select::{
@@ -24,13 +25,19 @@ use slam_ui::song_select::{
 };
 use slam_ui::theme::Theme;
 
+use slam_render::upload::{TextureLoaderConfig, TextureRequests, TextureState, texture_loader};
+use slam_skin::{Skin, SkinChain};
+use std::time::{Duration, Instant};
+
 use super::intro::{Gl, Gpu, draw_layers, settle, with_headless_gl};
 use super::{Frame, REFERENCE_RENDERER};
+use crate::ranking_skin::{MAX_RANKING_TEXTURES, RankingSkin, RankingView, load_chain};
 use crate::settings::Settings;
 use crate::shell::language::{InterfaceViews, interface_views};
 use crate::shell::{Rows, SECTIONS};
 
-pub const USAGE: &str = "usage: slam-app ui-preview --out DIR [--size WxH] [--any-renderer]";
+pub const USAGE: &str =
+    "usage: slam-app ui-preview --out DIR [--size WxH] [--any-renderer] [--skin DIR]";
 
 /// Size of the previews unless given.
 pub const DEFAULT_SIZE: (u32, u32) = (1280, 720);
@@ -46,19 +53,22 @@ pub struct Options {
     pub out: PathBuf,
     pub size: (u32, u32),
     pub any_renderer: bool,
+    /// A skin folder: the `results-stable` scenes are drawn with its ranking images.
+    pub skin: Option<PathBuf>,
 }
 
 impl Options {
     /// Parses the arguments after `ui-preview`.
     pub fn parse<I: IntoIterator<Item = String>>(args: I) -> Result<Options, String> {
         let mut args = args.into_iter();
-        let (mut out, mut size, mut any_renderer) = (None, DEFAULT_SIZE, false);
+        let (mut out, mut size, mut any_renderer, mut skin) = (None, DEFAULT_SIZE, false, None);
         while let Some(arg) = args.next() {
             let mut value = || args.next().ok_or_else(|| format!("{arg} needs a value"));
             match arg.as_str() {
                 "--out" => out = Some(PathBuf::from(value()?)),
                 "--size" => size = super::parse_size(&value()?)?,
                 "--any-renderer" => any_renderer = true,
+                "--skin" => skin = Some(PathBuf::from(value()?)),
                 other => return Err(format!("unknown argument {other}")),
             }
         }
@@ -66,6 +76,7 @@ impl Options {
             out: out.ok_or("--out DIR is required")?,
             size,
             any_renderer,
+            skin,
         })
     }
 }
@@ -73,7 +84,7 @@ impl Options {
 /// Draws every preview and writes them to `options.out`.
 pub fn run(options: &Options) -> Result<(), String> {
     std::fs::create_dir_all(&options.out).map_err(|e| format!("{}: {e}", options.out.display()))?;
-    let frames = render(options.size, options.any_renderer)?;
+    let frames = render_with(options.size, options.any_renderer, options.skin.as_deref())?;
     for (name, frame) in frames {
         let path = options.out.join(format!("{name}.png"));
         frame.write_png(&path)?;
@@ -99,10 +110,24 @@ enum Scene {
     Fps,
     /// The volume overlay at an edge, a meter selected and sparks flying (ADR-0145).
     Volume(slam_ui::volume::Edge, slam_ui::volume::MeterStyle),
+    /// SLAM's results screen; the flag picks the full combo play (ADR-0158).
+    Results {
+        full_combo: bool,
+    },
+    /// The results in the skin's own look; needs `--skin`.
+    ResultsStable {
+        full_combo: bool,
+    },
+}
+
+impl Scene {
+    fn needs_skin(self) -> bool {
+        matches!(self, Scene::ResultsStable { .. })
+    }
 }
 
 /// The names of the PNGs and what they show, in the order they are drawn.
-const SCENES: [(&str, Scene); 15] = [
+const SCENES: [(&str, Scene); 18] = [
     ("menu-play", Scene::Menu(0)),
     ("menu-settings", Scene::Menu(1)),
     ("song-select", Scene::SongSelect { effects: true }),
@@ -115,6 +140,12 @@ const SCENES: [(&str, Scene); 15] = [
     ("settings", Scene::Settings),
     ("cursor", Scene::Cursor),
     ("fps", Scene::Fps),
+    ("results", Scene::Results { full_combo: false }),
+    ("results-stable", Scene::ResultsStable { full_combo: false }),
+    (
+        "results-stable-perfect",
+        Scene::ResultsStable { full_combo: true },
+    ),
     (
         "volume-arc-left",
         Scene::Volume(
@@ -162,6 +193,17 @@ const SCENES: [(&str, Scene); 15] = [
 /// Draws the previews, named. Opens SDL video: one call at a time in a process, on its
 /// main thread.
 pub fn render(size: (u32, u32), any_renderer: bool) -> Result<Vec<(&'static str, Frame)>, String> {
+    render_with(size, any_renderer, None)
+}
+
+/// [`render`] with the skin folder the `results-stable` scenes are drawn with; without one
+/// they are skipped.
+pub fn render_with(
+    size: (u32, u32),
+    any_renderer: bool,
+    skin: Option<&Path>,
+) -> Result<Vec<(&'static str, Frame)>, String> {
+    let skin = skin.map(Path::to_path_buf);
     let extent = Extent::new(size.0, size.1);
     with_headless_gl(size, move |device| {
         let driver = device.driver_info();
@@ -171,7 +213,7 @@ pub fn render(size: (u32, u32), any_renderer: bool) -> Result<Vec<(&'static str,
             ));
         }
         let mut gpu = Gpu::new(device)?;
-        let frames = draw_scenes(device, &mut gpu, extent);
+        let frames = draw_scenes(device, &mut gpu, extent, skin.as_deref());
         gpu.destroy(device);
         frames
     })
@@ -181,11 +223,23 @@ fn draw_scenes(
     device: &mut Gl,
     gpu: &mut Gpu,
     size: Extent,
+    skin: Option<&Path>,
 ) -> Result<Vec<(&'static str, Frame)>, String> {
     let mut state = State::new(device, size)?;
+    if let Some(dir) = skin {
+        state.stable = Some(load_ranking_skin(device, gpu, dir)?);
+    }
     let background = state.views.theme.background;
+    let has_skin = state.stable.is_some();
     SCENES
         .iter()
+        .filter(|(name, scene)| {
+            let skipped = scene.needs_skin() && !has_skin;
+            if skipped {
+                tracing::info!("{name}: skipped, pass --skin DIR to draw it");
+            }
+            !skipped
+        })
         .map(|&(name, scene)| {
             let frame = settle(
                 device,
@@ -215,6 +269,9 @@ struct State {
     fps_counter: FpsCounter,
     shapes: ShapeBatch,
     text: SpriteBatch,
+    /// The skin's ranking images, loaded for `--skin`.
+    stable: Option<(RankingView, RankingSkin, TextureRequests)>,
+    results_en: Option<String>,
 }
 
 impl State {
@@ -258,6 +315,8 @@ impl State {
             plain_views,
             shapes: ShapeBatch::with_capacity(64),
             text: SpriteBatch::with_capacity(64),
+            stable: None,
+            results_en: Some(early_text(&localizer)),
         })
     }
 
@@ -394,6 +453,43 @@ impl State {
                     white,
                 );
             }
+            Scene::Results { full_combo } | Scene::ResultsStable { full_combo } => {
+                let data = sample_results(full_combo, self.results_en.clone());
+                let snapshot = ResultsSnapshot {
+                    data: Arc::new(data),
+                    hovered: None,
+                };
+                let stable = match (scene, &self.stable) {
+                    (Scene::ResultsStable { .. }, Some((view, skin, _))) => view.resolve(skin),
+                    _ => None,
+                };
+                match stable {
+                    Some(skin) => self.views.results.push_stable(
+                        &mut self.shapes,
+                        &mut self.text,
+                        &mut self.glyphs,
+                        width,
+                        height,
+                        &snapshot,
+                        Pose::SHOWN,
+                        white,
+                        &skin,
+                    ),
+                    None if scene.needs_skin() => {
+                        return Err("the skin's ranking images are not usable".to_owned());
+                    }
+                    None => self.views.results.push(
+                        &mut self.shapes,
+                        &mut self.text,
+                        &mut self.glyphs,
+                        width,
+                        height,
+                        &snapshot,
+                        Pose::SHOWN,
+                        white,
+                    ),
+                }
+            }
             Scene::Cursor => {
                 // At rest, pressed with a ring, turned, spun part-way, and with a trail.
                 let mut trailing = CursorMotion::REST;
@@ -436,6 +532,83 @@ impl State {
             }
         }
         draw_layers(device, gpu, &self.shapes, &self.text, size, split)
+    }
+}
+
+/// The skin's ranking images of the folder `dir` over the default skin, uploaded: blocks
+/// until every image is in.
+fn load_ranking_skin(
+    device: &mut Gl,
+    gpu: &mut Gpu,
+    dir: &Path,
+) -> Result<(RankingView, RankingSkin, TextureRequests), String> {
+    let default = Skin::load_default(&crate::default_skin::dir()?).map_err(|e| e.to_string())?;
+    let user = Skin::load(dir).map_err(|e| format!("{}: {e}", dir.display()))?;
+    let chain = SkinChain::new(Some(user), default);
+    let config = TextureLoaderConfig {
+        max_textures: MAX_RANKING_TEXTURES,
+        request_capacity: 128,
+        job_capacity: 2,
+        ..TextureLoaderConfig::new(device.limits())
+    };
+    let (mut requests, mut uploads) = texture_loader(&config).map_err(|e| e.to_string())?;
+    let skin = load_chain(&mut requests, &chain);
+    if !skin.present {
+        return Err(format!("{}: the skin has no ranking-panel", dir.display()));
+    }
+    let deadline = Instant::now() + super::LOAD_TIMEOUT;
+    loop {
+        uploads.process(device, &mut gpu.textures);
+        let pending = skin
+            .images
+            .iter()
+            .flatten()
+            .any(|image| matches!(uploads.get(image.handle), TextureState::Pending));
+        if !pending {
+            break;
+        }
+        if Instant::now() > deadline {
+            return Err("the skin's images did not load".to_owned());
+        }
+        std::thread::sleep(Duration::from_millis(1));
+    }
+    // The requests are kept: the loader ends with them.
+    Ok((RankingView::new(Some(uploads), None), skin, requests))
+}
+
+/// The average hit error's text of the sample results.
+fn early_text(localizer: &Localizer) -> String {
+    let mut args = slam_ui::i18n::FluentArgs::new();
+    args.set("ms", "1.50".to_owned());
+    localizer
+        .format("results-hit-error-early", Some(&args))
+        .into_owned()
+}
+
+/// The sample play of the results scenes: rank A with 456 of 789 combo, or a full combo
+/// with rank SH.
+fn sample_results(full_combo: bool, average_text: Option<String>) -> ResultsData {
+    let mut stats = [ResultsStat::default(); StatKind::COUNT];
+    let mut set = |kind: StatKind, value| {
+        stats[kind.index()] = ResultsStat { value, maximum: 0 };
+    };
+    set(StatKind::Great, 500);
+    set(StatKind::Ok, 20);
+    set(StatKind::Meh, 3);
+    set(StatKind::Miss, if full_combo { 0 } else { 2 });
+    ResultsData {
+        id: 1,
+        title: "Sample Artist - Sample Song [Sample Difficulty]".to_owned(),
+        score: 1_234_567,
+        accuracy: 0.9567,
+        rank: if full_combo { Rank::SH } else { Rank::A },
+        stats,
+        combo: if full_combo { 789 } else { 456 },
+        max_combo: 789,
+        mods: ResultsMods::new(["HD", "DT"]),
+        average_hit_error: Some(-1.5),
+        average_hit_error_text: average_text,
+        unstable_rate: Some(98.5),
     }
 }
 
@@ -672,6 +845,10 @@ mod tests {
         assert_eq!(options.size, (640, 360));
         assert!(options.any_renderer);
         assert_eq!(parse(&["--out", "d"]).unwrap().size, DEFAULT_SIZE);
+        assert_eq!(options.skin, None);
+        let with_skin = parse(&["--out", "d", "--skin", "s"]).unwrap();
+        assert_eq!(with_skin.skin, Some(PathBuf::from("s")));
+        assert!(parse(&["--out", "d", "--skin"]).is_err());
         assert!(parse(&[]).is_err());
         assert!(parse(&["--out", "d", "--bogus"]).is_err());
     }
@@ -681,7 +858,8 @@ mod tests {
     #[ignore = "opens a headless OpenGL window"]
     fn draws_every_preview() {
         let frames = render((640, 360), true).unwrap();
-        assert_eq!(frames.len(), SCENES.len());
+        // The stable scenes need a skin.
+        assert_eq!(frames.len(), SCENES.len() - 2);
         for (name, frame) in &frames {
             let first = &frame.pixels[..4];
             assert!(

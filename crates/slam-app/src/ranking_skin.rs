@@ -46,6 +46,12 @@ pub struct RankingSkin {
 }
 
 impl RankingSkin {
+    /// Whether the results are drawn in the skin's look: the one predicate both the update
+    /// side's hit testing and the draw side use (ADR-0158).
+    pub fn stable(&self) -> bool {
+        self.loaded && self.present
+    }
+
     fn handles(&self) -> impl Iterator<Item = TextureHandle> + '_ {
         self.images.iter().flatten().map(|image| image.handle)
     }
@@ -131,7 +137,10 @@ struct Reply {
     skin: RankingSkin,
 }
 
-fn read_image(requests: &mut TextureRequests, file: &Option<(PathBuf, f32)>) -> Option<SkinImage> {
+pub(crate) fn read_image(
+    requests: &mut TextureRequests,
+    file: &Option<(PathBuf, f32)>,
+) -> Option<SkinImage> {
     let (path, scale) = file.as_ref()?;
     let bytes = std::fs::read(path)
         .inspect_err(|e| tracing::warn!("ranking image {}: {e}", path.display()))
@@ -147,19 +156,25 @@ fn read_image(requests: &mut TextureRequests, file: &Option<(PathBuf, f32)>) -> 
 }
 
 fn load_skin(requests: &mut TextureRequests, user: Option<&Path>) -> RankingSkin {
-    let answered = RankingSkin {
-        loaded: true,
-        ..RankingSkin::default()
-    };
-    let files = match menu_chain(user) {
-        Ok(chain) => ranking_files(&chain),
+    match menu_chain(user) {
+        Ok(chain) => load_chain(requests, &chain),
         Err(e) => {
             tracing::warn!("ranking skin: {e}");
-            return answered;
+            RankingSkin {
+                loaded: true,
+                ..RankingSkin::default()
+            }
         }
-    };
-    let Some(files) = files else {
-        return answered;
+    }
+}
+
+/// Queues the ranking images of `chain` on `requests`; the handles come back at once.
+pub(crate) fn load_chain(requests: &mut TextureRequests, chain: &SkinChain) -> RankingSkin {
+    let Some(files) = ranking_files(chain) else {
+        return RankingSkin {
+            loaded: true,
+            ..RankingSkin::default()
+        };
     };
     RankingSkin {
         loaded: true,
@@ -388,7 +403,7 @@ impl RankingView {
     /// The skin to draw the results with: `None` (SLAM's screen) unless the skin has a
     /// panel and it is uploaded. Allocation-free.
     pub fn resolve(&self, skin: &RankingSkin) -> Option<StableSkin> {
-        if !skin.loaded || !skin.present {
+        if !skin.stable() {
             return None;
         }
         let uploads = self.uploads.as_ref()?;
@@ -404,7 +419,6 @@ impl RankingView {
                 TextureState::Pending | TextureState::Failed(_) => None,
             }
         });
-        images.panel?;
         Some(StableSkin {
             modern: skin.modern,
             score_overlap: skin.score_overlap,

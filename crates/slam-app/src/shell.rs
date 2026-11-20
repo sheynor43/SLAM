@@ -335,6 +335,8 @@ pub struct ShellState {
     layout: MenuLayout,
     song_layout: SongSelectLayout,
     results_layout: ResultsLayout,
+    /// Whether the results are in the skin's look: their buttons are elsewhere then.
+    ranking_stable: bool,
     settings_layout: SettingsLayout,
     song_select: SongSelect,
     /// The library's end, without a songs folder `None`.
@@ -485,6 +487,7 @@ impl ShellState {
             song_layout: SongSelectLayout::new(width, height, &theme)
                 .with_mod_columns(&mod_columns()),
             results_layout: ResultsLayout::new(width, height, &theme),
+            ranking_stable: false,
             settings_layout: panel_layout(width, height, &theme),
             song_select,
             songs: None,
@@ -1546,7 +1549,8 @@ impl ShellState {
         self.layout = MenuLayout::new(width, height, &self.theme);
         self.song_layout =
             SongSelectLayout::new(width, height, &self.theme).with_mod_columns(&mod_columns());
-        self.results_layout = ResultsLayout::new(width, height, &self.theme);
+        self.results_layout =
+            ResultsLayout::new_for(width, height, &self.theme, self.ranking_stable);
         self.settings_layout = panel_layout(width, height, &self.theme);
     }
 
@@ -2283,6 +2287,15 @@ impl ShellState {
             }
             None => Default::default(),
         };
+        if snapshot.ranking.stable() != self.ranking_stable {
+            self.ranking_stable = snapshot.ranking.stable();
+            self.results_layout = ResultsLayout::new_for(
+                self.size[0],
+                self.size[1],
+                &self.theme,
+                self.ranking_stable,
+            );
+        }
         let top: *const AppScreen = self.stack.top();
         for (slot, layer) in snapshot.layers.iter_mut().zip(self.stack.layers(now_ns)) {
             *slot = layer.and_then(|(screen, pose)| {
