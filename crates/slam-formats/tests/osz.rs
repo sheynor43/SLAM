@@ -18,6 +18,8 @@ struct Raw {
     /// Extra general purpose flag bits (bit 0 is encryption).
     flags: u16,
     method: u16,
+    /// Uncompressed size written in place of the data's length.
+    declared_size: Option<u32>,
 }
 
 fn raw(name: &[u8], data: &[u8]) -> Raw {
@@ -28,6 +30,7 @@ fn raw(name: &[u8], data: &[u8]) -> Raw {
         crc: None,
         flags: 0,
         method: 0,
+        declared_size: None,
     }
 }
 
@@ -46,7 +49,7 @@ fn build_zip(entries: &[Raw]) -> Vec<u8> {
         common.extend(0x21u16.to_le_bytes()); // date 1980-01-01
         common.extend(crc.to_le_bytes());
         common.extend(size.to_le_bytes());
-        common.extend(size.to_le_bytes());
+        common.extend(e.declared_size.unwrap_or(size).to_le_bytes());
         common.extend((e.name.len() as u16).to_le_bytes());
         common.extend(0u16.to_le_bytes()); // extra
         out.extend(0x0403_4b50u32.to_le_bytes());
@@ -242,9 +245,24 @@ fn unsupported_method_is_unsupported() {
     let mut e = raw(b"a.bin", b"data");
     e.method = 12;
     let mut r = open(build_zip(&[e]));
+    match r.read("a.bin") {
+        Err(ArchiveError::Unsupported { name, reason }) => {
+            assert_eq!(name, "a.bin");
+            assert_eq!(reason, "compression method 12");
+        }
+        other => panic!("{other:?}"),
+    }
+}
+
+#[test]
+fn data_beyond_the_declared_size_is_corrupt() {
+    // The zip crate stops at the declared uncompressed size, with a correct CRC too.
+    let mut e = raw(b"a.bin", b"twelve bytes");
+    e.declared_size = Some(4);
+    let mut r = open(build_zip(&[e]));
     assert!(matches!(
         r.read("a.bin"),
-        Err(ArchiveError::Unsupported { .. })
+        Err(ArchiveError::CorruptEntry { .. })
     ));
 }
 

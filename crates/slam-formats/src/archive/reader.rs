@@ -23,7 +23,8 @@ const MAX_PREALLOCATION: u64 = 1024 * 1024;
 pub struct Entry {
     /// Normalized name (`/` separators), in its original case.
     pub name: String,
-    /// Uncompressed size declared in the header. Informational; not trusted.
+    /// Uncompressed size declared in the header: reading stops at it (more data is a
+    /// corrupt entry), but nothing is allocated by it beyond the read limit.
     pub size: u64,
     index: usize,
 }
@@ -212,8 +213,9 @@ struct Declared {
 /// Reads the entry count of the central directory from the end record (and the zip64 end
 /// record, if there is one) before the `zip` crate allocates for it.
 ///
-/// Stricter than the `zip` crate: the end record must be in the last 65 557 bytes and a zip64
-/// end record must be exactly where its locator points, otherwise the archive is invalid.
+/// Stricter than the `zip` crate: the first end record found in the last 65 557 bytes must be
+/// valid (the crate falls back to earlier candidates) and a zip64 end record must be exactly
+/// where its locator points, otherwise the archive is invalid.
 fn declared_entry_count<R: Read + Seek>(reader: &mut R) -> Result<Declared, ArchiveError> {
     let io = |e: std::io::Error| ArchiveError::Io(e.to_string());
     let len = reader.seek(SeekFrom::End(0)).map_err(io)?;
@@ -319,10 +321,7 @@ fn read_limited(
     reader
         .take(limit.saturating_add(1))
         .read_to_end(&mut data)
-        .map_err(|e| ArchiveError::CorruptEntry {
-            name: name.to_owned(),
-            message: e.to_string(),
-        })?;
+        .map_err(|e| read_error(name, e))?;
     if data.len() as u64 > limit {
         return Err(ArchiveError::EntryTooLarge {
             name: name.to_owned(),
@@ -334,6 +333,23 @@ fn read_limited(
 
 fn open_error(e: ZipError) -> ArchiveError {
     ArchiveError::from_zip(e)
+}
+
+/// An error reading an entry's data. The zip crate starts the decompressor on the first
+/// read, so an unsupported compression method arrives here as an [`std::io::Error`]
+/// wrapping the [`ZipError`]; data beyond the declared size or a bad CRC as a plain one.
+fn read_error(name: &str, e: std::io::Error) -> ArchiveError {
+    let message = e.to_string();
+    match e
+        .into_inner()
+        .and_then(|inner| inner.downcast::<ZipError>().ok())
+    {
+        Some(zip) => entry_error(name, *zip),
+        None => ArchiveError::CorruptEntry {
+            name: name.to_owned(),
+            message,
+        },
+    }
 }
 
 fn entry_error(name: &str, e: ZipError) -> ArchiveError {

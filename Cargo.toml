@@ -46,7 +46,7 @@ signalsmith-stretch = "=0.1.3"
 sdl3-sys = { version = "0.7.2", default-features = false }
 thiserror = "2.0.21"
 # .osz/.osk archives: deflate in pure Rust plus deflate64 from old Windows Explorer archives (ADR-0030).
-zip = { version = "9.0.1", default-features = false, features = ["deflate-flate2-zlib-rs", "deflate64"] }
+zip = { version = "9.8.1", default-features = false, features = ["deflate-flate2-zlib-rs", "deflate64"] }
 # Shift-JIS (CP932) decoding of file names in stable archives.
 encoding_rs = "0.8.42"
 # Checksums of hand-built zip archives in slam-formats tests.
