@@ -880,6 +880,7 @@ fn view(map: &Beatmap) -> PlayView {
             visuals: CircleVisuals::new(map, mods, CircleSettings::default(), None, &chain),
             style: CircleStyle::new(mods, &windows, &chain),
             config: CircleSkinConfig::new(&chain),
+            kiai: slam_play::kiai::KiaiFlash::new(&map.control_points),
         },
         sliders: HitSliders {
             visuals: SliderVisuals::new(map, mods, CircleSettings::default(), None, &chain),

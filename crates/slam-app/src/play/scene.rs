@@ -337,6 +337,7 @@ pub fn prepare(
             ),
             style: CircleStyle::new(circle_mods, &windows, &loaded.skins),
             config: CircleSkinConfig::new(&loaded.skins),
+            kiai: slam_play::kiai::KiaiFlash::new(&beatmap.control_points),
         },
         sliders: HitSliders {
             visuals: SliderVisuals::new(

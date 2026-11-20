@@ -20,6 +20,7 @@ pub mod hud;
 pub mod input;
 pub mod judgements;
 pub mod key_overlay;
+pub mod kiai;
 pub mod legacy_hit_error;
 pub mod legacy_text;
 pub mod menu_overlay;

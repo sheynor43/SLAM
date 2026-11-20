@@ -12,7 +12,9 @@
 //! the value its property has at its start time, and a later-starting transform replaces any
 //! earlier one still running.
 //!
-//! Not done: the kiai flash (`LegacyKiaiFlashingDrawable`), the shake on an early press, the
+//! The kiai flash (`LegacyKiaiFlashingDrawable`, [`crate::kiai`]) is drawn on hit circles.
+//!
+//! Not done: the kiai flash of slider heads and tails, the shake on an early press, the
 //! combo colour brightness setting (`ComboColourNormalisationAmount`, 0 by default), turning hit
 //! animations off (on by default), and textures from the beatmap's skin.
 
@@ -28,6 +30,7 @@ use slam_render::textures::TextureId;
 use slam_render::{Blend, Color};
 use slam_skin::{Rgba, Skin, SkinChain, SkinSource, VersionRules};
 
+use crate::kiai::{KiaiFlash, kiai_colour};
 use crate::legacy_text::{Digits, LegacyFont, NO_SYMBOLS};
 use crate::playfield::PlayfieldLayout;
 
@@ -560,6 +563,8 @@ pub struct CirclePose {
     pub number_scale: f32,
     pub approach_alpha: f32,
     pub approach_scale: f32,
+    /// The kiai flash's alpha (0 outside kiai), set by the caller from [`crate::kiai`].
+    pub kiai_flash: f32,
 }
 
 /// The appearance of `circle` at game `time`, judged as `judgement`.
@@ -660,6 +665,7 @@ pub fn circle_pose(
         number_scale: number_scale.value(1.0, time),
         approach_alpha: approach_alpha.value(0.0, time),
         approach_scale: approach_scale.value(4.0, time),
+        kiai_flash: 0.0,
     }
 }
 
@@ -834,6 +840,8 @@ pub struct HitCircles {
     pub visuals: CircleVisuals,
     pub style: CircleStyle,
     pub config: CircleSkinConfig,
+    /// The beats of the kiai flash.
+    pub kiai: KiaiFlash,
 }
 
 impl HitCircles {
@@ -860,9 +868,13 @@ fn push_circles(
     time: f64,
     textures: &CircleTextures,
 ) {
+    let kiai_flash = circles.kiai.alpha(time);
     for c in live.iter().rev() {
         if let Some(circle) = circles.visuals.get(c.index) {
-            let pose = circle_pose(circle, c.judgement, time, &circles.style);
+            let pose = CirclePose {
+                kiai_flash,
+                ..circle_pose(circle, c.judgement, time, &circles.style)
+            };
             let all = PieceLayers::All;
             circles.push_piece(
                 batch,
@@ -941,6 +953,29 @@ impl HitCircles {
         let sprite_scale = object_scale * pose.sprite_scale;
         let sprite_alpha = alpha * pose.sprite_alpha;
 
+        // Ported from osu!lazer 2026.1005.0-lazer: osu.Game/Skinning/LegacyKiaiFlashingDrawable.cs
+        // Ported from osu!lazer 2026.1005.0-lazer: osu.Game.Rulesets.Osu/Skinning/Legacy/LegacyMainCirclePiece.cs (load)
+        // The second copy of the circle texture, additive in the brightened combo colour under
+        // the circle sprite's own colour; the piece proxies it above its overlay and number.
+        let flash = |batch: &mut SpriteBatch| {
+            if pose.kiai_flash <= 0.0 || layers == PieceLayers::Overlay {
+                return;
+            }
+            if let Some(t) = &piece.circle {
+                let size = Vec2::new(t.size.x * sprite_scale, t.size.y * sprite_scale);
+                let glow = kiai_colour(circle.colour);
+                let lit = Color {
+                    r: circle.colour.r * glow.r,
+                    g: circle.colour.g * glow.g,
+                    b: circle.colour.b * glow.b,
+                    a: circle.colour.a,
+                };
+                let colour = tint(lit, pose.brightness, sprite_alpha * pose.kiai_flash);
+                let mut sprite = centred(t, centre, size, colour);
+                sprite.blend = Blend::Additive;
+                batch.push(&sprite);
+            }
+        };
         if layers != PieceLayers::Overlay
             && let Some(t) = &piece.circle
         {
@@ -949,6 +984,7 @@ impl HitCircles {
             batch.push(&centred(t, centre, size, colour));
         }
         if layers == PieceLayers::Circle {
+            flash(batch);
             return;
         }
         let overlay = |batch: &mut SpriteBatch| {
@@ -980,6 +1016,7 @@ impl HitCircles {
             overlay(batch);
             number(batch);
         }
+        flash(batch);
     }
 }
 

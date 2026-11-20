@@ -190,6 +190,7 @@ fn circles(map: &Beatmap, overlay_above_number: bool) -> HitCircles {
             overlay_above_number,
             ..CircleSkinConfig::new(&chain)
         },
+        kiai: slam_play::kiai::KiaiFlash::new(&map.control_points),
     }
 }
 
@@ -412,4 +413,55 @@ fn only_skins_after_version_1_fade_the_number_briefly() {
     assert!(!short_fade("[General]\nVersion: 1.0\n"));
     assert!(short_fade("[General]\nVersion: 2.0\n"));
     assert!(short_fade("[General]\nVersion: latest\n"));
+}
+
+#[test]
+fn kiai_beats_flash_the_circle_texture_additively_above_the_number() {
+    // The timing point turns kiai on (effect flag 1).
+    let kiai = MAP
+        .replace("0,500,4,2,0,100,1,0", "0,500,4,2,0,100,1,1")
+        .replace("COLOURS", "");
+    let map = Beatmap::decode(kiai.as_bytes()).unwrap();
+    let layout = common::layout();
+    let mut batch = SpriteBatch::new();
+    let live = [live(0, None)];
+    let kiai_circles = circles(&map, true);
+
+    // On the beat at 1000 ms.
+    kiai_circles.push(&mut batch, &layout, &live, 1000.0, &textures());
+    assert_eq!(
+        order(&batch),
+        [CIRCLE.0, DIGITS.0, OVERLAY.0, CIRCLE.0, APPROACH.0]
+    );
+    let flash = &batch.batches()[3];
+    assert_eq!(flash.blend, slam_render::Blend::Additive);
+    let circle_alpha = batch.vertices()[0].colour[3];
+    let flash_alpha = batch.vertices()[flash.first_quad as usize * 4].colour[3];
+    assert!(
+        (flash_alpha - circle_alpha * 0.3).abs() < 1e-3,
+        "{flash_alpha} vs {circle_alpha}"
+    );
+
+    let additive = |batch: &SpriteBatch| {
+        batch
+            .batches()
+            .iter()
+            .filter(|b| b.blend == slam_render::Blend::Additive)
+            .count()
+    };
+
+    // The fade is over 420 ms after the beat.
+    batch.clear();
+    kiai_circles.push(&mut batch, &layout, &live, 1000.0 + 430.0, &textures());
+    assert_eq!(additive(&batch), 0);
+    // Halfway through the next beat's fade it still shows.
+    batch.clear();
+    kiai_circles.push(&mut batch, &layout, &live, 1500.0 + 200.0, &textures());
+    assert_eq!(additive(&batch), 1);
+
+    // Without kiai, never.
+    let plain = Beatmap::decode(MAP.replace("COLOURS", "").as_bytes()).unwrap();
+    batch.clear();
+    circles(&plain, true).push(&mut batch, &layout, &live, 1000.0, &textures());
+    assert_eq!(additive(&batch), 0);
 }
