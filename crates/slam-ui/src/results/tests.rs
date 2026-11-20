@@ -137,6 +137,7 @@ fn data(stats: [ResultsStat; StatKind::COUNT]) -> ResultsData {
         average_hit_error: None,
         average_hit_error_text: None,
         unstable_rate: None,
+        extra: crate::results::ResultsExtra::default(),
     }
 }
 
@@ -225,11 +226,11 @@ fn keys_and_buttons_ask_for_their_action() {
     let mut screen = Results::new(data([ResultsStat::default(); StatKind::COUNT]));
     let layout = layout();
     assert_eq!(
-        screen.input(ResultsInput::Retry, &layout),
+        screen.input(ResultsInput::Retry, &layout, 0),
         Some(ResultsAction::Retry)
     );
     assert_eq!(
-        screen.input(ResultsInput::Back, &layout),
+        screen.input(ResultsInput::Back, &layout, 0),
         Some(ResultsAction::Back)
     );
     for (button, action) in [
@@ -242,18 +243,18 @@ fn keys_and_buttons_ask_for_their_action() {
             .unwrap()]
         .centre();
         assert_eq!(
-            screen.input(ResultsInput::PointerMove { x, y }, &layout),
+            screen.input(ResultsInput::PointerMove { x, y }, &layout, 0),
             None
         );
         assert_eq!(screen.snapshot().hovered, Some(button));
         assert_eq!(
-            screen.input(ResultsInput::PointerPress { x, y }, &layout),
+            screen.input(ResultsInput::PointerPress { x, y }, &layout, 0),
             Some(action)
         );
     }
     // Off the buttons: no hover, no action.
     let miss = ResultsInput::PointerPress { x: 1.0, y: 1.0 };
-    assert_eq!(screen.input(miss, &layout), None);
+    assert_eq!(screen.input(miss, &layout, 0), None);
     assert_eq!(screen.snapshot().hovered, None);
 }
 
@@ -306,38 +307,190 @@ fn the_last_info_row_stays_clear_of_the_hint_and_the_buttons() {
     }
 }
 
+fn art() -> stable::StableArt {
+    let size = |w, h| {
+        Some(stable::ArtSize {
+            size: [w, h],
+            density: 1.0,
+        })
+    };
+    stable::StableArt {
+        title: size(300.0, 75.0),
+        back: size(225.0, 87.0),
+        retry: size(200.0, 60.0),
+    }
+}
+
 #[test]
-fn stable_look_moves_the_buttons_clear_of_the_panel() {
+fn stable_look_uses_the_skin_buttons_and_scrolls() {
     let theme = Theme::default();
     for (w, h) in [(1280.0, 720.0), (1920.0, 1080.0), (1024.0, 768.0)] {
-        let slam = ResultsLayout::new_for(w, h, &theme, false);
+        let slam = ResultsLayout::new_for(w, h, &theme, None);
         assert_eq!(slam, ResultsLayout::new(w, h, &theme));
-        let stable = ResultsLayout::new_for(w, h, &theme, true);
-        let panel_right = stable::panel_right(w, h);
-        assert!(panel_right > 0.0 && panel_right < w);
-        for (i, button) in stable.buttons.iter().enumerate() {
-            assert!(
-                button.x >= panel_right,
-                "{w}x{h}: button {i} overlaps the panel"
-            );
-            assert!(button.x + button.width <= w && button.y + button.height <= h);
-            // The same height and place at the bottom as in SLAM's look.
-            assert_eq!(button.y, slam.buttons[i].y);
-            assert_eq!(button.height, slam.buttons[i].height);
-        }
-        assert!(stable.buttons[0].x + stable.buttons[0].width <= stable.buttons[1].x);
-        // Right-aligned to the margin.
-        let margin = theme.results_margin * stable.scale;
-        let last = stable.buttons[1];
-        assert!((w - margin - (last.x + last.width)).abs() < 1e-3);
-        // The hint stays above the buttons and over them.
-        assert!(stable.hint.x >= panel_right);
-        assert!(stable.hint.y + stable.hint.height <= stable.buttons[0].y);
-        // Hit testing follows the moved buttons.
-        let [x, y] = stable.buttons[0].centre();
+        assert_eq!(slam.scroll_area, 0.0);
+        let stable = ResultsLayout::new_for(w, h, &theme, Some(&art()));
+        let [retry, back] = stable.buttons;
+        // Back at the bottom left, Retry at the right edge, centred at 576/768.
+        assert_eq!((back.x, back.y + back.height), (0.0, h));
+        assert!((retry.x + retry.width - w).abs() < 1e-3);
+        assert!((retry.y + retry.height / 2.0 - 576.0 / 768.0 * h).abs() < 1e-2);
+        assert!(stable.scroll_area > 0.0 && stable.scroll_area < h);
+        // Hit testing follows the drawn rects; Retry moves with the scroll.
+        let [x, y] = back.centre();
+        assert_eq!(stable.button_at(x, y), Some(ResultsButton::Back));
+        assert_eq!(
+            stable.button_at_scrolled(x, y, 50.0),
+            Some(ResultsButton::Back)
+        );
+        let [x, y] = retry.centre();
         assert_eq!(stable.button_at(x, y), Some(ResultsButton::Retry));
+        assert_eq!(stable.button_at_scrolled(x, y, 10.0 * h), None);
+        assert_eq!(
+            stable.button_at_scrolled(x, y - 30.0, 30.0),
+            Some(ResultsButton::Retry)
+        );
         let [x, y] = slam.buttons[0].centre();
-        assert_eq!(stable.button_at(x, y), None);
         assert_eq!(slam.button_at(x, y), Some(ResultsButton::Retry));
     }
+}
+
+#[test]
+fn back_button_is_clamped_to_one_and_a_half_base_heights() {
+    let tall = stable::StableArt {
+        back: Some(stable::ArtSize {
+            size: [225.0, 870.0],
+            density: 1.0,
+        }),
+        ..art()
+    };
+    let normal = stable::geometry(1024.0, 768.0, &art()).back;
+    let clamped = stable::geometry(1024.0, 768.0, &tall).back;
+    assert!((clamped.height - normal.height * 1.5).abs() < 1e-2);
+    assert!(clamped.width < normal.width);
+}
+
+#[test]
+fn hover_animates_over_a_tenth_of_a_second() {
+    let layout = ResultsLayout::new_for(1024.0, 768.0, &Theme::default(), Some(&art()));
+    let mut screen = Results::new(data([ResultsStat::default(); StatKind::COUNT]));
+    let [x, y] = layout.buttons[1].centre();
+    screen.input(ResultsInput::PointerMove { x, y }, &layout, 1_000);
+    let snap = screen.snapshot();
+    assert_eq!(snap.hover_amount(ResultsButton::Back, 1_000), 0.0);
+    let half = snap.hover_amount(ResultsButton::Back, 1_000 + stable::HOVER_NS / 2);
+    assert!(
+        half > 0.5 && half < 1.0,
+        "quad out is ahead of linear: {half}"
+    );
+    assert_eq!(
+        snap.hover_amount(ResultsButton::Back, 1_000 + stable::HOVER_NS),
+        1.0
+    );
+    assert_eq!(
+        snap.hover_amount(ResultsButton::Retry, 1_000 + stable::HOVER_NS),
+        0.0
+    );
+    // Leaving brings it back.
+    let later = 1_000 + 10 * stable::HOVER_NS;
+    screen.input(ResultsInput::PointerMove { x: 1.0, y: 1.0 }, &layout, later);
+    let snap = screen.snapshot();
+    assert_eq!(
+        snap.hover_amount(ResultsButton::Back, later + stable::HOVER_NS),
+        0.0
+    );
+}
+
+#[test]
+fn scrolling_clamps_eases_and_the_hint_scrolls_to_the_bottom() {
+    let layout = ResultsLayout::new_for(1024.0, 768.0, &Theme::default(), Some(&art()));
+    let mut screen = Results::new(data([ResultsStat::default(); StatKind::COUNT]));
+    let scroll = |screen: &mut Results, input| screen.input(input, &layout, 0);
+    scroll(&mut screen, ResultsInput::Scroll { delta: -3.0 });
+    assert_eq!(screen.snapshot().scroll_target(), 0.0);
+    scroll(&mut screen, ResultsInput::Scroll { delta: 2.0 });
+    let target = screen.snapshot().scroll_target();
+    assert!(target > 0.0 && target < 1.0);
+    // Eased: not there at once, there after the duration.
+    let snap = screen.snapshot();
+    assert_eq!(snap.scroll_at(0), 0.0);
+    assert!((snap.scroll_at(stable::SCROLL_NS) - target).abs() < 1e-6);
+    scroll(&mut screen, ResultsInput::Page { delta: 5.0 });
+    assert_eq!(screen.snapshot().scroll_target(), 1.0);
+    scroll(&mut screen, ResultsInput::Edge { bottom: false });
+    assert_eq!(screen.snapshot().scroll_target(), 0.0);
+    // The hint is a button while not at the bottom.
+    let [x, y] = layout.hint.centre();
+    assert_eq!(
+        screen.input(ResultsInput::PointerPress { x, y }, &layout, 0),
+        None
+    );
+    assert_eq!(screen.snapshot().scroll_target(), 1.0);
+    scroll(&mut screen, ResultsInput::Edge { bottom: true });
+    // At the bottom the hint is gone: a press there is no scroll.
+    let snap = screen.snapshot();
+    assert_eq!(snap.scroll_at(10 * stable::SCROLL_NS), 1.0);
+    // The SLAM look does not scroll.
+    let slam = ResultsLayout::new(1024.0, 768.0, &Theme::default());
+    let mut flat = Results::new(data([ResultsStat::default(); StatKind::COUNT]));
+    flat.input(ResultsInput::Edge { bottom: true }, &slam, 0);
+    assert_eq!(flat.snapshot().scroll_target(), 0.0);
+}
+
+#[test]
+fn header_lines_follow_the_info_label() {
+    let unit = 2.0;
+    let bar = stable::header_min_height(unit);
+    let (lines, count) = stable::header_lines(unit, bar, true);
+    assert_eq!(count, 3);
+    assert_eq!(lines[0].kind, stable::HeaderKind::Title);
+    assert_eq!((lines[0].x, lines[0].y), (10.0, 10.0));
+    // 0.741 of the minimum height ratio is below 1: the global scale is 1.
+    assert_eq!(lines[0].scale, 1.0);
+    assert!((lines[1].scale - 0.78).abs() < 1e-6);
+    assert!(lines[1].y > lines[0].y && lines[2].y > lines[1].y);
+    // A tall bar scales the lines up.
+    let (tall, _) = stable::header_lines(unit, bar * 3.0, true);
+    assert!(tall[0].scale > 2.0);
+    // Without the mapper line the played line takes its place.
+    let (two, count) = stable::header_lines(unit, bar, false);
+    assert_eq!(count, 2);
+    assert_eq!(two[1].kind, stable::HeaderKind::Played);
+    assert_eq!(two[1].y, lines[1].y);
+}
+
+#[test]
+fn health_line_points_and_colours() {
+    let graph = Rect {
+        x: 100.0,
+        y: 200.0,
+        width: 100.0,
+        height: 50.0,
+    };
+    let mut segments = Vec::new();
+    stable::health_segments(graph, &[1.0, 0.8, 0.2, 0.0, 1.0], |a, b, low| {
+        segments.push((a, b, low));
+    });
+    assert_eq!(segments.len(), 4);
+    // Inset 8% each side: x from 108 to 192, y from 204 to 246.
+    assert_eq!(segments[0].0, [108.0, 204.0]);
+    assert!((segments[3].1[0] - 192.0).abs() < 1e-3 && (segments[3].1[1] - 204.0).abs() < 1e-3);
+    assert!((segments[3].0[1] - 246.0).abs() < 1e-3);
+    let lows: Vec<bool> = segments.iter().map(|s| s.2).collect();
+    assert_eq!(lows, [false, false, true, false]);
+    // Nothing without a curve; long curves are sampled.
+    stable::health_segments(graph, &[], |_, _, _| panic!());
+    stable::health_segments(graph, &[0.5], |_, _, _| panic!());
+    let long = vec![0.5; 10_000];
+    let mut n = 0;
+    stable::health_segments(graph, &long, |_, _, _| n += 1);
+    assert_eq!(n, stable::MAX_HEALTH_SEGMENTS);
+}
+
+#[test]
+fn hint_bounce_stays_in_range() {
+    for i in 0..200 {
+        let b = stable::hint_bounce(i as f32 * 0.037);
+        assert!((-0.25..=0.0).contains(&b), "{b}");
+    }
+    assert_eq!(stable::hint_bounce(0.0), -0.25);
 }

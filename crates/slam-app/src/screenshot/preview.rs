@@ -117,6 +117,8 @@ enum Scene {
     /// The results in the skin's own look; needs `--skin`.
     ResultsStable {
         full_combo: bool,
+        /// Scrolled to the details page (ADR-0161).
+        scrolled: bool,
     },
 }
 
@@ -127,7 +129,7 @@ impl Scene {
 }
 
 /// The names of the PNGs and what they show, in the order they are drawn.
-const SCENES: [(&str, Scene); 18] = [
+const SCENES: [(&str, Scene); 19] = [
     ("menu-play", Scene::Menu(0)),
     ("menu-settings", Scene::Menu(1)),
     ("song-select", Scene::SongSelect { effects: true }),
@@ -141,10 +143,26 @@ const SCENES: [(&str, Scene); 18] = [
     ("cursor", Scene::Cursor),
     ("fps", Scene::Fps),
     ("results", Scene::Results { full_combo: false }),
-    ("results-stable", Scene::ResultsStable { full_combo: false }),
+    (
+        "results-stable",
+        Scene::ResultsStable {
+            full_combo: false,
+            scrolled: false,
+        },
+    ),
     (
         "results-stable-perfect",
-        Scene::ResultsStable { full_combo: true },
+        Scene::ResultsStable {
+            full_combo: true,
+            scrolled: false,
+        },
+    ),
+    (
+        "results-stable-scrolled",
+        Scene::ResultsStable {
+            full_combo: false,
+            scrolled: true,
+        },
     ),
     (
         "volume-arc-left",
@@ -272,6 +290,7 @@ struct State {
     /// The skin's ranking images, loaded for `--skin`.
     stable: Option<(RankingView, RankingSkin, TextureRequests)>,
     results_en: Option<String>,
+    results_extra: slam_ui::results::ResultsExtra,
 }
 
 impl State {
@@ -317,6 +336,7 @@ impl State {
             text: SpriteBatch::with_capacity(64),
             stable: None,
             results_en: Some(early_text(&localizer)),
+            results_extra: sample_extra(&localizer),
         })
     }
 
@@ -453,12 +473,16 @@ impl State {
                     white,
                 );
             }
-            Scene::Results { full_combo } | Scene::ResultsStable { full_combo } => {
-                let data = sample_results(full_combo, self.results_en.clone());
-                let snapshot = ResultsSnapshot {
-                    data: Arc::new(data),
-                    hovered: None,
-                };
+            Scene::Results { full_combo }
+            | Scene::ResultsStable {
+                full_combo,
+                scrolled: _,
+            } => {
+                let mut data = sample_results(full_combo, self.results_en.clone());
+                data.extra = self.results_extra.clone();
+                let scrolled = matches!(scene, Scene::ResultsStable { scrolled: true, .. });
+                let snapshot =
+                    ResultsSnapshot::new(Arc::new(data)).scrolled(if scrolled { 1.0 } else { 0.0 });
                 let stable = match (scene, &self.stable) {
                     (Scene::ResultsStable { .. }, Some((view, skin, _))) => view.resolve(skin),
                     _ => None,
@@ -585,6 +609,47 @@ fn early_text(localizer: &Localizer) -> String {
         .into_owned()
 }
 
+/// What stable's results add to the sample play: the mapper and player lines, a health
+/// curve that dips below half once, and the detail lines (ADR-0161).
+fn sample_extra(localizer: &Localizer) -> slam_ui::results::ResultsExtra {
+    let text = |key: &str, args: &[(&str, &str)]| {
+        let mut fluent = slam_ui::i18n::FluentArgs::new();
+        for (name, value) in args {
+            fluent.set(*name, (*value).to_owned());
+        }
+        localizer.format(key, Some(&fluent)).into_owned()
+    };
+    let health = (0..256)
+        .map(|i| {
+            let t = i as f32 / 255.0;
+            let dip = (-((t - 0.55) / 0.08).powi(2)).exp() * 0.75;
+            (0.95 - 0.1 * (t * 9.0).sin().abs() - dip).clamp(0.0, 1.0)
+        })
+        .collect();
+    slam_ui::results::ResultsExtra {
+        beatmap_by: text("results-beatmap-by", &[("mapper", "Jounzan")]),
+        played_by: text(
+            "results-played-by",
+            &[("player", "Guest"), ("date", "2026-11-20 21:55:12")],
+        ),
+        health,
+        details: vec![
+            text("results-details-stars", &[("stars", "5.23")]),
+            text("results-details-speed", &[("speed", "1.5")]),
+            text(
+                "results-details-difficulty",
+                &[("cs", "4"), ("ar", "9.33"), ("od", "8.5"), ("hp", "6")],
+            ),
+            text("results-details-mods", &[("mods", "HD DT")]),
+            text(
+                "results-details-error",
+                &[("early", "-15.00"), ("late", "+4.00")],
+            ),
+            text("results-details-ur", &[("ur", "98.77")]),
+        ],
+    }
+}
+
 /// The sample play of the results scenes: rank A with 456 of 789 combo, or a full combo
 /// with rank SH.
 fn sample_results(full_combo: bool, average_text: Option<String>) -> ResultsData {
@@ -609,6 +674,7 @@ fn sample_results(full_combo: bool, average_text: Option<String>) -> ResultsData
         average_hit_error: Some(-1.5),
         average_hit_error_text: average_text,
         unstable_rate: Some(98.5),
+        extra: slam_ui::results::ResultsExtra::default(),
     }
 }
 

@@ -8,6 +8,7 @@
 use std::fmt;
 use std::sync::Arc;
 
+use crate::anim::{Towards, ease_out_quad, ease_out_quint};
 use crate::menu::Rect;
 use crate::theme::Theme;
 
@@ -200,6 +201,21 @@ pub struct ResultsData {
     /// The unstable rate as lazer computes it (ten times the standard deviation of the hit
     /// offsets in ms, already scaled by the clock rate); `None` without hit offsets.
     pub unstable_rate: Option<f64>,
+    /// What stable's results add (ADR-0161).
+    pub extra: ResultsExtra,
+}
+
+/// What stable's results show besides the counts (ADR-0161), already localised.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct ResultsExtra {
+    /// "Beatmap by …"; empty when the mapper is not known.
+    pub beatmap_by: String,
+    /// "Played by … on …".
+    pub played_by: String,
+    /// Health over the playable time, 0..=1, evenly spaced; empty draws no line.
+    pub health: Vec<f32>,
+    /// The lines of the details under the panel, in order.
+    pub details: Vec<String>,
 }
 
 impl ResultsData {
@@ -345,9 +361,30 @@ impl ResultsButton {
 pub enum ResultsInput {
     Retry,
     Back,
-    PointerMove { x: f32, y: f32 },
-    PointerPress { x: f32, y: f32 },
+    PointerMove {
+        x: f32,
+        y: f32,
+    },
+    PointerPress {
+        x: f32,
+        y: f32,
+    },
+    /// Scrolls by `delta` lines, positive down (stable look).
+    Scroll {
+        delta: f32,
+    },
+    /// Scrolls by `delta` pages, positive down.
+    Page {
+        delta: f32,
+    },
+    /// Scrolls to the top or the bottom.
+    Edge {
+        bottom: bool,
+    },
 }
+
+/// Part of the scroll range one line of the wheel moves.
+const SCROLL_LINE: f32 = 0.15;
 
 /// What the screen asks the application to do.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -385,6 +422,9 @@ pub struct ResultsLayout {
     pub hint: Rect,
     /// Pixels per reference unit.
     pub scale: f32,
+    /// Pixels the content scrolls over its range; 0 when the screen does not scroll (only
+    /// the stable look does, ADR-0161).
+    pub scroll_area: f32,
 }
 
 impl ResultsLayout {
@@ -449,46 +489,31 @@ impl ResultsLayout {
                 height: hint_height,
             },
             scale,
+            scroll_area: 0.0,
         }
     }
 
-    /// This layout in the stable look (ADR-0158): the panel and the letter fill the left
-    /// and the middle, so the buttons and their hint move to the right part of the window,
-    /// right-aligned to the margin and clear of the panel.
-    pub fn stable_buttons(mut self, width: f32, height: f32, theme: &Theme) -> ResultsLayout {
-        let scale = self.scale;
-        let margin = theme.results_margin * scale;
-        let (bw, bh) = (theme.button_width * scale, theme.button_height * scale);
-        let spacing = theme.button_spacing * scale;
-        let left = (stable::panel_right(width, height) + margin).max(width * 0.55);
-        let right = width - margin;
-        // Narrow windows shrink the buttons rather than reach into the panel.
-        let bw = bw.min((right - left - spacing) / 2.0).max(0.0);
-        let buttons_left = right - 2.0 * bw - spacing;
-        let button_y = height - margin - bh;
-        for (i, button) in self.buttons.iter_mut().enumerate() {
-            *button = Rect {
-                x: buttons_left + i as f32 * (bw + spacing),
-                y: button_y,
-                width: bw,
-                height: bh,
-            };
-        }
-        self.hint = Rect {
-            x: buttons_left,
-            width: 2.0 * bw + spacing,
-            ..self.hint
-        };
+    /// This layout in the stable look (ADR-0158, ADR-0161): the skin's `ranking-retry` and
+    /// `menu-back` are the buttons, `hint` is the scroll-down button, and the screen scrolls.
+    pub fn stable(mut self, width: f32, height: f32, art: &stable::StableArt) -> ResultsLayout {
+        let geometry = stable::geometry(width, height, art);
+        self.buttons = [geometry.retry, geometry.back];
+        self.hint = geometry.hint;
+        self.scroll_area = geometry.scroll_area;
         self
     }
 
-    /// [`ResultsLayout::new`], in the stable look when `stable`.
-    pub fn new_for(width: f32, height: f32, theme: &Theme, stable: bool) -> ResultsLayout {
+    /// [`ResultsLayout::new`], in the stable look when `stable` has the skin's image sizes.
+    pub fn new_for(
+        width: f32,
+        height: f32,
+        theme: &Theme,
+        stable: Option<&stable::StableArt>,
+    ) -> ResultsLayout {
         let layout = ResultsLayout::new(width, height, theme);
-        if stable {
-            layout.stable_buttons(width, height, theme)
-        } else {
-            layout
+        match stable {
+            Some(art) => layout.stable(width, height, art),
+            None => layout,
         }
     }
 
@@ -503,10 +528,24 @@ impl ResultsLayout {
     }
 
     pub fn button_at(&self, x: f32, y: f32) -> Option<ResultsButton> {
+        self.button_at_scrolled(x, y, 0.0)
+    }
+
+    /// [`button_at`](Self::button_at) with the content scrolled `scrolled` pixels up: in the
+    /// stable look Retry scrolls with it, Back stays.
+    pub fn button_at_scrolled(&self, x: f32, y: f32, scrolled: f32) -> Option<ResultsButton> {
+        let stable = self.scroll_area > 0.0;
         ResultsButton::ALL
             .into_iter()
             .zip(&self.buttons)
-            .find(|(_, rect)| rect.contains(x, y))
+            .find(|(button, rect)| {
+                let up = if stable && *button == ResultsButton::Retry {
+                    scrolled
+                } else {
+                    0.0
+                };
+                rect.contains(x, y + up)
+            })
             .map(|(button, _)| button)
     }
 }
@@ -516,6 +555,47 @@ impl ResultsLayout {
 pub struct ResultsSnapshot {
     pub data: Arc<ResultsData>,
     pub hovered: Option<ResultsButton>,
+    hover: [Towards; 2],
+    scroll: Towards,
+    target: f32,
+}
+
+impl ResultsSnapshot {
+    /// A snapshot at rest: nothing hovered, scrolled to the top.
+    pub fn new(data: Arc<ResultsData>) -> ResultsSnapshot {
+        ResultsSnapshot {
+            data,
+            hovered: None,
+            hover: [Towards::default(); 2],
+            scroll: Towards::default(),
+            target: 0.0,
+        }
+    }
+
+    /// This snapshot scrolled to `fraction` (0 top, 1 bottom) of the range, at rest.
+    pub fn scrolled(mut self, fraction: f32) -> ResultsSnapshot {
+        let fraction = fraction.clamp(0.0, 1.0);
+        self.scroll = Towards::rest(fraction, 0);
+        self.target = fraction;
+        self
+    }
+
+    /// How far `button`'s highlight has come at `now_ns`, 0 ..= 1.
+    pub fn hover_amount(&self, button: ResultsButton, now_ns: u64) -> f32 {
+        self.hover[button as usize].at(now_ns, stable::HOVER_NS, ease_out_quad)
+    }
+
+    /// The scroll position at `now_ns`, 0 (top) ..= 1 (bottom of the range).
+    pub fn scroll_at(&self, now_ns: u64) -> f32 {
+        self.scroll
+            .at(now_ns, stable::SCROLL_NS, ease_out_quint)
+            .clamp(0.0, 1.0)
+    }
+
+    /// Where the scroll is heading, 0 ..= 1.
+    pub fn scroll_target(&self) -> f32 {
+        self.target
+    }
 }
 
 /// The screen's state on the update thread.
@@ -523,6 +603,9 @@ pub struct ResultsSnapshot {
 pub struct Results {
     data: Arc<ResultsData>,
     hovered: Option<ResultsButton>,
+    hover: [Towards; 2],
+    scroll: Towards,
+    target: f32,
 }
 
 impl Results {
@@ -530,6 +613,9 @@ impl Results {
         Results {
             data: Arc::new(data),
             hovered: None,
+            hover: [Towards::default(); 2],
+            scroll: Towards::default(),
+            target: 0.0,
         }
     }
 
@@ -547,21 +633,70 @@ impl Results {
         ResultsSnapshot {
             data: Arc::clone(&self.data),
             hovered: self.hovered,
+            hover: self.hover,
+            scroll: self.scroll,
+            target: self.target,
         }
     }
 
-    /// Applies `input`; `layout` places the buttons for the pointer. Does not allocate.
-    pub fn input(&mut self, input: ResultsInput, layout: &ResultsLayout) -> Option<ResultsAction> {
+    fn scroll_to(&mut self, target: f32, now_ns: u64) {
+        self.target = target.clamp(0.0, 1.0);
+        self.scroll
+            .aim(self.target, now_ns, stable::SCROLL_NS, ease_out_quint);
+    }
+
+    fn point(&mut self, x: f32, y: f32, layout: &ResultsLayout, now_ns: u64) {
+        let scrolled =
+            self.scroll.at(now_ns, stable::SCROLL_NS, ease_out_quint) * layout.scroll_area;
+        self.hovered = layout.button_at_scrolled(x, y, scrolled);
+        for button in ResultsButton::ALL {
+            let to = if self.hovered == Some(button) {
+                1.0
+            } else {
+                0.0
+            };
+            self.hover[button as usize].aim(to, now_ns, stable::HOVER_NS, ease_out_quad);
+        }
+    }
+
+    /// Applies `input` at `now_ns`; `layout` places the buttons for the pointer. Does not
+    /// allocate.
+    pub fn input(
+        &mut self,
+        input: ResultsInput,
+        layout: &ResultsLayout,
+        now_ns: u64,
+    ) -> Option<ResultsAction> {
+        let scrolls = layout.scroll_area > 0.0;
         match input {
             ResultsInput::Retry => Some(ResultsAction::Retry),
             ResultsInput::Back => Some(ResultsAction::Back),
             ResultsInput::PointerMove { x, y } => {
-                self.hovered = layout.button_at(x, y);
+                self.point(x, y, layout, now_ns);
                 None
             }
             ResultsInput::PointerPress { x, y } => {
-                self.hovered = layout.button_at(x, y);
+                if scrolls && self.target < 1.0 && layout.hint.contains(x, y) {
+                    self.scroll_to(1.0, now_ns);
+                    return None;
+                }
+                self.point(x, y, layout, now_ns);
                 self.hovered.map(ResultsAction::from)
+            }
+            ResultsInput::Scroll { delta } if scrolls => {
+                self.scroll_to(self.target + delta * SCROLL_LINE, now_ns);
+                None
+            }
+            ResultsInput::Page { delta } if scrolls => {
+                self.scroll_to(self.target + delta, now_ns);
+                None
+            }
+            ResultsInput::Edge { bottom } if scrolls => {
+                self.scroll_to(if bottom { 1.0 } else { 0.0 }, now_ns);
+                None
+            }
+            ResultsInput::Scroll { .. } | ResultsInput::Page { .. } | ResultsInput::Edge { .. } => {
+                None
             }
         }
     }

@@ -20,7 +20,8 @@ use slam_render::upload::{
 };
 use slam_skin::{AnimationOptions, SkinChain, SkinVersion};
 use slam_ui::results::stable::{
-    GLYPHS, GRADE_NAMES, Glyph, HIT_NAMES, MODS, StableImages, StableSkin, StableSprite,
+    ArtSize, GLYPHS, GRADE_NAMES, Glyph, HIT_NAMES, MODS, StableArt, StableImages, StableSkin,
+    StableSprite,
 };
 
 use crate::menu_cursor::{CursorShown, SkinImage, menu_chain, reached};
@@ -43,6 +44,10 @@ pub struct RankingSkin {
     pub score_overlap: f32,
     pub combo_overlap: f32,
     pub images: StableImages<Option<SkinImage>>,
+    /// The sizes of the images the buttons' places depend on, read from the files' headers
+    /// for the update thread's hit testing (ADR-0161). A file whose size is unknown (not a
+    /// PNG) counts as the default size.
+    pub art: StableArt,
 }
 
 impl RankingSkin {
@@ -118,6 +123,9 @@ pub fn ranking_files(skins: &SkinChain) -> Option<RankingFiles> {
             score_font: font(config.score_prefix(), &score_glyphs),
             combo_font: font(config.combo_prefix(), &combo_glyphs),
             mods: std::array::from_fn(|i| file(MODS[i].0)),
+            back: first_frame("menu-back"),
+            retry: file("ranking-retry"),
+            graph: file("ranking-graph"),
         },
     })
 }
@@ -135,6 +143,31 @@ enum Command {
 struct Reply {
     generation: u32,
     skin: RankingSkin,
+}
+
+/// The pixel size of a PNG from its header.
+fn png_size(bytes: &[u8]) -> Option<[f32; 2]> {
+    if bytes.len() < 24 || bytes[..8] != [0x89, b'P', b'N', b'G', 0x0d, 0x0a, 0x1a, 0x0a] {
+        return None;
+    }
+    let be =
+        |at: usize| u32::from_be_bytes([bytes[at], bytes[at + 1], bytes[at + 2], bytes[at + 3]]);
+    Some([be(16) as f32, be(20) as f32])
+}
+
+/// The size of the image in `file`, if it is a PNG (reads its header only).
+fn file_size(file: &Option<(PathBuf, f32)>) -> Option<ArtSize> {
+    use std::io::Read;
+    let (path, density) = file.as_ref()?;
+    let mut header = [0_u8; 24];
+    std::fs::File::open(path)
+        .ok()?
+        .read_exact(&mut header)
+        .ok()?;
+    Some(ArtSize {
+        size: png_size(&header)?,
+        density: *density,
+    })
 }
 
 pub(crate) fn read_image(
@@ -176,13 +209,20 @@ pub(crate) fn load_chain(requests: &mut TextureRequests, chain: &SkinChain) -> R
             ..RankingSkin::default()
         };
     };
+    let art = StableArt {
+        title: file_size(&files.images.title),
+        back: file_size(&files.images.back),
+        retry: file_size(&files.images.retry),
+    };
+    let images = files.images.map(|file| read_image(requests, file));
     RankingSkin {
         loaded: true,
         present: true,
         modern: files.modern,
         score_overlap: files.score_overlap,
         combo_overlap: files.combo_overlap,
-        images: files.images.map(|file| read_image(requests, file)),
+        images,
+        art,
     }
 }
 

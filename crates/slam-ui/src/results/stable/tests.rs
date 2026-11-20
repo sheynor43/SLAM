@@ -59,6 +59,7 @@ fn data() -> ResultsData {
         average_hit_error: None,
         average_hit_error_text: None,
         unstable_rate: None,
+        extra: crate::results::ResultsExtra::default(),
     }
 }
 
@@ -322,7 +323,7 @@ fn images_map_and_iterate_every_slot() {
     let images: StableImages<u32> = StableImages::default();
     assert_eq!(
         images.iter().count(),
-        5 + GRADES + HITS + 2 * GLYPHS + MOD_COUNT
+        5 + 3 + GRADES + HITS + 2 * GLYPHS + MOD_COUNT
     );
     let mut n = 0;
     let numbered = images.map(|_| {
@@ -331,5 +332,5 @@ fn images_map_and_iterate_every_slot() {
     });
     assert_eq!(numbered.iter().count(), n as usize);
     assert!(numbered.iter().all(|v| *v > 0));
-    assert!(MOD_COUNT as u32 + 2 * GLYPHS as u32 + 5 + (GRADES + HITS) as u32 <= 64);
+    assert!(MOD_COUNT as u32 + (12 + 11) + 5 + 3 + (GRADES + HITS) as u32 <= 64);
 }

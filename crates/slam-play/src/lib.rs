@@ -13,6 +13,7 @@ pub mod fps_graph;
 pub mod fps_view;
 pub mod gameplay_sounds;
 pub mod health_bar;
+pub mod health_graph;
 pub mod hit_error;
 pub mod hitsounds;
 pub mod hotkeys;

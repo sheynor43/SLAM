@@ -6,7 +6,7 @@ use slam_osu::scoring::ScoreRank;
 use slam_play::PlayResults;
 use slam_ui::i18n::{FluentArgs, Localizer};
 use slam_ui::results::{
-    Rank, ResultsData, ResultsMods, ResultsStat, StatKind, is_early, write_fixed2,
+    Rank, ResultsData, ResultsExtra, ResultsMods, ResultsStat, StatKind, is_early, write_fixed2,
 };
 
 /// The judgement a row counts.
@@ -71,6 +71,7 @@ pub fn results_data(
     mods: ResultsMods,
     r: &PlayResults,
     localizer: &Localizer,
+    extra: ResultsExtra,
 ) -> ResultsData {
     ResultsData {
         id,
@@ -94,6 +95,131 @@ pub fn results_data(
             .average
             .map(|offset| average_hit_error_text(localizer, offset)),
         unstable_rate: r.hit_errors.unstable_rate,
+        extra,
+    }
+}
+
+/// What a play's results say of its beatmap besides the title, known when it starts.
+#[derive(Clone, Debug, PartialEq)]
+pub struct PlayInfo {
+    /// The mapper; empty when not known.
+    pub creator: String,
+    /// The star rating with the mods, when the song select had it.
+    pub stars: Option<f32>,
+    /// CS, AR, OD and HP as the mods make them (lazer's adjusted display difficulty).
+    pub difficulty: Option<slam_osu::beatmap::Difficulty>,
+    /// The mods' speed.
+    pub rate: f64,
+}
+
+impl Default for PlayInfo {
+    fn default() -> Self {
+        PlayInfo {
+            creator: String::new(),
+            stars: None,
+            difficulty: None,
+            rate: 1.0,
+        }
+    }
+}
+
+/// A number with at most two decimals and no trailing zeros: `4`, `9.33`, `1.5`.
+fn short_number(value: f64) -> String {
+    let text = format!("{value:.2}");
+    text.trim_end_matches('0').trim_end_matches('.').to_owned()
+}
+
+// Ported from McOsu db2add2: src/App/Osu/OsuRankingScreen.cpp (update: the tooltip's lines)
+// Ported from McOsu db2add2: src/App/Osu/OsuScore.cpp (onScoreChange: hit error averages)
+/// Stable's additions to the results (ADR-0161): the header's lines, the health line and
+/// the details under the panel, localised. `offsets` are the play's hit offsets in ms.
+#[allow(clippy::too_many_arguments)]
+pub fn extra(
+    info: &PlayInfo,
+    player: &str,
+    date: &str,
+    health: Vec<f32>,
+    offsets: &[f64],
+    r: &PlayResults,
+    mods: &ResultsMods,
+    localizer: &Localizer,
+) -> ResultsExtra {
+    let text = |key: &str, args: &[(&str, String)]| {
+        let mut fluent = FluentArgs::new();
+        for (name, value) in args {
+            fluent.set(*name, value.clone());
+        }
+        localizer.format(key, Some(&fluent)).into_owned()
+    };
+    let beatmap_by = if info.creator.is_empty() {
+        String::new()
+    } else {
+        text("results-beatmap-by", &[("mapper", info.creator.clone())])
+    };
+    let played_by = text(
+        "results-played-by",
+        &[("player", player.to_owned()), ("date", date.to_owned())],
+    );
+    let mut details = Vec::new();
+    if let Some(stars) = info.stars {
+        details.push(text(
+            "results-details-stars",
+            &[("stars", format!("{stars:.2}"))],
+        ));
+    }
+    if info.rate != 1.0 {
+        details.push(text(
+            "results-details-speed",
+            &[("speed", short_number(info.rate))],
+        ));
+    }
+    if let Some(d) = info.difficulty {
+        details.push(text(
+            "results-details-difficulty",
+            &[
+                ("cs", short_number(f64::from(d.circle_size))),
+                ("ar", short_number(f64::from(d.approach_rate))),
+                ("od", short_number(f64::from(d.overall_difficulty))),
+                ("hp", short_number(f64::from(d.drain_rate))),
+            ],
+        ));
+    }
+    if !mods.is_empty() {
+        let list: Vec<&str> = mods.iter().map(|m| m.as_str()).collect();
+        details.push(text("results-details-mods", &[("mods", list.join(" "))]));
+    }
+    // McOsu's "Error: min - max avg": the averages of the early and of the late hits; an
+    // exact hit counts on both sides, an empty side is 0. McOsu sums whole milliseconds
+    // in `float`; these are the exact offsets.
+    let mean = |early: bool| {
+        let (sum, count) = offsets
+            .iter()
+            .filter(|&&o| if early { o <= 0.0 } else { o >= 0.0 })
+            .fold((0.0, 0u32), |(s, n), &o| (s + o, n + 1));
+        if count > 0 {
+            sum / f64::from(count)
+        } else {
+            0.0
+        }
+    };
+    if !offsets.is_empty() {
+        let (early, late) = (mean(true), mean(false));
+        details.push(text(
+            "results-details-error",
+            &[
+                ("early", format!("{early:.2}")),
+                ("late", format!("{late:+.2}")),
+            ],
+        ));
+    }
+    if let Some(ur) = r.hit_errors.unstable_rate {
+        details.push(text("results-details-ur", &[("ur", format!("{ur:.2}"))]));
+    }
+    ResultsExtra {
+        beatmap_by,
+        played_by,
+        health,
+        details,
     }
 }
 
@@ -152,6 +278,7 @@ mod tests {
             ResultsMods::new(["HD"]),
             &results,
             &localizer(),
+            ResultsExtra::default(),
         );
         assert_eq!((data.id, data.score, data.rank), (7, 123_456, Rank::SH));
         assert_eq!(
@@ -232,6 +359,7 @@ mod tests {
             ResultsMods::default(),
             &results,
             &localizer(),
+            ResultsExtra::default(),
         );
         assert_eq!(data.average_hit_error, Some(-1.234));
         assert_eq!(data.unstable_rate, Some(123.456));
@@ -276,5 +404,98 @@ mod tests {
         for (from, to) in pairs {
             assert_eq!(rank(from), to);
         }
+    }
+
+    #[test]
+    fn the_extras_word_the_header_and_the_details() {
+        let info = PlayInfo {
+            creator: "Jounzan".into(),
+            stars: Some(5.234),
+            difficulty: Some(slam_osu::beatmap::Difficulty {
+                circle_size: 4.0,
+                approach_rate: 9.333,
+                overall_difficulty: 8.5,
+                drain_rate: 6.0,
+                slider_multiplier: 1.4,
+                slider_tick_rate: 1.0,
+            }),
+            rate: 1.5,
+        };
+        let results = PlayResults {
+            score: 0,
+            score_without_mods: 0,
+            accuracy: 1.0,
+            rank: ScoreRank::X,
+            statistics: Statistics::default(),
+            maximum_statistics: Statistics::default(),
+            hit_errors: slam_osu::hit_events::HitErrorSummary {
+                unstable_rate: Some(98.765),
+                ..Default::default()
+            },
+        };
+        let got = extra(
+            &info,
+            "Guest",
+            "2026-11-20 21:55:12",
+            vec![1.0, 0.5],
+            &[-10.0, -20.0, 4.0],
+            &results,
+            &ResultsMods::new(["HD", "DT"]),
+            &localizer(),
+        );
+        assert_eq!(got.beatmap_by, "Beatmap by Jounzan");
+        assert_eq!(got.played_by, "Played by Guest on 2026-11-20 21:55:12.");
+        assert_eq!(got.health, [1.0, 0.5]);
+        assert_eq!(
+            got.details,
+            [
+                "Stars: 5.23",
+                "Speed: 1.5x",
+                "CS 4 · AR 9.33 · OD 8.5 · HP 6",
+                "Mods: HD DT",
+                "Error: -15.00 ms – +4.00 ms avg",
+                "Unstable rate: 98.77",
+            ]
+        );
+        let unknown = extra_of_unknown_mapper();
+        assert_eq!(unknown, "");
+        // Exact hits count on both sides; an empty side is 0 (McOsu).
+        let only_early = extra(
+            &PlayInfo::default(),
+            "Guest",
+            "now",
+            Vec::new(),
+            &[-10.0, 0.0],
+            &results,
+            &ResultsMods::default(),
+            &localizer(),
+        );
+        assert_eq!(
+            only_early.details,
+            ["Error: -5.00 ms – +0.00 ms avg", "Unstable rate: 98.77"]
+        );
+    }
+
+    fn extra_of_unknown_mapper() -> String {
+        let results = PlayResults {
+            score: 0,
+            score_without_mods: 0,
+            accuracy: 1.0,
+            rank: ScoreRank::X,
+            statistics: Statistics::default(),
+            maximum_statistics: Statistics::default(),
+            hit_errors: Default::default(),
+        };
+        extra(
+            &PlayInfo::default(),
+            "Guest",
+            "now",
+            Vec::new(),
+            &[],
+            &results,
+            &ResultsMods::default(),
+            &localizer(),
+        )
+        .beatmap_by
     }
 }

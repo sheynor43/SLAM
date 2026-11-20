@@ -7,6 +7,12 @@ pub fn ease_out_cubic(t: f32) -> f32 {
     1.0 - inv * inv * inv
 }
 
+/// Quadratic ease-out. `t` is clamped to `0 ..= 1`.
+pub fn ease_out_quad(t: f32) -> f32 {
+    let t = t.clamp(0.0, 1.0);
+    -t * (t - 2.0)
+}
+
 /// Quintic ease-out: faster start and softer stop than cubic. `t` is clamped to `0 ..= 1`.
 pub fn ease_out_quint(t: f32) -> f32 {
     let inv = 1.0 - t.clamp(0.0, 1.0);
@@ -68,7 +74,7 @@ pub fn progress(start_ns: u64, now_ns: u64, duration_ns: u64) -> f32 {
 }
 
 /// Animation towards a target value.
-#[derive(Clone, Copy, Debug, Default)]
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
 pub(crate) struct Towards {
     from: f32,
     to: f32,

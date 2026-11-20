@@ -45,6 +45,7 @@ use slam_ui::cursor::CursorStyle;
 use slam_ui::i18n::Localizer;
 use slam_ui::intro::{Intro, IntroSnapshot, IntroView};
 use slam_ui::menu::{MainMenu, MenuAction, MenuInput, MenuLayout, MenuSnapshot, MenuView};
+use slam_ui::results::stable::StableArt;
 use slam_ui::results::{
     Results, ResultsAction, ResultsData, ResultsInput, ResultsLayout, ResultsMods, ResultsSnapshot,
     ResultsView, StatKind,
@@ -135,6 +136,8 @@ const MAX_SHAPES: usize = 1024
     + 1
     + crate::menu_cursor::MAX_MENU_CURSOR_SHAPES
     + slam_ui::results::stable::MAX_STABLE_SPRITES
+    + slam_ui::results::stable::MAX_HEALTH_SEGMENTS
+    + 16
     + MAX_VOLUME_SHAPES;
 /// Outlined glyphs of the startup intro's title (ADR-0114).
 const MAX_INTRO_OUTLINES: usize = 64;
@@ -335,8 +338,9 @@ pub struct ShellState {
     layout: MenuLayout,
     song_layout: SongSelectLayout,
     results_layout: ResultsLayout,
-    /// Whether the results are in the skin's look: their buttons are elsewhere then.
-    ranking_stable: bool,
+    /// The sizes of the skin's results images when the results are in the skin's look: their
+    /// buttons are elsewhere then and the screen scrolls (ADR-0161).
+    ranking_art: Option<StableArt>,
     settings_layout: SettingsLayout,
     song_select: SongSelect,
     /// The library's end, without a songs folder `None`.
@@ -364,6 +368,8 @@ pub struct ShellState {
     held_results: Vec<Arc<ResultsData>>,
     /// The beatmap line of `last_file` for the results.
     last_title: String,
+    /// The mapper and star rating of the last play asked for (ADR-0161).
+    last_info: results::PlayInfo,
     /// The results ask to play `last_file` again, not yet taken by
     /// [`ShellState::take_retry_request`].
     retry_request: bool,
@@ -487,7 +493,7 @@ impl ShellState {
             song_layout: SongSelectLayout::new(width, height, &theme)
                 .with_mod_columns(&mod_columns()),
             results_layout: ResultsLayout::new(width, height, &theme),
-            ranking_stable: false,
+            ranking_art: None,
             settings_layout: panel_layout(width, height, &theme),
             song_select,
             songs: None,
@@ -500,6 +506,7 @@ impl ShellState {
             play_request: None,
             last_file: None,
             last_title: String::new(),
+            last_info: results::PlayInfo::default(),
             held_results: Vec::new(),
             retry_request: false,
             track_stop: false,
@@ -843,12 +850,30 @@ impl ShellState {
         &self.last_title
     }
 
+    /// What the results of the last play asked for say of its beatmap (ADR-0161).
+    pub fn last_info(&self) -> &results::PlayInfo {
+        &self.last_info
+    }
+
     /// "artist - title [difficulty]" of a difficulty of the song select's list.
     fn beatmap_title(&self, set: usize, difficulty: usize) -> String {
         let row = self.song_select.list().sets.get(set);
         match (row, row.and_then(|r| r.difficulties.get(difficulty))) {
             (Some(row), Some(d)) => results::title(&row.artist, &row.title, &d.version),
             _ => String::new(),
+        }
+    }
+
+    /// The mapper and the star rating of a difficulty of the song select's list.
+    fn play_info(&self, set: usize, difficulty: usize) -> results::PlayInfo {
+        let row = self.song_select.list().sets.get(set);
+        results::PlayInfo {
+            creator: row.map(|r| r.creator.clone()).unwrap_or_default(),
+            stars: row
+                .and_then(|r| r.difficulties.get(difficulty))
+                .and_then(|d| d.stars),
+            difficulty: None,
+            rate: 1.0,
         }
     }
 
@@ -1550,7 +1575,7 @@ impl ShellState {
         self.song_layout =
             SongSelectLayout::new(width, height, &self.theme).with_mod_columns(&mod_columns());
         self.results_layout =
-            ResultsLayout::new_for(width, height, &self.theme, self.ranking_stable);
+            ResultsLayout::new_for(width, height, &self.theme, self.ranking_art.as_ref());
         self.settings_layout = panel_layout(width, height, &self.theme);
     }
 
@@ -2121,6 +2146,7 @@ impl ShellState {
                             if let Some(file) = self.file(set, difficulty) {
                                 self.last_file = Some(file.clone());
                                 self.last_title = self.beatmap_title(set, difficulty);
+                                self.last_info = self.play_info(set, difficulty);
                                 self.play_request = Some((set, difficulty));
                                 self.set_loading(true);
                             }
@@ -2131,7 +2157,7 @@ impl ShellState {
                 }
                 AppScreen::Results(results) => {
                     let action = results_input(input)
-                        .and_then(|input| results.input(input, &self.results_layout));
+                        .and_then(|input| results.input(input, &self.results_layout, now_ns));
                     match action {
                         // Back while loading cancels the load and stays.
                         Some(ResultsAction::Back) if self.loading => {
@@ -2287,14 +2313,19 @@ impl ShellState {
             }
             None => Default::default(),
         };
-        if snapshot.ranking.stable() != self.ranking_stable {
-            self.ranking_stable = snapshot.ranking.stable();
+        let ranking_art = snapshot.ranking.stable().then_some(snapshot.ranking.art);
+        if ranking_art != self.ranking_art {
+            self.ranking_art = ranking_art;
             self.results_layout = ResultsLayout::new_for(
                 self.size[0],
                 self.size[1],
                 &self.theme,
-                self.ranking_stable,
+                self.ranking_art.as_ref(),
             );
+        }
+        // The beatmap's background behind stable's results is grey 0x99, as McOsu's.
+        if self.ranking_art.is_some() && matches!(self.stack.top(), AppScreen::Results(_)) {
+            snapshot.background_dim = 1.0 - 0x99 as f32 / 255.0;
         }
         let top: *const AppScreen = self.stack.top();
         for (slot, layer) in snapshot.layers.iter_mut().zip(self.stack.layers(now_ns)) {
@@ -2523,6 +2554,30 @@ fn results_input(input: ScreenInput) -> Option<ResultsInput> {
         | ScreenInput::ToggleSettings => {
             return None;
         }
+        // The stable look scrolls (ADR-0161).
+        ScreenInput::Common(scroll) | ScreenInput::Repeat(scroll)
+            if matches!(
+                scroll,
+                SongSelectInput::Up
+                    | SongSelectInput::Down
+                    | SongSelectInput::PageUp
+                    | SongSelectInput::PageDown
+                    | SongSelectInput::Home
+                    | SongSelectInput::End
+                    | SongSelectInput::Scroll { .. }
+            ) =>
+        {
+            match scroll {
+                SongSelectInput::Up => ResultsInput::Scroll { delta: -1.0 },
+                SongSelectInput::Down => ResultsInput::Scroll { delta: 1.0 },
+                SongSelectInput::PageUp => ResultsInput::Page { delta: -1.0 },
+                SongSelectInput::PageDown => ResultsInput::Page { delta: 1.0 },
+                SongSelectInput::Home => ResultsInput::Edge { bottom: false },
+                SongSelectInput::End => ResultsInput::Edge { bottom: true },
+                SongSelectInput::Scroll { lines } => ResultsInput::Scroll { delta: lines },
+                _ => return None,
+            }
+        }
         ScreenInput::Retry => ResultsInput::Retry,
         ScreenInput::Common(SongSelectInput::Back) => ResultsInput::Back,
         ScreenInput::Common(SongSelectInput::PointerMove { x, y }) => {
@@ -2614,6 +2669,8 @@ struct Game {
     /// The play's id, and what its results show besides the score; made when it starts.
     id: u64,
     title: String,
+    /// The mapper, star rating and difficulty, for the results (ADR-0161).
+    info: results::PlayInfo,
     mods: ResultsMods,
     /// The beatmap file played: its offset is kept when the play ends.
     map: Option<PathBuf>,
@@ -3065,9 +3122,10 @@ impl PlayHost {
                         std::mem::replace(&mut self.pending, Pending::Idle)
                     {
                         let title = state.last_title().to_owned();
+                        let info = state.last_info().clone();
                         let map = state.last_file().cloned();
                         let pointer = state.cursor_points();
-                        self.start(id, *prepared, title, map, pointer);
+                        self.start(id, *prepared, title, info, map, pointer);
                         state.finish_loading(now_ns, Some(id));
                     }
                 }
@@ -3239,6 +3297,16 @@ impl PlayHost {
                     game.mods,
                     &r,
                     &self.localizer,
+                    results::extra(
+                        &game.info,
+                        crate::replays::PLAYER_NAME,
+                        &crate::local_time::now_text(),
+                        game.session.health_curve(),
+                        game.session.hit_offsets(),
+                        &r,
+                        &game.mods,
+                        &self.localizer,
+                    ),
                 )
             });
             // The track plays on under the results, as in lazer; a failed command leaves it
@@ -3450,6 +3518,7 @@ impl PlayHost {
         id: u64,
         prepared: Prepared,
         title: String,
+        info: results::PlayInfo,
         map: Option<PathBuf>,
         pointer: [f32; 2],
     ) {
@@ -3471,6 +3540,15 @@ impl PlayHost {
             }),
         });
         let shown_mods = results::mods(&mods);
+        // The difficulty as the mods make it, for the results' details (ADR-0161).
+        let info = results::PlayInfo {
+            difficulty: Some(slam_osu::statistics::adjusted_display_difficulty(
+                beatmap.difficulty,
+                &mods,
+            )),
+            rate: mods.rate().rate,
+            ..info
+        };
         let mut input = LiveInput::new(
             self.input.bindings,
             PlayfieldLayout::new(self.points[0], self.points[1]),
@@ -3507,6 +3585,7 @@ impl PlayHost {
             ending: Ending::Playing,
             id,
             title,
+            info,
             mods: shown_mods,
             map,
             beatmap: replay_beatmap,
@@ -4283,17 +4362,37 @@ impl<B: render::Backend> Draw<ShellSnapshot> for View<B> {
                 ScreenView::Results(results) => {
                     // The skin's own screen when it has a panel (ADR-0158).
                     match self.ranking.resolve(&snapshot.ranking) {
-                        Some(skin) => self.results.push_stable(
-                            &mut self.shapes,
-                            &mut self.text,
-                            &mut self.glyphs,
-                            width,
-                            height,
-                            results,
-                            layer.pose,
-                            r.white,
-                            &skin,
-                        ),
+                        Some(skin) => {
+                            // The beatmap's background under it, as McOsu's
+                            // `drawSelectedBeatmapBackgroundImage` (ADR-0161); not blurred.
+                            if let Some((uploads, fade)) = &self.backgrounds {
+                                fade.push(
+                                    &mut self.shapes,
+                                    width,
+                                    height,
+                                    info.wait.woke_ns,
+                                    layer.pose.opacity,
+                                    1.0,
+                                    |h| match uploads.get(h) {
+                                        TextureState::Ready(region) => Some(region),
+                                        _ => None,
+                                    },
+                                );
+                                layer_from = (self.shapes.len(), self.text.len());
+                            }
+                            self.results.set_time(info.wait.woke_ns);
+                            self.results.push_stable(
+                                &mut self.shapes,
+                                &mut self.text,
+                                &mut self.glyphs,
+                                width,
+                                height,
+                                results,
+                                layer.pose,
+                                r.white,
+                                &skin,
+                            );
+                        }
                         None => self.results.push(
                             &mut self.shapes,
                             &mut self.text,

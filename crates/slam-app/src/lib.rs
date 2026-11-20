@@ -12,6 +12,7 @@ pub mod gpu;
 pub mod hud_layouts;
 pub mod i18n;
 pub mod loader;
+pub mod local_time;
 pub mod logging;
 pub mod menu_cursor;
 pub mod menu_sounds;

@@ -9,6 +9,8 @@
 use slam_render::atlas::UvRect;
 use slam_render::textures::TextureId;
 
+use crate::menu::Rect;
+
 use super::{Rank, ResultsData, StatKind};
 
 /// Letter images, in [`GRADE_NAMES`] order.
@@ -116,6 +118,12 @@ pub struct StableImages<T> {
     /// Combo font: the digits and `x`.
     pub combo_font: [T; GLYPHS],
     pub mods: [T; MOD_COUNT],
+    /// `menu-back`: the Back button at the bottom left (ADR-0161).
+    pub back: T,
+    /// `ranking-retry`.
+    pub retry: T,
+    /// `ranking-graph`, under the health line.
+    pub graph: T,
 }
 
 impl<T: Default> Default for StableImages<T> {
@@ -131,6 +139,9 @@ impl<T: Default> Default for StableImages<T> {
             score_font: std::array::from_fn(|_| T::default()),
             combo_font: std::array::from_fn(|_| T::default()),
             mods: std::array::from_fn(|_| T::default()),
+            back: T::default(),
+            retry: T::default(),
+            graph: T::default(),
         }
     }
 }
@@ -144,6 +155,9 @@ impl<T> StableImages<T> {
             &self.max_combo,
             &self.accuracy,
             &self.perfect,
+            &self.back,
+            &self.retry,
+            &self.graph,
         ]
         .into_iter()
         .chain(&self.grades)
@@ -166,6 +180,9 @@ impl<T> StableImages<T> {
             score_font: std::array::from_fn(|i| f(&self.score_font[i])),
             combo_font: std::array::from_fn(|i| f(&self.combo_font[i])),
             mods: std::array::from_fn(|i| f(&self.mods[i])),
+            back: f(&self.back),
+            retry: f(&self.retry),
+            graph: f(&self.graph),
         }
     }
 }
@@ -189,6 +206,237 @@ pub struct StableSkin {
     pub score_overlap: f32,
     pub combo_overlap: f32,
     pub images: StableImages<Option<StableSprite>>,
+}
+
+/// The pixel size of a skin image and its density: all the layout needs of an image that
+/// it does not draw itself (the update thread knows the sizes from the files' headers).
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct ArtSize {
+    pub size: [f32; 2],
+    pub density: f32,
+}
+
+/// The sizes of the images that decide where the buttons and the scroll range are: shared
+/// by hit testing (update thread) and drawing, so that both see the same rectangles.
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+pub struct StableArt {
+    pub title: Option<ArtSize>,
+    pub back: Option<ArtSize>,
+    pub retry: Option<ArtSize>,
+}
+
+impl StableSprite {
+    pub fn art(&self) -> ArtSize {
+        ArtSize {
+            size: self.size,
+            density: self.density,
+        }
+    }
+}
+
+impl StableSkin {
+    pub fn art(&self) -> StableArt {
+        StableArt {
+            title: self.images.title.as_ref().map(StableSprite::art),
+            back: self.images.back.as_ref().map(StableSprite::art),
+            retry: self.images.retry.as_ref().map(StableSprite::art),
+        }
+    }
+}
+
+/// McOsu's `OsuUIBackButton` base size at `osuSize` 54.
+const BACK_BASE: [f32; 2] = [225.0, 87.0];
+/// `ranking-retry` and `ranking-graph` are placed on stable's 1024x768 screen.
+const STABLE_SCREEN_HEIGHT: f32 = 768.0;
+/// Centre of `ranking-retry` on stable's screen (estimated from screenshots, ADR-0161).
+const RETRY_CENTRE_Y: f32 = 576.0;
+/// Top-left of `ranking-graph` on stable's screen (estimated from screenshots, ADR-0161).
+pub const GRAPH_AT: [f32; 2] = [256.0, 608.0];
+/// The most segments of the health line.
+pub const MAX_HEALTH_SEGMENTS: usize = 256;
+/// How long the Back button's highlight takes, in ns.
+pub const HOVER_NS: u64 = 100_000_000;
+/// How long the scroll eases to its target, in ns.
+pub const SCROLL_NS: u64 = 200_000_000;
+
+/// Line height of the header's font in osu pixels: a stand-in for McOsu's font height,
+/// matched to stable's results at 1920×1080 (the title about 36 px).
+const HEADER_FONT: f32 = 16.0;
+/// `m_fSubTitleScale`: 0.6 * 1.3.
+// Ported from McOsu db2add2: src/App/Osu/OsuUIRankingScreenInfoLabel.cpp
+pub const SUBTITLE_SCALE: f32 = 0.78;
+/// `m_iMargin` (10 px in McOsu, not scaled); in osu pixels, matched to stable's spacing.
+const HEADER_MARGIN: f32 = 2.0;
+
+/// The header font's em size at a unit, before the header's scale.
+pub fn header_em(unit: f32) -> f32 {
+    unit * HEADER_FONT
+}
+
+/// `getMinimumHeight` of the info label: the three lines and the margins.
+// Ported from McOsu db2add2: src/App/Osu/OsuUIRankingScreenInfoLabel.cpp (getMinimumHeight)
+pub fn header_min_height(unit: f32) -> f32 {
+    let h = unit * HEADER_FONT;
+    h + 2.0 * h * SUBTITLE_SCALE + 2.0 * HEADER_MARGIN * unit
+}
+
+/// What a header line says.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum HeaderKind {
+    Title,
+    By,
+    Played,
+}
+
+/// One line of the header: its top-left corner and the factor of [`header_em`] it is
+/// set in.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct HeaderLine {
+    pub kind: HeaderKind,
+    pub x: f32,
+    pub y: f32,
+    pub scale: f32,
+}
+
+/// The header's lines for a bar of `bar_height`; the "Beatmap by" line is skipped when
+/// `has_by` is false. Returns the lines and how many are used.
+// Ported from McOsu db2add2: src/App/Osu/OsuUIRankingScreenInfoLabel.cpp (draw)
+pub fn header_lines(unit: f32, bar_height: f32, has_by: bool) -> ([HeaderLine; 3], usize) {
+    let h = unit * HEADER_FONT;
+    let global = (bar_height / header_min_height(unit) * 0.741).max(1.0);
+    let sub = SUBTITLE_SCALE * global;
+    let margin = HEADER_MARGIN * unit;
+    let (x, top) = (5.0 * unit, 5.0 * unit);
+    let second = top + h * global + margin;
+    let line = |kind, y, scale| HeaderLine { kind, x, y, scale };
+    let mut lines = [line(HeaderKind::Title, top, global); 3];
+    let mut count = 1;
+    let mut y = second;
+    if has_by {
+        lines[count] = line(HeaderKind::By, y, sub);
+        count += 1;
+        y += h * sub + margin;
+    }
+    lines[count] = line(HeaderKind::Played, y, sub);
+    (lines, count + 1)
+}
+
+/// Where the interactive parts of the stable look are.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct Geometry {
+    /// Height of the black bar.
+    pub bar_height: f32,
+    /// `menu-back`, at the bottom left.
+    pub back: Rect,
+    /// `ranking-retry` unscrolled; empty without the image.
+    pub retry: Rect,
+    /// The scroll-down hint's button.
+    pub hint: Rect,
+    /// Pixels the content scrolls over its whole range: the area below the bar.
+    pub scroll_area: f32,
+    /// Pixels per window pixel of height / 768: the scale of `ranking-retry` and
+    /// `ranking-graph`.
+    pub screen_scale: f32,
+}
+
+/// The geometry for a `width` x `height` window.
+// Ported from McOsu db2add2: src/App/Osu/OsuUIBackButton.cpp (updateLayout)
+// Ported from McOsu db2add2: src/App/Osu/OsuRankingScreen.cpp (updateLayout)
+pub fn geometry(width: f32, height: f32, art: &StableArt) -> Geometry {
+    let m = Metrics::new(width, height);
+    let title_height = art
+        .title
+        .map_or(m.ui(75.0), |t| t.size[1] * m.image_scale(t.size, 75.0));
+    let bar_height = (title_height * 0.785).max(header_min_height(m.ui(1.0)));
+
+    // The back button: as wide as its base size, as high as the image's aspect gives,
+    // clamped to 1.5 times the base height; drawn scaled to the clamped height.
+    let res = m.image_scale(BACK_BASE, 54.0);
+    let raw = art.back.map_or(BACK_BASE, |a| a.size);
+    let natural = [BACK_BASE[0] * res, raw[1] / raw[0] * BACK_BASE[0] * res];
+    let clamped = natural[1].min(BACK_BASE[1] * res * 1.5);
+    let k = clamped / natural[1];
+    let back_size = [natural[0] * k, clamped];
+    let back = Rect {
+        x: 0.0,
+        y: height - back_size[1],
+        width: back_size[0],
+        height: back_size[1],
+    };
+
+    let f = height / STABLE_SCREEN_HEIGHT;
+    let retry = art.retry.map_or_else(Rect::default, |a| {
+        let size = [a.size[0] / a.density * f, a.size[1] / a.density * f];
+        Rect {
+            x: width - size[0],
+            y: RETRY_CENTRE_Y * f - size[1] / 2.0,
+            width: size[0],
+            height: size[1],
+        }
+    });
+    let hint_size = [width * 0.2, height * 0.1];
+    Geometry {
+        bar_height,
+        back,
+        retry,
+        hint: Rect {
+            x: (width - hint_size[0]) / 2.0,
+            y: height - hint_size[1],
+            width: hint_size[0],
+            height: hint_size[1],
+        },
+        scroll_area: (height - bar_height).max(0.0),
+        screen_scale: f,
+    }
+}
+
+/// The scroll-down hint's lift in units of its text height, from -0.25 (lowest) to 0, at
+/// `seconds`.
+// Ported from McOsu db2add2: src/App/Osu/OsuRankingScreen.cpp (OsuRankingScreenScrollDownInfoButton::draw)
+pub fn hint_bounce(seconds: f32) -> f32 {
+    let mut animation = (seconds * 3.2).rem_euclid(2.0);
+    if animation > 1.0 {
+        animation = 2.0 - animation;
+    }
+    animation = -animation * (animation - 2.0);
+    -0.25 + animation * 0.25
+}
+
+/// Hands the segments of the health line inside `graph` (the image's rectangle, inset by
+/// 8% on every side) to `sink` as `(from, to, below_half)`. At most
+/// [`MAX_HEALTH_SEGMENTS`] segments; longer curves are sampled.
+pub fn health_segments(
+    graph: Rect,
+    health: &[f32],
+    mut sink: impl FnMut([f32; 2], [f32; 2], bool),
+) {
+    if health.len() < 2 {
+        return;
+    }
+    let inset = 0.08;
+    let (x, y) = (
+        graph.x + graph.width * inset,
+        graph.y + graph.height * inset,
+    );
+    let (w, h) = (
+        graph.width * (1.0 - 2.0 * inset),
+        graph.height * (1.0 - 2.0 * inset),
+    );
+    let segments = (health.len() - 1).min(MAX_HEALTH_SEGMENTS);
+    let at = |i: usize| {
+        let index = i * (health.len() - 1) / segments;
+        let value = health[index].clamp(0.0, 1.0);
+        (
+            [x + w * i as f32 / segments as f32, y + h - value * h],
+            value,
+        )
+    };
+    let mut previous = at(0);
+    for i in 1..=segments {
+        let next = at(i);
+        sink(previous.0, next.0, (previous.1 + next.1) / 2.0 < 0.5);
+        previous = next;
+    }
 }
 
 /// What a placed sprite is, for tests and for callers that tint parts.

@@ -54,6 +54,7 @@ fn labels() -> ResultsLabels {
         retry: "Retry".into(),
         back: "Back".into(),
         hint: "hint".into(),
+        details_title: "Details".into(),
     }
 }
 
@@ -74,6 +75,14 @@ fn data(id: u64) -> ResultsData {
         average_hit_error: Some(-1.5),
         average_hit_error_text: Some("1.50 ms early".into()),
         unstable_rate: Some(90.25),
+        extra: slam_ui::results::ResultsExtra {
+            beatmap_by: "Beatmap by Someone".into(),
+            played_by: "Played by Guest on 2026-11-20 21:55:12.".into(),
+            health: (0..256)
+                .map(|i| 0.5 + 0.5 * (i as f32 / 20.0).sin())
+                .collect(),
+            details: (0..6).map(|i| format!("Detail line {i}")).collect(),
+        },
     }
 }
 
@@ -87,9 +96,18 @@ fn input_does_not_allocate() {
             ResultsInput::PointerPress { x: 640.0, y: 680.0 },
             ResultsInput::Retry,
             ResultsInput::Back,
+            ResultsInput::Scroll { delta: 1.0 },
+            ResultsInput::Page { delta: 1.0 },
+            ResultsInput::Edge { bottom: false },
         ] {
-            std::hint::black_box(screen.input(input, &layout));
+            std::hint::black_box(screen.input(input, &layout, 5));
         }
+        std::hint::black_box(screen.snapshot().scroll_at(10));
+        std::hint::black_box(
+            screen
+                .snapshot()
+                .hover_amount(slam_ui::results::ResultsButton::Back, 10),
+        );
         std::hint::black_box(screen.snapshot());
     });
 }
@@ -157,6 +175,9 @@ fn stable_view_pushes_without_allocating_once_warm() {
     }
     images.combo_font[Glyph::X.index()] = sprite(30.0, 50.0);
     images.mods[4] = sprite(68.0, 66.0);
+    images.back = sprite(225.0, 87.0);
+    images.retry = sprite(200.0, 60.0);
+    images.graph = sprite(256.0, 160.0);
     let skin = StableSkin {
         modern: true,
         score_overlap: 0.0,
@@ -168,10 +189,19 @@ fn stable_view_pushes_without_allocating_once_warm() {
     let mut view = ResultsView::new(registry, Theme::default(), &labels());
     let mut shapes = ShapeBatch::with_capacity(512);
     let mut text = SpriteBatch::with_capacity(8192);
-    let snapshot = Results::new(data(1)).snapshot();
+    // Half scrolled, the pointer over Back.
+    let layout = ResultsLayout::new_for(1280.0, 720.0, &Theme::default(), Some(&skin.art()));
+    let mut screen = Results::new(data(1));
+    screen.input(ResultsInput::Scroll { delta: 3.0 }, &layout, 0);
+    let [x, y] = layout.buttons[1].centre();
+    screen.input(ResultsInput::PointerMove { x, y }, &layout, 0);
+    let snapshot = screen.snapshot();
+    let mut now = 0;
     let mut frame = || {
         shapes.clear();
         text.clear();
+        now += 7_000_000;
+        view.set_time(now);
         view.push_stable(
             &mut shapes,
             &mut text,
@@ -193,4 +223,6 @@ fn stable_view_pushes_without_allocating_once_warm() {
     });
     // The panel, the letter and digits, the bar, the title and the buttons.
     assert!(shapes.len() > 20);
+    // The health line and the arrows add many sprites.
+    assert!(shapes.len() > 250);
 }

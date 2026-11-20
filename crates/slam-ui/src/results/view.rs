@@ -13,7 +13,7 @@ use slam_render::sprite::{Sprite, SpriteBatch};
 use crate::widgets::Look;
 use slam_text::{FontRegistry, Glyph, GlyphCache, GlyphKey, push_layout};
 
-use super::stable::{self, Item, StableSkin};
+use super::stable::{self, HeaderKind, Item, Metrics, Part, StableSkin, StableSprite};
 use super::{
     ResultsButton, ResultsData, ResultsLayout, ResultsSnapshot, StatKind, write_accuracy,
     write_fixed2, write_grouped, write_stat,
@@ -50,6 +50,8 @@ pub struct ResultsLabels {
     pub retry: String,
     pub back: String,
     pub hint: String,
+    /// Heading of the details page of the stable look (ADR-0161).
+    pub details_title: String,
 }
 
 impl std::fmt::Debug for ResultsLabels {
@@ -66,6 +68,59 @@ fn line() -> Line {
     line
 }
 
+/// The health line above half health and below it, as stable draws them.
+const HEALTH_HIGH: Color = Color::rgb(0.0, 1.0, 0.0);
+const HEALTH_LOW: Color = Color::rgb(1.0, 0.0, 0.0);
+
+/// A line from `from` to `to` as one rotated sprite `thickness` thick.
+fn line_segment(
+    shapes: &mut ShapeBatch,
+    white: AtlasRegion,
+    from: [f32; 2],
+    to: [f32; 2],
+    thickness: f32,
+    colour: Color,
+) {
+    let (dx, dy) = (to[0] - from[0], to[1] - from[1]);
+    let mut sprite = Sprite::new(
+        white.texture,
+        white.uv,
+        from,
+        [(dx * dx + dy * dy).sqrt(), thickness],
+    );
+    sprite.origin = [0.0, thickness / 2.0];
+    sprite.rotation = dy.atan2(dx);
+    sprite.colour = colour;
+    shapes.push(&sprite);
+}
+
+/// A skin button drawn into `rect`: grown by `1 + 0.01 a` about its centre and covered by
+/// a white veil of `0.15 a`, `a` being the hover animation.
+// Ported from McOsu db2add2: src/App/Osu/OsuUIBackButton.cpp (draw)
+fn push_button(
+    shapes: &mut ShapeBatch,
+    sprite: &StableSprite,
+    rect: &Rect,
+    amount: f32,
+    opacity: f32,
+    white: AtlasRegion,
+) {
+    let grow = 1.0 + 0.01 * amount;
+    let size = [rect.width * grow, rect.height * grow];
+    let at = [
+        rect.x + rect.width / 2.0 - size[0] / 2.0,
+        rect.y + rect.height / 2.0 - size[1] / 2.0,
+    ];
+    let mut quad = Sprite::new(sprite.texture, sprite.uv, at, size);
+    quad.colour = faded(Color::WHITE, opacity);
+    shapes.push(&quad);
+    if amount > 0.0 {
+        let mut veil = Sprite::new(white.texture, white.uv, at, size);
+        veil.colour = faded(Color::WHITE, 0.15 * amount * opacity);
+        shapes.push(&veil);
+    }
+}
+
 /// The draw side of [`super::Results`].
 pub struct ResultsView {
     theme: Theme,
@@ -78,7 +133,13 @@ pub struct ResultsView {
     title: Line,
     /// The beatmap line in the stable look's top bar, and what it was laid out for.
     stable_title: Line,
-    stable_holds: Option<(u64, u32, u32)>,
+    stable_by: Line,
+    stable_played: Line,
+    details_title: Line,
+    details: Vec<Line>,
+    stable_holds: Option<(u64, u32, u32, u32)>,
+    /// The frame's time, for the animations of the stable look.
+    now_ns: u64,
     rank: Line,
     info_labels: [Line; INFO_ROWS],
     info_values: [Line; INFO_ROWS],
@@ -112,7 +173,12 @@ impl ResultsView {
             ellipsis: 0.0,
             title: line(),
             stable_title: line(),
+            stable_by: line(),
+            stable_played: line(),
+            details_title: labelled(&labels.details_title),
+            details: Vec::new(),
             stable_holds: None,
+            now_ns: 0,
             rank: line(),
             info_labels: [
                 labelled(&labels.score),
@@ -133,6 +199,11 @@ impl ResultsView {
         };
         view.lay_out();
         view
+    }
+
+    /// Sets the time the animations of the next `push` are drawn at.
+    pub fn set_time(&mut self, now_ns: u64) {
+        self.now_ns = now_ns;
     }
 
     fn text_size(&self) -> f32 {
@@ -172,6 +243,10 @@ impl ResultsView {
         }
         self.type_setter
             .lay_out(&mut self.hint, self.theme.song_detail_size * scale);
+        self.type_setter.lay_out(
+            &mut self.details_title,
+            self.theme.results_title_size * scale,
+        );
         let mut probe = Line::new(&ELLIPSIS.to_string());
         self.type_setter
             .lay_out(&mut probe, self.theme.results_title_size * scale);
@@ -240,7 +315,8 @@ impl ResultsView {
         }
     }
 
-    /// The stable look's art: the skin's sprites, the black bar and the beatmap line in it.
+    /// The stable look's art: the details page, the graph, the skin's sprites, the black
+    /// bar with the header in it, the Back button and the scroll-down hint.
     #[allow(clippy::too_many_arguments)]
     fn push_art(
         &mut self,
@@ -254,49 +330,243 @@ impl ResultsView {
     ) {
         let Frame { width, height } = self.frame;
         let shift = pose.offset * width;
-        let tint = faded(Color::WHITE, pose.opacity);
+        let opacity = pose.opacity;
+        let tint = faded(Color::WHITE, opacity);
         let data = &*snapshot.data;
-        let info = stable::lay_out(skin, data, width, height, 0.0, |item| match item {
-            Item::Bar { height } => {
-                let mut bar = Sprite::new(white.texture, white.uv, [shift, 0.0], [width, height]);
-                bar.colour = faded(Color::BLACK, pose.opacity);
-                shapes.push(&bar);
-            }
-            Item::Sprite {
-                sprite,
-                centre,
-                size,
-                ..
-            } => {
-                let at = [centre[0] - size[0] / 2.0 + shift, centre[1] - size[1] / 2.0];
-                let mut quad = Sprite::new(sprite.texture, sprite.uv, at, size);
-                quad.colour = tint;
-                shapes.push(&quad);
-            }
-        });
-        let key = (data.id, width as u32, height as u32);
-        let size = (info.bar_height * 0.45).max(1.0);
-        let margin = info.unit * 5.0;
+        let now = self.now_ns;
+        let unit = Metrics::new(width, height).ui(1.0);
+        let geometry = stable::geometry(width, height, &skin.art());
+        let scroll = snapshot.scroll_at(now);
+        let scrolled = scroll * geometry.scroll_area;
+        let bar = geometry.bar_height;
+
+        // Texts first: laid out again when the data, the window or the bar changes.
+        let key = (data.id, width as u32, height as u32, bar as u32);
+        let (lines, count) = stable::header_lines(unit, bar, !data.extra.beatmap_by.is_empty());
+        let em = stable::header_em(unit);
         if self.stable_holds != Some(key) {
             self.stable_holds = Some(key);
+            let margin = unit * 5.0;
             self.stable_title.text.clear();
             self.stable_title.text.push_str(&data.title);
+            let size = em * lines[0].scale;
             let mut probe = Line::new(&ELLIPSIS.to_string());
             self.type_setter.lay_out(&mut probe, size);
             fit(
                 &mut self.type_setter,
                 &mut self.stable_title,
                 size,
-                (info.title_left - 2.0 * margin).max(0.0),
+                (width - 2.0 * margin).max(0.0),
                 probe.layout.width(),
             );
+            for (line, source, scale) in [
+                (&mut self.stable_by, &data.extra.beatmap_by, lines[1].scale),
+                (
+                    &mut self.stable_played,
+                    &data.extra.played_by,
+                    lines[count - 1].scale,
+                ),
+            ] {
+                line.text.clear();
+                line.text.push_str(source);
+                self.type_setter.lay_out(line, em * scale);
+            }
+            let scale = self.layout.scale;
+            self.details.truncate(data.extra.details.len());
+            while self.details.len() < data.extra.details.len() {
+                self.details.push(line());
+            }
+            for (line, source) in self.details.iter_mut().zip(&data.extra.details) {
+                line.text.clear();
+                line.text.push_str(source);
+                self.type_setter
+                    .lay_out(line, self.theme.results_text_size * scale);
+            }
         }
-        let line = &self.stable_title;
-        let position = [
-            margin + shift,
-            info.bar_height / 2.0 - line.layout.height() / 2.0,
-        ];
-        push_layout(text, &line.layout, position, tint, glyphs);
+
+        // The scrolled content, under the bar.
+        self.push_details(shapes, text, glyphs, &geometry, scrolled, pose, white);
+        let f = geometry.screen_scale;
+        if let Some(graph) = &skin.images.graph {
+            let size = [
+                graph.size[0] / graph.density * f,
+                graph.size[1] / graph.density * f,
+            ];
+            let at = [
+                stable::GRAPH_AT[0] * f + shift,
+                stable::GRAPH_AT[1] * f - scrolled,
+            ];
+            let mut quad = Sprite::new(graph.texture, graph.uv, at, size);
+            quad.colour = tint;
+            shapes.push(&quad);
+            let rect = Rect {
+                x: at[0],
+                y: at[1],
+                width: size[0],
+                height: size[1],
+            };
+            let thickness = (2.0 * f).max(1.0);
+            stable::health_segments(rect, &data.extra.health, |from, to, low| {
+                let colour = if low { HEALTH_LOW } else { HEALTH_HIGH };
+                line_segment(shapes, white, from, to, thickness, faded(colour, opacity));
+            });
+        }
+        if let Some(retry) = &skin.images.retry {
+            let mut rect = geometry.retry;
+            rect.x += shift;
+            rect.y -= scrolled;
+            let amount = snapshot.hover_amount(ResultsButton::Retry, now);
+            push_button(shapes, retry, &rect, amount, opacity, white);
+        }
+        stable::lay_out(
+            skin,
+            data,
+            width,
+            height,
+            stable::header_min_height(unit),
+            |item| match item {
+                Item::Bar { height } => {
+                    let mut bar =
+                        Sprite::new(white.texture, white.uv, [shift, 0.0], [width, height]);
+                    bar.colour = faded(Color::BLACK, opacity);
+                    shapes.push(&bar);
+                }
+                Item::Sprite {
+                    part,
+                    sprite,
+                    centre,
+                    size,
+                } => {
+                    let dy = if part == Part::Title { 0.0 } else { -scrolled };
+                    let at = [
+                        centre[0] - size[0] / 2.0 + shift,
+                        centre[1] - size[1] / 2.0 + dy,
+                    ];
+                    let mut quad = Sprite::new(sprite.texture, sprite.uv, at, size);
+                    quad.colour = tint;
+                    shapes.push(&quad);
+                }
+            },
+        );
+        for line_at in &lines[..count] {
+            let line = match line_at.kind {
+                HeaderKind::Title => &self.stable_title,
+                HeaderKind::By => &self.stable_by,
+                HeaderKind::Played => &self.stable_played,
+            };
+            push_layout(
+                text,
+                &line.layout,
+                [line_at.x + shift, line_at.y],
+                tint,
+                glyphs,
+            );
+        }
+        if let Some(back) = &skin.images.back {
+            let mut rect = geometry.back;
+            rect.x += shift;
+            let amount = snapshot.hover_amount(ResultsButton::Back, now);
+            push_button(shapes, back, &rect, amount, opacity, white);
+        }
+        self.push_hint(shapes, &geometry, scroll, pose, white);
+    }
+
+    /// The details page under the first screen: a translucent panel with the heading and
+    /// the lines. Lines above the bar are skipped (texts are drawn over the shapes).
+    #[allow(clippy::too_many_arguments)]
+    fn push_details(
+        &self,
+        shapes: &mut ShapeBatch,
+        text: &mut SpriteBatch,
+        glyphs: &mut GlyphCache,
+        geometry: &stable::Geometry,
+        scrolled: f32,
+        pose: Pose,
+        white: AtlasRegion,
+    ) {
+        let Frame { width, .. } = self.frame;
+        if self.details.is_empty() {
+            return;
+        }
+        let theme = &self.theme;
+        let scale = self.layout.scale;
+        let shift = pose.offset * width;
+        let pad = theme.song_text_pad * scale;
+        let pitch = theme.results_row_height * scale;
+        let heading = theme.results_title_size * scale * 1.5;
+        let left = width * 0.05;
+        let top =
+            geometry.bar_height + geometry.scroll_area - scrolled + theme.results_margin * scale;
+        let panel = Rect {
+            x: left - pad + shift,
+            y: top,
+            width: width - 2.0 * (left - pad),
+            height: 2.0 * pad + heading + self.details.len() as f32 * pitch,
+        };
+        let colour = faded(theme.button_fill, pose.opacity);
+        crate::widgets::draw(shapes, white, &panel, colour, Look::Round, theme, scale);
+        let tint = faded(theme.text, pose.opacity);
+        let mut y = top + pad;
+        let rows = std::iter::once((&self.details_title, heading))
+            .chain(self.details.iter().map(|line| (line, pitch)));
+        for (line, advance) in rows {
+            if y >= geometry.bar_height {
+                let at = [left + shift, y + (advance - line.layout.height()) / 2.0];
+                push_layout(text, &line.layout, at, tint, glyphs);
+            }
+            y += advance;
+        }
+    }
+
+    /// McOsu's scroll-down hint: three arrows bouncing at the bottom centre, fading out as
+    /// the content scrolls to the bottom.
+    // Ported from McOsu db2add2: src/App/Osu/OsuRankingScreen.cpp (OsuRankingScreenScrollDownInfoButton::draw)
+    fn push_hint(
+        &self,
+        shapes: &mut ShapeBatch,
+        geometry: &stable::Geometry,
+        scroll: f32,
+        pose: Pose,
+        white: AtlasRegion,
+    ) {
+        let alpha = (1.0 - scroll).clamp(0.0, 1.0) * pose.opacity;
+        if alpha <= 0.0 {
+            return;
+        }
+        let rect = geometry.hint;
+        let shift = pose.offset * self.frame.width;
+        // Text height of McOsu's hint: 0.45 of the button's height.
+        let text_height = rect.height * 0.45;
+        let seconds = self.now_ns as f64 / 1e9;
+        let lift = stable::hint_bounce(seconds as f32);
+        let centre_y = rect.y + rect.height / 2.0 - lift * text_height;
+        let half = text_height * 0.35;
+        let thickness = (text_height * 0.12).max(1.0);
+        let shadow = 2.0;
+        for k in [-1.0_f32, 0.0, 1.0] {
+            let cx = rect.x + rect.width / 2.0 + k * half * 4.0 + shift;
+            for (offset, colour) in [(shadow, Color::BLACK), (0.0, Color::WHITE)] {
+                let colour = faded(colour, alpha);
+                let (x, y) = (cx + offset, centre_y + offset);
+                let tip = [x, y + half * 0.5];
+                line_segment(
+                    shapes,
+                    white,
+                    [x - half, y - half * 0.5],
+                    tip,
+                    thickness,
+                    colour,
+                );
+                line_segment(
+                    shapes,
+                    white,
+                    tip,
+                    [x + half, y - half * 0.5],
+                    thickness,
+                    colour,
+                );
+            }
+        }
     }
 
     /// Asks `glyphs` for every glyph of the texts laid out so far. Returns how many are
@@ -308,9 +578,13 @@ impl ResultsView {
             .chain(&self.stat_labels)
             .chain(&self.stat_values)
             .chain(&self.buttons)
+            .chain(&self.details)
             .chain([
                 &self.title,
                 &self.stable_title,
+                &self.stable_by,
+                &self.stable_played,
+                &self.details_title,
                 &self.rank,
                 &self.no_mods,
                 &self.not_available,
@@ -406,7 +680,7 @@ impl ResultsView {
         let theme = &self.theme;
         let layout = &self.layout;
         let layout = &match stable {
-            Some(_) => layout.stable_buttons(width, height, theme),
+            Some(skin) => layout.stable(width, height, &skin.art()),
             None => *layout,
         };
         let pad = theme.song_text_pad * layout.scale;
@@ -494,6 +768,10 @@ impl ResultsView {
             }
         }
 
+        // The stable look has the skin's buttons and no hint line.
+        if stable.is_some() {
+            return;
+        }
         for (i, button) in ResultsButton::ALL.into_iter().enumerate() {
             let fill = if snapshot.hovered == Some(button) {
                 theme.button_hover_fill
