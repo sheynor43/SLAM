@@ -918,6 +918,8 @@ pub struct Gameplay {
     pub cursor_style: CursorStyle,
     /// The style of the pause and fail menus (ADR-0122).
     pub pause_menu_style: PauseMenuStyle,
+    /// How the skip button looks (ADR-0160).
+    pub skip_button: SkipButtonStyle,
     /// Scale of the pause and fail menus, in `slam_ui::theme::UI_SCALE_RANGE` in steps of 0.05
     /// (ADR-0122).
     #[serde(serialize_with = "serialize_scale")]
@@ -962,6 +964,7 @@ impl Default for Gameplay {
             auto_cursor_size: false,
             cursor_style: CursorStyle::Skin,
             pause_menu_style: PauseMenuStyle::default(),
+            skip_button: SkipButtonStyle::default(),
             pause_menu_scale: 1.0,
             hold_to_confirm_ms: 200.0,
         }
@@ -1000,6 +1003,51 @@ impl PauseMenuStyle {
     /// The value called `name`.
     pub fn from_name(name: &str) -> Option<PauseMenuStyle> {
         PauseMenuStyle::ALL.into_iter().find(|s| s.name() == name)
+    }
+}
+
+/// How the skip button looks (ADR-0160).
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum SkipButtonStyle {
+    /// The skin's `play-skip` where the HUD layout puts it, as in stable; lazer's without
+    /// the image.
+    #[default]
+    Skin,
+    /// Lazer's bar across the lower middle of the screen.
+    Lazer,
+    /// A plate in SLAM's style where the HUD layout puts it.
+    Slam,
+}
+
+impl SkipButtonStyle {
+    pub const ALL: [SkipButtonStyle; 3] = [
+        SkipButtonStyle::Skin,
+        SkipButtonStyle::Lazer,
+        SkipButtonStyle::Slam,
+    ];
+
+    /// The name in the settings file.
+    pub fn name(self) -> &'static str {
+        match self {
+            SkipButtonStyle::Skin => "skin",
+            SkipButtonStyle::Lazer => "lazer",
+            SkipButtonStyle::Slam => "slam",
+        }
+    }
+
+    /// The value called `name`.
+    pub fn from_name(name: &str) -> Option<SkipButtonStyle> {
+        SkipButtonStyle::ALL.into_iter().find(|s| s.name() == name)
+    }
+
+    /// The gameplay side's style.
+    pub fn play(self) -> slam_play::skip::SkipStyle {
+        match self {
+            SkipButtonStyle::Skin => slam_play::skip::SkipStyle::Skin,
+            SkipButtonStyle::Lazer => slam_play::skip::SkipStyle::Lazer,
+            SkipButtonStyle::Slam => slam_play::skip::SkipStyle::Slam,
+        }
     }
 }
 

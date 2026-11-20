@@ -21,8 +21,8 @@ use crate::displays::{DisplayLists, DisplayViews};
 use crate::settings::model::ModHotkeyStyle;
 use crate::settings::{
     BreakDisplay, DrawRate, FpsScreens, HitsoundDelay, InputSettings, KeyOverlayAnimation, KeySlot,
-    MenuBackground, MenuSounds, PauseMenuStyle, RendererChoice, Settings, Thumbnails, Timing,
-    skins,
+    MenuBackground, MenuSounds, PauseMenuStyle, RendererChoice, Settings, SkipButtonStyle,
+    Thumbnails, Timing, skins,
 };
 use slam_ui::cursor::CursorStyle;
 use slam_ui::screen::TransitionStyle;
@@ -304,6 +304,8 @@ pub enum Row {
     /// What the main menu shows behind its content (ADR-0119).
     MenuBackground,
     PauseMenuStyle,
+    /// How the skip button looks (ADR-0160).
+    SkipButton,
     UpdateHz,
     DrawHz,
     MenuDrawHz,
@@ -355,7 +357,7 @@ pub enum Row {
 const _: () = assert!(Row::ALL.len() <= slam_ui::settings_screen::MAX_ROWS);
 
 impl Row {
-    pub const ALL: [Row; 102] = [
+    pub const ALL: [Row; 103] = [
         Row::MasterVolume,
         Row::MusicVolume,
         Row::MenuMusic,
@@ -427,6 +429,7 @@ impl Row {
         Row::MenuSounds,
         Row::MenuBackground,
         Row::PauseMenuStyle,
+        Row::SkipButton,
         Row::UpdateHz,
         Row::DrawHz,
         Row::MenuDrawHz,
@@ -571,7 +574,8 @@ impl Row {
             | Row::HitLighting
             | Row::MenuSounds
             | Row::MenuBackground
-            | Row::PauseMenuStyle => section::SKIN,
+            | Row::PauseMenuStyle
+            | Row::SkipButton => section::SKIN,
             Row::UpdateHz
             | Row::DrawHz
             | Row::MenuDrawHz
@@ -700,6 +704,7 @@ impl Row {
             Row::CursorSize => "settings-gameplay-cursor-size",
             Row::AutoCursorSize => "settings-gameplay-auto-cursor-size",
             Row::PauseMenuStyle => "settings-gameplay-pause-menu-style",
+            Row::SkipButton => "settings-gameplay-skip-button",
             Row::PauseMenuScale => "settings-gameplay-pause-menu-scale",
             Row::HoldToConfirm => "settings-gameplay-hold-to-confirm",
             Row::Skin => "settings-gameplay-skin",
@@ -812,6 +817,14 @@ fn corner_key(corner: FpsCorner) -> &'static str {
 }
 
 /// The Fluent key of a key overlay animation option.
+fn skip_button_key(style: SkipButtonStyle) -> &'static str {
+    match style {
+        SkipButtonStyle::Skin => "settings-option-skip-button-skin",
+        SkipButtonStyle::Lazer => "settings-option-skip-button-lazer",
+        SkipButtonStyle::Slam => "settings-option-skip-button-slam",
+    }
+}
+
 fn pause_menu_style_key(style: PauseMenuStyle) -> &'static str {
     match style {
         PauseMenuStyle::Slam => "settings-option-pause-menu-style-slam",
@@ -1269,6 +1282,12 @@ impl Rows {
                     .iter()
                     .position(|d| *d == s.audio.hitsound_delay),
             ),
+            Row::SkipButton => choice(
+                SkipButtonStyle::ALL.len(),
+                SkipButtonStyle::ALL
+                    .iter()
+                    .position(|p| *p == s.gameplay.skip_button),
+            ),
             Row::PauseMenuStyle => choice(
                 PauseMenuStyle::ALL.len(),
                 PauseMenuStyle::ALL
@@ -1528,6 +1547,11 @@ impl Rows {
             (Row::KeyOverlayAnimation, RowValue::Choice(i)) => {
                 if let Some(animation) = KeyOverlayAnimation::ALL.get(i) {
                     settings.gameplay.key_overlay_animation = *animation;
+                }
+            }
+            (Row::SkipButton, RowValue::Choice(i)) => {
+                if let Some(style) = SkipButtonStyle::ALL.get(i) {
+                    settings.gameplay.skip_button = *style;
                 }
             }
             (Row::PauseMenuStyle, RowValue::Choice(i)) => {
@@ -1845,6 +1869,10 @@ impl Rows {
                     Row::HitsoundDelay => HitsoundDelay::ALL
                         .iter()
                         .map(|delay| text(delay_key(*delay)))
+                        .collect(),
+                    Row::SkipButton => SkipButtonStyle::ALL
+                        .iter()
+                        .map(|style| text(skip_button_key(*style)))
                         .collect(),
                     Row::PauseMenuStyle => PauseMenuStyle::ALL
                         .iter()
@@ -2602,6 +2630,8 @@ mod tests {
         assert_eq!(s.gameplay.break_display, BreakDisplay::Slam);
         rows.apply(&mut s, index(Row::PauseMenuStyle), RowValue::Choice(2));
         assert_eq!(s.gameplay.pause_menu_style, PauseMenuStyle::Stable);
+        rows.apply(&mut s, index(Row::SkipButton), RowValue::Choice(1));
+        assert_eq!(s.gameplay.skip_button, SkipButtonStyle::Lazer);
         rows.apply(&mut s, index(Row::PauseMenuScale), RowValue::Slider(150.0));
         assert_eq!(s.gameplay.pause_menu_scale, 1.5);
         assert_eq!(s.general.transitions, TransitionStyle::Random);
@@ -2952,6 +2982,7 @@ mod tests {
             Row::MenuSounds,
             Row::MenuBackground,
             Row::PauseMenuStyle,
+            Row::SkipButton,
         ] {
             assert_eq!(row.section(), section::SKIN, "{row:?}");
         }

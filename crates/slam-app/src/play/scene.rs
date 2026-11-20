@@ -101,6 +101,8 @@ pub struct PlaySettings {
     pub cursor_trail: bool,
     /// Whether presses leave ripples (ADR-0159).
     pub cursor_ripple: bool,
+    /// How the skip button looks, before the skin is known (ADR-0160).
+    pub skip_style: slam_play::skip::SkipStyle,
     /// Lazer's `GameplayCursorSize` (ADR-0086).
     pub cursor_size: f32,
     /// Lazer's `AutoCursorSize`: the cursor's size follows the beatmap's circle size.
@@ -137,6 +139,7 @@ impl Default for PlaySettings {
             hit_lighting: true,
             cursor_trail: true,
             cursor_ripple: false,
+            skip_style: slam_play::skip::SkipStyle::Skin,
             cursor_size: 1.0,
             auto_cursor_size: false,
             cursor_style: slam_ui::cursor::CursorStyle::Skin,
@@ -444,6 +447,7 @@ pub fn prepare(
         cursor_shapes: ShapeBatch::with_capacity(
             2 * MAX_CURSOR_SHAPES + slam_play::ripple::MAX_RIPPLE_SPRITES,
         ),
+        hud_shapes: ShapeBatch::with_capacity(slam_play::skip::MAX_SKIP_SHAPES + 1),
         cursor_style: settings.cursor_style,
         cursor_theme: Theme::new(settings.cursor_scheme, 1.0),
         menu,
@@ -460,6 +464,7 @@ pub fn prepare(
             .iter()
             .find(|e| e.component == ComponentKind::SkipButton)
             .cloned(),
+        skip_style: settings.skip_style,
     };
     Ok(Prepared {
         audio: loaded.audio,
@@ -516,6 +521,9 @@ pub struct PlayScene {
     cursor: SpriteBatch,
     /// SLAM's cursors, drawn over `cursor` with the cursor style `slam` (ADR-0124).
     cursor_shapes: ShapeBatch,
+    /// The skip button's plates and the skip's dip, between the sprites and the HUD's text
+    /// (ADR-0160).
+    hud_shapes: ShapeBatch,
     cursor_style: CursorStyle,
     cursor_theme: Theme,
     /// The pause and fail menus, on top of everything (ADR-0052).
@@ -526,6 +534,8 @@ pub struct PlayScene {
     stats: PlayfieldStats,
     /// The layout's skip button as drawn, for clicks on the update side (ADR-0141).
     skip_element: Option<LayoutElement>,
+    /// How the skip button looks, as set (ADR-0160).
+    skip_style: slam_play::skip::SkipStyle,
     /// The time left in a break (ADR-0142).
     break_countdown: slam_play::break_countdown::BreakCountdownView,
     /// Which service elements the play shows (ADR-0142).
@@ -636,6 +646,7 @@ impl PlayScene {
         self.text.clear();
         self.cursor.clear();
         self.cursor_shapes.clear();
+        self.hud_shapes.clear();
         self.menu_shapes.clear();
         self.menu_text.clear();
         let background = slam_play::background::shown_region(
@@ -688,6 +699,31 @@ impl PlayScene {
             textures.meter.as_ref(),
             &textures.hud,
         );
+        let skip_style = self.skip_style();
+        self.hud.set_skip_style(skip_style);
+        self.hud.push_skip_shapes(
+            &mut self.hud_shapes,
+            snapshot,
+            &textures.hud,
+            textures.white,
+            &self.cursor_theme,
+        );
+        // The skip dips the picture to black around its seek (ADR-0160).
+        if let (Some(pressed), Some(white)) = (snapshot.skip_dip_ns, textures.white) {
+            let alpha = slam_play::skip::dip_alpha(now_ns.saturating_sub(pressed));
+            if alpha > 0.0 {
+                self.hud_shapes.push_shape(&slam_render::shape::Shape::new(
+                    white.texture,
+                    white.uv,
+                    [0.0, 0.0],
+                    [width, height],
+                    Color {
+                        a: alpha,
+                        ..Color::BLACK
+                    },
+                ));
+            }
+        }
         self.hud.push_text(
             &mut self.text,
             snapshot,
@@ -723,6 +759,7 @@ impl PlayScene {
         if fail.is_some() {
             self.batch.transform_from(layer_first, &layer, layer_tint);
             self.text.transform_from(0, &layer, layer_tint);
+            self.hud_shapes.transform_from(0, &layer, layer_tint);
             self.cursor.transform_from(0, &layer, layer_tint);
             self.cursor_shapes.transform_from(0, &layer, layer_tint);
         }
@@ -824,6 +861,11 @@ impl PlayScene {
                 self.stats.sprites += stats;
             }
         }
+        if !self.hud_shapes.is_empty() {
+            let _ = r
+                .shape_renderer
+                .draw(device, &self.hud_shapes, &projection, texture);
+        }
         let _ = r
             .text_renderer
             .draw(device, &self.text, &projection, texture);
@@ -853,6 +895,16 @@ impl PlayScene {
     /// [`slam_play::session::PlaySession::set_service_options`] (ADR-0142).
     pub fn service_options(&self) -> slam_play::service::ServiceOptions {
         self.service
+    }
+
+    /// How the skip button looks with this skin (ADR-0160): the skin's style without its
+    /// `play-skip` is lazer's.
+    pub fn skip_style(&self) -> slam_play::skip::SkipStyle {
+        use slam_play::skip::SkipStyle;
+        match (self.skip_style, self.textures.skip_size()) {
+            (SkipStyle::Skin, None) => SkipStyle::Lazer,
+            (style, _) => style,
+        }
     }
 
     /// The skip button's layout element (with the game scale) and `play-skip` frame size,

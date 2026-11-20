@@ -22,6 +22,7 @@ use std::sync::Arc;
 use slam_osu::Vec2;
 use slam_osu::hit_windows::HitWindows;
 use slam_render::atlas::AtlasRegion;
+use slam_render::shape::ShapeBatch;
 use slam_render::sprite::{Affine, Sprite, SpriteBatch};
 use slam_render::{Blend, Color};
 use slam_text::{
@@ -511,6 +512,9 @@ pub struct HudView {
     combo: Counter,
     skip_label: String,
     skip: Layout,
+    /// How the skip button looks, resolved (ADR-0160).
+    skip_style: crate::skip::SkipStyle,
+    skip_anim: crate::skip::SkipAnimation,
     /// The offset panel's texts: at zero, earlier, later ([`OffsetWording`]).
     offset_templates: [Template; 3],
     /// The offset the panel's layout shows, as bits; `None` lays it out on the next update.
@@ -643,6 +647,8 @@ impl HudView {
             combo: Counter::new(COMBO_SIZE),
             skip_label: labels.skip.clone(),
             skip: Layout::new(),
+            skip_style: crate::skip::SkipStyle::default(),
+            skip_anim: crate::skip::SkipAnimation::default(),
             offset_templates,
             offset_shown: None,
             offset_text: String::with_capacity(longest + NUMBER_TEXT_LEN),
@@ -812,6 +818,8 @@ impl HudView {
         self.health_bar
             .update(snapshot.health, snapshot.hud.hits, self.time);
         self.key_overlay.update(&snapshot.keys, self.time);
+        self.skip_anim
+            .update(snapshot.skip_available, snapshot.skip_hover, self.time);
         // `TransformCount` at the frame's time, from what the last frame showed.
         let time = self.time;
         let roll = |roll: &mut Option<Roll>, value: f64, duration: f64, whole: bool| match roll {
@@ -933,6 +941,7 @@ impl HudView {
             return [size.x * s, size.y * s];
         }
         if part == Part::SkipButton
+            && self.skip_style == crate::skip::SkipStyle::Skin
             && let Some(frame) = textures.skip.frame(0.0)
         {
             return [frame.size.x * scale, frame.size.y * scale];
@@ -1013,11 +1022,87 @@ impl HudView {
             .zip(boxes)
             .filter_map(move |(placed, (map, ..))| {
                 let element = &placed.element;
-                let shown = element.visible
-                    && element.alpha > 0.0
-                    && (placed.part != Part::SkipButton || snapshot.skip_available);
-                shown.then_some((placed.part, map, element.alpha.min(1.0)))
+                let mut alpha = element.alpha.min(1.0);
+                if placed.part == Part::SkipButton {
+                    // Lazer's band is not in the layout; the others fade (ADR-0160).
+                    if self.skip_style == crate::skip::SkipStyle::Lazer {
+                        return None;
+                    }
+                    alpha *= self.skip_pose(snapshot).alpha;
+                }
+                let shown = element.visible && alpha > 0.0;
+                shown.then_some((placed.part, map, alpha))
             })
+    }
+
+    /// Sets how the skip button looks, resolved: [`SkipStyle::Skin`] only with the skin's
+    /// `play-skip` (ADR-0160).
+    ///
+    /// [`SkipStyle::Skin`]: crate::skip::SkipStyle::Skin
+    pub fn set_skip_style(&mut self, style: crate::skip::SkipStyle) {
+        self.skip_style = style;
+    }
+
+    /// The skip button's pose of the last [`HudView::animate`].
+    fn skip_pose(&self, snapshot: &PlaySnapshot) -> crate::skip::SkipPose {
+        let clicked = snapshot.skip_dip_ns.map(|ns| self.time - ns as f64 / 1e6);
+        self.skip_anim.pose(self.time, clicked)
+    }
+
+    /// Writes the skip button of lazer's and SLAM's styles (ADR-0160), under the HUD's text:
+    /// lazer's band, or SLAM's plate where the layout puts the button, in `theme`.
+    /// Allocation-free once `shapes` has room for
+    /// [`MAX_SKIP_SHAPES`](crate::skip::MAX_SKIP_SHAPES).
+    pub fn push_skip_shapes(
+        &self,
+        shapes: &mut ShapeBatch,
+        snapshot: &PlaySnapshot,
+        textures: &HudTextures,
+        white: Option<AtlasRegion>,
+        theme: &slam_ui::theme::Theme,
+    ) {
+        let Some(white) = white else { return };
+        let Frame {
+            width,
+            height,
+            scale,
+        } = self.frame;
+        match self.skip_style {
+            crate::skip::SkipStyle::Lazer => {
+                let pose = self.skip_pose(snapshot);
+                crate::skip::push_lazer(
+                    shapes,
+                    white,
+                    [width, height],
+                    scale,
+                    &pose,
+                    snapshot.skip_progress,
+                );
+            }
+            crate::skip::SkipStyle::Slam => {
+                let Some((_, map, alpha)) = self
+                    .placed(snapshot, textures)
+                    .find(|(part, ..)| *part == Part::SkipButton)
+                else {
+                    return;
+                };
+                let [w, h] = self.part_size(Part::SkipButton, textures);
+                let [x0, y0] = map.apply([0.0, 0.0]);
+                let [x1, y1] = map.apply([w, h]);
+                let rect = slam_ui::menu::Rect {
+                    x: x0.min(x1),
+                    y: y0.min(y1),
+                    width: (x1 - x0).abs(),
+                    height: (y1 - y0).abs(),
+                };
+                let pose = crate::skip::SkipPose {
+                    alpha,
+                    ..self.skip_pose(snapshot)
+                };
+                crate::skip::push_slam(shapes, white, theme, &rect, scale, &pose);
+            }
+            crate::skip::SkipStyle::Skin => {}
+        }
     }
 
     /// The offset panel's text as last laid out.
@@ -1091,7 +1176,10 @@ impl HudView {
                     self.key_overlay
                         .push(batch, &textures.keys, scale, self.time);
                 }
-                (Part::SkipButton, _) if textures.skip.count > 0 => {
+                (Part::SkipButton, _)
+                    if self.skip_style == crate::skip::SkipStyle::Skin
+                        && textures.skip.count > 0 =>
+                {
                     let Some(frame) = textures.skip.frame(self.time) else {
                         continue;
                     };
@@ -1118,15 +1206,8 @@ impl HudView {
                     let health = snapshot.health.clamp(0.0, 1.0) as f32;
                     rect(batch, white, [0.0, 0.0], [bar[0] * health, bar[1]], TEXT);
                 }
-                (Part::SkipButton, Some(white)) => {
-                    rect(
-                        batch,
-                        white,
-                        [0.0, 0.0],
-                        self.part_size(part, textures),
-                        SHADE,
-                    );
-                }
+                // SLAM's plate is a shape ([`HudView::push_skip_shapes`]).
+                (Part::SkipButton, _) => continue,
                 (Part::Meter(i), _) => {
                     let Some(textures) = meter else { continue };
                     alpha *= meter_alpha;
@@ -1279,7 +1360,8 @@ impl HudView {
                         );
                     }
                 }
-                Part::SkipButton if textures.skip.count > 0 => continue,
+                // The skin's image draws itself (and nothing until it loads).
+                Part::SkipButton if self.skip_style == crate::skip::SkipStyle::Skin => continue,
                 Part::SkipButton => {
                     let [w, h] = self.part_size(part, textures);
                     let skip = &self.skip;
@@ -1289,6 +1371,30 @@ impl HudView {
                 Part::Health | Part::SongProgress | Part::Meter(_) => continue,
             }
             batch.transform_from(first, &map, [1.0, 1.0, 1.0, alpha]);
+        }
+        // Lazer's skip band's text, on its button (ADR-0160).
+        let pose = self.skip_pose(snapshot);
+        if self.skip_style == crate::skip::SkipStyle::Lazer && pose.alpha > 0.0 {
+            let Frame {
+                width,
+                height,
+                scale,
+            } = self.frame;
+            let ([cx, cy], side) = crate::skip::lazer_button(width, height, scale, pose.scale);
+            let size = crate::skip::LAZER_TEXT_SIZE * scale * pose.scale;
+            let k = size / self.skip.height().max(1.0);
+            let centre_y = cy - side / 2.0 + side * crate::skip::LAZER_TEXT_Y;
+            let first = batch.len();
+            text(batch, &self.skip, [0.0, 0.0], TEXT);
+            let offset = [
+                cx - self.skip.width() * k / 2.0,
+                centre_y - self.skip.height() * k / 2.0,
+            ];
+            batch.transform_from(
+                first,
+                &Affine::about([0.0, 0.0], k, 0.0, offset),
+                [1.0, 1.0, 1.0, pose.alpha],
+            );
         }
         if let Some((position, _, alpha)) = self.offset_box(&snapshot.offset_panel, now_ns) {
             let padding = OFFSET_PADDING * scale;
@@ -1603,29 +1709,62 @@ mod tests {
             [0.0, 0.0],
         )];
         let mut hud = hud(&layout);
+        hud.set_skip_style(crate::skip::SkipStyle::Slam);
         hud.update(1280.0, 720.0, &HudValues::default(), 0.0);
         let mut snapshot = PlaySnapshot::default();
-        let mut batch = SpriteBatch::with_capacity(MAX_HUD_SHAPES);
-        hud.push_shapes(
-            &mut batch,
+        let theme = slam_ui::theme::Theme::default();
+        let mut shapes = ShapeBatch::with_capacity(crate::skip::MAX_SKIP_SHAPES);
+        hud.animate(&snapshot, 0);
+        hud.push_skip_shapes(
+            &mut shapes,
             &snapshot,
-            0,
-            Some(white()),
-            None,
             &HudTextures::default(),
+            Some(white()),
+            &theme,
         );
-        assert_eq!(batch.len(), 0);
+        assert!(shapes.is_empty());
+        // It fades in over 300 ms (ADR-0160).
         snapshot.skip_available = true;
-        hud.push_shapes(
-            &mut batch,
+        hud.animate(&snapshot, 0);
+        hud.animate(&snapshot, 300_000_000);
+        hud.push_skip_shapes(
+            &mut shapes,
             &snapshot,
-            0,
-            Some(white()),
-            None,
             &HudTextures::default(),
+            Some(white()),
+            &theme,
         );
-        let (_, max) = bounds(&batch, 0, 1);
-        assert!(close(max[0], 1280.0) && close(max[1], 720.0), "{max:?}");
+        assert!(!shapes.is_empty());
+        // Lazer's band is drawn whatever the layout says.
+        let mut band = ShapeBatch::with_capacity(crate::skip::MAX_SKIP_SHAPES);
+        hud.set_skip_style(crate::skip::SkipStyle::Lazer);
+        hud.push_skip_shapes(
+            &mut band,
+            &snapshot,
+            &HudTextures::default(),
+            Some(white()),
+            &theme,
+        );
+        assert!(!band.is_empty());
+        // Each style fits the room the scene keeps for it, in every colour scheme.
+        for scheme in slam_ui::theme::ColourScheme::ALL {
+            let theme = slam_ui::theme::Theme::new(scheme, 1.0);
+            for style in [crate::skip::SkipStyle::Lazer, crate::skip::SkipStyle::Slam] {
+                let mut shapes = ShapeBatch::new();
+                hud.set_skip_style(style);
+                hud.push_skip_shapes(
+                    &mut shapes,
+                    &snapshot,
+                    &HudTextures::default(),
+                    Some(white()),
+                    &theme,
+                );
+                assert!(
+                    shapes.len() <= crate::skip::MAX_SKIP_SHAPES,
+                    "{style:?} {scheme:?}"
+                );
+            }
+        }
     }
 
     #[test]
@@ -2067,6 +2206,8 @@ mod tests {
         let mut textures = skin_textures();
         textures.skip.frames[0] = skin_sprite(30, 193.0, 147.0);
         textures.skip.count = 1;
+        hud.animate(&snapshot, 0);
+        hud.animate(&snapshot, 300_000_000);
         let mut batch = SpriteBatch::with_capacity(MAX_HUD_SHAPES);
         hud.push_shapes(&mut batch, &snapshot, 0, Some(white()), None, &textures);
         assert_eq!(batch.len(), 1);

@@ -3208,6 +3208,7 @@ impl PlayHost {
         style_menu(&mut game.session, self.pause_menu, game.stable_pause);
         let (skip_element, skip_size) = scene.skip_button();
         game.session.set_skip_button(skip_element, skip_size);
+        game.session.set_skip_style(scene.skip_style());
         game.session.set_service_options(scene.service_options());
         game.session.set_hold_ns(self.hold_ns);
         if let Err(rtrb::PushError::Full((_, scene))) = self.scenes.push((game.id, scene)) {
@@ -3502,6 +3503,7 @@ impl PlayHost {
         style_menu(&mut session, self.pause_menu, stable_pause);
         let (skip_element, skip_size) = scene.skip_button();
         session.set_skip_button(skip_element, skip_size);
+        session.set_skip_style(scene.skip_style());
         session.set_service_options(scene.service_options());
         session.set_hold_ns(self.hold_ns);
         session.set_pointer(slam_osu::Vec2::new(pointer[0], pointer[1]));

@@ -73,6 +73,17 @@ impl IntroSkip {
         self.fade_out_begin_time() > self.display_time
     }
 
+    /// How much of the skip period is left at `current`, 1 to 0: lazer's bar of the time
+    /// left. 0 when the skip is not offered.
+    // Ported from osu!lazer 2026.1005.0-lazer: osu.Game/Screens/Play/SkipOverlay.cs (Update)
+    pub fn progress(&self, current: f64) -> f64 {
+        if !self.is_offered() {
+            return 0.0;
+        }
+        (1.0 - (current - self.display_time) / (self.fade_out_begin_time() - self.display_time))
+            .clamp(0.0, 1.0)
+    }
+
     /// Whether the skip can be used at `current`: the overlay's skip period.
     // Ported from osu!lazer 2026.1005.0-lazer: osu.Game/Screens/Play/SkipOverlay.cs (Update)
     pub fn is_available(&self, current: f64) -> bool {
