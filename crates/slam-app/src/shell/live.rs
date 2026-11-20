@@ -202,6 +202,7 @@ pub fn play_options(settings: &Settings) -> PlayOptions {
             .then(|| settings.gameplay.key_overlay_animation.into()),
         hud_animations: settings.gameplay.hud_animations,
         cursor_trail: settings.gameplay.cursor_trail,
+        cursor_ripple: settings.gameplay.cursor_ripple,
         cursor_size: settings.gameplay.cursor_size,
         auto_cursor_size: settings.gameplay.auto_cursor_size,
         cursor_style: crate::menu_cursor::game_style(settings),
@@ -417,6 +418,7 @@ mod tests {
         settings.gameplay.key_overlay_animation = crate::settings::KeyOverlayAnimation::Lazer;
         settings.gameplay.hud_animations = false;
         settings.gameplay.cursor_trail = false;
+        settings.gameplay.cursor_ripple = true;
         settings.gameplay.cursor_size = 0.65;
         settings.gameplay.auto_cursor_size = true;
         settings.gameplay.cursor_style = CursorStyle::Slam;
@@ -442,6 +444,7 @@ mod tests {
                 key_overlay: Some(slam_play::key_overlay::KeyAnimation::Lazer),
                 hud_animations: false,
                 cursor_trail: false,
+                cursor_ripple: true,
                 cursor_size: 0.65,
                 auto_cursor_size: true,
                 cursor_style: CursorStyle::Slam,

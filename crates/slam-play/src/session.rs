@@ -56,6 +56,7 @@ use crate::menu_overlay::{
 use crate::offset::{self, OffsetPanel};
 use crate::playfield::PlayfieldLayout;
 use crate::resume::ResumeView;
+use crate::ripple::RippleRing;
 use crate::service::{
     COUNTDOWN_IMAGES, COUNTDOWN_STEPS, ServiceState, ServiceTextures, ServiceTracker,
 };
@@ -65,6 +66,7 @@ use crate::sliders::{
     MAX_FOLLOW_CIRCLE_AREA_SIZE, ObjectTextures, SliderBodies, SliderTextures, push_approaches,
     push_objects,
 };
+use crate::smoke::{SmokeEvents, SmokeFrame, SmokeTracker, SmokeView};
 use crate::song_progress::ring_image;
 use crate::spinners::{HitSpinners, LiveSpinners, SpinnerSpm, SpinnerTextures};
 use crate::time::Offsets;
@@ -283,6 +285,10 @@ pub struct PlaySnapshot {
     pub cursor_path: CursorPath,
     /// When the cursor last expanded and contracted.
     pub cursor_expand: ExpandTimes,
+    /// The smoke key's presses and releases (ADR-0159).
+    pub smoke: SmokeEvents,
+    /// The presses that leave ripples (ADR-0159).
+    pub ripples: RippleRing,
     /// The judgements that show popups (ADR-0043).
     pub judgements: JudgementRing,
     /// The judgements the hit error meter shows.
@@ -337,6 +343,8 @@ impl Default for PlaySnapshot {
             cursor: Vec2::ZERO,
             cursor_path: CursorPath::default(),
             cursor_expand: ExpandTimes::default(),
+            smoke: SmokeEvents::default(),
+            ripples: RippleRing::default(),
             judgements: JudgementRing::default(),
             hit_errors: HitErrorRing::default(),
             skip_available: false,
@@ -435,6 +443,8 @@ pub struct PlaySession {
     spm: SpinnerSpm,
     /// The cursor's expansion by the left and right buttons.
     expand: ExpandTracker,
+    smoke: SmokeTracker,
+    ripples: RippleRing,
     log: JudgementLog,
     /// Which judgements show popups.
     popup_targets: PopupTargets,
@@ -614,6 +624,8 @@ impl PlaySession {
             rules,
             spm: SpinnerSpm::new(beatmap),
             expand: ExpandTracker::default(),
+            smoke: SmokeTracker::default(),
+            ripples: RippleRing::default(),
             log,
             popup_targets: PopupTargets::new(beatmap, mods),
             popups: JudgementRing::default(),
@@ -1118,6 +1130,15 @@ impl PlaySession {
         self.pointer = Some(at);
     }
 
+    /// The cursor path gameplay follows: the automation mod's when it moves the cursor
+    /// (ADR-0153), else the player's.
+    fn cursor_path(&self) -> &CursorPath {
+        match self.auto.as_deref().filter(|auto| auto.moves_cursor()) {
+            Some(auto) => auto.path(),
+            None => self.input.path(),
+        }
+    }
+
     /// Whether gameplay takes input and time: playing, failing or passed.
     fn in_gameplay(&self) -> bool {
         matches!(
@@ -1131,6 +1152,8 @@ impl PlaySession {
     /// popups. A step of an automation mod may make several (ADR-0153).
     fn rules_step(&mut self, step: &StepInput<'_>, sink: &mut impl VoiceSink) {
         self.expand.apply(step.events);
+        self.smoke.apply(step.events);
+        crate::ripple::record(&mut self.ripples, step.events);
         // Ported from osu!lazer 2026.1005.0-lazer: osu.Game/Screens/Play/Player.cs (LoadComponents)
         // The health processor is a frame-stable component ahead of the playfield: it drains
         // first, then takes the step's judgements as they come.
@@ -1237,6 +1260,11 @@ impl PlaySession {
                 self.auto = Some(auto);
             }
         }
+        // The smoke of the tick's steps begins and ends where the cursor path the snapshot
+        // carries has got to (ADR-0159). Autoplay's substeps share it: its frames never
+        // press smoke; if an automation ever does, settle after each substep.
+        let path_end = self.cursor_path().written();
+        self.smoke.end_tick(path_end);
         // Ported from McOsu db2add2: src/App/Osu/OsuBeatmap.cpp (keyPressed1, keyPressed2)
         // Ported from osu!lazer 2026.1005.0-lazer: osu.Game/Screens/Play/Player.cs (onBreakTimeChanged)
         // Presses count while playing, outside breaks (lazer's `IsBreakTime`, the intro
@@ -1536,6 +1564,8 @@ impl PlaySession {
         self.rules = self.initial.rules.clone();
         self.spm.reset();
         self.expand.reset();
+        self.smoke.restart();
+        self.ripples.restart();
         self.health = self.initial.health.clone();
         self.score = self.initial.score.clone();
         self.mods = self.initial.mods.clone();
@@ -1669,6 +1699,8 @@ impl PlaySession {
         snapshot.fail = None;
         snapshot.offset_panel = self.offset_panel;
         snapshot.judgements.clone_from(&self.popups);
+        snapshot.smoke.clone_from(self.smoke.events());
+        snapshot.ripples.clone_from(&self.ripples);
         snapshot.hit_errors.clone_from(&self.hit_errors);
         snapshot.circles.clear();
         snapshot.sliders.clear();
@@ -1699,6 +1731,8 @@ impl PlaySession {
         snapshot.menu = self.menu.snapshot();
         snapshot.fail = self.fail;
         snapshot.judgements.clone_from(&self.popups);
+        snapshot.smoke.clone_from(self.smoke.events());
+        snapshot.ripples.clone_from(&self.ripples);
         snapshot.hit_errors.clone_from(&self.hit_errors);
         snapshot.circles.capture(&self.rules);
         snapshot.sliders.capture(&self.rules);
@@ -1744,6 +1778,9 @@ enum Element {
     Cursor,
     CursorMiddle,
     CursorTrail,
+    /// `cursor-smoke` and `cursor-ripple` of the first skin with them (ADR-0159).
+    CursorSmoke,
+    CursorRipple,
     Digit(u8),
     /// A legacy spinner texture.
     Spinner(SpinnerPart),
@@ -1802,7 +1839,7 @@ impl SpinnerPart {
     }
 }
 
-const ELEMENTS: [Element; 36] = [
+const ELEMENTS: [Element; 38] = [
     Element::Circle,
     Element::Overlay,
     Element::Approach,
@@ -1817,6 +1854,8 @@ const ELEMENTS: [Element; 36] = [
     Element::Cursor,
     Element::CursorMiddle,
     Element::CursorTrail,
+    Element::CursorSmoke,
+    Element::CursorRipple,
     Element::Digit(0),
     Element::Digit(1),
     Element::Digit(2),
@@ -2058,6 +2097,9 @@ impl PlayTextures {
                 | Element::TailCircle
                 | Element::TailOverlay => continue,
                 Element::ScorePoint => "sliderscorepoint".to_owned(),
+                // Ported from osu!lazer 2026.1005.0-lazer: osu.Game.Rulesets.Osu/Skinning/Legacy/OsuLegacySkinTransformer.cs (CursorSmoke, CursorRipple)
+                Element::CursorSmoke => "cursor-smoke".to_owned(),
+                Element::CursorRipple => "cursor-ripple".to_owned(),
                 Element::ReverseArrow => "reversearrow".to_owned(),
                 Element::BallNd
                 | Element::BallSpec
@@ -2303,6 +2345,12 @@ impl PlayTextures {
                 }
                 Element::CursorTrail => {
                     frame.cursor.trail = Some(SkinSprite::new(region, r.scale, f32::MAX))
+                }
+                Element::CursorSmoke => {
+                    frame.cursor.smoke = Some(SkinSprite::new(region, r.scale, f32::MAX))
+                }
+                Element::CursorRipple => {
+                    frame.cursor.ripple = Some(SkinSprite::new(region, r.scale, f32::MAX))
                 }
                 Element::Digit(d) => {
                     frame.circles.digits[usize::from(d)] = Some(SkinSprite::digit(region, r.scale))
@@ -2786,6 +2834,10 @@ pub struct PlayView {
     pub judgements: JudgementView,
     pub cursor: CursorView,
     pub resume: ResumeView,
+    /// The smoke of the smoke key (ADR-0159).
+    pub smoke: SmokeView,
+    /// Whether presses leave ripples (lazer's `ShowCursorRipples`, ADR-0159).
+    pub ripples: bool,
 }
 
 impl PlayView {
@@ -2815,6 +2867,32 @@ impl PlayView {
         }
     }
 
+    /// Writes the ripples of `snapshot` drawn at engine time `now_ns` as lazer's default
+    /// rings when they are on and the skin has no `cursor-ripple` (ADR-0159). Allocation-free
+    /// once `shapes` has room for [`MAX_RIPPLE_SPRITES`](crate::ripple::MAX_RIPPLE_SPRITES).
+    pub fn push_ripple_rings(
+        &self,
+        shapes: &mut slam_render::shape::ShapeBatch,
+        layout: &PlayfieldLayout,
+        snapshot: &PlaySnapshot,
+        now_ns: u64,
+        textures: &FrameTextures,
+    ) {
+        if !self.ripples || textures.cursor.ripple.is_some() || snapshot.state == PlayState::Waiting
+        {
+            return;
+        }
+        let Some(white) = textures.white else { return };
+        crate::ripple::push_rings(
+            shapes,
+            layout,
+            &snapshot.ripples,
+            snapshot.time_at(now_ns),
+            self.cursor.scale().scale,
+            white,
+        );
+    }
+
     /// Writes the playfield's sprites of `snapshot` drawn at engine time `now_ns` on a
     /// surface laid out by `layout`, and the slider bodies to draw between them into `bodies`
     /// (cleared first); the cursor goes on top of the HUD with [`PlayView::push_cursor`].
@@ -2834,6 +2912,21 @@ impl PlayView {
             let [width, height] = layout.window_size();
             let fail = FailFrame::new(snapshot.fail, time, now_ns, width, height);
             let fail = fail.as_ref();
+            // Ported from osu!lazer 2026.1005.0-lazer: osu.Game.Rulesets.Osu/UI/OsuPlayfield.cs (OsuPlayfield)
+            // The smoke is under the spinners and every other object.
+            let smoke = textures.cursor.smoke.as_ref();
+            self.smoke.update(
+                &SmokeFrame {
+                    events: &snapshot.smoke,
+                    path: &snapshot.cursor_path,
+                    time,
+                    restarts: snapshot.restarts,
+                },
+                smoke,
+            );
+            if let Some(smoke) = smoke {
+                self.smoke.push(batch, layout, time, smoke);
+            }
             self.spinners.push(
                 batch,
                 layout,
@@ -2902,7 +2995,26 @@ impl PlayView {
             now_ns,
             visible: snapshot.state != PlayState::Resuming,
         };
-        self.cursor.push(batch, layout, &frame, &textures.cursor);
+        let ripples = self
+            .ripples
+            .then_some(())
+            .and(textures.cursor.ripple.as_ref());
+        let cursor_scale = self.cursor.scale().scale;
+        // Ported from osu!lazer 2026.1005.0-lazer: osu.Game.Rulesets.Osu/UI/Cursor/OsuCursorContainer.cs (load)
+        // The ripples are between the trail and the cursor.
+        self.cursor
+            .push_with(batch, layout, &frame, &textures.cursor, |batch| {
+                if let Some(texture) = ripples {
+                    crate::ripple::push_sprites(
+                        batch,
+                        layout,
+                        &snapshot.ripples,
+                        frame.time,
+                        cursor_scale,
+                        texture,
+                    );
+                }
+            });
         self.push_resume(batch, layout, snapshot, now_ns, textures);
     }
 

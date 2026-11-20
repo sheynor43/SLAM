@@ -720,6 +720,13 @@ fn from_table(mut table: Table) -> Loaded {
         &mut settings.gameplay.cursor_trail,
         |_| Ok(()),
     );
+    cx.field(
+        &mut gameplay,
+        "gameplay",
+        "cursor_ripple",
+        &mut settings.gameplay.cursor_ripple,
+        |_| Ok(()),
+    );
     cx.float(
         &mut gameplay,
         "gameplay",

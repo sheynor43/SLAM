@@ -95,6 +95,7 @@ fn round_trip_non_default() {
     s.gameplay.key_overlay_animation = KeyOverlayAnimation::Lazer;
     s.gameplay.hud_animations = false;
     s.gameplay.cursor_trail = false;
+    s.gameplay.cursor_ripple = true;
     s.gameplay.cursor_size = 0.65;
     s.gameplay.auto_cursor_size = true;
     s.general.colour_scheme = ColourScheme::Mono;
@@ -227,12 +228,14 @@ fn view_settings_default_to_no_snaking_with_lighting_and_trail() {
     assert!(!s.gameplay.snaking_out);
     assert!(s.gameplay.hit_lighting);
     assert!(s.gameplay.cursor_trail);
+    assert!(!s.gameplay.cursor_ripple);
     let missing = file::from_toml_str("[gameplay]\ndim = 0.2\n");
     assert_eq!(missing.status, LoadStatus::Ok, "{:?}", missing.warnings);
     assert!(!missing.settings.gameplay.snaking_in);
     assert!(!missing.settings.gameplay.snaking_out);
     assert!(missing.settings.gameplay.hit_lighting);
     assert!(missing.settings.gameplay.cursor_trail);
+    assert!(!missing.settings.gameplay.cursor_ripple);
     assert!(!s.gameplay.key_overlay);
     assert!(s.gameplay.hud_animations);
     assert!(missing.settings.gameplay.hud_animations);
