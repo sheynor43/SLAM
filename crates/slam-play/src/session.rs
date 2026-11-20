@@ -51,7 +51,7 @@ use crate::key_overlay::{KEYS, KeyOverlayTextures, KeyValues};
 use crate::legacy_hit_error::triangle_image;
 use crate::legacy_text::{self, FontSprites};
 use crate::menu_overlay::{
-    GameplayMenu, MenuButton, MenuInfo, MenuKind, MenuSnapshot, ReplaySave, song_progress,
+    GameplayMenu, MenuButton, MenuCues, MenuInfo, MenuKind, MenuSnapshot, ReplaySave, song_progress,
 };
 use crate::offset::{self, OffsetPanel};
 use crate::playfield::PlayfieldLayout;
@@ -315,6 +315,8 @@ pub struct PlaySnapshot {
     pub service: ServiceState,
     /// The pause or fail menu.
     pub menu: MenuSnapshot,
+    /// The interface sounds the menu asked for this tick (ADR-0157).
+    pub menu_cues: MenuCues,
     /// When the play failed: the fail animation runs from then on.
     pub fail: Option<FailView>,
     /// The beatmap offset and its panel.
@@ -352,6 +354,7 @@ impl Default for PlaySnapshot {
             exit_progress: 0.0,
             restarts: 0,
             menu: MenuSnapshot::default(),
+            menu_cues: MenuCues::default(),
             fail: None,
             offset_panel: OffsetPanel::default(),
             circles: LiveCircles::new(),
@@ -939,6 +942,7 @@ impl PlaySession {
             // Stops of looping samples that did not queue are retried while gameplay stands.
             self.sounds.stop_all(sink);
         }
+        self.sounds.update_pause_loop(now_ns, sink);
 
         if (restart || menu_restart) && self.phase != Phase::Exited {
             // Lazer's quick restarts skip the intro (`AutomaticallySkipIntro`); the menu's
@@ -1003,12 +1007,14 @@ impl PlaySession {
         snapshot.is_break_time = self.is_break_time(self.last_time);
         snapshot.offset_panel = self.offset_panel;
         self.fill(snapshot, now_ns);
+        snapshot.menu_cues = self.menu.take_cues();
     }
 
     /// Stops the looping sounds (the play is closing). Returns whether all stops were
     /// queued; call again until it does.
     pub fn stop_sounds(&mut self, sink: &mut impl VoiceSink) -> bool {
-        self.sounds.stop_all(sink)
+        let looping = self.sounds.stop_all(sink);
+        self.sounds.stop_pause_loop(sink) && looping
     }
 
     /// Takes the samples of `sounds`, made for this play's beatmap and mods with another
@@ -1043,6 +1049,8 @@ impl PlaySession {
             // Nothing resumes from under the panel.
             let _ = self.input.follow_suspended(events, |_, _| false);
         }
+        // The panel makes its own sounds.
+        let _ = self.menu.take_cues();
     }
 
     /// Places the skip button for clicks (ADR-0141): the gameplay layout's `skip_button`
@@ -1391,6 +1399,7 @@ impl PlaySession {
             // The save button is in the fail menu's footer: the menu stays.
             MenuButton::SaveReplay => {
                 self.save_failed_replay();
+                self.menu.note_press(button);
                 return;
             }
             MenuButton::Continue => self.resume(),
@@ -1398,7 +1407,9 @@ impl PlaySession {
             // The menu shows: `PerformExitWithConfirmation` exits at once.
             MenuButton::Quit => self.perform_exit(sink),
         }
+        self.menu.note_press(button);
         self.menu.hide(now_ns);
+        self.sounds.hide_pause_loop(now_ns);
     }
 
     /// The menu's information now: lazer updates it as the menu shows.
@@ -1411,10 +1422,11 @@ impl PlaySession {
         }
     }
 
-    fn show_menu(&mut self, kind: MenuKind, now_ns: u64) {
+    fn show_menu(&mut self, kind: MenuKind, now_ns: u64, sink: &mut impl VoiceSink) {
         let info = self.menu_info();
         let size = self.input.layout().window_size();
         self.menu.show(kind, info, now_ns, size);
+        self.sounds.show_pause_loop(now_ns, sink);
     }
 
     /// The player asks to quit: lazer's `PerformExit` (or the results screen's exit).
@@ -1456,7 +1468,7 @@ impl PlaySession {
         // Looping samples stop; the others play out.
         self.sounds.stop_all(sink);
         self.input.suspend();
-        self.show_menu(MenuKind::Pause, now_ns);
+        self.show_menu(MenuKind::Pause, now_ns, sink);
     }
 
     // Ported from osu!lazer 2026.1005.0-lazer: osu.Game/Screens/Play/Player.cs (Resume)
@@ -1496,7 +1508,7 @@ impl PlaySession {
         }
         self.sounds.stop_all(sink);
         self.input.suspend();
-        self.show_menu(MenuKind::Fail, now_ns);
+        self.show_menu(MenuKind::Fail, now_ns, sink);
         let save = self.replay_save();
         self.menu.set_replay_save(save);
     }
@@ -1509,6 +1521,7 @@ impl PlaySession {
         self.run = false;
         self.sounds.stop_all(sink);
         // Ported from osu!lazer 2026.1005.0-lazer: osu.Game/Screens/Play/Player.cs (OnExiting)
+        self.sounds.stop_pause_loop(sink);
         self.sounds.stop_fail(sink);
         self.track_effects = TrackEffects::Neutral;
         self.input.suspend();
@@ -1532,7 +1545,8 @@ impl PlaySession {
         self.service_state = ServiceState::default();
         // A stop that did not queue is retried by the sounds' next update.
         self.sounds.reset(sink);
-        // The old player's fail animation goes with it (`OnExiting`).
+        // The old player's menu loop and fail animation go with it (`OnExiting`).
+        self.sounds.stop_pause_loop(sink);
         self.sounds.stop_fail(sink);
         self.track_effects = TrackEffects::Neutral;
         self.fail = None;
@@ -1651,6 +1665,7 @@ impl PlaySession {
         snapshot.exit_progress = 0.0;
         snapshot.restarts = self.restarts;
         snapshot.menu = self.menu.snapshot();
+        snapshot.menu_cues = MenuCues::default();
         snapshot.fail = None;
         snapshot.offset_panel = self.offset_panel;
         snapshot.judgements.clone_from(&self.popups);

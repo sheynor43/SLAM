@@ -300,6 +300,8 @@ pub fn prepare(
     let fail_sound = slam_play::hitsounds::effect("Gameplay/failsound", sample_skins, &mut cache);
     // Ported from osu!lazer 2026.1005.0-lazer: osu.Game/Screens/Play/ComboEffects.cs (load)
     let combo_break = slam_play::hitsounds::effect("Gameplay/combobreak", sample_skins, &mut cache);
+    // Ported from osu!lazer 2026.1005.0-lazer: osu.Game/Screens/Play/GameplayMenuOverlay.cs (load)
+    let pause_loop = slam_play::hitsounds::effect("Gameplay/pause-loop", sample_skins, &mut cache);
     let sounds = GameplaySounds::new(
         beatmap,
         hitsounds,
@@ -311,6 +313,7 @@ pub fn prepare(
     )
     .with_fail_sound(fail_sound)
     .with_combo_break_sound(combo_break)
+    .with_pause_loop(pause_loop)
     .with_service_sounds(service_samples(sample_skins, &mut cache));
     let circle_mods = CircleMods::new(mods);
     let windows = slam_osu::hit_windows::HitWindows::new(beatmap.difficulty.overall_difficulty);
