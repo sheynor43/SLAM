@@ -424,6 +424,8 @@ pub struct PlaySession {
     start_time: f64,
     /// Lazer's `GameplayStartTime`: the offset can change for a while after it.
     gameplay_start_time: f64,
+    /// Health over the playable time, for the results (ADR-0161).
+    health_graph: crate::health_graph::HealthGraph,
     /// Whether hotkeys may change the beatmap offset (not in a replay).
     offset_adjustable: bool,
     offset_panel: OffsetPanel,
@@ -618,6 +620,7 @@ impl PlaySession {
             offsets,
             start_time,
             gameplay_start_time,
+            health_graph: crate::health_graph::HealthGraph::new(playable.0, playable.1),
             offset_adjustable: true,
             offset_panel: OffsetPanel::new(offsets.beatmap_ms),
             breaks,
@@ -767,6 +770,17 @@ impl PlaySession {
             maximum_statistics: *self.score.maximum_statistics(),
             hit_errors: self.hit_events.summary(),
         })
+    }
+
+    /// The health over the playable time of the attempt, for the results' graph
+    /// (ADR-0161). Allocates.
+    pub fn health_curve(&self) -> Vec<f32> {
+        self.health_graph.curve()
+    }
+
+    /// The hit offsets of the attempt in judgement order, ms, negative when early.
+    pub fn hit_offsets(&self) -> &[f64] {
+        self.hit_events.offsets()
     }
 
     /// The hit error statistics of the attempt so far, passed or not. Allocates for the
@@ -1407,6 +1421,7 @@ impl PlaySession {
             .breaks
             .update(step_time, self.score.has_completed(step_time))
             .period;
+        self.health_graph.record(step_time, self.health.health());
         let (service, sounds) = self.service.update(
             step_time,
             self.health.health(),
@@ -1660,6 +1675,7 @@ impl PlaySession {
         self.expand.reset();
         self.smoke.restart();
         self.ripples.restart();
+        self.health_graph.restart();
         self.health = self.initial.health.clone();
         self.score = self.initial.score.clone();
         self.mods = self.initial.mods.clone();

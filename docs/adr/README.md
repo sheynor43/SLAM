@@ -164,6 +164,7 @@
 | [0158](0158-stable-ranking-screen.md) | Экран результатов из элементов скина stable (по McOsu), когда в скине есть `ranking-panel` | Принято |
 | [0159](0159-cursor-smoke-and-ripples.md) | Дым курсора и рябь от нажатий: события в кольцах снапшота, точки дыма в потоке draw, рябь без состояния, настройка `gameplay.cursor_ripple` | Принято |
 | [0160](0160-skip-transition-and-button-styles.md) | Переход при пропуске (картинка и музыка уходят на 100 мс, перескок, возврат за 250 мс) и стили кнопки пропуска: скин, лазер, SLAM (`gameplay.skip_button`) | Принято |
+| [0161](0161-stable-ranking-header-graph-scroll.md) | Результаты stable: шапка из трёх строк, фон карты, `menu-back` и `ranking-retry` скина, `ranking-graph` с линией здоровья, прокрутка к подробностям | Принято |
 
 ## Шаблон
 

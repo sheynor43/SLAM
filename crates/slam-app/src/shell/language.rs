@@ -127,6 +127,7 @@ pub fn interface_views(
         retry: text("results-retry-button"),
         back: text("results-back-button"),
         hint: text("results-hint"),
+        details_title: text("results-details-title"),
     };
     let fps = crate::play::scene::hud_labels(localizer).fps;
     InterfaceViews {

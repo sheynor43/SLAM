@@ -2210,6 +2210,21 @@ fn holding_quick_retry_restarts_from_the_start() {
     assert_eq!(d.session.log().events().len(), 1);
 }
 
+/// The results' health line (ADR-0161): misses pull it down; a restart starts it over.
+#[test]
+fn the_health_curve_follows_the_play_and_restarts() {
+    let map = beatmap();
+    let mut d = Driver::new(&map, mods(vec![slam_osu::mods::Mod::NoFail]));
+    // No presses: every circle is missed.
+    d.run_to(2500.0);
+    let curve = d.session.health_curve();
+    assert_eq!(curve.len(), slam_play::health_graph::HEALTH_SAMPLES);
+    assert!(curve.iter().any(|&h| h < 1.0), "{curve:?}");
+    d.hold(None, GRAVE, 200);
+    assert_eq!(d.snapshot.restarts, 1);
+    assert!(d.session.health_curve().iter().all(|&h| h == 1.0));
+}
+
 /// With no hold-to-confirm delay, quick retry restarts in the tick of the press, and once
 /// per press however long it is held.
 #[test]

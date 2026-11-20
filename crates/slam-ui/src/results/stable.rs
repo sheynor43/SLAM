@@ -9,6 +9,8 @@
 use slam_render::atlas::UvRect;
 use slam_render::textures::TextureId;
 
+use crate::menu::Rect;
+
 use super::{Rank, ResultsData, StatKind};
 
 /// Letter images, in [`GRADE_NAMES`] order.
@@ -116,6 +118,12 @@ pub struct StableImages<T> {
     /// Combo font: the digits and `x`.
     pub combo_font: [T; GLYPHS],
     pub mods: [T; MOD_COUNT],
+    /// `menu-back`: the Back button at the bottom left (ADR-0161).
+    pub back: T,
+    /// `ranking-retry`.
+    pub retry: T,
+    /// `ranking-graph`, under the health line.
+    pub graph: T,
 }
 
 impl<T: Default> Default for StableImages<T> {
@@ -131,6 +139,9 @@ impl<T: Default> Default for StableImages<T> {
             score_font: std::array::from_fn(|_| T::default()),
             combo_font: std::array::from_fn(|_| T::default()),
             mods: std::array::from_fn(|_| T::default()),
+            back: T::default(),
+            retry: T::default(),
+            graph: T::default(),
         }
     }
 }
@@ -144,6 +155,9 @@ impl<T> StableImages<T> {
             &self.max_combo,
             &self.accuracy,
             &self.perfect,
+            &self.back,
+            &self.retry,
+            &self.graph,
         ]
         .into_iter()
         .chain(&self.grades)
@@ -166,6 +180,9 @@ impl<T> StableImages<T> {
             score_font: std::array::from_fn(|i| f(&self.score_font[i])),
             combo_font: std::array::from_fn(|i| f(&self.combo_font[i])),
             mods: std::array::from_fn(|i| f(&self.mods[i])),
+            back: f(&self.back),
+            retry: f(&self.retry),
+            graph: f(&self.graph),
         }
     }
 }
@@ -189,6 +206,259 @@ pub struct StableSkin {
     pub score_overlap: f32,
     pub combo_overlap: f32,
     pub images: StableImages<Option<StableSprite>>,
+}
+
+/// The pixel size of a skin image and its density: all the layout needs of an image that
+/// it does not draw itself (the update thread knows the sizes from the files' headers).
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct ArtSize {
+    pub size: [f32; 2],
+    pub density: f32,
+}
+
+/// The sizes of the images that decide where the buttons and the scroll range are: shared
+/// by hit testing (update thread) and drawing, so that both see the same rectangles.
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+pub struct StableArt {
+    pub title: Option<ArtSize>,
+    pub back: Option<ArtSize>,
+    pub retry: Option<ArtSize>,
+}
+
+impl StableSprite {
+    pub fn art(&self) -> ArtSize {
+        ArtSize {
+            size: self.size,
+            density: self.density,
+        }
+    }
+}
+
+impl StableSkin {
+    pub fn art(&self) -> StableArt {
+        StableArt {
+            title: self.images.title.as_ref().map(StableSprite::art),
+            back: self.images.back.as_ref().map(StableSprite::art),
+            retry: self.images.retry.as_ref().map(StableSprite::art),
+        }
+    }
+}
+
+/// McOsu's `OsuUIBackButton` base size at `osuSize` 54.
+const BACK_BASE: [f32; 2] = [225.0, 87.0];
+/// `ranking-retry` and `ranking-graph` are placed on stable's 1024x768 screen.
+const STABLE_SCREEN_HEIGHT: f32 = 768.0;
+/// Centre of `ranking-retry` on stable's screen (estimated from screenshots, ADR-0161).
+const RETRY_CENTRE_Y: f32 = 576.0;
+/// Top-left of `ranking-graph` on stable's screen (estimated from screenshots, ADR-0161).
+pub const GRAPH_AT: [f32; 2] = [256.0, 608.0];
+/// The most segments of the health line.
+pub const MAX_HEALTH_SEGMENTS: usize = 256;
+/// How long the Back button's highlight takes, in ns.
+pub const HOVER_NS: u64 = 100_000_000;
+/// How long the scroll eases to its target, in ns.
+pub const SCROLL_NS: u64 = 200_000_000;
+
+/// Digits the score shows at least, with leading zeros (stable's `06848980`).
+const SCORE_DIGITS: usize = 8;
+/// Where the score's middle is, in units of 640×480 from the panel's left (stable's).
+const SCORE_CENTRE_X: f32 = 220.0;
+/// How much lower than McOsu stable draws the score and the other numbers, in units.
+const SCORE_DROP: f32 = 10.0;
+const NUMBER_DROP: f32 = 3.0;
+
+/// Decimal digits of `n`, 1 for 0.
+fn digit_count(mut n: u64) -> usize {
+    let mut count = 1;
+    while n >= 10 {
+        n /= 10;
+        count += 1;
+    }
+    count
+}
+
+/// Height of the score's `0` image on stable's results, in units of 640×480.
+const SCORE_DIGIT_HEIGHT: f32 = 30.0;
+/// Height of the `0` image of the counts, the combo and the accuracy, in units of 640×480.
+const NUMBER_DIGIT_HEIGHT: f32 = 26.0;
+
+/// Line height of the header's font in osu pixels: a stand-in for McOsu's font height,
+/// matched to stable's results at 1920×1080 (the title about 36 px).
+const HEADER_FONT: f32 = 16.0;
+/// `m_fSubTitleScale`: 0.6 * 1.3.
+// Ported from McOsu db2add2: src/App/Osu/OsuUIRankingScreenInfoLabel.cpp
+pub const SUBTITLE_SCALE: f32 = 0.78;
+/// `m_iMargin` (10 px in McOsu, not scaled); in osu pixels, matched to stable's spacing.
+const HEADER_MARGIN: f32 = 2.0;
+
+/// The header font's em size at a unit, before the header's scale.
+pub fn header_em(unit: f32) -> f32 {
+    unit * HEADER_FONT
+}
+
+/// `getMinimumHeight` of the info label: the three lines and the margins.
+// Ported from McOsu db2add2: src/App/Osu/OsuUIRankingScreenInfoLabel.cpp (getMinimumHeight)
+pub fn header_min_height(unit: f32) -> f32 {
+    let h = unit * HEADER_FONT;
+    h + 2.0 * h * SUBTITLE_SCALE + 2.0 * HEADER_MARGIN * unit
+}
+
+/// What a header line says.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum HeaderKind {
+    Title,
+    By,
+    Played,
+}
+
+/// One line of the header: its top-left corner and the factor of [`header_em`] it is
+/// set in.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct HeaderLine {
+    pub kind: HeaderKind,
+    pub x: f32,
+    pub y: f32,
+    pub scale: f32,
+}
+
+/// The header's lines for a bar of `bar_height`; the "Beatmap by" line is skipped when
+/// `has_by` is false. Returns the lines and how many are used.
+// Ported from McOsu db2add2: src/App/Osu/OsuUIRankingScreenInfoLabel.cpp (draw)
+pub fn header_lines(unit: f32, bar_height: f32, has_by: bool) -> ([HeaderLine; 3], usize) {
+    let h = unit * HEADER_FONT;
+    let global = (bar_height / header_min_height(unit) * 0.741).max(1.0);
+    let sub = SUBTITLE_SCALE * global;
+    let margin = HEADER_MARGIN * unit;
+    let (x, top) = (5.0 * unit, 5.0 * unit);
+    let second = top + h * global + margin;
+    let line = |kind, y, scale| HeaderLine { kind, x, y, scale };
+    let mut lines = [line(HeaderKind::Title, top, global); 3];
+    let mut count = 1;
+    let mut y = second;
+    if has_by {
+        lines[count] = line(HeaderKind::By, y, sub);
+        count += 1;
+        y += h * sub + margin;
+    }
+    lines[count] = line(HeaderKind::Played, y, sub);
+    (lines, count + 1)
+}
+
+/// Where the interactive parts of the stable look are.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct Geometry {
+    /// Height of the black bar.
+    pub bar_height: f32,
+    /// `menu-back`, at the bottom left.
+    pub back: Rect,
+    /// `ranking-retry` unscrolled; empty without the image.
+    pub retry: Rect,
+    /// The scroll-down hint's button.
+    pub hint: Rect,
+    /// Pixels the content scrolls over its whole range: the area below the bar.
+    pub scroll_area: f32,
+    /// Pixels per window pixel of height / 768: the scale of `ranking-retry` and
+    /// `ranking-graph`.
+    pub screen_scale: f32,
+}
+
+/// The geometry for a `width` x `height` window.
+// Ported from McOsu db2add2: src/App/Osu/OsuUIBackButton.cpp (updateLayout)
+// Ported from McOsu db2add2: src/App/Osu/OsuRankingScreen.cpp (updateLayout)
+pub fn geometry(width: f32, height: f32, art: &StableArt) -> Geometry {
+    let m = Metrics::new(width, height);
+    let title_height = art
+        .title
+        .map_or(m.ui(75.0), |t| t.size[1] * m.image_scale(t.size, 75.0));
+    let bar_height = (title_height * 0.785).max(header_min_height(m.ui(1.0)));
+
+    // The back button: the image at its display size (`@2x` halved) on a screen 768 high,
+    // its height clamped to 1.5 times McOsu's base height (stable's results, measured with
+    // skins of `@1x` and `@2x` buttons; McOsu stretches it to the base width).
+    let f = height / STABLE_SCREEN_HEIGHT;
+    let (raw, density) = art.back.map_or((BACK_BASE, 1.0), |a| (a.size, a.density));
+    let natural = [raw[0] / density * f, raw[1] / density * f];
+    let clamped = natural[1].min(BACK_BASE[1] * 1.5 * f);
+    let back_size = [natural[0] * clamped / natural[1], clamped];
+    let back = Rect {
+        x: 0.0,
+        y: height - back_size[1],
+        width: back_size[0],
+        height: back_size[1],
+    };
+
+    let retry = art.retry.map_or_else(Rect::default, |a| {
+        let size = [a.size[0] / a.density * f, a.size[1] / a.density * f];
+        Rect {
+            x: width - size[0],
+            y: RETRY_CENTRE_Y * f - size[1] / 2.0,
+            width: size[0],
+            height: size[1],
+        }
+    });
+    let hint_size = [width * 0.2, height * 0.1];
+    Geometry {
+        bar_height,
+        back,
+        retry,
+        hint: Rect {
+            x: (width - hint_size[0]) / 2.0,
+            y: height - hint_size[1],
+            width: hint_size[0],
+            height: hint_size[1],
+        },
+        scroll_area: (height - bar_height).max(0.0),
+        screen_scale: f,
+    }
+}
+
+/// The scroll-down hint's lift in units of its text height, from -0.25 (lowest) to 0, at
+/// `seconds`.
+// Ported from McOsu db2add2: src/App/Osu/OsuRankingScreen.cpp (OsuRankingScreenScrollDownInfoButton::draw)
+pub fn hint_bounce(seconds: f32) -> f32 {
+    let mut animation = (seconds * 3.2).rem_euclid(2.0);
+    if animation > 1.0 {
+        animation = 2.0 - animation;
+    }
+    animation = -animation * (animation - 2.0);
+    -0.25 + animation * 0.25
+}
+
+/// Hands the segments of the health line inside `graph` (the image's rectangle, inset by
+/// 8% on every side) to `sink` as `(from, to, below_half)`. At most
+/// [`MAX_HEALTH_SEGMENTS`] segments; longer curves are sampled.
+pub fn health_segments(
+    graph: Rect,
+    health: &[f32],
+    mut sink: impl FnMut([f32; 2], [f32; 2], bool),
+) {
+    if health.len() < 2 {
+        return;
+    }
+    let inset = 0.08;
+    let (x, y) = (
+        graph.x + graph.width * inset,
+        graph.y + graph.height * inset,
+    );
+    let (w, h) = (
+        graph.width * (1.0 - 2.0 * inset),
+        graph.height * (1.0 - 2.0 * inset),
+    );
+    let segments = (health.len() - 1).min(MAX_HEALTH_SEGMENTS);
+    let at = |i: usize| {
+        let index = i * (health.len() - 1) / segments;
+        let value = health[index].clamp(0.0, 1.0);
+        (
+            [x + w * i as f32 / segments as f32, y + h - value * h],
+            value,
+        )
+    };
+    let mut previous = at(0);
+    for i in 1..=segments {
+        let next = at(i);
+        sink(previous.0, next.0, (previous.1 + next.1) / 2.0 < 0.5);
+        previous = next;
+    }
 }
 
 /// What a placed sprite is, for tests and for callers that tint parts.
@@ -457,33 +727,40 @@ pub fn lay_out<'a>(
         ));
     }
 
-    // Numbers are scaled by the score font's `0`.
+    // Numbers are scaled by the score font's `0`. Stable fits the image's height: the
+    // score's `0` is 30 units of 640×480 high and the other numbers' 26, whatever its
+    // width (measured on stable's results with skins of narrow and wide digits; McOsu's
+    // `getImageScale(…, 20 or 17) × 1.3` fits the wider side and draws narrow digits far
+    // too big). All of them are in the score font, as stable draws them (ADR-0161).
+    let _ = modern;
     if let Some(zero) = &images.score_font[0] {
-        let gss = if modern { 1.3 } else { 1.05 };
-        let scale20 = m.image_scale(zero.size, 20.0) * gss;
-        let scale17 = m.image_scale(zero.size, 17.0) * gss;
+        let scale20 = m.ui(SCORE_DIGIT_HEIGHT) / zero.size[1];
+        let scale17 = m.ui(NUMBER_DIGIT_HEIGHT) / zero.size[1];
         let half = zero.size[1] / 2.0;
         let score_spacing = skin.score_overlap * zero.density;
-        let combo_zero = images.combo_font[0];
-        let combo_spacing = skin.combo_overlap * combo_zero.map_or(1.0, |s| s.density);
-        let combo_advance = combo_zero.map_or(0.0, |s| s.size[0]);
-        // The score.
+        let combo_spacing = score_spacing;
+        let combo_advance = zero.size[0];
+        // The score: eight digits at least, centred on a point of the panel, a little lower
+        // than McOsu draws it (both measured on stable's results).
+        let score = data.score.max(0) as u64;
+        let len = digit_count(score).max(SCORE_DIGITS);
+        let width = len as f32 * (zero.size[0] - score_spacing) * scale20 + score_spacing * scale20;
         let mut pen = score_pen(
             &mut sink,
             &images.score_font,
             zero,
             score_spacing,
             scale20,
-            panel_x + m.ui(111.0),
-            panel_y + m.ui(11.0) + global_y,
+            panel_x + m.ui(SCORE_CENTRE_X) - width / 2.0,
+            panel_y + m.ui(11.0 + SCORE_DROP) + global_y,
         );
-        pen.number(data.score.max(0) as u64, 1);
+        pen.number(score, SCORE_DIGITS);
 
         // The hit icons and their counts: two columns of three.
         let start = [40.0, 99.0];
         let count_start = [
             start[0] + 40.0,
-            start[1] + if modern { -16.0 } else { -25.0 },
+            start[1] + if modern { -16.0 } else { -25.0 } + NUMBER_DROP,
         ];
         let counts = [
             data.stats[StatKind::Great.index()].value,
@@ -514,7 +791,7 @@ pub fn lay_out<'a>(
             let (column, row) = ((i / 3) as f32, (i % 3) as f32);
             let mut pen = Pen {
                 sink: &mut sink,
-                font: &images.combo_font,
+                font: &images.score_font,
                 part: Part::Combo,
                 advance: combo_advance * scale17,
                 scale: scale17,
@@ -529,10 +806,10 @@ pub fn lay_out<'a>(
         // The fourth row: max combo and accuracy with their labels.
         let row4 = 260.0;
         let label_offset = if modern { 20.0 } else { 8.0 } - 20.0;
-        let row_cy = panel_y + half * scale17 + m.ui(row4 + 10.0) + global_y;
+        let row_cy = panel_y + half * scale17 + m.ui(row4 + 10.0 + NUMBER_DROP) + global_y;
         let mut pen = Pen {
             sink: &mut sink,
-            font: &images.combo_font,
+            font: &images.score_font,
             part: Part::Combo,
             advance: combo_advance * scale17,
             scale: scale17,

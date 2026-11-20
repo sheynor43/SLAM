@@ -510,6 +510,7 @@ fn results_data(id: u64) -> ResultsData {
         average_hit_error: None,
         average_hit_error_text: None,
         unstable_rate: None,
+        extra: slam_ui::results::ResultsExtra::default(),
     }
 }
 
