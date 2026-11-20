@@ -181,19 +181,27 @@ fn score_digits_advance_by_the_width_of_zero_less_the_overlap() {
     let skin = skin();
     let (items, info) = placed(&skin, &data(), 640.0, 480.0);
     let digits = of(&items, Part::Score(Glyph::Digit(1)));
-    // "123" then the accuracy: the score's `1` is the first glyph.
+    // "00000123" then the accuracy: the score's `1` is the first `1`.
     let one = digits[0];
-    // Scale: max(20/40, 20/50) = 0.5, times 1.05 for a version 1 skin.
-    let scale = 0.5 * 1.05;
+    // Scale: the `0`'s height fitted to 30 units, 30/50 (stable, not McOsu's 20 × 1.05).
+    let scale = 30.0 / 50.0;
     assert!(near(one.2[0], 40.0 * scale));
-    assert!(near(one.1[0], 111.0 + 40.0 * scale / 2.0));
     let two = of(&items, Part::Score(Glyph::Digit(2)))[0];
     let advance = 40.0 * scale - 2.0 * scale;
     assert!(near(two.1[0] - one.1[0], advance));
-    // The centre is half a digit under the line's top.
+    // Eight digits, centred on 220 units of the panel (stable).
+    let score: Vec<_> = items
+        .iter()
+        .filter(|p| matches!(p.0, Part::Score(_)))
+        .take(8)
+        .collect();
+    let left = score[0].1[0] - score[0].2[0] / 2.0;
+    let right = score[7].1[0] + score[7].2[0] / 2.0;
+    assert!(near((left + right) / 2.0, 220.0), "{left} {right}");
+    // The centre is half a digit under the line's top, 10 units lower than McOsu.
     assert!(near(
         one.1[1],
-        info.bar_height - 1.0 + 25.0 * scale + 11.0 + -1.0
+        info.bar_height - 1.0 + 25.0 * scale + 11.0 + 10.0 + -1.0
     ));
 }
 
@@ -205,7 +213,7 @@ fn accuracy_reads_int_dot_two_digits_and_percent() {
         .iter()
         .map(|p| p.0)
         .filter(|p| matches!(p, Part::Score(_)))
-        .skip(3)
+        .skip(8)
         .collect();
     use Glyph::*;
     // 95.67: "95", dot, "67", percent.

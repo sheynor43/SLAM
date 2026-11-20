@@ -106,7 +106,11 @@ pub fn ranking_files(skins: &SkinChain) -> Option<RankingFiles> {
         })
     };
     let digits = (0..10).map(Glyph::Digit);
-    let score_glyphs: Vec<Glyph> = digits.clone().chain([Glyph::Dot, Glyph::Percent]).collect();
+    // Stable draws every number of the panel in the score font, the counts' `x` too.
+    let score_glyphs: Vec<Glyph> = digits
+        .clone()
+        .chain([Glyph::Dot, Glyph::Percent, Glyph::X])
+        .collect();
     let combo_glyphs: Vec<Glyph> = digits.chain([Glyph::X]).collect();
     Some(RankingFiles {
         modern: config.version() > SkinVersion::V1,

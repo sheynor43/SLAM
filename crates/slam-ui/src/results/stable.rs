@@ -259,6 +259,29 @@ pub const HOVER_NS: u64 = 100_000_000;
 /// How long the scroll eases to its target, in ns.
 pub const SCROLL_NS: u64 = 200_000_000;
 
+/// Digits the score shows at least, with leading zeros (stable's `06848980`).
+const SCORE_DIGITS: usize = 8;
+/// Where the score's middle is, in units of 640×480 from the panel's left (stable's).
+const SCORE_CENTRE_X: f32 = 220.0;
+/// How much lower than McOsu stable draws the score and the other numbers, in units.
+const SCORE_DROP: f32 = 10.0;
+const NUMBER_DROP: f32 = 3.0;
+
+/// Decimal digits of `n`, 1 for 0.
+fn digit_count(mut n: u64) -> usize {
+    let mut count = 1;
+    while n >= 10 {
+        n /= 10;
+        count += 1;
+    }
+    count
+}
+
+/// Height of the score's `0` image on stable's results, in units of 640×480.
+const SCORE_DIGIT_HEIGHT: f32 = 30.0;
+/// Height of the `0` image of the counts, the combo and the accuracy, in units of 640×480.
+const NUMBER_DIGIT_HEIGHT: f32 = 26.0;
+
 /// Line height of the header's font in osu pixels: a stand-in for McOsu's font height,
 /// matched to stable's results at 1920×1080 (the title about 36 px).
 const HEADER_FONT: f32 = 16.0;
@@ -349,14 +372,14 @@ pub fn geometry(width: f32, height: f32, art: &StableArt) -> Geometry {
         .map_or(m.ui(75.0), |t| t.size[1] * m.image_scale(t.size, 75.0));
     let bar_height = (title_height * 0.785).max(header_min_height(m.ui(1.0)));
 
-    // The back button: as wide as its base size, as high as the image's aspect gives,
-    // clamped to 1.5 times the base height; drawn scaled to the clamped height.
-    let res = m.image_scale(BACK_BASE, 54.0);
-    let raw = art.back.map_or(BACK_BASE, |a| a.size);
-    let natural = [BACK_BASE[0] * res, raw[1] / raw[0] * BACK_BASE[0] * res];
-    let clamped = natural[1].min(BACK_BASE[1] * res * 1.5);
-    let k = clamped / natural[1];
-    let back_size = [natural[0] * k, clamped];
+    // The back button: the image at its display size (`@2x` halved) on a screen 768 high,
+    // its height clamped to 1.5 times McOsu's base height (stable's results, measured with
+    // skins of `@1x` and `@2x` buttons; McOsu stretches it to the base width).
+    let f = height / STABLE_SCREEN_HEIGHT;
+    let (raw, density) = art.back.map_or((BACK_BASE, 1.0), |a| (a.size, a.density));
+    let natural = [raw[0] / density * f, raw[1] / density * f];
+    let clamped = natural[1].min(BACK_BASE[1] * 1.5 * f);
+    let back_size = [natural[0] * clamped / natural[1], clamped];
     let back = Rect {
         x: 0.0,
         y: height - back_size[1],
@@ -364,7 +387,6 @@ pub fn geometry(width: f32, height: f32, art: &StableArt) -> Geometry {
         height: back_size[1],
     };
 
-    let f = height / STABLE_SCREEN_HEIGHT;
     let retry = art.retry.map_or_else(Rect::default, |a| {
         let size = [a.size[0] / a.density * f, a.size[1] / a.density * f];
         Rect {
@@ -705,33 +727,40 @@ pub fn lay_out<'a>(
         ));
     }
 
-    // Numbers are scaled by the score font's `0`.
+    // Numbers are scaled by the score font's `0`. Stable fits the image's height: the
+    // score's `0` is 30 units of 640×480 high and the other numbers' 26, whatever its
+    // width (measured on stable's results with skins of narrow and wide digits; McOsu's
+    // `getImageScale(…, 20 or 17) × 1.3` fits the wider side and draws narrow digits far
+    // too big). All of them are in the score font, as stable draws them (ADR-0161).
+    let _ = modern;
     if let Some(zero) = &images.score_font[0] {
-        let gss = if modern { 1.3 } else { 1.05 };
-        let scale20 = m.image_scale(zero.size, 20.0) * gss;
-        let scale17 = m.image_scale(zero.size, 17.0) * gss;
+        let scale20 = m.ui(SCORE_DIGIT_HEIGHT) / zero.size[1];
+        let scale17 = m.ui(NUMBER_DIGIT_HEIGHT) / zero.size[1];
         let half = zero.size[1] / 2.0;
         let score_spacing = skin.score_overlap * zero.density;
-        let combo_zero = images.combo_font[0];
-        let combo_spacing = skin.combo_overlap * combo_zero.map_or(1.0, |s| s.density);
-        let combo_advance = combo_zero.map_or(0.0, |s| s.size[0]);
-        // The score.
+        let combo_spacing = score_spacing;
+        let combo_advance = zero.size[0];
+        // The score: eight digits at least, centred on a point of the panel, a little lower
+        // than McOsu draws it (both measured on stable's results).
+        let score = data.score.max(0) as u64;
+        let len = digit_count(score).max(SCORE_DIGITS);
+        let width = len as f32 * (zero.size[0] - score_spacing) * scale20 + score_spacing * scale20;
         let mut pen = score_pen(
             &mut sink,
             &images.score_font,
             zero,
             score_spacing,
             scale20,
-            panel_x + m.ui(111.0),
-            panel_y + m.ui(11.0) + global_y,
+            panel_x + m.ui(SCORE_CENTRE_X) - width / 2.0,
+            panel_y + m.ui(11.0 + SCORE_DROP) + global_y,
         );
-        pen.number(data.score.max(0) as u64, 1);
+        pen.number(score, SCORE_DIGITS);
 
         // The hit icons and their counts: two columns of three.
         let start = [40.0, 99.0];
         let count_start = [
             start[0] + 40.0,
-            start[1] + if modern { -16.0 } else { -25.0 },
+            start[1] + if modern { -16.0 } else { -25.0 } + NUMBER_DROP,
         ];
         let counts = [
             data.stats[StatKind::Great.index()].value,
@@ -762,7 +791,7 @@ pub fn lay_out<'a>(
             let (column, row) = ((i / 3) as f32, (i % 3) as f32);
             let mut pen = Pen {
                 sink: &mut sink,
-                font: &images.combo_font,
+                font: &images.score_font,
                 part: Part::Combo,
                 advance: combo_advance * scale17,
                 scale: scale17,
@@ -777,10 +806,10 @@ pub fn lay_out<'a>(
         // The fourth row: max combo and accuracy with their labels.
         let row4 = 260.0;
         let label_offset = if modern { 20.0 } else { 8.0 } - 20.0;
-        let row_cy = panel_y + half * scale17 + m.ui(row4 + 10.0) + global_y;
+        let row_cy = panel_y + half * scale17 + m.ui(row4 + 10.0 + NUMBER_DROP) + global_y;
         let mut pen = Pen {
             sink: &mut sink,
-            font: &images.combo_font,
+            font: &images.score_font,
             part: Part::Combo,
             advance: combo_advance * scale17,
             scale: scale17,
