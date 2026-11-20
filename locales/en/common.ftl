@@ -312,6 +312,7 @@ settings-gameplay-hit-lighting = Hit lighting
 settings-gameplay-key-overlay = Key overlay
 settings-gameplay-pause-menu-style = Pause menu
 settings-gameplay-pause-menu-scale = Pause menu scale
+settings-gameplay-hold-to-confirm = Hold-to-confirm activation time
 settings-option-pause-menu-style-slam = SLAM
 settings-option-pause-menu-style-lazer = lazer
 settings-option-pause-menu-style-stable = stable (from the skin)

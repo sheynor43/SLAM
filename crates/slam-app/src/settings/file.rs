@@ -764,6 +764,14 @@ fn from_table(mut table: Table) -> Loaded {
         f64::from(UI_SCALE_RANGE.0)..=f64::from(UI_SCALE_RANGE.1),
     );
     settings.gameplay.pause_menu_scale = ((scale * 20.0).round() / 20.0) as f32;
+    cx.float(
+        &mut gameplay,
+        "gameplay",
+        "hold_to_confirm_ms",
+        &mut settings.gameplay.hold_to_confirm_ms,
+        crate::settings::model::Gameplay::HOLD_TO_CONFIRM_RANGE,
+    );
+    settings.gameplay.hold_to_confirm_ms = settings.gameplay.hold_to_confirm_ms.round();
     // Retired in favour of the HUD layout (ADR-0109); read only to migrate it.
     let mut legacy_scale = f64::NAN;
     cx.float(
