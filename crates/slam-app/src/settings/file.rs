@@ -720,6 +720,13 @@ fn from_table(mut table: Table) -> Loaded {
         &mut settings.gameplay.cursor_trail,
         |_| Ok(()),
     );
+    cx.field(
+        &mut gameplay,
+        "gameplay",
+        "cursor_ripple",
+        &mut settings.gameplay.cursor_ripple,
+        |_| Ok(()),
+    );
     cx.float(
         &mut gameplay,
         "gameplay",
@@ -755,6 +762,16 @@ fn from_table(mut table: Table) -> Loaded {
             )),
         }
     }
+    let mut style: Option<String> = None;
+    cx.opt(&mut gameplay, "gameplay", "skip_button", &mut style);
+    if let Some(name) = style {
+        match crate::settings::SkipButtonStyle::from_name(&name) {
+            Some(style) => settings.gameplay.skip_button = style,
+            None => cx.warn(format!(
+                "gameplay.skip_button: unknown value \"{name}\", using the default"
+            )),
+        }
+    }
     let mut scale = f64::from(settings.gameplay.pause_menu_scale);
     cx.float(
         &mut gameplay,
@@ -764,6 +781,14 @@ fn from_table(mut table: Table) -> Loaded {
         f64::from(UI_SCALE_RANGE.0)..=f64::from(UI_SCALE_RANGE.1),
     );
     settings.gameplay.pause_menu_scale = ((scale * 20.0).round() / 20.0) as f32;
+    cx.float(
+        &mut gameplay,
+        "gameplay",
+        "hold_to_confirm_ms",
+        &mut settings.gameplay.hold_to_confirm_ms,
+        crate::settings::model::Gameplay::HOLD_TO_CONFIRM_RANGE,
+    );
+    settings.gameplay.hold_to_confirm_ms = settings.gameplay.hold_to_confirm_ms.round();
     // Retired in favour of the HUD layout (ADR-0109); read only to migrate it.
     let mut legacy_scale = f64::NAN;
     cx.float(

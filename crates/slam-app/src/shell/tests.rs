@@ -762,6 +762,7 @@ fn host(name: &str, with_track: bool) -> HostFixture {
             slam_ui::theme::ColourScheme::Pink,
         ),
         effects: true,
+        hold_ns: slam_play::hotkeys::HOLD_NS,
     };
     HostFixture {
         host,

@@ -32,6 +32,12 @@ impl<T: Copy, const N: usize> EventRing<T, N> {
         self.written
     }
 
+    /// Event `index` of all ever written, unless overwritten already or not yet written.
+    pub fn get_mut(&mut self, index: u64) -> Option<&mut T> {
+        (index < self.written && index + N as u64 >= self.written)
+            .then(|| &mut self.entries[(index % N as u64) as usize])
+    }
+
     /// Starts a new attempt: the events written so far are of the previous one and are no
     /// longer read.
     pub fn restart(&mut self) {

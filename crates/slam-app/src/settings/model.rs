@@ -904,6 +904,9 @@ pub struct Gameplay {
     pub hud_animations: bool,
     /// The cursor leaves a trail (lazer's `OsuRulesetSetting.ShowCursorTrail`).
     pub cursor_trail: bool,
+    /// Ripples under the cursor on every press (lazer's `ShowCursorRipples`, off by default;
+    /// ADR-0159).
+    pub cursor_ripple: bool,
     /// Size of the gameplay cursor and its trail, 0.1 ..= 2.0 in steps of 0.01 (lazer's
     /// `OsuSetting.GameplayCursorSize`, ADR-0086).
     pub cursor_size: f64,
@@ -915,10 +918,24 @@ pub struct Gameplay {
     pub cursor_style: CursorStyle,
     /// The style of the pause and fail menus (ADR-0122).
     pub pause_menu_style: PauseMenuStyle,
+    /// How the skip button looks (ADR-0160).
+    pub skip_button: SkipButtonStyle,
     /// Scale of the pause and fail menus, in `slam_ui::theme::UI_SCALE_RANGE` in steps of 0.05
     /// (ADR-0122).
     #[serde(serialize_with = "serialize_scale")]
     pub pause_menu_scale: f32,
+    /// How long quick retry and quick exit are held to fire, in milliseconds, in
+    /// [`Gameplay::HOLD_TO_CONFIRM_RANGE`]; 0 fires on the press (lazer's
+    /// `UIHoldActivationDelay`).
+    pub hold_to_confirm_ms: f64,
+}
+
+impl Gameplay {
+    // Ported from osu!lazer 2026.1005.0-lazer: osu.Game/Configuration/OsuConfigManager.cs (UIHoldActivationDelay)
+    /// Range of `hold_to_confirm_ms`.
+    pub const HOLD_TO_CONFIRM_RANGE: std::ops::RangeInclusive<f64> = 0.0..=500.0;
+    /// Step of `hold_to_confirm_ms` on the settings screen.
+    pub const HOLD_TO_CONFIRM_STEP: f64 = 50.0;
 }
 
 impl Default for Gameplay {
@@ -942,11 +959,14 @@ impl Default for Gameplay {
             key_overlay_animation: KeyOverlayAnimation::default(),
             hud_animations: true,
             cursor_trail: true,
+            cursor_ripple: false,
             cursor_size: 1.0,
             auto_cursor_size: false,
             cursor_style: CursorStyle::Skin,
             pause_menu_style: PauseMenuStyle::default(),
+            skip_button: SkipButtonStyle::default(),
             pause_menu_scale: 1.0,
+            hold_to_confirm_ms: 200.0,
         }
     }
 }
@@ -983,6 +1003,51 @@ impl PauseMenuStyle {
     /// The value called `name`.
     pub fn from_name(name: &str) -> Option<PauseMenuStyle> {
         PauseMenuStyle::ALL.into_iter().find(|s| s.name() == name)
+    }
+}
+
+/// How the skip button looks (ADR-0160).
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum SkipButtonStyle {
+    /// The skin's `play-skip` where the HUD layout puts it, as in stable; lazer's without
+    /// the image.
+    #[default]
+    Skin,
+    /// Lazer's bar across the lower middle of the screen.
+    Lazer,
+    /// A plate in SLAM's style where the HUD layout puts it.
+    Slam,
+}
+
+impl SkipButtonStyle {
+    pub const ALL: [SkipButtonStyle; 3] = [
+        SkipButtonStyle::Skin,
+        SkipButtonStyle::Lazer,
+        SkipButtonStyle::Slam,
+    ];
+
+    /// The name in the settings file.
+    pub fn name(self) -> &'static str {
+        match self {
+            SkipButtonStyle::Skin => "skin",
+            SkipButtonStyle::Lazer => "lazer",
+            SkipButtonStyle::Slam => "slam",
+        }
+    }
+
+    /// The value called `name`.
+    pub fn from_name(name: &str) -> Option<SkipButtonStyle> {
+        SkipButtonStyle::ALL.into_iter().find(|s| s.name() == name)
+    }
+
+    /// The gameplay side's style.
+    pub fn play(self) -> slam_play::skip::SkipStyle {
+        match self {
+            SkipButtonStyle::Skin => slam_play::skip::SkipStyle::Skin,
+            SkipButtonStyle::Lazer => slam_play::skip::SkipStyle::Lazer,
+            SkipButtonStyle::Slam => slam_play::skip::SkipStyle::Slam,
+        }
     }
 }
 

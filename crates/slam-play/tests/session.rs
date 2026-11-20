@@ -656,7 +656,12 @@ fn ticks_and_frames_do_not_allocate() {
     track.reserve(16);
     let mut sink = Sink::default();
     let mut session = session(&map, &track);
-    let events = events(&map, session.start_time(), T0);
+    let mut events = events(&map, session.start_time(), T0);
+    // The smoke key held through most of the play (ADR-0159).
+    let (first, last) = (events[0].time_ns, events[events.len() - 1].time_ns);
+    events.push(smoke_key(first + 1, true));
+    events.push(smoke_key(first + (last - first) * 3 / 4, false));
+    events.sort_by_key(|e| e.time_ns);
     // On to the results.
     let end = end_ns(&map, session.start_time()) + 1_100 * MS;
     let mut snapshot = PlaySnapshot::default();
@@ -668,6 +673,8 @@ fn ticks_and_frames_do_not_allocate() {
         cursor: piece,
         middle: piece,
         trail: piece,
+        smoke: piece,
+        ripple: piece,
         config: CursorSkinConfig {
             disjoint: false,
             ..CursorSkinConfig::default()
@@ -684,12 +691,16 @@ fn ticks_and_frames_do_not_allocate() {
     let mut batch = SpriteBatch::with_capacity(
         4096 + MAX_CURSOR_SPRITES
             + slam_play::resume::MAX_TARGET_SPRITES
-            + slam_play::hit_error::MAX_HIT_ERROR_SPRITES,
+            + slam_play::hit_error::MAX_HIT_ERROR_SPRITES
+            + slam_play::smoke::MAX_SMOKE_POINTS
+            + slam_play::ripple::MAX_RIPPLE_SPRITES,
     );
+    view.ripples = true;
     let mut bodies = SliderBodies::new();
     let mut drawn = 0;
     let mut bodies_drawn = 0;
     let mut follow_points_drawn = 0;
+    let mut smoke_points = 0;
     // The HUD's glyphs are only requested here: without a device they stay pending.
     let registry = Arc::new(FontRegistry::with_builtin());
     let mut glyphs = glyph_atlas(Arc::clone(&registry), &GlyphAtlasConfig::new(LIMITS)).unwrap();
@@ -757,6 +768,7 @@ fn ticks_and_frames_do_not_allocate() {
                 .push_text(&mut text, &snapshot, now, &mut glyphs, &textures.hud)
                 .pending;
             view.push_cursor(&mut batch, &layout(), &snapshot, now + MS / 2, &textures);
+            smoke_points = smoke_points.max(view.smoke.point_count());
             drawn += snapshot.circles.as_slice().len();
             follow_points_drawn += view
                 .follow_points
@@ -769,6 +781,8 @@ fn ticks_and_frames_do_not_allocate() {
     assert!(drawn > 0);
     assert!(bodies_drawn > 0);
     assert!(follow_points_drawn > 0);
+    assert!(smoke_points > 0, "no smoke");
+    assert!(snapshot.ripples.written() > 0, "no ripples");
     assert!(pending > 0);
     assert!(snapshot.hud.score > 0);
     assert_eq!(hud.texts()[0], format!("{:06}", snapshot.hud.score));
@@ -902,6 +916,8 @@ fn view(map: &Beatmap) -> PlayView {
         ),
         cursor: CursorView::default(),
         resume: slam_play::resume::ResumeView::default(),
+        smoke: slam_play::smoke::SmokeView::new(),
+        ripples: false,
     }
 }
 
@@ -1113,11 +1129,15 @@ fn a_long_lead_in_is_skipped_to_a_second_before_gameplay_starts() {
     // The first object at 1000 ms: gameplay starts at −1000, the skip goes to −2000.
     assert_eq!(session(&map, &track).start_time(), -9000.0);
 
-    let (ticks, track) = run_presses(&map, &[space(T0 + 100 * MS)], T0 + 200 * MS);
+    let (ticks, track) = run_presses(&map, &[space(T0 + 100 * MS)], T0 + 300 * MS);
     // Playing ticks start at `T0` + 1 ms; the press is on the 100th.
     assert!(ticks[..99].iter().all(|&(_, available)| available));
-    // The tick with the press still runs on the old clock; the next runs from the target.
-    let (time, available) = ticks[100];
+    // The picture and music dip for 100 ms on the old clock (ADR-0160); the tick after
+    // the seek runs from the target.
+    assert!(ticks[99..200].iter().all(|&(_, available)| !available));
+    let (time, _) = ticks[199];
+    assert!(time < -8000.0, "{time}");
+    let (time, available) = ticks[200];
     assert!((time - (-2000.0 + 1.0)).abs() < 0.1, "{time}");
     assert!(!available);
     // Track frame 0 plays when time reaches 0: 2 s after the skip.
@@ -1129,9 +1149,55 @@ fn a_long_lead_in_is_skipped_to_a_second_before_gameplay_starts() {
             Command::PlayAt(9000 * 48),
             Command::Pause,
             Command::Seek(0),
-            Command::PlayAt(2100 * 48),
+            Command::PlayAt(2200 * 48),
         ]
     );
+}
+
+/// The player's skip dips the music out, seeks, and brings it back (ADR-0160); the
+/// snapshot tells the draw side when the dip began.
+#[test]
+fn a_skip_dips_the_music_around_its_seek() {
+    let map = long_lead_in();
+    let track = Track::default();
+    let mut session = session(&map, &track);
+    let mut track = track;
+    let mut sink = Sink::default();
+    let mut snapshot = PlaySnapshot::default();
+    let mut dips = Vec::new();
+    let mut now = T0 - 10 * MS;
+    while now <= T0 + 500 * MS {
+        let presses: &[InputEvent] = if now == T0 + 100 * MS {
+            &[space(T0 + 100 * MS)]
+        } else {
+            &[]
+        };
+        let (output, music) = reports(now, &track);
+        session.tick(
+            now,
+            presses,
+            output,
+            music,
+            &mut track,
+            &mut sink,
+            &mut snapshot,
+        );
+        dips.push((now, snapshot.skip_dip_ns));
+        now += MS;
+    }
+    let fades: Vec<f32> = track
+        .adjustments
+        .iter()
+        .filter_map(|a| match a {
+            TrackAdjustment::Fade { volume, .. } => Some(*volume),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(fades, [0.0, 1.0]);
+    let dipping: Vec<_> = dips.iter().filter(|(_, d)| d.is_some()).collect();
+    assert!(dipping.iter().all(|(_, d)| *d == Some(T0 + 100 * MS)));
+    // From the press to the end of the fade in.
+    assert_eq!(dipping.len(), 350);
 }
 
 #[test]
@@ -1235,7 +1301,8 @@ fn long_lead_in() -> Beatmap {
 #[test]
 fn the_skip_period_ends_a_second_before_gameplay_starts() {
     let map = long_lead_in();
-    // Tick time −2001: skipped to −2000, the track plays 2 s later.
+    // Tick time −2001: too near the target for the dip (ADR-0160), skipped to −2000 at
+    // once, the track plays 2 s later.
     let (_, track) = run_presses(&map, &[space(T0 + 6999 * MS)], T0 + 7100 * MS);
     assert_eq!(track.commands.last(), Some(&Command::PlayAt(8999 * 48)));
     // Tick time −2000: no skip.
@@ -1264,7 +1331,7 @@ fn a_skip_lands_on_its_target_with_offsets() {
     let track = Track::default();
     let session = session_with(&map, &track, offsets);
     let (ticks, track, _) =
-        run_presses_with(session, track, &[space(T0 + 100 * MS)], T0 + 200 * MS);
+        run_presses_with(session, track, &[space(T0 + 100 * MS)], T0 + 300 * MS);
     // Game time 27000 is track time 27015.
     assert_eq!(track.commands.last(), Some(&Command::Seek(27015 * 48)));
     assert!(!ticks[99].1);
@@ -1280,12 +1347,12 @@ fn a_refused_skip_is_tried_again_on_the_next_tick() {
     };
     let session = session(&map, &track);
     let (ticks, track, session) =
-        run_presses_with(session, track, &[space(T0 + 100 * MS)], T0 + 200 * MS);
+        run_presses_with(session, track, &[space(T0 + 100 * MS)], T0 + 300 * MS);
     assert_eq!(session.clock_errors(), 1);
-    assert!(!ticks[99].1 && !ticks[100].1);
+    assert!(!ticks[199].1 && !ticks[200].1);
     // Retried 1 ms later: the clock runs again from −2000.
-    assert_eq!(track.commands.last(), Some(&Command::PlayAt(2101 * 48)));
-    let (time, _) = ticks[150];
+    assert_eq!(track.commands.last(), Some(&Command::PlayAt(2201 * 48)));
+    let (time, _) = ticks[250];
     assert!((time - (-2000.0 + 50.0)).abs() < 0.1, "{time}");
 }
 
@@ -2158,6 +2225,26 @@ fn the_health_curve_follows_the_play_and_restarts() {
     assert!(d.session.health_curve().iter().all(|&h| h == 1.0));
 }
 
+/// With no hold-to-confirm delay, quick retry restarts in the tick of the press, and once
+/// per press however long it is held.
+#[test]
+fn a_zero_hold_restarts_at_the_press_once() {
+    let map = beatmap();
+    let mut d = Driver::new(&map, mods(vec![slam_osu::mods::Mod::NoFail]));
+    d.session.set_hold_ns(0);
+    d.run_to(2500.0);
+    let press = d.key(GRAVE, true);
+    d.tick(&[press]);
+    assert_eq!(d.snapshot.restarts, 1);
+    d.run(500);
+    assert_eq!(d.snapshot.restarts, 1);
+    let release = d.key(GRAVE, false);
+    d.tick(&[release]);
+    let press = d.key(GRAVE, true);
+    d.tick(&[press]);
+    assert_eq!(d.snapshot.restarts, 2);
+}
+
 #[test]
 fn a_quick_restart_skips_the_intro() {
     let map = delayed(29000.0);
@@ -2583,8 +2670,12 @@ fn hud_updates_and_frames_do_not_allocate() {
     hud.request_glyphs(&mut glyphs);
     let mut text = SpriteBatch::with_capacity(256);
     let mut batch = SpriteBatch::with_capacity(256);
+    let mut shapes =
+        slam_render::shape::ShapeBatch::with_capacity(2 * slam_play::skip::MAX_SKIP_SHAPES);
+    let theme = slam_ui::theme::Theme::default();
     let mut snapshot = PlaySnapshot {
         skip_available: true,
+        skip_dip_ns: Some(50 * MS),
         state: PlayState::Resuming,
         ..PlaySnapshot::default()
     };
@@ -2620,6 +2711,22 @@ fn hud_updates_and_frames_do_not_allocate() {
             snapshot.offset_panel.changed(offset, 0);
             batch.clear();
             text.clear();
+            shapes.clear();
+            // Both shaped styles of the skip button (ADR-0160).
+            hud.animate(&snapshot, 100 * MS);
+            for style in [
+                slam_play::skip::SkipStyle::Lazer,
+                slam_play::skip::SkipStyle::Slam,
+            ] {
+                hud.set_skip_style(style);
+                hud.push_skip_shapes(
+                    &mut shapes,
+                    &snapshot,
+                    &HudTextures::default(),
+                    Some(WHITE),
+                    &theme,
+                );
+            }
             hud.push_shapes(
                 &mut batch,
                 &snapshot,
@@ -2637,9 +2744,9 @@ fn hud_updates_and_frames_do_not_allocate() {
             );
         }
     });
-    // Health bar (two), skip button and offset panel; the resume target goes with the
-    // cursor.
-    assert_eq!(batch.len(), 4);
+    // Health bar (two) and offset panel; the skip button is a shape (ADR-0160), the resume
+    // target goes with the cursor.
+    assert_eq!(batch.len(), 3);
     hud.update(1280.0, 720.0, &HudValues::default(), -0.0001);
     assert_eq!(hud.offset_text(), "0 мс");
     hud.update(1280.0, 720.0, &HudValues::default(), 12.5);
@@ -3306,9 +3413,55 @@ fn space_in_the_pause_menu_does_not_skip_the_intro() {
     assert_eq!(d.state(), PlayState::Playing);
     d.run(10);
     assert!(!d.track.commands[commands..].contains(&Command::Seek(27000 * 48)));
-    // Space while playing still skips.
+    // Space while playing still skips, after the dip.
     d.tap(SPACE);
-    d.run(5);
+    d.run(105);
+    assert!(d.track.commands.contains(&Command::Seek(27000 * 48)));
+}
+
+/// A quick retry in the middle of the skip's dip brings the music back at once and drops
+/// the dip (ADR-0160).
+#[test]
+fn a_retry_during_the_skips_dip_brings_the_music_back() {
+    let map = delayed(29000.0);
+    let mut d = Driver::new(&map, ModSet::default());
+    d.run(100);
+    d.tap(SPACE);
+    d.run(50);
+    assert!(d.snapshot.skip_dip_ns.is_some());
+    d.hold(None, GRAVE, 200);
+    assert_eq!(d.snapshot.restarts, 1);
+    assert_eq!(d.snapshot.skip_dip_ns, None);
+    let last_fade = d.track.adjustments.iter().rev().find_map(|a| match a {
+        TrackAdjustment::Fade {
+            volume,
+            duration_ms,
+            ..
+        } => Some((*volume, *duration_ms)),
+        _ => None,
+    });
+    assert_eq!(last_fade, Some((1.0, 0.0)));
+}
+
+/// A fade that does not queue is tried again: the music must not stay silent (ADR-0160).
+#[test]
+fn a_refused_fade_is_tried_again() {
+    let map = delayed(29000.0);
+    let mut d = Driver::new(&map, ModSet::default());
+    d.run(100);
+    d.track.refuse_adjust = true;
+    d.tap(SPACE);
+    d.run(400);
+    let fades: Vec<f32> = d
+        .track
+        .adjustments
+        .iter()
+        .filter_map(|a| match a {
+            TrackAdjustment::Fade { volume, .. } => Some(*volume),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(fades, [0.0, 1.0]);
     assert!(d.track.commands.contains(&Command::Seek(27000 * 48)));
 }
 
@@ -4403,6 +4556,62 @@ fn autoplay_plays_the_map_perfectly_without_input() {
         // The game moved the cursor.
         assert!(cursors.windows(2).any(|w| w[0] != w[1]));
     }
+}
+
+/// The default binding of the smoke key, pressed or released at `time_ns`.
+fn smoke_key(time_ns: u64, down: bool) -> InputEvent {
+    let scancode = Bindings::default()
+        .as_slice()
+        .iter()
+        .find_map(|b| match b.input {
+            slam_play::input::Input::Key(scancode) if b.action == Actions::SMOKE => Some(scancode),
+            _ => None,
+        })
+        .unwrap();
+    InputEvent {
+        time_ns,
+        kind: InputKind::Key { scancode, down },
+    }
+}
+
+/// Smoke under Autopilot follows the cursor Autopilot moves: each press and release is
+/// placed on the path the snapshot carries, where it had got to by the event's tick
+/// (ADR-0159).
+#[test]
+fn smoke_events_are_placed_on_the_path_the_snapshot_carries() {
+    let map = beatmap();
+    let track = Track::default();
+    let session = session_with_mods(
+        &map,
+        &track,
+        Offsets::default(),
+        mods(vec![
+            slam_osu::mods::Mod::Autopilot,
+            slam_osu::mods::Mod::NoFail,
+        ]),
+    );
+    let end = end_ns(&map, session.start_time());
+    let span = end - T0;
+    let keys = [
+        smoke_key(T0 + span / 4, true),
+        smoke_key(T0 + span / 2, false),
+        smoke_key(T0 + span * 5 / 8, true),
+        smoke_key(T0 + span * 3 / 4, false),
+    ];
+    let mut seen = 0;
+    let mut placed = 0;
+    let mut ripples = 0;
+    run_events(&keys, session, track, MS, end, |s| {
+        for event in s.smoke.since(seen) {
+            assert_eq!(event.path_end, s.cursor_path.written());
+            placed += 1;
+        }
+        seen = s.smoke.written();
+        ripples = s.ripples.written();
+    });
+    assert_eq!(placed, 4);
+    // Smoke presses ripple too.
+    assert_eq!(ripples, 2);
 }
 
 /// Autopilot moves the cursor; without presses nothing is hit.

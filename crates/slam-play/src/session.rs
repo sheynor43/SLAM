@@ -7,7 +7,9 @@
 //! only [`PlaySnapshot::is_break_time`] for the background dim; the HUD's numbers go out in
 //! [`HudValues`].
 
-use slam_audio::{ClockError, GameClock, MusicSnapshot, PositionSnapshot, TrackControl};
+use slam_audio::{
+    ClockError, GameClock, MusicSnapshot, PositionSnapshot, TrackAdjustment, TrackControl,
+};
 use slam_input::{InputEvent, InputKind, MouseButton};
 use slam_osu::breaks::BreakTracker;
 use slam_osu::hit_events::{HitErrorSummary, HitEvents};
@@ -56,15 +58,18 @@ use crate::menu_overlay::{
 use crate::offset::{self, OffsetPanel};
 use crate::playfield::PlayfieldLayout;
 use crate::resume::ResumeView;
+use crate::ripple::RippleRing;
 use crate::service::{
     COUNTDOWN_IMAGES, COUNTDOWN_STEPS, ServiceState, ServiceTextures, ServiceTracker,
 };
 use crate::shake::ObjectShakes;
+use crate::skip::Dip;
 use crate::sliders::{
     AnimationSprites, BallStyle, HitSliders, LiveSliders, MAX_ANIMATION_FRAMES,
     MAX_FOLLOW_CIRCLE_AREA_SIZE, ObjectTextures, SliderBodies, SliderTextures, push_approaches,
     push_objects,
 };
+use crate::smoke::{SmokeEvents, SmokeFrame, SmokeTracker, SmokeView};
 use crate::song_progress::ring_image;
 use crate::spinners::{HitSpinners, LiveSpinners, SpinnerSpm, SpinnerTextures};
 use crate::time::Offsets;
@@ -283,12 +288,22 @@ pub struct PlaySnapshot {
     pub cursor_path: CursorPath,
     /// When the cursor last expanded and contracted.
     pub cursor_expand: ExpandTimes,
+    /// The smoke key's presses and releases (ADR-0159).
+    pub smoke: SmokeEvents,
+    /// The presses that leave ripples (ADR-0159).
+    pub ripples: RippleRing,
     /// The judgements that show popups (ADR-0043).
     pub judgements: JudgementRing,
     /// The judgements the hit error meter shows.
     pub hit_errors: HitErrorRing,
     /// Whether the intro can be skipped now.
     pub skip_available: bool,
+    /// Engine time the player's skip was pressed while its dip runs (ADR-0160).
+    pub skip_dip_ns: Option<u64>,
+    /// How much of the skip period is left, 1 to 0 (lazer's bar).
+    pub skip_progress: f32,
+    /// Whether the pointer is over the skip button.
+    pub skip_hover: bool,
     /// Whether gameplay is in a break (lazer's `IsBreakTime`): the background dims less.
     pub is_break_time: bool,
     /// Health, 0..=1.
@@ -337,9 +352,14 @@ impl Default for PlaySnapshot {
             cursor: Vec2::ZERO,
             cursor_path: CursorPath::default(),
             cursor_expand: ExpandTimes::default(),
+            smoke: SmokeEvents::default(),
+            ripples: RippleRing::default(),
             judgements: JudgementRing::default(),
             hit_errors: HitErrorRing::default(),
             skip_available: false,
+            skip_dip_ns: None,
+            skip_progress: 0.0,
+            skip_hover: false,
             // Lazer's `BreakTracker` starts in a break.
             is_break_time: true,
             health: 1.0,
@@ -418,12 +438,20 @@ pub struct PlaySession {
     /// The skip button's layout element and `play-skip` frame size (ADR-0141); `None`: only
     /// the skip keys skip.
     skip_button: Option<(LayoutElement, Option<[f32; 2]>)>,
+    /// How the skip button looks: lazer's band takes clicks where the layout does not say
+    /// (ADR-0160).
+    skip_style: crate::skip::SkipStyle,
     /// The mouse's last position in window points, from the events.
     pointer: Option<Vec2>,
     /// Skip the intro as soon as it can be (a quick restart).
     auto_skip: bool,
     /// A seek the clock still has to take; retried every tick until it does.
     pending_seek: Option<f64>,
+    /// The player's skip under way: the picture and music dip around its seek (ADR-0160).
+    skip_dip: Option<Dip>,
+    /// A fade of the track that did not queue, tried again each tick: the volume must not
+    /// stay down (ADR-0160).
+    pending_fade: Option<(f32, u64)>,
     /// Whether the clock should run; commands that fail are retried every tick.
     run: bool,
     started: bool,
@@ -437,6 +465,8 @@ pub struct PlaySession {
     spm: SpinnerSpm,
     /// The cursor's expansion by the left and right buttons.
     expand: ExpandTracker,
+    smoke: SmokeTracker,
+    ripples: RippleRing,
     log: JudgementLog,
     /// Which judgements show popups.
     popup_targets: PopupTargets,
@@ -601,6 +631,9 @@ impl PlaySession {
             pointer: None,
             auto_skip: false,
             pending_seek: None,
+            skip_dip: None,
+            pending_fade: None,
+            skip_style: crate::skip::SkipStyle::default(),
             run: false,
             started: false,
             phase: Phase::Playing,
@@ -617,6 +650,8 @@ impl PlaySession {
             rules,
             spm: SpinnerSpm::new(beatmap),
             expand: ExpandTracker::default(),
+            smoke: SmokeTracker::default(),
+            ripples: RippleRing::default(),
             log,
             popup_targets: PopupTargets::new(beatmap, mods),
             popups: JudgementRing::default(),
@@ -967,15 +1002,50 @@ impl PlaySession {
             // The skip period is checked at the tick's time; lazer checks the button enabled
             // by the previous frame, which differs only on the period's last millisecond.
             if (skip_requested || self.auto_skip)
+                && self.skip_dip.is_none()
                 && let Some(target) = self.skip.target(current, false)
             {
-                // Lazer stops the samples by disabling their playback around the seek.
-                // Nothing loops before gameplay starts; a stop that did not queue is not
-                // retried.
-                self.sounds.stop_all(sink);
-                self.pending_seek = Some(target);
+                if self.auto_skip || target - current < crate::skip::DIP_MIN_LEAD_MS {
+                    // A quick restart's skip is at once: the restart is the transition. So
+                    // is a skip too near its target for the dip to end before it: the
+                    // seek must not go back in time.
+                    // Lazer stops the samples by disabling their playback around the seek.
+                    // Nothing loops before gameplay starts; a stop that did not queue is
+                    // not retried.
+                    self.sounds.stop_all(sink);
+                    self.pending_seek = Some(target);
+                } else {
+                    // The player's skip seeks once the picture and music have dipped.
+                    self.skip_dip = Some(Dip {
+                        started_ns: now_ns,
+                        target,
+                        seeked: false,
+                    });
+                    self.fade(track, 0.0, crate::skip::DIP_OUT_NS);
+                }
             }
             self.auto_skip = false;
+        }
+        if let Some((volume, duration_ns)) = self.pending_fade {
+            self.fade(track, volume, duration_ns);
+        }
+        if let Some(mut dip) = self.skip_dip {
+            if self.phase == Phase::Exited || restart || menu_restart {
+                // Cut short: the music comes back at once.
+                self.skip_dip = None;
+                self.fade(track, 1.0, 0);
+            } else if dip.seek_due(now_ns) {
+                dip.seeked = true;
+                self.skip_dip = Some(dip);
+                // Never back in time: past the target, the skip has nothing left to do.
+                if current < dip.target {
+                    self.sounds.stop_all(sink);
+                    self.pending_seek = Some(dip.target);
+                }
+                self.fade(track, 1.0, crate::skip::DIP_IN_NS);
+            } else if dip.is_over(now_ns) {
+                self.skip_dip = None;
+            }
         }
 
         // The clock moves on the next tick at the earliest: a seek sent now hides the skip.
@@ -1016,8 +1086,11 @@ impl PlaySession {
         snapshot.cursor_expand = self.expand.times();
         snapshot.skip_available = self.phase == Phase::Playing
             && !seek_sent
+            && self.skip_dip.is_none()
             && !self.clock.is_seeking()
             && self.skip.is_available(current);
+        snapshot.skip_progress = self.skip.progress(current) as f32;
+        snapshot.skip_hover = snapshot.skip_available && self.pointer_on_skip_button();
         snapshot.is_break_time = self.is_break_time(self.last_time);
         snapshot.offset_panel = self.offset_panel;
         self.fill(snapshot, now_ns);
@@ -1081,6 +1154,14 @@ impl PlaySession {
             .map(|e| (e.clone(), skin_size));
     }
 
+    /// Sets how the skip button looks (ADR-0160), already resolved: [`SkipStyle::Skin`]
+    /// only with the skin's `play-skip`. Lazer's band takes clicks across the window.
+    ///
+    /// [`SkipStyle::Skin`]: crate::skip::SkipStyle::Skin
+    pub fn set_skip_style(&mut self, style: crate::skip::SkipStyle) {
+        self.skip_style = style;
+    }
+
     /// Whether `event` presses the skip button: a press of the left or right mouse button,
     /// or of an input bound to a gameplay button, with the pointer over it, while the intro
     /// can be skipped (ADR-0141). Unlike McOsu, any press counts (not only the first of
@@ -1111,13 +1192,31 @@ impl PlaySession {
     }
 
     fn pointer_on_skip_button(&self) -> bool {
-        let (Some((element, skin_size)), Some(at)) = (&self.skip_button, self.pointer) else {
+        let Some(at) = self.pointer else {
             return false;
         };
         let [width, height] = self.input.layout().window_size();
-        let [left, top, right, bottom] =
-            crate::hud::skip_button_area(element, width, height, *skin_size);
+        let [left, top, right, bottom] = match (self.skip_style, &self.skip_button) {
+            (crate::skip::SkipStyle::Lazer, _) => {
+                let unit = slam_ui::hud_layout::unit_scale(width, height)
+                    / crate::hit_error::LAZER_PIXELS_PER_UNIT;
+                crate::skip::lazer_area(width, height, unit)
+            }
+            (crate::skip::SkipStyle::Slam, Some((element, _))) => {
+                crate::hud::skip_button_area(element, width, height, None)
+            }
+            (crate::skip::SkipStyle::Skin, Some((element, skin_size))) => {
+                crate::hud::skip_button_area(element, width, height, *skin_size)
+            }
+            (_, None) => return false,
+        };
         at.x >= left && at.x <= right && at.y >= top && at.y <= bottom
+    }
+
+    /// Sets how long quick retry and quick exit are held to fire, in nanoseconds (lazer's
+    /// `UIHoldActivationDelay`); 0 fires them at the press.
+    pub fn set_hold_ns(&mut self, hold_ns: u64) {
+        self.hotkeys.set_hold_ns(hold_ns);
     }
 
     /// Turns the countdown, warning arrows, their sounds and the break display on and off
@@ -1130,6 +1229,22 @@ impl PlaySession {
     /// the skip button (ADR-0141).
     pub fn set_pointer(&mut self, at: Vec2) {
         self.pointer = Some(at);
+    }
+
+    /// Fades the track to `volume` over `duration_ns`, again next tick if the command does
+    /// not queue (ADR-0160).
+    fn fade(&mut self, track: &mut impl TrackControl, volume: f32, duration_ns: u64) {
+        self.pending_fade =
+            (!fade_track(track, volume, duration_ns)).then_some((volume, duration_ns));
+    }
+
+    /// The cursor path gameplay follows: the automation mod's when it moves the cursor
+    /// (ADR-0153), else the player's.
+    fn cursor_path(&self) -> &CursorPath {
+        match self.auto.as_deref().filter(|auto| auto.moves_cursor()) {
+            Some(auto) => auto.path(),
+            None => self.input.path(),
+        }
     }
 
     /// Whether gameplay takes input and time: playing, failing or passed.
@@ -1145,6 +1260,8 @@ impl PlaySession {
     /// popups. A step of an automation mod may make several (ADR-0153).
     fn rules_step(&mut self, step: &StepInput<'_>, sink: &mut impl VoiceSink) {
         self.expand.apply(step.events);
+        self.smoke.apply(step.events);
+        crate::ripple::record(&mut self.ripples, step.events);
         // Ported from osu!lazer 2026.1005.0-lazer: osu.Game/Screens/Play/Player.cs (LoadComponents)
         // The health processor is a frame-stable component ahead of the playfield: it drains
         // first, then takes the step's judgements as they come.
@@ -1251,6 +1368,11 @@ impl PlaySession {
                 self.auto = Some(auto);
             }
         }
+        // The smoke of the tick's steps begins and ends where the cursor path the snapshot
+        // carries has got to (ADR-0159). Autoplay's substeps share it: its frames never
+        // press smoke; if an automation ever does, settle after each substep.
+        let path_end = self.cursor_path().written();
+        self.smoke.end_tick(path_end);
         // Ported from McOsu db2add2: src/App/Osu/OsuBeatmap.cpp (keyPressed1, keyPressed2)
         // Ported from osu!lazer 2026.1005.0-lazer: osu.Game/Screens/Play/Player.cs (onBreakTimeChanged)
         // Presses count while playing, outside breaks (lazer's `IsBreakTime`, the intro
@@ -1551,6 +1673,8 @@ impl PlaySession {
         self.rules = self.initial.rules.clone();
         self.spm.reset();
         self.expand.reset();
+        self.smoke.restart();
+        self.ripples.restart();
         self.health_graph.restart();
         self.health = self.initial.health.clone();
         self.score = self.initial.score.clone();
@@ -1677,6 +1801,7 @@ impl PlaySession {
             .resume_cursor_path
             .clone_from(self.input.window_path());
         snapshot.resumes = self.resumes;
+        snapshot.skip_dip_ns = None;
         snapshot.retry_progress = 0.0;
         snapshot.exit_progress = 0.0;
         snapshot.restarts = self.restarts;
@@ -1685,6 +1810,8 @@ impl PlaySession {
         snapshot.fail = None;
         snapshot.offset_panel = self.offset_panel;
         snapshot.judgements.clone_from(&self.popups);
+        snapshot.smoke.clone_from(self.smoke.events());
+        snapshot.ripples.clone_from(&self.ripples);
         snapshot.hit_errors.clone_from(&self.hit_errors);
         snapshot.circles.clear();
         snapshot.sliders.clear();
@@ -1709,12 +1836,15 @@ impl PlaySession {
             .resume_cursor_path
             .clone_from(self.input.window_path());
         snapshot.resumes = self.resumes;
+        snapshot.skip_dip_ns = self.skip_dip.map(|dip| dip.started_ns);
         snapshot.retry_progress = self.hotkeys.retry_progress(now_ns);
         snapshot.exit_progress = self.hotkeys.exit_progress(now_ns);
         snapshot.restarts = self.restarts;
         snapshot.menu = self.menu.snapshot();
         snapshot.fail = self.fail;
         snapshot.judgements.clone_from(&self.popups);
+        snapshot.smoke.clone_from(self.smoke.events());
+        snapshot.ripples.clone_from(&self.ripples);
         snapshot.hit_errors.clone_from(&self.hit_errors);
         snapshot.circles.capture(&self.rules);
         snapshot.sliders.capture(&self.rules);
@@ -1760,6 +1890,9 @@ enum Element {
     Cursor,
     CursorMiddle,
     CursorTrail,
+    /// `cursor-smoke` and `cursor-ripple` of the first skin with them (ADR-0159).
+    CursorSmoke,
+    CursorRipple,
     Digit(u8),
     /// A legacy spinner texture.
     Spinner(SpinnerPart),
@@ -1818,7 +1951,7 @@ impl SpinnerPart {
     }
 }
 
-const ELEMENTS: [Element; 36] = [
+const ELEMENTS: [Element; 38] = [
     Element::Circle,
     Element::Overlay,
     Element::Approach,
@@ -1833,6 +1966,8 @@ const ELEMENTS: [Element; 36] = [
     Element::Cursor,
     Element::CursorMiddle,
     Element::CursorTrail,
+    Element::CursorSmoke,
+    Element::CursorRipple,
     Element::Digit(0),
     Element::Digit(1),
     Element::Digit(2),
@@ -2074,6 +2209,9 @@ impl PlayTextures {
                 | Element::TailCircle
                 | Element::TailOverlay => continue,
                 Element::ScorePoint => "sliderscorepoint".to_owned(),
+                // Ported from osu!lazer 2026.1005.0-lazer: osu.Game.Rulesets.Osu/Skinning/Legacy/OsuLegacySkinTransformer.cs (CursorSmoke, CursorRipple)
+                Element::CursorSmoke => "cursor-smoke".to_owned(),
+                Element::CursorRipple => "cursor-ripple".to_owned(),
                 Element::ReverseArrow => "reversearrow".to_owned(),
                 Element::BallNd
                 | Element::BallSpec
@@ -2319,6 +2457,12 @@ impl PlayTextures {
                 }
                 Element::CursorTrail => {
                     frame.cursor.trail = Some(SkinSprite::new(region, r.scale, f32::MAX))
+                }
+                Element::CursorSmoke => {
+                    frame.cursor.smoke = Some(SkinSprite::new(region, r.scale, f32::MAX))
+                }
+                Element::CursorRipple => {
+                    frame.cursor.ripple = Some(SkinSprite::new(region, r.scale, f32::MAX))
                 }
                 Element::Digit(d) => {
                     frame.circles.digits[usize::from(d)] = Some(SkinSprite::digit(region, r.scale))
@@ -2802,6 +2946,10 @@ pub struct PlayView {
     pub judgements: JudgementView,
     pub cursor: CursorView,
     pub resume: ResumeView,
+    /// The smoke of the smoke key (ADR-0159).
+    pub smoke: SmokeView,
+    /// Whether presses leave ripples (lazer's `ShowCursorRipples`, ADR-0159).
+    pub ripples: bool,
 }
 
 impl PlayView {
@@ -2831,6 +2979,32 @@ impl PlayView {
         }
     }
 
+    /// Writes the ripples of `snapshot` drawn at engine time `now_ns` as lazer's default
+    /// rings when they are on and the skin has no `cursor-ripple` (ADR-0159). Allocation-free
+    /// once `shapes` has room for [`MAX_RIPPLE_SPRITES`](crate::ripple::MAX_RIPPLE_SPRITES).
+    pub fn push_ripple_rings(
+        &self,
+        shapes: &mut slam_render::shape::ShapeBatch,
+        layout: &PlayfieldLayout,
+        snapshot: &PlaySnapshot,
+        now_ns: u64,
+        textures: &FrameTextures,
+    ) {
+        if !self.ripples || textures.cursor.ripple.is_some() || snapshot.state == PlayState::Waiting
+        {
+            return;
+        }
+        let Some(white) = textures.white else { return };
+        crate::ripple::push_rings(
+            shapes,
+            layout,
+            &snapshot.ripples,
+            snapshot.time_at(now_ns),
+            self.cursor.scale().scale,
+            white,
+        );
+    }
+
     /// Writes the playfield's sprites of `snapshot` drawn at engine time `now_ns` on a
     /// surface laid out by `layout`, and the slider bodies to draw between them into `bodies`
     /// (cleared first); the cursor goes on top of the HUD with [`PlayView::push_cursor`].
@@ -2850,6 +3024,21 @@ impl PlayView {
             let [width, height] = layout.window_size();
             let fail = FailFrame::new(snapshot.fail, time, now_ns, width, height);
             let fail = fail.as_ref();
+            // Ported from osu!lazer 2026.1005.0-lazer: osu.Game.Rulesets.Osu/UI/OsuPlayfield.cs (OsuPlayfield)
+            // The smoke is under the spinners and every other object.
+            let smoke = textures.cursor.smoke.as_ref();
+            self.smoke.update(
+                &SmokeFrame {
+                    events: &snapshot.smoke,
+                    path: &snapshot.cursor_path,
+                    time,
+                    restarts: snapshot.restarts,
+                },
+                smoke,
+            );
+            if let Some(smoke) = smoke {
+                self.smoke.push(batch, layout, time, smoke);
+            }
             self.spinners.push(
                 batch,
                 layout,
@@ -2918,7 +3107,26 @@ impl PlayView {
             now_ns,
             visible: snapshot.state != PlayState::Resuming,
         };
-        self.cursor.push(batch, layout, &frame, &textures.cursor);
+        let ripples = self
+            .ripples
+            .then_some(())
+            .and(textures.cursor.ripple.as_ref());
+        let cursor_scale = self.cursor.scale().scale;
+        // Ported from osu!lazer 2026.1005.0-lazer: osu.Game.Rulesets.Osu/UI/Cursor/OsuCursorContainer.cs (load)
+        // The ripples are between the trail and the cursor.
+        self.cursor
+            .push_with(batch, layout, &frame, &textures.cursor, |batch| {
+                if let Some(texture) = ripples {
+                    crate::ripple::push_sprites(
+                        batch,
+                        layout,
+                        &snapshot.ripples,
+                        frame.time,
+                        cursor_scale,
+                        texture,
+                    );
+                }
+            });
         self.push_resume(batch, layout, snapshot, now_ns, textures);
     }
 
@@ -2941,6 +3149,19 @@ impl PlayView {
             &textures.cursor,
         );
     }
+}
+
+/// Moves the track's fade to `volume` over `duration_ns` (ADR-0160). Returns whether the
+/// command queued.
+fn fade_track(track: &mut impl TrackControl, volume: f32, duration_ns: u64) -> bool {
+    track
+        .adjust(&[TrackAdjustment::Fade {
+            volume,
+            delay_ms: 0.0,
+            duration_ms: duration_ns as f64 / 1e6,
+            easing: slam_audio::Easing::Out,
+        }])
+        .is_ok()
 }
 
 #[cfg(test)]
