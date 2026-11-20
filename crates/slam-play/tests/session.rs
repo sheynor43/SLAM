@@ -2143,6 +2143,26 @@ fn holding_quick_retry_restarts_from_the_start() {
     assert_eq!(d.session.log().events().len(), 1);
 }
 
+/// With no hold-to-confirm delay, quick retry restarts in the tick of the press, and once
+/// per press however long it is held.
+#[test]
+fn a_zero_hold_restarts_at_the_press_once() {
+    let map = beatmap();
+    let mut d = Driver::new(&map, mods(vec![slam_osu::mods::Mod::NoFail]));
+    d.session.set_hold_ns(0);
+    d.run_to(2500.0);
+    let press = d.key(GRAVE, true);
+    d.tick(&[press]);
+    assert_eq!(d.snapshot.restarts, 1);
+    d.run(500);
+    assert_eq!(d.snapshot.restarts, 1);
+    let release = d.key(GRAVE, false);
+    d.tick(&[release]);
+    let press = d.key(GRAVE, true);
+    d.tick(&[press]);
+    assert_eq!(d.snapshot.restarts, 2);
+}
+
 #[test]
 fn a_quick_restart_skips_the_intro() {
     let map = delayed(29000.0);

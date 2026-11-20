@@ -1106,6 +1106,12 @@ impl PlaySession {
         at.x >= left && at.x <= right && at.y >= top && at.y <= bottom
     }
 
+    /// Sets how long quick retry and quick exit are held to fire, in nanoseconds (lazer's
+    /// `UIHoldActivationDelay`); 0 fires them at the press.
+    pub fn set_hold_ns(&mut self, hold_ns: u64) {
+        self.hotkeys.set_hold_ns(hold_ns);
+    }
+
     /// Turns the countdown, warning arrows, their sounds and the break display on and off
     /// (ADR-0142).
     pub fn set_service_options(&mut self, options: crate::service::ServiceOptions) {
