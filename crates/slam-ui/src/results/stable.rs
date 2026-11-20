@@ -1,0 +1,647 @@
+//! The results screen in osu!stable's look (ADR-0158): the pure layout of the skin's ranking
+//! elements, from the window size, the images' pixel sizes and the skin's settings. The
+//! application resolves its uploaded images into a [`StableSkin`]; [`lay_out`] hands every
+//! sprite of the screen to a sink, in drawing order, without allocating.
+//!
+//! Stable's screen is not in lazer, so the reference is McOsu's `OsuRankingScreen`
+//! (ADR-0150): a 640x480 design fitted into the window as 4:3, sizes in "osu pixels".
+
+use slam_render::atlas::UvRect;
+use slam_render::textures::TextureId;
+
+use super::{Rank, ResultsData, StatKind};
+
+/// Letter images, in [`GRADE_NAMES`] order.
+pub const GRADES: usize = 8;
+/// Hit icons, in [`HIT_NAMES`] order.
+pub const HITS: usize = 6;
+/// Characters of a font: the digits, then dot, percent and `x`.
+pub const GLYPHS: usize = 13;
+/// Mod icons, in [`MODS`] order.
+pub const MOD_COUNT: usize = 17;
+/// The most sprites [`lay_out`] hands out: the panel, the title, the letter, the labels,
+/// the perfect banner, the hit icons, the mods and the digits of the counters.
+pub const MAX_STABLE_SPRITES: usize = 192;
+
+/// Skin element names of the letters: `XH`, `SH`, `X`, `S`, `A`, `B`, `C`, `D`.
+pub const GRADE_NAMES: [&str; GRADES] = [
+    "ranking-XH",
+    "ranking-SH",
+    "ranking-X",
+    "ranking-S",
+    "ranking-A",
+    "ranking-B",
+    "ranking-C",
+    "ranking-D",
+];
+
+/// Skin element names of the hit icons: 300, 100, 50, 300g, 100k, miss.
+pub const HIT_NAMES: [&str; HITS] = ["hit300", "hit100", "hit50", "hit300g", "hit100k", "hit0"];
+
+/// The mod icons in the order stable draws them, with the acronyms that show each.
+// Ported from McOsu db2add2: src/App/Osu/OsuRankingScreen.cpp (draw)
+pub const MODS: [(&str, &[&str]); MOD_COUNT] = [
+    ("selection-mod-touchdevice", &["TD"]),
+    ("selection-mod-perfect", &["PF"]),
+    ("selection-mod-suddendeath", &["SD"]),
+    ("selection-mod-easy", &["EZ"]),
+    ("selection-mod-hidden", &["HD"]),
+    ("selection-mod-hardrock", &["HR"]),
+    ("selection-mod-nightcore", &["NC"]),
+    ("selection-mod-doubletime", &["DT"]),
+    ("selection-mod-target", &["TP"]),
+    ("selection-mod-spunout", &["SO"]),
+    ("selection-mod-relax", &["RX"]),
+    ("selection-mod-nofail", &["NF"]),
+    ("selection-mod-halftime", &["HT"]),
+    ("selection-mod-daycore", &["DC"]),
+    ("selection-mod-flashlight", &["FL"]),
+    ("selection-mod-relax2", &["AP"]),
+    ("selection-mod-autoplay", &["AT"]),
+];
+
+/// Index of the letter image of `rank`: stable has no F, so F shows the D.
+pub const fn grade_index(rank: Rank) -> usize {
+    match rank {
+        Rank::XH => 0,
+        Rank::SH => 1,
+        Rank::X => 2,
+        Rank::S => 3,
+        Rank::A => 4,
+        Rank::B => 5,
+        Rank::C => 6,
+        Rank::D | Rank::F => 7,
+    }
+}
+
+/// The image name of the letter of `rank`.
+pub const fn grade_name(rank: Rank) -> &'static str {
+    GRADE_NAMES[grade_index(rank)]
+}
+
+/// A character of a legacy font.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Glyph {
+    Digit(u8),
+    Dot,
+    Percent,
+    X,
+}
+
+impl Glyph {
+    /// Position in a font's array.
+    pub const fn index(self) -> usize {
+        match self {
+            Glyph::Digit(d) => d as usize,
+            Glyph::Dot => 10,
+            Glyph::Percent => 11,
+            Glyph::X => 12,
+        }
+    }
+}
+
+/// One value per image the screen uses. The loader holds file names, the update thread
+/// texture handles and the draw thread sprites.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct StableImages<T> {
+    pub panel: T,
+    pub title: T,
+    pub max_combo: T,
+    pub accuracy: T,
+    pub perfect: T,
+    pub grades: [T; GRADES],
+    pub hits: [T; HITS],
+    /// Score font: the digits, dot and percent ([`Glyph::index`]).
+    pub score_font: [T; GLYPHS],
+    /// Combo font: the digits and `x`.
+    pub combo_font: [T; GLYPHS],
+    pub mods: [T; MOD_COUNT],
+}
+
+impl<T: Default> Default for StableImages<T> {
+    fn default() -> Self {
+        StableImages {
+            panel: T::default(),
+            title: T::default(),
+            max_combo: T::default(),
+            accuracy: T::default(),
+            perfect: T::default(),
+            grades: std::array::from_fn(|_| T::default()),
+            hits: std::array::from_fn(|_| T::default()),
+            score_font: std::array::from_fn(|_| T::default()),
+            combo_font: std::array::from_fn(|_| T::default()),
+            mods: std::array::from_fn(|_| T::default()),
+        }
+    }
+}
+
+impl<T> StableImages<T> {
+    /// Every value, in field order.
+    pub fn iter(&self) -> impl Iterator<Item = &T> {
+        [
+            &self.panel,
+            &self.title,
+            &self.max_combo,
+            &self.accuracy,
+            &self.perfect,
+        ]
+        .into_iter()
+        .chain(&self.grades)
+        .chain(&self.hits)
+        .chain(&self.score_font)
+        .chain(&self.combo_font)
+        .chain(&self.mods)
+    }
+
+    /// `f` applied to every value.
+    pub fn map<U>(&self, mut f: impl FnMut(&T) -> U) -> StableImages<U> {
+        StableImages {
+            panel: f(&self.panel),
+            title: f(&self.title),
+            max_combo: f(&self.max_combo),
+            accuracy: f(&self.accuracy),
+            perfect: f(&self.perfect),
+            grades: std::array::from_fn(|i| f(&self.grades[i])),
+            hits: std::array::from_fn(|i| f(&self.hits[i])),
+            score_font: std::array::from_fn(|i| f(&self.score_font[i])),
+            combo_font: std::array::from_fn(|i| f(&self.combo_font[i])),
+            mods: std::array::from_fn(|i| f(&self.mods[i])),
+        }
+    }
+}
+
+/// An uploaded image of the skin.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct StableSprite {
+    pub texture: TextureId,
+    pub uv: UvRect,
+    /// The file's size in pixels.
+    pub size: [f32; 2],
+    /// 2 for an `@2x` file, 1 otherwise.
+    pub density: f32,
+}
+
+/// The skin as the layout needs it. Missing images are skipped.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct StableSkin {
+    /// Whether the skin's `Version` is above 1.0: stable moves several elements then.
+    pub modern: bool,
+    pub score_overlap: f32,
+    pub combo_overlap: f32,
+    pub images: StableImages<Option<StableSprite>>,
+}
+
+/// What a placed sprite is, for tests and for callers that tint parts.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Part {
+    Panel,
+    Title,
+    Grade,
+    MaxComboLabel,
+    AccuracyLabel,
+    Perfect,
+    /// Index into [`HIT_NAMES`].
+    Hit(usize),
+    /// Index into [`MODS`].
+    Mod(usize),
+    /// A glyph of the score font (the score, the accuracy).
+    Score(Glyph),
+    /// A glyph of the combo font (hit counts, max combo).
+    Combo(Glyph),
+}
+
+/// What [`lay_out`] hands out, in drawing order.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub enum Item<'a> {
+    /// The black bar across the top.
+    Bar { height: f32 },
+    Sprite {
+        part: Part,
+        sprite: &'a StableSprite,
+        centre: [f32; 2],
+        size: [f32; 2],
+    },
+}
+
+/// Where the screen ended up.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct StableInfo {
+    /// Height of the black bar; the beatmap's text sits in it.
+    pub bar_height: f32,
+    /// Left edge of the title image (or the window's right edge less its margin when the
+    /// skin has none): the text must end before it.
+    pub title_left: f32,
+    /// Pixels per osu pixel of the 640x480 design.
+    pub unit: f32,
+}
+
+/// The 4:3 area of the window the design is fitted into.
+// Ported from McOsu db2add2: src/App/Osu/Osu.cpp (getUIScale, getImageScale)
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct Metrics {
+    x: f32,
+    y: f32,
+}
+
+impl Metrics {
+    pub fn new(width: f32, height: f32) -> Metrics {
+        // Integers, as the original does: the area is clipped to 4:3.
+        let (mut w, mut h) = (width as i32, height as i32);
+        if w * 3 > h * 4 {
+            w = h * 4 / 3;
+        } else {
+            h = w * 3 / 4;
+        }
+        Metrics {
+            x: w as f32 / 640.0,
+            y: h as f32 / 480.0,
+        }
+    }
+
+    /// `getUIScale`: `v` osu pixels in window pixels.
+    pub fn ui(&self, v: f32) -> f32 {
+        (v * self.x).max(v * self.y)
+    }
+
+    /// `getImageScale`: the scale that makes an image of `size` pixels `osu_size` osu
+    /// pixels big.
+    pub fn image_scale(&self, size: [f32; 2], osu_size: f32) -> f32 {
+        let (dx, dy) = (osu_size * self.x / size[0], osu_size * self.y / size[1]);
+        dx.max(dy)
+    }
+}
+
+/// The decimal digits of `n`, at least `min_len` of them, as 0..=9 values.
+fn digits(mut n: u64, min_len: usize, out: &mut [u8; 20]) -> usize {
+    let mut len = 0;
+    loop {
+        out[len] = (n % 10) as u8;
+        len += 1;
+        n /= 10;
+        if n == 0 {
+            break;
+        }
+    }
+    while len < min_len.min(out.len()) {
+        out[len] = 0;
+        len += 1;
+    }
+    out[..len].reverse();
+    len
+}
+
+/// Splits an accuracy in percent as stable shows it: the integer part and the fraction
+/// rounded to two digits, clamped to 99.
+// Ported from McOsu db2add2: src/App/Osu/OsuHUD.cpp (drawAccuracySimple)
+pub fn accuracy_parts(percent: f32) -> (u64, u64) {
+    let int = percent as i32;
+    let frac = ((percent - int as f32) * 100.0).round() as i32;
+    (int.max(0) as u64, frac.clamp(0, 99) as u64)
+}
+
+/// The mod icons `data` shows: indices into [`MODS`], in drawing order. PF hides SD and NC
+/// hides DT.
+// Ported from McOsu db2add2: src/App/Osu/OsuRankingScreen.cpp (draw)
+pub fn mod_icons(data: &ResultsData) -> impl Iterator<Item = usize> + '_ {
+    let has = |acronym: &str| data.mods.iter().any(|m| m.as_str() == acronym);
+    MODS.iter()
+        .enumerate()
+        .filter_map(move |(i, (_, acronyms))| {
+            let shown = acronyms.iter().any(|a| has(a))
+                && !(acronyms[0] == "SD" && has("PF"))
+                && !(acronyms[0] == "DT" && has("NC"));
+            shown.then_some(i)
+        })
+}
+
+/// A number being drawn in a font: McOsu advances by the width of the score font's `0`
+/// for every digit.
+struct Pen<'a, 'b, F: FnMut(Item<'a>)> {
+    sink: &'b mut F,
+    font: &'a [Option<StableSprite>; GLYPHS],
+    part: fn(Glyph) -> Part,
+    /// Digit advance in pixels (width of the font's `0` times `scale`).
+    advance: f32,
+    scale: f32,
+    spacing: f32,
+    x: f32,
+    cy: f32,
+}
+
+impl<'a, F: FnMut(Item<'a>)> Pen<'a, '_, F> {
+    fn put(&mut self, glyph: Glyph, centre_x: f32) {
+        if let Some(sprite) = &self.font[glyph.index()] {
+            (self.sink)(Item::Sprite {
+                part: (self.part)(glyph),
+                sprite,
+                centre: [centre_x, self.cy],
+                size: [sprite.size[0] * self.scale, sprite.size[1] * self.scale],
+            });
+        }
+    }
+
+    // Ported from McOsu db2add2: src/App/Osu/OsuHUD.cpp (drawScoreNumber, drawComboNumber)
+    fn number(&mut self, value: u64, min_len: usize) {
+        let mut buffer = [0; 20];
+        let len = digits(value, min_len, &mut buffer);
+        for &d in &buffer[..len] {
+            self.put(Glyph::Digit(d), self.x + self.advance / 2.0);
+            self.x += self.advance - self.spacing;
+        }
+    }
+
+    /// A symbol that ends the number (`x`, `%`).
+    fn tail(&mut self, glyph: Glyph) {
+        if let Some(sprite) = &self.font[glyph.index()] {
+            let width = sprite.size[0] * self.scale;
+            self.put(glyph, self.x + width / 2.0);
+            self.x += width;
+        }
+    }
+
+    /// The dot between the integer and fractional part.
+    fn dot(&mut self) {
+        if let Some(sprite) = &self.font[Glyph::Dot.index()] {
+            let width = sprite.size[0] * self.scale;
+            self.put(Glyph::Dot, self.x + width / 2.0);
+            self.x += width - self.spacing;
+        }
+    }
+}
+
+/// A pen on the score font whose line's top is at `top`.
+fn score_pen<'a, 'b, F: FnMut(Item<'a>)>(
+    sink: &'b mut F,
+    font: &'a [Option<StableSprite>; GLYPHS],
+    zero: &StableSprite,
+    spacing: f32,
+    scale: f32,
+    x: f32,
+    top: f32,
+) -> Pen<'a, 'b, F> {
+    Pen {
+        sink,
+        font,
+        part: Part::Score,
+        advance: zero.size[0] * scale,
+        scale,
+        spacing: spacing * scale,
+        x,
+        cy: top + zero.size[1] / 2.0 * scale,
+    }
+}
+
+/// Hands every sprite of the screen for a `width` x `height` window to `sink`, in drawing
+/// order. `min_bar` is the least height of the black bar (the height of its text).
+///
+/// The caller draws only when the skin has a panel; the layout itself skips every missing
+/// image.
+// Ported from McOsu db2add2: src/App/Osu/OsuRankingScreen.cpp (updateLayout, setGrade, draw)
+// Ported from McOsu db2add2: src/App/Osu/OsuUIRankingScreenRankingPanel.cpp (draw)
+pub fn lay_out<'a>(
+    skin: &'a StableSkin,
+    data: &ResultsData,
+    width: f32,
+    height: f32,
+    min_bar: f32,
+    mut sink: impl FnMut(Item<'a>),
+) -> StableInfo {
+    let m = Metrics::new(width, height);
+    let images = &skin.images;
+    let modern = skin.modern;
+    let sprite_item =
+        |part, sprite: &'a StableSprite, centre: [f32; 2], size: [f32; 2]| Item::Sprite {
+            part,
+            sprite,
+            centre,
+            size,
+        };
+    // McOsu's container is as wide as the screen plus two pixels.
+    let rankings_width = width + 2.0;
+
+    // The title decides the bar's height.
+    let title = images.title.as_ref().map(|s| {
+        let scale = m.image_scale(s.size, 75.0);
+        (s, [s.size[0] * scale, s.size[1] * scale])
+    });
+    let title_height = title.map_or(m.ui(75.0), |(_, size)| size[1]);
+    let bar_height = (title_height * 0.785).max(min_bar);
+    let title_left = title.map_or(width, |(_, size)| width - size[0] - m.ui(20.0));
+
+    // The panel and everything on it are placed from its top-left corner.
+    let panel_x = 0.0;
+    let panel_y = bar_height - 1.0;
+    let global_y = m.ui(-1.0).trunc();
+
+    if let Some(panel) = &images.panel {
+        let hard = [622.0 * panel.density, 505.0 * panel.density];
+        let scale = m.image_scale(hard, 317.0);
+        let size = [
+            (hard[0] * scale).max(panel.size[0] * scale),
+            (hard[1] * scale).max(panel.size[1] * scale),
+        ];
+        sink(sprite_item(
+            Part::Panel,
+            panel,
+            [panel_x + size[0] / 2.0, panel_y + size[1] / 2.0],
+            size,
+        ));
+    }
+
+    // Numbers are scaled by the score font's `0`.
+    if let Some(zero) = &images.score_font[0] {
+        let gss = if modern { 1.3 } else { 1.05 };
+        let scale20 = m.image_scale(zero.size, 20.0) * gss;
+        let scale17 = m.image_scale(zero.size, 17.0) * gss;
+        let half = zero.size[1] / 2.0;
+        let score_spacing = skin.score_overlap * zero.density;
+        let combo_zero = images.combo_font[0];
+        let combo_spacing = skin.combo_overlap * combo_zero.map_or(1.0, |s| s.density);
+        let combo_advance = combo_zero.map_or(0.0, |s| s.size[0]);
+        // The score.
+        let mut pen = score_pen(
+            &mut sink,
+            &images.score_font,
+            zero,
+            score_spacing,
+            scale20,
+            panel_x + m.ui(111.0),
+            panel_y + m.ui(11.0) + global_y,
+        );
+        pen.number(data.score.max(0) as u64, 1);
+
+        // The hit icons and their counts: two columns of three.
+        let start = [40.0, 99.0];
+        let count_start = [
+            start[0] + 40.0,
+            start[1] + if modern { -16.0 } else { -25.0 },
+        ];
+        let counts = [
+            data.stats[StatKind::Great.index()].value,
+            data.stats[StatKind::Ok.index()].value,
+            data.stats[StatKind::Meh.index()].value,
+            // Gekis and katus: not counted in the lazer profile (ADR-0158).
+            0,
+            0,
+            data.stats[StatKind::Miss.index()].value,
+        ];
+        let hit_scale = m.image_scale([128.0, 128.0], 42.0);
+        for i in 0..HITS {
+            let (column, row) = ((i / 3) as f32, (i % 3) as f32);
+            if let Some(sprite) = &images.hits[i] {
+                let scale = hit_scale / sprite.density;
+                sink(sprite_item(
+                    Part::Hit(i),
+                    sprite,
+                    [
+                        panel_x + m.ui(start[0] + 200.0 * column),
+                        panel_y + m.ui(start[1] + 60.0 * row),
+                    ],
+                    [sprite.size[0] * scale, sprite.size[1] * scale],
+                ));
+            }
+        }
+        for (i, count) in counts.into_iter().enumerate() {
+            let (column, row) = ((i / 3) as f32, (i % 3) as f32);
+            let mut pen = Pen {
+                sink: &mut sink,
+                font: &images.combo_font,
+                part: Part::Combo,
+                advance: combo_advance * scale17,
+                scale: scale17,
+                spacing: combo_spacing * scale17,
+                x: panel_x + m.ui(count_start[0] + 200.0 * column),
+                cy: panel_y + half * scale17 + m.ui(count_start[1] + 60.0 * row),
+            };
+            pen.number(u64::from(count), 1);
+            pen.tail(Glyph::X);
+        }
+
+        // The fourth row: max combo and accuracy with their labels.
+        let row4 = 260.0;
+        let label_offset = if modern { 20.0 } else { 8.0 } - 20.0;
+        let row_cy = panel_y + half * scale17 + m.ui(row4 + 10.0) + global_y;
+        let mut pen = Pen {
+            sink: &mut sink,
+            font: &images.combo_font,
+            part: Part::Combo,
+            advance: combo_advance * scale17,
+            scale: scale17,
+            spacing: combo_spacing * scale17,
+            x: panel_x + m.ui(15.0),
+            cy: row_cy,
+        };
+        pen.number(u64::from(data.combo), 1);
+        pen.tail(Glyph::X);
+
+        if let Some(label) = &images.max_combo {
+            let scale = m.image_scale([162.0 * label.density, 50.0 * label.density], 32.0);
+            let size = [label.size[0] * scale, label.size[1] * scale];
+            sink(sprite_item(
+                Part::MaxComboLabel,
+                label,
+                [
+                    panel_x + size[0] * 0.5 + m.ui(4.0),
+                    panel_y + m.ui(row4 - 5.0 - label_offset) + global_y,
+                ],
+                size,
+            ));
+        }
+
+        let (int, frac) = accuracy_parts((data.accuracy * 100.0) as f32);
+        let mut pen = score_pen(
+            &mut sink,
+            &images.score_font,
+            zero,
+            score_spacing,
+            scale17,
+            panel_x + m.ui(195.0),
+            0.0,
+        );
+        pen.cy = row_cy;
+        pen.number(int, 2);
+        pen.dot();
+        pen.number(frac, 2);
+        pen.tail(Glyph::Percent);
+
+        if let Some(label) = &images.accuracy {
+            let scale = m.image_scale([192.0 * label.density, 58.0 * label.density], 36.0);
+            let size = [label.size[0] * scale, label.size[1] * scale];
+            sink(sprite_item(
+                Part::AccuracyLabel,
+                label,
+                [
+                    panel_x + size[0] * 0.5 + m.ui(183.0),
+                    panel_y + m.ui(row4 - 3.0 - label_offset) + global_y,
+                ],
+                size,
+            ));
+        }
+    }
+
+    // The banner of a full combo.
+    if data.full_combo()
+        && let Some(sprite) = &images.perfect
+    {
+        let base = [478.0 * sprite.density, 150.0 * sprite.density];
+        let scale = m.image_scale(base, 94.0);
+        let x = panel_x + m.ui(if modern { 260.0 } else { 200.0 });
+        let y = panel_y + (m.ui(430.0) + global_y) * 0.97;
+        sink(sprite_item(
+            Part::Perfect,
+            sprite,
+            [x, y - base[1] * scale * 0.5],
+            [sprite.size[0] * scale, sprite.size[1] * scale],
+        ));
+    }
+
+    // The big letter. F shows the D.
+    if let Some(sprite) = &images.grades[grade_index(data.rank)] {
+        let hard = [369.0 * sprite.density, 422.0 * sprite.density];
+        let scale = m.image_scale(hard, 230.0);
+        let size = [sprite.size[0] * scale, sprite.size[1] * scale];
+        sink(sprite_item(
+            Part::Grade,
+            sprite,
+            [
+                rankings_width - m.ui(120.0),
+                m.ui(if modern { 200.0 } else { 170.0 }),
+            ],
+            size,
+        ));
+    }
+
+    // The mods, right to left.
+    let mut x = rankings_width - m.ui(20.0);
+    for i in mod_icons(data).take(super::MAX_MODS) {
+        if let Some(sprite) = &images.mods[i] {
+            let scale = m.image_scale([68.0, 66.0], 38.0) / sprite.density;
+            let size = [sprite.size[0] * scale, sprite.size[1] * scale];
+            sink(sprite_item(
+                Part::Mod(i),
+                sprite,
+                [x - size[0] / 2.0, m.ui(260.0)],
+                size,
+            ));
+        }
+        x -= m.ui(20.0);
+    }
+
+    sink(Item::Bar { height: bar_height });
+    if let Some((sprite, size)) = title {
+        sink(sprite_item(
+            Part::Title,
+            sprite,
+            [title_left + size[0] / 2.0, size[1] / 2.0],
+            size,
+        ));
+    }
+    StableInfo {
+        bar_height,
+        title_left,
+        unit: m.ui(1.0),
+    }
+}
+
+#[cfg(test)]
+mod tests;

@@ -11,6 +11,7 @@ use std::sync::Arc;
 use crate::menu::Rect;
 use crate::theme::Theme;
 
+pub mod stable;
 pub mod view;
 
 pub use view::{ResultsLabels, ResultsView};
@@ -202,6 +203,11 @@ pub struct ResultsData {
 }
 
 impl ResultsData {
+    /// Whether the play reached the highest possible combo (stable's "perfect" banner).
+    pub fn full_combo(&self) -> bool {
+        self.max_combo > 0 && self.combo >= self.max_combo
+    }
+
     /// The rows to list, in order.
     pub fn rows(&self) -> impl Iterator<Item = (StatKind, ResultsStat)> + '_ {
         StatKind::ALL

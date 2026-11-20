@@ -120,7 +120,8 @@ pub const USAGE: &str = "usage: slam-app [--songs DIR]\n\
 const MAX_TEXTURES: usize = 16
     + MAX_BACKGROUNDS as usize
     + crate::thumbnails::MAX_HANDLES as usize
-    + crate::menu_cursor::MAX_CURSOR_TEXTURES as usize;
+    + crate::menu_cursor::MAX_CURSOR_TEXTURES as usize
+    + crate::ranking_skin::MAX_RANKING_TEXTURES as usize;
 /// Rectangles of one frame: the buttons or rows of up to two layers (each a few layers deep,
 /// ADR-0136), the FPS counter's
 /// box, two backgrounds of each layer, the language curtain (ADR-0091) and the intro's
@@ -133,6 +134,7 @@ const MAX_SHAPES: usize = 1024
     + slam_ui::curtain::MAX_SPRITES
     + 1
     + crate::menu_cursor::MAX_MENU_CURSOR_SHAPES
+    + slam_ui::results::stable::MAX_STABLE_SPRITES
     + MAX_VOLUME_SHAPES;
 /// Outlined glyphs of the startup intro's title (ADR-0114).
 const MAX_INTRO_OUTLINES: usize = 64;
@@ -316,6 +318,9 @@ pub struct ShellSnapshot {
     pub intro: Option<IntroSnapshot>,
     /// The menu cursor drawn over everything (ADR-0124).
     pub menu_cursor: crate::menu_cursor::MenuCursorFrame,
+    /// The menu skin's results screen images (ADR-0158) and the tick that made them.
+    pub ranking: crate::ranking_skin::RankingSkin,
+    pub ranking_seq: u32,
     /// The volume overlay over the screens and the play (ADR-0145).
     pub volume: VolumeFrame,
     /// The replay toast (ADR-0154).
@@ -445,6 +450,8 @@ pub struct ShellState {
     /// Loads the skin's cursor for the menus (ADR-0124); without it the skin's cursor is
     /// SLAM's.
     skin_cursor: Option<crate::menu_cursor::SkinCursorLink>,
+    /// Loads the skin's results screen images (ADR-0158); without it the screen is SLAM's.
+    ranking_link: Option<crate::ranking_skin::RankingLink>,
     /// Asks for the selected difficulty's statistics; without a library thread `None`.
     details: Option<DetailsPicker>,
     /// The startup intro until it is over; `None` when off (ADR-0114).
@@ -528,6 +535,7 @@ impl ShellState {
             menu_track: None,
             menu_skin: None,
             skin_cursor: None,
+            ranking_link: None,
             menu_skin_of: (None, None),
             ui_sounds: ui_sounds::UiSoundQueue::default(),
             ui_seen: (1, slam_ui::menu::MenuItem::ALL[0], None, false, 0),
@@ -667,6 +675,12 @@ impl ShellState {
     /// A shell whose song select shows the selected beatmap's background (ADR-0066).
     pub fn with_skin_cursor(mut self, link: crate::menu_cursor::SkinCursorLink) -> ShellState {
         self.skin_cursor = Some(link);
+        self
+    }
+
+    /// A shell that follows the menu skin's results screen (ADR-0158).
+    pub fn with_ranking_link(mut self, link: crate::ranking_skin::RankingLink) -> ShellState {
+        self.ranking_link = Some(link);
         self
     }
 
@@ -2248,6 +2262,23 @@ impl ShellState {
             Some(link) => {
                 let skin = link.tick(cursor_skin.as_ref().map(Option::as_ref));
                 snapshot.menu_cursor.seq = link.seq();
+                skin
+            }
+            None => Default::default(),
+        };
+        // Held only around a play and its results: loaded while the play runs, so the
+        // results come up in the skin's look at once.
+        let ranking_skin = self
+            .stack
+            .layers(now_ns)
+            .iter()
+            .flatten()
+            .any(|(screen, _)| matches!(screen, AppScreen::Play(_) | AppScreen::Results(_)))
+            .then(|| self.menu_skin().cloned());
+        snapshot.ranking = match &mut self.ranking_link {
+            Some(link) => {
+                let skin = link.tick(ranking_skin.as_ref().map(Option::as_ref));
+                snapshot.ranking_seq = link.seq();
                 skin
             }
             None => Default::default(),
@@ -3855,6 +3886,8 @@ struct View<B: render::Backend> {
     thumb_shown: Option<crate::thumbnails::ThumbShown>,
     /// The menu cursor over everything (ADR-0124).
     menu_cursor: crate::menu_cursor::MenuCursorView,
+    /// The skin's results screen images (ADR-0158).
+    ranking: crate::ranking_skin::RankingView,
     /// The pointer's smoothed place for the parallax (ADR-0132).
     parallax: crate::parallax::Parallax,
     _quit: crate::bench::QuitOnDrop,
@@ -4034,6 +4067,8 @@ impl<B: render::Backend> Draw<ShellSnapshot> for View<B> {
         });
         self.glyphs.process(&mut r.device, &mut r.textures);
         self.menu_cursor.process(&mut r.device, &mut r.textures);
+        self.ranking.process(&mut r.device, &mut r.textures);
+        self.ranking.acknowledge(snapshot.ranking_seq);
         // On every screen: releases queued during a play would otherwise fill the queue.
         if let Some(shown) = &self.thumb_shown {
             shown.set(snapshot.thumbnails.seq);
@@ -4232,16 +4267,32 @@ impl<B: render::Backend> Draw<ShellSnapshot> for View<B> {
                         layers += 1;
                     }
                 }
-                ScreenView::Results(results) => self.results.push(
-                    &mut self.shapes,
-                    &mut self.text,
-                    &mut self.glyphs,
-                    width,
-                    height,
-                    results,
-                    layer.pose,
-                    r.white,
-                ),
+                ScreenView::Results(results) => {
+                    // The skin's own screen when it has a panel (ADR-0158).
+                    match self.ranking.resolve(&snapshot.ranking) {
+                        Some(skin) => self.results.push_stable(
+                            &mut self.shapes,
+                            &mut self.text,
+                            &mut self.glyphs,
+                            width,
+                            height,
+                            results,
+                            layer.pose,
+                            r.white,
+                            &skin,
+                        ),
+                        None => self.results.push(
+                            &mut self.shapes,
+                            &mut self.text,
+                            &mut self.glyphs,
+                            width,
+                            height,
+                            results,
+                            layer.pose,
+                            r.white,
+                        ),
+                    }
+                }
                 // Drawn whole, without the transition's slide.
                 ScreenView::Play(_) => {}
             }
@@ -5097,6 +5148,21 @@ fn run_with<B: render::Backend>(
             None
         }
     };
+    // The skin's results screen images; it ends once the update side drops its link.
+    let mut ranking_thread = None;
+    let mut ranking_shown = None;
+    let ranking_uploads = match crate::ranking_skin::spawn(&TextureLoaderConfig::new(limits)) {
+        Ok((link, uploads, shown, thread)) => {
+            state = state.with_ranking_link(link);
+            ranking_thread = Some(thread);
+            ranking_shown = Some(shown);
+            Some(uploads)
+        }
+        Err(e) => {
+            tracing::warn!("ranking skin: cannot start the loader: {e}");
+            None
+        }
+    };
     // Joined when `run` returns, after the engine. Without the thread the settings screen
     // hides the display and resolution rows.
     let (display_views, _displays) = {
@@ -5325,6 +5391,7 @@ fn run_with<B: render::Backend>(
             cursor_uploads,
         )
         .with_shown_opt(cursor_shown),
+        ranking: crate::ranking_skin::RankingView::new(ranking_uploads, ranking_shown),
         parallax: crate::parallax::Parallax::new(window.pointer(), scale_for_parallax),
         _quit: crate::bench::QuitOnDrop(window.quit_handle()),
     };
@@ -5419,6 +5486,9 @@ fn run_with<B: render::Backend>(
     // Dropping the update state dropped the cursor link, which ends the loader thread.
     drop(shell);
     if let Some(thread) = cursor_thread {
+        let _ = thread.join();
+    }
+    if let Some(thread) = ranking_thread {
         let _ = thread.join();
     }
     if let Some(thread) = saver_thread {
