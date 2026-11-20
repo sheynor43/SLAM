@@ -99,6 +99,8 @@ fn textures(config: CursorSkinConfig) -> CursorTextures {
         cursor: sprite(CURSOR, 64.0),
         middle: sprite(MIDDLE, 32.0),
         trail: sprite(TRAIL, 16.0),
+        smoke: None,
+        ripple: None,
         config,
     }
 }
@@ -618,4 +620,52 @@ fn slams_cursor_expands_on_a_click_with_the_skins_times() {
         ..config
     };
     assert_eq!(expand_at(clicked, 500.0, off), 1.0);
+}
+
+/// What goes between the trail and the cursor (the ripples, ADR-0159) is written after the
+/// trail and before the cursor, and also while the cursor is hidden.
+#[test]
+fn push_with_writes_between_the_trail_and_the_cursor_even_when_hidden() {
+    let marker = |batch: &mut SpriteBatch| {
+        batch.push(&slam_render::sprite::Sprite::new(
+            TextureId(99),
+            slam_render::atlas::UvRect {
+                u0: 0.0,
+                v0: 0.0,
+                u1: 1.0,
+                v1: 1.0,
+            },
+            [-1000.0, -1000.0],
+            [1.0, 1.0],
+        ));
+    };
+    let mut path = CursorPath::default();
+    path.push(Vec2::new(100.0, 100.0));
+    path.push(Vec2::new(300.0, 100.0));
+    let textures = textures(CursorSkinConfig::default());
+    let mut view = CursorView::default();
+    let mut batch = SpriteBatch::new();
+    let shown = frame(
+        &path,
+        Vec2::new(300.0, 100.0),
+        ExpandTimes::default(),
+        100.0,
+    );
+    view.push_with(&mut batch, &layout(), &shown, &textures, marker);
+    let order: Vec<_> = quads(&batch);
+    let at = order
+        .iter()
+        .position(|q| q[0] == -1000.0)
+        .expect("the marker is written");
+    // The cursor and its middle come after it.
+    assert_eq!(order.len() - at - 1, 2);
+
+    let mut hidden_view = CursorView::default();
+    let mut hidden = SpriteBatch::new();
+    let frame = CursorFrame {
+        visible: false,
+        ..shown
+    };
+    hidden_view.push_with(&mut hidden, &layout(), &frame, &textures, marker);
+    assert_eq!(quads(&hidden).len(), 1);
 }

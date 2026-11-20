@@ -59,6 +59,8 @@ pub struct PlayOptions {
     pub hud_animations: bool,
     /// The cursor leaves a trail.
     pub cursor_trail: bool,
+    /// Presses leave ripples under the cursor (ADR-0159).
+    pub cursor_ripple: bool,
     /// How the skip button looks (ADR-0160).
     pub skip_style: slam_play::skip::SkipStyle,
     /// Size of the cursor (ADR-0086).
@@ -305,6 +307,7 @@ pub fn spawn(mut config: LoaderConfig) -> std::io::Result<(LoaderLink, SceneTras
                     config.settings.key_overlay = options.key_overlay;
                     config.settings.hud_animations = options.hud_animations;
                     config.settings.cursor_trail = options.cursor_trail;
+                    config.settings.cursor_ripple = options.cursor_ripple;
                     config.settings.skip_style = options.skip_style;
                     config.settings.cursor_size = options.cursor_size as f32;
                     config.settings.auto_cursor_size = options.auto_cursor_size;
@@ -379,6 +382,7 @@ mod tests {
             key_overlay: None,
             hud_animations: true,
             cursor_trail: true,
+            cursor_ripple: false,
             skip_style: slam_play::skip::SkipStyle::Skin,
             cursor_size: 1.0,
             auto_cursor_size: false,

@@ -30,8 +30,8 @@ const ALT: u8 = 4;
 const SUPER: u8 = 8;
 
 // Ported from osu!lazer 2026.1005.0-lazer: osu.Game/Configuration/OsuConfigManager.cs (UIHoldActivationDelay)
-/// How long quick retry and quick exit are held to fire, in nanoseconds: the default
-/// hold-to-confirm delay, 200 ms.
+/// How long quick retry and quick exit are held to fire by default, in nanoseconds: the
+/// default hold-to-confirm delay, 200 ms. The player sets it (`Hotkeys::set_hold_ns`).
 pub const HOLD_NS: u64 = 200_000_000;
 
 /// A global action of the gameplay screen.
@@ -121,9 +121,9 @@ impl Hold {
         *self = Hold::default();
     }
 
-    fn fire(&mut self, now_ns: u64) -> bool {
+    fn fire(&mut self, now_ns: u64, hold_ns: u64) -> bool {
         match self.since {
-            Some(since) if !self.fired && now_ns.saturating_sub(since) >= HOLD_NS => {
+            Some(since) if !self.fired && now_ns.saturating_sub(since) >= hold_ns => {
                 self.fired = true;
                 true
             }
@@ -131,25 +131,44 @@ impl Hold {
         }
     }
 
-    fn progress(&self, now_ns: u64) -> f32 {
+    fn progress(&self, now_ns: u64, hold_ns: u64) -> f32 {
         match self.since {
-            Some(_) if self.fired => 1.0,
-            Some(since) => (now_ns.saturating_sub(since) as f64 / HOLD_NS as f64).min(1.0) as f32,
+            Some(_) if self.fired || hold_ns == 0 => 1.0,
+            Some(since) => (now_ns.saturating_sub(since) as f64 / hold_ns as f64).min(1.0) as f32,
             None => 0.0,
         }
     }
 }
 
 /// Recognises global actions in input events. Never allocates.
-#[derive(Debug, Clone, Copy, Default)]
+#[derive(Debug, Clone, Copy)]
 pub struct Hotkeys {
     /// Modifier keys held, a bit per scancode from left control.
     modifiers: u8,
     retry: Hold,
     exit: Hold,
+    /// How long quick retry and quick exit are held to fire.
+    hold_ns: u64,
+}
+
+impl Default for Hotkeys {
+    fn default() -> Self {
+        Hotkeys {
+            modifiers: 0,
+            retry: Hold::default(),
+            exit: Hold::default(),
+            hold_ns: HOLD_NS,
+        }
+    }
 }
 
 impl Hotkeys {
+    /// Sets how long quick retry and quick exit are held to fire (lazer's
+    /// `UIHoldActivationDelay`); 0 fires them in the tick of the press.
+    pub fn set_hold_ns(&mut self, hold_ns: u64) {
+        self.hold_ns = hold_ns;
+    }
+
     /// Takes one event. Returns the action it presses, if any; quick retry and quick exit
     /// only start their hold here and fire from [`fire`](Self::fire).
     // Ported from osu!lazer 2026.1005.0-lazer: osu.Game/Input/Bindings/GlobalActionContainer.cs (globalKeyBindings, InGameKeyBindings)
@@ -269,9 +288,9 @@ impl Hotkeys {
 
     /// The hold action that fires at engine time `now_ns`, once per press.
     pub fn fire(&mut self, now_ns: u64) -> Option<GlobalAction> {
-        if self.retry.fire(now_ns) {
+        if self.retry.fire(now_ns, self.hold_ns) {
             Some(GlobalAction::QuickRetry)
-        } else if self.exit.fire(now_ns) {
+        } else if self.exit.fire(now_ns, self.hold_ns) {
             Some(GlobalAction::QuickExit)
         } else {
             None
@@ -280,12 +299,12 @@ impl Hotkeys {
 
     /// How far quick retry is held at `now_ns`, 0..=1.
     pub fn retry_progress(&self, now_ns: u64) -> f32 {
-        self.retry.progress(now_ns)
+        self.retry.progress(now_ns, self.hold_ns)
     }
 
     /// How far quick exit is held at `now_ns`, 0..=1.
     pub fn exit_progress(&self, now_ns: u64) -> f32 {
-        self.exit.progress(now_ns)
+        self.exit.progress(now_ns, self.hold_ns)
     }
 
     /// The modifier kinds held.
@@ -534,5 +553,29 @@ mod tests {
         h.on_event(&key(0, SCANCODE_GRAVE, true));
         h.follow(&key(10, SCANCODE_GRAVE, false));
         assert_eq!(h.fire(HOLD_NS * 2), None);
+    }
+
+    #[test]
+    fn a_zero_hold_fires_at_the_press() {
+        let mut h = Hotkeys::default();
+        h.set_hold_ns(0);
+        assert_eq!(h.on_event(&key(5, SCANCODE_GRAVE, true)), None);
+        assert_eq!(h.retry_progress(5), 1.0);
+        assert_eq!(h.fire(5), Some(GlobalAction::QuickRetry));
+        // Once per press.
+        assert_eq!(h.fire(6), None);
+        h.on_event(&key(7, SCANCODE_GRAVE, false));
+        h.on_event(&key(8, SCANCODE_GRAVE, true));
+        assert_eq!(h.fire(8), Some(GlobalAction::QuickRetry));
+    }
+
+    #[test]
+    fn the_hold_takes_the_delay_set() {
+        let mut h = Hotkeys::default();
+        h.set_hold_ns(400 * MS);
+        h.on_event(&key(0, SCANCODE_GRAVE, true));
+        assert_eq!(h.fire(399 * MS), None);
+        assert!((h.retry_progress(200 * MS) - 0.5).abs() < 1e-6);
+        assert_eq!(h.fire(400 * MS), Some(GlobalAction::QuickRetry));
     }
 }

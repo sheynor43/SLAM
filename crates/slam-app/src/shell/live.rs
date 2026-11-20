@@ -202,6 +202,7 @@ pub fn play_options(settings: &Settings) -> PlayOptions {
             .then(|| settings.gameplay.key_overlay_animation.into()),
         hud_animations: settings.gameplay.hud_animations,
         cursor_trail: settings.gameplay.cursor_trail,
+        cursor_ripple: settings.gameplay.cursor_ripple,
         skip_style: settings.gameplay.skip_button.play(),
         cursor_size: settings.gameplay.cursor_size,
         auto_cursor_size: settings.gameplay.auto_cursor_size,
@@ -418,6 +419,7 @@ mod tests {
         settings.gameplay.key_overlay_animation = crate::settings::KeyOverlayAnimation::Lazer;
         settings.gameplay.hud_animations = false;
         settings.gameplay.cursor_trail = false;
+        settings.gameplay.cursor_ripple = true;
         settings.gameplay.cursor_size = 0.65;
         settings.gameplay.auto_cursor_size = true;
         settings.gameplay.cursor_style = CursorStyle::Slam;
@@ -443,6 +445,7 @@ mod tests {
                 key_overlay: Some(slam_play::key_overlay::KeyAnimation::Lazer),
                 hud_animations: false,
                 cursor_trail: false,
+                cursor_ripple: true,
                 skip_style: slam_play::skip::SkipStyle::Skin,
                 cursor_size: 0.65,
                 auto_cursor_size: true,

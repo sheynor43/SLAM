@@ -904,6 +904,9 @@ pub struct Gameplay {
     pub hud_animations: bool,
     /// The cursor leaves a trail (lazer's `OsuRulesetSetting.ShowCursorTrail`).
     pub cursor_trail: bool,
+    /// Ripples under the cursor on every press (lazer's `ShowCursorRipples`, off by default;
+    /// ADR-0159).
+    pub cursor_ripple: bool,
     /// Size of the gameplay cursor and its trail, 0.1 ..= 2.0 in steps of 0.01 (lazer's
     /// `OsuSetting.GameplayCursorSize`, ADR-0086).
     pub cursor_size: f64,
@@ -921,6 +924,18 @@ pub struct Gameplay {
     /// (ADR-0122).
     #[serde(serialize_with = "serialize_scale")]
     pub pause_menu_scale: f32,
+    /// How long quick retry and quick exit are held to fire, in milliseconds, in
+    /// [`Gameplay::HOLD_TO_CONFIRM_RANGE`]; 0 fires on the press (lazer's
+    /// `UIHoldActivationDelay`).
+    pub hold_to_confirm_ms: f64,
+}
+
+impl Gameplay {
+    // Ported from osu!lazer 2026.1005.0-lazer: osu.Game/Configuration/OsuConfigManager.cs (UIHoldActivationDelay)
+    /// Range of `hold_to_confirm_ms`.
+    pub const HOLD_TO_CONFIRM_RANGE: std::ops::RangeInclusive<f64> = 0.0..=500.0;
+    /// Step of `hold_to_confirm_ms` on the settings screen.
+    pub const HOLD_TO_CONFIRM_STEP: f64 = 50.0;
 }
 
 impl Default for Gameplay {
@@ -944,12 +959,14 @@ impl Default for Gameplay {
             key_overlay_animation: KeyOverlayAnimation::default(),
             hud_animations: true,
             cursor_trail: true,
+            cursor_ripple: false,
             cursor_size: 1.0,
             auto_cursor_size: false,
             cursor_style: CursorStyle::Skin,
             pause_menu_style: PauseMenuStyle::default(),
             skip_button: SkipButtonStyle::default(),
             pause_menu_scale: 1.0,
+            hold_to_confirm_ms: 200.0,
         }
     }
 }
