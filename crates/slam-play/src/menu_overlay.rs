@@ -8,8 +8,9 @@
 //!
 //! The buttons are plain rectangles: no shear, glow, flash on click or text scale of lazer's
 //! `DialogButton`, only its width on selection. The fail menu's footer holds the button that
-//! saves the failed attempt's replay (ADR-0084), labelled rather than an icon. No pause loop
-//! sound yet.
+//! saves the failed attempt's replay (ADR-0084), labelled rather than an icon. The menus'
+//! sounds (ADR-0157): the session plays the `pause-loop` ([`crate::pause_loop`]); the button
+//! sounds go to the host as [`MenuCues`].
 
 use std::sync::Arc;
 
@@ -501,6 +502,29 @@ impl Default for MenuSnapshot {
     }
 }
 
+/// The interface sounds the menu asks for (ADR-0157): the host plays them as its other menu
+/// sounds, under its menu sound setting.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct MenuCues {
+    /// Another button was selected (by the mouse or the keys).
+    pub hover: bool,
+    /// Continue or retry was pressed (`menuhit`).
+    pub confirm: bool,
+    /// Quit or the fail menu's save button was pressed: the button's click. Leaving the
+    /// play sounds its own `menuback` as the screen goes, as lazer's `screen-back`.
+    pub click: bool,
+}
+
+impl MenuCues {
+    /// Notes the press of `button`.
+    pub fn press(&mut self, button: MenuButton) {
+        match button {
+            MenuButton::Continue | MenuButton::Retry => self.confirm = true,
+            MenuButton::Quit | MenuButton::SaveReplay => self.click = true,
+        }
+    }
+}
+
 /// The update side of the menu. Never allocates.
 #[derive(Debug, Clone, Default)]
 pub struct GameplayMenu {
@@ -515,6 +539,8 @@ pub struct GameplayMenu {
     pointer: Option<Vec2>,
     /// The left mouse button went down on the save button.
     save_pressed: bool,
+    /// The sounds asked for since [`GameplayMenu::take_cues`].
+    cues: MenuCues,
 }
 
 impl GameplayMenu {
@@ -601,12 +627,25 @@ impl GameplayMenu {
     }
 
     /// Hides the menu at once: the play starts over, as lazer's new player has no menu.
+    ///
+    /// The sounds not yet taken stay: the retry that restarts the play still sounds.
     pub fn reset(&mut self) {
-        let pointer = self.pointer;
+        let (pointer, cues) = (self.pointer, self.cues);
         *self = GameplayMenu {
             pointer,
+            cues,
             ..GameplayMenu::default()
         };
+    }
+
+    /// Notes the press of `button`: the session acts on it, the host sounds it.
+    pub fn note_press(&mut self, button: MenuButton) {
+        self.cues.press(button);
+    }
+
+    /// The sounds asked for since the last call; clears them.
+    pub fn take_cues(&mut self) -> MenuCues {
+        std::mem::take(&mut self.cues)
     }
 
     /// Follows the mouse with `event`, whether the menu shows or not: a menu that shows
@@ -744,6 +783,9 @@ impl GameplayMenu {
         }
         if let Some(new) = index {
             self.state.widths[new].retarget(HOVER_WIDTH, now_ns, HOVER_NS, Easing::OutQuint);
+            // Stable's `onSelectionChange` and `onMouseInside` play `menuclick`; lazer's
+            // buttons their hover sample.
+            self.cues.hover = true;
         }
         self.selected = index;
     }
@@ -1432,6 +1474,55 @@ pub(crate) mod tests {
         assert_eq!(menu.selected(), None, "showing deselects");
         key(&mut menu, MenuKey::SelectPrevious, 8);
         assert_eq!(menu.selected(), Some(1), "up starts from the last");
+    }
+
+    #[test]
+    fn a_new_selection_asks_for_the_hover_sound_and_presses_their_own() {
+        let mut menu = GameplayMenu::default();
+        menu.show(MenuKind::Pause, info(), 0, SIZE);
+        assert_eq!(
+            menu.take_cues(),
+            MenuCues::default(),
+            "showing selects nothing"
+        );
+        key(&mut menu, MenuKey::SelectNext, 1);
+        assert!(menu.take_cues().hover);
+        assert_eq!(menu.take_cues(), MenuCues::default(), "taking clears");
+        // Deselecting is silent.
+        menu.hide(2);
+        assert_eq!(menu.take_cues(), MenuCues::default());
+
+        menu.note_press(MenuButton::Retry);
+        // The restart's reset keeps what was not taken.
+        menu.reset();
+        let cues = menu.take_cues();
+        assert!(cues.confirm && !cues.hover && !cues.click);
+        for (button, cue) in [
+            (
+                MenuButton::Continue,
+                MenuCues {
+                    confirm: true,
+                    ..MenuCues::default()
+                },
+            ),
+            (
+                MenuButton::Quit,
+                MenuCues {
+                    click: true,
+                    ..MenuCues::default()
+                },
+            ),
+            (
+                MenuButton::SaveReplay,
+                MenuCues {
+                    click: true,
+                    ..MenuCues::default()
+                },
+            ),
+        ] {
+            menu.note_press(button);
+            assert_eq!(menu.take_cues(), cue, "{button:?}");
+        }
     }
 
     #[test]

@@ -29,6 +29,7 @@ use slam_osu::mods::{
 };
 use slam_osu::statistics::{adjusted_display_difficulty, round_bpm};
 use slam_play::input::Input;
+use slam_play::menu_overlay::MenuCues;
 use slam_play::{
     Bindings, LiveInput, Offsets, PlaySession, PlaySnapshot, PlayState, PlayfieldLayout,
 };
@@ -1557,6 +1558,21 @@ impl ShellState {
         self.menu_skin.as_ref()
     }
 
+    /// Notes the sounds the pause or fail menu asked for (ADR-0157): they play as the other
+    /// menus' sounds (ADR-0120).
+    pub fn note_menu_cues(&mut self, cues: MenuCues) {
+        use crate::menu_sounds::MenuSound;
+        for (cued, sound) in [
+            (cues.hover, MenuSound::Hover),
+            (cues.confirm, MenuSound::Enter),
+            (cues.click, MenuSound::Click),
+        ] {
+            if cued {
+                self.ui_sounds.push(sound);
+            }
+        }
+    }
+
     /// The interface sounds noted since the last call (ADR-0120).
     pub fn take_ui_sounds(&mut self) -> [bool; crate::menu_sounds::MenuSound::ALL.len()] {
         self.ui_sounds.take()
@@ -2752,12 +2768,18 @@ impl PlayHost {
     }
 
     /// Runs the play on top with `events`.
-    fn tick_game(&mut self, now_ns: u64, events: &[InputEvent], snapshot: &mut PlaySnapshot) {
+    /// Ticks the play; returns the interface sounds its menu asked for (ADR-0157).
+    fn tick_game(
+        &mut self,
+        now_ns: u64,
+        events: &[InputEvent],
+        snapshot: &mut PlaySnapshot,
+    ) -> MenuCues {
         let Some(game) = self.game.as_mut() else {
-            return;
+            return MenuCues::default();
         };
         if game.ending != Ending::Playing {
-            return;
+            return MenuCues::default();
         }
         let audio = &mut self.audio;
         let (output, music) = (audio.output.read(), audio.music.read());
@@ -2784,6 +2806,7 @@ impl PlayHost {
             game.ending = Ending::Sounds;
         }
         self.follow_play(snapshot);
+        snapshot.menu_cues
     }
 
     /// The window is `width` × `height` points.
@@ -3633,7 +3656,8 @@ impl Update for Shell {
         self.text_input.set_enabled(!playing || panel);
         let navigated = match &mut self.host {
             Some(host) if playing && !panel => {
-                host.tick_game(now, events, &mut snapshot.play);
+                let cues = host.tick_game(now, events, &mut snapshot.play);
+                self.state.note_menu_cues(cues);
                 self.state.follow_pointer(events);
                 self.state.watch_hotkeys(events);
                 self.state.watch_volume(events, now);
@@ -3644,7 +3668,8 @@ impl Update for Shell {
                 // stays held after it (#324). First, as a release goes before a hold fires
                 // on the play's own ticks.
                 host.follow_covered(events);
-                host.tick_game(now, &[], &mut snapshot.play);
+                let cues = host.tick_game(now, &[], &mut snapshot.play);
+                self.state.note_menu_cues(cues);
                 self.state.tick(now, events, snapshot)
             }
             _ => self.state.tick(now, events, snapshot),

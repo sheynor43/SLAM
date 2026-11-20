@@ -39,6 +39,7 @@ use slam_osu::rules::OsuRules;
 use slam_osu::{Beatmap, Mod, ModSet, SliderPath, Vec2};
 
 use crate::hitsounds::{Hitsounds, Sound};
+use crate::pause_loop::PauseLoop;
 use crate::service::{COUNTDOWN_STEPS, ServiceSound};
 
 /// Width of the playfield in osu!pixels.
@@ -329,6 +330,9 @@ pub struct GameplaySounds {
     /// Gameplay time of the first combo break that sounded or would have (lazer's
     /// `firstBreakTime`).
     first_break_time: Option<f64>,
+    /// The pause and fail menus' `pause-loop` (ADR-0157); [`GameplaySounds::stop_all`]
+    /// leaves it alone.
+    pause: PauseLoop,
 }
 
 /// The skin's sounds of the service elements (ADR-0140).
@@ -428,6 +432,7 @@ impl GameplaySounds {
             combo_break: None,
             service: ServiceSamples::default(),
             first_break_time: None,
+            pause: PauseLoop::new(None),
         }
     }
 
@@ -452,6 +457,35 @@ impl GameplaySounds {
         self
     }
 
+    /// Loops `sample` while the pause or fail menu shows
+    /// ([`hitsounds::effect`](crate::hitsounds::effect) of `Gameplay/pause-loop`, ADR-0157);
+    /// no sound without one.
+    pub fn with_pause_loop(mut self, sample: Option<Arc<Sample>>) -> Self {
+        self.pause = PauseLoop::new(sample);
+        self
+    }
+
+    /// The pause or fail menu shows at `now_ns`: its loop starts and fades in.
+    pub fn show_pause_loop(&mut self, now_ns: u64, sink: &mut impl VoiceSink) {
+        self.pause.show(now_ns, sink);
+    }
+
+    /// The menu hides at `now_ns`: its loop fades out and stops.
+    pub fn hide_pause_loop(&mut self, now_ns: u64) {
+        self.pause.hide(now_ns);
+    }
+
+    /// Moves the menu loop's fades on to `now_ns`; call it every update tick.
+    pub fn update_pause_loop(&mut self, now_ns: u64, sink: &mut impl VoiceSink) {
+        self.pause.update(now_ns, sink);
+    }
+
+    /// Stops the menu loop at once, as the player screen goes. Returns whether the stop
+    /// queued; call again until it does.
+    pub fn stop_pause_loop(&mut self, sink: &mut impl VoiceSink) -> bool {
+        self.pause.stop(sink)
+    }
+
     /// Plays a sound of the service elements under the effects volume; it plays out.
     pub fn play_service(&mut self, sound: ServiceSound, sink: &mut impl VoiceSink) {
         let sample = match sound {
@@ -470,8 +504,9 @@ impl GameplaySounds {
 
     /// Takes the samples and settings of `other`, sounds made for the same beatmap and mods
     /// with another skin or other settings (ADR-0096), and gives it these to free off the
-    /// update thread. The looping voices stop first; the state of the attempt stays: what
-    /// has sounded, the first combo break, the spinners. Returns whether every stop was
+    /// update thread. The looping voices stop first (the menu loop starts again with the
+    /// next update while its menu shows); the state of the attempt stays: what has
+    /// sounded, the first combo break, the spinners. Returns whether every stop was
     /// queued, as [`GameplaySounds::stop_all`]. Does not allocate.
     pub fn replace_samples(
         &mut self,
@@ -479,12 +514,13 @@ impl GameplaySounds {
         sink: &mut impl VoiceSink,
     ) -> bool {
         let stopped = self.stop_all(sink);
+        let pause_stopped = self.pause.replace_sample(&mut other.pause, sink);
         std::mem::swap(&mut self.hitsounds, &mut other.hitsounds);
         std::mem::swap(&mut self.settings, &mut other.settings);
         std::mem::swap(&mut self.fail, &mut other.fail);
         std::mem::swap(&mut self.combo_break, &mut other.combo_break);
         std::mem::swap(&mut self.service, &mut other.service);
-        stopped
+        stopped && pause_stopped
     }
 
     // Ported from osu!lazer 2026.1005.0-lazer: osu.Game/Screens/Play/ComboEffects.cs (onComboChange)
@@ -541,7 +577,7 @@ impl GameplaySounds {
     /// Mixer commands that failed so far. Hit samples and balance changes are dropped;
     /// starting and stopping looping samples is tried again in later updates.
     pub fn failed_commands(&self) -> u64 {
-        self.failed
+        self.failed + self.pause.failed_commands()
     }
 
     /// Plays the sounds of an update at `time`: the judgements `rules` added to `log` since the

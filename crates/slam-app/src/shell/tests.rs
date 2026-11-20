@@ -2883,3 +2883,37 @@ fn a_saved_replay_shows_a_toast_that_takes_its_click() {
     s.tick(10 + show, &[], &mut snap);
     assert!(!snap.toast.visible);
 }
+
+#[test]
+fn the_play_menu_cues_become_menu_sounds() {
+    use crate::menu_sounds::MenuSound;
+    use slam_play::menu_overlay::MenuCues;
+    let at = |sound| {
+        MenuSound::ALL
+            .iter()
+            .position(|s| *s == sound)
+            .expect("listed")
+    };
+    let mut s = state();
+    let _ = s.take_ui_sounds();
+    s.note_menu_cues(MenuCues::default());
+    assert_eq!(s.take_ui_sounds(), [false; MenuSound::ALL.len()]);
+    s.note_menu_cues(MenuCues {
+        hover: true,
+        confirm: true,
+        click: true,
+    });
+    let noted = s.take_ui_sounds();
+    for sound in [MenuSound::Hover, MenuSound::Enter, MenuSound::Click] {
+        assert!(noted[at(sound)], "{sound:?}: {noted:?}");
+    }
+    // Leaving the play sounds `menuback` itself: the menu never asks for it.
+    assert!(!noted[at(MenuSound::Back)]);
+    s.note_menu_cues(MenuCues {
+        click: true,
+        ..MenuCues::default()
+    });
+    let noted = s.take_ui_sounds();
+    assert_eq!(noted.iter().filter(|n| **n).count(), 1);
+    assert!(noted[at(MenuSound::Click)]);
+}

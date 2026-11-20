@@ -24,6 +24,7 @@ pub mod legacy_hit_error;
 pub mod legacy_text;
 pub mod menu_overlay;
 pub mod offset;
+pub mod pause_loop;
 pub mod playfield;
 pub mod resume;
 pub mod ring;

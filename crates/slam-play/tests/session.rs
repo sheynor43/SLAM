@@ -31,8 +31,8 @@ use slam_play::hud::{HudTextures, MAX_HUD_SHAPES, OFFSET_PLACEHOLDER, SkipTextur
 use slam_play::key_overlay::KeyOverlayTextures;
 use slam_play::legacy_text::FontSprites;
 use slam_play::menu_overlay::{
-    GameplayMenu, MenuInfo, MenuKind, MenuLayout, MenuSnapshot, MenuStyle, MenuView, ReplaySave,
-    song_progress,
+    GameplayMenu, MenuCues, MenuInfo, MenuKind, MenuLayout, MenuSnapshot, MenuStyle, MenuView,
+    ReplaySave, song_progress,
 };
 use slam_play::offset::OffsetPanel;
 use slam_play::session::{PAUSE_IMAGES, PauseTextures};
@@ -361,6 +361,8 @@ struct Sink {
     last_effect: Option<VoiceId>,
     /// The last voice stopped.
     last_stopped: Option<VoiceId>,
+    /// Looping voices started and not stopped since.
+    looping: Vec<VoiceId>,
 }
 
 impl VoiceSink for Sink {
@@ -371,11 +373,15 @@ impl VoiceSink for Sink {
             self.effects += 1;
             self.last_effect = Some(voice);
         }
+        if params.looping {
+            self.looping.push(voice);
+        }
         Ok(voice)
     }
 
     fn stop_voice(&mut self, voice: VoiceId) -> Result<(), PlayError> {
         self.last_stopped = Some(voice);
+        self.looping.retain(|&v| v != voice);
         Ok(())
     }
 
@@ -1304,6 +1310,8 @@ struct Driver {
     sink: Sink,
     snapshot: PlaySnapshot,
     now: u64,
+    /// The menu's sounds asked for since [`Driver::take_cues`].
+    cues: MenuCues,
 }
 
 impl Driver {
@@ -1323,15 +1331,24 @@ impl Driver {
                 )))
                 .with_combo_break_sound(Some(Arc::new(
                     Sample::from_interleaved(vec![0.2; 2 * 10], RATE, 2).unwrap(),
+                )))
+                .with_pause_loop(Some(Arc::new(
+                    Sample::from_interleaved(vec![0.3; 2 * 10], RATE, 2).unwrap(),
                 ))),
             Offsets::default(),
         );
         let mut driver = Driver {
             session,
             track,
-            sink: Sink::default(),
+            // Room for the looping voices, so recording them does not allocate in the
+            // allocation checks.
+            sink: Sink {
+                looping: Vec::with_capacity(64),
+                ..Sink::default()
+            },
             snapshot: PlaySnapshot::default(),
             now: T0,
+            cues: MenuCues::default(),
         };
         driver.tick(&[]);
         driver.tick(&[]);
@@ -1350,7 +1367,15 @@ impl Driver {
             &mut self.sink,
             &mut self.snapshot,
         );
+        let cues = self.snapshot.menu_cues;
+        self.cues.hover |= cues.hover;
+        self.cues.confirm |= cues.confirm;
+        self.cues.click |= cues.click;
         self.now += MS;
+    }
+
+    fn take_cues(&mut self) -> MenuCues {
+        std::mem::take(&mut self.cues)
     }
 
     /// Ticks for `ms` milliseconds without input.
@@ -2268,13 +2293,13 @@ fn back_cuts_the_fail_animation_short_and_stops_the_track_at_once() {
     let map = beatmap();
     let mut d = Driver::new(&map, ModSet::default());
     d.run_until(10_000, |s| s.state == PlayState::Failing);
+    let fail_voice = d.sink.last_effect;
     d.run(500);
     d.tap(ESCAPE);
     assert_eq!(d.state(), PlayState::Failed);
     assert!(d.snapshot.fail.unwrap().cut);
     assert_eq!(d.track.adjustments[8..], FAILED);
     // Quitting stops the fail sound and resets the track.
-    let fail_voice = d.sink.last_effect;
     d.tap(ESCAPE);
     assert_eq!(d.state(), PlayState::Exited);
     assert_eq!(d.sink.last_stopped, fail_voice);
@@ -3163,6 +3188,93 @@ fn the_pause_menu_retries_without_skipping_and_quits() {
     d.tap(UP);
     d.tap(ENTER);
     assert_eq!(d.state(), PlayState::Exited);
+}
+
+#[test]
+fn the_menu_loop_plays_while_a_menu_shows_and_the_buttons_ask_for_their_sounds() {
+    let map = delayed(29000.0);
+    let mut d = Driver::new(&map, ModSet::default());
+    d.run(100);
+    assert!(d.sink.looping.is_empty());
+    d.tap(ESCAPE);
+    assert_eq!(d.state(), PlayState::Paused);
+    assert_eq!(d.sink.looping.len(), 1);
+    let pause_loop = d.sink.looping[0];
+    // Showing selects nothing: no sound.
+    assert_eq!(d.take_cues(), MenuCues::default());
+    // The loop plays on through the pause: the gameplay sounds' stops leave it alone.
+    d.run(500);
+    assert_eq!(d.sink.looping, [pause_loop]);
+
+    // Down selects continue; Enter presses it.
+    d.tap(DOWN);
+    assert_eq!(
+        d.take_cues(),
+        MenuCues {
+            hover: true,
+            ..MenuCues::default()
+        }
+    );
+    d.tap(ENTER);
+    assert_eq!(d.state(), PlayState::Playing);
+    assert_eq!(
+        d.take_cues(),
+        MenuCues {
+            confirm: true,
+            ..MenuCues::default()
+        }
+    );
+    // It fades out over 200 ms, then stops.
+    d.run(150);
+    assert_eq!(d.sink.looping, [pause_loop]);
+    d.run(100);
+    assert!(d.sink.looping.is_empty());
+
+    // Retry stops the loop at once, and its sound survives the restart.
+    d.run(1_000);
+    d.tap(ESCAPE);
+    assert_eq!(d.sink.looping.len(), 1);
+    d.tap(UP);
+    d.tap(UP);
+    let _ = d.take_cues();
+    d.tap(ENTER);
+    assert_eq!(d.snapshot.restarts, 1);
+    assert!(d.sink.looping.is_empty());
+    assert!(d.take_cues().confirm);
+
+    // Quit stops it too, with the button's click (leaving sounds `menuback`).
+    d.run(100);
+    d.tap(ESCAPE);
+    assert_eq!(d.sink.looping.len(), 1);
+    d.tap(UP);
+    let _ = d.take_cues();
+    d.tap(ENTER);
+    assert_eq!(d.state(), PlayState::Exited);
+    assert!(d.sink.looping.is_empty());
+    assert_eq!(
+        d.take_cues(),
+        MenuCues {
+            click: true,
+            ..MenuCues::default()
+        }
+    );
+}
+
+#[test]
+fn the_fail_menu_plays_the_loop_and_its_save_button_clicks() {
+    let map = beatmap();
+    let mut d = Driver::new(&map, ModSet::default());
+    d.run_until(60_000, |s| s.state == PlayState::Failing);
+    assert!(d.sink.looping.is_empty());
+    d.run_until(10_000, |s| s.state == PlayState::Failed);
+    assert_eq!(d.sink.looping.len(), 1);
+    assert_eq!(d.snapshot.menu.kind, MenuKind::Fail);
+    let _ = d.take_cues();
+    d.tap(F1);
+    assert!(d.take_cues().click);
+    // The menu stays: so does the loop.
+    d.run(500);
+    assert_eq!(d.sink.looping.len(), 1);
 }
 
 #[test]
