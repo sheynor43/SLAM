@@ -1113,11 +1113,15 @@ fn a_long_lead_in_is_skipped_to_a_second_before_gameplay_starts() {
     // The first object at 1000 ms: gameplay starts at −1000, the skip goes to −2000.
     assert_eq!(session(&map, &track).start_time(), -9000.0);
 
-    let (ticks, track) = run_presses(&map, &[space(T0 + 100 * MS)], T0 + 200 * MS);
+    let (ticks, track) = run_presses(&map, &[space(T0 + 100 * MS)], T0 + 300 * MS);
     // Playing ticks start at `T0` + 1 ms; the press is on the 100th.
     assert!(ticks[..99].iter().all(|&(_, available)| available));
-    // The tick with the press still runs on the old clock; the next runs from the target.
-    let (time, available) = ticks[100];
+    // The picture and music dip for 100 ms on the old clock (ADR-0160); the tick after
+    // the seek runs from the target.
+    assert!(ticks[99..200].iter().all(|&(_, available)| !available));
+    let (time, _) = ticks[199];
+    assert!(time < -8000.0, "{time}");
+    let (time, available) = ticks[200];
     assert!((time - (-2000.0 + 1.0)).abs() < 0.1, "{time}");
     assert!(!available);
     // Track frame 0 plays when time reaches 0: 2 s after the skip.
@@ -1129,9 +1133,55 @@ fn a_long_lead_in_is_skipped_to_a_second_before_gameplay_starts() {
             Command::PlayAt(9000 * 48),
             Command::Pause,
             Command::Seek(0),
-            Command::PlayAt(2100 * 48),
+            Command::PlayAt(2200 * 48),
         ]
     );
+}
+
+/// The player's skip dips the music out, seeks, and brings it back (ADR-0160); the
+/// snapshot tells the draw side when the dip began.
+#[test]
+fn a_skip_dips_the_music_around_its_seek() {
+    let map = long_lead_in();
+    let track = Track::default();
+    let mut session = session(&map, &track);
+    let mut track = track;
+    let mut sink = Sink::default();
+    let mut snapshot = PlaySnapshot::default();
+    let mut dips = Vec::new();
+    let mut now = T0 - 10 * MS;
+    while now <= T0 + 500 * MS {
+        let presses: &[InputEvent] = if now == T0 + 100 * MS {
+            &[space(T0 + 100 * MS)]
+        } else {
+            &[]
+        };
+        let (output, music) = reports(now, &track);
+        session.tick(
+            now,
+            presses,
+            output,
+            music,
+            &mut track,
+            &mut sink,
+            &mut snapshot,
+        );
+        dips.push((now, snapshot.skip_dip_ns));
+        now += MS;
+    }
+    let fades: Vec<f32> = track
+        .adjustments
+        .iter()
+        .filter_map(|a| match a {
+            TrackAdjustment::Fade { volume, .. } => Some(*volume),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(fades, [0.0, 1.0]);
+    let dipping: Vec<_> = dips.iter().filter(|(_, d)| d.is_some()).collect();
+    assert!(dipping.iter().all(|(_, d)| *d == Some(T0 + 100 * MS)));
+    // From the press to the end of the fade in.
+    assert_eq!(dipping.len(), 350);
 }
 
 #[test]
@@ -1235,7 +1285,8 @@ fn long_lead_in() -> Beatmap {
 #[test]
 fn the_skip_period_ends_a_second_before_gameplay_starts() {
     let map = long_lead_in();
-    // Tick time −2001: skipped to −2000, the track plays 2 s later.
+    // Tick time −2001: too near the target for the dip (ADR-0160), skipped to −2000 at
+    // once, the track plays 2 s later.
     let (_, track) = run_presses(&map, &[space(T0 + 6999 * MS)], T0 + 7100 * MS);
     assert_eq!(track.commands.last(), Some(&Command::PlayAt(8999 * 48)));
     // Tick time −2000: no skip.
@@ -1264,7 +1315,7 @@ fn a_skip_lands_on_its_target_with_offsets() {
     let track = Track::default();
     let session = session_with(&map, &track, offsets);
     let (ticks, track, _) =
-        run_presses_with(session, track, &[space(T0 + 100 * MS)], T0 + 200 * MS);
+        run_presses_with(session, track, &[space(T0 + 100 * MS)], T0 + 300 * MS);
     // Game time 27000 is track time 27015.
     assert_eq!(track.commands.last(), Some(&Command::Seek(27015 * 48)));
     assert!(!ticks[99].1);
@@ -1280,12 +1331,12 @@ fn a_refused_skip_is_tried_again_on_the_next_tick() {
     };
     let session = session(&map, &track);
     let (ticks, track, session) =
-        run_presses_with(session, track, &[space(T0 + 100 * MS)], T0 + 200 * MS);
+        run_presses_with(session, track, &[space(T0 + 100 * MS)], T0 + 300 * MS);
     assert_eq!(session.clock_errors(), 1);
-    assert!(!ticks[99].1 && !ticks[100].1);
+    assert!(!ticks[199].1 && !ticks[200].1);
     // Retried 1 ms later: the clock runs again from −2000.
-    assert_eq!(track.commands.last(), Some(&Command::PlayAt(2101 * 48)));
-    let (time, _) = ticks[150];
+    assert_eq!(track.commands.last(), Some(&Command::PlayAt(2201 * 48)));
+    let (time, _) = ticks[250];
     assert!((time - (-2000.0 + 50.0)).abs() < 0.1, "{time}");
 }
 
@@ -2568,8 +2619,12 @@ fn hud_updates_and_frames_do_not_allocate() {
     hud.request_glyphs(&mut glyphs);
     let mut text = SpriteBatch::with_capacity(256);
     let mut batch = SpriteBatch::with_capacity(256);
+    let mut shapes =
+        slam_render::shape::ShapeBatch::with_capacity(2 * slam_play::skip::MAX_SKIP_SHAPES);
+    let theme = slam_ui::theme::Theme::default();
     let mut snapshot = PlaySnapshot {
         skip_available: true,
+        skip_dip_ns: Some(50 * MS),
         state: PlayState::Resuming,
         ..PlaySnapshot::default()
     };
@@ -2605,6 +2660,22 @@ fn hud_updates_and_frames_do_not_allocate() {
             snapshot.offset_panel.changed(offset, 0);
             batch.clear();
             text.clear();
+            shapes.clear();
+            // Both shaped styles of the skip button (ADR-0160).
+            hud.animate(&snapshot, 100 * MS);
+            for style in [
+                slam_play::skip::SkipStyle::Lazer,
+                slam_play::skip::SkipStyle::Slam,
+            ] {
+                hud.set_skip_style(style);
+                hud.push_skip_shapes(
+                    &mut shapes,
+                    &snapshot,
+                    &HudTextures::default(),
+                    Some(WHITE),
+                    &theme,
+                );
+            }
             hud.push_shapes(
                 &mut batch,
                 &snapshot,
@@ -2622,9 +2693,9 @@ fn hud_updates_and_frames_do_not_allocate() {
             );
         }
     });
-    // Health bar (two), skip button and offset panel; the resume target goes with the
-    // cursor.
-    assert_eq!(batch.len(), 4);
+    // Health bar (two) and offset panel; the skip button is a shape (ADR-0160), the resume
+    // target goes with the cursor.
+    assert_eq!(batch.len(), 3);
     hud.update(1280.0, 720.0, &HudValues::default(), -0.0001);
     assert_eq!(hud.offset_text(), "0 мс");
     hud.update(1280.0, 720.0, &HudValues::default(), 12.5);
@@ -3291,9 +3362,55 @@ fn space_in_the_pause_menu_does_not_skip_the_intro() {
     assert_eq!(d.state(), PlayState::Playing);
     d.run(10);
     assert!(!d.track.commands[commands..].contains(&Command::Seek(27000 * 48)));
-    // Space while playing still skips.
+    // Space while playing still skips, after the dip.
     d.tap(SPACE);
-    d.run(5);
+    d.run(105);
+    assert!(d.track.commands.contains(&Command::Seek(27000 * 48)));
+}
+
+/// A quick retry in the middle of the skip's dip brings the music back at once and drops
+/// the dip (ADR-0160).
+#[test]
+fn a_retry_during_the_skips_dip_brings_the_music_back() {
+    let map = delayed(29000.0);
+    let mut d = Driver::new(&map, ModSet::default());
+    d.run(100);
+    d.tap(SPACE);
+    d.run(50);
+    assert!(d.snapshot.skip_dip_ns.is_some());
+    d.hold(None, GRAVE, 200);
+    assert_eq!(d.snapshot.restarts, 1);
+    assert_eq!(d.snapshot.skip_dip_ns, None);
+    let last_fade = d.track.adjustments.iter().rev().find_map(|a| match a {
+        TrackAdjustment::Fade {
+            volume,
+            duration_ms,
+            ..
+        } => Some((*volume, *duration_ms)),
+        _ => None,
+    });
+    assert_eq!(last_fade, Some((1.0, 0.0)));
+}
+
+/// A fade that does not queue is tried again: the music must not stay silent (ADR-0160).
+#[test]
+fn a_refused_fade_is_tried_again() {
+    let map = delayed(29000.0);
+    let mut d = Driver::new(&map, ModSet::default());
+    d.run(100);
+    d.track.refuse_adjust = true;
+    d.tap(SPACE);
+    d.run(400);
+    let fades: Vec<f32> = d
+        .track
+        .adjustments
+        .iter()
+        .filter_map(|a| match a {
+            TrackAdjustment::Fade { volume, .. } => Some(*volume),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(fades, [0.0, 1.0]);
     assert!(d.track.commands.contains(&Command::Seek(27000 * 48)));
 }
 

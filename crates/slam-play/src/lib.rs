@@ -32,6 +32,7 @@ pub mod ring;
 pub mod service;
 pub mod session;
 pub mod shake;
+pub mod skip;
 pub mod slider_body;
 pub mod sliders;
 pub mod song_progress;

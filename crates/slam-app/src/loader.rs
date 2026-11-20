@@ -59,6 +59,8 @@ pub struct PlayOptions {
     pub hud_animations: bool,
     /// The cursor leaves a trail.
     pub cursor_trail: bool,
+    /// How the skip button looks (ADR-0160).
+    pub skip_style: slam_play::skip::SkipStyle,
     /// Size of the cursor (ADR-0086).
     pub cursor_size: f64,
     /// The cursor's size follows the beatmap's circle size.
@@ -303,6 +305,7 @@ pub fn spawn(mut config: LoaderConfig) -> std::io::Result<(LoaderLink, SceneTras
                     config.settings.key_overlay = options.key_overlay;
                     config.settings.hud_animations = options.hud_animations;
                     config.settings.cursor_trail = options.cursor_trail;
+                    config.settings.skip_style = options.skip_style;
                     config.settings.cursor_size = options.cursor_size as f32;
                     config.settings.auto_cursor_size = options.auto_cursor_size;
                     config.settings.cursor_style = options.cursor_style;
@@ -376,6 +379,7 @@ mod tests {
             key_overlay: None,
             hud_animations: true,
             cursor_trail: true,
+            skip_style: slam_play::skip::SkipStyle::Skin,
             cursor_size: 1.0,
             auto_cursor_size: false,
             cursor_style: slam_ui::cursor::CursorStyle::Skin,

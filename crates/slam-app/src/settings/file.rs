@@ -755,6 +755,16 @@ fn from_table(mut table: Table) -> Loaded {
             )),
         }
     }
+    let mut style: Option<String> = None;
+    cx.opt(&mut gameplay, "gameplay", "skip_button", &mut style);
+    if let Some(name) = style {
+        match crate::settings::SkipButtonStyle::from_name(&name) {
+            Some(style) => settings.gameplay.skip_button = style,
+            None => cx.warn(format!(
+                "gameplay.skip_button: unknown value \"{name}\", using the default"
+            )),
+        }
+    }
     let mut scale = f64::from(settings.gameplay.pause_menu_scale);
     cx.float(
         &mut gameplay,
