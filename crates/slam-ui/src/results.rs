@@ -11,6 +11,7 @@ use std::sync::Arc;
 use crate::menu::Rect;
 use crate::theme::Theme;
 
+pub mod stable;
 pub mod view;
 
 pub use view::{ResultsLabels, ResultsView};
@@ -202,6 +203,11 @@ pub struct ResultsData {
 }
 
 impl ResultsData {
+    /// Whether the play reached the highest possible combo (stable's "perfect" banner).
+    pub fn full_combo(&self) -> bool {
+        self.max_combo > 0 && self.combo >= self.max_combo
+    }
+
     /// The rows to list, in order.
     pub fn rows(&self) -> impl Iterator<Item = (StatKind, ResultsStat)> + '_ {
         StatKind::ALL
@@ -443,6 +449,46 @@ impl ResultsLayout {
                 height: hint_height,
             },
             scale,
+        }
+    }
+
+    /// This layout in the stable look (ADR-0158): the panel and the letter fill the left
+    /// and the middle, so the buttons and their hint move to the right part of the window,
+    /// right-aligned to the margin and clear of the panel.
+    pub fn stable_buttons(mut self, width: f32, height: f32, theme: &Theme) -> ResultsLayout {
+        let scale = self.scale;
+        let margin = theme.results_margin * scale;
+        let (bw, bh) = (theme.button_width * scale, theme.button_height * scale);
+        let spacing = theme.button_spacing * scale;
+        let left = (stable::panel_right(width, height) + margin).max(width * 0.55);
+        let right = width - margin;
+        // Narrow windows shrink the buttons rather than reach into the panel.
+        let bw = bw.min((right - left - spacing) / 2.0).max(0.0);
+        let buttons_left = right - 2.0 * bw - spacing;
+        let button_y = height - margin - bh;
+        for (i, button) in self.buttons.iter_mut().enumerate() {
+            *button = Rect {
+                x: buttons_left + i as f32 * (bw + spacing),
+                y: button_y,
+                width: bw,
+                height: bh,
+            };
+        }
+        self.hint = Rect {
+            x: buttons_left,
+            width: 2.0 * bw + spacing,
+            ..self.hint
+        };
+        self
+    }
+
+    /// [`ResultsLayout::new`], in the stable look when `stable`.
+    pub fn new_for(width: f32, height: f32, theme: &Theme, stable: bool) -> ResultsLayout {
+        let layout = ResultsLayout::new(width, height, theme);
+        if stable {
+            layout.stable_buttons(width, height, theme)
+        } else {
+            layout
         }
     }
 

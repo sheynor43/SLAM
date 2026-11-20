@@ -17,6 +17,7 @@ pub mod menu_cursor;
 pub mod menu_sounds;
 pub mod parallax;
 pub mod play;
+pub mod ranking_skin;
 pub mod replay_stats;
 pub mod replays;
 pub mod reveal;

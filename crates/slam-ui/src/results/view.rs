@@ -8,11 +8,12 @@ use std::sync::Arc;
 use slam_render::Color;
 use slam_render::atlas::AtlasRegion;
 use slam_render::shape::ShapeBatch;
-use slam_render::sprite::SpriteBatch;
+use slam_render::sprite::{Sprite, SpriteBatch};
 
 use crate::widgets::Look;
 use slam_text::{FontRegistry, Glyph, GlyphCache, GlyphKey, push_layout};
 
+use super::stable::{self, Item, StableSkin};
 use super::{
     ResultsButton, ResultsData, ResultsLayout, ResultsSnapshot, StatKind, write_accuracy,
     write_fixed2, write_grouped, write_stat,
@@ -75,6 +76,9 @@ pub struct ResultsView {
     holds: Option<u64>,
     ellipsis: f32,
     title: Line,
+    /// The beatmap line in the stable look's top bar, and what it was laid out for.
+    stable_title: Line,
+    stable_holds: Option<(u64, u32, u32)>,
     rank: Line,
     info_labels: [Line; INFO_ROWS],
     info_values: [Line; INFO_ROWS],
@@ -107,6 +111,8 @@ impl ResultsView {
             holds: None,
             ellipsis: 0.0,
             title: line(),
+            stable_title: line(),
+            stable_holds: None,
             rank: line(),
             info_labels: [
                 labelled(&labels.score),
@@ -172,6 +178,7 @@ impl ResultsView {
         self.ellipsis = probe.layout.width();
         // The title and rank depend on the data; they are laid out again from it.
         self.holds = None;
+        self.stable_holds = None;
     }
 
     /// Writes the texts of `data` and lays them out.
@@ -233,6 +240,65 @@ impl ResultsView {
         }
     }
 
+    /// The stable look's art: the skin's sprites, the black bar and the beatmap line in it.
+    #[allow(clippy::too_many_arguments)]
+    fn push_art(
+        &mut self,
+        shapes: &mut ShapeBatch,
+        text: &mut SpriteBatch,
+        glyphs: &mut GlyphCache,
+        snapshot: &ResultsSnapshot,
+        pose: Pose,
+        white: AtlasRegion,
+        skin: &StableSkin,
+    ) {
+        let Frame { width, height } = self.frame;
+        let shift = pose.offset * width;
+        let tint = faded(Color::WHITE, pose.opacity);
+        let data = &*snapshot.data;
+        let info = stable::lay_out(skin, data, width, height, 0.0, |item| match item {
+            Item::Bar { height } => {
+                let mut bar = Sprite::new(white.texture, white.uv, [shift, 0.0], [width, height]);
+                bar.colour = faded(Color::BLACK, pose.opacity);
+                shapes.push(&bar);
+            }
+            Item::Sprite {
+                sprite,
+                centre,
+                size,
+                ..
+            } => {
+                let at = [centre[0] - size[0] / 2.0 + shift, centre[1] - size[1] / 2.0];
+                let mut quad = Sprite::new(sprite.texture, sprite.uv, at, size);
+                quad.colour = tint;
+                shapes.push(&quad);
+            }
+        });
+        let key = (data.id, width as u32, height as u32);
+        let size = (info.bar_height * 0.45).max(1.0);
+        let margin = info.unit * 5.0;
+        if self.stable_holds != Some(key) {
+            self.stable_holds = Some(key);
+            self.stable_title.text.clear();
+            self.stable_title.text.push_str(&data.title);
+            let mut probe = Line::new(&ELLIPSIS.to_string());
+            self.type_setter.lay_out(&mut probe, size);
+            fit(
+                &mut self.type_setter,
+                &mut self.stable_title,
+                size,
+                (info.title_left - 2.0 * margin).max(0.0),
+                probe.layout.width(),
+            );
+        }
+        let line = &self.stable_title;
+        let position = [
+            margin + shift,
+            info.bar_height / 2.0 - line.layout.height() / 2.0,
+        ];
+        push_layout(text, &line.layout, position, tint, glyphs);
+    }
+
     /// Asks `glyphs` for every glyph of the texts laid out so far. Returns how many are
     /// not ready yet; repeat with [`GlyphCache::process`] in between.
     pub fn request_glyphs(&self, glyphs: &mut GlyphCache) -> usize {
@@ -244,6 +310,7 @@ impl ResultsView {
             .chain(&self.buttons)
             .chain([
                 &self.title,
+                &self.stable_title,
                 &self.rank,
                 &self.no_mods,
                 &self.not_available,
@@ -278,17 +345,70 @@ impl ResultsView {
         pose: Pose,
         white: AtlasRegion,
     ) {
+        self.push_with(
+            shapes, text, glyphs, width, height, snapshot, pose, white, None,
+        );
+    }
+
+    /// [`push`](Self::push) in stable's look when the skin gives one (ADR-0158): the
+    /// skin's panel, letter and counters replace SLAM's rows; the buttons stay.
+    #[allow(clippy::too_many_arguments)]
+    pub fn push_stable(
+        &mut self,
+        shapes: &mut ShapeBatch,
+        text: &mut SpriteBatch,
+        glyphs: &mut GlyphCache,
+        width: f32,
+        height: f32,
+        snapshot: &ResultsSnapshot,
+        pose: Pose,
+        white: AtlasRegion,
+        skin: &StableSkin,
+    ) {
+        self.push_with(
+            shapes,
+            text,
+            glyphs,
+            width,
+            height,
+            snapshot,
+            pose,
+            white,
+            Some(skin),
+        );
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn push_with(
+        &mut self,
+        shapes: &mut ShapeBatch,
+        text: &mut SpriteBatch,
+        glyphs: &mut GlyphCache,
+        width: f32,
+        height: f32,
+        snapshot: &ResultsSnapshot,
+        pose: Pose,
+        white: AtlasRegion,
+        stable: Option<&StableSkin>,
+    ) {
         let frame = Frame { width, height };
         if frame != self.frame {
             self.frame = frame;
             self.lay_out();
         }
         self.prepare(&snapshot.data);
+        if let Some(skin) = stable {
+            self.push_art(shapes, text, glyphs, snapshot, pose, white, skin);
+        }
 
         let shift = pose.offset * width;
         let opacity = pose.opacity;
         let theme = &self.theme;
         let layout = &self.layout;
+        let layout = &match stable {
+            Some(_) => layout.stable_buttons(width, height, theme),
+            None => *layout,
+        };
         let pad = theme.song_text_pad * layout.scale;
         let data = &*snapshot.data;
 
@@ -306,69 +426,71 @@ impl ResultsView {
             push_layout(text, &line.layout, position, faded(colour, opacity), glyphs);
         };
 
-        place(
-            &self.title,
-            layout.title.centre()[0] - self.title.layout.width() / 2.0,
-            layout.title.centre()[1],
-            theme.text,
-        );
-        let rank_colour = if data.rank.silver() {
-            theme.rank_silver
-        } else {
-            theme.text
-        };
-        place(
-            &self.rank,
-            layout.rank.centre()[0] - self.rank.layout.width() / 2.0,
-            layout.rank.centre()[1],
-            rank_colour,
-        );
-
-        let mut row = |area: &Rect, label: &Line, value: &Line| {
-            rect(area, theme.button_fill, Look::Round);
-            let y = area.y + area.height / 2.0;
-            place(label, area.x + pad, y, theme.disabled_text);
+        if stable.is_none() {
             place(
-                value,
-                area.x + area.width - pad - value.layout.width(),
-                y,
+                &self.title,
+                layout.title.centre()[0] - self.title.layout.width() / 2.0,
+                layout.title.centre()[1],
                 theme.text,
             );
-        };
-        for (i, area) in layout.info.iter().enumerate() {
-            row(area, &self.info_labels[i], &self.info_values[i]);
-        }
-        for (n, (kind, _)) in data.rows().enumerate() {
-            let i = kind.index();
-            row(
-                &layout.stat_row(n),
-                &self.stat_labels[i],
-                &self.stat_values[i],
-            );
-        }
-        // Mods with none: the "none" text over the empty value.
-        if data.mods.is_empty() {
-            let area = &layout.info[MODS_ROW];
+            let rank_colour = if data.rank.silver() {
+                theme.rank_silver
+            } else {
+                theme.text
+            };
             place(
-                &self.no_mods,
-                area.x + area.width - pad - self.no_mods.layout.width(),
-                area.y + area.height / 2.0,
-                theme.disabled_text,
+                &self.rank,
+                layout.rank.centre()[0] - self.rank.layout.width() / 2.0,
+                layout.rank.centre()[1],
+                rank_colour,
             );
-        }
-        // The hit error rows without a value: the "not available" text over the empty one.
-        for (row, present) in [
-            (4, data.average_hit_error_text.is_some()),
-            (5, data.unstable_rate.is_some()),
-        ] {
-            if !present {
-                let area = &layout.info[row];
+
+            let mut row = |area: &Rect, label: &Line, value: &Line| {
+                rect(area, theme.button_fill, Look::Round);
+                let y = area.y + area.height / 2.0;
+                place(label, area.x + pad, y, theme.disabled_text);
                 place(
-                    &self.not_available,
-                    area.x + area.width - pad - self.not_available.layout.width(),
+                    value,
+                    area.x + area.width - pad - value.layout.width(),
+                    y,
+                    theme.text,
+                );
+            };
+            for (i, area) in layout.info.iter().enumerate() {
+                row(area, &self.info_labels[i], &self.info_values[i]);
+            }
+            for (n, (kind, _)) in data.rows().enumerate() {
+                let i = kind.index();
+                row(
+                    &layout.stat_row(n),
+                    &self.stat_labels[i],
+                    &self.stat_values[i],
+                );
+            }
+            // Mods with none: the "none" text over the empty value.
+            if data.mods.is_empty() {
+                let area = &layout.info[MODS_ROW];
+                place(
+                    &self.no_mods,
+                    area.x + area.width - pad - self.no_mods.layout.width(),
                     area.y + area.height / 2.0,
                     theme.disabled_text,
                 );
+            }
+            // The hit error rows without a value: the "not available" text over the empty one.
+            for (row, present) in [
+                (4, data.average_hit_error_text.is_some()),
+                (5, data.unstable_rate.is_some()),
+            ] {
+                if !present {
+                    let area = &layout.info[row];
+                    place(
+                        &self.not_available,
+                        area.x + area.width - pad - self.not_available.layout.width(),
+                        area.y + area.height / 2.0,
+                        theme.disabled_text,
+                    );
+                }
             }
         }
 

@@ -131,3 +131,66 @@ fn view_pushes_without_allocating_once_warm() {
     });
     assert!(shapes.len() > 8);
 }
+
+#[test]
+#[allow(clippy::field_reassign_with_default, clippy::needless_range_loop)]
+fn stable_view_pushes_without_allocating_once_warm() {
+    use slam_render::atlas::UvRect as Uv;
+    use slam_ui::results::stable::{Glyph, StableImages, StableSkin, StableSprite};
+
+    let sprite = |w: f32, h: f32| {
+        Some(StableSprite {
+            texture: TextureId(3),
+            uv: Uv::FULL,
+            size: [w, h],
+            density: 1.0,
+        })
+    };
+    let mut images: StableImages<Option<StableSprite>> = StableImages::default();
+    images.panel = sprite(622.0, 505.0);
+    images.title = sprite(300.0, 75.0);
+    images.perfect = sprite(478.0, 150.0);
+    images.grades[1] = sprite(369.0, 422.0);
+    for d in 0..10 {
+        images.score_font[d] = sprite(40.0, 50.0);
+        images.combo_font[d] = sprite(40.0, 50.0);
+    }
+    images.combo_font[Glyph::X.index()] = sprite(30.0, 50.0);
+    images.mods[4] = sprite(68.0, 66.0);
+    let skin = StableSkin {
+        modern: true,
+        score_overlap: 0.0,
+        combo_overlap: 0.0,
+        images,
+    };
+    let registry = Arc::new(FontRegistry::with_builtin());
+    let mut glyphs = glyph_atlas(Arc::clone(&registry), &GlyphAtlasConfig::new(LIMITS)).unwrap();
+    let mut view = ResultsView::new(registry, Theme::default(), &labels());
+    let mut shapes = ShapeBatch::with_capacity(512);
+    let mut text = SpriteBatch::with_capacity(8192);
+    let snapshot = Results::new(data(1)).snapshot();
+    let mut frame = || {
+        shapes.clear();
+        text.clear();
+        view.push_stable(
+            &mut shapes,
+            &mut text,
+            &mut glyphs,
+            1280.0,
+            720.0,
+            &snapshot,
+            Pose::SHOWN,
+            white(),
+            &skin,
+        );
+    };
+    frame();
+    frame();
+    assert_no_alloc(|| {
+        for _ in 0..10 {
+            frame();
+        }
+    });
+    // The panel, the letter and digits, the bar, the title and the buttons.
+    assert!(shapes.len() > 20);
+}
