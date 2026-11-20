@@ -319,6 +319,7 @@ settings-option-pause-menu-style-stable = stable (from the skin)
 settings-gameplay-key-overlay-animation = Key overlay animation
 settings-gameplay-hud-animations = HUD animations
 settings-gameplay-cursor-trail = Cursor trail
+settings-gameplay-cursor-ripple = Cursor ripples
 settings-gameplay-cursor-size = Gameplay cursor size
 settings-gameplay-auto-cursor-size = Adjust gameplay cursor size based on current beatmap
 settings-gameplay-skin = Skin

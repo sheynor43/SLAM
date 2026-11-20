@@ -296,6 +296,8 @@ pub enum Row {
     CursorSize,
     AutoCursorSize,
     CursorTrail,
+    /// The gameplay cursor sends a ring out at each press (ADR-0159).
+    CursorRipple,
     HitLighting,
     /// Where the menu sounds come from (ADR-0120).
     MenuSounds,
@@ -353,7 +355,7 @@ pub enum Row {
 const _: () = assert!(Row::ALL.len() <= slam_ui::settings_screen::MAX_ROWS);
 
 impl Row {
-    pub const ALL: [Row; 101] = [
+    pub const ALL: [Row; 102] = [
         Row::MasterVolume,
         Row::MusicVolume,
         Row::MenuMusic,
@@ -420,6 +422,7 @@ impl Row {
         Row::CursorSize,
         Row::AutoCursorSize,
         Row::CursorTrail,
+        Row::CursorRipple,
         Row::HitLighting,
         Row::MenuSounds,
         Row::MenuBackground,
@@ -564,6 +567,7 @@ impl Row {
             | Row::CursorSize
             | Row::AutoCursorSize
             | Row::CursorTrail
+            | Row::CursorRipple
             | Row::HitLighting
             | Row::MenuSounds
             | Row::MenuBackground
@@ -692,6 +696,7 @@ impl Row {
             Row::KeyOverlayAnimation => "settings-gameplay-key-overlay-animation",
             Row::HudAnimations => "settings-gameplay-hud-animations",
             Row::CursorTrail => "settings-gameplay-cursor-trail",
+            Row::CursorRipple => "settings-gameplay-cursor-ripple",
             Row::CursorSize => "settings-gameplay-cursor-size",
             Row::AutoCursorSize => "settings-gameplay-auto-cursor-size",
             Row::PauseMenuStyle => "settings-gameplay-pause-menu-style",
@@ -1396,6 +1401,9 @@ impl Rows {
             Row::CursorTrail => RowKind::Toggle {
                 value: s.gameplay.cursor_trail,
             },
+            Row::CursorRipple => RowKind::Toggle {
+                value: s.gameplay.cursor_ripple,
+            },
             Row::AutoCursorSize => RowKind::Toggle {
                 value: s.gameplay.auto_cursor_size,
             },
@@ -1531,6 +1539,7 @@ impl Rows {
                 settings.gameplay.pause_menu_scale = scale_from_percent(v);
             }
             (Row::CursorTrail, RowValue::Toggle(v)) => settings.gameplay.cursor_trail = v,
+            (Row::CursorRipple, RowValue::Toggle(v)) => settings.gameplay.cursor_ripple = v,
             (Row::AutoCursorSize, RowValue::Toggle(v)) => {
                 settings.gameplay.auto_cursor_size = v;
             }
@@ -2335,6 +2344,7 @@ mod tests {
             (Row::ServiceSounds, true),
             (Row::DisableWinKey, true),
             (Row::CursorTrail, true),
+            (Row::CursorRipple, false),
             (Row::AutoCursorSize, false),
         ] {
             assert_eq!(specs[index(row)].kind, RowKind::Toggle { value }, "{row:?}");
@@ -2645,6 +2655,7 @@ mod tests {
         rows.apply(&mut s, index(Row::HudAnimations), RowValue::Toggle(false));
         rows.apply(&mut s, index(Row::Intro), RowValue::Toggle(false));
         rows.apply(&mut s, index(Row::CursorTrail), RowValue::Toggle(false));
+        rows.apply(&mut s, index(Row::CursorRipple), RowValue::Toggle(true));
         rows.apply(
             &mut s,
             index(Row::BeatmapHitsounds),
@@ -2692,6 +2703,7 @@ mod tests {
         assert!(!s.gameplay.hud_animations);
         assert!(!s.general.intro);
         assert!(!s.gameplay.cursor_trail);
+        assert!(s.gameplay.cursor_ripple);
         assert!(!s.gameplay.beatmap_hitsounds);
         assert!(!s.gameplay.always_play_first_combo_break);
         assert!(!s.gameplay.disable_win_key);
@@ -2935,6 +2947,7 @@ mod tests {
             Row::CursorSize,
             Row::AutoCursorSize,
             Row::CursorTrail,
+            Row::CursorRipple,
             Row::HitLighting,
             Row::MenuSounds,
             Row::MenuBackground,

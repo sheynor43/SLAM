@@ -54,6 +54,12 @@ impl CursorPath {
         self.written
     }
 
+    /// Position `index` of all ever written, unless overwritten already or not yet written.
+    pub fn at(&self, index: u64) -> Option<Vec2> {
+        (index < self.written && index + CURSOR_PATH_CAPACITY as u64 >= self.written)
+            .then(|| self.points[(index % CURSOR_PATH_CAPACITY as u64) as usize])
+    }
+
     /// The positions written after the first `seen`, oldest first. Those overwritten already
     /// are skipped.
     pub fn since(&self, seen: u64) -> impl Iterator<Item = Vec2> + '_ {
@@ -252,6 +258,9 @@ pub struct CursorTextures {
     pub cursor: Option<SkinSprite>,
     pub middle: Option<SkinSprite>,
     pub trail: Option<SkinSprite>,
+    /// `cursor-smoke` and `cursor-ripple` (ADR-0159).
+    pub smoke: Option<SkinSprite>,
+    pub ripple: Option<SkinSprite>,
     pub config: CursorSkinConfig,
 }
 
@@ -707,6 +716,19 @@ impl CursorView {
         frame: &CursorFrame<'_>,
         textures: &CursorTextures,
     ) {
+        self.push_with(batch, layout, frame, textures, |_| {});
+    }
+
+    /// As [`push`](Self::push), with `between` writing what goes between the trail and the
+    /// cursor (the ripples, ADR-0159); it runs whether the cursor shows or not.
+    pub fn push_with(
+        &mut self,
+        batch: &mut SpriteBatch,
+        layout: &PlayfieldLayout,
+        frame: &CursorFrame<'_>,
+        textures: &CursorTextures,
+        between: impl FnOnce(&mut SpriteBatch),
+    ) {
         if frame.restarts != self.restarts {
             // A new play has a new cursor container.
             self.restarts = frame.restarts;
@@ -747,11 +769,13 @@ impl CursorView {
         }
         self.part_scale = Some(part_scale);
 
-        if frame.path.written() == 0 || !frame.visible {
-            return;
-        }
-        if let Some(trail) = trail_texture {
+        let shown = frame.path.written() != 0 && frame.visible;
+        if shown && let Some(trail) = trail_texture {
             self.trail.push(batch, layout, trail, config, part_rotation);
+        }
+        between(batch);
+        if !shown {
+            return;
         }
         let at = layout.to_window(frame.position);
         if self.slam {

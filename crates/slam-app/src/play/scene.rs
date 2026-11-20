@@ -99,6 +99,8 @@ pub struct PlaySettings {
     pub hit_lighting: bool,
     /// Lazer's `ShowCursorTrail`.
     pub cursor_trail: bool,
+    /// Whether presses leave ripples (ADR-0159).
+    pub cursor_ripple: bool,
     /// Lazer's `GameplayCursorSize` (ADR-0086).
     pub cursor_size: f32,
     /// Lazer's `AutoCursorSize`: the cursor's size follows the beatmap's circle size.
@@ -134,6 +136,7 @@ impl Default for PlaySettings {
             snaking: Snaking::default(),
             hit_lighting: true,
             cursor_trail: true,
+            cursor_ripple: false,
             cursor_size: 1.0,
             auto_cursor_size: false,
             cursor_style: slam_ui::cursor::CursorStyle::Skin,
@@ -367,6 +370,8 @@ pub fn prepare(
             .with_slam(settings.cursor_style == CursorStyle::Slam),
         resume: slam_play::resume::ResumeView::new(settings.cursor_trail, cursor_scale)
             .with_slam(settings.cursor_style == CursorStyle::Slam),
+        smoke: slam_play::smoke::SmokeView::new(),
+        ripples: settings.cursor_ripple,
     };
 
     let (mut requests, uploads): (TextureRequests, TextureUploads) =
@@ -428,13 +433,17 @@ pub fn prepare(
             dim_level: settings.dim,
             ..BackgroundSettings::default()
         }),
-        batch: SpriteBatch::with_capacity(MAX_SPRITES),
+        batch: SpriteBatch::with_capacity(MAX_SPRITES + slam_play::smoke::MAX_SMOKE_POINTS),
         bodies: SliderBodies::new(),
         meshes: SliderVisuals::meshes(beatmap),
         objects: beatmap.hit_objects.len(),
         text,
-        cursor: SpriteBatch::with_capacity(MAX_CURSOR_SPRITES + MAX_TARGET_SPRITES),
-        cursor_shapes: ShapeBatch::with_capacity(2 * MAX_CURSOR_SHAPES),
+        cursor: SpriteBatch::with_capacity(
+            MAX_CURSOR_SPRITES + MAX_TARGET_SPRITES + slam_play::ripple::MAX_RIPPLE_SPRITES,
+        ),
+        cursor_shapes: ShapeBatch::with_capacity(
+            2 * MAX_CURSOR_SHAPES + slam_play::ripple::MAX_RIPPLE_SPRITES,
+        ),
         cursor_style: settings.cursor_style,
         cursor_theme: Theme::new(settings.cursor_scheme, 1.0),
         menu,
@@ -694,6 +703,13 @@ impl PlayScene {
         } else {
             self.view
                 .push_cursor(&mut self.cursor, &layout, snapshot, now_ns, &textures);
+            self.view.push_ripple_rings(
+                &mut self.cursor_shapes,
+                &layout,
+                snapshot,
+                now_ns,
+                &textures,
+            );
             if self.cursor_style == CursorStyle::Slam {
                 self.view.push_slam_cursors(
                     &mut self.cursor_shapes,

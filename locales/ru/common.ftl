@@ -323,6 +323,7 @@ settings-option-pause-menu-style-stable = stable (из скина)
 settings-gameplay-key-overlay-animation = Анимация оверлея клавиш
 settings-gameplay-hud-animations = Анимации HUD
 settings-gameplay-cursor-trail = След курсора
+settings-gameplay-cursor-ripple = Рябь от нажатий
 settings-gameplay-cursor-size = Размер курсора в игре
 settings-gameplay-auto-cursor-size = Подстраивать размер курсора под карту
 settings-gameplay-skin = Скин

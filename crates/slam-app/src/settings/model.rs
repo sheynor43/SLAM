@@ -904,6 +904,9 @@ pub struct Gameplay {
     pub hud_animations: bool,
     /// The cursor leaves a trail (lazer's `OsuRulesetSetting.ShowCursorTrail`).
     pub cursor_trail: bool,
+    /// Ripples under the cursor on every press (lazer's `ShowCursorRipples`, off by default;
+    /// ADR-0159).
+    pub cursor_ripple: bool,
     /// Size of the gameplay cursor and its trail, 0.1 ..= 2.0 in steps of 0.01 (lazer's
     /// `OsuSetting.GameplayCursorSize`, ADR-0086).
     pub cursor_size: f64,
@@ -954,6 +957,7 @@ impl Default for Gameplay {
             key_overlay_animation: KeyOverlayAnimation::default(),
             hud_animations: true,
             cursor_trail: true,
+            cursor_ripple: false,
             cursor_size: 1.0,
             auto_cursor_size: false,
             cursor_style: CursorStyle::Skin,
