@@ -125,3 +125,19 @@ jobs:
           gh release create "$GITHUB_REF_NAME" --repo "$GITHUB_REPOSITORY" \
             --prerelease --title "SLAM $GITHUB_REF_NAME" --notes-file packaging/release-notes.md \
             SLAM-*.AppImage SLAM-*.zip
+      # Rebuild the project site (sheynor-slam.pages.dev) right away instead of waiting for its
+      # periodic check. Needs the SITE_DISPATCH_TOKEN secret; without it this step does nothing.
+      - name: Update the project site
+        continue-on-error: true
+        env:
+          SITE_DISPATCH_TOKEN: ${{ secrets.SITE_DISPATCH_TOKEN }}
+        run: |
+          if [ -z "$SITE_DISPATCH_TOKEN" ]; then
+            echo "SITE_DISPATCH_TOKEN is not set, the site picks the release up on its own check."
+            exit 0
+          fi
+          curl -fsS -X POST \
+            -H "Accept: application/vnd.github+json" \
+            -H "Authorization: Bearer $SITE_DISPATCH_TOKEN" \
+            https://api.github.com/repos/sheynor43/site/dispatches \
+            -d "{\"event_type\":\"slam-release\",\"client_payload\":{\"tag\":\"$GITHUB_REF_NAME\"}}"
