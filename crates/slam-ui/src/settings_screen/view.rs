@@ -11,7 +11,7 @@ use slam_text::{FontRegistry, Glyph, GlyphCache, GlyphKey};
 
 use super::{
     Conflict, KeyValue, MAX_ROWS, MouseKey, RowKind, RowSpec, RowWidget, SettingsLayout,
-    SettingsScreen, SettingsSnapshot,
+    SettingsScreen, SettingsSnapshot, icons,
 };
 use crate::marquee::{Marquee, MarqueeParams, ScrollTracker, push_marquee};
 use crate::menu::Rect;
@@ -223,6 +223,9 @@ enum RowView {
 
 /// How much larger than a row's text a section header's is (ADR-0133).
 const HEADER_TEXT: f32 = 1.25;
+
+/// The icon's side as a share of its tab's.
+const ICON_SHARE: f32 = 0.56;
 
 /// The draw side of [`SettingsScreen`].
 pub struct SettingsView {
@@ -511,9 +514,8 @@ impl SettingsView {
             line.text.clone_from(whole);
             lay_out_fitted_face(&mut self.type_setter, line, caption, label);
         }
-        let tab = self.layout.tabs[0].width - pad;
         for line in &mut self.tabs {
-            lay_out_fitted(&mut self.type_setter, line, text, tab);
+            self.type_setter.lay_out(line, text);
         }
         for line in &mut self.headers {
             self.type_setter.lay_out(line, text * HEADER_TEXT);
@@ -772,35 +774,69 @@ impl SettingsView {
                 glyphs,
             );
         }
-        for (i, tab) in self.tabs.iter().enumerate() {
-            // Each section in its own colour; the current one washes and is outlined in it,
-            // not filled (ADR-0136).
-            let fill_colour = theme.button_fill;
-            let look = Look::TintedButton {
-                highlighted: i == snapshot.section,
+        let pointer = snapshot.text.pointer;
+        let mut hovered = None;
+        for i in 0..self.tabs.len() {
+            // One colour for all tabs; the current section is highlighted, the hovered one
+            // lit like any button (ADR-0165).
+            let rect = layout.tabs[i];
+            let hover = rect.contains(pointer[0], pointer[1]);
+            if hover {
+                hovered = Some(i);
+            }
+            let current = i == snapshot.section;
+            let fill_colour = if hover || current {
+                theme.button_hover_fill
+            } else {
+                theme.button_fill
+            };
+            let look = Look::Button {
+                highlighted: current,
                 seed: i as f32 * 0.41,
                 fade: opacity,
-                tint: theme.section_tints[i % theme.section_tints.len()],
             };
-            let colour = faded(fill_colour, opacity);
             draw(
                 shapes,
                 white,
-                &layout.tabs[i],
-                colour,
+                &rect,
+                faded(fill_colour, opacity),
                 look,
                 &theme,
                 layout.scale,
             );
-            push_left(
-                text,
-                tab,
-                &layout.tabs[i],
-                pad,
-                faded(theme.text, opacity),
-                glyphs,
+            let ink = theme.text;
+            icons::push_icon(
+                shapes,
+                white,
+                &rect,
+                ICON_SHARE,
+                faded(ink, opacity),
+                icons::icon(i),
             );
         }
+        // The name of the hovered section, in a plate beside its tab; the plate and its text
+        // are drawn last, and the list's texts under it step aside.
+        let tip = hovered.filter(|_| snapshot.conflict.is_none()).map(|i| {
+            let pad = theme.widget_pad * layout.scale;
+            let tab = layout.tabs[i];
+            (
+                i,
+                Rect {
+                    x: tab.x + tab.width + pad,
+                    y: tab.y,
+                    width: self.tabs[i].layout.width() + 2.0 * pad,
+                    height: tab.height,
+                },
+            )
+        });
+        let under_tip = |rect: &Rect| {
+            tip.is_some_and(|(_, t)| {
+                rect.x < t.x + t.width
+                    && t.x < rect.x + rect.width
+                    && rect.y < t.y + t.height
+                    && t.y < rect.y + rect.height
+            })
+        };
 
         if let Some(conflict) = snapshot.conflict {
             self.push_conflict(shapes, text, glyphs, &layout, &conflict, opacity, white);
@@ -833,7 +869,7 @@ impl SettingsView {
                     && layout.row(slot).x + pad + self.headers[section].layout.width()
                         > layout.widget(slot).x
             });
-            if fraction <= 0.0 || reaches_list {
+            if fraction <= 0.0 || reaches_list || under_tip(&layout.row(slot)) {
                 continue;
             }
             push_left(
@@ -897,17 +933,19 @@ impl SettingsView {
             } else {
                 theme.text
             };
-            push_marquee(
-                text,
-                &self.labels[i],
-                &label,
-                pad,
-                faded(label_colour, opacity),
-                glyphs,
-                &mut self.label_rides[i],
-                &params,
-                now_ns,
-            );
+            if !under_tip(&label) {
+                push_marquee(
+                    text,
+                    &self.labels[i],
+                    &label,
+                    pad,
+                    faded(label_colour, opacity),
+                    glyphs,
+                    &mut self.label_rides[i],
+                    &params,
+                    now_ns,
+                );
+            }
             let widget_opacity = if disabled {
                 opacity * DISABLED_OPACITY
             } else {
@@ -1053,6 +1091,26 @@ impl SettingsView {
             view.set_theme(&self.theme);
             view.push(
                 shapes, text, glyphs, dropdown, &bounds, opacity, white, now_ns,
+            );
+        }
+        if let Some((i, rect)) = tip {
+            let pad = theme.widget_pad * layout.scale;
+            draw(
+                shapes,
+                white,
+                &rect,
+                faded(theme.widget_popup_fill, opacity),
+                Look::Round,
+                &theme,
+                layout.scale,
+            );
+            push_left(
+                text,
+                &self.tabs[i],
+                &rect,
+                pad,
+                faded(theme.text, opacity),
+                glyphs,
             );
         }
     }

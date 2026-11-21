@@ -1943,3 +1943,41 @@ fn hold_to_confirm_defaults_to_lazers_200_ms_and_stays_in_range() {
     // Out of range: the default stays.
     assert_eq!(long.settings.gameplay.hold_to_confirm_ms, 200.0);
 }
+
+#[test]
+fn the_results_style_setting_defaults_reads_and_writes_by_name() {
+    assert_eq!(
+        Settings::default().general.results_style,
+        crate::settings::ResultsStyle::Skin
+    );
+    let loaded = file::from_toml_str("[general]\nresults_style = \"slam\"\n");
+    assert_eq!(loaded.status, LoadStatus::Ok, "{:?}", loaded.warnings);
+    assert_eq!(
+        loaded.settings.general.results_style,
+        crate::settings::ResultsStyle::Slam
+    );
+    let mut settings = Settings::default();
+    settings.general.results_style = crate::settings::ResultsStyle::Slam;
+    let text = file::to_toml_string(&settings).unwrap();
+    assert!(text.contains("results_style = \"slam\""), "{text}");
+    let back = file::from_toml_str(&text);
+    assert_eq!(back.settings.general, settings.general);
+}
+
+#[test]
+fn a_bad_results_style_falls_back_with_a_warning() {
+    let loaded = file::from_toml_str("[general]\nresults_style = \"fancy\"\n");
+    assert_eq!(loaded.status, LoadStatus::Recovered);
+    assert_eq!(
+        loaded.settings.general.results_style,
+        crate::settings::ResultsStyle::Skin
+    );
+    assert!(
+        loaded
+            .warnings
+            .iter()
+            .any(|w| w.starts_with("general.results_style")),
+        "{:?}",
+        loaded.warnings
+    );
+}

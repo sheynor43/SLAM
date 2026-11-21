@@ -1577,3 +1577,36 @@ fn the_sideways_wheel_reaches_the_snapshot() {
     s.scroll_text(-0.5);
     assert_eq!(s.snapshot().text.wheel, 1.5);
 }
+
+#[test]
+fn tabs_are_square_icon_buttons_in_a_narrow_column() {
+    let theme = theme();
+    let l = SettingsLayout::new(1920.0, 1080.0, &theme);
+    for tab in &l.tabs {
+        assert_eq!(tab.width, tab.height);
+        assert_eq!(tab.width, theme.settings_tab_size * l.scale);
+    }
+    for pair in l.tabs.windows(2) {
+        assert!(pair[1].y >= pair[0].y + pair[0].height);
+    }
+    // Narrower than the old 880-wide panel with its 170-wide tab plates.
+    assert!(panel::panel_width(1920.0, 1080.0, &theme) < 880.0 * l.scale);
+    let last = l.tabs[MAX_SECTIONS - 1];
+    assert!(last.y + last.height <= 1080.0);
+}
+
+#[test]
+fn every_section_has_its_own_icon() {
+    assert!(icons::ICONS >= MAX_SECTIONS.min(9));
+    for section in 0..icons::ICONS {
+        assert!(!icons::icon(section).is_empty(), "section {section}");
+    }
+    for a in 0..icons::ICONS {
+        for b in a + 1..icons::ICONS {
+            assert_ne!(
+                format!("{:?}", icons::icon(a)),
+                format!("{:?}", icons::icon(b))
+            );
+        }
+    }
+}

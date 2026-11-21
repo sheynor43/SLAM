@@ -363,6 +363,8 @@ impl<B: render::Backend> Draw<PlaySnapshot> for View<B> {
             size,
             info.wait.woke_ns,
             snapshot,
+            // No pointer here: the cursor keeps to the snapshot (ADR-0162).
+            None,
             fps.and_then(fps::FpsOverlay::view),
             false,
         );

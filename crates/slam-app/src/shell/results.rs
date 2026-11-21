@@ -8,6 +8,7 @@ use slam_ui::i18n::{FluentArgs, Localizer};
 use slam_ui::results::{
     Rank, ResultsData, ResultsExtra, ResultsMods, ResultsStat, StatKind, is_early, write_fixed2,
 };
+use slam_ui::song_select::ScoreRow;
 
 /// The judgement a row counts.
 pub fn hit_result(kind: StatKind) -> HitResult {
@@ -99,6 +100,99 @@ pub fn results_data(
     }
 }
 
+/// The rank of a listed score from its letters (`XH`, `X`, `SH`, `S`, `A`...); an
+/// unknown one reads as a fail.
+pub fn rank_of_letters(letters: [u8; 2]) -> Rank {
+    match &letters {
+        b"XH" => Rank::XH,
+        [b'X', 0] => Rank::X,
+        b"SH" => Rank::SH,
+        [b'S', 0] => Rank::S,
+        [b'A', 0] => Rank::A,
+        [b'B', 0] => Rank::B,
+        [b'C', 0] => Rank::C,
+        [b'D', 0] => Rank::D,
+        _ => Rank::F,
+    }
+}
+
+/// The results of a saved local score `row` (a click on the song select's list). What the
+/// file does not keep is absent: the hit error lines, the health line and the difficulty
+/// details. A score saved without its perfect play's counts shows the four basic rows
+/// and takes its own combo for the highest.
+pub fn score_data(
+    id: u64,
+    title: String,
+    row: &ScoreRow,
+    info: &PlayInfo,
+    date: &str,
+    localizer: &Localizer,
+) -> ResultsData {
+    let mods = ResultsMods::new(row.mods.iter());
+    let known = row.maximum_combo > 0;
+    let beatmap_by = if info.creator.is_empty() {
+        String::new()
+    } else {
+        format_text(
+            localizer,
+            "results-beatmap-by",
+            &[("mapper", info.creator.clone())],
+        )
+    };
+    let played_by = format_text(
+        localizer,
+        "results-played-by",
+        &[
+            ("player", row.player.as_str().to_owned()),
+            ("date", date.to_owned()),
+        ],
+    );
+    let mut details = Vec::new();
+    if let Some(stars) = info.stars {
+        details.push(format_text(
+            localizer,
+            "results-details-stars",
+            &[("stars", format!("{stars:.2}"))],
+        ));
+    }
+    // The mods are in the details' table.
+    ResultsData {
+        id,
+        title,
+        score: i64::try_from(row.total_score).unwrap_or(i64::MAX),
+        accuracy: row.accuracy,
+        rank: rank_of_letters(row.rank),
+        stats: StatKind::ALL.map(|kind| ResultsStat {
+            value: row.hits[kind.index()],
+            maximum: row.maximums[kind.index()],
+        }),
+        combo: row.max_combo,
+        max_combo: if known {
+            row.maximum_combo
+        } else {
+            row.max_combo
+        },
+        mods,
+        average_hit_error: None,
+        average_hit_error_text: None,
+        unstable_rate: None,
+        extra: ResultsExtra {
+            beatmap_by,
+            played_by,
+            health: Vec::new(),
+            details,
+        },
+    }
+}
+
+fn format_text(localizer: &Localizer, key: &str, args: &[(&str, String)]) -> String {
+    let mut fluent = FluentArgs::new();
+    for (name, value) in args {
+        fluent.set(*name, value.clone());
+    }
+    localizer.format(key, Some(&fluent)).into_owned()
+}
+
 /// What a play's results say of its beatmap besides the title, known when it starts.
 #[derive(Clone, Debug, PartialEq)]
 pub struct PlayInfo {
@@ -140,8 +234,6 @@ pub fn extra(
     date: &str,
     health: Vec<f32>,
     offsets: &[f64],
-    r: &PlayResults,
-    mods: &ResultsMods,
     localizer: &Localizer,
 ) -> ResultsExtra {
     let text = |key: &str, args: &[(&str, String)]| {
@@ -184,10 +276,7 @@ pub fn extra(
             ],
         ));
     }
-    if !mods.is_empty() {
-        let list: Vec<&str> = mods.iter().map(|m| m.as_str()).collect();
-        details.push(text("results-details-mods", &[("mods", list.join(" "))]));
-    }
+    // The mods, the average error and the unstable rate are in the details' table.
     // McOsu's "Error: min - max avg": the averages of the early and of the late hits; an
     // exact hit counts on both sides, an empty side is 0. McOsu sums whole milliseconds
     // in `float`; these are the exact offsets.
@@ -211,9 +300,6 @@ pub fn extra(
                 ("late", format!("{late:+.2}")),
             ],
         ));
-    }
-    if let Some(ur) = r.hit_errors.unstable_rate {
-        details.push(text("results-details-ur", &[("ur", format!("{ur:.2}"))]));
     }
     ResultsExtra {
         beatmap_by,
@@ -421,26 +507,12 @@ mod tests {
             }),
             rate: 1.5,
         };
-        let results = PlayResults {
-            score: 0,
-            score_without_mods: 0,
-            accuracy: 1.0,
-            rank: ScoreRank::X,
-            statistics: Statistics::default(),
-            maximum_statistics: Statistics::default(),
-            hit_errors: slam_osu::hit_events::HitErrorSummary {
-                unstable_rate: Some(98.765),
-                ..Default::default()
-            },
-        };
         let got = extra(
             &info,
             "Guest",
             "2026-11-20 21:55:12",
             vec![1.0, 0.5],
             &[-10.0, -20.0, 4.0],
-            &results,
-            &ResultsMods::new(["HD", "DT"]),
             &localizer(),
         );
         assert_eq!(got.beatmap_by, "Beatmap by Jounzan");
@@ -452,9 +524,7 @@ mod tests {
                 "Stars: 5.23",
                 "Speed: 1.5x",
                 "CS 4 · AR 9.33 · OD 8.5 · HP 6",
-                "Mods: HD DT",
                 "Error: -15.00 ms – +4.00 ms avg",
-                "Unstable rate: 98.77",
             ]
         );
         let unknown = extra_of_unknown_mapper();
@@ -466,34 +536,18 @@ mod tests {
             "now",
             Vec::new(),
             &[-10.0, 0.0],
-            &results,
-            &ResultsMods::default(),
             &localizer(),
         );
-        assert_eq!(
-            only_early.details,
-            ["Error: -5.00 ms – +0.00 ms avg", "Unstable rate: 98.77"]
-        );
+        assert_eq!(only_early.details, ["Error: -5.00 ms – +0.00 ms avg"]);
     }
 
     fn extra_of_unknown_mapper() -> String {
-        let results = PlayResults {
-            score: 0,
-            score_without_mods: 0,
-            accuracy: 1.0,
-            rank: ScoreRank::X,
-            statistics: Statistics::default(),
-            maximum_statistics: Statistics::default(),
-            hit_errors: Default::default(),
-        };
         extra(
             &PlayInfo::default(),
             "Guest",
             "now",
             Vec::new(),
             &[],
-            &results,
-            &ResultsMods::default(),
             &localizer(),
         )
         .beatmap_by

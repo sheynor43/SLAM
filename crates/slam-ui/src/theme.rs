@@ -254,6 +254,9 @@ pub struct Theme {
     pub results_panel_width: f32,
     /// Gap between the two columns.
     pub results_column_gap: f32,
+    /// Font weight of the stable look's header lines and of the labels of its details
+    /// (regular, like stable's text; the values use `caption_weight`).
+    pub results_header_weight: u16,
     /// Colour of the rank letter of a silver rank (Hidden, Flashlight).
     pub rank_silver: Color,
     /// Height of a settings widget row (toggle, slider, dropdown box, key binding box).
@@ -301,9 +304,11 @@ pub struct Theme {
     pub settings_margin: f32,
     /// Size of the settings screen's title.
     pub settings_title_size: f32,
-    /// Width of the column of section tabs.
-    pub settings_tab_width: f32,
-    /// Pitch of the settings rows and of the tabs.
+    /// Side of a section tab, a square icon button (ADR-0165); the tab column is as wide.
+    pub settings_tab_size: f32,
+    /// Gap between the tabs.
+    pub settings_tab_gap: f32,
+    /// Pitch of the settings rows.
     pub settings_row_pitch: f32,
     /// Fraction of the content width the row labels take.
     pub settings_label_ratio: f32,
@@ -370,8 +375,6 @@ pub struct Theme {
     /// difficulty reduction, difficulty increase, automation, conversion, fun. An active
     /// mod's tile washes and is outlined in its column's colour.
     pub mod_column_tints: [Color; 5],
-    /// Colours of the settings' sections, in turn (ADR-0136).
-    pub section_tints: [Color; 8],
     /// How strong a difficulty row's glow in its star colour is, as a part of the accent
     /// glow's alpha (ADR-0131).
     pub difficulty_glow_scale: f32,
@@ -724,6 +727,7 @@ impl Theme {
             results_row_height: 34.0,
             results_panel_width: 400.0,
             results_column_gap: 48.0,
+            results_header_weight: 400,
             rank_silver: Color::rgb(0.78, 0.82, 0.88),
             widget_height: 40.0,
             widget_text_size: 20.0,
@@ -748,11 +752,12 @@ impl Theme {
             widget_popup_fill: alpha(p.raised, 0.97),
             settings_margin: 32.0,
             settings_title_size: 40.0,
-            settings_tab_width: 170.0,
+            settings_tab_size: 48.0,
+            settings_tab_gap: 8.0,
             settings_row_pitch: 52.0,
             settings_label_ratio: 0.45,
             settings_marker_size: 14.0,
-            settings_panel_width: 880.0,
+            settings_panel_width: 780.0,
             settings_panel_fill: alpha(p.panel, 0.9),
             settings_dim_fill: Color {
                 r: 0.0,
@@ -789,16 +794,6 @@ impl Theme {
                 p.accent,
                 Color::rgb(0.40, 0.80, 1.0),
                 Color::rgb(0.93, 0.27, 0.40),
-            ],
-            section_tints: [
-                p.accent,
-                Color::rgb(0.40, 0.80, 1.0),
-                Color::rgb(0.70, 1.0, 0.40),
-                Color::rgb(1.0, 0.80, 0.30),
-                Color::rgb(0.55, 0.40, 1.0),
-                Color::rgb(0.30, 0.95, 0.80),
-                Color::rgb(1.0, 0.50, 0.35),
-                Color::rgb(0.85, 0.45, 0.95),
             ],
             // lazer: Lime1, Red1, Blue1, Purple1, Pink1.
             mod_column_tints: [

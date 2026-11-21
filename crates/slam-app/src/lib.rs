@@ -1,5 +1,6 @@
 //! SLAM application: wires the systems together. The binary is `main.rs`.
 
+pub mod atomic_file;
 pub mod backend;
 pub mod backgrounds;
 pub mod bench;

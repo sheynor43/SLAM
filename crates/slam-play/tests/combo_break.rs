@@ -170,3 +170,16 @@ fn the_first_break_state_survives_with_always_play_first() {
     s.combo_changed(3, 0, 200.0, &mut sink);
     assert_eq!(sink.plays, 1);
 }
+
+/// The restart sound plays as an effect, once a restart (ADR-0164); without a sample, nothing.
+#[test]
+fn the_restart_sound_plays_once_a_restart() {
+    let sample = Arc::new(Sample::from_interleaved(vec![0.1; 20], 48_000, 2).unwrap());
+    let mut s = sounds(true, false).with_restart_sound(Some(sample));
+    let mut sink = Sink::default();
+    s.play_restart(&mut sink);
+    assert_eq!(sink.plays, 1);
+    let mut silent = sounds(true, false);
+    silent.play_restart(&mut sink);
+    assert_eq!(sink.plays, 1);
+}

@@ -640,12 +640,10 @@ fn sample_extra(localizer: &Localizer) -> slam_ui::results::ResultsExtra {
                 "results-details-difficulty",
                 &[("cs", "4"), ("ar", "9.33"), ("od", "8.5"), ("hp", "6")],
             ),
-            text("results-details-mods", &[("mods", "HD DT")]),
             text(
                 "results-details-error",
                 &[("early", "-15.00"), ("late", "+4.00")],
             ),
-            text("results-details-ur", &[("ur", "98.77")]),
         ],
     }
 }
@@ -872,6 +870,7 @@ fn sample_details() -> BeatmapDetails {
             rank: *rank,
             mods: ScoreMods::from_acronyms(mods.iter().copied()),
             date_ms: 1_794_681_000_000,
+            ..Default::default()
         })
     };
     let mut rows = [None; MAX_LOCAL_SCORES];

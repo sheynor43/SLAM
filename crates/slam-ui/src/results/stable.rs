@@ -250,12 +250,69 @@ const BACK_BASE: [f32; 2] = [225.0, 87.0];
 const STABLE_SCREEN_HEIGHT: f32 = 768.0;
 /// Centre of `ranking-retry` on stable's screen (estimated from screenshots, ADR-0161).
 const RETRY_CENTRE_Y: f32 = 576.0;
+/// Height of the bar across the top on a screen 768 high, whatever the title (stable's
+/// results at 1920×1080 with and without a `ranking-title`: 135 px; McOsu sizes it by the
+/// title instead).
+const BAR_HEIGHT: f32 = 96.0;
+/// The bar's opacity: stable lets about a fifth of the background through it (measured on
+/// stable's results; McOsu's bar is opaque).
+pub const BAR_ALPHA: f32 = 0.8;
+/// Gap between `ranking-title`'s right edge and the screen's on a screen 768 high (stable's
+/// results at 1920×1080: 45 px).
+const TITLE_RIGHT_MARGIN: f32 = 32.0;
 /// Top-left of `ranking-graph` on stable's screen (estimated from screenshots, ADR-0161).
 pub const GRAPH_AT: [f32; 2] = [256.0, 608.0];
 /// The most segments of the health line.
 pub const MAX_HEALTH_SEGMENTS: usize = 256;
 /// How long the Back button's highlight takes, in ns.
 pub const HOVER_NS: u64 = 100_000_000;
+/// How much brighter a hovered button's sprite gets at full hover: its colour is scaled
+/// by `1 + HOVER_GAIN` (no shape behind it, like stable).
+pub const HOVER_GAIN: f32 = 0.28;
+
+/// The colour factor of a button sprite at hover animation `amount` (0..=1).
+pub fn hover_factor(amount: f32) -> f32 {
+    1.0 + HOVER_GAIN * amount.clamp(0.0, 1.0)
+}
+
+/// How tall the details block is and how its rows are spaced.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct DetailsMetrics {
+    /// Pitch of the grid's and the extra lines' rows, shrunk when the block would not fit.
+    pub pitch: f32,
+    /// Rows of the two-column grid (the taller column).
+    pub grid_rows: usize,
+    /// Total height of the panel.
+    pub height: f32,
+}
+
+/// The details block: a heading, a grid of `grid_rows` rows and `extra` lines under it,
+/// all in `pad` padding. The pitch is cut so that the panel stays within `available`
+/// (the scroll range must reach all of it).
+pub fn details_metrics(
+    grid_rows: usize,
+    extra: usize,
+    pitch: f32,
+    heading: f32,
+    pad: f32,
+    available: f32,
+) -> DetailsMetrics {
+    // A half row of air between the grid and the extra lines.
+    let gap = if extra > 0 && grid_rows > 0 { 0.5 } else { 0.0 };
+    let rows = grid_rows as f32 + extra as f32 + gap;
+    let fixed = 2.0 * pad + heading;
+    let pitch = if rows > 0.0 && fixed + rows * pitch > available {
+        ((available - fixed) / rows).max(0.0)
+    } else {
+        pitch
+    };
+    DetailsMetrics {
+        pitch,
+        grid_rows,
+        height: fixed + rows * pitch,
+    }
+}
+
 /// How long the scroll eases to its target, in ns.
 pub const SCROLL_NS: u64 = 200_000_000;
 
@@ -353,8 +410,6 @@ pub struct Geometry {
     pub back: Rect,
     /// `ranking-retry` unscrolled; empty without the image.
     pub retry: Rect,
-    /// The scroll-down hint's button.
-    pub hint: Rect,
     /// Pixels the content scrolls over its whole range: the area below the bar.
     pub scroll_area: f32,
     /// Pixels per window pixel of height / 768: the scale of `ranking-retry` and
@@ -362,15 +417,18 @@ pub struct Geometry {
     pub screen_scale: f32,
 }
 
+/// Height of the bar across the top of a window `height` high, at least `min_bar` (its
+/// text's height).
+fn bar_height(height: f32, min_bar: f32) -> f32 {
+    (BAR_HEIGHT * height / STABLE_SCREEN_HEIGHT).max(min_bar)
+}
+
 /// The geometry for a `width` x `height` window.
 // Ported from McOsu db2add2: src/App/Osu/OsuUIBackButton.cpp (updateLayout)
 // Ported from McOsu db2add2: src/App/Osu/OsuRankingScreen.cpp (updateLayout)
 pub fn geometry(width: f32, height: f32, art: &StableArt) -> Geometry {
     let m = Metrics::new(width, height);
-    let title_height = art
-        .title
-        .map_or(m.ui(75.0), |t| t.size[1] * m.image_scale(t.size, 75.0));
-    let bar_height = (title_height * 0.785).max(header_min_height(m.ui(1.0)));
+    let bar_height = bar_height(height, header_min_height(m.ui(1.0)));
 
     // The back button: the image at its display size (`@2x` halved) on a screen 768 high,
     // its height clamped to 1.5 times McOsu's base height (stable's results, measured with
@@ -396,32 +454,13 @@ pub fn geometry(width: f32, height: f32, art: &StableArt) -> Geometry {
             height: size[1],
         }
     });
-    let hint_size = [width * 0.2, height * 0.1];
     Geometry {
         bar_height,
         back,
         retry,
-        hint: Rect {
-            x: (width - hint_size[0]) / 2.0,
-            y: height - hint_size[1],
-            width: hint_size[0],
-            height: hint_size[1],
-        },
         scroll_area: (height - bar_height).max(0.0),
         screen_scale: f,
     }
-}
-
-/// The scroll-down hint's lift in units of its text height, from -0.25 (lowest) to 0, at
-/// `seconds`.
-// Ported from McOsu db2add2: src/App/Osu/OsuRankingScreen.cpp (OsuRankingScreenScrollDownInfoButton::draw)
-pub fn hint_bounce(seconds: f32) -> f32 {
-    let mut animation = (seconds * 3.2).rem_euclid(2.0);
-    if animation > 1.0 {
-        animation = 2.0 - animation;
-    }
-    animation = -animation * (animation - 2.0);
-    -0.25 + animation * 0.25
 }
 
 /// Hands the segments of the health line inside `graph` (the image's rectangle, inset by
@@ -698,14 +737,15 @@ pub fn lay_out<'a>(
     // McOsu's container is as wide as the screen plus two pixels.
     let rankings_width = width + 2.0;
 
-    // The title decides the bar's height.
+    // The title: at its own size on a screen 768 high (`@2x` halved), at the top, a margin
+    // off the right edge (stable's results; McOsu fits it to 75 units and the bar to it).
+    let f = height / STABLE_SCREEN_HEIGHT;
     let title = images.title.as_ref().map(|s| {
-        let scale = m.image_scale(s.size, 75.0);
+        let scale = f / s.density;
         (s, [s.size[0] * scale, s.size[1] * scale])
     });
-    let title_height = title.map_or(m.ui(75.0), |(_, size)| size[1]);
-    let bar_height = (title_height * 0.785).max(min_bar);
-    let title_left = title.map_or(width, |(_, size)| width - size[0] - m.ui(20.0));
+    let bar_height = bar_height(height, min_bar);
+    let title_left = title.map_or(width, |(_, size)| width - size[0] - TITLE_RIGHT_MARGIN * f);
 
     // The panel and everything on it are placed from its top-left corner.
     let panel_x = 0.0;

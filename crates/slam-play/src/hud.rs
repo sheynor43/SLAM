@@ -1045,6 +1045,9 @@ impl HudView {
 
     /// The skip button's pose of the last [`HudView::animate`].
     fn skip_pose(&self, snapshot: &PlaySnapshot) -> crate::skip::SkipPose {
+        if !self.animations {
+            return self.skip_anim.still_pose();
+        }
         let clicked = snapshot.skip_dip_ns.map(|ns| self.time - ns as f64 / 1e6);
         self.skip_anim.pose(self.time, clicked)
     }

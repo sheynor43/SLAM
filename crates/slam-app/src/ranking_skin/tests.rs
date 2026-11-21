@@ -241,3 +241,16 @@ fn letting_go_releases_the_images_after_the_draw_thread_moved_on() {
     link.tick(Some(Some(&a)));
     assert!(matches!(commands.pop(), Ok(Command::Load { .. })));
 }
+
+#[test]
+fn the_slam_results_style_turns_the_stable_look_off_even_with_a_panel() {
+    let mut skin = RankingSkin {
+        loaded: true,
+        present: true,
+        ..RankingSkin::default()
+    };
+    assert!(skin.stable());
+    skin.style = crate::settings::ResultsStyle::Slam;
+    assert!(!skin.stable());
+    assert!(RankingView::new(None, None).resolve(&skin).is_none());
+}

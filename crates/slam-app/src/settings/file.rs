@@ -222,6 +222,16 @@ fn from_table(mut table: Table) -> Loaded {
     }
 
     let mut general = cx.section(&mut table, "general");
+    let mut results_style: Option<String> = None;
+    cx.opt(&mut general, "general", "results_style", &mut results_style);
+    if let Some(name) = results_style {
+        match crate::settings::ResultsStyle::from_name(&name) {
+            Some(style) => settings.general.results_style = style,
+            None => cx.warn(format!(
+                "general.results_style: unknown value \"{name}\", using the default"
+            )),
+        }
+    }
     let mut language: Option<String> = None;
     cx.opt(&mut general, "general", "language", &mut language);
     if let Some(tag) = language {
@@ -725,6 +735,13 @@ fn from_table(mut table: Table) -> Loaded {
         "gameplay",
         "cursor_ripple",
         &mut settings.gameplay.cursor_ripple,
+        |_| Ok(()),
+    );
+    cx.field(
+        &mut gameplay,
+        "gameplay",
+        "restart_animation",
+        &mut settings.gameplay.restart_animation,
         |_| Ok(()),
     );
     cx.float(

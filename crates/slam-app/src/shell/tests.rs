@@ -763,6 +763,7 @@ fn host(name: &str, with_track: bool) -> HostFixture {
         ),
         effects: true,
         hold_ns: slam_play::hotkeys::HOLD_NS,
+        restart_animation: true,
     };
     HostFixture {
         host,
@@ -2307,10 +2308,12 @@ fn a_passed_play_saves_its_replay_before_the_results() {
     let replays = fixture.dir.join("replays");
     let deadline = std::time::Instant::now() + Duration::from_secs(20);
     let file = loop {
-        let file = std::fs::read_dir(&replays)
-            .ok()
-            .and_then(|mut entries| entries.next())
-            .map(|entry| entry.unwrap().path());
+        // Only a finished `.osr`: the replay is written into a temporary file first.
+        let file = std::fs::read_dir(&replays).ok().and_then(|entries| {
+            entries
+                .map(|entry| entry.unwrap().path())
+                .find(|path| path.extension().is_some_and(|e| e == "osr"))
+        });
         if let Some(file) = file {
             break file;
         }
@@ -2918,4 +2921,79 @@ fn the_play_menu_cues_become_menu_sounds() {
     let noted = s.take_ui_sounds();
     assert_eq!(noted.iter().filter(|n| **n).count(), 1);
     assert!(noted[at(MenuSound::Click)]);
+}
+
+#[test]
+fn a_listed_score_opens_its_results_and_back_returns_to_the_song_select() {
+    use slam_ui::results::Rank;
+    use slam_ui::song_select::{ScoreMods, ScorePlayer, ScoreRow};
+    let (mut s, mut snap, _producer) = in_song_select();
+    s.set_localizer(Arc::new(
+        interface_localizer(&crate::settings::Settings::default()).unwrap(),
+    ));
+    let mut hits = [0; StatKind::COUNT];
+    hits[StatKind::Great.index()] = 40;
+    hits[StatKind::Miss.index()] = 1;
+    let mut maximums = [0; StatKind::COUNT];
+    maximums[StatKind::SliderTick.index()] = 9;
+    let row = ScoreRow {
+        total_score: 765_432,
+        accuracy: 0.9876,
+        max_combo: 33,
+        rank: *b"SH",
+        mods: ScoreMods::from_acronyms(["HD", "DT"]),
+        date_ms: 1_794_681_000_000,
+        hits,
+        maximums,
+        maximum_combo: 41,
+        player: ScorePlayer::new("Guest"),
+    };
+    s.tick(TRANSITION_NS + 1, &[key(KEY_DOWN)], &mut snap);
+    let nav = s.open_score(&row);
+    assert!(matches!(nav, Some(Nav::Push(AppScreen::Results(_)))));
+    let Some(Nav::Push(AppScreen::Results(results))) = nav else {
+        unreachable!()
+    };
+    let data = results.data();
+    assert_eq!(
+        (data.score, data.rank, data.combo, data.max_combo),
+        (765_432, Rank::SH, 33, 41)
+    );
+    assert_eq!(data.stats[StatKind::Great.index()].value, 40);
+    assert_eq!(data.stats[StatKind::Miss.index()].value, 1);
+    assert!(data.rows().any(|(kind, _)| kind == StatKind::SliderTick));
+    assert!(data.title.ends_with("[Hard]"), "{}", data.title);
+    let mods: Vec<&str> = data.mods.iter().map(|m| m.as_str()).collect();
+    assert_eq!(mods, ["HD", "DT"]);
+    assert!(data.extra.played_by.contains("Guest"));
+    assert!(data.extra.health.is_empty());
+    assert_eq!(data.average_hit_error, None);
+    // The beatmap is the one Retry plays.
+    assert_eq!(s.last_title(), "a - a [Hard]");
+}
+
+#[test]
+fn an_opened_score_goes_back_and_retries_like_the_results_of_a_play() {
+    let (mut s, mut snap, _producer) = in_song_select();
+    s.set_localizer(Arc::new(
+        interface_localizer(&crate::settings::Settings::default()).unwrap(),
+    ));
+    s.tick(TRANSITION_NS + 1, &[key(KEY_DOWN)], &mut snap);
+    let row = slam_ui::song_select::ScoreRow::default();
+    let nav = s.open_score(&row).unwrap();
+    s.stack.navigate(nav, TRANSITION_NS + 2);
+    let now = 3 * TRANSITION_NS;
+    s.tick(now, &[], &mut snap);
+    assert!(matches!(s.stack().top(), AppScreen::Results(_)));
+    assert_eq!(s.stack().depth(), 3);
+    // Retry plays the selected difficulty.
+    s.tick(now + 1, &[key(KEY_R)], &mut snap);
+    assert!(s.is_loading());
+    assert!(s.take_retry_request());
+    assert_eq!(s.last_title(), "a - a [Hard]");
+    // Back (cancelling the load first) returns to the song select.
+    s.tick(now + 2, &[key(KEY_ESCAPE)], &mut snap);
+    s.tick(now + 3, &[key(KEY_ESCAPE)], &mut snap);
+    s.tick(now + 3 + TRANSITION_NS, &[], &mut snap);
+    assert_eq!(*s.stack().top(), AppScreen::SongSelect);
 }

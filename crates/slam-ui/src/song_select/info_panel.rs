@@ -47,6 +47,34 @@ pub struct InfoLayout {
     pub empty: Rect,
 }
 
+/// The listed local score at `(x, y)`, if any: the rows lean with the wedge as the panel
+/// draws them.
+pub fn score_row_at(
+    layout: &SongSelectLayout,
+    scores: &LocalScores,
+    x: f32,
+    y: f32,
+) -> Option<usize> {
+    let parts = &layout.info_parts;
+    let shown = scores
+        .rows
+        .iter()
+        .take_while(|r| r.is_some())
+        .count()
+        .min(parts.row_count);
+    let last = parts.rows.get(shown.checked_sub(1)?)?;
+    // The wedges lean along one line through the board's bottom edge (see `push`).
+    let anchor = last.y + last.height + layout.info_inset;
+    parts.rows[..shown].iter().position(|r| {
+        let lean = (anchor - (r.y + r.height / 2.0)) * layout.info_tan;
+        let moved = Rect {
+            x: r.x + lean,
+            ..*r
+        };
+        moved.contains(x, y)
+    })
+}
+
 /// One difficulty bar: its name, the track and the number.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct BarLayout {
@@ -701,17 +729,23 @@ impl InfoPanel {
         }
         let pad = theme.song_text_pad * scale;
         let rank_width = theme.song_info_artist_size * scale * 2.2;
-        for ((area, row), lines) in parts
+        for (i, ((area, row), lines)) in parts
             .rows
             .iter()
             .zip(&scores.rows)
             .zip(&self.scores)
             .take(parts.row_count)
+            .enumerate()
         {
             if row.is_none() {
                 break;
             }
-            rect(area, theme.song_search_fill, Look::Round);
+            let fill = if snapshot.score_hovered == Some(i) {
+                theme.button_hover_fill
+            } else {
+                theme.song_search_fill
+            };
+            rect(area, fill, Look::Round);
             let (top, bottom) = (area.y + area.height * 0.3, area.y + area.height * 0.72);
             left(&lines.rank, area.x + pad / 2.0, centre(area), theme.text);
             let x = area.x + rank_width;

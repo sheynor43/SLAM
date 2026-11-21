@@ -165,6 +165,10 @@
 | [0159](0159-cursor-smoke-and-ripples.md) | Дым курсора и рябь от нажатий: события в кольцах снапшота, точки дыма в потоке draw, рябь без состояния, настройка `gameplay.cursor_ripple` | Принято |
 | [0160](0160-skip-transition-and-button-styles.md) | Переход при пропуске (картинка и музыка уходят на 100 мс, перескок, возврат за 250 мс) и стили кнопки пропуска: скин, лазер, SLAM (`gameplay.skip_button`) | Принято |
 | [0161](0161-stable-ranking-header-graph-scroll.md) | Результаты stable: шапка из трёх строк, фон карты, `menu-back` и `ranking-retry` скина, `ranking-graph` с линией здоровья, прокрутка к подробностям | Принято |
+| [0162](0162-gameplay-cursor-at-fresh-pointer.md) | Игровой курсор рисуется по самой свежей позиции указателя, судейство — по событиям в update | Принято |
+| [0163](0163-results-style-setting.md) | Настройка `general.results_style`: вид результатов по скину (`skin`) или всегда SLAM (`slam`) | Принято |
+| [0164](0164-restart-animation.md) | Рестарт: затемнение при удержании, проявление после рестарта (как `PlayerLoader` лазера) и звук `Gameplay/restart`/`pause-retry-click`; настройка `gameplay.restart_animation` | Принято |
+| [0165](0165-settings-icon-tabs.md) | Вкладки настроек — квадратные кнопки со значками одного цвета, название — подсказкой; панель уже | Принято |
 
 ## Шаблон
 

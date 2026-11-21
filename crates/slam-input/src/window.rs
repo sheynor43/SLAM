@@ -126,6 +126,8 @@ pub struct InputWindow {
     /// Whether the window is a borderless one wider than its display (Windows,
     /// [`windowing::BORDERLESS_WIDTH_HACK`]): its reported sizes leave the extra out.
     borderless_hack: bool,
+    /// Whether SDL reports the window fullscreen (`SDL_WINDOW_FULLSCREEN`).
+    sdl_fullscreen: bool,
     /// The display the window was last seen on and reported; 0 before the first look.
     display_id: SDL_DisplayID,
     /// SDL's clock when a state was last applied: window events stamped earlier come
@@ -380,8 +382,9 @@ impl InputWindow {
             window_flags.0 & SDL_WINDOW_MOUSE_FOCUS.0 != 0,
             [w as f32, h as f32],
         );
+        let sdl_fullscreen = window_flags.0 & SDL_WINDOW_FULLSCREEN.0 != 0;
         // Off at this point, so nothing to apply.
-        relative.set_confined(window_flags.0 & SDL_WINDOW_FULLSCREEN.0 != 0);
+        relative.set_confined(sdl_fullscreen);
         Ok(Self {
             window,
             opengl,
@@ -404,6 +407,7 @@ impl InputWindow {
             state_applied: window_settings.word(),
             minimise_applied: None,
             borderless_hack: false,
+            sdl_fullscreen,
             display_id: SDL_DisplayID(0),
             applied_at_ns: 0,
             window_settings,
@@ -523,6 +527,8 @@ impl InputWindow {
                     self.wayland,
                 )
             };
+            let change = self.relative.set_confined(self.covers_display());
+            self.apply_change(change);
             // SAFETY: SDL is initialised.
             self.applied_at_ns = unsafe { SDL_GetTicksNS() };
             // The mode change may end in a size SDL reports through events, or not at all
@@ -662,6 +668,19 @@ impl InputWindow {
         if self.report(state) {
             self.display_id = id;
         }
+    }
+
+    /// Whether the cursor is confined to the window (ADR-0069): in every mode but windowed,
+    /// as osu-framework's default `ConfineMouseMode.Fullscreen`, or when SDL reports it
+    /// fullscreen. The borderless window on Windows is a plain window without SDL's
+    /// fullscreen: unconfined there, a cursor handed to the OS at the screen's edge stays in
+    /// the window, no enter event comes, and relative mode (with its sensitivity) would not
+    /// come back.
+    fn covers_display(&self) -> bool {
+        covers_display(
+            self.sdl_fullscreen,
+            WindowState::unpack(self.state_applied).mode,
+        )
     }
 
     /// Pixels at the right edge the window leaves out of its reported sizes: the extra
@@ -833,8 +852,14 @@ impl InputWindow {
                 self.pointer.record_outside(true);
                 self.relative.set_cursor_in_window(false)
             }
-            SDL_EVENT_WINDOW_ENTER_FULLSCREEN => self.relative.set_confined(true),
-            SDL_EVENT_WINDOW_LEAVE_FULLSCREEN => self.relative.set_confined(false),
+            SDL_EVENT_WINDOW_ENTER_FULLSCREEN => {
+                self.sdl_fullscreen = true;
+                self.relative.set_confined(self.covers_display())
+            }
+            SDL_EVENT_WINDOW_LEAVE_FULLSCREEN => {
+                self.sdl_fullscreen = false;
+                self.relative.set_confined(self.covers_display())
+            }
             SDL_EVENT_WINDOW_RESIZED => {
                 // SAFETY: the event type says this is a window event.
                 let window = unsafe { event.window };
@@ -1163,9 +1188,26 @@ pub(crate) fn sdl_error() -> String {
         .into_owned()
 }
 
+/// See [`InputWindow::covers_display`].
+// Ported from osu-framework 2026.921.1: osu.Framework/Platform/SDL3/SDL3Window.Input.cs (updateConfineMode)
+// Unlike there, SDL's own fullscreen confines too, whatever the mode wished; and only
+// `RelativeMouse` is confined, not the OS cursor (`CursorState.Confined`).
+fn covers_display(sdl_fullscreen: bool, mode: WindowMode) -> bool {
+    sdl_fullscreen || mode != WindowMode::Windowed
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn every_mode_but_windowed_confines_the_cursor() {
+        assert!(covers_display(false, WindowMode::Fullscreen));
+        // Not fullscreen for SDL on Windows, yet confined.
+        assert!(covers_display(false, WindowMode::Borderless));
+        assert!(!covers_display(false, WindowMode::Windowed));
+        assert!(covers_display(true, WindowMode::Windowed));
+    }
 
     #[test]
     fn cursor_visibility_handles_share_one_wish() {

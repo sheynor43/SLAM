@@ -466,6 +466,13 @@ impl MenuCursorView {
         self
     }
 
+    /// The pointer's freshest position in window pixels, `None` before it first moved and
+    /// while it is outside the window; gameplay draws its cursor there (ADR-0162).
+    pub fn pointer_pixels(&self) -> Option<[f32; 2]> {
+        let ppp = self.scale.pixels_per_point();
+        self.pointer.position().map(|[x, y]| [x * ppp, y * ppp])
+    }
+
     /// Uploads the skin's cursor images that came in; once per frame before drawing.
     pub fn process<D: Device>(&mut self, device: &mut D, textures: &mut Textures<D::Texture>) {
         if let Some(uploads) = &mut self.uploads {

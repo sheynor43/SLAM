@@ -98,6 +98,7 @@ fn live() -> LiveSpinner {
     LiveSpinner {
         index: 0,
         is_spinning: false,
+        tracking: false,
         progress_unclamped: 0.0,
         bonus_max_spins: 0,
         progress: 0.0,

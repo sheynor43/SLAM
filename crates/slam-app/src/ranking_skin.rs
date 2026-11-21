@@ -39,6 +39,8 @@ pub struct RankingSkin {
     pub loaded: bool,
     /// Whether the skin has a `ranking-panel`: the screen is stable's then.
     pub present: bool,
+    /// The `general.results_style` setting (ADR-0163); `Slam` turns the stable look off.
+    pub style: crate::settings::ResultsStyle,
     /// `Version` above 1.0.
     pub modern: bool,
     pub score_overlap: f32,
@@ -54,7 +56,7 @@ impl RankingSkin {
     /// Whether the results are drawn in the skin's look: the one predicate both the update
     /// side's hit testing and the draw side use (ADR-0158).
     pub fn stable(&self) -> bool {
-        self.loaded && self.present
+        self.loaded && self.present && self.style == crate::settings::ResultsStyle::Skin
     }
 
     fn handles(&self) -> impl Iterator<Item = TextureHandle> + '_ {
@@ -227,6 +229,7 @@ pub(crate) fn load_chain(requests: &mut TextureRequests, chain: &SkinChain) -> R
         combo_overlap: files.combo_overlap,
         images,
         art,
+        style: crate::settings::ResultsStyle::default(),
     }
 }
 

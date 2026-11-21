@@ -229,6 +229,11 @@ impl SpinnerState {
         self.is_spinning
     }
 
+    /// The tracker's `Tracking`, as of the last update.
+    pub(super) fn tracking(&self) -> bool {
+        self.tracking
+    }
+
     /// The tracker's drawn rotation in degrees, clockwise.
     pub(super) fn rotation(&self) -> f32 {
         self.rotation

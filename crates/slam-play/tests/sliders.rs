@@ -2130,3 +2130,107 @@ fn the_ball_style_reads_the_skin_that_provides_the_ball() {
     assert_eq!(user.ball_colour(accent), Color::rgb(1.0, 0.0, 1.0));
     assert_eq!(style("", true).ball_colour(accent), Color::WHITE);
 }
+
+#[test]
+fn kiai_beats_flash_circles_and_slider_heads_tails_and_repeats_in_play() {
+    // Kiai from the start (effect flag 1); the slider repeats once (1000–2000 ms).
+    let kiai = MAP
+        .replace("0,500,4,2,0,100,1,0", "0,500,4,2,0,100,1,1")
+        .replace("L|300:200,1,100", "L|300:200,2,100");
+    let map = Beatmap::decode(kiai.as_bytes()).unwrap();
+    let (mut circles, sliders) = objects(&map, &ModSet::default(), Snaking::LAZER);
+    circles.kiai = slam_play::kiai::KiaiFlash::new(&map.control_points);
+    let layout = common::layout();
+    let live_circles = [
+        LiveCircle {
+            index: 0,
+            judgement: None,
+        },
+        LiveCircle {
+            index: 2,
+            judgement: None,
+        },
+    ];
+    let (circle_textures, slider_textures) = (circle_textures(), slider_textures());
+    let live_sliders = snapshot(&map, live(None, None, None));
+    let draw = |time: f64| {
+        let mut batch = SpriteBatch::new();
+        let mut bodies = SliderBodies::new();
+        push_objects(
+            &circles,
+            &sliders,
+            &mut batch,
+            &mut bodies,
+            &layout,
+            &live_circles,
+            &live_sliders,
+            time,
+            &ObjectShakes::default(),
+            ObjectTextures {
+                circles: &circle_textures,
+                sliders: &slider_textures,
+            },
+            None,
+        );
+        batch
+    };
+    let additive = |batch: &SpriteBatch| -> Vec<u32> {
+        batch
+            .batches()
+            .iter()
+            .filter(|b| b.blend == Blend::Additive)
+            .map(|b| b.texture.0)
+            .collect()
+    };
+
+    // On the beat at 1000 ms, every visible piece flashes its own circle texture: the
+    // slider's repeat and tail (the tail's texture), its head, then circle 0 (circle 2 has
+    // not faded in yet). The tail's flash comes after its overlay; the head's right after its
+    // circle, under its reverse arrow and overlay.
+    let batch = draw(1000.0);
+    assert_eq!(
+        additive(&batch),
+        [TAIL.0, TAIL.0, HEAD.0, CIRCLE.0],
+        "{:?}",
+        order(&batch)
+    );
+    let textures = order(&batch);
+    let tail = textures.iter().position(|&t| t == TAIL.0).unwrap();
+    assert_eq!(textures[tail + 1], TAIL_OVERLAY.0);
+    assert_eq!(batch.batches()[tail + 2].blend, Blend::Additive);
+    let head = textures.iter().position(|&t| t == HEAD.0).unwrap();
+    assert_eq!(batch.batches()[head + 1].blend, Blend::Additive);
+    assert_eq!(textures[head + 3], HEAD_OVERLAY.0);
+
+    // The flash is at 0.3 of the circle sprite's alpha.
+    let quad_alpha =
+        |i: usize| batch.vertices()[batch.batches()[i].first_quad as usize * 4].colour[3];
+    assert!((quad_alpha(tail + 2) - quad_alpha(tail) * 0.3).abs() < 1e-3);
+
+    // The fade is over 420 ms after the beat.
+    assert!(additive(&draw(1000.0 + 430.0)).is_empty());
+
+    // Without kiai, never.
+    let plain = Beatmap::decode(MAP.as_bytes()).unwrap();
+    let (circles, sliders) = objects(&plain, &ModSet::default(), Snaking::LAZER);
+    let mut batch = SpriteBatch::new();
+    let mut bodies = SliderBodies::new();
+    let live_sliders = snapshot(&plain, live(None, None, None));
+    push_objects(
+        &circles,
+        &sliders,
+        &mut batch,
+        &mut bodies,
+        &layout,
+        &live_circles,
+        &live_sliders,
+        1000.0,
+        &ObjectShakes::default(),
+        ObjectTextures {
+            circles: &circle_textures,
+            sliders: &slider_textures,
+        },
+        None,
+    );
+    assert!(additive(&batch).is_empty());
+}

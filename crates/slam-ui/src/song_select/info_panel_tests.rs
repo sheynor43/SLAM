@@ -55,6 +55,7 @@ fn row(score: u64) -> ScoreRow {
         rank: *b"SH",
         mods: ScoreMods::from_acronyms(["HD", "DT"]),
         date_ms: 1_794_681_000_000,
+        ..Default::default()
     }
 }
 
@@ -514,4 +515,96 @@ fn the_bars_move_to_new_values_and_the_first_shows_at_once() {
     // The same values again change nothing.
     push(&mut rig, harder, 30 * ms);
     assert_eq!(at(&rig, 20 * ms + duration), 0.8);
+}
+
+/// The centres of the score rows as the panel draws them (the rounded fills).
+fn drawn_score_centres(
+    rig: &mut Rig,
+    screen: &SongSelect,
+    layout: &SongSelectLayout,
+) -> Vec<[f32; 2]> {
+    let snapshot = screen.snapshot();
+    let mut centres = Vec::new();
+    rig.panel.push(
+        layout,
+        &rig.theme,
+        &snapshot,
+        1.0,
+        0,
+        &mut |r, _, look| {
+            if matches!(look, Look::Round) {
+                centres.push(r.centre());
+            }
+        },
+        &mut |_, _, _, _| {},
+    );
+    centres
+}
+
+#[test]
+fn a_click_on_a_listed_score_opens_it_and_hover_follows_the_pointer() {
+    use super::super::{SongSelectAction, SongSelectInput as I};
+    let mut rig = Rig::new();
+    let mut screen = rig.screen.clone();
+    let mut scores = LocalScores::default();
+    scores.rows[0] = Some(row(1_234_567));
+    scores.rows[1] = Some(row(900));
+    screen.set_details(Some(details(Some(scores))));
+    let layout = SongSelectLayout::new(1280.0, 768.0, &rig.theme);
+    rig.show(details(Some(scores)));
+    let centres = drawn_score_centres(&mut rig, &screen, &layout);
+    assert_eq!(centres.len(), 2);
+
+    for (i, [x, y]) in centres.iter().copied().enumerate() {
+        assert_eq!(screen.input(I::PointerMove { x, y }, &layout), None);
+        assert_eq!(screen.snapshot().score_hovered, Some(i));
+        assert_eq!(screen.input(I::PointerPress { x, y }, &layout), None);
+        assert_eq!(
+            screen.input(I::PointerRelease, &layout),
+            Some(SongSelectAction::OpenScore {
+                row: scores.rows[i].unwrap()
+            })
+        );
+    }
+    // Past the last listed row there is nothing to open, and nothing is hovered.
+    let [x, y] = centres[1];
+    let pitch = rig.theme.song_score_row_height * layout.scale;
+    screen.input(I::PointerMove { x, y: y + pitch }, &layout);
+    assert_eq!(screen.snapshot().score_hovered, None);
+    screen.input(I::PointerPress { x, y: y + pitch }, &layout);
+    assert_eq!(screen.input(I::PointerRelease, &layout), None);
+}
+
+#[test]
+fn the_hovered_score_row_takes_the_hover_fill() {
+    use super::super::SongSelectInput as I;
+    let mut rig = Rig::new();
+    let mut screen = rig.screen.clone();
+    let mut scores = LocalScores::default();
+    scores.rows[0] = Some(row(1));
+    scores.rows[1] = Some(row(2));
+    screen.set_details(Some(details(Some(scores))));
+    let layout = SongSelectLayout::new(1280.0, 768.0, &rig.theme);
+    rig.show(details(Some(scores)));
+    let [x, y] = drawn_score_centres(&mut rig, &screen, &layout)[1];
+    screen.input(I::PointerMove { x, y }, &layout);
+    let snapshot = screen.snapshot();
+    let mut fills = Vec::new();
+    rig.panel.push(
+        &layout,
+        &rig.theme,
+        &snapshot,
+        1.0,
+        0,
+        &mut |_, colour, look| {
+            if matches!(look, Look::Round) {
+                fills.push(colour);
+            }
+        },
+        &mut |_, _, _, _| {},
+    );
+    assert_eq!(
+        fills,
+        [rig.theme.song_search_fill, rig.theme.button_hover_fill]
+    );
 }

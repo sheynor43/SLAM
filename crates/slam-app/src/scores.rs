@@ -10,10 +10,12 @@ use std::path::{Path, PathBuf};
 use std::time::UNIX_EPOCH;
 
 use crate::replays::ReplayJob;
+use crate::shell::results::hit_result;
 use serde::{Deserialize, Serialize};
 use slam_osu::scoring::ScoreRank;
 use slam_play::FinishedAttempt;
-use slam_ui::song_select::{LocalScores, MAX_LOCAL_SCORES, ScoreMods, ScoreRow};
+use slam_ui::results::StatKind;
+use slam_ui::song_select::{LocalScores, MAX_LOCAL_SCORES, ScoreMods, ScorePlayer, ScoreRow};
 
 /// The file's format version.
 pub const VERSION: u32 = 1;
@@ -33,6 +35,10 @@ pub struct Record {
     pub mods: Vec<String>,
     /// Hits by kind, named as lazer names them.
     pub statistics: BTreeMap<String, u32>,
+    /// The hits of a perfect play, named the same way, with the highest combo as
+    /// `max_combo`; empty in records saved before it was kept.
+    #[serde(default)]
+    pub maximum_statistics: BTreeMap<String, u32>,
     pub player: String,
     /// The `.osr` file's name in `replays/`, if it was saved.
     pub replay: Option<String>,
@@ -49,6 +55,7 @@ impl Record {
     /// its replay file's name.
     pub fn of(attempt: &FinishedAttempt, date_ms: i64, replay: Option<String>) -> Record {
         let statistics = attempt.statistics();
+        let maximum = attempt.maximum_statistics();
         Record {
             date: date_ms,
             total_score: attempt.score(),
@@ -61,17 +68,30 @@ impl Record {
                 .into_iter()
                 .map(|m| m.acronym)
                 .collect(),
-            statistics: slam_osu::judgement::HitResult::ALL
-                .iter()
-                .map(|&r| (r, statistics.count(r)))
-                .filter(|&(_, n)| n != 0)
-                .map(|(r, n)| (r.to_score_key().as_str().to_owned(), n))
-                .collect(),
+            statistics: counts_of(statistics),
+            maximum_statistics: {
+                let mut counts = counts_of(maximum);
+                counts.insert(COMBO_KEY.to_owned(), maximum.max_combo);
+                counts
+            },
             player: crate::replays::PLAYER_NAME.to_owned(),
             replay,
         }
     }
 }
+
+/// The non-zero counts of `statistics`, named as lazer names them.
+fn counts_of(statistics: &slam_osu::judgement::Statistics) -> BTreeMap<String, u32> {
+    slam_osu::judgement::HitResult::ALL
+        .iter()
+        .map(|&r| (r, statistics.count(r)))
+        .filter(|&(_, n)| n != 0)
+        .map(|(r, n)| (r.to_score_key().as_str().to_owned(), n))
+        .collect()
+}
+
+/// Where the highest possible combo sits in a record's `maximum_statistics`.
+const COMBO_KEY: &str = "max_combo";
 
 /// Whether `hash` is a lowercase MD5 hex string: it names a file, so nothing else goes
 /// into a path.
@@ -146,6 +166,14 @@ pub fn load_top(dir: &Path, hash: &str, count: usize) -> Vec<Record> {
     scores
 }
 
+/// How many of `kind` the counts name `statistics` hold.
+fn count_in(statistics: &BTreeMap<String, u32>, result: slam_osu::judgement::HitResult) -> u32 {
+    statistics
+        .get(result.to_score_key().as_str())
+        .copied()
+        .unwrap_or(0)
+}
+
 /// The song select's rows for `records`, best first.
 pub fn rows_of(records: &[Record]) -> LocalScores {
     let mut scores = LocalScores::default();
@@ -165,6 +193,10 @@ pub fn rows_of(records: &[Record]) -> LocalScores {
             rank,
             mods: ScoreMods::from_acronyms(r.mods.iter().map(String::as_str)),
             date_ms: r.date,
+            hits: StatKind::ALL.map(|k| count_in(&r.statistics, hit_result(k))),
+            maximums: StatKind::ALL.map(|k| count_in(&r.maximum_statistics, hit_result(k))),
+            maximum_combo: r.maximum_statistics.get(COMBO_KEY).copied().unwrap_or(0),
+            player: ScorePlayer::new(&r.player),
         });
     }
     scores

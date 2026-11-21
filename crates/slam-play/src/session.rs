@@ -120,6 +120,15 @@ pub enum PlayState {
 }
 
 impl PlayState {
+    /// Whether the player's cursor is drawn at the pointer (ADR-0162): gameplay takes its
+    /// moves, or (waiting) will take them once the play starts.
+    pub fn cursor_follows_pointer(self) -> bool {
+        matches!(
+            self,
+            PlayState::Waiting | PlayState::Playing | PlayState::Failing | PlayState::Passed
+        )
+    }
+
     /// Whether the OS cursor should be hidden: while lazer shows the gameplay cursor (the
     /// player's, or the resume overlay's to aim at the resume target). Paused, failed and on
     /// the results the OS cursor shows where lazer shows its menu cursor (there is no menu
@@ -284,6 +293,10 @@ pub struct PlaySnapshot {
     pub clock: Option<ClockTime>,
     /// Cursor position in osu!pixels.
     pub cursor: Vec2,
+    /// Whether the player moves the cursor now, so a frame may draw it at the pointer's
+    /// freshest position instead of [`cursor`](Self::cursor) (ADR-0162): no mod moves it,
+    /// input is not suspended, and the play waits, runs, fails or has passed.
+    pub cursor_live: bool,
     /// The cursor positions gameplay took, for the trail (ADR-0042).
     pub cursor_path: CursorPath,
     /// When the cursor last expanded and contracted.
@@ -306,6 +319,10 @@ pub struct PlaySnapshot {
     pub skip_hover: bool,
     /// Whether gameplay is in a break (lazer's `IsBreakTime`): the background dims less.
     pub is_break_time: bool,
+    /// Kiai, with a kiai slider or spinner tracked: the kiai particles spew.
+    pub kiai_tracking: bool,
+    /// The left and right buttons held: where the break particles go.
+    pub buttons: [bool; 2],
     /// Health, 0..=1.
     pub health: f64,
     pub hud: HudValues,
@@ -322,6 +339,11 @@ pub struct PlaySnapshot {
     pub resumes: u32,
     /// How far quick retry is held, 0..=1.
     pub retry_progress: f32,
+    /// Engine time of the last restart while the restart animation is on (ADR-0164): the
+    /// new play shows from under black.
+    pub restart_ns: Option<u64>,
+    /// Whether the restart animation is on: the hold of quick retry darkens the screen.
+    pub restart_animation: bool,
     /// How far quick exit is held, 0..=1.
     pub exit_progress: f32,
     /// Times the play was restarted.
@@ -350,6 +372,7 @@ impl Default for PlaySnapshot {
             time: 0.0,
             clock: None,
             cursor: Vec2::ZERO,
+            cursor_live: false,
             cursor_path: CursorPath::default(),
             cursor_expand: ExpandTimes::default(),
             smoke: SmokeEvents::default(),
@@ -362,6 +385,8 @@ impl Default for PlaySnapshot {
             skip_hover: false,
             // Lazer's `BreakTracker` starts in a break.
             is_break_time: true,
+            kiai_tracking: false,
+            buttons: [false; 2],
             health: 1.0,
             service: ServiceState::default(),
             hud: HudValues::default(),
@@ -371,6 +396,8 @@ impl Default for PlaySnapshot {
             resume_cursor_path: CursorPath::default(),
             resumes: 0,
             retry_progress: 0.0,
+            restart_ns: None,
+            restart_animation: true,
             exit_progress: 0.0,
             restarts: 0,
             menu: MenuSnapshot::default(),
@@ -465,6 +492,12 @@ pub struct PlaySession {
     spm: SpinnerSpm,
     /// The cursor's expansion by the left and right buttons.
     expand: ExpandTracker,
+    /// The restart animation and sound are on (ADR-0164).
+    restart_animation: bool,
+    /// Engine time of the last restart with the animation on.
+    restart_ns: Option<u64>,
+    /// Which objects are kiai ones, and the kiai sections, for the cursor particles.
+    kiai: KiaiObjects,
     smoke: SmokeTracker,
     ripples: RippleRing,
     log: JudgementLog,
@@ -650,6 +683,9 @@ impl PlaySession {
             rules,
             spm: SpinnerSpm::new(beatmap),
             expand: ExpandTracker::default(),
+            restart_animation: true,
+            restart_ns: None,
+            kiai: KiaiObjects::new(beatmap),
             smoke: SmokeTracker::default(),
             ripples: RippleRing::default(),
             log,
@@ -713,6 +749,15 @@ impl PlaySession {
     /// Turns the menus' glow and sheen on or off (ADR-0123).
     pub fn set_menu_effects(&mut self, effects: bool) {
         self.menu.set_effects(effects);
+    }
+
+    /// Turns the restart animation and sound on or off (`gameplay.restart_animation`,
+    /// ADR-0164).
+    pub fn set_restart_animation(&mut self, on: bool) {
+        self.restart_animation = on;
+        if !on {
+            self.restart_ns = None;
+        }
     }
 
     /// Game time the clock starts at: 0, or earlier for the first object's fade-in and the
@@ -997,6 +1042,11 @@ impl PlaySession {
             // Lazer's quick restarts skip the intro (`AutomaticallySkipIntro`); the menu's
             // retry does not.
             self.restart(sink, restart);
+            if self.restart_animation {
+                // Ported from osu!lazer 2026.1005.0-lazer: osu.Game/Screens/Play/PlayerLoader.cs (OnResuming, contentIn)
+                self.restart_ns = Some(now_ns);
+                self.sounds.play_restart(sink);
+            }
         } else if self.phase == Phase::Playing && !seeking {
             // Ported from osu!lazer 2026.1005.0-lazer: osu.Game/Screens/Play/Player.cs (PerformIntroSkip)
             // The skip period is checked at the tick's time; lazer checks the button enabled
@@ -1076,10 +1126,13 @@ impl PlaySession {
         match self.auto.as_deref().filter(|auto| auto.moves_cursor()) {
             Some(auto) => {
                 snapshot.cursor = auto.position();
+                snapshot.cursor_live = false;
                 snapshot.cursor_path.clone_from(auto.path());
             }
             None => {
                 snapshot.cursor = self.input.position();
+                snapshot.cursor_live =
+                    !self.input.is_suspended() && snapshot.state.cursor_follows_pointer();
                 snapshot.cursor_path.clone_from(self.input.path());
             }
         }
@@ -1777,10 +1830,13 @@ impl PlaySession {
         match self.auto.as_deref().filter(|auto| auto.moves_cursor()) {
             Some(auto) => {
                 snapshot.cursor = auto.position();
+                snapshot.cursor_live = false;
                 snapshot.cursor_path.clone_from(auto.path());
             }
             None => {
                 snapshot.cursor = self.input.position();
+                snapshot.cursor_live =
+                    !self.input.is_suspended() && snapshot.state.cursor_follows_pointer();
                 snapshot.cursor_path.clone_from(self.input.path());
             }
         }
@@ -1803,6 +1859,8 @@ impl PlaySession {
         snapshot.resumes = self.resumes;
         snapshot.skip_dip_ns = None;
         snapshot.retry_progress = 0.0;
+        snapshot.restart_ns = self.restart_ns;
+        snapshot.restart_animation = self.restart_animation;
         snapshot.exit_progress = 0.0;
         snapshot.restarts = self.restarts;
         snapshot.menu = self.menu.snapshot();
@@ -1817,6 +1875,8 @@ impl PlaySession {
         snapshot.sliders.clear();
         snapshot.spinners.clear();
         snapshot.shakes = self.shakes;
+        snapshot.kiai_tracking = false;
+        snapshot.buttons = self.expand.buttons();
     }
 
     /// Fills the fields every gameplay tick writes alike.
@@ -1838,6 +1898,8 @@ impl PlaySession {
         snapshot.resumes = self.resumes;
         snapshot.skip_dip_ns = self.skip_dip.map(|dip| dip.started_ns);
         snapshot.retry_progress = self.hotkeys.retry_progress(now_ns);
+        snapshot.restart_ns = self.restart_ns;
+        snapshot.restart_animation = self.restart_animation;
         snapshot.exit_progress = self.hotkeys.exit_progress(now_ns);
         snapshot.restarts = self.restarts;
         snapshot.menu = self.menu.snapshot();
@@ -1850,6 +1912,52 @@ impl PlaySession {
         snapshot.sliders.capture(&self.rules);
         snapshot.spinners.capture(&self.rules, &self.spm);
         snapshot.shakes = self.shakes;
+        snapshot.kiai_tracking = self.kiai.tracking(self.last_time, snapshot);
+        snapshot.buttons = self.expand.buttons();
+    }
+}
+
+/// Lazer's `HitObject.Kiai` of every object and the beatmap's effect points: whether a kiai
+/// object is tracked for the cursor particles (`LegacyCursorParticles.Update`).
+#[derive(Debug, Clone)]
+struct KiaiObjects {
+    objects: Vec<bool>,
+    points: slam_osu::control_points::ControlPoints,
+}
+
+/// Lazer's `HitObject.control_point_leniency`.
+const KIAI_LENIENCY: f64 = 1.0;
+
+impl KiaiObjects {
+    // Ported from osu!lazer 2026.1005.0-lazer: osu.Game/Rulesets/Objects/HitObject.cs (ApplyDefaultsToSelf)
+    fn new(beatmap: &Beatmap) -> Self {
+        let points = beatmap.control_points.clone();
+        let objects = beatmap
+            .hit_objects
+            .iter()
+            .map(|o| points.effect_point_at(o.start_time + KIAI_LENIENCY).kiai)
+            .collect();
+        KiaiObjects { objects, points }
+    }
+
+    /// Whether at `time` it is kiai and a kiai slider or spinner of `snapshot` is tracked.
+    /// Allocation-free.
+    // Ported from osu!lazer 2026.1005.0-lazer: osu.Game.Rulesets.Osu/Skinning/Legacy/LegacyCursorParticles.cs (Update, isTracking)
+    fn tracking(&self, time: f64, snapshot: &PlaySnapshot) -> bool {
+        if !self.points.effect_point_at(time).kiai {
+            return false;
+        }
+        let kiai = |index: u32| self.objects.get(index as usize).copied().unwrap_or(false);
+        snapshot
+            .sliders
+            .as_slice()
+            .iter()
+            .any(|s| s.tracking && kiai(s.index))
+            || snapshot
+                .spinners
+                .as_slice()
+                .iter()
+                .any(|s| s.live.tracking && kiai(s.live.index))
     }
 }
 
@@ -1893,6 +2001,8 @@ enum Element {
     /// `cursor-smoke` and `cursor-ripple` of the first skin with them (ADR-0159).
     CursorSmoke,
     CursorRipple,
+    /// `star2`, the first skin with it (`OsuLegacySkinTransformer`, `CursorParticles`).
+    Star2,
     Digit(u8),
     /// A legacy spinner texture.
     Spinner(SpinnerPart),
@@ -1951,7 +2061,7 @@ impl SpinnerPart {
     }
 }
 
-const ELEMENTS: [Element; 38] = [
+const ELEMENTS: [Element; 39] = [
     Element::Circle,
     Element::Overlay,
     Element::Approach,
@@ -1968,6 +2078,7 @@ const ELEMENTS: [Element; 38] = [
     Element::CursorTrail,
     Element::CursorSmoke,
     Element::CursorRipple,
+    Element::Star2,
     Element::Digit(0),
     Element::Digit(1),
     Element::Digit(2),
@@ -2212,6 +2323,7 @@ impl PlayTextures {
                 // Ported from osu!lazer 2026.1005.0-lazer: osu.Game.Rulesets.Osu/Skinning/Legacy/OsuLegacySkinTransformer.cs (CursorSmoke, CursorRipple)
                 Element::CursorSmoke => "cursor-smoke".to_owned(),
                 Element::CursorRipple => "cursor-ripple".to_owned(),
+                Element::Star2 => "star2".to_owned(),
                 Element::ReverseArrow => "reversearrow".to_owned(),
                 Element::BallNd
                 | Element::BallSpec
@@ -2463,6 +2575,9 @@ impl PlayTextures {
                 }
                 Element::CursorRipple => {
                     frame.cursor.ripple = Some(SkinSprite::new(region, r.scale, f32::MAX))
+                }
+                Element::Star2 => {
+                    frame.cursor.star = Some(SkinSprite::new(region, r.scale, f32::MAX))
                 }
                 Element::Digit(d) => {
                     frame.circles.digits[usize::from(d)] = Some(SkinSprite::digit(region, r.scale))
@@ -2950,6 +3065,8 @@ pub struct PlayView {
     pub smoke: SmokeView,
     /// Whether presses leave ripples (lazer's `ShowCursorRipples`, ADR-0159).
     pub ripples: bool,
+    /// The `star2` particles of legacy skins.
+    pub particles: crate::particles::CursorParticles,
 }
 
 impl PlayView {
@@ -3090,17 +3207,24 @@ impl PlayView {
     /// and cursor show instead. Allocation-free once `batch` has room for
     /// [`MAX_CURSOR_SPRITES`](crate::cursor::MAX_CURSOR_SPRITES) and
     /// [`MAX_TARGET_SPRITES`](crate::resume::MAX_TARGET_SPRITES).
+    ///
+    /// `pointer` is the pointer's freshest position in the window's pixels, if the caller
+    /// knows it and it is inside the window: while the player moves the cursor
+    /// ([`PlaySnapshot::cursor_live`]) the cursor is drawn there, not where the last tick
+    /// left it (ADR-0162). The trail keeps to the tick's path.
+    #[allow(clippy::too_many_arguments)]
     pub fn push_cursor(
         &mut self,
         batch: &mut SpriteBatch,
         layout: &PlayfieldLayout,
         snapshot: &PlaySnapshot,
         now_ns: u64,
+        pointer: Option<Vec2>,
         textures: &FrameTextures,
     ) {
         let frame = CursorFrame {
             path: &snapshot.cursor_path,
-            position: snapshot.cursor,
+            position: cursor_position(snapshot, layout, pointer),
             expand: snapshot.cursor_expand,
             time: snapshot.time_at(now_ns),
             restarts: snapshot.restarts,
@@ -3112,8 +3236,27 @@ impl PlayView {
             .then_some(())
             .and(textures.cursor.ripple.as_ref());
         let cursor_scale = self.cursor.scale().scale;
-        // Ported from osu!lazer 2026.1005.0-lazer: osu.Game.Rulesets.Osu/UI/Cursor/OsuCursorContainer.cs (load)
-        // The ripples are between the trail and the cursor.
+        self.particles.update(
+            &crate::particles::ParticleFrame {
+                time: frame.time,
+                cursor: (frame.path.written() > 0).then_some(frame.position),
+                break_time: snapshot.is_break_time,
+                kiai_tracking: snapshot.kiai_tracking,
+                left: snapshot.buttons[0],
+                right: snapshot.buttons[1],
+                restarts: snapshot.restarts,
+            },
+            layout,
+        );
+        let particles = &self.particles;
+        let star = textures
+            .cursor
+            .star
+            .as_ref()
+            .filter(|_| frame.visible)
+            .map(|s| crate::particles::Star::new(s, textures.cursor.config.star_colour));
+        // Ported from osu!lazer 2026.1005.0-lazer: osu.Game.Rulesets.Osu/UI/Cursor/OsuCursorContainer.cs (OsuCursorContainer)
+        // The ripples, then the particles, are between the trail and the cursor.
         self.cursor
             .push_with(batch, layout, &frame, &textures.cursor, |batch| {
                 if let Some(texture) = ripples {
@@ -3125,6 +3268,9 @@ impl PlayView {
                         cursor_scale,
                         texture,
                     );
+                }
+                if let Some(star) = &star {
+                    particles.push(batch, layout, frame.time, star);
                 }
             });
         self.push_resume(batch, layout, snapshot, now_ns, textures);
@@ -3164,9 +3310,100 @@ fn fade_track(track: &mut impl TrackControl, volume: f32, duration_ns: u64) -> b
         .is_ok()
 }
 
+/// Where a frame draws the cursor of `snapshot`, in osu!pixels: at `pointer` (window pixels)
+/// while the player moves it, else where the last tick left it (ADR-0162).
+pub fn cursor_position(
+    snapshot: &PlaySnapshot,
+    layout: &PlayfieldLayout,
+    pointer: Option<Vec2>,
+) -> Vec2 {
+    match pointer {
+        Some(pointer) if snapshot.cursor_live => layout.to_playfield(pointer),
+        _ => snapshot.cursor,
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn objects_are_kiai_by_the_effect_point_a_millisecond_after_their_start() {
+        let map = Beatmap::decode(
+            b"osu file format v14\n\n[TimingPoints]\n0,500,4,2,0,100,1,0\n999,-100,4,2,0,100,0,1\n2000,-100,4,2,0,100,0,0\n\n[HitObjects]\n100,100,997,1,0\n100,100,1500,1,0\n100,100,1999,1,0\n100,100,2500,1,0\n",
+        )
+        .unwrap();
+        let kiai = KiaiObjects::new(&map);
+        // 997 + 1 is still before kiai (from 999); 1999 + 1 is past it.
+        assert_eq!(kiai.objects, [false, true, false, false]);
+        // Out of kiai nothing is tracked, whatever the snapshot.
+        assert!(!kiai.tracking(500.0, &PlaySnapshot::default()));
+        // In kiai with nothing alive: nothing tracked.
+        assert!(!kiai.tracking(1500.0, &PlaySnapshot::default()));
+        let slider = |index: u32, tracking: bool| {
+            let mut snapshot = PlaySnapshot::default();
+            snapshot.sliders.push(
+                slam_osu::rules::LiveSlider {
+                    index,
+                    tracking,
+                    press_time: None,
+                    head: None,
+                    tail: None,
+                    judgement: None,
+                },
+                [],
+            );
+            snapshot
+        };
+        // A tracked kiai object: tracked; untracked, or not a kiai object: not.
+        assert!(kiai.tracking(1500.0, &slider(1, true)));
+        assert!(!kiai.tracking(1500.0, &slider(1, false)));
+        assert!(!kiai.tracking(1500.0, &slider(0, true)));
+        // Out of kiai even a tracked kiai object spews nothing.
+        assert!(!kiai.tracking(2500.0, &slider(1, true)));
+        // A spun kiai spinner.
+        let mut spun = PlaySnapshot::default();
+        spun.spinners.push(crate::spinners::SpinnerEntry {
+            live: slam_osu::rules::LiveSpinner {
+                index: 1,
+                tracking: true,
+                ..crate::spinners::EMPTY_LIVE
+            },
+            tick_fade: None,
+            spm: 0.0,
+        });
+        assert!(kiai.tracking(1500.0, &spun));
+    }
+
+    #[test]
+    fn a_live_cursor_is_drawn_at_the_pointer() {
+        let layout = PlayfieldLayout::new(1920.0, 1080.0);
+        let pointer = Vec2::new(960.0, 540.0);
+        let mut snapshot = PlaySnapshot {
+            cursor: Vec2::new(10.0, 20.0),
+            cursor_live: true,
+            ..PlaySnapshot::default()
+        };
+        let at = cursor_position(&snapshot, &layout, Some(pointer));
+        assert_eq!(at, layout.to_playfield(pointer));
+        // Outside the window, or without a pointer: where the tick left it.
+        assert_eq!(cursor_position(&snapshot, &layout, None), snapshot.cursor);
+        // A mod or a pause moves it: the tick's position.
+        snapshot.cursor_live = false;
+        let at = cursor_position(&snapshot, &layout, Some(pointer));
+        assert_eq!(at, snapshot.cursor);
+    }
+
+    #[test]
+    fn the_cursor_follows_the_pointer_only_while_gameplay_takes_its_moves() {
+        use PlayState::*;
+        for state in [Waiting, Playing, Failing, Passed] {
+            assert!(state.cursor_follows_pointer(), "{state:?}");
+        }
+        for state in [Paused, Resuming, Failed, Results, Exited] {
+            assert!(!state.cursor_follows_pointer(), "{state:?}");
+        }
+    }
     use slam_render::upload::LoadError;
 
     #[test]

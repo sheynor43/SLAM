@@ -227,6 +227,10 @@ pub enum SongSelectAction {
     },
     /// The "choose folder" button was used: the application shows its folder picker.
     ChooseFolder,
+    /// A listed local score was clicked: the application shows its results.
+    OpenScore {
+        row: ScoreRow,
+    },
 }
 
 /// One row of the flat column.
@@ -241,6 +245,8 @@ pub enum Row {
 enum Pressed {
     Row(Row),
     ChooseFolder,
+    /// A listed local score, by position.
+    Score(usize),
 }
 
 /// [`Pressed`] by keys instead of indices, which a replaced list shuffles.
@@ -249,6 +255,7 @@ enum PressedKeys {
     Set(u64),
     Difficulty(u64, u64),
     ChooseFolder,
+    Score,
 }
 
 /// Where the list, status line and hint are (a panel on the right of the window) and the
@@ -272,6 +279,12 @@ pub struct SongSelectLayout {
     pub choose_folder: Rect,
     /// The mod select panel.
     pub mods: ModSelectLayout,
+    /// Where the info panel's parts are, before leaning; hit testing of the local scores.
+    pub info_parts: info_panel::InfoLayout,
+    /// How far the info panel's wedges reach past their content, in pixels.
+    pub info_inset: f32,
+    /// `tan` of the buttons' skew: how the info panel's wedges lean.
+    pub info_tan: f32,
     /// Pitch of a set row in theme reference pixels: plate and gap (ADR-0149).
     pub set_pitch: f32,
     /// Pitch of a difficulty row in theme reference pixels.
@@ -360,6 +373,9 @@ impl SongSelectLayout {
             hint,
             choose_folder,
             mods: ModSelectLayout::new(width, height, theme),
+            info_parts: info_panel::InfoLayout::new(&info, theme, scale),
+            info_inset: margin / 2.0,
+            info_tan: theme.button_skew().tan(),
             set_pitch,
             difficulty_pitch: theme.song_difficulty_height + gap,
             gap,
@@ -509,6 +525,8 @@ pub struct SongSelectSnapshot {
     pub hovered: Option<Row>,
     /// The pointer is over the "choose folder" button, which is shown.
     pub folder_hovered: bool,
+    /// The pointer is over this listed local score.
+    pub score_hovered: Option<usize>,
     pub status: SongSelectStatus,
     /// The localised "scanning" message, made by the application; the view re-lays it
     /// out when the `Arc` changes (by identity).
@@ -644,8 +662,45 @@ impl ScoreMods {
     }
 }
 
-/// One listed local score, as the library thread reads it (ADR-0125).
-#[derive(Clone, Copy, Debug, PartialEq)]
+/// The longest player name a listed score keeps, in bytes.
+pub const MAX_PLAYER_BYTES: usize = 32;
+
+/// A listed score's player name: UTF-8 of up to [`MAX_PLAYER_BYTES`] bytes, cut at a
+/// character boundary.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct ScorePlayer {
+    bytes: [u8; MAX_PLAYER_BYTES],
+    len: u8,
+}
+
+impl Default for ScorePlayer {
+    fn default() -> Self {
+        ScorePlayer::new("")
+    }
+}
+
+impl ScorePlayer {
+    pub fn new(name: &str) -> ScorePlayer {
+        let mut end = name.len().min(MAX_PLAYER_BYTES);
+        while !name.is_char_boundary(end) {
+            end -= 1;
+        }
+        let mut bytes = [0; MAX_PLAYER_BYTES];
+        bytes[..end].copy_from_slice(&name.as_bytes()[..end]);
+        ScorePlayer {
+            bytes,
+            len: end as u8,
+        }
+    }
+
+    pub fn as_str(&self) -> &str {
+        std::str::from_utf8(&self.bytes[..usize::from(self.len)]).unwrap_or("")
+    }
+}
+
+/// One listed local score, as the library thread reads it (ADR-0125). It carries what the
+/// results of the score show, so that opening it needs no file.
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
 pub struct ScoreRow {
     pub total_score: u64,
     /// 0..=1.
@@ -657,6 +712,13 @@ pub struct ScoreRow {
     pub mods: ScoreMods,
     /// Unix milliseconds.
     pub date_ms: i64,
+    /// Hits by kind, in [`crate::results::StatKind::ALL`] order.
+    pub hits: [u32; crate::results::StatKind::COUNT],
+    /// The hits of a perfect play by kind, in the same order; all zero when not known.
+    pub maximums: [u32; crate::results::StatKind::COUNT],
+    /// The highest possible combo; zero when not known.
+    pub maximum_combo: u32,
+    pub player: ScorePlayer,
 }
 
 /// The best local scores of a beatmap, best first; `None` rows come last.
@@ -719,6 +781,8 @@ pub struct SongSelect {
     /// The list was replaced under the pointer: find the row under it on the next tick.
     rehover: bool,
     folder_hovered: bool,
+    /// The listed local score under the pointer.
+    score_hovered: Option<usize>,
     /// The list dragged with the primary button and flung (ADR-0093).
     drag: ListDrag,
     /// What the held press went down on: the row, or the "choose folder" button.
@@ -774,6 +838,7 @@ impl SongSelect {
             hovered: None,
             rehover: false,
             folder_hovered: false,
+            score_hovered: None,
             drag: ListDrag::default(),
             pressed: None,
             status: SongSelectStatus::default(),
@@ -976,6 +1041,7 @@ impl SongSelect {
     fn pressed_keys(&self) -> Option<PressedKeys> {
         match self.pressed? {
             Pressed::ChooseFolder => Some(PressedKeys::ChooseFolder),
+            Pressed::Score(_) => Some(PressedKeys::Score),
             Pressed::Row(Row::Set(set)) => Some(PressedKeys::Set(self.list.sets.get(set)?.key)),
             Pressed::Row(Row::Difficulty { set, difficulty }) => {
                 let set = self.list.sets.get(set)?;
@@ -991,7 +1057,7 @@ impl SongSelect {
     /// or has no key to find it by, so the release clicks nothing.
     fn remap_pressed(&self, keys: Option<PressedKeys>) -> Option<Pressed> {
         match keys? {
-            PressedKeys::ChooseFolder => self.pressed,
+            PressedKeys::ChooseFolder | PressedKeys::Score => self.pressed,
             PressedKeys::Set(key) => {
                 let set = self.list.sets.iter().position(|s| s.key == key)?;
                 Some(Pressed::Row(Row::Set(set)))
@@ -1107,6 +1173,7 @@ impl SongSelect {
             geometry: self.geometry(),
             hovered: self.hovered,
             folder_hovered: self.folder_hovered,
+            score_hovered: self.score_hovered,
             status: self.status,
             scanning_text: Arc::clone(&self.scanning_text),
             generation: self.generation,
@@ -1370,12 +1437,22 @@ impl SongSelect {
             && self
                 .pointer
                 .is_some_and(|(x, y)| layout.over_choose_folder(x, y));
+        self.score_hovered = self.pointer.and_then(|(x, y)| self.score_at(x, y, layout));
+    }
+
+    /// The listed local score under `(x, y)`.
+    fn score_at(&self, x: f32, y: f32, layout: &SongSelectLayout) -> Option<usize> {
+        let scores = self.details.as_ref()?.scores.as_ref()?;
+        info_panel::score_row_at(layout, scores, x, y)
     }
 
     /// What is under `(x, y)` to click.
     fn pressed_at(&self, x: f32, y: f32, layout: &SongSelectLayout) -> Option<Pressed> {
         if self.shows_choose_folder() && layout.over_choose_folder(x, y) {
             return Some(Pressed::ChooseFolder);
+        }
+        if let Some(index) = self.score_at(x, y, layout) {
+            return Some(Pressed::Score(index));
         }
         layout
             .row_at(x, y, self.shown, &self.filter, self.set)
@@ -1391,6 +1468,10 @@ impl SongSelect {
         self.measure(layout);
         match pressed? {
             Pressed::ChooseFolder => Some(SongSelectAction::ChooseFolder),
+            Pressed::Score(index) => {
+                let row = (*self.details.as_ref()?.scores.as_ref()?.rows.get(index)?)?;
+                Some(SongSelectAction::OpenScore { row })
+            }
             Pressed::Row(Row::Set(set)) => {
                 if let Some(position) = self.filter.set_position(set)
                     && position != self.set

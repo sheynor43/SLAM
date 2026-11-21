@@ -8,6 +8,11 @@ pub fn now_text() -> String {
     let seconds = SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .map_or(0, |d| d.as_secs() as i64);
+    text_at(seconds)
+}
+
+/// [`now_text`]'s format for the Unix time `seconds`.
+pub fn text_at(seconds: i64) -> String {
     match utc_offset(seconds) {
         Some(offset) => format_seconds(seconds + offset),
         None => format!("{} UTC", format_seconds(seconds)),

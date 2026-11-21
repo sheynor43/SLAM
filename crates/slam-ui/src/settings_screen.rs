@@ -19,13 +19,14 @@ use crate::widgets::{
     ToggleInput, ToggleLayout,
 };
 
+pub mod icons;
 pub mod panel;
 pub mod view;
 
 pub use view::{KeyLabels, RowLabels, SettingsLabels, SettingsView};
 
 /// Most rows; more are ignored.
-pub const MAX_ROWS: usize = 104;
+pub const MAX_ROWS: usize = 112;
 /// Most sections; rows of later ones go into the last.
 pub const MAX_SECTIONS: usize = 9;
 
@@ -273,21 +274,22 @@ impl SettingsLayout {
         let margin = theme.settings_margin * scale;
         let title_height = theme.settings_title_size * scale;
         let top = margin + title_height + margin;
-        let (tab_width, pitch) = (
-            theme.settings_tab_width * scale,
+        let (tab_size, pitch) = (
+            theme.settings_tab_size * scale,
             theme.settings_row_pitch * scale,
         );
+        let tab_pitch = tab_size + theme.settings_tab_gap * scale;
         let row_height = theme.widget_height * scale;
         let mut tabs = [Rect::default(); MAX_SECTIONS];
         for (i, tab) in tabs.iter_mut().enumerate() {
             *tab = Rect {
                 x: margin,
-                y: top + i as f32 * pitch,
-                width: tab_width,
-                height: row_height,
+                y: top + i as f32 * tab_pitch,
+                width: tab_size,
+                height: tab_size,
             };
         }
-        let left = margin + tab_width + margin;
+        let left = margin + tab_size + margin;
         let content = Rect {
             x: left,
             y: top,
