@@ -2,29 +2,29 @@
 
 ## English
 
-### What's new in 0.1.3
-**Mods**
-- New mod select panel in lazer's style: columns by mod type in the lower part of the screen, each mod with its name and description; the song list stays visible behind it.
-- **Autoplay**, **Relax** and **Autopilot**. Autoplay moves the cursor smoothly from object to object, as stable does. Autoplay plays keep neither a replay nor a score.
-- Mod hotkeys can work as in lazer (by place in the column) or as in stable (a letter per mod: Q Easy, W No Fail, E Half Time, A Hard Rock, S Sudden Death, D Double Time, F Hidden, Z Relax, V Autoplay; press again for Daycore, Perfect, Nightcore or Traceable, Shift goes back): **Settings → Gameplay → Mod hotkeys**.
+### What's new in 0.1.4
+**Skins and effects**
+- Results screen in stable's look when the skin has `ranking-panel`: its header, the beatmap's background, the skin's Back and Retry, the performance graph with a health line and a details page below (scroll down). Switch it off in **Settings → Skin → Results screen style**.
+- Kiai flashes on hit circles and on slider heads, tails and repeats.
+- Cursor effects: `star2` particles in kiai and breaks, cursor smoke (hold the smoke key) and ripples on presses (**Settings → Skin → Cursor ripples**).
+- Pause and fail menus play the skin's sounds and `pause-loop`.
 
-**Song select**
-- Difficulty rows show a star counter, the star rating and the maximum pp with the selected mods (**Settings → Gameplay → Difficulty row shows**).
-- Set and difficulty rows look and move as in lazer: their heights can be set, the selected row is centred.
-- The info panel at the top left changes smoothly to another difficulty.
-- Long names that do not fit scroll back and forth.
+**Gameplay**
+- The cursor is drawn at the mouse's latest position every frame: smoother, with less delay. Hits are judged as before.
+- Windows: in borderless mode the sensitivity no longer resets after the cursor reaches the screen edge.
+- Skipping the intro dips to black and fades the music; the skip button has three styles (skin, lazer, SLAM) in **Settings → Skin**.
+- Restarting darkens the screen while quick retry is held, then fades the new play in with a sound; switch it off in **Settings → Gameplay → Restart animation and sound**.
+- The hold delay of quick retry and quick exit can be set (**Settings → Gameplay**).
 
 **Interface**
-- A volume overlay: Alt + mouse wheel anywhere, Alt+↑/↓, Ctrl+M to mute; its style and screen edge are in the settings.
-- A new interface font with Cyrillic, Onest; smaller captions and hints.
-- After a replay is saved, a notification appears; click it to show the file.
+- Local scores in song select open their results screen.
+- Settings: sections are icon buttons in a narrower panel.
 
 **Known limitations**
+- Combo bursts are not drawn yet.
+- Results opened from a local score have no hit error lines or health graph.
 - Hot-reloading skins, skin profiles, `.osk` import and choosing HUD layouts in the settings are not done yet.
-- The skin's score and accuracy sit 10–13 px further right than in lazer and stable at 1920×1080.
-- Search keys `star`, `bpm`, `length`, `divisor`, `status` and dates are accepted but do not filter yet.
-- Spinners follow lazer's rules, not stable's.
-- With Autoplay or Relax the key overlay counts your own keys, not the game's presses.
+- Spinners, scoring and health follow lazer's rules, not stable's.
 - The new interface has not been checked on Direct3D 11 yet; if something looks wrong, try OpenGL.
 
 ### Download
@@ -67,29 +67,29 @@ The quickest way is **Settings → Feedback**: it opens a form with the version 
 
 ## Русский
 
-### Что нового в 0.1.3
-**Моды**
-- Новая панель модов в стиле лазера: колонки по типам модов в нижней части экрана, у каждого мода название и описание; список карт остаётся виден за ней.
-- **Autoplay**, **Relax** и **Autopilot**. Autoplay плавно ведёт курсор от объекта к объекту, как в stable. Игры с Autoplay не сохраняют ни реплей, ни рекорд.
-- Горячие клавиши модов работают как в лазере (по месту в колонке) или как в stable (у мода своя буква: Q Easy, W No Fail, E Half Time, A Hard Rock, S Sudden Death, D Double Time, F Hidden, Z Relax, V Autoplay; повторное нажатие — Daycore, Perfect, Nightcore или Traceable, Shift — назад): **Настройки → Игра → Клавиши модов**.
+### Что нового в 0.1.4
+**Скины и эффекты**
+- Экран результатов в виде stable, если в скине есть `ranking-panel`: шапка, фон карты, кнопки «Назад» и «Заново» из скина, график с линией здоровья и страница подробностей ниже (прокрутите вниз). Выключается в **Настройки → Скин → Вид экрана результатов**.
+- Вспышки kiai у кругов, головок, хвостов и повторов слайдеров.
+- Эффекты курсора: частицы `star2` в kiai и перерывах, дым курсора (удерживайте клавишу дыма) и рябь от нажатий (**Настройки → Скин → Рябь от нажатий**).
+- Меню паузы и провала играют звуки скина и `pause-loop`.
 
-**Выбор песни**
-- В строке сложности — счётчик звёзд, звёзды и максимум pp с выбранными модами (**Настройки → Игра → В строке сложности**).
-- Строки сетов и сложностей выглядят и двигаются как в лазере: их высоту можно настроить, выбранная строка встаёт по центру.
-- Панель сведений слева вверху плавно меняется при смене сложности.
-- Длинные названия, которые не помещаются, прокручиваются туда-обратно.
+**Игра**
+- Курсор рисуется по самой свежей позиции мыши в каждом кадре: плавнее и с меньшей задержкой. Попадания считаются как раньше.
+- Windows: в безрамочном режиме чувствительность больше не сбрасывается, когда курсор доходит до края экрана.
+- Пропуск заставки уводит картинку в чёрное и приглушает музыку; у кнопки пропуска три вида (скин, лазер, SLAM) в **Настройки → Скин**.
+- Рестарт: пока удерживается быстрый рестарт, экран темнеет, затем новая игра проявляется со звуком; выключается в **Настройки → Игра → Анимация и звук рестарта**.
+- Задержку удержания для быстрого рестарта и выхода можно настроить (**Настройки → Игра**).
 
 **Интерфейс**
-- Оверлей громкости: Alt + колесо мыши везде, Alt+↑/↓, Ctrl+M — выключить звук; вид и край экрана — в настройках.
-- Новый шрифт интерфейса с кириллицей, Onest; подписи и подсказки мельче.
-- После сохранения реплея появляется уведомление; по клику открывается файл.
+- Локальные рекорды в выборе песни открывают свой экран результатов.
+- Настройки: разделы — кнопки со значками, панель уже.
 
 **Известные ограничения**
+- Комбо-взрывы пока не рисуются.
+- У результатов, открытых из локального рекорда, нет строк ошибки попаданий и графика здоровья.
 - Горячей перезагрузки скинов, профилей скина, импорта `.osk` и выбора раскладки HUD в настройках пока нет.
-- Счёт и точность скина при 1920×1080 стоят на 10–13 px правее, чем в лазере и stable.
-- Ключи поиска `star`, `bpm`, `length`, `divisor`, `status` и даты принимаются, но пока не фильтруют.
-- Спиннеры работают по правилам лазера, а не stable.
-- С Autoplay и Relax оверлей клавиш считает ваши клавиши, а не нажатия игры.
+- Спиннеры, очки и здоровье работают по правилам лазера, а не stable.
 - Новый интерфейс ещё не проверен на Direct3D 11; если что-то выглядит не так, попробуйте OpenGL.
 
 ### Скачать
