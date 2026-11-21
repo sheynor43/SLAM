@@ -323,6 +323,8 @@ pub struct GameplaySounds {
     fail: Option<Arc<Sample>>,
     /// The fail sound playing, or [`VoiceId::NONE`].
     fail_voice: VoiceId,
+    /// The restart sound (ADR-0164).
+    restart: Option<Arc<Sample>>,
     /// The skin's `combobreak`, if it has one.
     combo_break: Option<Arc<Sample>>,
     /// The skin's countdown and section sounds (ADR-0140).
@@ -429,6 +431,7 @@ impl GameplaySounds {
             failed: 0,
             fail: None,
             fail_voice: VoiceId::NONE,
+            restart: None,
             combo_break: None,
             service: ServiceSamples::default(),
             first_break_time: None,
@@ -440,6 +443,12 @@ impl GameplaySounds {
     /// `failsound`); no sound without one.
     pub fn with_fail_sound(mut self, sample: Option<Arc<Sample>>) -> Self {
         self.fail = sample;
+        self
+    }
+
+    /// Plays `sample` on each restart (ADR-0164); no sound without one.
+    pub fn with_restart_sound(mut self, sample: Option<Arc<Sample>>) -> Self {
+        self.restart = sample;
         self
     }
 
@@ -558,6 +567,15 @@ impl GameplaySounds {
         match sink.play_voice(sample, EFFECT) {
             Ok(voice) => self.fail_voice = voice,
             Err(_) => self.failed += 1,
+        }
+    }
+
+    // Ported from osu!lazer 2026.1005.0-lazer: osu.Game/Screens/Play/PlayerLoader.cs (OnResuming)
+    /// Plays the restart sound, as a restart starts the play again; it plays out.
+    pub fn play_restart(&mut self, sink: &mut impl VoiceSink) {
+        let Some(sample) = &self.restart else { return };
+        if sink.play_voice(sample, EFFECT).is_err() {
+            self.failed += 1;
         }
     }
 

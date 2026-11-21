@@ -675,6 +675,7 @@ fn ticks_and_frames_do_not_allocate() {
         trail: piece,
         smoke: piece,
         ripple: piece,
+        star: piece,
         config: CursorSkinConfig {
             disjoint: false,
             ..CursorSkinConfig::default()
@@ -767,7 +768,14 @@ fn ticks_and_frames_do_not_allocate() {
             pending += hud
                 .push_text(&mut text, &snapshot, now, &mut glyphs, &textures.hud)
                 .pending;
-            view.push_cursor(&mut batch, &layout(), &snapshot, now + MS / 2, &textures);
+            view.push_cursor(
+                &mut batch,
+                &layout(),
+                &snapshot,
+                now + MS / 2,
+                None,
+                &textures,
+            );
             smoke_points = smoke_points.max(view.smoke.point_count());
             drawn += snapshot.circles.as_slice().len();
             follow_points_drawn += view
@@ -918,6 +926,7 @@ fn view(map: &Beatmap) -> PlayView {
         resume: slam_play::resume::ResumeView::default(),
         smoke: slam_play::smoke::SmokeView::new(),
         ripples: false,
+        particles: slam_play::particles::CursorParticles::default(),
     }
 }
 
@@ -1607,7 +1616,7 @@ fn with_the_os_cursor_only_the_resume_target_is_drawn() {
     // while `push_cursor` would draw the skin's cursor.
     view.push_resume(&mut batch, &layout(), &d.snapshot, d.now, &textures);
     assert_eq!(batch.len(), 0);
-    view.push_cursor(&mut batch, &layout(), &d.snapshot, d.now, &textures);
+    view.push_cursor(&mut batch, &layout(), &d.snapshot, d.now, None, &textures);
     assert!(batch.batches().iter().any(|b| b.texture == CURSOR));
     batch.clear();
     d.tap(ESCAPE);
@@ -1644,7 +1653,7 @@ fn while_resuming_the_overlay_cursor_follows_the_window_and_gameplay_cursor_hide
         batch: &mut SpriteBatch,
     ) -> Vec<TextureId> {
         batch.clear();
-        view.push_cursor(batch, &layout(), &d.snapshot, d.now, textures);
+        view.push_cursor(batch, &layout(), &d.snapshot, d.now, None, textures);
         batch.batches().iter().map(|b| b.texture).collect()
     }
 
@@ -1681,7 +1690,7 @@ fn while_resuming_the_overlay_cursor_follows_the_window_and_gameplay_cursor_hide
         let (snapshot, now) = (&d.snapshot, d.now);
         assert_no_alloc(|| {
             frames.clear();
-            view.push_cursor(&mut frames, &layout(), snapshot, now, &textures);
+            view.push_cursor(&mut frames, &layout(), snapshot, now, None, &textures);
         });
     }
     assert_eq!(d.state(), PlayState::Resuming);
@@ -4631,10 +4640,14 @@ fn autopilot_moves_the_cursor_but_leaves_the_presses_to_the_player() {
     let end = end_ns(&map, session.start_time());
     let first = map.hit_objects[0].stacked_position();
     let mut near_first = false;
+    let mut live = false;
     let (session, _, _) = run_events(&[], session, track, MS, end, |s| {
         near_first |= s.cursor.distance(first) < 1.0;
+        live |= s.cursor_live;
     });
     assert!(near_first, "the cursor never reached the first object");
+    // The mod moves it: frames draw it where the tick put it, not at the pointer.
+    assert!(!live);
     assert!(session.log().events().iter().all(|j| !j.result.is_hit()));
 }
 
@@ -4668,7 +4681,14 @@ fn relax_presses_while_the_player_moves() {
             }
         })
         .collect();
-    let (session, _, _) = run_events(&moves, session, track, MS, end, |_| {});
+    // The player moves the cursor: frames draw it at the pointer while playing (ADR-0162).
+    let mut live_while_playing = true;
+    let (session, _, _) = run_events(&moves, session, track, MS, end, |s| {
+        if s.state == PlayState::Playing {
+            live_while_playing &= s.cursor_live;
+        }
+    });
+    assert!(live_while_playing);
     let log = session.log().events();
     assert!(!log.is_empty());
     let missed: Vec<_> = log
@@ -4690,4 +4710,29 @@ fn relax_presses_while_the_player_moves() {
     );
     let (session, _, _) = run_events(&[], session, track, MS, end, |_| {});
     assert!(session.log().events().iter().all(|j| !j.result.is_hit()));
+}
+
+/// A restart is marked for its black cover while the animation is on, and not when it is off
+/// (ADR-0164).
+#[test]
+fn a_restart_marks_its_cover_only_with_the_animation_on() {
+    let map = beatmap();
+    let mut d = Driver::new(&map, mods(vec![slam_osu::mods::Mod::NoFail]));
+    d.run_to(2500.0);
+    assert_eq!(d.snapshot.restart_ns, None);
+    assert!(d.snapshot.restart_animation);
+    d.hold(None, GRAVE, 200);
+    assert_eq!(d.snapshot.restarts, 1);
+    let at = d.snapshot.restart_ns.expect("the restart is marked");
+    // Right after the restart the play is covered in black.
+    assert_eq!(slam_play::restart::cover_alpha(&d.snapshot, at), 1.0);
+
+    d.session.set_restart_animation(false);
+    d.run(1);
+    assert_eq!(d.snapshot.restart_ns, None);
+    assert!(!d.snapshot.restart_animation);
+    d.hold(None, GRAVE, 200);
+    assert_eq!(d.snapshot.restarts, 2);
+    assert_eq!(d.snapshot.restart_ns, None);
+    assert_eq!(slam_play::restart::cover_alpha(&d.snapshot, at), 0.0);
 }

@@ -270,6 +270,8 @@ pub struct LiveSpinner {
     /// Lazer's `SpinnerRotationTracker.IsSpinning`: whether the spinner is being spun fast
     /// enough to play its spinning sample. False once its end time has passed.
     pub is_spinning: bool,
+    /// Lazer's `SpinnerRotationTracker.Tracking`: a button is held in the spinner's time.
+    pub tracking: bool,
     /// Lazer's `progressUnclamped`: the fraction of the required spins done, past 1 once spun
     /// beyond them. The spinning sample's frequency follows it.
     pub progress_unclamped: f32,
@@ -609,6 +611,7 @@ impl OsuRules {
                         // Beatmap object counts fit in `u32`, as `ObjectRef::index` assumes.
                         index: i as u32,
                         is_spinning: spinner.is_spinning(),
+                        tracking: spinner.tracking(),
                         progress_unclamped: spinner.progress_unclamped(),
                         bonus_max_spins: spinner.bonus_max_spins(),
                         progress: spinner.progress(),

@@ -19,9 +19,9 @@ use super::{
     write_fixed2, write_grouped, write_stat,
 };
 use crate::menu::Rect;
-use crate::menu::view::{Frame, Line, Typesetter};
+use crate::menu::view::{Face, Frame, Line, Typesetter};
 use crate::screen::Pose;
-use crate::song_select::view::fit;
+use crate::song_select::view::{fit, fit_face};
 use crate::theme::{Theme, faded};
 
 const ELLIPSIS: char = '\u{2026}';
@@ -94,8 +94,9 @@ fn line_segment(
     shapes.push(&sprite);
 }
 
-/// A skin button drawn into `rect`: grown by `1 + 0.01 a` about its centre and covered by
-/// a white veil of `0.15 a`, `a` being the hover animation.
+/// A skin button drawn into `rect`: grown by `1 + 0.01 a` about its centre and brightened
+/// by [`stable::hover_factor`], `a` being the hover animation. The sprite itself gets
+/// brighter; nothing is drawn behind or over it.
 // Ported from McOsu db2add2: src/App/Osu/OsuUIBackButton.cpp (draw)
 fn push_button(
     shapes: &mut ShapeBatch,
@@ -103,7 +104,6 @@ fn push_button(
     rect: &Rect,
     amount: f32,
     opacity: f32,
-    white: AtlasRegion,
 ) {
     let grow = 1.0 + 0.01 * amount;
     let size = [rect.width * grow, rect.height * grow];
@@ -111,14 +111,17 @@ fn push_button(
         rect.x + rect.width / 2.0 - size[0] / 2.0,
         rect.y + rect.height / 2.0 - size[1] / 2.0,
     ];
+    let gain = stable::hover_factor(amount);
     let mut quad = Sprite::new(sprite.texture, sprite.uv, at, size);
-    quad.colour = faded(Color::WHITE, opacity);
+    quad.colour = faded(Color::rgb(gain, gain, gain), opacity);
     shapes.push(&quad);
-    if amount > 0.0 {
-        let mut veil = Sprite::new(white.texture, white.uv, at, size);
-        veil.colour = faded(Color::WHITE, 0.15 * amount * opacity);
-        shapes.push(&veil);
-    }
+}
+
+/// A row of the details grid: a label and its value, in the left or the right column.
+struct GridRow {
+    label: Line,
+    value: Line,
+    right: bool,
 }
 
 /// The draw side of [`super::Results`].
@@ -137,6 +140,7 @@ pub struct ResultsView {
     stable_played: Line,
     details_title: Line,
     details: Vec<Line>,
+    grid: Vec<GridRow>,
     stable_holds: Option<(u64, u32, u32, u32)>,
     /// The frame's time, for the animations of the stable look.
     now_ns: u64,
@@ -177,6 +181,7 @@ impl ResultsView {
             stable_played: line(),
             details_title: labelled(&labels.details_title),
             details: Vec::new(),
+            grid: Vec::new(),
             stable_holds: None,
             now_ns: 0,
             rank: line(),
@@ -243,10 +248,13 @@ impl ResultsView {
         }
         self.type_setter
             .lay_out(&mut self.hint, self.theme.song_detail_size * scale);
-        self.type_setter.lay_out(
-            &mut self.details_title,
-            self.theme.results_title_size * scale,
-        );
+        let heading = Face {
+            size: self.theme.results_title_size * scale * 1.5,
+            weight: self.theme.caption_weight,
+            width: slam_text::NORMAL_WIDTH,
+        };
+        self.type_setter
+            .lay_out_face(&mut self.details_title, heading);
         let mut probe = Line::new(&ELLIPSIS.to_string());
         self.type_setter
             .lay_out(&mut probe, self.theme.results_title_size * scale);
@@ -315,6 +323,55 @@ impl ResultsView {
         }
     }
 
+    /// Writes the details grid: the play's numbers in the left column and the judgement
+    /// counts in the right one. Allocates; runs when the data or the window changes.
+    fn fill_grid(&mut self, data: &ResultsData, light: Face, strong: Face) {
+        let rows = INFO_ROWS + data.rows().count();
+        self.grid.truncate(rows);
+        while self.grid.len() < rows {
+            self.grid.push(GridRow {
+                label: line(),
+                value: line(),
+                right: false,
+            });
+        }
+        let unavailable = |i: usize| match i {
+            3 => data.mods.is_empty().then_some(&self.no_mods),
+            4 => data
+                .average_hit_error_text
+                .is_none()
+                .then_some(&self.not_available),
+            5 => data.unstable_rate.is_none().then_some(&self.not_available),
+            _ => None,
+        };
+        let mut sources: [Option<(usize, bool)>; INFO_ROWS + StatKind::COUNT] =
+            [None; INFO_ROWS + StatKind::COUNT];
+        for (i, source) in sources.iter_mut().enumerate().take(INFO_ROWS) {
+            *source = Some((i, false));
+        }
+        for (n, (kind, _)) in data.rows().enumerate() {
+            sources[INFO_ROWS + n] = Some((kind.index(), true));
+        }
+        for (row, source) in self.grid.iter_mut().zip(sources) {
+            let Some((i, right)) = source else { continue };
+            row.right = right;
+            let (label, value) = if right {
+                (&self.stat_labels[i], &self.stat_values[i])
+            } else {
+                (
+                    &self.info_labels[i],
+                    unavailable(i).unwrap_or(&self.info_values[i]),
+                )
+            };
+            row.label.text.clear();
+            row.label.text.push_str(&label.text);
+            row.value.text.clear();
+            row.value.text.push_str(&value.text);
+            self.type_setter.lay_out_face(&mut row.label, light);
+            self.type_setter.lay_out_face(&mut row.value, strong);
+        }
+    }
+
     /// The stable look's art: the details page, the graph, the skin's sprites, the black
     /// bar with the header in it, the Back button and the scroll-down hint.
     #[allow(clippy::too_many_arguments)]
@@ -349,13 +406,18 @@ impl ResultsView {
             let margin = unit * 5.0;
             self.stable_title.text.clear();
             self.stable_title.text.push_str(&data.title);
-            let size = em * lines[0].scale;
+            let regular = |size| Face {
+                size,
+                weight: self.theme.results_header_weight,
+                width: slam_text::NORMAL_WIDTH,
+            };
+            let face = regular(em * lines[0].scale);
             let mut probe = Line::new(&ELLIPSIS.to_string());
-            self.type_setter.lay_out(&mut probe, size);
-            fit(
+            self.type_setter.lay_out_face(&mut probe, face);
+            fit_face(
                 &mut self.type_setter,
                 &mut self.stable_title,
-                size,
+                face,
                 (width - 2.0 * margin).max(0.0),
                 probe.layout.width(),
             );
@@ -369,9 +431,19 @@ impl ResultsView {
             ] {
                 line.text.clear();
                 line.text.push_str(source);
-                self.type_setter.lay_out(line, em * scale);
+                self.type_setter.lay_out_face(line, regular(em * scale));
             }
             let scale = self.layout.scale;
+            let size = self.theme.results_text_size * scale;
+            let light = Face {
+                size,
+                weight: self.theme.results_header_weight,
+                width: slam_text::NORMAL_WIDTH,
+            };
+            let strong = Face {
+                weight: self.theme.caption_weight,
+                ..light
+            };
             self.details.truncate(data.extra.details.len());
             while self.details.len() < data.extra.details.len() {
                 self.details.push(line());
@@ -379,9 +451,9 @@ impl ResultsView {
             for (line, source) in self.details.iter_mut().zip(&data.extra.details) {
                 line.text.clear();
                 line.text.push_str(source);
-                self.type_setter
-                    .lay_out(line, self.theme.results_text_size * scale);
+                self.type_setter.lay_out_face(line, light);
             }
+            self.fill_grid(data, light, strong);
         }
 
         // The scrolled content, under the bar.
@@ -416,7 +488,7 @@ impl ResultsView {
             rect.x += shift;
             rect.y -= scrolled;
             let amount = snapshot.hover_amount(ResultsButton::Retry, now);
-            push_button(shapes, retry, &rect, amount, opacity, white);
+            push_button(shapes, retry, &rect, amount, opacity);
         }
         stable::lay_out(
             skin,
@@ -428,7 +500,13 @@ impl ResultsView {
                 Item::Bar { height } => {
                     let mut bar =
                         Sprite::new(white.texture, white.uv, [shift, 0.0], [width, height]);
-                    bar.colour = faded(Color::BLACK, opacity);
+                    bar.colour = faded(
+                        Color {
+                            a: stable::BAR_ALPHA,
+                            ..Color::BLACK
+                        },
+                        opacity,
+                    );
                     shapes.push(&bar);
                 }
                 Item::Sprite {
@@ -466,13 +544,14 @@ impl ResultsView {
             let mut rect = geometry.back;
             rect.x += shift;
             let amount = snapshot.hover_amount(ResultsButton::Back, now);
-            push_button(shapes, back, &rect, amount, opacity, white);
+            push_button(shapes, back, &rect, amount, opacity);
         }
         self.push_hint(shapes, &geometry, scroll, pose, white);
     }
 
-    /// The details page under the first screen: a translucent panel with the heading and
-    /// the lines. Lines above the bar are skipped (texts are drawn over the shapes).
+    /// The details page under the first screen: a translucent plate with the heading, the
+    /// two-column grid of the play's numbers and the extra lines. Rows above the bar are
+    /// skipped (texts are drawn over the shapes).
     #[allow(clippy::too_many_arguments)]
     fn push_details(
         &self,
@@ -485,36 +564,81 @@ impl ResultsView {
         white: AtlasRegion,
     ) {
         let Frame { width, .. } = self.frame;
-        if self.details.is_empty() {
+        if self.details.is_empty() && self.grid.is_empty() {
             return;
         }
         let theme = &self.theme;
         let scale = self.layout.scale;
         let shift = pose.offset * width;
-        let pad = theme.song_text_pad * scale;
-        let pitch = theme.results_row_height * scale;
+        let pad = theme.song_text_pad * scale * 1.5;
+        let margin = theme.results_margin * scale;
         let heading = theme.results_title_size * scale * 1.5;
         let left = width * 0.05;
-        let top =
-            geometry.bar_height + geometry.scroll_area - scrolled + theme.results_margin * scale;
+        let left_rows = self.grid.iter().filter(|row| !row.right).count();
+        let right_rows = self.grid.len() - left_rows;
+        let top = geometry.bar_height + geometry.scroll_area - scrolled + margin;
+        let metrics = stable::details_metrics(
+            left_rows.max(right_rows),
+            self.details.len(),
+            theme.results_row_height * scale,
+            heading,
+            pad,
+            geometry.scroll_area - margin,
+        );
         let panel = Rect {
             x: left - pad + shift,
             y: top,
             width: width - 2.0 * (left - pad),
-            height: 2.0 * pad + heading + self.details.len() as f32 * pitch,
+            height: metrics.height,
         };
         let colour = faded(theme.button_fill, pose.opacity);
         crate::widgets::draw(shapes, white, &panel, colour, Look::Round, theme, scale);
-        let tint = faded(theme.text, pose.opacity);
+        let strong = faded(theme.text, pose.opacity);
+        let dim = faded(theme.disabled_text, pose.opacity);
+        let visible = |y: f32, line: &Line| y + line.layout.height() > geometry.bar_height;
+        let centred = |line: &Line, y: f32| y + (metrics.pitch - line.layout.height()) / 2.0;
+
         let mut y = top + pad;
-        let rows = std::iter::once((&self.details_title, heading))
-            .chain(self.details.iter().map(|line| (line, pitch)));
-        for (line, advance) in rows {
-            if y >= geometry.bar_height {
-                let at = [left + shift, y + (advance - line.layout.height()) / 2.0];
-                push_layout(text, &line.layout, at, tint, glyphs);
+        let at = [
+            left + shift,
+            y + (heading - self.details_title.layout.height()) / 2.0,
+        ];
+        if visible(at[1], &self.details_title) {
+            push_layout(text, &self.details_title.layout, at, strong, glyphs);
+        }
+        y += heading;
+
+        let column = ((width - 2.0 * left) - theme.results_column_gap * scale) / 2.0;
+        let grid_top = y;
+        let mut next = [0_usize; 2];
+        for row in &self.grid {
+            let side = usize::from(row.right);
+            let row_y = grid_top + next[side] as f32 * metrics.pitch;
+            next[side] += 1;
+            let x = left + side as f32 * (column + theme.results_column_gap * scale) + shift;
+            let ly = centred(&row.label, row_y);
+            if visible(ly, &row.label) {
+                push_layout(text, &row.label.layout, [x, ly], dim, glyphs);
+                let vx = x + column - row.value.layout.width();
+                push_layout(
+                    text,
+                    &row.value.layout,
+                    [vx, centred(&row.value, row_y)],
+                    strong,
+                    glyphs,
+                );
             }
-            y += advance;
+        }
+        y = grid_top + metrics.grid_rows as f32 * metrics.pitch;
+        if !self.grid.is_empty() && !self.details.is_empty() {
+            y += metrics.pitch * 0.5;
+        }
+        for line in &self.details {
+            let ly = centred(line, y);
+            if visible(ly, line) {
+                push_layout(text, &line.layout, [left + shift, ly], dim, glyphs);
+            }
+            y += metrics.pitch;
         }
     }
 
@@ -579,6 +703,7 @@ impl ResultsView {
             .chain(&self.stat_values)
             .chain(&self.buttons)
             .chain(&self.details)
+            .chain(self.grid.iter().flat_map(|row| [&row.label, &row.value]))
             .chain([
                 &self.title,
                 &self.stable_title,

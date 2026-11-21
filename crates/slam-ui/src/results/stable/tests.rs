@@ -136,9 +136,14 @@ fn metrics_fit_the_design_as_4_by_3() {
 fn layout_at_640_by_480() {
     let skin = skin();
     let (items, info) = placed(&skin, &data(), 640.0, 480.0);
-    // Title: scale max(75/300, 75/75) = 1, so 300x75; the bar is 0.785 of its height.
-    assert!(near(info.bar_height, 75.0 * 0.785));
-    assert!(near(info.title_left, 640.0 - 300.0 - 20.0));
+    // The bar is 96 high on a screen 768 high, whatever the title; the title (300x75) is
+    // at its own size on that screen, 32 off the right edge.
+    let f = 480.0 / 768.0;
+    assert!(near(info.bar_height, 96.0 * f), "{}", info.bar_height);
+    assert!(near(info.title_left, 640.0 - 300.0 * f - 32.0 * f));
+    let title = of(&items, Part::Title)[0];
+    assert!(near(title.2[0], 300.0 * f) && near(title.2[1], 75.0 * f));
+    assert!(near(title.1[1], 75.0 * f / 2.0));
     let panel = of(&items, Part::Panel)[0];
     let scale = 317.0 / 505.0;
     assert!(near(panel.2[0], 622.0 * scale) && near(panel.2[1], 505.0 * scale));
@@ -341,4 +346,27 @@ fn images_map_and_iterate_every_slot() {
     assert_eq!(numbered.iter().count(), n as usize);
     assert!(numbered.iter().all(|v| *v > 0));
     assert!(MOD_COUNT as u32 + (12 + 11) + 5 + 3 + (GRADES + HITS) as u32 <= 64);
+}
+
+#[test]
+fn hover_brightens_the_sprite_by_the_gain_at_full_hover() {
+    assert_eq!(hover_factor(0.0), 1.0);
+    assert!((hover_factor(1.0) - (1.0 + HOVER_GAIN)).abs() < 1e-6);
+    assert!(hover_factor(0.5) > 1.0 && hover_factor(0.5) < hover_factor(1.0));
+    // Out-of-range animation values are clamped.
+    assert_eq!(hover_factor(2.0), hover_factor(1.0));
+    assert_eq!(hover_factor(-1.0), 1.0);
+}
+
+#[test]
+fn details_block_keeps_its_pitch_when_it_fits_and_shrinks_when_not() {
+    let roomy = details_metrics(6, 2, 30.0, 40.0, 10.0, 10_000.0);
+    assert_eq!(roomy.pitch, 30.0);
+    // 6 grid rows, 2 extra lines and half a row between them.
+    assert!((roomy.height - (20.0 + 40.0 + 8.5 * 30.0)).abs() < 1e-3);
+    let tight = details_metrics(6, 2, 30.0, 40.0, 10.0, 200.0);
+    assert!(tight.pitch < 30.0);
+    assert!((tight.height - 200.0).abs() < 1e-3);
+    // Nothing but the heading: no rows, no gap.
+    assert_eq!(details_metrics(0, 0, 30.0, 40.0, 10.0, 500.0).height, 60.0);
 }

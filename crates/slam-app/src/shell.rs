@@ -59,8 +59,8 @@ use slam_ui::settings_screen::{
     SettingsSnapshot, SettingsView,
 };
 use slam_ui::song_select::{
-    BeatmapDetails, DetailStats, ModColumns, ModSelect, SettingValue, SongFilter, SongList,
-    SongSelect, SongSelectAction, SongSelectInput, SongSelectLayout, SongSelectSnapshot,
+    BeatmapDetails, DetailStats, ModColumns, ModSelect, ScoreRow, SettingValue, SongFilter,
+    SongList, SongSelect, SongSelectAction, SongSelectInput, SongSelectLayout, SongSelectSnapshot,
     SongSelectStatus, SongSelectView, TileDetail,
 };
 use slam_ui::song_select::{MAX_VISIBLE_ROWS, RowThumb, Thumbs};
@@ -104,7 +104,7 @@ mod mod_settings;
 mod ui_sounds;
 use menu_music::{MenuMusic, Picked, Want};
 mod output;
-mod results;
+pub(crate) mod results;
 mod rows;
 
 pub use draw_rate::DrawRateSwitch;
@@ -373,6 +373,8 @@ pub struct ShellState {
     /// The results ask to play `last_file` again, not yet taken by
     /// [`ShellState::take_retry_request`].
     retry_request: bool,
+    /// The id of the last score opened from the song select's list.
+    viewed_id: u64,
     /// The results went back to the song select: the track they played on stops, not yet
     /// taken by [`ShellState::take_track_stop`].
     track_stop: bool,
@@ -509,6 +511,7 @@ impl ShellState {
             last_info: results::PlayInfo::default(),
             held_results: Vec::new(),
             retry_request: false,
+            viewed_id: u64::MAX,
             track_stop: false,
             device_list_request: false,
             feedback_request: None,
@@ -862,6 +865,31 @@ impl ShellState {
             (Some(row), Some(d)) => results::title(&row.artist, &row.title, &d.version),
             _ => String::new(),
         }
+    }
+
+    /// The results of the saved score `row` of the selected difficulty, over the song select.
+    /// Back returns to it; Retry plays that difficulty, as the results of a play do. Navigation.
+    fn open_score(&mut self, row: &ScoreRow) -> Option<Nav<AppScreen>> {
+        let (set, difficulty) = self.song_select.selected()?;
+        let file = self.file(set, difficulty)?.clone();
+        let localizer = self.localizer.clone()?;
+        self.last_file = Some(file);
+        self.last_title = self.beatmap_title(set, difficulty);
+        self.last_info = self.play_info(set, difficulty);
+        // Ids of viewed scores count down from the top: plays count up from zero.
+        self.viewed_id = self.viewed_id.wrapping_sub(1);
+        let data = results::score_data(
+            self.viewed_id,
+            self.last_title.clone(),
+            row,
+            &self.last_info,
+            &crate::local_time::text_at(row.date_ms.div_euclid(1000)),
+            &localizer,
+        );
+        let screen = Results::new(data);
+        self.held_results.retain(|data| Arc::strong_count(data) > 1);
+        self.held_results.push(screen.share());
+        Some(Nav::Push(AppScreen::Results(screen)))
     }
 
     /// The mapper and the star rating of a difficulty of the song select's list.
@@ -2142,6 +2170,7 @@ impl ShellState {
                             self.pick_folder();
                             None
                         }
+                        Some(SongSelectAction::OpenScore { row }) => self.open_score(&row),
                         Some(SongSelectAction::Play { set, difficulty }) => {
                             if let Some(file) = self.file(set, difficulty) {
                                 self.last_file = Some(file.clone());
@@ -2313,6 +2342,7 @@ impl ShellState {
             }
             None => Default::default(),
         };
+        snapshot.ranking.style = self.live_settings().general.results_style;
         let ranking_art = snapshot.ranking.stable().then_some(snapshot.ranking.art);
         if ranking_art != self.ranking_art {
             self.ranking_art = ranking_art;
@@ -2809,6 +2839,8 @@ struct PlayHost {
     /// How long quick retry and quick exit are held, in nanoseconds
     /// (`gameplay.hold_to_confirm_ms`). Applies live.
     hold_ns: u64,
+    /// `gameplay.restart_animation` (ADR-0164).
+    restart_animation: bool,
     /// Whether the interface effects are on (ADR-0123).
     effects: bool,
 }
@@ -2931,10 +2963,12 @@ impl PlayHost {
         );
         self.effects = settings.general.effects;
         self.hold_ns = hold_ns(settings);
+        self.restart_animation = settings.gameplay.restart_animation;
         if let Some(game) = &mut self.game {
             style_menu(&mut game.session, self.pause_menu, game.stable_pause);
             game.session.set_menu_effects(self.effects);
             game.session.set_hold_ns(self.hold_ns);
+            game.session.set_restart_animation(self.restart_animation);
         }
         let audio = &mut self.audio;
         audio.volumes.sync(
@@ -3310,8 +3344,6 @@ impl PlayHost {
                         &crate::local_time::now_text(),
                         game.session.health_curve(),
                         game.session.hit_offsets(),
-                        &r,
-                        &game.mods,
                         &self.localizer,
                     ),
                 )
@@ -3586,6 +3618,7 @@ impl PlayHost {
         session.set_hold_ns(self.hold_ns);
         session.set_pointer(slam_osu::Vec2::new(pointer[0], pointer[1]));
         session.set_menu_effects(self.effects);
+        session.set_restart_animation(self.restart_animation);
         self.loader.free(Trash::Other(Box::new((beatmap, mods))));
         // The caller checked for a free slot.
         let _ = self.scenes.push((id, scene));
@@ -4560,6 +4593,7 @@ impl<B: render::Backend> Draw<ShellSnapshot> for View<B> {
         let text = r
             .text_renderer
             .upload(&mut r.device, &self.text, &projection, texture);
+        let pointer = self.menu_cursor.pointer_pixels();
         let mut from = (0, 0);
         for (i, &(shapes_end, text_end, play)) in ends[..layers].iter().enumerate() {
             if play {
@@ -4577,6 +4611,7 @@ impl<B: render::Backend> Draw<ShellSnapshot> for View<B> {
                         size,
                         info.wait.woke_ns,
                         &snapshot.play,
+                        pointer,
                         None,
                         over_layer,
                     );
@@ -5423,6 +5458,7 @@ fn run_with<B: render::Backend>(
             ),
             effects: settings.general.effects,
             hold_ns: hold_ns(&settings),
+            restart_animation: settings.gameplay.restart_animation,
         }
     });
 

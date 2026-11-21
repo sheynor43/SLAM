@@ -27,6 +27,10 @@ fn record(total_score: i64) -> Record {
         rank: "SH".into(),
         mods: vec!["HD".into(), "DT".into()],
         statistics: BTreeMap::from([("great".to_owned(), 300), ("miss".to_owned(), 2)]),
+        maximum_statistics: BTreeMap::from([
+            ("great".to_owned(), 302),
+            ("max_combo".to_owned(), 400),
+        ]),
         player: "Guest".into(),
         replay: Some("map (1).osr".into()),
     }
@@ -164,4 +168,25 @@ fn autoplay_plays_are_not_kept_but_relax_and_autopilot_ones_are() {
     assert!(!is_kept_play(&set(&["HD", "AT"])));
     assert!(is_kept_play(&set(&["RX"])));
     assert!(is_kept_play(&set(&["AP"])));
+}
+
+#[test]
+fn rows_carry_what_the_results_of_a_score_show() {
+    let rows = rows_of(&[record(5)]);
+    let row = rows.rows[0].unwrap();
+    assert_eq!(row.hits[StatKind::Great.index()], 300);
+    assert_eq!(row.hits[StatKind::Miss.index()], 2);
+    assert_eq!(row.maximums[StatKind::Great.index()], 302);
+    assert_eq!(row.maximum_combo, 400);
+    assert_eq!(row.player.as_str(), "Guest");
+}
+
+#[test]
+fn a_record_saved_without_the_perfect_counts_still_reads() {
+    let json = r#"{"date":1,"total_score":5,"accuracy":0.5,"max_combo":3,"rank":"A",
+        "mods":[],"statistics":{"great":3},"player":"Guest","replay":null}"#;
+    let record: Record = serde_json::from_str(json).unwrap();
+    assert!(record.maximum_statistics.is_empty());
+    let row = rows_of(&[record]).rows[0].unwrap();
+    assert_eq!((row.maximum_combo, row.maximums), (0, [0; StatKind::COUNT]));
 }

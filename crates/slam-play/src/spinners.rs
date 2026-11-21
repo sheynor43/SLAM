@@ -363,28 +363,32 @@ impl Default for LiveSpinners {
     }
 }
 
+/// A spinner of nothing: the snapshot's empty slots.
+pub(crate) const EMPTY_LIVE: LiveSpinner = LiveSpinner {
+    index: 0,
+    is_spinning: false,
+    tracking: false,
+    progress_unclamped: 0.0,
+    bonus_max_spins: 0,
+    progress: 0.0,
+    rotation: 0.0,
+    spun_rotation: 0.0,
+    total_rotation: 0.0,
+    completed_full_spins: 0,
+    full_spins_changed: None,
+    bonus_score: 0.0,
+    maximum_bonus_score: 0.0,
+    time_completed: None,
+    last_bonus_hit: None,
+    judgement: None,
+};
+
 impl LiveSpinners {
     /// An empty snapshot.
     pub const fn new() -> Self {
         LiveSpinners {
             spinners: [SpinnerEntry {
-                live: LiveSpinner {
-                    index: 0,
-                    is_spinning: false,
-                    progress_unclamped: 0.0,
-                    bonus_max_spins: 0,
-                    progress: 0.0,
-                    rotation: 0.0,
-                    spun_rotation: 0.0,
-                    total_rotation: 0.0,
-                    completed_full_spins: 0,
-                    full_spins_changed: None,
-                    bonus_score: 0.0,
-                    maximum_bonus_score: 0.0,
-                    time_completed: None,
-                    last_bonus_hit: None,
-                    judgement: None,
-                },
+                live: EMPTY_LIVE,
                 tick_fade: None,
                 spm: 0.0,
             }; MAX_LIVE_SPINNERS],

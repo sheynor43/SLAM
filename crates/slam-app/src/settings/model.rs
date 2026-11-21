@@ -153,6 +153,8 @@ pub struct General {
     /// The cursor of the menus, the pause menu and the results (ADR-0124). Applies live.
     #[serde(serialize_with = "serialize_cursor_style")]
     pub menu_cursor: CursorStyle,
+    /// Which look the results screen takes (ADR-0163). Applies live.
+    pub results_style: ResultsStyle,
 }
 
 impl Default for General {
@@ -180,6 +182,7 @@ impl Default for General {
             skew: DEFAULT_SKEW_DEGREES,
             menu_background: MenuBackground::default(),
             menu_cursor: CursorStyle::Slam,
+            results_style: ResultsStyle::default(),
         }
     }
 }
@@ -907,6 +910,8 @@ pub struct Gameplay {
     /// Ripples under the cursor on every press (lazer's `ShowCursorRipples`, off by default;
     /// ADR-0159).
     pub cursor_ripple: bool,
+    /// A restart darkens the screen and plays its sound (ADR-0164). Applies live.
+    pub restart_animation: bool,
     /// Size of the gameplay cursor and its trail, 0.1 ..= 2.0 in steps of 0.01 (lazer's
     /// `OsuSetting.GameplayCursorSize`, ADR-0086).
     pub cursor_size: f64,
@@ -960,6 +965,7 @@ impl Default for Gameplay {
             hud_animations: true,
             cursor_trail: true,
             cursor_ripple: false,
+            restart_animation: true,
             cursor_size: 1.0,
             auto_cursor_size: false,
             cursor_style: CursorStyle::Skin,
@@ -1003,6 +1009,34 @@ impl PauseMenuStyle {
     /// The value called `name`.
     pub fn from_name(name: &str) -> Option<PauseMenuStyle> {
         PauseMenuStyle::ALL.into_iter().find(|s| s.name() == name)
+    }
+}
+
+/// Which look the results screen takes (ADR-0163).
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ResultsStyle {
+    /// Stable's look when the menu skin has a `ranking-panel`, SLAM's screen otherwise.
+    #[default]
+    Skin,
+    /// Always SLAM's screen.
+    Slam,
+}
+
+impl ResultsStyle {
+    pub const ALL: [ResultsStyle; 2] = [ResultsStyle::Skin, ResultsStyle::Slam];
+
+    /// The name in the settings file.
+    pub fn name(self) -> &'static str {
+        match self {
+            ResultsStyle::Skin => "skin",
+            ResultsStyle::Slam => "slam",
+        }
+    }
+
+    /// The value called `name`.
+    pub fn from_name(name: &str) -> Option<ResultsStyle> {
+        ResultsStyle::ALL.into_iter().find(|s| s.name() == name)
     }
 }
 

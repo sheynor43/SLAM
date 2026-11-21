@@ -51,6 +51,7 @@ fn the_cursor_and_the_trail_read_the_skins_they_come_from() {
             trail_rotate: false,
             trail_centre: false,
             disjoint: true,
+            star_colour: slam_play::particles::DEFAULT_STAR_COLOUR,
         }
     );
     // No cursor of the user's: the default's, with its middle.
@@ -64,6 +65,7 @@ fn the_cursor_and_the_trail_read_the_skins_they_come_from() {
             trail_rotate: true,
             trail_centre: true,
             disjoint: false,
+            star_colour: slam_play::particles::DEFAULT_STAR_COLOUR,
         }
     );
 }
@@ -101,6 +103,7 @@ fn textures(config: CursorSkinConfig) -> CursorTextures {
         trail: sprite(TRAIL, 16.0),
         smoke: None,
         ripple: None,
+        star: None,
         config,
     }
 }

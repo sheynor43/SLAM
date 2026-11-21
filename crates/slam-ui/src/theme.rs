@@ -254,6 +254,9 @@ pub struct Theme {
     pub results_panel_width: f32,
     /// Gap between the two columns.
     pub results_column_gap: f32,
+    /// Font weight of the stable look's header lines and of the labels of its details
+    /// (regular, like stable's text; the values use `caption_weight`).
+    pub results_header_weight: u16,
     /// Colour of the rank letter of a silver rank (Hidden, Flashlight).
     pub rank_silver: Color,
     /// Height of a settings widget row (toggle, slider, dropdown box, key binding box).
@@ -724,6 +727,7 @@ impl Theme {
             results_row_height: 34.0,
             results_panel_width: 400.0,
             results_column_gap: 48.0,
+            results_header_weight: 400,
             rank_silver: Color::rgb(0.78, 0.82, 0.88),
             widget_height: 40.0,
             widget_text_size: 20.0,

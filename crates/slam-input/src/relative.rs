@@ -166,7 +166,7 @@ impl RelativeMouse {
         self.changed()
     }
 
-    /// The window entered or left fullscreen, which confines the cursor.
+    /// The cursor is confined to the window or not: every window mode but windowed.
     pub fn set_confined(&mut self, confined: bool) -> Change {
         if self.confined == confined {
             return Change::default();
@@ -526,6 +526,24 @@ mod tests {
         assert_eq!(position, [1270.0, 700.0]);
         let (position, _) = mouse.motion([0.0, 0.0], [-2000.0, -2000.0], 1.0);
         assert_eq!(position, [0.0, 0.0]);
+    }
+
+    #[test]
+    fn confining_after_a_hand_over_turns_relative_mode_back_on() {
+        // A window covering the screen but not confined: past its edge the cursor goes to
+        // the OS, which keeps it on the screen, so no enter event follows and motion stays
+        // absolute, at the OS's speed.
+        let mut mouse = relative_at([1270.0, 100.0]);
+        let (_, change) = mouse.motion([0.0, 0.0], [20.0, 0.0], 2.0);
+        assert_eq!(change.relative, Some(false));
+        let (position, change) = mouse.motion([1279.0, 100.0], [-10.0, 0.0], 2.0);
+        assert_eq!(position, [1279.0, 100.0]);
+        assert_eq!(change, Change::default());
+        assert!(!mouse.is_active());
+        // Confined (the window counted as covering its display), it comes back at once.
+        assert_eq!(mouse.set_confined(true).relative, Some(true));
+        let (position, _) = mouse.motion([0.0, 0.0], [-10.0, 0.0], 2.0);
+        assert_eq!(position, [1259.0, 100.0]);
     }
 
     #[test]

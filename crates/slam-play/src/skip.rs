@@ -160,6 +160,17 @@ impl SkipAnimation {
         self.hover.set(if hovered { 1.0 } else { 0.0 }, time);
     }
 
+    /// The pose with the HUD's animations off: shown or hidden, hovered or not at once,
+    /// without the click's flash and growth.
+    pub fn still_pose(&self) -> SkipPose {
+        SkipPose {
+            alpha: self.shown.to,
+            hover: self.hover.to,
+            flash: 0.0,
+            scale: 1.0,
+        }
+    }
+
     /// The pose at `time`, `clicked` ms after the click if there was one.
     pub fn pose(&self, time: f64, clicked: Option<f64>) -> SkipPose {
         let (flash, scale) = match clicked {
@@ -387,6 +398,23 @@ mod tests {
         assert_eq!(dip_alpha(DIP_OUT_NS), 1.0);
         assert!((dip_alpha(DIP_OUT_NS + DIP_IN_NS / 2) - 0.5).abs() < 1e-6);
         assert_eq!(dip_alpha(DIP_OUT_NS + DIP_IN_NS), 0.0);
+    }
+
+    #[test]
+    fn without_animations_the_button_shows_and_hides_at_once() {
+        let mut a = SkipAnimation::default();
+        a.update(true, true, 0.0);
+        assert_eq!(
+            a.still_pose(),
+            SkipPose {
+                alpha: 1.0,
+                hover: 1.0,
+                flash: 0.0,
+                scale: 1.0,
+            }
+        );
+        a.update(false, false, 10.0);
+        assert_eq!(a.still_pose().alpha, 0.0);
     }
 
     #[test]

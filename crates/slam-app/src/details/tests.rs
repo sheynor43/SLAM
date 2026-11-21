@@ -198,6 +198,7 @@ fn the_pickers_answer_carries_the_scores_of_its_own_selection() {
         rank: *b"X\0",
         mods: Default::default(),
         date_ms: 0,
+        ..Default::default()
     });
     let reply = DetailsReply {
         generation: 1,
@@ -233,6 +234,7 @@ fn the_reader_lists_the_scores_found_under_the_files_hash() {
                 rank: "A".into(),
                 mods: vec!["HD".into()],
                 statistics: Default::default(),
+                maximum_statistics: Default::default(),
                 player: "Guest".into(),
                 replay: None,
             },

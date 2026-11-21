@@ -386,6 +386,55 @@ pub enum ResultsInput {
 /// Part of the scroll range one line of the wheel moves.
 const SCROLL_LINE: f32 = 0.15;
 
+/// How long a pull past the top takes to reach its furthest, in ns.
+const OVERSCROLL_OUT_NS: u64 = 100_000_000;
+/// How long the content then takes to spring back, in ns.
+const OVERSCROLL_BACK_NS: u64 = 500_000_000;
+/// The furthest the content is pulled past the top, as a part of the scroll range.
+const MAX_OVERSCROLL: f32 = 0.75;
+
+/// The content pulled down past the top by the wheel, springing back: stable lets the
+/// results scroll up past the top, then eases them back (stable's results at 1920×1080: a
+/// few quick lines pull it ~600 px down, back in about half a second).
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+struct Overscroll {
+    /// Where the latest pull started from, as a part of the scroll range.
+    from: f32,
+    /// The furthest the latest pull goes.
+    amount: f32,
+    /// When the latest pull started.
+    at_ns: u64,
+}
+
+impl Overscroll {
+    /// How far the content is pulled down at `now_ns`, as a part of the scroll range.
+    fn at(&self, now_ns: u64) -> f32 {
+        if self.amount <= 0.0 {
+            return 0.0;
+        }
+        let t = now_ns.saturating_sub(self.at_ns);
+        if t < OVERSCROLL_OUT_NS {
+            let out = ease_out_quint(t as f32 / OVERSCROLL_OUT_NS as f32);
+            self.from + (self.amount - self.from) * out
+        } else {
+            let back = (t - OVERSCROLL_OUT_NS) as f32 / OVERSCROLL_BACK_NS as f32;
+            self.amount * (1.0 - ease_out_quint(back.min(1.0)))
+        }
+    }
+
+    /// Pulls `lines` of the wheel further than the pull under way is heading.
+    fn pull(&mut self, lines: f32, now_ns: u64) {
+        let now = self.at(now_ns);
+        let rising = now_ns.saturating_sub(self.at_ns) < OVERSCROLL_OUT_NS;
+        let base = if rising { self.amount } else { now };
+        *self = Overscroll {
+            from: now,
+            amount: (base + lines * SCROLL_LINE).min(MAX_OVERSCROLL),
+            at_ns: now_ns,
+        };
+    }
+}
+
 /// What the screen asks the application to do.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum ResultsAction {
@@ -558,6 +607,7 @@ pub struct ResultsSnapshot {
     hover: [Towards; 2],
     scroll: Towards,
     target: f32,
+    overscroll: Overscroll,
 }
 
 impl ResultsSnapshot {
@@ -569,6 +619,7 @@ impl ResultsSnapshot {
             hover: [Towards::default(); 2],
             scroll: Towards::default(),
             target: 0.0,
+            overscroll: Overscroll::default(),
         }
     }
 
@@ -585,17 +636,24 @@ impl ResultsSnapshot {
         self.hover[button as usize].at(now_ns, stable::HOVER_NS, ease_out_quad)
     }
 
-    /// The scroll position at `now_ns`, 0 (top) ..= 1 (bottom of the range).
+    /// The scroll position at `now_ns`, 0 (top) ..= 1 (bottom of the range), below 0 while
+    /// the content is pulled past the top.
     pub fn scroll_at(&self, now_ns: u64) -> f32 {
-        self.scroll
-            .at(now_ns, stable::SCROLL_NS, ease_out_quint)
-            .clamp(0.0, 1.0)
+        scroll_at(&self.scroll, &self.overscroll, now_ns)
     }
 
     /// Where the scroll is heading, 0 ..= 1.
     pub fn scroll_target(&self) -> f32 {
         self.target
     }
+}
+
+/// The scroll position at `now_ns` of `scroll`, less the pull past the top.
+fn scroll_at(scroll: &Towards, overscroll: &Overscroll, now_ns: u64) -> f32 {
+    scroll
+        .at(now_ns, stable::SCROLL_NS, ease_out_quint)
+        .clamp(0.0, 1.0)
+        - overscroll.at(now_ns)
 }
 
 /// The screen's state on the update thread.
@@ -606,6 +664,7 @@ pub struct Results {
     hover: [Towards; 2],
     scroll: Towards,
     target: f32,
+    overscroll: Overscroll,
 }
 
 impl Results {
@@ -616,6 +675,7 @@ impl Results {
             hover: [Towards::default(); 2],
             scroll: Towards::default(),
             target: 0.0,
+            overscroll: Overscroll::default(),
         }
     }
 
@@ -636,6 +696,7 @@ impl Results {
             hover: self.hover,
             scroll: self.scroll,
             target: self.target,
+            overscroll: self.overscroll,
         }
     }
 
@@ -646,8 +707,7 @@ impl Results {
     }
 
     fn point(&mut self, x: f32, y: f32, layout: &ResultsLayout, now_ns: u64) {
-        let scrolled =
-            self.scroll.at(now_ns, stable::SCROLL_NS, ease_out_quint) * layout.scroll_area;
+        let scrolled = scroll_at(&self.scroll, &self.overscroll, now_ns) * layout.scroll_area;
         self.hovered = layout.button_at_scrolled(x, y, scrolled);
         for button in ResultsButton::ALL {
             let to = if self.hovered == Some(button) {
@@ -684,7 +744,12 @@ impl Results {
                 self.hovered.map(ResultsAction::from)
             }
             ResultsInput::Scroll { delta } if scrolls => {
-                self.scroll_to(self.target + delta * SCROLL_LINE, now_ns);
+                // Up at the top pulls the content past it, as stable does.
+                if delta < 0.0 && self.target <= 0.0 {
+                    self.overscroll.pull(-delta, now_ns);
+                } else {
+                    self.scroll_to(self.target + delta * SCROLL_LINE, now_ns);
+                }
                 None
             }
             ResultsInput::Page { delta } if scrolls => {

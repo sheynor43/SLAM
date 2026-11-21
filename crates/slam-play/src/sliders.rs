@@ -10,7 +10,7 @@
 //! A slider shaken by a blocked press on its head ([`crate::shake`]) moves all but its ball and
 //! follow circle.
 //!
-//! Not done: the kiai flash of the head and tail pieces. Reverse
+//! Head, tail and repeat circles flash in kiai as hit circles do ([`crate::kiai`]). Reverse
 //! arrows keep the direction of the full path: they do not follow a body snaking out, and
 //! their rotation is not smoothed over frames. Without frame history, the ball faces right where
 //! lazer keeps its previous rotation (a path too short to tell the direction), and the follow
@@ -27,7 +27,7 @@ use slam_skin::{Skin, SkinChain};
 use crate::circles::{
     CircleMods, CirclePose, CircleSettings, CircleStyle, CircleTextures, CircleVisual, DIM, Easing,
     HitCircles, Kind, LEGACY_FADE_DURATION, MISS_WINDOW, PieceLayers, PieceTextures, SkinSprite,
-    Track, centred, circle_pose, combo_colour, push_approach, tint, value_at,
+    Track, centred, circle_pose, combo_colour, kiai_lit, push_approach, tint, value_at,
 };
 use crate::fail::FailFrame;
 use crate::playfield::PlayfieldLayout;
@@ -457,6 +457,9 @@ pub struct SliderPose {
     pub range: (f64, f64),
     pub head: CirclePose,
     pub tail: TailPose,
+    /// The kiai flash's alpha of the tail and repeat circles (0 outside kiai), set by the
+    /// caller from [`crate::kiai`] as the head's.
+    pub kiai_flash: f32,
 }
 
 /// The appearance of `slider` at game `time` in the state `live`.
@@ -507,6 +510,7 @@ pub fn slider_pose(
         range: snaking_range(&slider.timing, time, head_hit, snaking),
         head: circle_pose(&slider.head, live.head, time, style),
         tail: tail_pose(slider, live, time, style, snaking, &dim),
+        kiai_flash: 0.0,
     }
 }
 
@@ -1285,6 +1289,8 @@ pub fn push_objects(
     let snaking = hit_sliders.snaking;
     let visuals = &hit_sliders.visuals;
     let sliders = live_sliders.as_slice();
+    // One flash for every piece: it follows the track's beats, not the objects' times.
+    let kiai_flash = hit_circles.kiai.alpha(time);
 
     // Later objects first: merge both lists by descending object index.
     let (mut c, mut s) = (circles.len(), sliders.len());
@@ -1295,7 +1301,10 @@ pub fn push_objects(
             let live = &circles[c];
             if let Some(circle) = hit_circles.visuals.get(live.index) {
                 let first = batch.len();
-                let pose = circle_pose(circle, live.judgement, time, style);
+                let pose = CirclePose {
+                    kiai_flash,
+                    ..circle_pose(circle, live.judgement, time, style)
+                };
                 let piece = PieceTextures::from(textures.circles);
                 let all = PieceLayers::All;
                 let circles = textures.circles;
@@ -1314,7 +1323,9 @@ pub fn push_objects(
             let live = &sliders[s];
             if let Some(slider) = visuals.get(live.index) {
                 let (first, first_body) = (batch.len(), bodies.len());
-                let pose = slider_pose(slider, live, time, style, snaking);
+                let mut pose = slider_pose(slider, live, time, style, snaking);
+                pose.head.kiai_flash = kiai_flash;
+                pose.kiai_flash = kiai_flash;
                 let nested = Nested {
                     visuals: visuals.nested(slider),
                     judgements: live_sliders.nested(s),
@@ -1503,6 +1514,7 @@ fn push_end_circle(
     brightness: f32,
     alpha: f32,
     scale: f32,
+    kiai_flash: f32,
     pieces: &PieceTextures,
 ) {
     if alpha <= 0.0 {
@@ -1519,6 +1531,19 @@ fn push_end_circle(
         let size = Vec2::new(t.size.x * scale, t.size.y * scale);
         let colour = tint(Color::WHITE, brightness, alpha);
         batch.push(&centred(t, centre, size, colour));
+    }
+    // Ported from osu!lazer 2026.1005.0-lazer: osu.Game/Skinning/LegacyKiaiFlashingDrawable.cs
+    // Ported from osu!lazer 2026.1005.0-lazer: osu.Game.Rulesets.Osu/Skinning/Legacy/LegacyMainCirclePiece.cs (load)
+    // The tail is a `LegacyMainCirclePiece("sliderendcircle", false)`: the flash, a second
+    // circle sprite additive in the brightened combo colour, is proxied above its overlay.
+    if kiai_flash > 0.0
+        && let Some(t) = &pieces.circle
+    {
+        let size = Vec2::new(t.size.x * scale, t.size.y * scale);
+        let colour = tint(kiai_lit(slider.head.colour), brightness, alpha * kiai_flash);
+        let mut sprite = centred(t, centre, size, colour);
+        sprite.blend = Blend::Additive;
+        batch.push(&sprite);
     }
 }
 
@@ -1566,6 +1591,7 @@ fn push_slider(
         tail.brightness,
         pose.object_alpha * tail.object_alpha * tail.piece_alpha * tail.sprite_alpha,
         tail.sprite_scale,
+        pose.kiai_flash,
         &textures.sliders.tail,
     );
 
@@ -1597,6 +1623,7 @@ fn push_slider(
             pose.body_brightness,
             pose.object_alpha * p.object_alpha * p.piece_alpha * p.sprite_alpha,
             p.sprite_scale,
+            pose.kiai_flash,
             &textures.sliders.tail,
         );
     }

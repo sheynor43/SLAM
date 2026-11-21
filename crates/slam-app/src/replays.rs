@@ -78,7 +78,8 @@ pub fn save(job: &ReplayJob, dir: &Path) -> Option<String> {
         return None;
     };
     let path = dir.join(&name);
-    match std::fs::create_dir_all(dir).and_then(|()| std::fs::write(&path, bytes)) {
+    // Atomically, so that a reader of the folder never sees a half-written `.osr`.
+    match std::fs::create_dir_all(dir).and_then(|()| crate::atomic_file::write(&path, &bytes)) {
         Ok(()) => {
             tracing::info!("replay saved: {}", path.display());
             Some(name)

@@ -12,9 +12,10 @@
 //! the value its property has at its start time, and a later-starting transform replaces any
 //! earlier one still running.
 //!
-//! The kiai flash (`LegacyKiaiFlashingDrawable`, [`crate::kiai`]) is drawn on hit circles.
+//! The kiai flash (`LegacyKiaiFlashingDrawable`, [`crate::kiai`]) is drawn on hit circles and
+//! on slider heads, tails and repeats ([`crate::sliders`]).
 //!
-//! Not done: the kiai flash of slider heads and tails, the shake on an early press, the
+//! Not done: the shake on an early press, the
 //! combo colour brightness setting (`ComboColourNormalisationAmount`, 0 by default), turning hit
 //! animations off (on by default), and textures from the beatmap's skin.
 
@@ -963,13 +964,7 @@ impl HitCircles {
             }
             if let Some(t) = &piece.circle {
                 let size = Vec2::new(t.size.x * sprite_scale, t.size.y * sprite_scale);
-                let glow = kiai_colour(circle.colour);
-                let lit = Color {
-                    r: circle.colour.r * glow.r,
-                    g: circle.colour.g * glow.g,
-                    b: circle.colour.b * glow.b,
-                    a: circle.colour.a,
-                };
+                let lit = kiai_lit(circle.colour);
                 let colour = tint(lit, pose.brightness, sprite_alpha * pose.kiai_flash);
                 let mut sprite = centred(t, centre, size, colour);
                 sprite.blend = Blend::Additive;
@@ -1017,6 +1012,19 @@ impl HitCircles {
             number(batch);
         }
         flash(batch);
+    }
+}
+
+/// The colour of a piece's kiai flash: the flash's own colour, the brightened combo colour,
+/// under the circle sprite's, the combo colour (`LegacyKiaiFlashingDrawable` colours its
+/// container with the combo colour and the flash with the kiai tint).
+pub(crate) fn kiai_lit(combo: Color) -> Color {
+    let glow = kiai_colour(combo);
+    Color {
+        r: combo.r * glow.r,
+        g: combo.g * glow.g,
+        b: combo.b * glow.b,
+        a: combo.a,
     }
 }
 

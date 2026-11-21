@@ -126,6 +126,8 @@ impl ExpandTimes {
 pub struct ExpandTracker {
     down: u32,
     times: ExpandTimes,
+    /// The left and right buttons held (`LegacyCursorParticles.handleInput`).
+    buttons: [bool; 2],
 }
 
 impl ExpandTracker {
@@ -136,6 +138,7 @@ impl ExpandTracker {
             if event.action != Actions::LEFT && event.action != Actions::RIGHT {
                 continue;
             }
+            self.buttons[usize::from(event.action == Actions::RIGHT)] = event.pressed;
             if event.pressed {
                 self.down += 1;
                 self.times.expanded_at = event.time;
@@ -153,6 +156,11 @@ impl ExpandTracker {
 
     pub fn times(&self) -> ExpandTimes {
         self.times
+    }
+
+    /// Whether the left and the right button are held.
+    pub fn buttons(&self) -> [bool; 2] {
+        self.buttons
     }
 
     /// Nothing held, never expanded: a play that starts over has a new cursor.
@@ -178,7 +186,7 @@ pub fn rotation(time: f64, rotate: bool) -> f32 {
 
 // Ported from osu!lazer 2026.1005.0-lazer: osu.Game/Skinning/LegacySkin.cs (STABLE_MAGIC_SCALE_FACTOR)
 /// Lazer shrinks the cursor's and the trail's textures by this (`NonPlayfieldSprite`).
-const STABLE_MAGIC_SCALE_FACTOR: f32 = 1.6;
+pub(crate) const STABLE_MAGIC_SCALE_FACTOR: f32 = 1.6;
 
 /// The skin configuration of the cursor and its trail.
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -196,6 +204,8 @@ pub struct CursorSkinConfig {
     pub trail_centre: bool,
     /// Whether the trail is disjoint: the skin with `cursor` has no `cursormiddle`.
     pub disjoint: bool,
+    /// `StarBreakAdditive`, the first skin that sets it: the colour of the `star2` particles.
+    pub star_colour: Color,
 }
 
 impl Default for CursorSkinConfig {
@@ -207,6 +217,7 @@ impl Default for CursorSkinConfig {
             trail_rotate: true,
             trail_centre: true,
             disjoint: true,
+            star_colour: crate::particles::DEFAULT_STAR_COLOUR,
         }
     }
 }
@@ -230,6 +241,12 @@ impl CursorSkinConfig {
             trail_centre: trail.is_none_or(|s| s.cursor_centre()),
             // Stable picks the trail's style by the skin the cursor comes from.
             disjoint: cursor.is_none_or(|s| s.texture("cursormiddle").is_none()),
+            // Ported from osu!lazer 2026.1005.0-lazer: osu.Game.Rulesets.Osu/Skinning/Legacy/LegacyCursorParticles.cs (load)
+            star_colour: skins
+                .config(|s| s.custom_colour("StarBreakAdditive"))
+                .map_or(crate::particles::DEFAULT_STAR_COLOUR, |f| {
+                    crate::spinners::rgba(f.value)
+                }),
         }
     }
 }
@@ -261,6 +278,8 @@ pub struct CursorTextures {
     /// `cursor-smoke` and `cursor-ripple` (ADR-0159).
     pub smoke: Option<SkinSprite>,
     pub ripple: Option<SkinSprite>,
+    /// `star2`: the cursor particles ([`crate::particles`]).
+    pub star: Option<SkinSprite>,
     pub config: CursorSkinConfig,
 }
 
@@ -815,6 +834,25 @@ impl CursorView {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn the_tracker_follows_which_buttons_are_held() {
+        let event = |action, pressed| ActionEvent {
+            time: 0.0,
+            position: Vec2::ZERO,
+            action,
+            pressed,
+        };
+        let mut t = ExpandTracker::default();
+        t.apply(&[event(Actions::LEFT, true)]);
+        assert_eq!(t.buttons(), [true, false]);
+        t.apply(&[event(Actions::RIGHT, true), event(Actions::SMOKE, true)]);
+        assert_eq!(t.buttons(), [true, true]);
+        t.apply(&[event(Actions::LEFT, false)]);
+        assert_eq!(t.buttons(), [false, true]);
+        t.reset();
+        assert_eq!(t.buttons(), [false, false]);
+    }
 
     const MS: u64 = 1_000_000;
 

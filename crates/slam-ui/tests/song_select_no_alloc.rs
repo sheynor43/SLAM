@@ -623,6 +623,7 @@ fn changing_details_push_without_allocating_once_warm() {
                 rank: *b"SH",
                 mods: ScoreMods::from_acronyms(["HD", "DT"]),
                 date_ms: 1_700_000_000_000 + i64::from(i) * 86_400_000,
+                ..Default::default()
             })
         }),
     };

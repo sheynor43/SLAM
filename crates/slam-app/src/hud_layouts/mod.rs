@@ -7,7 +7,6 @@
 pub mod migrate;
 
 use std::fmt;
-use std::io::Write;
 use std::path::{Path, PathBuf};
 
 use slam_ui::hud_layout::{self, Builtin, HudLayout, LAYOUT_VERSION, LayoutError};
@@ -306,19 +305,7 @@ impl LayoutStore {
 
 /// Writes through a temp file in the same folder and renames it over `path`.
 fn write_atomic(path: &Path, bytes: &[u8]) -> Result<()> {
-    let mut name = path.file_name().unwrap_or_default().to_os_string();
-    name.push(".tmp");
-    let tmp = path.with_file_name(name);
-    let written = (|| {
-        let mut file = std::fs::File::create(&tmp)?;
-        file.write_all(bytes)?;
-        file.sync_all()?;
-        std::fs::rename(&tmp, path)
-    })();
-    if written.is_err() {
-        let _ = std::fs::remove_file(&tmp);
-    }
-    io(path, written)
+    io(path, crate::atomic_file::write(path, bytes))
 }
 
 #[cfg(test)]

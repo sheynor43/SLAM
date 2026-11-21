@@ -407,6 +407,8 @@ fn scrolling_clamps_eases_and_the_hint_scrolls_to_the_bottom() {
     let scroll = |screen: &mut Results, input| screen.input(input, &layout, 0);
     scroll(&mut screen, ResultsInput::Scroll { delta: -3.0 });
     assert_eq!(screen.snapshot().scroll_target(), 0.0);
+    // Past the top it springs back (see the test below); start over at rest.
+    let mut screen = Results::new(data([ResultsStat::default(); StatKind::COUNT]));
     scroll(&mut screen, ResultsInput::Scroll { delta: 2.0 });
     let target = screen.snapshot().scroll_target();
     assert!(target > 0.0 && target < 1.0);
@@ -493,4 +495,36 @@ fn hint_bounce_stays_in_range() {
         assert!((-0.25..=0.0).contains(&b), "{b}");
     }
     assert_eq!(stable::hint_bounce(0.0), -0.25);
+}
+
+#[test]
+fn the_wheel_pulls_the_content_past_the_top_and_it_springs_back() {
+    let layout = ResultsLayout::new_for(1920.0, 1080.0, &Theme::default(), Some(&art()));
+    let mut screen = Results::new(data([ResultsStat::default(); StatKind::COUNT]));
+    screen.input(ResultsInput::Scroll { delta: -1.0 }, &layout, 0);
+    let snap = screen.snapshot();
+    // The target stays at the top; the content goes past it, furthest at 100 ms.
+    assert_eq!(snap.scroll_target(), 0.0);
+    assert_eq!(snap.scroll_at(0), 0.0);
+    let furthest = snap.scroll_at(100_000_000);
+    assert!((furthest + 0.15).abs() < 1e-6, "{furthest}");
+    // Halfway back it is still pulled, then at rest at the top.
+    let back = snap.scroll_at(200_000_000);
+    assert!(back < 0.0 && back > furthest, "{back}");
+    assert_eq!(snap.scroll_at(600_000_000), 0.0);
+
+    // Quick lines add up, to a limit.
+    for i in 0..20 {
+        screen.input(
+            ResultsInput::Scroll { delta: -1.0 },
+            &layout,
+            1_000_000_000 + i,
+        );
+    }
+    let snap = screen.snapshot();
+    assert!((snap.scroll_at(1_100_000_019) + 0.75).abs() < 1e-6);
+
+    // Down from a pull scrolls as before.
+    screen.input(ResultsInput::Scroll { delta: 1.0 }, &layout, 3_000_000_000);
+    assert!(screen.snapshot().scroll_target() > 0.0);
 }

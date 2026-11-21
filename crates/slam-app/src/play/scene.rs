@@ -6,7 +6,7 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
-use slam_osu::{Beatmap, ModSet};
+use slam_osu::{Beatmap, ModSet, Vec2};
 use slam_play::circles::{
     CircleMods, CircleSettings, CircleSkinConfig, CircleStyle, CircleVisuals, HitCircles,
 };
@@ -304,6 +304,16 @@ pub fn prepare(
     let hitsounds = Hitsounds::new(beatmap, sample_skins, &mut cache);
     // Ported from osu!lazer 2026.1005.0-lazer: osu.Game/Screens/Play/FailAnimationContainer.cs (load)
     let fail_sound = slam_play::hitsounds::effect("Gameplay/failsound", sample_skins, &mut cache);
+    // Ported from osu!lazer 2026.1005.0-lazer: osu.Game/Screens/Play/PlayerLoader.cs (load)
+    // `Gameplay/restart`, legacy `pause-retry-click`; without either, the client's
+    // confirming click from the built-in skin (ADR-0164).
+    let restart_sound = [
+        "Gameplay/restart",
+        "pause-retry-click",
+        "click-short-confirm",
+    ]
+    .into_iter()
+    .find_map(|name| slam_play::hitsounds::effect(name, sample_skins, &mut cache));
     // Ported from osu!lazer 2026.1005.0-lazer: osu.Game/Screens/Play/ComboEffects.cs (load)
     let combo_break = slam_play::hitsounds::effect("Gameplay/combobreak", sample_skins, &mut cache);
     // Ported from osu!lazer 2026.1005.0-lazer: osu.Game/Screens/Play/GameplayMenuOverlay.cs (load)
@@ -318,6 +328,7 @@ pub fn prepare(
         },
     )
     .with_fail_sound(fail_sound)
+    .with_restart_sound(restart_sound)
     .with_combo_break_sound(combo_break)
     .with_pause_loop(pause_loop)
     .with_service_sounds(service_samples(sample_skins, &mut cache));
@@ -375,6 +386,7 @@ pub fn prepare(
             .with_slam(settings.cursor_style == CursorStyle::Slam),
         smoke: slam_play::smoke::SmokeView::new(),
         ripples: settings.cursor_ripple,
+        particles: slam_play::particles::CursorParticles::default(),
     };
 
     let (mut requests, uploads): (TextureRequests, TextureUploads) =
@@ -442,12 +454,16 @@ pub fn prepare(
         objects: beatmap.hit_objects.len(),
         text,
         cursor: SpriteBatch::with_capacity(
-            MAX_CURSOR_SPRITES + MAX_TARGET_SPRITES + slam_play::ripple::MAX_RIPPLE_SPRITES,
+            MAX_CURSOR_SPRITES
+                + MAX_TARGET_SPRITES
+                + slam_play::ripple::MAX_RIPPLE_SPRITES
+                + slam_play::particles::MAX_PARTICLE_SPRITES,
         ),
         cursor_shapes: ShapeBatch::with_capacity(
             2 * MAX_CURSOR_SHAPES + slam_play::ripple::MAX_RIPPLE_SPRITES,
         ),
         hud_shapes: ShapeBatch::with_capacity(slam_play::skip::MAX_SKIP_SHAPES + 1),
+        cover_shapes: ShapeBatch::with_capacity(1),
         cursor_style: settings.cursor_style,
         cursor_theme: Theme::new(settings.cursor_scheme, 1.0),
         menu,
@@ -524,6 +540,9 @@ pub struct PlayScene {
     /// The skip button's plates and the skip's dip, between the sprites and the HUD's text
     /// (ADR-0160).
     hud_shapes: ShapeBatch,
+    /// The restart's black (ADR-0164): over the HUD's text, under the cursor, outside the
+    /// fail layer.
+    cover_shapes: ShapeBatch,
     cursor_style: CursorStyle,
     cursor_theme: Theme,
     /// The pause and fail menus, on top of everything (ADR-0052).
@@ -617,7 +636,9 @@ impl PlayScene {
     }
 
     /// Draws the play with `r`, the resources its [`PlayScene::start`] made, into the
-    /// frame `device` began at `size`, with the FPS counter `fps` on top (ADR-0060).
+    /// frame `device` began at `size`, with the FPS counter `fps` on top (ADR-0060). The
+    /// player's cursor is drawn at `pointer`, the pointer's freshest position in pixels,
+    /// when known (ADR-0162).
     #[allow(clippy::too_many_arguments)]
     pub fn draw<D: Device>(
         &mut self,
@@ -626,6 +647,7 @@ impl PlayScene {
         size: Extent,
         now_ns: u64,
         snapshot: &PlaySnapshot,
+        pointer: Option<[f32; 2]>,
         fps: Option<&FpsView>,
         over_layer: bool,
     ) {
@@ -647,6 +669,7 @@ impl PlayScene {
         self.cursor.clear();
         self.cursor_shapes.clear();
         self.hud_shapes.clear();
+        self.cover_shapes.clear();
         self.menu_shapes.clear();
         self.menu_text.clear();
         let background = slam_play::background::shown_region(
@@ -708,11 +731,11 @@ impl PlayScene {
             textures.white,
             &self.cursor_theme,
         );
-        // The skip dips the picture to black around its seek (ADR-0160).
-        if let (Some(pressed), Some(white)) = (snapshot.skip_dip_ns, textures.white) {
-            let alpha = slam_play::skip::dip_alpha(now_ns.saturating_sub(pressed));
-            if alpha > 0.0 {
-                self.hud_shapes.push_shape(&slam_render::shape::Shape::new(
+        // The skip dips the picture to black around its seek (ADR-0160), under the HUD's
+        // text; quick retry's hold and a restart cover the text too (ADR-0164).
+        if let Some(white) = textures.white {
+            let black = |alpha: f32| {
+                slam_render::shape::Shape::new(
                     white.texture,
                     white.uv,
                     [0.0, 0.0],
@@ -721,7 +744,17 @@ impl PlayScene {
                         a: alpha,
                         ..Color::BLACK
                     },
-                ));
+                )
+            };
+            if let Some(pressed) = snapshot.skip_dip_ns {
+                let alpha = slam_play::skip::dip_alpha(now_ns.saturating_sub(pressed));
+                if alpha > 0.0 {
+                    self.hud_shapes.push_shape(&black(alpha));
+                }
+            }
+            let cover = slam_play::restart::cover_alpha(snapshot, now_ns);
+            if cover > 0.0 {
+                self.cover_shapes.push_shape(&black(cover));
             }
         }
         self.hud.push_text(
@@ -737,8 +770,14 @@ impl PlayScene {
             self.view
                 .push_resume(&mut self.cursor, &layout, snapshot, now_ns, &textures);
         } else {
-            self.view
-                .push_cursor(&mut self.cursor, &layout, snapshot, now_ns, &textures);
+            self.view.push_cursor(
+                &mut self.cursor,
+                &layout,
+                snapshot,
+                now_ns,
+                pointer.map(|[x, y]| Vec2::new(x, y)),
+                &textures,
+            );
             self.view.push_ripple_rings(
                 &mut self.cursor_shapes,
                 &layout,
@@ -869,6 +908,11 @@ impl PlayScene {
         let _ = r
             .text_renderer
             .draw(device, &self.text, &projection, texture);
+        if !self.cover_shapes.is_empty() {
+            let _ = r
+                .shape_renderer
+                .draw(device, &self.cover_shapes, &projection, texture);
+        }
         let _ = r.renderer.draw(device, &self.cursor, &projection, texture);
         if !self.cursor_shapes.is_empty() {
             let _ = r
