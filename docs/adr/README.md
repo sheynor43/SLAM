@@ -168,6 +168,7 @@
 | [0162](0162-gameplay-cursor-at-fresh-pointer.md) | Игровой курсор рисуется по самой свежей позиции указателя, судейство — по событиям в update | Принято |
 | [0163](0163-results-style-setting.md) | Настройка `general.results_style`: вид результатов по скину (`skin`) или всегда SLAM (`slam`) | Принято |
 | [0164](0164-restart-animation.md) | Рестарт: затемнение при удержании, проявление после рестарта (как `PlayerLoader` лазера) и звук `Gameplay/restart`/`pause-retry-click`; настройка `gameplay.restart_animation` | Принято |
+| [0165](0165-settings-icon-tabs.md) | Вкладки настроек — квадратные кнопки со значками одного цвета, название — подсказкой; панель уже | Принято |
 
 ## Шаблон
 

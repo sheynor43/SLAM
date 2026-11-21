@@ -7,8 +7,10 @@ use crate::session::PlaySnapshot;
 // Ported from osu!lazer 2026.1005.0-lazer: osu.Game/Screens/Play/PlayerLoader.cs (contentIn)
 /// How long a restarted play stays fully black, ns.
 pub const BLACK_NS: u64 = 50_000_000;
-/// How long the black then takes to fade out (OutQuint), ns.
-pub const FADE_NS: u64 = 5_000_000_000;
+/// How long the black then takes to fade out (OutQuint), ns: as long as lazer's content
+/// takes to fade in (`FadeInFromZero(500, OutQuint)`); lazer's own black layer takes 5 s,
+/// which feels too slow without its loader screen.
+pub const FADE_NS: u64 = 500_000_000;
 
 /// The black over a play restarted `since_ns` ago.
 pub fn after_restart(since_ns: u64) -> f32 {
@@ -45,10 +47,10 @@ mod tests {
     fn a_restarted_play_stays_black_for_50_ms_then_fades_out_quint() {
         assert_eq!(after_restart(0), 1.0);
         assert_eq!(after_restart(50 * MS), 1.0);
-        // OutQuint: most of the black is gone within the first second of five.
-        let a = after_restart((50 + 1000) * MS);
+        // OutQuint: most of the black is gone within the first fifth of the half second.
+        let a = after_restart((50 + 100) * MS);
         assert!((a - 0.8f32.powi(5)).abs() < 1e-4, "{a}");
-        assert_eq!(after_restart((50 + 5000) * MS), 0.0);
+        assert_eq!(after_restart((50 + 500) * MS), 0.0);
         assert_eq!(after_restart(60_000 * MS), 0.0);
     }
 

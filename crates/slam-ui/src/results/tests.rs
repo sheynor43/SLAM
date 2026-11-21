@@ -401,7 +401,7 @@ fn hover_animates_over_a_tenth_of_a_second() {
 }
 
 #[test]
-fn scrolling_clamps_eases_and_the_hint_scrolls_to_the_bottom() {
+fn scrolling_clamps_eases_and_has_no_arrow_button() {
     let layout = ResultsLayout::new_for(1024.0, 768.0, &Theme::default(), Some(&art()));
     let mut screen = Results::new(data([ResultsStat::default(); StatKind::COUNT]));
     let scroll = |screen: &mut Results, input| screen.input(input, &layout, 0);
@@ -420,15 +420,14 @@ fn scrolling_clamps_eases_and_the_hint_scrolls_to_the_bottom() {
     assert_eq!(screen.snapshot().scroll_target(), 1.0);
     scroll(&mut screen, ResultsInput::Edge { bottom: false });
     assert_eq!(screen.snapshot().scroll_target(), 0.0);
-    // The hint is a button while not at the bottom.
-    let [x, y] = layout.hint.centre();
+    // No scroll-down arrows: a press at the bottom centre scrolls nothing.
+    let (x, y) = (512.0, 760.0);
     assert_eq!(
         screen.input(ResultsInput::PointerPress { x, y }, &layout, 0),
         None
     );
-    assert_eq!(screen.snapshot().scroll_target(), 1.0);
+    assert_eq!(screen.snapshot().scroll_target(), 0.0);
     scroll(&mut screen, ResultsInput::Edge { bottom: true });
-    // At the bottom the hint is gone: a press there is no scroll.
     let snap = screen.snapshot();
     assert_eq!(snap.scroll_at(10 * stable::SCROLL_NS), 1.0);
     // The SLAM look does not scroll.
@@ -486,15 +485,6 @@ fn health_line_points_and_colours() {
     let mut n = 0;
     stable::health_segments(graph, &long, |_, _, _| n += 1);
     assert_eq!(n, stable::MAX_HEALTH_SEGMENTS);
-}
-
-#[test]
-fn hint_bounce_stays_in_range() {
-    for i in 0..200 {
-        let b = stable::hint_bounce(i as f32 * 0.037);
-        assert!((-0.25..=0.0).contains(&b), "{b}");
-    }
-    assert_eq!(stable::hint_bounce(0.0), -0.25);
 }
 
 #[test]

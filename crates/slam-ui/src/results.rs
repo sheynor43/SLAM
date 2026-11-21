@@ -543,11 +543,11 @@ impl ResultsLayout {
     }
 
     /// This layout in the stable look (ADR-0158, ADR-0161): the skin's `ranking-retry` and
-    /// `menu-back` are the buttons, `hint` is the scroll-down button, and the screen scrolls.
+    /// `menu-back` are the buttons, and the screen scrolls (with the wheel and keys; McOsu's
+    /// scroll-down arrows are left out at the player's wish).
     pub fn stable(mut self, width: f32, height: f32, art: &stable::StableArt) -> ResultsLayout {
         let geometry = stable::geometry(width, height, art);
         self.buttons = [geometry.retry, geometry.back];
-        self.hint = geometry.hint;
         self.scroll_area = geometry.scroll_area;
         self
     }
@@ -736,10 +736,6 @@ impl Results {
                 None
             }
             ResultsInput::PointerPress { x, y } => {
-                if scrolls && self.target < 1.0 && layout.hint.contains(x, y) {
-                    self.scroll_to(1.0, now_ns);
-                    return None;
-                }
                 self.point(x, y, layout, now_ns);
                 self.hovered.map(ResultsAction::from)
             }

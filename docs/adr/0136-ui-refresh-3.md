@@ -1,6 +1,6 @@
 # ADR-0136: Обновление интерфейса, часть 3 — слои кнопок по лазеру, тени, курсор, раздельные эффекты
 
-- Статус: Принято
+- Статус: Принято; цвета вкладок настроек заменены [ADR-0165](0165-settings-icon-tabs.md)
 - Дата: 2026-11-14
 - Дополняет [ADR-0123](0123-interface-effects.md), [ADR-0124](0124-cursor-styles.md), [ADR-0125](0125-local-scores-json.md), [ADR-0131](0131-hybrid-buttons-and-difficulty-glow.md), [ADR-0132](0132-parallax.md), [ADR-0133](0133-settings-continuous-list.md); заменяет их в частях, перечисленных ниже
 

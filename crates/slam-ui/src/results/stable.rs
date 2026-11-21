@@ -410,8 +410,6 @@ pub struct Geometry {
     pub back: Rect,
     /// `ranking-retry` unscrolled; empty without the image.
     pub retry: Rect,
-    /// The scroll-down hint's button.
-    pub hint: Rect,
     /// Pixels the content scrolls over its whole range: the area below the bar.
     pub scroll_area: f32,
     /// Pixels per window pixel of height / 768: the scale of `ranking-retry` and
@@ -456,32 +454,13 @@ pub fn geometry(width: f32, height: f32, art: &StableArt) -> Geometry {
             height: size[1],
         }
     });
-    let hint_size = [width * 0.2, height * 0.1];
     Geometry {
         bar_height,
         back,
         retry,
-        hint: Rect {
-            x: (width - hint_size[0]) / 2.0,
-            y: height - hint_size[1],
-            width: hint_size[0],
-            height: hint_size[1],
-        },
         scroll_area: (height - bar_height).max(0.0),
         screen_scale: f,
     }
-}
-
-/// The scroll-down hint's lift in units of its text height, from -0.25 (lowest) to 0, at
-/// `seconds`.
-// Ported from McOsu db2add2: src/App/Osu/OsuRankingScreen.cpp (OsuRankingScreenScrollDownInfoButton::draw)
-pub fn hint_bounce(seconds: f32) -> f32 {
-    let mut animation = (seconds * 3.2).rem_euclid(2.0);
-    if animation > 1.0 {
-        animation = 2.0 - animation;
-    }
-    animation = -animation * (animation - 2.0);
-    -0.25 + animation * 0.25
 }
 
 /// Hands the segments of the health line inside `graph` (the image's rectangle, inset by

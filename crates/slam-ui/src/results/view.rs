@@ -546,7 +546,6 @@ impl ResultsView {
             let amount = snapshot.hover_amount(ResultsButton::Back, now);
             push_button(shapes, back, &rect, amount, opacity);
         }
-        self.push_hint(shapes, &geometry, scroll, pose, white);
     }
 
     /// The details page under the first screen: a translucent plate with the heading, the
@@ -639,57 +638,6 @@ impl ResultsView {
                 push_layout(text, &line.layout, [left + shift, ly], dim, glyphs);
             }
             y += metrics.pitch;
-        }
-    }
-
-    /// McOsu's scroll-down hint: three arrows bouncing at the bottom centre, fading out as
-    /// the content scrolls to the bottom.
-    // Ported from McOsu db2add2: src/App/Osu/OsuRankingScreen.cpp (OsuRankingScreenScrollDownInfoButton::draw)
-    fn push_hint(
-        &self,
-        shapes: &mut ShapeBatch,
-        geometry: &stable::Geometry,
-        scroll: f32,
-        pose: Pose,
-        white: AtlasRegion,
-    ) {
-        let alpha = (1.0 - scroll).clamp(0.0, 1.0) * pose.opacity;
-        if alpha <= 0.0 {
-            return;
-        }
-        let rect = geometry.hint;
-        let shift = pose.offset * self.frame.width;
-        // Text height of McOsu's hint: 0.45 of the button's height.
-        let text_height = rect.height * 0.45;
-        let seconds = self.now_ns as f64 / 1e9;
-        let lift = stable::hint_bounce(seconds as f32);
-        let centre_y = rect.y + rect.height / 2.0 - lift * text_height;
-        let half = text_height * 0.35;
-        let thickness = (text_height * 0.12).max(1.0);
-        let shadow = 2.0;
-        for k in [-1.0_f32, 0.0, 1.0] {
-            let cx = rect.x + rect.width / 2.0 + k * half * 4.0 + shift;
-            for (offset, colour) in [(shadow, Color::BLACK), (0.0, Color::WHITE)] {
-                let colour = faded(colour, alpha);
-                let (x, y) = (cx + offset, centre_y + offset);
-                let tip = [x, y + half * 0.5];
-                line_segment(
-                    shapes,
-                    white,
-                    [x - half, y - half * 0.5],
-                    tip,
-                    thickness,
-                    colour,
-                );
-                line_segment(
-                    shapes,
-                    white,
-                    tip,
-                    [x + half, y - half * 0.5],
-                    thickness,
-                    colour,
-                );
-            }
         }
     }
 

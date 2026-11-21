@@ -557,7 +557,8 @@ fn a_name_too_long_for_its_column_is_kept_whole_to_ride() {
     let theme = Theme::default();
     let specs = rows();
     let mut texts = labels();
-    let long = "Minimise SLAM when switching to another app while it plays a beatmap";
+    let long =
+        "Minimise SLAM when switching to another app while it plays a beatmap in full screen";
     texts.rows[0].label = long.into();
     let mut view = SettingsView::new(Arc::clone(&registry), theme, &specs, &texts);
     view.lay_out_for(640.0, 480.0);
@@ -665,8 +666,9 @@ fn the_continuous_list_scrolls_and_draws_without_allocating() {
         }
     }
     let top = frame(&mut screen, &mut glyphs);
-    // Sixty rows would draw several times what a window of them does.
-    assert!(top > 0 && top < 60, "{top} shapes");
+    // Sixty rows would draw several times what a window of them does (the tabs' icons
+    // add a few shapes each, ADR-0165).
+    assert!(top > 0 && top < 100, "{top} shapes");
     assert_no_alloc(|| {
         for i in 0..200 {
             screen.input(SettingsInput::Scroll { lines: 0.7 }, &layout);
