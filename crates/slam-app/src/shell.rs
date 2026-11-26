@@ -108,8 +108,24 @@ mod otd;
 mod output;
 pub(crate) mod results;
 mod rows;
+mod toolbar;
 
 pub use draw_rate::DrawRateSwitch;
+
+/// Whether `name` is the name of a settings row that can be pinned to the toolbar
+/// (ADR-0168): the settings file keeps only these.
+pub fn is_setting_name(name: &str) -> bool {
+    rows::Row::from_name(name).is_some_and(rows::Row::pinnable)
+}
+
+/// The names of the rows that can be pinned. For tests.
+#[doc(hidden)]
+pub fn pinnable_setting_names() -> impl Iterator<Item = String> {
+    rows::Row::ALL
+        .into_iter()
+        .filter(|row| row.pinnable())
+        .map(|row| row.name().to_owned())
+}
 pub use rows::{Row, Rows, SECTIONS, round_for_save};
 
 pub const USAGE: &str = "usage: slam-app [--songs DIR]\n\
@@ -331,6 +347,8 @@ pub struct ShellSnapshot {
     pub volume: VolumeFrame,
     /// The replay toast (ADR-0154).
     pub toast: slam_ui::toast::ToastFrame,
+    /// The menus' toolbar (ADR-0168).
+    pub toolbar: slam_ui::toolbar::ToolbarFrame,
 }
 
 /// The update logic without the window: input to navigation to snapshot.
@@ -402,6 +420,13 @@ pub struct ShellState {
     /// The toast of the last saved replay and its file (ADR-0154).
     toast: slam_ui::toast::Toast,
     toast_path: Option<PathBuf>,
+    /// The menus' toolbar (ADR-0168), whether its popup edits a copy of the settings
+    /// (`editing`) to commit on closing, and the clock it shows: minutes into the local day,
+    /// read again at `clock_at_ns`.
+    toolbar: slam_ui::toolbar::Toolbar,
+    popup_editing: bool,
+    clock: u16,
+    clock_at_ns: u64,
     /// Files dropped on the window and the thread that imports them (ADR-0169).
     imports: Option<crate::import::Imports>,
     /// The mods the next play takes: they outlast a play and the results, and are not saved.
@@ -537,6 +562,10 @@ impl ShellState {
             volume: VolumeMixer::new(),
             toast: slam_ui::toast::Toast::new(&theme),
             toast_path: None,
+            toolbar: slam_ui::toolbar::Toolbar::new(),
+            popup_editing: false,
+            clock: slam_ui::toolbar::NO_CLOCK,
+            clock_at_ns: 0,
             imports: None,
             // An empty set is always compatible; the capacity keeps a toggle from allocating.
             selected_mods: ModSet::new(Vec::with_capacity(SELECTED_MODS_CAPACITY))
@@ -753,6 +782,7 @@ impl ShellState {
     pub fn with_settings(mut self, settings: Settings) -> ShellState {
         self.rows = Rows::new(&settings);
         self.settings = settings;
+        self.refresh_pins();
         self
     }
 
@@ -1199,6 +1229,9 @@ impl ShellState {
     /// Opens the settings panel with the settings in force to edit, or turns a closing one
     /// back. Allocates.
     fn open_settings(&mut self, now_ns: u64) {
+        // A toolbar popup's edits are committed first: the panel starts from the settings
+        // in force (ADR-0168).
+        self.close_popup();
         if let Some(panel) = &mut self.panel {
             panel.motion.reopen(now_ns);
             return;
@@ -2236,6 +2269,11 @@ impl ShellState {
             if self.toast_input(event.kind, now_ns) {
                 continue;
             }
+            // The toolbar over the menus, and the pin toggle of the settings rows
+            // (ADR-0168).
+            if self.toolbar_input(event.kind, now_ns) || self.pin_input(event.kind, now_ns) {
+                continue;
+            }
             if let InputKind::MouseWheel { x, y } = event.kind
                 && self.text_wheel(x, y, now_ns)
             {
@@ -2400,6 +2438,7 @@ impl ShellState {
         self.receive_otd(now_ns);
         let navigated = self.handle(events, now_ns);
         self.tick_volume(now_ns, snapshot);
+        self.tick_toolbar(now_ns, snapshot);
         self.note_ui_sounds(events);
         if self.intro.is_some_and(|intro| intro.is_done(now_ns)) {
             self.intro = None;
@@ -4294,6 +4333,8 @@ struct View<B: render::Backend> {
     volume: VolumeView,
     /// The replay toast over every screen (ADR-0154).
     toast: slam_ui::toast::ToastView,
+    /// The menus' toolbar (ADR-0168).
+    toolbar: slam_ui::toolbar::ToolbarView,
     /// Views laid out in a language switched to (ADR-0091).
     languages: Option<LanguageViews>,
     /// The curtain over a language switch and the views it waits for.
@@ -4468,6 +4509,7 @@ impl<B: render::Backend> Draw<ShellSnapshot> for View<B> {
             self.fps.swap_view(&mut views.fps);
             std::mem::swap(&mut self.volume, &mut views.volume);
             std::mem::swap(&mut self.toast, &mut views.toast);
+            std::mem::swap(&mut self.toolbar, &mut views.toolbar);
             self.theme = views.theme;
             languages.give_back(views);
         }
@@ -4481,6 +4523,7 @@ impl<B: render::Backend> Draw<ShellSnapshot> for View<B> {
                 &self.fps,
                 &self.volume,
                 &self.toast,
+                &self.toolbar,
             )
         });
         self.glyphs.process(&mut r.device, &mut r.textures);
@@ -4597,7 +4640,7 @@ impl<B: render::Backend> Draw<ShellSnapshot> for View<B> {
         }
         // The screens' layers and the settings panel's.
         // Two per screen (the song select's mod panel is a layer of its own), and the panel.
-        let mut ends = [(0_u32, 0_u32, false); 2 * MAX_LAYERS + 2];
+        let mut ends = [(0_u32, 0_u32, false); 2 * MAX_LAYERS + 4];
         let mut layers = 0;
         for layer in snapshot.layers.iter().flatten() {
             // Where the screen's own quads start: its background is not scaled.
@@ -4748,6 +4791,27 @@ impl<B: render::Backend> Draw<ShellSnapshot> for View<B> {
             }
             let play = matches!(layer.view, ScreenView::Play(_));
             ends[layers] = (self.shapes.len() as u32, self.text.len() as u32, play);
+            layers += 1;
+        }
+        // The toolbar over the menus, under the settings panel (ADR-0168); its tooltip is a
+        // layer of its own, over the popup's texts.
+        if snapshot.toolbar.visible {
+            let tip = self.toolbar.push(
+                &mut self.shapes,
+                &mut self.text,
+                &mut self.glyphs,
+                &mut self.settings,
+                &snapshot.toolbar,
+                width,
+                height,
+                info.wait.woke_ns,
+                r.white,
+            );
+            if let Some((shapes_at, text_at)) = tip {
+                ends[layers] = (shapes_at, text_at, false);
+                layers += 1;
+            }
+            ends[layers] = (self.shapes.len() as u32, self.text.len() as u32, false);
             layers += 1;
         }
         // The settings panel over the screens and the play, under the curtain (ADR-0095).
@@ -4997,6 +5061,7 @@ impl<B: render::Backend> View<B> {
             &self.fps,
             &self.volume,
             &self.toast,
+            &self.toolbar,
         )
     }
 }
@@ -5012,6 +5077,7 @@ fn glyphs_pending(
     fps: &FpsOverlay,
     volume: &VolumeView,
     toast: &slam_ui::toast::ToastView,
+    toolbar: &slam_ui::toolbar::ToolbarView,
 ) -> usize {
     menu.request_glyphs(glyphs)
         + song_select.request_glyphs(glyphs)
@@ -5020,6 +5086,7 @@ fn glyphs_pending(
         + fps.request_glyphs(glyphs)
         + volume.request_glyphs(glyphs)
         + toast.request_glyphs(glyphs)
+        + toolbar.request_glyphs(glyphs)
 }
 
 /// The backend `name` names if this build has it, else the first available one.
@@ -5440,11 +5507,13 @@ fn run_with<B: render::Backend>(
         fps: fps_view,
         volume: mut volume_view,
         toast: mut toast_view,
+        toolbar: mut toolbar_view,
         ..
     } = language::interface_views(&registry, theme, &localizer, state.rows(), &settings);
     // Its first showing would otherwise lay out and grow its lines in a frame (ADR-0145).
     volume_view.lay_out_for(pixels_w as f32, pixels_h as f32);
     toast_view.lay_out_for(pixels_w as f32, pixels_h as f32);
+    toolbar_view.lay_out_for(pixels_w as f32, pixels_h as f32);
     let (language_link, language_views, _language) = match language::spawn(
         Arc::clone(&registry),
         Arc::clone(&localizer),
@@ -5845,6 +5914,7 @@ fn run_with<B: render::Backend>(
         ),
         volume: volume_view,
         toast: toast_view,
+        toolbar: toolbar_view,
         languages: language_views,
         swap: LanguageSwap::default(),
         backgrounds,

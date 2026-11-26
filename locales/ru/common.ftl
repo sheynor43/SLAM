@@ -464,6 +464,14 @@ import-replay-imported = Реплей импортирован
 import-failed = Не удалось импортировать
 import-unsupported = Файл не поддерживается
 
+# Верхняя панель меню и закреплённые на ней настройки (ADR-0168).
+toolbar-settings = Настройки
+toolbar-home = Главное меню
+settings-row-pin = Закреплено на панели
+settings-row-pin-hint = Правый клик по строке ещё раз открепит её
+settings-row-unpin = Откреплено от панели
+settings-row-pin-full = На панели уже 8 настроек: сначала открепите одну
+
 ## Tablet section: OpenTabletDriver (ADR-0166)
 settings-otd-not-running = OpenTabletDriver не найден: не установлен или не запущен.
 settings-otd-unsupported = Эта версия OpenTabletDriver не поддерживается (нужна 0.6.x).

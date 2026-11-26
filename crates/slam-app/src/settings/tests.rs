@@ -1997,3 +1997,57 @@ fn the_discord_presence_setting_defaults_on_and_round_trips() {
     let text = file::to_toml_string(&settings).unwrap();
     assert!(text.contains("discord_presence = false"), "{text}");
 }
+
+#[test]
+fn pinned_settings_default_to_none_and_round_trip_in_order() {
+    assert!(Settings::default().general.pinned_settings.is_empty());
+    let mut settings = Settings::default();
+    settings.general.pinned_settings =
+        vec!["audio-menu-music".into(), "audio-master-volume".into()];
+    let text = file::to_toml_string(&settings).unwrap();
+    let loaded = file::from_toml_str(&text);
+    assert_eq!(
+        loaded.settings.general.pinned_settings,
+        settings.general.pinned_settings
+    );
+    assert_eq!(loaded.status, file::LoadStatus::Ok, "{:?}", loaded.warnings);
+}
+
+#[test]
+fn unknown_unpinnable_and_repeated_pins_are_dropped_on_read() {
+    let loaded = file::from_toml_str(
+        "[general]\npinned_settings = [\"audio-menu-music\", \"no-such-row\", \"audio-menu-music\", \"language\", \"audio-master-volume\"]\n",
+    );
+    assert_eq!(
+        loaded.settings.general.pinned_settings,
+        ["audio-menu-music", "audio-master-volume"]
+    );
+    assert_eq!(loaded.warnings.len(), 3, "{:?}", loaded.warnings);
+    assert!(
+        loaded
+            .warnings
+            .iter()
+            .all(|w| w.contains("pinned_settings"))
+    );
+}
+
+#[test]
+fn at_most_eight_pins_are_read() {
+    let names: Vec<String> = crate::shell::pinnable_setting_names().take(10).collect();
+    assert_eq!(names.len(), 10);
+    let list = names
+        .iter()
+        .map(|n| format!("\"{n}\""))
+        .collect::<Vec<_>>()
+        .join(", ");
+    let loaded = file::from_toml_str(&format!("[general]\npinned_settings = [{list}]\n"));
+    assert_eq!(loaded.settings.general.pinned_settings, names[..8]);
+    assert_eq!(loaded.warnings.len(), 2);
+}
+
+#[test]
+fn a_pin_list_of_the_wrong_type_falls_back_to_none() {
+    let loaded = file::from_toml_str("[general]\npinned_settings = 3\n");
+    assert!(loaded.settings.general.pinned_settings.is_empty());
+    assert_eq!(loaded.status, file::LoadStatus::Recovered);
+}

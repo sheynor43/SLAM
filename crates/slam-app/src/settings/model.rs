@@ -157,6 +157,14 @@ pub struct General {
     pub results_style: ResultsStyle,
     /// Whether the Discord status shows what the player does (ADR-0170). Applies live.
     pub discord_presence: bool,
+    /// The names of the settings rows pinned to the menus' toolbar, in the order they show
+    /// (ADR-0168), at most [`General::MAX_PINNED`]. Unknown names are dropped on read.
+    pub pinned_settings: Vec<String>,
+}
+
+impl General {
+    /// The most settings that can be pinned to the toolbar.
+    pub const MAX_PINNED: usize = slam_ui::toolbar::MAX_PINS;
 }
 
 impl Default for General {
@@ -186,6 +194,7 @@ impl Default for General {
             menu_cursor: CursorStyle::Slam,
             results_style: ResultsStyle::default(),
             discord_presence: true,
+            pinned_settings: Vec::new(),
         }
     }
 }

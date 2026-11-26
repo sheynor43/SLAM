@@ -338,6 +338,16 @@ pub struct Theme {
     pub settings_dim_fill: Color,
     /// How long the settings panel slides in or out, in milliseconds.
     pub settings_panel_ms: f32,
+    /// The menus' toolbar (ADR-0168): its height, the share of a button an icon takes, the gap
+    /// between its buttons, its fill, the size of its clock text, and how long a popup
+    /// takes to fade in and how far it slides.
+    pub toolbar_height: f32,
+    pub toolbar_icon_share: f32,
+    pub toolbar_gap: f32,
+    pub toolbar_fill: Color,
+    pub toolbar_clock_size: f32,
+    pub toolbar_popup_ms: f32,
+    pub toolbar_popup_slide: f32,
     /// Fill of the curtain's slats while the language switches (ADR-0091).
     pub curtain_fill: Color,
     /// Height of the accent edge leading each slat.
@@ -809,6 +819,13 @@ impl Theme {
                 a: 0.5,
             },
             settings_panel_ms: 250.0,
+            toolbar_height: 40.0,
+            toolbar_icon_share: 0.5,
+            toolbar_gap: 2.0,
+            toolbar_fill: alpha(p.panel, 0.88),
+            toolbar_clock_size: 18.0,
+            toolbar_popup_ms: 200.0,
+            toolbar_popup_slide: 10.0,
             curtain_fill: p.raised,
             curtain_edge: 4.0,
             intro_backdrop: Color::rgb(0.0, 0.0, 0.0),

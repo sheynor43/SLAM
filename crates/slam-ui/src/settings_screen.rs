@@ -348,6 +348,31 @@ impl SettingsLayout {
         self.width
     }
 
+    /// The width of the rows: the content area's.
+    pub fn content_width(&self) -> f32 {
+        self.content.width
+    }
+
+    /// A layout of one row, `row` big and at its place, for a widget outside the screen
+    /// (the toolbar's popup, ADR-0168): slot 0 is `row`, at no scroll. `window_height` keeps
+    /// an open dropdown list within the window.
+    pub fn single(row: Rect, window_height: f32, theme: &Theme) -> SettingsLayout {
+        let scale = theme.scale(window_height);
+        SettingsLayout {
+            title: Rect::default(),
+            tabs: [Rect::default(); MAX_SECTIONS],
+            content: row,
+            width: row.x + row.width,
+            window_height,
+            row_height: row.height,
+            pitch: row.height,
+            label_width: row.width * theme.settings_label_ratio,
+            theme: *theme,
+            scale,
+            scroll: 0.0,
+        }
+    }
+
     /// The layout with its rows scrolled by `rows` (the snapshot's
     /// [`SettingsSnapshot::scroll`]).
     pub fn scrolled(&self, rows: f32) -> SettingsLayout {
@@ -594,6 +619,83 @@ pub struct SettingsScreen {
     preview: AreaPreview,
 }
 
+/// The widget state a row of `kind` starts with.
+pub fn widget_of(kind: RowKind) -> RowWidget {
+    match kind {
+        RowKind::Key { value } => RowWidget::Key(KeyRow {
+            bind: KeyBind::new(),
+            value,
+        }),
+        RowKind::Button => RowWidget::Button,
+        RowKind::Note => RowWidget::Note,
+        RowKind::Preview => RowWidget::Preview,
+        RowKind::Toggle { value } => RowWidget::Toggle(Toggle::new(value)),
+        RowKind::Slider {
+            min,
+            max,
+            step,
+            value,
+        } => RowWidget::Slider(Slider::new(min, max, step, value)),
+        RowKind::Dropdown { options, selected } => {
+            RowWidget::Dropdown(Dropdown::new(options, selected))
+        }
+    }
+}
+
+/// Gives `input` to the toggle, slider or dropdown `widget` of the row at `slot` of
+/// `layout`, in the form it understands; the new value, if it changed. Other widgets give
+/// nothing. The screen and the toolbar's popup (ADR-0168) share it. Does not allocate.
+pub fn route_value(
+    widget: &mut RowWidget,
+    input: SettingsInput,
+    layout: &SettingsLayout,
+    slot: usize,
+) -> Option<RowValue> {
+    Some(match widget {
+        RowWidget::Toggle(toggle) => {
+            let input = match input {
+                SettingsInput::Activate => ToggleInput::Activate,
+                SettingsInput::PointerPress { x, y } => ToggleInput::PointerPress { x, y },
+                _ => return None,
+            };
+            let ToggleAction::Changed(v) = toggle.input(input, &layout.toggle(slot))?;
+            RowValue::Toggle(v)
+        }
+        RowWidget::Slider(slider) => {
+            let input = match input {
+                SettingsInput::Left => SliderInput::Decrease,
+                SettingsInput::Right => SliderInput::Increase,
+                SettingsInput::PointerPress { x, y } => SliderInput::PointerPress { x, y },
+                SettingsInput::PointerMove { x, y } => SliderInput::PointerMove { x, y },
+                SettingsInput::PointerRelease => SliderInput::PointerRelease,
+                _ => return None,
+            };
+            let SliderAction::Changed(v) = slider.input(input, &layout.slider(slot))?;
+            RowValue::Slider(v)
+        }
+        RowWidget::Dropdown(dropdown) => {
+            let open = dropdown.is_open();
+            let input = match input {
+                SettingsInput::Up => DropdownInput::Up,
+                SettingsInput::Down => DropdownInput::Down,
+                // Closed, the arrows step the selection; open they do nothing.
+                SettingsInput::Left if !open => DropdownInput::Up,
+                SettingsInput::Right if !open => DropdownInput::Down,
+                SettingsInput::Activate => DropdownInput::Activate,
+                SettingsInput::Back => DropdownInput::Back,
+                SettingsInput::PointerMove { x, y } => DropdownInput::PointerMove { x, y },
+                SettingsInput::PointerPress { x, y } => DropdownInput::PointerPress { x, y },
+                SettingsInput::Scroll { lines } => DropdownInput::Scroll { lines },
+                _ => return None,
+            };
+            let layout = layout.dropdown(slot, dropdown.count());
+            let DropdownAction::Selected(i) = dropdown.input(input, &layout)?;
+            RowValue::Choice(i)
+        }
+        _ => return None,
+    })
+}
+
 impl SettingsScreen {
     /// A screen for `rows` in `sections` sections, on the first row of the list. Call it
     /// off the hot paths.
@@ -607,25 +709,7 @@ impl SettingsScreen {
             let section = spec.section.min(sections - 1);
             meta[i] = (section as u8, counts[section]);
             counts[section] = counts[section].saturating_add(1);
-            widgets[i] = match spec.kind {
-                RowKind::Key { value } => RowWidget::Key(KeyRow {
-                    bind: KeyBind::new(),
-                    value,
-                }),
-                RowKind::Button => RowWidget::Button,
-                RowKind::Note => RowWidget::Note,
-                RowKind::Preview => RowWidget::Preview,
-                RowKind::Toggle { value } => RowWidget::Toggle(Toggle::new(value)),
-                RowKind::Slider {
-                    min,
-                    max,
-                    step,
-                    value,
-                } => RowWidget::Slider(Slider::new(min, max, step, value)),
-                RowKind::Dropdown { options, selected } => {
-                    RowWidget::Dropdown(Dropdown::new(options, selected))
-                }
-            };
+            widgets[i] = widget_of(spec.kind);
         }
         let mut screen = SettingsScreen {
             widgets,
@@ -1287,45 +1371,8 @@ impl SettingsScreen {
                 )
                 .then_some(SettingsAction::Pressed { row });
             }
-            RowWidget::Toggle(toggle) => {
-                let input = match input {
-                    SettingsInput::Activate => ToggleInput::Activate,
-                    SettingsInput::PointerPress { x, y } => ToggleInput::PointerPress { x, y },
-                    _ => return None,
-                };
-                let ToggleAction::Changed(v) = toggle.input(input, &layout.toggle(slot))?;
-                RowValue::Toggle(v)
-            }
-            RowWidget::Slider(slider) => {
-                let input = match input {
-                    SettingsInput::Left => SliderInput::Decrease,
-                    SettingsInput::Right => SliderInput::Increase,
-                    SettingsInput::PointerPress { x, y } => SliderInput::PointerPress { x, y },
-                    SettingsInput::PointerMove { x, y } => SliderInput::PointerMove { x, y },
-                    SettingsInput::PointerRelease => SliderInput::PointerRelease,
-                    _ => return None,
-                };
-                let SliderAction::Changed(v) = slider.input(input, &layout.slider(slot))?;
-                RowValue::Slider(v)
-            }
-            RowWidget::Dropdown(dropdown) => {
-                let open = dropdown.is_open();
-                let input = match input {
-                    SettingsInput::Up => DropdownInput::Up,
-                    SettingsInput::Down => DropdownInput::Down,
-                    // Closed, the arrows step the selection; open they do nothing.
-                    SettingsInput::Left if !open => DropdownInput::Up,
-                    SettingsInput::Right if !open => DropdownInput::Down,
-                    SettingsInput::Activate => DropdownInput::Activate,
-                    SettingsInput::Back => DropdownInput::Back,
-                    SettingsInput::PointerMove { x, y } => DropdownInput::PointerMove { x, y },
-                    SettingsInput::PointerPress { x, y } => DropdownInput::PointerPress { x, y },
-                    SettingsInput::Scroll { lines } => DropdownInput::Scroll { lines },
-                    _ => return None,
-                };
-                let layout = layout.dropdown(slot, dropdown.count());
-                let DropdownAction::Selected(i) = dropdown.input(input, &layout)?;
-                RowValue::Choice(i)
+            widget @ (RowWidget::Toggle(_) | RowWidget::Slider(_) | RowWidget::Dropdown(_)) => {
+                route_value(widget, input, layout, slot)?
             }
         };
         Some(SettingsAction::Changed { row, value })
@@ -1567,6 +1614,13 @@ impl SettingsScreen {
             SettingsInput::PointerPress { x, y } if apply.contains(x, y) => resolve(self, true),
             _ => None,
         }
+    }
+
+    /// The row under the point of `layout`, as the screen is scrolled now (unscrolled
+    /// `layout`, as [`SettingsScreen::input`] takes it).
+    pub fn row_under(&self, layout: &SettingsLayout, x: f32, y: f32) -> Option<usize> {
+        self.row_at(&layout.scrolled(self.shown), x, y)
+            .filter(|row| !self.hidden[*row])
     }
 
     fn row_at(&self, layout: &SettingsLayout, x: f32, y: f32) -> Option<usize> {

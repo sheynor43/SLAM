@@ -18,7 +18,7 @@ use toml::{Table, Value};
 
 use super::keys;
 use super::model::{
-    BindingEntry, BreakDisplay, Combo, DrawRate, FpsScreens, HitsoundDelay, InputSettings,
+    BindingEntry, BreakDisplay, Combo, DrawRate, FpsScreens, General, HitsoundDelay, InputSettings,
     KeyOverlayAnimation, KeySlot, MenuBackground, MenuSounds, PauseMenuStyle, RendererChoice,
     Settings, Thumbnails, Timing, Window, corner_from_name, parse_size, window_mode_from_name,
 };
@@ -334,6 +334,26 @@ fn from_table(mut table: Table) -> Loaded {
         &mut settings.general.discord_presence,
         |_| Ok(()),
     );
+    let mut pinned: Option<Vec<String>> = None;
+    cx.opt(&mut general, "general", "pinned_settings", &mut pinned);
+    for name in pinned.into_iter().flatten() {
+        if settings.general.pinned_settings.len() >= General::MAX_PINNED {
+            cx.warn(format!(
+                "general.pinned_settings: more than {} pins, dropping \"{name}\"",
+                General::MAX_PINNED
+            ));
+        } else if !crate::shell::is_setting_name(&name) {
+            cx.warn(format!(
+                "general.pinned_settings: unknown setting \"{name}\", dropping it"
+            ));
+        } else if settings.general.pinned_settings.contains(&name) {
+            cx.warn(format!(
+                "general.pinned_settings: \"{name}\" twice, dropping the second"
+            ));
+        } else {
+            settings.general.pinned_settings.push(name);
+        }
+    }
     let mut scheme: Option<String> = None;
     cx.opt(&mut general, "general", "colour_scheme", &mut scheme);
     if let Some(name) = scheme {

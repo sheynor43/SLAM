@@ -460,6 +460,14 @@ import-replay-imported = Replay imported
 import-failed = Import failed
 import-unsupported = Unsupported file
 
+# The toolbar over the menus and the settings pinned to it (ADR-0168).
+toolbar-settings = Settings
+toolbar-home = Main menu
+settings-row-pin = Pinned to the toolbar
+settings-row-pin-hint = Right-click the row again to unpin
+settings-row-unpin = Removed from the toolbar
+settings-row-pin-full = The toolbar holds 8 settings: unpin one first
+
 ## Tablet section: OpenTabletDriver (ADR-0166)
 settings-otd-not-running = OpenTabletDriver was not found: it is not installed or not running.
 settings-otd-unsupported = This OpenTabletDriver version is not supported (0.6.x is needed).

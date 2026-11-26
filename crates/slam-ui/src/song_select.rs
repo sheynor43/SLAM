@@ -318,9 +318,10 @@ impl SongSelectLayout {
         let panel = width * theme.song_panel_ratio;
         let x = width - margin - panel;
         let hint_height = theme.song_detail_size * scale * 1.5;
+        // The toolbar (ADR-0168) takes the strip above the content.
         let header = Rect {
             x,
-            y: margin,
+            y: margin + theme.toolbar_height * scale,
             width: panel,
             height: hint_height,
         };
