@@ -188,6 +188,9 @@ impl ScoreLines {
     }
 }
 
+/// The panel narrows to its texts down to this part of the room it has (the bars need it).
+const MIN_WIDTH_PART: f32 = 0.6;
+
 /// Width of a star-rating pill around `line`, and the gap before it (ADR-0131).
 pub(super) fn pill_width(line: &Line, theme: &Theme, scale: f32) -> f32 {
     if line.text.is_empty() {
@@ -289,6 +292,12 @@ struct InfoMotion {
     colour: [Towards; 4],
     /// Whether the bars and colour had a value to start from.
     started: bool,
+    /// The panel's width, following its texts (ADR-0167).
+    width: Towards,
+    /// The height the wedges lean from, moving when the scores' wedge comes or goes.
+    anchor: Towards,
+    /// Whether the width and anchor had a value to start from.
+    sized: bool,
 }
 
 impl InfoPanel {
@@ -491,7 +500,31 @@ impl InfoPanel {
             ms(theme.song_info_transition_ms),
             ms(theme.song_info_text_fade_ms),
         );
-        let mut parts = InfoLayout::new(&layout.info, theme, scale);
+        // As wide as the texts need, between the bars' minimum and the room there is; the
+        // width moves there (ADR-0167).
+        let content = [
+            self.name.layout.width() + pill_width(&self.stars, theme, scale),
+            self.artist.layout.width(),
+            self.stats.layout.width(),
+            self.counts.layout.width(),
+        ]
+        .into_iter()
+        .fold(0.0_f32, f32::max);
+        let room = layout.info.width;
+        let wanted =
+            (content + theme.song_text_pad * scale).clamp(room * MIN_WIDTH_PART, room.max(0.0));
+        let info = Rect {
+            width: if self.motion.sized {
+                self.motion
+                    .width
+                    .aim(wanted, now_ns, move_ns, ease_out_quint);
+                self.motion.width.at(now_ns, move_ns, ease_out_quint)
+            } else {
+                wanted
+            },
+            ..layout.info
+        };
+        let mut parts = InfoLayout::new(&info, theme, scale);
         let tan = theme.button_skew().tan();
         let inset = theme.song_margin * scale / 2.0;
         let stars = snapshot.selected_stars();
@@ -553,10 +586,10 @@ impl InfoPanel {
         let wedge_outline = faded(outline, opacity);
         // The difficulty's wedge, down to the counts.
         let wedge = Rect {
-            x: layout.info.x - inset,
-            y: layout.info.y - inset,
-            width: layout.info.width + 2.0 * inset,
-            height: parts.counts.y + parts.counts.height - layout.info.y + 2.0 * inset,
+            x: info.x - inset,
+            y: info.y - inset,
+            width: info.width + 2.0 * inset,
+            height: parts.counts.y + parts.counts.height - info.y + 2.0 * inset,
         };
         let wedge_look = Look::Wedge {
             lean: tan,
@@ -593,6 +626,19 @@ impl InfoPanel {
             board.y + board.height
         } else {
             wedge.y + wedge.height
+        };
+        // Between two selections the details are gone for a moment: the lean moves, not
+        // jumps, so the texts do not slide sideways at once.
+        let anchor = if self.motion.sized {
+            self.motion
+                .anchor
+                .aim(anchor, now_ns, move_ns, ease_out_quint);
+            self.motion.anchor.at(now_ns, move_ns, ease_out_quint)
+        } else {
+            self.motion.width = Towards::rest(wanted, now_ns);
+            self.motion.anchor = Towards::rest(anchor, now_ns);
+            self.motion.sized = true;
+            anchor
         };
         let lean_of = |y: f32| (anchor - y) * tan;
         let mut rect = |r: &Rect, colour: Color, look: Look| {

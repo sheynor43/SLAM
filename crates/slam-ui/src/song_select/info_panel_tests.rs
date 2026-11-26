@@ -608,3 +608,44 @@ fn the_hovered_score_row_takes_the_hover_fill() {
         [rig.theme.song_search_fill, rig.theme.button_hover_fill]
     );
 }
+
+#[test]
+fn short_texts_narrow_the_panel_and_a_new_width_moves_there() {
+    let mut rig = Rig::new();
+    rig.show(details(None));
+    let layout = SongSelectLayout::new(1280.0, 768.0, &rig.theme);
+    let snapshot = {
+        let mut screen = rig.screen.clone();
+        screen.set_details(Some(details(None)));
+        screen.snapshot()
+    };
+    let right_edge = |panel: &mut InfoPanel, now_ns: u64| {
+        let mut edge = 0.0_f32;
+        panel.push(
+            &layout,
+            &rig.theme,
+            &snapshot,
+            1.0,
+            now_ns,
+            &mut |r, _, look| {
+                if matches!(look, Look::Wedge { .. }) {
+                    edge = edge.max(r.x + r.width);
+                }
+            },
+            &mut |_, _, _, _| {},
+        );
+        edge
+    };
+    let first = right_edge(&mut rig.panel, 0);
+    let full = layout.info.x + layout.info.width + rig.theme.song_margin;
+    assert!(first < full, "short texts: {first} < {full}");
+    // A longer name widens the panel over the transition, not at once.
+    rig.panel.name.text.push_str(" with a much longer name");
+    rig.type_setter
+        .lay_out(&mut rig.panel.name, rig.theme.song_info_title_size);
+    let start = right_edge(&mut rig.panel, 1);
+    let later = right_edge(&mut rig.panel, 200_000_000);
+    let end = right_edge(&mut rig.panel, 2_000_000_000);
+    assert!(start - first < 1.0, "no jump: {first} -> {start}");
+    assert!(start < later && later < end, "{start} < {later} < {end}");
+}
