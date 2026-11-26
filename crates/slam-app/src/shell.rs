@@ -562,7 +562,7 @@ impl ShellState {
             feedback_request: None,
             settings: Settings::default(),
             rows: Rows::new(&Settings::default()),
-            otd: otd::OtdSection::default(),
+            otd: otd::OtdSection::new(Dirs::detect().map(|dirs| otd::presets::file_in(&dirs.data))),
             editing: None,
             save_request: None,
             volume: VolumeMixer::new(),
