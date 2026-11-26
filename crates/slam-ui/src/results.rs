@@ -485,10 +485,9 @@ impl ResultsLayout {
         let gap = theme.results_column_gap * scale;
         let left = width / 2.0 - gap / 2.0 - panel_width;
         let right = width / 2.0 + gap / 2.0;
-        // The toolbar (ADR-0168) takes the strip above the content.
         let title = Rect {
             x: 0.0,
-            y: margin + theme.toolbar_height * scale,
+            y: margin,
             width,
             height: theme.results_title_size * scale * 1.25,
         };

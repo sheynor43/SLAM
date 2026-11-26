@@ -15,7 +15,7 @@ mod test_support;
 pub use glyphs::{Glyph, GlyphAtlasConfig, GlyphCache, GlyphStats, glyph_atlas};
 pub use layout::{Align, Layout, LayoutContext, Line, PositionedGlyph, TextStyle};
 pub use msdf::{
-    DISTANCE_RANGE, EM_PX, GlyphBitmap, GlyphError, GlyphKey, MAX_GLYPH_SIDE, PADDING,
+    DISTANCE_RANGE, EM_PX, EM_PX_HIRES, GlyphBitmap, GlyphError, GlyphKey, MAX_GLYPH_SIDE, PADDING,
     generate_glyph,
 };
 pub use registry::{

@@ -28,6 +28,7 @@ mod bench {
                 weight: face.weight,
                 width: face.width,
                 glyph_id: gid.to_u32() as u16,
+                hires: false,
             })
             .collect()
     }

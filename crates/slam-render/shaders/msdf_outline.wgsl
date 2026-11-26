@@ -1,8 +1,8 @@
 // Outline of multi-channel signed distance field text (ADR-0114): the vertices,
 // bindings and field decoding of `msdf.wgsl`, with a band of coverage centred on the
 // glyph's edge instead of its inside. The band is `STROKE` atlas pixels (at
-// `slam_text::EM_PX`) wide, so it grows with the text, and not thinner than one screen
-// pixel while the field's range allows. The colour is straight alpha; the band only
+// `slam_text::EM_PX_HIRES`) wide, so it grows with the text, and not thinner than one
+// screen pixel while the field's range allows. The colour is straight alpha; the band only
 // scales alpha.
 
 struct Globals {
@@ -16,9 +16,11 @@ struct Globals {
 
 // Total distance range of the field in atlas pixels; `slam_text::msdf::DISTANCE_RANGE`.
 const DISTANCE_RANGE: f32 = 4.0;
-// Width of the band in atlas pixels. With its antialiasing it must stay inside the
-// field's range (`DISTANCE_RANGE`), where distances are known.
-const STROKE: f32 = 1.2;
+// Width of the band in atlas pixels (of the intro's glyphs, made at
+// `slam_text::EM_PX_HIRES`). With its antialiasing it must stay inside the field's range
+// (`DISTANCE_RANGE`), where distances are known: this is wider than the range allows at any
+// size, so the band is as wide as the range does, a clean thin line.
+const STROKE: f32 = 4.8;
 
 struct VertexInput {
     @location(0) position: vec2<f32>,

@@ -3,6 +3,7 @@
 //! that the old track fades out while the new one fades in. Runs on the update thread:
 //! allocates only when it starts another track.
 
+use std::collections::VecDeque;
 use std::path::{Path, PathBuf};
 
 use slam_audio::{Easing, MusicPlayer, TrackAdjustment, TrackSource};
@@ -21,6 +22,11 @@ const RISE_MS: f64 = 800.0;
 const MENU_LEAD_MS: f64 = 2_600.0;
 /// After a track failed to open, the menu waits this long before trying another.
 const RETRY_NS: u64 = 1_000_000_000;
+/// Tracks the menu remembers for the player's Previous button (ADR-0178).
+pub const HISTORY: usize = 16;
+/// Previous restarts the track when it is further than this into it, else goes back
+/// (lazer's `MusicController.PreviousTrack`).
+pub const RESTART_AFTER_MS: f64 = 5_000.0;
 
 /// What the screens want to hear.
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -36,6 +42,7 @@ pub enum Want<'a> {
 }
 
 /// A track the menu picked.
+#[derive(Clone, Debug, PartialEq)]
 pub struct Picked {
     pub path: PathBuf,
     pub preview_ms: i32,
@@ -135,6 +142,8 @@ struct Slot {
     restart: u64,
     looping: bool,
     preview_ms: i32,
+    /// The track's length in frames, once it opened.
+    length: Option<u64>,
 }
 
 impl Slot {
@@ -146,6 +155,7 @@ impl Slot {
             restart: 0,
             looping: false,
             preview_ms: -1,
+            length: None,
         }
     }
 
@@ -172,6 +182,23 @@ pub struct MenuMusic {
     load_at_ns: u64,
     /// The menu's track ended: the next comes in from its start.
     menu_next: bool,
+    /// The player paused the music: nothing resumes it but the player (ADR-0178).
+    user_paused: bool,
+    /// The tracks the menu played before the current one, oldest first.
+    history: VecDeque<Picked>,
+    /// The track the menu is playing, as it picked it; `None` for a song select preview.
+    current: Option<Picked>,
+}
+
+/// What the player's Previous button did.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Previous {
+    /// No track.
+    Nothing,
+    /// The track went back to its start.
+    Restarted,
+    /// The track before this one started: the beatmap at this set and difficulty.
+    Started((usize, usize)),
 }
 
 impl Default for MenuMusic {
@@ -183,6 +210,9 @@ impl Default for MenuMusic {
             retry_at_ns: 0,
             load_at_ns: 0,
             menu_next: false,
+            user_paused: false,
+            history: VecDeque::with_capacity(HISTORY),
+            current: None,
         }
     }
 }
@@ -207,14 +237,14 @@ impl MenuMusic {
         match want {
             Want::Silence => self.stop(active, now_ns, decks),
             Want::Keep => {
-                self.resume(decks);
+                self.resume_or_hold(decks);
             }
             Want::Preview { path, preview_ms } => {
                 if self.slots[active].holds(path) {
                     // A menu track the song select selected loops from now on, as lazer's
                     // song select makes the track loop.
                     self.slots[active].looping = true;
-                    self.resume(decks);
+                    self.resume_or_hold(decks);
                 } else if self.failed.as_deref() != Some(path) && now_ns >= self.load_at_ns {
                     self.start(now_ns, path, preview_ms, true, decks);
                 }
@@ -222,13 +252,13 @@ impl MenuMusic {
             Want::Menu => {
                 // The menu moves on at the end of a preview it took over.
                 self.slots[active].looping = false;
-                if !self.resume(decks)
+                if !self.resume_or_hold(decks)
                     && self.slots[active].phase == Phase::Idle
                     && now_ns >= self.retry_at_ns.max(self.load_at_ns)
                 {
                     match pick() {
                         Some(picked) => {
-                            self.start(now_ns, &picked.path, picked.preview_ms, false, decks);
+                            self.start_menu(now_ns, picked, decks);
                         }
                         None => self.retry_at_ns = now_ns.saturating_add(RETRY_NS),
                     }
@@ -252,6 +282,7 @@ impl MenuMusic {
         if generation != slot.generation {
             return;
         }
+        slot.length = length;
         let d = &mut decks[deck];
         let frames_per_ms = f64::from(d.sample_rate()) / 1_000.0;
         let point = preview_point(slot.preview_ms, length, frames_per_ms);
@@ -302,7 +333,7 @@ impl MenuMusic {
         preview_ms: i32,
         looping: bool,
         decks: &mut [D; 2],
-    ) {
+    ) -> bool {
         let old = self.active;
         let audible = matches!(
             self.slots[old].phase,
@@ -320,7 +351,7 @@ impl MenuMusic {
         d.fade(0.0, 0.0, 0.0, Easing::None);
         let Some(generation) = d.load(path) else {
             self.load_at_ns = now_ns.saturating_add(RETRY_NS);
-            return;
+            return false;
         };
         self.menu_next = false;
         self.failed = None;
@@ -332,7 +363,135 @@ impl MenuMusic {
         slot.restart = 0;
         slot.preview_ms = preview_ms;
         slot.looping = looping;
-        slot.phase = Phase::Loading { entry, held: false };
+        slot.length = None;
+        // A track chosen while the player has paused waits paused at its start.
+        slot.phase = Phase::Loading {
+            entry,
+            held: self.user_paused,
+        };
+        if looping {
+            // A preview is not a menu track: it has no place in the history.
+            self.current = None;
+        }
+        true
+    }
+
+    /// Starts the menu's `picked` track; the one it replaces goes into the history.
+    fn start_menu<D: Deck>(&mut self, now_ns: u64, picked: Picked, decks: &mut [D; 2]) -> bool {
+        if !self.start(now_ns, &picked.path, picked.preview_ms, false, decks) {
+            return false;
+        }
+        if let Some(old) = self.current.replace(picked) {
+            if self.history.len() == HISTORY {
+                self.history.pop_front();
+            }
+            self.history.push_back(old);
+        }
+        true
+    }
+
+    /// Plays the active deck's stopped track on unless the player paused it; whether it has
+    /// a track.
+    fn resume_or_hold<D: Deck>(&mut self, decks: &mut [D; 2]) -> bool {
+        if self.user_paused {
+            return self.slots[self.active].phase != Phase::Idle;
+        }
+        self.resume(decks)
+    }
+
+    /// Whether the player paused the music.
+    pub fn is_paused(&self) -> bool {
+        self.user_paused
+    }
+
+    /// Whether a track is loaded or loading on the active deck.
+    pub fn has_track(&self) -> bool {
+        self.slots[self.active].phase != Phase::Idle
+    }
+
+    /// How many tracks Previous can go back through.
+    #[cfg(test)]
+    pub fn history_len(&self) -> usize {
+        self.history.len()
+    }
+
+    /// The active track's length in milliseconds, once it opened.
+    pub fn length_ms<D: Deck>(&self, decks: &[D; 2]) -> Option<f64> {
+        let frames = self.slots[self.active].length?;
+        let rate = f64::from(decks[self.active].sample_rate());
+        (rate > 0.0).then(|| frames as f64 / rate * 1_000.0)
+    }
+
+    /// The player's Play/Pause: pauses the music (fading out) or plays it on. Without a
+    /// track it only remembers the choice, so a track that starts is held.
+    pub fn toggle_pause<D: Deck>(&mut self, now_ns: u64, decks: &mut [D; 2]) {
+        if self.user_paused {
+            self.user_paused = false;
+            self.resume(decks);
+        } else {
+            self.user_paused = true;
+            let active = self.active;
+            self.stop(active, now_ns, decks);
+        }
+    }
+
+    /// The player's seek bar: the active track to `ms`.
+    pub fn seek_ms<D: Deck>(&mut self, ms: f64, decks: &mut [D; 2]) {
+        let slot = &self.slots[self.active];
+        if !matches!(
+            slot.phase,
+            Phase::Playing | Phase::Paused | Phase::Stopping { .. }
+        ) {
+            return;
+        }
+        let d = &mut decks[self.active];
+        let frames_per_ms = f64::from(d.sample_rate()) / 1_000.0;
+        let last = slot.length.map(|l| l.saturating_sub(1));
+        d.seek(clamp_frame(ms.max(0.0) * frames_per_ms, last));
+    }
+
+    /// The player's Next on the main menu: another random track, from its start. Returns
+    /// the beatmap it started.
+    pub fn next<D: Deck>(
+        &mut self,
+        now_ns: u64,
+        decks: &mut [D; 2],
+        pick: impl FnOnce() -> Option<Picked>,
+    ) -> Option<(usize, usize)> {
+        let picked = pick()?;
+        let at = picked.at;
+        self.menu_next = true;
+        self.start_menu(now_ns, picked, decks).then_some(at)
+    }
+
+    /// The player's Previous on the main menu: past [`RESTART_AFTER_MS`] into the track, or
+    /// without history, the track starts over; else the track before it comes back.
+    pub fn previous<D: Deck>(
+        &mut self,
+        now_ns: u64,
+        position_ms: Option<f64>,
+        decks: &mut [D; 2],
+    ) -> Previous {
+        if !self.has_track() {
+            return Previous::Nothing;
+        }
+        let far = position_ms.is_some_and(|ms| ms > RESTART_AFTER_MS);
+        if far || self.history.is_empty() {
+            decks[self.active].seek(0);
+            return Previous::Restarted;
+        }
+        let Some(picked) = self.history.pop_back() else {
+            return Previous::Nothing;
+        };
+        let at = picked.at;
+        self.menu_next = true;
+        if self.start(now_ns, &picked.path, picked.preview_ms, false, decks) {
+            self.current = Some(picked);
+            Previous::Started(at)
+        } else {
+            self.history.push_back(picked);
+            Previous::Nothing
+        }
     }
 
     /// Fades deck `deck` out; it pauses once faded.

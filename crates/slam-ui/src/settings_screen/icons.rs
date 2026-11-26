@@ -155,6 +155,66 @@ pub(crate) const HOME: &[Part] = &[
     fill(0.43, 0.62, 0.14, 0.28, 0.03),
 ];
 
+/// Music note: a filled head, a stem and a flag (the toolbar's player button, ADR-0178).
+pub(crate) const NOTE: &[Part] = &[
+    fill(0.14, 0.62, 0.34, 0.26, 0.5),
+    fill(0.42, 0.12, 0.1, 0.62, 0.04),
+    leaning(0.5, 0.12, 0.34, 0.12, 28.0),
+    fill(0.66, 0.2, 0.1, 0.22, 0.4),
+];
+
+/// Rows of a triangle built from bars.
+const BARS: usize = 9;
+
+/// A triangle made of `BARS` stacked bars between `x` and `x + w`, pointing right, or left
+/// when `right` is false; `y` and `h` give its height.
+const fn triangle(x: f32, y: f32, w: f32, h: f32, right: bool) -> [Part; BARS] {
+    let mut parts = [fill(0.0, 0.0, 0.0, 0.0, 0.0); BARS];
+    let mut i = 0;
+    while i < BARS {
+        // 0 at the middle bar, 1 at the outer ones.
+        let t = (2.0 * i as f32 + 1.0) / BARS as f32 - 1.0;
+        let t = if t < 0.0 { -t } else { t };
+        let bar_w = w * (1.0 - t);
+        let bar_x = if right { x } else { x + w - bar_w };
+        let bar_h = h / BARS as f32;
+        parts[i] = fill(bar_x, y + bar_h * i as f32, bar_w, bar_h * 1.15, 0.0);
+        i += 1;
+    }
+    parts
+}
+
+const fn with_bar(bar: Part, tri: [Part; BARS]) -> [Part; BARS + 1] {
+    let mut parts = [bar; BARS + 1];
+    let mut i = 0;
+    while i < BARS {
+        parts[i + 1] = tri[i];
+        i += 1;
+    }
+    parts
+}
+
+const PLAY_PARTS: [Part; BARS] = triangle(0.24, 0.2, 0.56, 0.6, true);
+const PREV_PARTS: [Part; BARS + 1] = with_bar(
+    fill(0.2, 0.2, 0.1, 0.6, 0.03),
+    triangle(0.34, 0.2, 0.48, 0.6, false),
+);
+const NEXT_PARTS: [Part; BARS + 1] = with_bar(
+    fill(0.7, 0.2, 0.1, 0.6, 0.03),
+    triangle(0.18, 0.2, 0.48, 0.6, true),
+);
+/// Play triangle (the player's button while paused).
+pub(crate) const PLAY: &[Part] = &PLAY_PARTS;
+/// Two bars (the player's button while playing).
+pub(crate) const PAUSE: &[Part] = &[
+    fill(0.26, 0.2, 0.16, 0.6, 0.04),
+    fill(0.58, 0.2, 0.16, 0.6, 0.04),
+];
+/// Bar and a triangle pointing left.
+pub(crate) const PREV: &[Part] = &PREV_PARTS;
+/// Triangle pointing right and a bar.
+pub(crate) const NEXT: &[Part] = &NEXT_PARTS;
+
 /// Number of icons: one per section.
 pub const ICONS: usize = 10;
 

@@ -476,6 +476,8 @@ import-unsupported = Файл не поддерживается
 # Верхняя панель меню и закреплённые на ней настройки (ADR-0168).
 toolbar-settings = Настройки
 toolbar-home = Главное меню
+toolbar-player = Сейчас играет
+player-nothing-playing = Ничего не играет
 settings-row-pin = Закреплено на панели
 settings-row-pin-hint = Правый клик по строке ещё раз открепит её
 settings-row-unpin = Откреплено от панели

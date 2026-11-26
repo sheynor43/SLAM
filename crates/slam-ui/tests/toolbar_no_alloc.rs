@@ -15,7 +15,9 @@ use slam_ui::settings_screen::{
     RowKind, RowLabels, RowSpec, SettingsLabels, SettingsView, widget_of,
 };
 use slam_ui::theme::Theme;
-use slam_ui::toolbar::{Toolbar, ToolbarLabels, ToolbarLayout, ToolbarView};
+use slam_ui::toolbar::{
+    NowPlayingFrame, NowPlayingText, Toolbar, ToolbarLabels, ToolbarLayout, ToolbarView,
+};
 
 slam_testkit::install_counting_allocator!();
 
@@ -84,6 +86,8 @@ fn input_and_drawing_do_not_allocate_once_warm() {
         &ToolbarLabels {
             settings: "Settings".into(),
             home: "Main menu".into(),
+            player: "Now playing".into(),
+            nothing_playing: "Nothing is playing".into(),
         },
     );
     let white = AtlasRegion {
@@ -107,15 +111,30 @@ fn input_and_drawing_do_not_allocate_once_warm() {
     bar.set_pins(&[0, 1, 2]);
     let widgets = [0, 1, 2].map(|i| widget_of(specs()[i].kind));
     let mut now = 0_u64;
+    // A title too long for the popup rides as a marquee.
+    let words = NowPlayingText {
+        key: 1,
+        title: "A very long title that does not fit the popup of the player at all".into(),
+        artist: "Some artist".into(),
+    };
     let mut frame = |bar: &Toolbar, clock: u16, glyphs: &mut _, now: u64| {
         shapes.clear();
         text.clear();
+        let mut shown = bar.frame(true, clock);
+        shown.now_playing = NowPlayingFrame {
+            available: !clock.is_multiple_of(7),
+            paused: clock.is_multiple_of(2),
+            position_ms: (now / MS) as f32,
+            length_ms: 90_000.0,
+        };
         view.push(
             &mut shapes,
             &mut text,
             glyphs,
             &mut rows,
-            &bar.frame(true, clock),
+            &shown,
+            &words,
+            Some(white),
             width,
             height,
             now,
@@ -138,7 +157,17 @@ fn input_and_drawing_do_not_allocate_once_warm() {
         frame(&bar, 61, &mut glyphs, now + 300 * MS);
         bar.close_popup();
     }
-    for target in [layout.settings, layout.home] {
+    // The player's popup, with and without a track, a hovered button, a drag.
+    bar.show_player(now);
+    for clock in [61, 62, 63, 14] {
+        frame(&bar, clock, &mut glyphs, now + 400 * MS);
+    }
+    let rects = layout.player_rects(0.0);
+    let [x, y] = rects.buttons[1].centre();
+    bar.pointer(x, y, &layout);
+    frame(&bar, 61, &mut glyphs, now + 500 * MS);
+    bar.close_player();
+    for target in [layout.settings, layout.home, layout.player] {
         let [x, y] = target.centre();
         bar.pointer(x, y, &layout);
         frame(&bar, 61, &mut glyphs, now);
@@ -165,6 +194,21 @@ fn input_and_drawing_do_not_allocate_once_warm() {
             }
             if k % 20 == 15 {
                 bar.back(&layout);
+                bar.back(&layout);
+            }
+            // The player's popup opens, is dragged along its bar, pressed and closed.
+            if k % 20 == 16 {
+                bar.show_player(at);
+                let rects = layout.player_rects(0.0);
+                let y = rects.bar.y + rects.bar.height / 2.0;
+                bar.press(rects.bar.x + 30.0, y, &layout);
+                bar.pointer(rects.bar.x + 90.0, y, &layout);
+                bar.release(&layout);
+                let [bx, by] = rects.buttons[(k % 3) as usize].centre();
+                bar.pointer(bx, by, &layout);
+                bar.press(bx, by, &layout);
+            }
+            if k % 20 == 19 {
                 bar.back(&layout);
             }
             frame(&bar, (k * 13 % 1440) as u16, &mut glyphs, at);

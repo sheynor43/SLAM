@@ -11,10 +11,10 @@ use std::sync::Arc;
 
 use slam_render::atlas::AtlasRegion;
 use slam_render::shape::ShapeBatch;
-use slam_render::sprite::SpriteBatch;
+use slam_render::sprite::{Affine, SpriteBatch};
 use slam_text::{FontRegistry, Glyph, GlyphCache, GlyphKey};
 
-use crate::anim::{ease_out_cubic, progress};
+use crate::anim::{ease_out_cubic, ease_out_quint, progress};
 use crate::menu::Rect;
 use crate::menu::view::{Line, Typesetter};
 use crate::settings_screen::icons;
@@ -24,6 +24,11 @@ use crate::settings_screen::{
 };
 use crate::theme::{Theme, faded};
 use crate::widgets::{Look, draw, push_left, push_right};
+
+mod player;
+
+pub use player::{NowPlayingFrame, NowPlayingText, PlayerAction, PlayerFrame, PlayerRects};
+use player::{PlayerOpen, PlayerView};
 
 /// Most settings that can be pinned.
 pub const MAX_PINS: usize = 8;
@@ -36,6 +41,8 @@ pub const NO_CLOCK: u16 = u16::MAX;
 pub enum Target {
     Settings,
     Home,
+    /// The music player's button (ADR-0178).
+    Player,
     /// The pinned setting at this position.
     Pin(usize),
 }
@@ -47,6 +54,8 @@ pub struct ToolbarLayout {
     pub bar: Rect,
     pub settings: Rect,
     pub home: Rect,
+    /// The music player's button, left of the pins.
+    pub player: Rect,
     pub clock: Rect,
     pins: [Rect; MAX_PINS],
     pin_count: usize,
@@ -86,18 +95,25 @@ impl ToolbarLayout {
         let mut pins = [Rect::default(); MAX_PINS];
         for (i, pin) in pins.iter_mut().enumerate().take(pin_count) {
             *pin = Rect {
-                x: clock.x - (pin_count - i) as f32 * (side + gap),
+                x: clock.x - (pin_count + 1 - i) as f32 * (side + gap),
                 y: 0.0,
                 width: side,
                 height: side,
             };
         }
+        let player = Rect {
+            x: clock.x - (side + gap),
+            y: 0.0,
+            width: side,
+            height: side,
+        };
         let row_width =
             SettingsLayout::new(panel_width(width, height, theme), height, theme).content_width();
         ToolbarLayout {
             bar,
             settings: button(0),
             home: button(1),
+            player,
             clock,
             pins,
             pin_count,
@@ -125,6 +141,9 @@ impl ToolbarLayout {
         }
         if self.home.contains(x, y) {
             return Some(Target::Home);
+        }
+        if self.player.contains(x, y) {
+            return Some(Target::Player);
         }
         self.pins()
             .iter()
@@ -179,6 +198,13 @@ pub enum ToolbarEvent {
     },
     /// The popup went; the application commits what it changed.
     ClosePopup,
+    /// The player's button was clicked: the application shows its popup with
+    /// [`Toolbar::show_player`].
+    OpenPlayer,
+    /// The player's popup went.
+    ClosePlayer,
+    /// A press or drag in the player's popup.
+    Player(PlayerAction),
     /// The popup's widget changed row `row` to `value`.
     Changed {
         row: usize,
@@ -207,6 +233,13 @@ pub struct ToolbarFrame {
     pub popup: Option<PopupFrame>,
     /// The local time as minutes into the day, or [`NO_CLOCK`].
     pub clock: u16,
+    /// How far the bar is in, 0 (above the window) ..= 1 (in place): it slides in with the
+    /// main menu after the intro and out and in around the results (ADR-0178).
+    pub slide: f32,
+    /// The music player's popup, when open.
+    pub player: Option<PlayerFrame>,
+    /// What plays.
+    pub now_playing: NowPlayingFrame,
 }
 
 impl Default for ToolbarFrame {
@@ -218,7 +251,54 @@ impl Default for ToolbarFrame {
             pin_count: 0,
             popup: None,
             clock: NO_CLOCK,
+            slide: 1.0,
+            player: None,
+            now_playing: NowPlayingFrame::default(),
         }
+    }
+}
+
+/// How far the bar is in, easing towards shown or hidden over the theme's
+/// `toolbar_slide_ms` (ADR-0178). The value is linear progress, 0 hidden ..= 1 in place;
+/// the draw side eases it.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct Slide {
+    from: f32,
+    to: f32,
+    since_ns: u64,
+    now: f32,
+}
+
+impl Default for Slide {
+    /// Out of sight.
+    fn default() -> Slide {
+        Slide {
+            from: 0.0,
+            to: 0.0,
+            since_ns: 0,
+            now: 0.0,
+        }
+    }
+}
+
+impl Slide {
+    /// Moves towards `shown` at `now_ns`; a change of direction turns from where it is.
+    /// Returns how far in the bar is.
+    pub fn update(&mut self, shown: bool, now_ns: u64, theme: &Theme) -> f32 {
+        let to = if shown { 1.0 } else { 0.0 };
+        if to != self.to {
+            self.from = self.now;
+            self.to = to;
+            self.since_ns = now_ns;
+        }
+        let ms = (f64::from(theme.toolbar_slide_ms.max(0.0)) * 1e6) as u64;
+        let t = if theme.effects {
+            progress(self.since_ns, now_ns, ms)
+        } else {
+            1.0
+        };
+        self.now = self.from + (self.to - self.from) * t;
+        self.now
     }
 }
 
@@ -229,6 +309,7 @@ pub struct Toolbar {
     pin_count: usize,
     hover: Option<Target>,
     popup: Option<PopupFrame>,
+    player: Option<PlayerOpen>,
 }
 
 impl Default for Toolbar {
@@ -244,6 +325,7 @@ impl Toolbar {
             pin_count: 0,
             hover: None,
             popup: None,
+            player: None,
         }
     }
 
@@ -319,6 +401,9 @@ impl Toolbar {
     /// highlight in the popup.
     pub fn pointer(&mut self, x: f32, y: f32, layout: &ToolbarLayout) -> Option<ToolbarEvent> {
         self.hover = layout.target_at(x, y);
+        if let Some(event) = self.player_pointer(x, y, layout) {
+            return Some(event);
+        }
         self.route(SettingsInput::PointerMove { x, y }, layout)
     }
 
@@ -365,6 +450,12 @@ impl Toolbar {
             return Some(event);
         }
         let target = layout.target_at(x, y);
+        if self.player.is_some() {
+            return Some(
+                self.player_press(x, y, layout)
+                    .unwrap_or_else(|| self.player_outside(target)),
+            );
+        }
         if self.popup.is_some() {
             if self.on_popup(x, y, layout) {
                 return Some(
@@ -379,6 +470,7 @@ impl Toolbar {
                 Some(Target::Pin(pin)) if Some(pin) != open => ToolbarEvent::OpenPopup { pin },
                 Some(Target::Settings) => ToolbarEvent::OpenSettings,
                 Some(Target::Home) => ToolbarEvent::Home,
+                Some(Target::Player) => ToolbarEvent::OpenPlayer,
                 _ => ToolbarEvent::ClosePopup,
             });
         }
@@ -386,6 +478,7 @@ impl Toolbar {
             Some(Target::Settings) => Some(ToolbarEvent::OpenSettings),
             Some(Target::Home) => Some(ToolbarEvent::Home),
             Some(Target::Pin(pin)) => Some(ToolbarEvent::OpenPopup { pin }),
+            Some(Target::Player) => Some(ToolbarEvent::OpenPlayer),
             // The bar takes the press: nothing under it is clicked through.
             None if layout.bar.contains(x, y) => Some(ToolbarEvent::Absorbed),
             None => None,
@@ -394,6 +487,7 @@ impl Toolbar {
 
     /// The primary button released: ends a slider's drag.
     pub fn release(&mut self, layout: &ToolbarLayout) {
+        self.player_release();
         self.route(SettingsInput::PointerRelease, layout);
     }
 
@@ -408,6 +502,9 @@ impl Toolbar {
 
     /// Escape: closes an open dropdown list, else the popup. `None` without a popup.
     pub fn back(&mut self, layout: &ToolbarLayout) -> Option<ToolbarEvent> {
+        if self.player.take().is_some() {
+            return Some(ToolbarEvent::ClosePlayer);
+        }
         let popup = self.popup.as_mut()?;
         if let RowWidget::Slider(slider) = &mut popup.widget
             && slider.is_editing()
@@ -436,6 +533,9 @@ impl Toolbar {
             pin_count: self.pin_count as u8,
             popup: self.popup,
             clock,
+            slide: 1.0,
+            player: self.player_frame(),
+            now_playing: NowPlayingFrame::default(),
         }
     }
 }
@@ -445,6 +545,10 @@ impl Toolbar {
 pub struct ToolbarLabels {
     pub settings: String,
     pub home: String,
+    /// The player's button tooltip.
+    pub player: String,
+    /// The player's popup when nothing plays.
+    pub nothing_playing: String,
 }
 
 /// The toolbar on the draw thread.
@@ -454,6 +558,8 @@ pub struct ToolbarView {
     scale: f32,
     settings: Line,
     home: Line,
+    player_tip: Line,
+    player: PlayerView,
     clock: Line,
     clock_seen: u16,
     /// All the digits, so their glyphs are asked for up front.
@@ -475,6 +581,8 @@ impl ToolbarView {
             scale: 0.0,
             settings: Line::new(&labels.settings),
             home: Line::new(&labels.home),
+            player_tip: Line::new(&labels.player),
+            player: PlayerView::new(&labels.nothing_playing),
             clock,
             clock_seen: NO_CLOCK,
             warm: Line::new("0123456789:"),
@@ -495,11 +603,17 @@ impl ToolbarView {
 
     /// How many glyphs of its texts are not ready yet.
     pub fn request_glyphs(&self, glyphs: &mut GlyphCache) -> usize {
-        [&self.settings, &self.home, &self.clock, &self.warm]
-            .into_iter()
-            .flat_map(|l| l.layout.glyphs())
-            .filter(|g| matches!(glyphs.glyph(GlyphKey::of(g)), Glyph::Pending))
-            .count()
+        [
+            &self.settings,
+            &self.home,
+            &self.player_tip,
+            &self.clock,
+            &self.warm,
+        ]
+        .into_iter()
+        .flat_map(|l| l.layout.glyphs())
+        .filter(|g| matches!(glyphs.glyph(GlyphKey::of(g)), Glyph::Pending))
+        .count()
     }
 
     fn lay_out(&mut self, scale: f32) {
@@ -509,6 +623,9 @@ impl ToolbarView {
         let bold = self.theme.heading_face(text);
         self.type_setter.lay_out_face(&mut self.settings, bold);
         self.type_setter.lay_out_face(&mut self.home, bold);
+        self.type_setter.lay_out_face(&mut self.player_tip, bold);
+        self.player
+            .lay_out(&mut self.type_setter, &self.theme, scale);
         self.lay_out_clock();
         self.type_setter
             .lay_out(&mut self.warm, self.theme.toolbar_clock_size * scale);
@@ -523,6 +640,10 @@ impl ToolbarView {
     /// rows' names and the popup's row come from `rows`. Returns where the tooltip's shapes
     /// and texts begin when there is one: the caller draws them on a layer of their own,
     /// over the rest. Does not allocate once laid out at the window's scale.
+    ///
+    /// The bar slides in from above as `frame.slide` goes from 0 to 1 (ADR-0178); `words`
+    /// and `cover` (the playing beatmap's background, when ready) are for the player's
+    /// popup.
     #[allow(clippy::too_many_arguments)]
     pub fn push(
         &mut self,
@@ -531,14 +652,45 @@ impl ToolbarView {
         glyphs: &mut GlyphCache,
         rows: &mut SettingsView,
         frame: &ToolbarFrame,
+        words: &NowPlayingText,
+        cover: Option<AtlasRegion>,
         width: f32,
         height: f32,
         now_ns: u64,
         white: AtlasRegion,
     ) -> Option<(u32, u32)> {
-        if !frame.visible {
+        if !frame.visible || frame.slide <= 0.0 {
             return None;
         }
+        let first = (shapes.len(), text.len());
+        let tip = self.push_bar(
+            shapes, text, glyphs, rows, frame, words, cover, width, height, now_ns, white,
+        );
+        let away = 1.0 - ease_out_quint(frame.slide.clamp(0.0, 1.0));
+        if away > 0.0 {
+            let dy = -away * ToolbarLayout::new(width, height, &self.theme, 0).height();
+            let map = Affine::about([0.0, 0.0], 1.0, 0.0, [0.0, dy]);
+            shapes.transform_from(first.0, &map, [1.0; 4]);
+            text.transform_from(first.1, &map, [1.0; 4]);
+        }
+        tip
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn push_bar(
+        &mut self,
+        shapes: &mut ShapeBatch,
+        text: &mut SpriteBatch,
+        glyphs: &mut GlyphCache,
+        rows: &mut SettingsView,
+        frame: &ToolbarFrame,
+        words: &NowPlayingText,
+        cover: Option<AtlasRegion>,
+        width: f32,
+        height: f32,
+        now_ns: u64,
+        white: AtlasRegion,
+    ) -> Option<(u32, u32)> {
         let pins = usize::from(frame.pin_count).min(MAX_PINS);
         let layout = ToolbarLayout::new(width, height, &self.theme, pins);
         if layout.scale != self.scale {
@@ -609,6 +761,12 @@ impl ToolbarView {
             frame.hover == Some(Target::Home),
             icons::HOME,
         );
+        button(
+            shapes,
+            &layout.player,
+            frame.hover == Some(Target::Player) || frame.player.is_some(),
+            icons::NOTE,
+        );
         for (i, rect) in layout.pins().iter().enumerate() {
             let row = usize::from(frame.pins[i]);
             let lit = frame.hover == Some(Target::Pin(i)) || popup_pin == Some(i);
@@ -628,14 +786,31 @@ impl ToolbarView {
         if let (Some(popup), true) = (frame.popup, popup_pin.is_some()) {
             self.push_popup(shapes, text, glyphs, rows, &layout, &popup, now_ns, white);
         }
+        if let Some(player) = &frame.player {
+            self.player.push(
+                &mut self.type_setter,
+                shapes,
+                text,
+                glyphs,
+                &layout,
+                player,
+                &frame.now_playing,
+                words,
+                cover,
+                now_ns,
+                white,
+            );
+        }
         // The tooltip of the hovered button, over everything; a pin whose popup is open
-        // shows its row instead.
+        // (or the player's) shows its row instead.
         let tip = frame
             .hover
-            .filter(|t| !matches!(t, Target::Pin(i) if popup_pin == Some(*i)))?;
+            .filter(|t| !matches!(t, Target::Pin(i) if popup_pin == Some(*i)))
+            .filter(|t| !(*t == Target::Player && frame.player.is_some()))?;
         let (rect, label) = match tip {
             Target::Settings => (layout.settings, &self.settings),
             Target::Home => (layout.home, &self.home),
+            Target::Player => (layout.player, &self.player_tip),
             Target::Pin(i) => {
                 let rect = *layout.pins().get(i)?;
                 let width = rows.shown_label(usize::from(frame.pins[i]))?.1;

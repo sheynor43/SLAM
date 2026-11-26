@@ -33,6 +33,11 @@ mod vector;
 /// Atlas pixels per em: glyph bitmaps are generated at this size; the renderer
 /// scales by `font_size / EM_PX`.
 pub const EM_PX: f32 = 32.0;
+/// Atlas pixels per em of the glyphs made for very large text (ADR-0178): the startup
+/// intro's letters, which grow to several hundred pixels and would show the 32-pixel
+/// field's wobble at [`EM_PX`]. The distance range stays [`DISTANCE_RANGE`] atlas pixels,
+/// so the shaders read both alike; the renderer scales by `font_size / EM_PX_HIRES`.
+pub const EM_PX_HIRES: f32 = 256.0;
 /// Total distance range in atlas pixels: the field covers
 /// `[-DISTANCE_RANGE / 2, DISTANCE_RANGE / 2]` around the outline.
 pub const DISTANCE_RANGE: f64 = 4.0;
@@ -53,6 +58,8 @@ pub struct GlyphKey {
     /// Effective width in percent; used as the `wdth` coordinate of faces with the axis.
     pub width: u16,
     pub glyph_id: u16,
+    /// Made at [`EM_PX_HIRES`] instead of [`EM_PX`], for very large text.
+    pub hires: bool,
 }
 
 impl GlyphKey {
@@ -63,7 +70,22 @@ impl GlyphKey {
             weight: glyph.weight,
             width: glyph.width,
             glyph_id: glyph.glyph_id,
+            hires: false,
         }
+    }
+
+    /// Key of a laid-out glyph made at [`EM_PX_HIRES`]: its bitmap is `EM_PX_HIRES / EM_PX`
+    /// times as big in each direction.
+    pub fn hires_of(glyph: &PositionedGlyph) -> Self {
+        Self {
+            hires: true,
+            ..Self::of(glyph)
+        }
+    }
+
+    /// Atlas pixels per em of the bitmap this key makes.
+    pub fn em_px(&self) -> f32 {
+        if self.hires { EM_PX_HIRES } else { EM_PX }
     }
 }
 
@@ -134,7 +156,7 @@ pub fn generate_glyph(
         .metrics(Size::unscaled(), &location)
         .units_per_em
         .max(1);
-    let s = f64::from(EM_PX) / f64::from(upem);
+    let s = f64::from(key.em_px()) / f64::from(upem);
     let pad = f64::from(PADDING);
     let x0 = (xmin * s).floor() - pad;
     let y0 = (ymin * s).floor() - pad;

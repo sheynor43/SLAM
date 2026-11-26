@@ -5,10 +5,24 @@
 //! closes: live settings follow the popup's changes, and the file is saved once.
 
 use slam_ui::settings_screen::RowValue;
-use slam_ui::toolbar::{MAX_PINS, ToolbarEvent, ToolbarFrame, ToolbarLayout};
+use slam_ui::toolbar::{
+    MAX_PINS, NowPlayingFrame, NowPlayingText, PlayerAction, ToolbarEvent, ToolbarFrame,
+    ToolbarLayout,
+};
 
 use super::*;
 use crate::menu_sounds::MenuSound;
+
+/// What the toolbar's music player asked of the menu music since the shell last took it
+/// (ADR-0178). A seek keeps the latest position of a drag.
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+pub struct MusicCommands {
+    pub previous: bool,
+    pub play_pause: bool,
+    pub next: bool,
+    /// Share of the track to seek to, 0 ..= 1.
+    pub seek: Option<f32>,
+}
 
 impl ShellState {
     /// Where the toolbar's parts are in the window.
@@ -21,9 +35,90 @@ impl ShellState {
         )
     }
 
-    /// Whether the toolbar shows: on the menus, not in the play and not over the intro.
-    pub(super) fn toolbar_shown(&self) -> bool {
-        !matches!(self.stack.top(), AppScreen::Play(_)) && self.intro.is_none()
+    /// Whether the toolbar is wanted in view: on the song select and the main menu, not in
+    /// the play and not on the results (ADR-0178). Over the intro it comes in when the
+    /// black starts to fade, with the menu, so it is there as the menu is.
+    pub(super) fn toolbar_wanted(&self, now_ns: u64) -> bool {
+        let screen = !matches!(self.stack.top(), AppScreen::Play(_) | AppScreen::Results(_));
+        let revealed = match &self.intro {
+            Some(intro) => intro.reveal_at().is_some_and(|at| now_ns >= at),
+            None => true,
+        };
+        screen && revealed
+    }
+
+    /// What the music player asked for since the last call.
+    pub fn take_music_commands(&mut self) -> MusicCommands {
+        std::mem::take(&mut self.music_commands)
+    }
+
+    /// What the menu music is doing, for the player: whether there is a track, whether it
+    /// is paused, where it is and how long it is (milliseconds).
+    pub fn set_now_playing(
+        &mut self,
+        available: bool,
+        paused: bool,
+        position_ms: Option<f64>,
+        length_ms: Option<f64>,
+    ) {
+        self.now_playing = NowPlayingFrame {
+            available,
+            paused,
+            position_ms: position_ms.unwrap_or(0.0) as f32,
+            length_ms: length_ms.unwrap_or(0.0) as f32,
+        };
+    }
+
+    /// Follows the track the menu music plays: the player shows its set's title and artist.
+    /// Allocates only when the set changes.
+    fn refresh_now_text(&mut self) {
+        let set = self
+            .menu_track
+            .and_then(|(set, _)| self.song_select.list().sets.get(set));
+        let key = set.map(|set| set.key);
+        if key == self.now_key {
+            return;
+        }
+        self.now_key = key;
+        self.now_text = match set {
+            Some(set) => NowPlayingText {
+                key: set.key,
+                title: set.title.as_str().into(),
+                artist: set.artist.as_str().into(),
+            },
+            None => NowPlayingText::default(),
+        };
+    }
+
+    /// A press in the player's popup. On the song select Previous and Next move the
+    /// selection to the neighbouring set (the music follows it); elsewhere they go to the
+    /// menu music with the rest.
+    fn player_action(&mut self, action: PlayerAction) {
+        let on_song_select = matches!(self.stack.top(), AppScreen::SongSelect);
+        match action {
+            PlayerAction::Previous | PlayerAction::Next if on_song_select => {
+                let input = if action == PlayerAction::Next {
+                    SongSelectInput::Right
+                } else {
+                    SongSelectInput::Left
+                };
+                let _ = self.song_select.input(input, &self.song_layout);
+                self.ui_sounds.push(MenuSound::Click);
+            }
+            PlayerAction::Previous => {
+                self.music_commands.previous = true;
+                self.ui_sounds.push(MenuSound::Click);
+            }
+            PlayerAction::Next => {
+                self.music_commands.next = true;
+                self.ui_sounds.push(MenuSound::Click);
+            }
+            PlayerAction::PlayPause => {
+                self.music_commands.play_pause = !self.music_commands.play_pause;
+                self.ui_sounds.push(MenuSound::Click);
+            }
+            PlayerAction::Seek(share) => self.music_commands.seek = Some(share),
+        }
     }
 
     /// The rows the settings in force pin, as indices on the settings screen, in the order
@@ -56,7 +151,7 @@ impl ShellState {
     /// event: a press on the bar or its popup, Escape with a popup open, the wheel over its
     /// dropdown list.
     pub(super) fn toolbar_input(&mut self, kind: InputKind, now_ns: u64) -> bool {
-        if !self.toolbar_shown() || self.settings_open() {
+        if !self.toolbar_wanted(now_ns) || self.intro.is_some() || self.settings_open() {
             return false;
         }
         let layout = self.toolbar_layout();
@@ -144,6 +239,12 @@ impl ShellState {
             }
             ToolbarEvent::OpenPopup { pin } => self.open_popup(pin, now_ns),
             ToolbarEvent::ClosePopup => self.close_popup(),
+            ToolbarEvent::OpenPlayer => {
+                self.close_popup();
+                self.toolbar.show_player(now_ns);
+            }
+            ToolbarEvent::ClosePlayer => {}
+            ToolbarEvent::Player(action) => self.player_action(action),
             ToolbarEvent::Changed { row, value } => {
                 self.ui_sounds.push(match value {
                     RowValue::Toggle(true) => MenuSound::ToggleOn,
@@ -264,10 +365,15 @@ impl ShellState {
     /// One tick of the toolbar: closes a popup the screen went from under, keeps the clock,
     /// and writes the frame. Does not allocate.
     pub(super) fn tick_toolbar(&mut self, now_ns: u64, snapshot: &mut ShellSnapshot) {
-        let shown = self.toolbar_shown();
-        if !shown && (self.toolbar.popup_open() || self.popup_editing) {
-            self.close_popup();
+        let wanted = self.toolbar_wanted(now_ns);
+        if !wanted {
+            if self.toolbar.popup_open() || self.popup_editing {
+                self.close_popup();
+            }
+            self.toolbar.close_player();
         }
+        let slide = self.toolbar_slide.update(wanted, now_ns, &self.theme);
+        self.refresh_now_text();
         if self.settings_open() {
             // The panel covers the bar: nothing under the pointer.
             let layout = self.toolbar_layout();
@@ -277,8 +383,11 @@ impl ShellState {
             self.clock = crate::local_time::minute_now();
             self.clock_at_ns = now_ns.saturating_add(1_000_000_000);
         }
-        let frame: ToolbarFrame = self.toolbar.frame(shown, self.clock);
+        let mut frame: ToolbarFrame = self.toolbar.frame(wanted || slide > 0.0, self.clock);
+        frame.slide = slide;
+        frame.now_playing = self.now_playing;
         snapshot.toolbar = frame;
+        snapshot.now_playing = self.now_text.clone();
     }
 }
 
