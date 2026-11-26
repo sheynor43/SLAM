@@ -14,6 +14,7 @@ use super::{
     SongSelectSnapshot,
 };
 use crate::anim::{Towards, ease_out_quint, progress};
+use crate::marquee::Marquee;
 use crate::menu::Rect;
 use crate::menu::view::{Line, Typesetter};
 use crate::theme::{Theme, faded};
@@ -87,9 +88,12 @@ pub struct BarLayout {
 impl InfoLayout {
     pub fn new(info: &Rect, theme: &Theme, scale: f32) -> InfoLayout {
         let detail = theme.song_info_detail_size * scale;
-        let gap = theme.song_text_pad * scale / 2.0;
+        // The user's height multiplier stretches every row and gap (ADR-0168).
+        let k = theme.song_info_height_mult.clamp(0.25, 3.0);
+        let gap = theme.song_text_pad * scale / 2.0 * k;
         let y = std::cell::Cell::new(info.y);
         let next = |height: f32| {
+            let height = height * k;
             let rect = Rect {
                 x: info.x,
                 y: y.get(),
@@ -133,7 +137,7 @@ impl InfoLayout {
         // their content, so a margin more keeps them `gap` apart.
         y.set(y.get() + theme.song_margin * scale + gap);
         let scores_title = next(detail * 2.0);
-        let pitch = theme.song_score_row_height * scale;
+        let pitch = theme.song_score_row_height * scale * k;
         let row_gap = theme.song_row_gap * scale;
         let top = y.get();
         let rows = std::array::from_fn(|i| Rect {
@@ -161,11 +165,39 @@ impl InfoLayout {
     }
 }
 
+/// Sizes of a score row's parts at one scale.
+struct ScoreSizes {
+    score: f32,
+    caption: f32,
+    value: f32,
+    /// Width of the rank badge's column, and the gap between neighbouring texts.
+    rank: f32,
+    gap: f32,
+}
+
+impl ScoreSizes {
+    fn new(theme: &Theme, scale: f32) -> ScoreSizes {
+        ScoreSizes {
+            score: theme.song_score_size * scale,
+            caption: theme.song_score_caption_size * scale,
+            value: theme.song_score_value_size * scale,
+            rank: theme.song_info_artist_size * scale * 2.2,
+            gap: theme.song_text_pad * scale / 2.0,
+        }
+    }
+}
+
 /// The texts of one score row.
 struct ScoreLines {
     rank: Line,
+    /// The total score, big, at the row's right.
     score: Line,
+    /// The date, a dim caption above the values.
+    date: Line,
+    /// The accuracy and max combo values; their labels are the panel's.
     accuracy: Line,
+    combo: Line,
+    /// Mods and the multiplier, one compact line.
     extra: Line,
 }
 
@@ -179,17 +211,27 @@ impl ScoreLines {
         ScoreLines {
             rank: line(),
             score: line(),
+            date: line(),
             accuracy: line(),
+            combo: line(),
             extra: line(),
         }
     }
 
-    fn lines(&self) -> [&Line; 4] {
-        [&self.rank, &self.score, &self.accuracy, &self.extra]
+    fn lines(&self) -> [&Line; 6] {
+        [
+            &self.rank,
+            &self.score,
+            &self.date,
+            &self.accuracy,
+            &self.combo,
+            &self.extra,
+        ]
     }
 }
 
-/// The panel narrows to its texts down to this part of the room it has (the bars need it).
+/// With `song_select.info_auto_width` the panel narrows to its texts down to this part of
+/// the room it has (the bars need it).
 const MIN_WIDTH_PART: f32 = 0.6;
 
 /// Width of a star-rating pill around `line`, and the gap before it (ADR-0131).
@@ -263,6 +305,9 @@ pub(super) struct InfoPanel {
     bar_labels: [Line; 4],
     scores_title: Line,
     no_scores: Line,
+    /// The labels before a score row's accuracy and max combo.
+    accuracy_label: Line,
+    combo_label: Line,
     charset: Line,
     name: Line,
     /// The difficulty's star rating, drawn in a pill of its colour after the name.
@@ -276,6 +321,9 @@ pub(super) struct InfoPanel {
     details_for: Option<Option<BeatmapDetails>>,
     scores: Vec<ScoreLines>,
     scores_for: Option<Option<LocalScores>>,
+    /// Rides of the name, the artist, the length and BPM and the counts when they do not
+    /// fit (ADR-0168).
+    marquees: [Marquee; 4],
     /// The bars and colour moving to the selection's, and its texts fading in (ADR-0156).
     motion: InfoMotion,
 }
@@ -299,6 +347,12 @@ struct InfoMotion {
     anchor: Towards,
     /// Whether the width and anchor had a value to start from.
     sized: bool,
+    /// The difficulty the score rows came in for, and how many rows they had then: a
+    /// refreshed list of the same difficulty animates only the rows it gained.
+    scores_key: Option<u64>,
+    scores_rows: Option<usize>,
+    /// When each row's entrance starts; in the future while it waits its turn.
+    row_since: [u64; MAX_LOCAL_SCORES],
 }
 
 impl InfoPanel {
@@ -318,6 +372,8 @@ impl InfoPanel {
             ],
             scores_title: Line::new(&labels.scores),
             no_scores: Line::new(&labels.no_scores),
+            accuracy_label: Line::new(&labels.accuracy),
+            combo_label: Line::new(&labels.combo),
             charset: Line::new(CHARSET),
             name: line(),
             stars: line(),
@@ -329,6 +385,7 @@ impl InfoPanel {
             details_for: None,
             scores: (0..MAX_LOCAL_SCORES).map(|_| ScoreLines::new()).collect(),
             scores_for: None,
+            marquees: [Marquee::default(); 4],
             motion: InfoMotion::default(),
         }
     }
@@ -343,6 +400,9 @@ impl InfoPanel {
         ]) {
             type_setter.lay_out(line, detail);
         }
+        for line in [&mut self.accuracy_label, &mut self.combo_label] {
+            type_setter.lay_out(line, theme.song_score_caption_size * scale);
+        }
         self.name_for = None;
         self.details_for = None;
         self.scores_for = None;
@@ -356,6 +416,8 @@ impl InfoPanel {
             .chain([
                 &self.scores_title,
                 &self.no_scores,
+                &self.accuracy_label,
+                &self.combo_label,
                 &self.charset,
                 &self.name,
                 &self.stars,
@@ -367,7 +429,8 @@ impl InfoPanel {
     }
 
     /// Writes the texts that differ from the ones shown. `ellipsis` is the width of the
-    /// ellipsis at the title and detail sizes.
+    /// ellipsis at the title and detail sizes; the score rows' mods line is cut with it,
+    /// the other texts ride when they do not fit (ADR-0168).
     pub(super) fn refresh(
         &mut self,
         type_setter: &mut Typesetter,
@@ -382,14 +445,8 @@ impl InfoPanel {
             theme.song_info_artist_size * scale,
             theme.song_info_detail_size * scale,
         );
-        // The ellipsis widths are measured at the rows' sizes.
-        let ellipsis = [
-            ellipsis[0] * theme.song_info_title_size / theme.song_title_size,
-            ellipsis[1] * theme.song_info_detail_size / theme.song_detail_size,
-        ];
-        let artist_ellipsis =
-            ellipsis[1] * theme.song_info_artist_size / theme.song_info_detail_size;
-        let parts = InfoLayout::new(&layout.info, theme, scale);
+        // The ellipsis width is measured at the rows' size.
+        let ellipsis = ellipsis[1] * theme.song_score_value_size / theme.song_detail_size;
         let key = (snapshot.generation, snapshot.selected);
         if self.name_for != Some(key) {
             self.name_for = Some(key);
@@ -409,27 +466,14 @@ impl InfoPanel {
                 let _ = write!(self.artist.text, "{} - {}", set.artist, set.title);
             }
             type_setter.lay_out(&mut self.stars, detail);
-            let pill = pill_width(&self.stars, theme, scale);
-            super::view::fit_face(
-                type_setter,
-                &mut self.name,
-                theme.heading_face(title),
-                (parts.name.width - pill).max(0.0),
-                ellipsis[0],
-            );
-            fit(
-                type_setter,
-                &mut self.artist,
-                artist_size,
-                parts.artist.width,
-                artist_ellipsis,
-            );
+            type_setter.lay_out_face(&mut self.name, theme.heading_face(title));
+            type_setter.lay_out(&mut self.artist, artist_size);
         }
         if self.details_for != Some(snapshot.details) {
             self.details_for = Some(snapshot.details);
             self.write_details(snapshot.details.as_ref());
             for line in [&mut self.stats, &mut self.counts] {
-                fit(type_setter, line, detail, parts.stats.width, ellipsis[1]);
+                type_setter.lay_out(line, detail);
             }
             for line in &mut self.values {
                 type_setter.lay_out(line, detail);
@@ -439,21 +483,28 @@ impl InfoPanel {
         if self.scores_for != Some(scores) {
             self.scores_for = Some(scores);
             let rows = scores.map(|s| s.rows).unwrap_or_default();
-            let gap = theme.song_text_pad * scale;
-            let avail = (parts.rows[0].width - artist_size * 2.2 - gap).max(0.0);
+            let parts = InfoLayout::new(&layout.info, theme, scale);
+            let sizes = ScoreSizes::new(theme, scale);
+            let gap = sizes.gap;
             for (lines, row) in self.scores.iter_mut().zip(rows) {
                 write_score(lines, row.as_ref());
                 type_setter.lay_out(&mut lines.rank, artist_size);
-                type_setter.lay_out(&mut lines.accuracy, detail);
-                let accuracy = lines.accuracy.layout.width();
+                type_setter.lay_out(&mut lines.score, sizes.score);
+                type_setter.lay_out(&mut lines.date, sizes.caption);
+                type_setter.lay_out(&mut lines.accuracy, sizes.value);
+                type_setter.lay_out(&mut lines.combo, sizes.value);
+                let column =
+                    (parts.rows[0].width - sizes.rank - lines.score.layout.width() - 2.0 * gap)
+                        .max(0.0);
+                // The mods follow the date on the top line.
+                let used = lines.date.layout.width() + 2.0 * gap;
                 fit(
                     type_setter,
-                    &mut lines.score,
-                    detail,
-                    (avail - accuracy - gap).max(0.0),
-                    ellipsis[1],
+                    &mut lines.extra,
+                    sizes.value,
+                    (column - used).max(0.0),
+                    ellipsis,
                 );
-                fit(type_setter, &mut lines.extra, detail, avail, ellipsis[1]);
             }
         }
     }
@@ -481,7 +532,9 @@ impl InfoPanel {
     }
 
     /// Draws the panel at the layer's `opacity`. `rect` fills (fading the colour by the
-    /// opacity), `left` draws a line left-aligned at `(x, centre_y)`.
+    /// opacity), `left` draws a line left-aligned at `(x, centre_y)`, `ride` draws one in
+    /// a box of `avail` pixels from `x`, riding as its marquee says when it is wider
+    /// (arguments: line, marquee, avail, x, centre_y, colour).
     /// Two wedges after lazer's (ADR-0136): the difficulty's, outlined in its star colour,
     /// and the local scores' below it; each leans by the buttons' skew, and so does all on it.
     #[allow(clippy::too_many_arguments)]
@@ -494,6 +547,7 @@ impl InfoPanel {
         now_ns: u64,
         rect: &mut impl FnMut(&Rect, Color, Look),
         left: &mut impl FnMut(&Line, f32, f32, Color),
+        ride: &mut impl FnMut(&Line, &mut Marquee, f32, f32, f32, Color),
     ) {
         let scale = layout.scale;
         let ms = |ms: f32| (ms.max(0.0) as f64 * 1e6) as u64;
@@ -501,21 +555,24 @@ impl InfoPanel {
             ms(theme.song_info_transition_ms),
             ms(theme.song_info_text_fade_ms),
         );
-        // As wide as the texts need, between the bars' minimum and the room there is; the
-        // width moves there (ADR-0167).
-        let content = [
-            self.name.layout.width() + pill_width(&self.stars, theme, scale),
-            self.artist.layout.width(),
-            self.stats.layout.width(),
-            self.counts.layout.width(),
-        ]
-        .into_iter()
-        .fold(0.0_f32, f32::max);
+        // Optionally (ADR-0168): as wide as the texts need, between the bars' minimum and
+        // the room there is; the width moves there (ADR-0167).
         let room = layout.info.width;
-        let wanted =
-            (content + theme.song_text_pad * scale).clamp(room * MIN_WIDTH_PART, room.max(0.0));
+        let wanted = if theme.song_info_auto_width {
+            let content = [
+                self.name.layout.width() + pill_width(&self.stars, theme, scale),
+                self.artist.layout.width(),
+                self.stats.layout.width(),
+                self.counts.layout.width(),
+            ]
+            .into_iter()
+            .fold(0.0_f32, f32::max);
+            (content + theme.song_text_pad * scale).clamp(room * MIN_WIDTH_PART, room.max(0.0))
+        } else {
+            room
+        };
         let info = Rect {
-            width: if self.motion.sized {
+            width: if self.motion.sized && theme.song_info_auto_width {
                 self.motion
                     .width
                     .aim(wanted, now_ns, move_ns, ease_out_quint);
@@ -546,6 +603,12 @@ impl InfoPanel {
             // The first difficulty shows at once.
             motion.texts_since = if motion.shown.is_some() { now_ns } else { 0 };
             motion.shown = key;
+            // The texts start their rides over, the score rows come in again.
+            for marquee in &mut self.marquees {
+                marquee.restart(now_ns);
+            }
+            motion.scores_key = key;
+            motion.scores_rows = None;
         }
         let texts = ease_out_quint(progress(motion.texts_since, now_ns, fade_ns));
         let channels = [outline.r, outline.g, outline.b, outline.a];
@@ -652,7 +715,22 @@ impl InfoPanel {
         let mut left = |line: &Line, x: f32, centre_y: f32, colour: Color| {
             left(line, x + lean_of(centre_y), centre_y, colour);
         };
-        let (rect, left) = (&mut rect, &mut left);
+        let mut ride = |line: &Line,
+                        marquee: &mut Marquee,
+                        avail: f32,
+                        x: f32,
+                        centre_y: f32,
+                        colour: Color| {
+            ride(
+                line,
+                marquee,
+                avail,
+                x + lean_of(centre_y),
+                centre_y,
+                colour,
+            );
+        };
+        let (rect, left, ride) = (&mut rect, &mut left, &mut ride);
         // Leaning with the edge pushes the difficulty's lines right, up to the edge, and
         // leaves room at the left: they move back by a text pad, as far as they lean, so
         // that their right end clears the edge and the left never reaches the window's.
@@ -688,8 +766,13 @@ impl InfoPanel {
             rect(&bleed(&board), theme.song_panel_fill, board_look);
         }
         let centre = |r: &Rect| r.y + r.height / 2.0;
-        left(
+        let [name_ride, artist_ride, stats_ride, counts_ride] = &mut self.marquees;
+        // The name rides in the room the star pill leaves.
+        let name_room = (parts.name.width - pill_width(&self.stars, theme, scale)).max(0.0);
+        ride(
             &self.name,
+            name_ride,
+            name_room,
             parts.name.x,
             centre(&parts.name),
             ink(theme.text),
@@ -702,12 +785,16 @@ impl InfoPanel {
                 stars,
                 theme,
                 scale,
-                parts.name.x + self.name.layout.width() + theme.star_pill_pad * scale,
+                parts.name.x
+                    + self.name.layout.width().min(name_room)
+                    + theme.star_pill_pad * scale,
                 centre(&parts.name),
             );
         }
-        left(
+        ride(
             &self.artist,
+            artist_ride,
+            parts.artist.width,
             parts.artist.x,
             centre(&parts.artist),
             ink(theme.song_hint_text),
@@ -746,14 +833,18 @@ impl InfoPanel {
                 ink(theme.text),
             );
         }
-        left(
+        ride(
             &self.stats,
+            stats_ride,
+            parts.stats.width,
             parts.stats.x,
             centre(&parts.stats),
             ink(theme.text),
         );
-        left(
+        ride(
             &self.counts,
+            counts_ride,
+            parts.counts.width,
             parts.counts.x,
             centre(&parts.counts),
             ink(theme.text),
@@ -774,8 +865,26 @@ impl InfoPanel {
             );
             return;
         }
-        let pad = theme.song_text_pad * scale;
-        let rank_width = theme.song_info_artist_size * scale * 2.2;
+        // Rows come in one after another when a difficulty's scores arrive (ADR-0168); a
+        // refreshed list of the same difficulty animates only the rows it gained.
+        let rows_now = shown;
+        let stagger = ms(theme.song_score_enter_stagger_ms);
+        let from = match self.motion.scores_rows {
+            None => Some(0),
+            Some(before) if rows_now > before => Some(before),
+            _ => None,
+        };
+        if let Some(first) = from {
+            let base = now_ns + ms(theme.song_score_enter_delay_ms);
+            for i in first..MAX_LOCAL_SCORES {
+                self.motion.row_since[i] = base + stagger * (i - first) as u64;
+            }
+        }
+        self.motion.scores_rows = Some(rows_now);
+        let enter_ns = ms(theme.song_score_enter_ms);
+        let offset = theme.song_score_enter_offset * scale;
+        let sizes = ScoreSizes::new(theme, scale);
+        let (pad, gap) = (theme.song_text_pad * scale, sizes.gap);
         for (i, ((area, row), lines)) in parts
             .rows
             .iter()
@@ -787,23 +896,59 @@ impl InfoPanel {
             if row.is_none() {
                 break;
             }
+            let t = ease_out_quint(progress(self.motion.row_since[i], now_ns, enter_ns));
+            let area = Rect {
+                x: area.x - offset * (1.0 - t),
+                ..*area
+            };
+            let fade = |colour: Color| faded(colour, t);
             let fill = if snapshot.score_hovered == Some(i) {
                 theme.button_hover_fill
             } else {
                 theme.song_search_fill
             };
-            rect(area, fill, Look::Round);
+            rect(&area, fade(fill), Look::Round);
             let (top, bottom) = (area.y + area.height * 0.3, area.y + area.height * 0.72);
-            left(&lines.rank, area.x + pad / 2.0, centre(area), theme.text);
-            let x = area.x + rank_width;
-            left(&lines.score, x, top, theme.text);
             left(
-                &lines.accuracy,
-                area.x + area.width - pad / 2.0 - lines.accuracy.layout.width(),
-                top,
-                theme.text,
+                &lines.rank,
+                area.x + pad / 2.0,
+                centre(&area),
+                fade(theme.text),
             );
-            left(&lines.extra, x, bottom, theme.song_hint_text);
+            left(
+                &lines.score,
+                area.x + area.width - pad / 2.0 - lines.score.layout.width(),
+                centre(&area),
+                fade(theme.text),
+            );
+            let x = area.x + sizes.rank;
+            left(&lines.date, x, top, fade(theme.song_hint_text));
+            left(
+                &lines.extra,
+                x + lines.date.layout.width() + gap * 2.0,
+                top,
+                fade(theme.song_hint_text),
+            );
+            // Labelled values, as many as fit before the total score.
+            let end = area.x + area.width - pad / 2.0 - lines.score.layout.width() - gap;
+            let mut x = x;
+            for (label, value) in [
+                (&self.accuracy_label, &lines.accuracy),
+                (&self.combo_label, &lines.combo),
+            ] {
+                let width = label.layout.width() + gap + value.layout.width();
+                if x + width > end {
+                    break;
+                }
+                left(label, x, bottom, fade(theme.song_hint_text));
+                left(
+                    value,
+                    x + label.layout.width() + gap,
+                    bottom,
+                    fade(theme.text),
+                );
+                x += width + gap * 2.0;
+            }
         }
     }
 }
@@ -813,7 +958,9 @@ fn write_score(lines: &mut ScoreLines, row: Option<&ScoreRow>) {
     for line in [
         &mut lines.rank,
         &mut lines.score,
+        &mut lines.date,
         &mut lines.accuracy,
+        &mut lines.combo,
         &mut lines.extra,
     ] {
         line.text.clear();
@@ -824,10 +971,10 @@ fn write_score(lines: &mut ScoreLines, row: Option<&ScoreRow>) {
     }
     push_grouped(&mut lines.score.text, row.total_score);
     push_accuracy(&mut lines.accuracy.text, row.accuracy);
-    let _ = write!(lines.extra.text, "{}x", row.max_combo);
+    let _ = write!(lines.combo.text, "{}x", row.max_combo);
+    push_date(&mut lines.date.text, row.date_ms);
     let mut mods = row.mods.iter().peekable();
     if mods.peek().is_some() {
-        lines.extra.text.push_str(SEPARATOR);
         for (i, acronym) in mods.enumerate() {
             if i > 0 {
                 lines.extra.text.push(' ');
@@ -837,8 +984,6 @@ fn write_score(lines: &mut ScoreLines, row: Option<&ScoreRow>) {
         lines.extra.text.push_str(SEPARATOR);
         push_multiplier(&mut lines.extra.text, row.multiplier);
     }
-    lines.extra.text.push_str(SEPARATOR);
-    push_date(&mut lines.extra.text, row.date_ms);
 }
 
 /// `1,234,567`.

@@ -883,6 +883,27 @@ fn from_table(mut table: Table) -> Loaded {
         cx.float(&mut song_select, "song_select", key, &mut height, range);
         *slot = height.round() as f32;
     }
+    for (key, slot) in [
+        ("info_width", &mut settings.song_select.info_width),
+        ("info_height", &mut settings.song_select.info_height),
+    ] {
+        let mut multiplier = f64::from(*slot);
+        cx.float(
+            &mut song_select,
+            "song_select",
+            key,
+            &mut multiplier,
+            0.5..=1.5,
+        );
+        *slot = ((multiplier * 20.0).round() / 20.0) as f32;
+    }
+    cx.field(
+        &mut song_select,
+        "song_select",
+        "info_auto_width",
+        &mut settings.song_select.info_auto_width,
+        |_| Ok(()),
+    );
     let mut difficulty_info: Option<String> = None;
     cx.opt(
         &mut song_select,

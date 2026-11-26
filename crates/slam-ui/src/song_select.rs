@@ -343,11 +343,19 @@ impl SongSelectLayout {
         // from their bottom edge, so their top reaches right by their height's lean.
         let info_height = (hint.y - margin / 2.0 - header.y).max(0.0);
         let wedge_lean = (info_height + margin) * theme.button_skew().tan();
+        // Lazer's left column: half the window at most, 700 and a widescreen bonus at its
+        // scale (ADR-0168); the user's multiplier comes on top.
+        let aspect = width / height.max(1.0);
+        let wanted = (theme.song_info_width
+            * scale
+            * (1.0 + (aspect - 2.0).max(0.0) * theme.song_info_widescreen_bonus))
+            .min(width * 0.5)
+            * theme.song_info_width_mult;
         let info = Rect {
             x: margin,
             y: header.y,
             width: (x - margin - 3.0 * margin / 2.0 - lean_reach - wedge_lean)
-                .min(theme.song_info_width * scale)
+                .min(wanted)
                 .max(0.0),
             height: info_height,
         };

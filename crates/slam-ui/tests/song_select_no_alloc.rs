@@ -159,6 +159,8 @@ fn labels() -> SongSelectLabels {
             drain_rate: "HP".into(),
             scores: "Локальные рекорды".into(),
             no_scores: "Рекордов нет".into(),
+            accuracy: "ACCURACY".into(),
+            combo: "MAX COMBO".into(),
         },
     }
 }

@@ -102,6 +102,8 @@ pub fn interface_views(
             drain_rate: text("song-select-details-drain-rate"),
             scores: text("song-select-scores"),
             no_scores: text("song-select-no-scores"),
+            accuracy: text("song-select-score-accuracy"),
+            combo: text("song-select-score-combo"),
         },
         mod_texts: mod_columns().map(|column| {
             column
