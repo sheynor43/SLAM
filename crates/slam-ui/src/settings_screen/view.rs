@@ -332,6 +332,8 @@ pub struct SettingsView {
     /// The search as typed, laid out when it changes; its buffers are reserved up front.
     search: Line,
     search_seen: SearchQuery,
+    /// The typing feedback of the search text (ADR-0167).
+    search_type: crate::typing::TypeFeedback,
     tabs: Vec<Line>,
     /// The section names as headers of the list, larger than the tabs'.
     headers: Vec<Line>,
@@ -479,6 +481,7 @@ impl SettingsView {
                 line
             },
             search_seen: SearchQuery::default(),
+            search_type: crate::typing::TypeFeedback::new(),
             tabs: labels.sections.iter().map(|s| Line::new(s)).collect(),
             headers: labels.sections.iter().map(|s| Line::new(s)).collect(),
             labels: (0..rows.len())
@@ -657,7 +660,8 @@ impl SettingsView {
             self.type_setter.lay_out(line, text);
         }
         for line in &mut self.headers {
-            self.type_setter.lay_out(line, text * HEADER_TEXT);
+            let face = self.theme.heading_face(text * HEADER_TEXT);
+            self.type_setter.lay_out_face(line, face);
         }
         for line in [
             &mut self.placeholder,
@@ -846,6 +850,9 @@ impl SettingsView {
     /// Writes the screen at `pose` on a `width` × `height` window: rectangles into `shapes`
     /// (tinting `white`, an opaque white image) and texts into `text` (drawn with the MSDF
     /// shader). Allocation-free once warm and once the batches have room.
+    ///
+    /// Returns where the hovered tab's tooltip starts in `shapes` and `text` when it is shown:
+    /// the caller draws from there as a layer of its own, over the rows' texts.
     #[allow(clippy::too_many_arguments)]
     pub fn push(
         &mut self,
@@ -858,7 +865,7 @@ impl SettingsView {
         pose: Pose,
         white: AtlasRegion,
         now_ns: u64,
-    ) {
+    ) -> Option<(u32, u32)> {
         let frame = Frame { width, height };
         if frame != self.frame {
             self.frame = frame;
@@ -881,6 +888,7 @@ impl SettingsView {
         }
         if self.search_seen != snapshot.search {
             self.search_seen = snapshot.search;
+            self.search_type.observe(snapshot.search.as_str(), now_ns);
             self.search.text.clear();
             self.search.text.push_str(snapshot.search.as_str());
             self.type_setter.lay_out(
@@ -944,13 +952,19 @@ impl SettingsView {
                 glyphs,
             );
         } else {
-            push_left(
+            // The newest character slides in; an erase pops the text (ADR-0167).
+            let line = &self.search;
+            let pose = self.search_type.pose(now_ns, &theme, layout.scale);
+            let position = [
+                search.x + pad,
+                search.y + (search.height - line.layout.height()) / 2.0,
+            ];
+            slam_text::push_layout_styled(
                 text,
-                &self.search,
-                &search,
-                pad,
-                faded(theme.text, opacity),
+                &line.layout,
+                position,
                 glyphs,
+                crate::typing::styler(&line.layout, faded(theme.text, opacity), pose),
             );
         }
         let pointer = snapshot.text.pointer;
@@ -994,7 +1008,9 @@ impl SettingsView {
             );
         }
         // The name of the hovered section, in a plate beside its tab; the plate and its text
-        // are drawn last, and the list's texts under it step aside.
+        // are drawn last:
+        // the caller draws the rest first, then the shapes and texts from the returned split
+        // on, so the plate covers the list's texts.
         let tip = hovered.filter(|_| snapshot.conflict.is_none()).map(|i| {
             let pad = theme.widget_pad * layout.scale;
             let tab = layout.tabs[i];
@@ -1008,18 +1024,10 @@ impl SettingsView {
                 },
             )
         });
-        let under_tip = |rect: &Rect| {
-            tip.is_some_and(|(_, t)| {
-                rect.x < t.x + t.width
-                    && t.x < rect.x + rect.width
-                    && rect.y < t.y + t.height
-                    && t.y < rect.y + rect.height
-            })
-        };
 
         if let Some(conflict) = snapshot.conflict {
             self.push_conflict(shapes, text, glyphs, &layout, &conflict, opacity, white);
-            return;
+            return None;
         }
 
         // An open list covers the widget column of rows below or above it. Its shapes are
@@ -1048,7 +1056,7 @@ impl SettingsView {
                     && layout.row(slot).x + pad + self.headers[section].layout.width()
                         > layout.widget(slot).x
             });
-            if fraction <= 0.0 || reaches_list || under_tip(&layout.row(slot)) {
+            if fraction <= 0.0 || reaches_list {
                 continue;
             }
             push_left(
@@ -1133,19 +1141,17 @@ impl SettingsView {
             } else {
                 theme.text
             };
-            if !under_tip(&label) {
-                push_marquee(
-                    text,
-                    &self.labels[i],
-                    &label,
-                    pad,
-                    faded(label_colour, opacity),
-                    glyphs,
-                    &mut self.label_rides[i],
-                    &params,
-                    now_ns,
-                );
-            }
+            push_marquee(
+                text,
+                &self.labels[i],
+                &label,
+                pad,
+                faded(label_colour, opacity),
+                glyphs,
+                &mut self.label_rides[i],
+                &params,
+                now_ns,
+            );
             let widget_opacity = if disabled {
                 opacity * DISABLED_OPACITY
             } else {
@@ -1294,6 +1300,7 @@ impl SettingsView {
             );
         }
         if let Some((i, rect)) = tip {
+            let split = (shapes.len() as u32, text.len() as u32);
             let pad = theme.widget_pad * layout.scale;
             draw(
                 shapes,
@@ -1312,7 +1319,9 @@ impl SettingsView {
                 faded(theme.text, opacity),
                 glyphs,
             );
+            return Some(split);
         }
+        None
     }
 
     /// The question about a taken key, in place of the rows.

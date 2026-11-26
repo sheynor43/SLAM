@@ -1918,9 +1918,9 @@ fn held_keys_repeat_the_walks_and_the_mod_steps_only() {
 }
 
 #[test]
-fn a_held_backspace_erases_with_control_too() {
+fn a_held_backspace_erases_a_word_per_repeat_with_control() {
     let (mut s, mut snap, _producer) = in_song_select();
-    s.tick(at(1), &[text("abc")], &mut snap);
+    s.tick(at(1), &[text("ab cd")], &mut snap);
     s.tick(
         at(2),
         &[
@@ -1930,7 +1930,7 @@ fn a_held_backspace_erases_with_control_too() {
         ],
         &mut snap,
     );
-    assert_eq!(s.song_select().query().as_str(), "a");
+    assert_eq!(s.song_select().query().as_str(), "");
 }
 
 #[test]
@@ -2997,4 +2997,59 @@ fn an_opened_score_goes_back_and_retries_like_the_results_of_a_play() {
     s.tick(now + 3, &[key(KEY_ESCAPE)], &mut snap);
     s.tick(now + 3 + TRANSITION_NS, &[], &mut snap);
     assert_eq!(*s.stack().top(), AppScreen::SongSelect);
+}
+
+fn held(scancode: u16, down: bool) -> InputEvent {
+    InputEvent {
+        time_ns: 0,
+        kind: InputKind::Key { scancode, down },
+    }
+}
+
+#[test]
+fn ctrl_backspace_erases_a_word_on_press_and_on_repeat() {
+    let (mut s, mut snap, _producer) = in_song_select();
+    s.tick(at(1), &[text("one two three")], &mut snap);
+    s.tick(at(2), &[held(KEY_LEFT_CTRL, true)], &mut snap);
+    s.tick(at(3), &[key(KEY_BACKSPACE)], &mut snap);
+    assert_eq!(s.song_select().query().as_str(), "one two ");
+    s.tick(at(4), &[repeat(KEY_BACKSPACE)], &mut snap);
+    assert_eq!(s.song_select().query().as_str(), "one ");
+    s.tick(at(5), &[held(KEY_LEFT_CTRL, false)], &mut snap);
+    s.tick(at(6), &[key(KEY_BACKSPACE)], &mut snap);
+    assert_eq!(s.song_select().query().as_str(), "one");
+}
+
+#[test]
+fn typing_and_erasing_make_key_sounds() {
+    use crate::menu_sounds::MenuSound;
+    let at_sound = |sound| MenuSound::ALL.iter().position(|s| *s == sound).unwrap();
+    let (mut s, mut snap, _producer) = in_song_select();
+    let _ = s.take_ui_sounds();
+    s.tick(at(1), &[text("a")], &mut snap);
+    let noted = s.take_ui_sounds();
+    assert!(noted[at_sound(MenuSound::Type)] && !noted[at_sound(MenuSound::Erase)]);
+    s.tick(at(2), &[key(KEY_BACKSPACE)], &mut snap);
+    let noted = s.take_ui_sounds();
+    assert!(noted[at_sound(MenuSound::Erase)] && !noted[at_sound(MenuSound::Type)]);
+}
+
+#[test]
+fn the_side_button_filter_keeps_other_events() {
+    let x1 = |down| {
+        mouse(InputKind::MouseButton {
+            button: MouseButton::X1,
+            down,
+        })
+    };
+    let left = mouse(InputKind::MouseButton {
+        button: MouseButton::Left,
+        down: true,
+    });
+    let mut scratch = Vec::new();
+    let events = [x1(true), left, key(KEY_ESCAPE), x1(false)];
+    let kept = without_side_buttons(&events, &mut scratch);
+    assert_eq!(kept, [left, key(KEY_ESCAPE)]);
+    let plain = [left];
+    assert_eq!(without_side_buttons(&plain, &mut Vec::new()), plain);
 }

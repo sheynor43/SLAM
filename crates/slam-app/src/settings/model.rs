@@ -1161,6 +1161,9 @@ pub struct InputSettings {
     /// Relative ("high precision") mouse mode (ADR-0069). On by default on Windows only,
     /// as in lazer.
     pub high_precision_mouse: bool,
+    /// Whether the mouse side buttons (X1 and X2) act: Back in the menus and bindings in
+    /// the play (ADR-0167). On by default, as in lazer.
+    pub mouse_side_buttons: bool,
     /// The multiplier of relative mouse motion, [`InputSettings::SENSITIVITY_RANGE`] in
     /// steps of [`InputSettings::SENSITIVITY_STEP`].
     pub sensitivity: f64,
@@ -1171,6 +1174,7 @@ impl Default for InputSettings {
         InputSettings {
             bindings: Bindings::default(),
             high_precision_mouse: cfg!(target_os = "windows"),
+            mouse_side_buttons: true,
             sensitivity: 1.0,
         }
     }
@@ -1294,9 +1298,10 @@ impl Serialize for InputSettings {
             }
         }
 
-        let mut state = serializer.serialize_struct("InputSettings", 3)?;
+        let mut state = serializer.serialize_struct("InputSettings", 4)?;
         // The array of tables goes last: TOML wants the plain values before it.
         state.serialize_field("high_precision_mouse", &self.high_precision_mouse)?;
+        state.serialize_field("mouse_side_buttons", &self.mouse_side_buttons)?;
         state.serialize_field("sensitivity", &self.sensitivity)?;
         state.serialize_field("bindings", &Entries(self.bindings.as_slice()))?;
         state.end()

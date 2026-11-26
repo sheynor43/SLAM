@@ -126,8 +126,18 @@ pub struct Theme {
     pub disabled_text: Color,
     /// Window height the sizes below are given at.
     pub reference_height: f32,
-    /// Font weight of every text.
+    /// Font weight of body text.
     pub font_weight: u16,
+    /// Font weight of titles and section headers (ADR-0167).
+    pub heading_weight: u16,
+    /// Milliseconds a newly typed character of a search takes to fade and slide in.
+    pub type_in_ms: f32,
+    /// Pixels (at the reference height) a newly typed character slides up from.
+    pub type_slide: f32,
+    /// Milliseconds the search text takes to settle after an erase.
+    pub erase_pop_ms: f32,
+    /// Pixels (at the reference height) the search text jumps up on an erase.
+    pub erase_pop: f32,
     pub title_size: f32,
     pub button_text_size: f32,
     /// Text of a screen that is only a message.
@@ -599,6 +609,15 @@ impl Theme {
         }
     }
 
+    /// The heading face at `size` pixels: titles and section headers (ADR-0167).
+    pub(crate) fn heading_face(&self, size: f32) -> crate::menu::view::Face {
+        crate::menu::view::Face {
+            size,
+            weight: self.heading_weight,
+            width: slam_text::NORMAL_WIDTH,
+        }
+    }
+
     /// The note face at layout scale `scale`.
     pub(crate) fn note_face(&self, scale: f32) -> crate::menu::view::Face {
         crate::menu::view::Face {
@@ -631,7 +650,12 @@ impl Theme {
                 a: 0.35,
             },
             reference_height: 768.0,
-            font_weight: 700,
+            font_weight: 500,
+            heading_weight: 700,
+            type_in_ms: 120.0,
+            type_slide: 5.0,
+            erase_pop_ms: 140.0,
+            erase_pop: 3.0,
             title_size: 96.0,
             button_text_size: 28.0,
             message_size: 28.0,
@@ -733,7 +757,7 @@ impl Theme {
             widget_text_size: 20.0,
             caption_size: 16.0,
             note_size: 14.0,
-            caption_weight: 600,
+            caption_weight: 500,
             caption_width: 100,
             widget_pad: 12.0,
             marquee_speed: 50.0,
@@ -757,7 +781,7 @@ impl Theme {
             settings_row_pitch: 52.0,
             settings_label_ratio: 0.45,
             settings_marker_size: 14.0,
-            settings_panel_width: 780.0,
+            settings_panel_width: 560.0,
             settings_panel_fill: alpha(p.panel, 0.9),
             settings_dim_fill: Color {
                 r: 0.0,
@@ -1002,7 +1026,8 @@ mod tests {
         let theme = Theme::new(ColourScheme::default(), 1.0);
         assert!(theme.caption_size < theme.widget_text_size);
         assert!(theme.note_size < theme.caption_size);
-        assert!(theme.caption_weight < theme.font_weight);
+        assert!(theme.caption_weight <= theme.font_weight);
+        assert!(theme.font_weight < theme.heading_weight);
         let face = theme.caption_face(2.0);
         assert_eq!(face.size, theme.caption_size * 2.0);
         assert_eq!(theme.note_face(2.0).size, theme.note_size * 2.0);

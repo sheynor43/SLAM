@@ -182,6 +182,8 @@ pub enum SongSelectInput {
     Type(char),
     /// A key repeat of Backspace: erases the last character of the query, nothing else.
     Erase,
+    /// Ctrl+Backspace (and its key repeat): erases the last word of the query.
+    EraseWord,
     /// Wheel: positive `lines` scroll towards the end of the list. Selection stays.
     Scroll {
         lines: f32,
@@ -1155,6 +1157,15 @@ impl SongSelect {
         erased
     }
 
+    /// Erases the last word of the query; returns whether there was one.
+    fn erase_word(&mut self) -> bool {
+        let erased = self.query.pop_word();
+        if erased {
+            self.refilter();
+        }
+        erased
+    }
+
     /// Whether the "choose folder" button is shown.
     pub fn shows_choose_folder(&self) -> bool {
         can_choose_folder(&self.list, self.status)
@@ -1358,6 +1369,10 @@ impl SongSelect {
             }
             I::Erase => {
                 self.erase();
+                moved = false;
+            }
+            I::EraseWord => {
+                self.erase_word();
                 moved = false;
             }
             I::ToggleMods => {

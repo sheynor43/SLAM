@@ -28,17 +28,30 @@ pub fn push_layout(
     colour: Color,
     glyphs: &mut GlyphCache,
 ) -> TextStats {
+    push_layout_styled(batch, layout, position, glyphs, |_| (colour, [0.0, 0.0]))
+}
+
+/// Records `layout` like [`push_layout`], where `style` gives each glyph its colour and an
+/// offset from its place (target pixels). Does not allocate once the batch has room.
+pub fn push_layout_styled(
+    batch: &mut SpriteBatch,
+    layout: &Layout,
+    position: [f32; 2],
+    glyphs: &mut GlyphCache,
+    style: impl Fn(&crate::PositionedGlyph) -> (Color, [f32; 2]),
+) -> TextStats {
     let scale = layout.font_size() / EM_PX;
     let mut stats = TextStats::default();
     for g in layout.glyphs() {
         match glyphs.glyph(GlyphKey::of(g)) {
             Glyph::Ready { region, offset } => {
+                let (colour, shift) = style(g);
                 let mut sprite = Sprite::new(
                     region.texture,
                     region.uv,
                     [
-                        position[0] + g.x + offset[0] * scale,
-                        position[1] + g.y + offset[1] * scale,
+                        position[0] + shift[0] + g.x + offset[0] * scale,
+                        position[1] + shift[1] + g.y + offset[1] * scale,
                     ],
                     [
                         region.size.width as f32 * scale,

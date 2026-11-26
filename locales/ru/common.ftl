@@ -225,6 +225,7 @@ settings-audio-buffer = Размер буфера
 settings-offset-global = Общее смещение
 settings-keys-mouse-buttons = Кнопки мыши в игре
 settings-input-high-precision = Высокоточная мышь
+settings-input-mouse-side-buttons = Боковые кнопки мыши
 settings-input-sensitivity = Чувствительность курсора
 settings-input-high-precision-warning =
     На вашей платформе эта настройка работает с ошибками. При проблемах

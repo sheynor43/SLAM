@@ -221,6 +221,7 @@ settings-audio-buffer = Buffer size
 settings-offset-global = Global offset
 settings-keys-mouse-buttons = Mouse buttons in gameplay
 settings-input-high-precision = High precision mouse
+settings-input-mouse-side-buttons = Mouse side buttons
 settings-input-sensitivity = Cursor sensitivity
 settings-input-high-precision-warning =
     This setting has known issues on your platform. If you run into problems,

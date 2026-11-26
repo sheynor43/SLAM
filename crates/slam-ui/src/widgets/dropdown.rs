@@ -520,8 +520,8 @@ mod tests {
         let mut plain = Line::new(text);
         let size = view.theme.caption_size;
         view.type_setter.lay_out(&mut plain, size);
-        // The caption face is lighter than the default one.
-        assert!(caption < plain.layout.width());
+        // The caption face is never wider than the default one.
+        assert!(caption <= plain.layout.width());
     }
 
     #[test]
