@@ -47,16 +47,6 @@ pub(crate) struct Face {
     pub(crate) width: u16,
 }
 
-impl Face {
-    /// The same face at `factor` times the size.
-    pub(crate) fn scaled(self, factor: f32) -> Face {
-        Face {
-            size: self.size * factor,
-            ..self
-        }
-    }
-}
-
 /// Fonts and the layout context shared by the views.
 pub(crate) struct Typesetter {
     registry: Arc<FontRegistry>,

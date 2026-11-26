@@ -3,10 +3,14 @@
 //! the query and the screens' input stay as they were.
 
 use slam_render::Color;
+use slam_render::atlas::AtlasRegion;
+use slam_render::shape::ShapeBatch;
 use slam_text::{Layout, PositionedGlyph};
 
 use crate::anim::ease_out_cubic;
+use crate::menu::Rect;
 use crate::theme::Theme;
+use crate::widgets::{Look, draw};
 
 /// What changed in the text last.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -74,6 +78,32 @@ impl TypeFeedback {
         self.chars = Some(chars);
     }
 
+    /// Forgets the text and starts the caret's blink at `now_ns`, on.
+    pub(crate) fn reset(&mut self, now_ns: u64) {
+        *self = TypeFeedback {
+            chars: None,
+            change: Change::None,
+            since_ns: now_ns,
+        };
+    }
+
+    /// Whether the text caret shows at `now_ns` (ADR-0173): solid for
+    /// `caret_solid_ms` after the text changed, then blinking, `caret_blink_ms` on and off.
+    pub(crate) fn caret_on(&self, now_ns: u64, theme: &Theme) -> bool {
+        let elapsed = now_ns.saturating_sub(self.since_ns) as f32 / 1.0e6;
+        let idle = if self.change == Change::None {
+            elapsed
+        } else if elapsed < theme.caret_solid_ms {
+            return true;
+        } else {
+            elapsed - theme.caret_solid_ms
+        };
+        if theme.caret_blink_ms <= 0.0 {
+            return true;
+        }
+        ((idle / theme.caret_blink_ms) as u64).is_multiple_of(2)
+    }
+
     /// The pose at `now_ns`, `scale` the window height over the reference height.
     pub(crate) fn pose(&self, now_ns: u64, theme: &Theme, scale: f32) -> TypePose {
         let elapsed = now_ns.saturating_sub(self.since_ns);
@@ -96,6 +126,38 @@ impl TypeFeedback {
             }
         }
     }
+}
+
+/// Where a text caret goes: a thin bar at `x`, centred on `y`, `line_height` being the
+/// text's height (ADR-0173).
+pub(crate) fn caret_rect(x: f32, y: f32, line_height: f32, theme: &Theme, scale: f32) -> Rect {
+    let height = line_height * theme.caret_height;
+    Rect {
+        x,
+        y: y - height / 2.0,
+        width: (theme.caret_width * scale).max(1.0),
+        height,
+    }
+}
+
+/// Draws a text caret (see [`caret_rect`]); `opacity` is the layer's.
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn push_caret(
+    shapes: &mut ShapeBatch,
+    white: AtlasRegion,
+    x: f32,
+    y: f32,
+    line_height: f32,
+    opacity: f32,
+    theme: &Theme,
+    scale: f32,
+) {
+    let rect = caret_rect(x, y, line_height, theme, scale);
+    let colour = Color {
+        a: theme.caret.a * opacity,
+        ..theme.caret
+    };
+    draw(shapes, white, &rect, colour, Look::Pill, theme, scale);
 }
 
 /// The glyph style of `layout` under `pose`: the newest glyph (the last cluster) has its own
@@ -152,6 +214,33 @@ mod tests {
         assert!(pose.text_offset < 0.0);
         assert_eq!(pose.last_alpha, 1.0);
         assert_eq!(f.pose(501 * MS, &theme, 2.0), TypePose::SETTLED);
+    }
+
+    #[test]
+    fn the_caret_is_solid_after_a_key_then_blinks() {
+        let theme = Theme::default();
+        let mut f = TypeFeedback::new();
+        f.observe("a", 0);
+        f.observe("ab", 100 * MS);
+        // Solid for the hold after the key, whatever the blink phase would say.
+        let blink = theme.caret_blink_ms as u64;
+        for t in [100, 300, 599] {
+            assert!(f.caret_on(t * MS, &theme), "{t}");
+        }
+        let start = 100 + theme.caret_solid_ms as u64;
+        assert!(f.caret_on(start * MS, &theme));
+        assert!(!f.caret_on((start + blink + 5) * MS, &theme));
+        assert!(f.caret_on((start + 2 * blink + 5) * MS, &theme));
+    }
+
+    #[test]
+    fn an_idle_caret_blinks_from_the_start() {
+        let theme = Theme::default();
+        let f = TypeFeedback::new();
+        let blink = theme.caret_blink_ms as u64;
+        assert!(f.caret_on(MS, &theme));
+        assert!(!f.caret_on((blink + 1) * MS, &theme));
+        assert!(f.caret_on((2 * blink + 1) * MS, &theme));
     }
 
     #[test]

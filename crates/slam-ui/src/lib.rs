@@ -11,6 +11,7 @@ pub mod marquee;
 pub mod menu;
 pub mod results;
 pub mod screen;
+pub mod scrollbar;
 pub mod settings_screen;
 pub mod song_select;
 pub mod star_colour;

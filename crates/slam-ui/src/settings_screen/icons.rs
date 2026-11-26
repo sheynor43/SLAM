@@ -59,77 +59,83 @@ const fn leaning(x: f32, y: f32, w: f32, h: f32, skew: f32) -> Part {
     }
 }
 
-const STROKE: f32 = 0.11;
+/// One line weight for every icon, a share of the icon's side.
+const STROKE: f32 = 0.1;
 
-/// Speaker with sound waves.
+/// Speaker: a box and a stepped cone, two sound waves as pills.
 const AUDIO: &[Part] = &[
-    fill(0.08, 0.36, 0.2, 0.28, 0.04),
-    fill(0.22, 0.2, 0.2, 0.6, 0.05),
-    fill(0.58, 0.4, 0.09, 0.2, 0.05),
-    fill(0.73, 0.28, 0.09, 0.44, 0.05),
-    fill(0.88, 0.14, 0.09, 0.72, 0.05),
+    fill(0.04, 0.37, 0.16, 0.26, 0.04),
+    fill(0.18, 0.27, 0.12, 0.46, 0.03),
+    fill(0.28, 0.16, 0.12, 0.68, 0.04),
+    fill(0.56, 0.36, 0.09, 0.28, 0.5),
+    fill(0.74, 0.22, 0.09, 0.56, 0.5),
+    fill(0.91, 0.1, 0.07, 0.8, 0.5),
 ];
-/// Clock.
+/// Clock: a ring with two hands.
 const OFFSET: &[Part] = &[
     ring(0.04, 0.04, 0.92, 0.92, 0.5),
-    fill(0.45, 0.22, 0.1, 0.32, 0.05),
-    fill(0.45, 0.45, 0.28, 0.1, 0.05),
+    fill(0.455, 0.2, 0.09, 0.34, 0.5),
+    fill(0.455, 0.455, 0.27, 0.09, 0.5),
 ];
-/// Keycap.
+/// Keyboard: a case with two rows of keys and a space bar.
 const KEYS: &[Part] = &[
-    ring(0.04, 0.14, 0.92, 0.72, 0.18),
-    fill(0.2, 0.34, 0.12, 0.12, 0.03),
-    fill(0.44, 0.34, 0.12, 0.12, 0.03),
-    fill(0.68, 0.34, 0.12, 0.12, 0.03),
-    fill(0.24, 0.58, 0.52, 0.1, 0.04),
+    ring(0.03, 0.2, 0.94, 0.6, 0.12),
+    fill(0.17, 0.33, 0.1, 0.1, 0.03),
+    fill(0.35, 0.33, 0.1, 0.1, 0.03),
+    fill(0.53, 0.33, 0.1, 0.1, 0.03),
+    fill(0.71, 0.33, 0.1, 0.1, 0.03),
+    fill(0.26, 0.5, 0.1, 0.1, 0.03),
+    fill(0.44, 0.5, 0.1, 0.1, 0.03),
+    fill(0.62, 0.5, 0.1, 0.1, 0.03),
 ];
-/// Monitor on a stand.
+/// Monitor on a neck and a base.
 const LAYOUT: &[Part] = &[
     ring(0.04, 0.1, 0.92, 0.6, 0.1),
-    fill(0.43, 0.7, 0.14, 0.12, 0.0),
-    fill(0.24, 0.82, 0.52, 0.09, 0.04),
+    fill(0.44, 0.7, 0.12, 0.14, 0.0),
+    fill(0.24, 0.84, 0.52, 0.09, 0.5),
 ];
-/// Palette with paint dots.
+/// Palette: a round board with four paint dots.
 const SKIN: &[Part] = &[
-    ring(0.04, 0.08, 0.92, 0.84, 0.42),
-    fill(0.22, 0.34, 0.16, 0.16, 0.5),
-    fill(0.46, 0.22, 0.16, 0.16, 0.5),
-    fill(0.66, 0.42, 0.16, 0.16, 0.5),
-    fill(0.34, 0.6, 0.16, 0.16, 0.5),
+    ring(0.04, 0.06, 0.92, 0.88, 0.5),
+    fill(0.2, 0.36, 0.14, 0.14, 0.5),
+    fill(0.34, 0.2, 0.14, 0.14, 0.5),
+    fill(0.54, 0.2, 0.14, 0.14, 0.5),
+    fill(0.68, 0.38, 0.14, 0.14, 0.5),
 ];
-/// Bars rising, like a refresh-rate graph.
+/// Gauge: a dial with ticks, a hub and a needle.
 const FRAME: &[Part] = &[
-    fill(0.06, 0.62, 0.17, 0.3, 0.04),
-    fill(0.29, 0.44, 0.17, 0.48, 0.04),
-    fill(0.52, 0.26, 0.17, 0.66, 0.04),
-    fill(0.75, 0.06, 0.17, 0.86, 0.04),
+    ring(0.04, 0.06, 0.92, 0.92, 0.5),
+    fill(0.17, 0.3, 0.08, 0.08, 0.5),
+    fill(0.46, 0.17, 0.08, 0.08, 0.5),
+    fill(0.75, 0.3, 0.08, 0.08, 0.5),
+    leaning(0.5, 0.3, 0.09, 0.26, 40.0),
+    fill(0.41, 0.47, 0.18, 0.18, 0.5),
 ];
 /// A circle to hit: rings round a dot.
 const GAMEPLAY: &[Part] = &[
     ring(0.04, 0.04, 0.92, 0.92, 0.5),
-    ring(0.24, 0.24, 0.52, 0.52, 0.5),
-    fill(0.42, 0.42, 0.16, 0.16, 0.5),
+    ring(0.26, 0.26, 0.48, 0.48, 0.5),
+    fill(0.43, 0.43, 0.14, 0.14, 0.5),
 ];
-/// Books on a shelf, one leaning.
+/// Folder: a tab on a solid body.
 const LIBRARY: &[Part] = &[
-    fill(0.06, 0.18, 0.2, 0.7, 0.04),
-    fill(0.3, 0.1, 0.2, 0.78, 0.04),
-    leaning(0.58, 0.14, 0.2, 0.74, 14.0),
-    fill(0.02, 0.9, 0.96, 0.08, 0.03),
+    fill(0.05, 0.16, 0.36, 0.2, 0.06),
+    fill(0.05, 0.28, 0.9, 0.58, 0.1),
 ];
-/// Speech bubble with its tail.
+/// Network: three nodes and the links between them.
 pub(crate) const FEEDBACK: &[Part] = &[
-    ring(0.04, 0.1, 0.92, 0.62, 0.2),
-    leaning(0.2, 0.68, 0.16, 0.24, -30.0),
-    fill(0.24, 0.32, 0.12, 0.12, 0.5),
-    fill(0.44, 0.32, 0.12, 0.12, 0.5),
-    fill(0.64, 0.32, 0.12, 0.12, 0.5),
+    leaning(0.2, 0.26, 0.07, 0.5, -34.0),
+    leaning(0.73, 0.26, 0.07, 0.5, 34.0),
+    fill(0.2, 0.7, 0.6, 0.07, 0.5),
+    fill(0.38, 0.04, 0.24, 0.24, 0.5),
+    fill(0.04, 0.62, 0.24, 0.24, 0.5),
+    fill(0.72, 0.62, 0.24, 0.24, 0.5),
 ];
 /// Tablet with its active area and a leaning pen.
 pub(crate) const TABLET: &[Part] = &[
     ring(0.04, 0.14, 0.7, 0.72, 0.1),
-    fill(0.18, 0.3, 0.34, 0.4, 0.05),
-    leaning(0.82, 0.2, 0.1, 0.62, 20.0),
+    fill(0.19, 0.3, 0.34, 0.4, 0.06),
+    leaning(0.84, 0.16, 0.09, 0.66, 20.0),
 ];
 
 /// Cog: a ring with four teeth round a dot (the toolbar's settings button, ADR-0168).

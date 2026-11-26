@@ -332,9 +332,38 @@ impl Toolbar {
         })
     }
 
+    /// Whether the popup's slider is being typed into (ADR-0173).
+    pub fn is_editing(&self) -> bool {
+        matches!(&self.popup, Some(p) if matches!(&p.widget, RowWidget::Slider(s) if s.is_editing()))
+    }
+
+    /// A key for the popup's slider: Enter starts typing its value or commits it, typed
+    /// characters, Backspace and Ctrl+Backspace (`Type`, `Erase`, `EraseWord`) edit it while
+    /// typing. `None` when the toolbar does not take the key; a taken key that changed
+    /// nothing is [`ToolbarEvent::Absorbed`].
+    pub fn key(&mut self, input: SettingsInput, layout: &ToolbarLayout) -> Option<ToolbarEvent> {
+        let slider = matches!(&self.popup, Some(p) if matches!(p.widget, RowWidget::Slider(_)));
+        let taken = match input {
+            SettingsInput::Activate => slider,
+            SettingsInput::Type(_) | SettingsInput::Erase | SettingsInput::EraseWord => {
+                self.is_editing()
+            }
+            _ => false,
+        };
+        taken.then(|| self.route(input, layout).unwrap_or(ToolbarEvent::Absorbed))
+    }
+
     /// A press of the primary button at `x`, `y`: `None` when it is not the toolbar's.
-    /// With a popup open every press is: inside it goes to the widget, outside closes it.
+    /// With a popup open every press is: inside it goes to the widget, outside closes it. A
+    /// press outside ends the typing of a value first; when that changed the value it is
+    /// all the press does.
     pub fn press(&mut self, x: f32, y: f32, layout: &ToolbarLayout) -> Option<ToolbarEvent> {
+        if self.is_editing()
+            && !self.on_popup(x, y, layout)
+            && let Some(event) = self.route(SettingsInput::Activate, layout)
+        {
+            return Some(event);
+        }
         let target = layout.target_at(x, y);
         if self.popup.is_some() {
             if self.on_popup(x, y, layout) {
@@ -380,6 +409,13 @@ impl Toolbar {
     /// Escape: closes an open dropdown list, else the popup. `None` without a popup.
     pub fn back(&mut self, layout: &ToolbarLayout) -> Option<ToolbarEvent> {
         let popup = self.popup.as_mut()?;
+        if let RowWidget::Slider(slider) = &mut popup.widget
+            && slider.is_editing()
+        {
+            // Escape drops the typed value first.
+            slider.cancel_edit();
+            return Some(ToolbarEvent::Absorbed);
+        }
         if let RowWidget::Dropdown(d) = &popup.widget
             && d.is_open()
         {

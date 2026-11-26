@@ -207,6 +207,137 @@ mod slider_tests {
     fn s_fraction() -> f32 {
         Slider::new(0.0, 10.0, 1.0, 5.0).fraction()
     }
+
+    fn type_text(s: &mut Slider, text: &str) {
+        for c in text.chars() {
+            s.input(SliderInput::Type(c), &layout());
+        }
+    }
+
+    fn value_at() -> (f32, f32) {
+        let l = layout();
+        (l.value.x + 5.0, l.value.y + 5.0)
+    }
+
+    #[test]
+    fn a_press_on_the_value_text_starts_typing_with_the_value_shown() {
+        let mut s = Slider::new(0.0, 100.0, 0.5, 12.5);
+        let (x, y) = value_at();
+        assert_eq!(s.input(SliderInput::PointerPress { x, y }, &layout()), None);
+        assert!(s.is_editing());
+        assert_eq!(s.edit_text(), Some("12.5"));
+        assert!(!s.is_dragging());
+    }
+
+    #[test]
+    fn enter_starts_typing_and_commits_the_number_clamped_and_snapped() {
+        let mut s = Slider::new(0.0, 100.0, 0.5, 10.0);
+        assert_eq!(s.input(SliderInput::Activate, &layout()), None);
+        type_text(&mut s, "33,3");
+        assert_eq!(s.edit_text(), Some("33.3"));
+        // 33.3 snaps to the step 0.5.
+        assert_eq!(
+            s.input(SliderInput::Activate, &layout()),
+            Some(SliderAction::Changed(33.5))
+        );
+        assert!(!s.is_editing());
+        assert_eq!(s.value(), 33.5);
+        // Past the range it is clamped.
+        s.input(SliderInput::Activate, &layout());
+        type_text(&mut s, "250");
+        assert_eq!(
+            s.input(SliderInput::Activate, &layout()),
+            Some(SliderAction::Changed(100.0))
+        );
+        s.input(SliderInput::Activate, &layout());
+        type_text(&mut s, "-7");
+        s.input(SliderInput::Activate, &layout());
+        assert_eq!(s.value(), 0.0);
+    }
+
+    #[test]
+    fn committing_the_same_or_no_number_changes_nothing() {
+        let mut s = Slider::new(0.0, 100.0, 1.0, 40.0);
+        s.input(SliderInput::Activate, &layout());
+        assert_eq!(s.input(SliderInput::Activate, &layout()), None);
+        assert_eq!(s.value(), 40.0);
+        s.input(SliderInput::Activate, &layout());
+        s.input(SliderInput::Erase, &layout());
+        // Empty text is no number.
+        assert_eq!(s.edit_text(), Some(""));
+        assert_eq!(s.input(SliderInput::Activate, &layout()), None);
+        assert_eq!(s.value(), 40.0);
+        assert!(!s.is_editing());
+    }
+
+    #[test]
+    fn escape_cancels_and_backspace_edits() {
+        let mut s = Slider::new(0.0, 100.0, 1.0, 40.0);
+        s.input(SliderInput::Activate, &layout());
+        type_text(&mut s, "789");
+        s.input(SliderInput::Erase, &layout());
+        assert_eq!(s.edit_text(), Some("78"));
+        s.input(SliderInput::EraseWord, &layout());
+        assert_eq!(s.edit_text(), Some(""));
+        type_text(&mut s, "99");
+        assert_eq!(s.input(SliderInput::Back, &layout()), None);
+        assert!(!s.is_editing());
+        assert_eq!(s.value(), 40.0);
+    }
+
+    #[test]
+    fn the_keys_of_a_slider_that_is_not_typed_into_do_nothing() {
+        let mut s = Slider::new(0.0, 100.0, 1.0, 40.0);
+        for input in [
+            SliderInput::Type('5'),
+            SliderInput::Erase,
+            SliderInput::EraseWord,
+            SliderInput::Back,
+        ] {
+            assert_eq!(s.input(input, &layout()), None);
+        }
+        assert!(!s.is_editing());
+        assert_eq!(s.value(), 40.0);
+    }
+
+    #[test]
+    fn arrows_wait_while_typing_and_a_press_elsewhere_commits_then_acts() {
+        let mut s = Slider::new(0.0, 100.0, 1.0, 40.0);
+        s.input(SliderInput::Activate, &layout());
+        type_text(&mut s, "20");
+        assert_eq!(s.input(SliderInput::Increase, &layout()), None);
+        assert_eq!(s.edit_text(), Some("20"));
+        // A press on the value text keeps typing.
+        let (x, y) = value_at();
+        assert_eq!(s.input(SliderInput::PointerPress { x, y }, &layout()), None);
+        assert!(s.is_editing());
+        // A press on the track commits and then jumps there: the jump's value is reported.
+        let (x, y) = at(0.75);
+        assert_eq!(
+            s.input(SliderInput::PointerPress { x, y }, &layout()),
+            Some(SliderAction::Changed(75.0))
+        );
+        assert!(!s.is_editing() && s.is_dragging());
+        // A press elsewhere that hits nothing still reports the commit.
+        let mut s = Slider::new(0.0, 100.0, 1.0, 40.0);
+        s.input(SliderInput::Activate, &layout());
+        type_text(&mut s, "20");
+        let outside = SliderInput::PointerPress { x: 5.0, y: 5.0 };
+        assert_eq!(
+            s.input(outside, &layout()),
+            Some(SliderAction::Changed(20.0))
+        );
+    }
+
+    #[test]
+    fn the_step_decides_the_decimals_shown_when_typing_starts() {
+        let mut s = Slider::new(0.0, 5.0, 0.25, 1.5);
+        s.input(SliderInput::Activate, &layout());
+        assert_eq!(s.edit_text(), Some("1.5"));
+        let mut s = Slider::new(0.0, 5.0, 1.0, 3.0);
+        s.input(SliderInput::Activate, &layout());
+        assert_eq!(s.edit_text(), Some("3"));
+    }
 }
 
 mod dropdown_tests {
