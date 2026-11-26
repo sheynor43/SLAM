@@ -2151,7 +2151,7 @@ fn difficulty_adjust_expands_the_panel_and_shows_the_beatmap_values() {
     );
     assert_eq!(acronyms(&s), ["DA"]);
     let c = customise(&snap);
-    assert_eq!(c.state, CustomisationState::ExpandedByMod);
+    assert_eq!(c.state, CustomisationState::Expanded);
     // Header, CS, HP, OD, AR and Extended Limits.
     assert_eq!(c.len, 6);
     // The test difficulties have CS 4, HP 5, OD 5; the hotkey set the approach rate only.
@@ -3085,6 +3085,177 @@ fn the_mod_select_overlay_pops_in_and_out_with_sounds() {
     s.tick(t + 3, &[], &mut snap);
     let noted = s.take_ui_sounds();
     assert!(noted[at(MenuSound::ModsClose)] && !noted[at(MenuSound::ModColumn)]);
+}
+
+fn button_press(button: MouseButton, down: bool) -> InputEvent {
+    mouse(InputKind::MouseButton { button, down })
+}
+
+/// Moves the pointer to the footer's `button` and clicks it.
+fn footer_click(
+    s: &mut ShellState,
+    snap: &mut ShellSnapshot,
+    n: u64,
+    button: slam_ui::song_select::FooterButton,
+) {
+    let [x, y] = s
+        .song_select
+        .footer_buttons(&s.song_layout)
+        .rect(button)
+        .expect("the button is shown")
+        .centre();
+    s.tick(
+        at(n),
+        &[
+            mouse(InputKind::MouseMove { x, y }),
+            button_press(MouseButton::Left, true),
+            button_press(MouseButton::Left, false),
+        ],
+        snap,
+    );
+}
+
+fn presets_of(s: &ShellState) -> Vec<&str> {
+    s.settings
+        .song_select
+        .mod_presets
+        .iter()
+        .map(String::as_str)
+        .collect()
+}
+
+#[test]
+fn the_footer_pins_applies_and_removes_mod_presets() {
+    use slam_ui::song_select::FooterButton;
+    let (mut s, mut snap, _producer) = in_song_select();
+    // Double Time selected through the panel, which is closed again.
+    s.tick(
+        at(1),
+        &[key(KEY_F1), key(KEY_F), key(KEY_ESCAPE)],
+        &mut snap,
+    );
+    assert_eq!(acronyms(&s), ["DT"]);
+    assert!(song_view(&snap).footer.pin && song_view(&snap).footer.reset);
+    assert!(presets_of(&s).is_empty());
+    // Pin: saved, shown, and the "+" gives way.
+    footer_click(&mut s, &mut snap, 2, FooterButton::Pin);
+    assert_eq!(presets_of(&s), ["DT"]);
+    assert!(s.take_save_request().is_some());
+    assert_eq!(&*song_view(&snap).presets[0], "DT");
+    assert!(!song_view(&snap).footer.pin, "already pinned");
+    // Reset deselects every mod and the reset button goes.
+    footer_click(&mut s, &mut snap, 3, FooterButton::Reset);
+    assert!(acronyms(&s).is_empty());
+    assert!(!song_view(&snap).footer.reset);
+    assert_eq!(presets_of(&s), ["DT"], "presets stay");
+    // Applying the preset selects its mods again.
+    footer_click(&mut s, &mut snap, 4, FooterButton::Preset(0));
+    assert_eq!(acronyms(&s), ["DT"]);
+    // A changed setting is a different set: the "+" comes back.
+    s.tick(at(5), &[key(KEY_LEFT_CTRL), key(KEY_UP)], &mut snap);
+    assert!(song_view(&snap).footer.pin);
+    footer_click(&mut s, &mut snap, 6, FooterButton::Pin);
+    assert_eq!(presets_of(&s).len(), 2);
+    assert!(presets_of(&s)[1].starts_with("DT(speed_change="));
+    // Right click removes.
+    let [x, y] = s
+        .song_select
+        .footer_buttons(&s.song_layout)
+        .rect(FooterButton::Preset(0))
+        .unwrap()
+        .centre();
+    s.tick(
+        at(7),
+        &[
+            mouse(InputKind::MouseMove { x, y }),
+            button_press(MouseButton::Right, true),
+        ],
+        &mut snap,
+    );
+    assert_eq!(presets_of(&s).len(), 1);
+    assert!(presets_of(&s)[0].starts_with("DT(speed_change="));
+    assert_eq!(song_view(&snap).presets.len(), 1);
+}
+
+#[test]
+fn at_most_six_presets_can_be_pinned() {
+    use slam_ui::song_select::FooterButton;
+    let (mut s, mut snap, _producer) = in_song_select();
+    s.settings.song_select.mod_presets = ["HD", "HR", "EZ", "HT", "SD", "PF"]
+        .map(str::to_owned)
+        .to_vec();
+    s.sync_presets();
+    s.tick(
+        at(1),
+        &[key(KEY_F1), key(KEY_F), key(KEY_ESCAPE)],
+        &mut snap,
+    );
+    assert_eq!(song_view(&snap).presets.len(), 6);
+    assert!(!song_view(&snap).footer.pin, "no room for a seventh");
+    s.pin_preset();
+    assert_eq!(presets_of(&s).len(), 6);
+    // Presets stay as they are on the bar: each applies its own mods.
+    footer_click(&mut s, &mut snap, 2, FooterButton::Preset(1));
+    assert_eq!(acronyms(&s), ["HR"]);
+}
+
+#[test]
+fn a_preset_with_nothing_known_applies_nothing() {
+    let (mut s, mut snap, _producer) = in_song_select();
+    s.settings.song_select.mod_presets = vec!["ZZ".to_owned()];
+    s.sync_presets();
+    s.apply_preset(0);
+    assert!(acronyms(&s).is_empty());
+    s.tick(at(1), &[], &mut snap);
+}
+
+#[test]
+fn right_clicking_a_mod_with_settings_opens_its_panel_at_the_pointer() {
+    use slam_ui::song_select::CustomisationState;
+    let (mut s, mut snap, _producer) = in_song_select();
+    s.tick(at(1), &[key(KEY_F1)], &mut snap);
+    let (column, index, _, _) = s
+        .song_select
+        .mods()
+        .iter()
+        .find(|(_, _, acronym, _)| *acronym == "DT")
+        .unwrap();
+    let [x, y] = s.song_layout.mods.tile_rect(column, index).centre();
+    // Not selected yet: the right click selects it and opens its settings there.
+    s.tick(
+        at(2),
+        &[
+            mouse(InputKind::MouseMove { x, y }),
+            button_press(MouseButton::Right, true),
+        ],
+        &mut snap,
+    );
+    assert_eq!(acronyms(&s), ["DT"]);
+    let c = customise(&snap);
+    assert_eq!(c.state, CustomisationState::Expanded);
+    assert_eq!(c.origin, (x, y));
+    // Another right click closes it.
+    s.tick(at(3), &[button_press(MouseButton::Right, true)], &mut snap);
+    assert_eq!(customise(&snap).state, CustomisationState::Collapsed);
+    assert!(song_view(&snap).mods.open);
+    // A mod without settings does nothing on a right click.
+    let (column, index, _, _) = s
+        .song_select
+        .mods()
+        .iter()
+        .find(|(_, _, acronym, _)| *acronym == "HR")
+        .unwrap();
+    let [x, y] = s.song_layout.mods.tile_rect(column, index).centre();
+    s.tick(
+        at(4),
+        &[
+            mouse(InputKind::MouseMove { x, y }),
+            button_press(MouseButton::Right, true),
+        ],
+        &mut snap,
+    );
+    assert_eq!(acronyms(&s), ["DT"]);
+    assert_eq!(customise(&snap).state, CustomisationState::Collapsed);
 }
 
 #[test]

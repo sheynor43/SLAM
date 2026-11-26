@@ -101,6 +101,7 @@ use output::{DeviceList, DeviceViews, OutputLink, Request};
 mod keybinds;
 pub(crate) mod language;
 mod menu_music;
+mod mod_presets;
 mod mod_settings;
 mod ui_sounds;
 use menu_music::{MenuMusic, Picked, Want};
@@ -448,6 +449,9 @@ pub struct ShellState {
     /// The panel's mods with default settings, by column and tile: a toggle clones one
     /// (`Mod::from_acronym` allocates).
     mod_templates: Vec<Vec<Mod>>,
+    /// The mods of each pinned preset, parsed once so that comparing them with the
+    /// selection allocates nothing (ADR-0175).
+    preset_mods: Vec<Vec<Mod>>,
     /// The mod select's selection being built on a toggle; kept for its capacity.
     mod_buffer: Vec<Mod>,
     /// What the mod speed hotkeys remember of the selection.
@@ -591,6 +595,7 @@ impl ShellState {
             // An empty set is always compatible; the capacity keeps a toggle from allocating.
             selected_mods: ModSet::new(Vec::with_capacity(SELECTED_MODS_CAPACITY))
                 .unwrap_or_default(),
+            preset_mods: Vec::new(),
             mod_templates: mod_columns()
                 .iter()
                 .map(|c| c.iter().map(|a| Mod::from_acronym(a)).collect())
@@ -810,6 +815,7 @@ impl ShellState {
         self.rows = Rows::new(&settings);
         self.settings = settings;
         self.refresh_pins();
+        self.sync_presets();
         self
     }
 
@@ -1074,6 +1080,7 @@ impl ShellState {
             self.song_select.mods_mut().collapse_customisation();
         }
         self.rebuild_setting_rows();
+        self.sync_pinned();
         if before == after {
             return;
         }
@@ -2007,6 +2014,13 @@ impl ShellState {
                 down: true,
             } => SongSelectInput::Back,
             InputKind::MouseButton {
+                button: MouseButton::Right,
+                down: true,
+            } => SongSelectInput::SecondaryPress {
+                x: self.cursor[0],
+                y: self.cursor[1],
+            },
+            InputKind::MouseButton {
                 button: MouseButton::Left,
                 down: false,
             } => return Some(ScreenInput::Release),
@@ -2388,6 +2402,27 @@ impl ShellState {
                         }
                         Some(SongSelectAction::DeselectMods) => {
                             self.deselect_mods();
+                            None
+                        }
+                        Some(SongSelectAction::ApplyPreset(index)) => {
+                            self.apply_preset(index);
+                            None
+                        }
+                        Some(SongSelectAction::RemovePreset(index)) => {
+                            self.remove_preset(index);
+                            None
+                        }
+                        Some(SongSelectAction::PinPreset) => {
+                            self.pin_preset();
+                            None
+                        }
+                        Some(SongSelectAction::ModSettings {
+                            column,
+                            index,
+                            x,
+                            y,
+                        }) => {
+                            self.show_mod_settings(column, index, (x, y));
                             None
                         }
                         Some(SongSelectAction::SetModSetting { row, value }) => {
@@ -4757,7 +4792,7 @@ impl<B: render::Backend> Draw<ShellSnapshot> for View<B> {
         }
         // The screens' layers and the settings panel's.
         // Two per screen (the song select's mod panel is a layer of its own), and the panel.
-        let mut ends = [(0_u32, 0_u32, false); 2 * MAX_LAYERS + 4];
+        let mut ends = [(0_u32, 0_u32, false); 3 * MAX_LAYERS + 4];
         let mut layers = 0;
         for layer in snapshot.layers.iter().flatten() {
             // Where the screen's own quads start: its background is not scaled.
@@ -4841,7 +4876,8 @@ impl<B: render::Backend> Draw<ShellSnapshot> for View<B> {
                         },
                     );
                     // The mod panel over the list's texts (ADR-0152).
-                    if let Some((shapes_at, text_at)) = split {
+                    // The floating mod settings over the panel (ADR-0177).
+                    for (shapes_at, text_at) in [split.panel, split.popup].into_iter().flatten() {
                         ends[layers] = (shapes_at, text_at, false);
                         layers += 1;
                     }

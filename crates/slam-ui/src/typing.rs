@@ -25,7 +25,8 @@ enum Change {
 pub(crate) struct TypeFeedback {
     chars: Option<usize>,
     change: Change,
-    since_ns: u64,
+    /// When the text last changed (or the field was reset); `None` before any of that.
+    since_ns: Option<u64>,
 }
 
 /// How to draw the text now: the newest character's opacity and offset, and the pop of the
@@ -54,15 +55,17 @@ fn fraction(elapsed_ns: u64, span_ms: f32) -> f32 {
 }
 
 impl TypeFeedback {
+    /// A field that starts empty: the first character typed is a change.
     pub(crate) const fn new() -> TypeFeedback {
         TypeFeedback {
-            chars: None,
+            chars: Some(0),
             change: Change::None,
-            since_ns: 0,
+            since_ns: None,
         }
     }
 
-    /// Notes the text shown at `now_ns`. The first text seen starts nothing.
+    /// Notes the text shown at `now_ns`. After [`TypeFeedback::reset`] the first text seen
+    /// starts nothing.
     pub(crate) fn observe(&mut self, text: &str, now_ns: u64) {
         let chars = text.chars().count();
         if let Some(before) = self.chars
@@ -73,7 +76,7 @@ impl TypeFeedback {
             } else {
                 Change::Erased
             };
-            self.since_ns = now_ns;
+            self.since_ns = Some(now_ns);
         }
         self.chars = Some(chars);
     }
@@ -83,30 +86,58 @@ impl TypeFeedback {
         *self = TypeFeedback {
             chars: None,
             change: Change::None,
-            since_ns: now_ns,
+            since_ns: Some(now_ns),
         };
     }
 
-    /// Whether the text caret shows at `now_ns` (ADR-0173): solid for
-    /// `caret_solid_ms` after the text changed, then blinking, `caret_blink_ms` on and off.
-    pub(crate) fn caret_on(&self, now_ns: u64, theme: &Theme) -> bool {
-        let elapsed = now_ns.saturating_sub(self.since_ns) as f32 / 1.0e6;
+    /// How visible the text caret is at `now_ns`, 0 to 1 (ADR-0173, ADR-0177): solid for
+    /// `caret_solid_ms` after the text changed, then blinking with soft edges
+    /// (`caret_blink_ms` on and off, `caret_fade_ms` per fade). A field out of use shows
+    /// none: `filled` fields (text in them, or being edited) always count as used, an
+    /// empty one only for `caret_active_ms` after its last change.
+    pub(crate) fn caret_alpha(&self, now_ns: u64, theme: &Theme, filled: bool) -> f32 {
+        let Some(since) = self.since_ns else {
+            return if filled { 1.0 } else { 0.0 };
+        };
+        let elapsed = now_ns.saturating_sub(since) as f32 / 1.0e6;
+        let fade = theme.caret_fade_ms.max(1.0);
+        let presence = if filled {
+            1.0
+        } else {
+            1.0 - ((elapsed - theme.caret_active_ms) / fade).clamp(0.0, 1.0)
+        };
+        if presence <= 0.0 {
+            return 0.0;
+        }
         let idle = if self.change == Change::None {
             elapsed
         } else if elapsed < theme.caret_solid_ms {
-            return true;
+            return presence;
         } else {
             elapsed - theme.caret_solid_ms
         };
-        if theme.caret_blink_ms <= 0.0 {
-            return true;
+        let blink = theme.caret_blink_ms;
+        if blink <= 0.0 {
+            return presence;
         }
-        ((idle / theme.caret_blink_ms) as u64).is_multiple_of(2)
+        let fade = fade.min(blink);
+        let t = idle % (2.0 * blink);
+        let smooth = |x: f32| x * x * (3.0 - 2.0 * x);
+        let blinking = if t < blink - fade {
+            1.0
+        } else if t < blink {
+            1.0 - smooth((t - (blink - fade)) / fade)
+        } else if t < 2.0 * blink - fade {
+            0.0
+        } else {
+            smooth((t - (2.0 * blink - fade)) / fade)
+        };
+        presence * blinking
     }
 
     /// The pose at `now_ns`, `scale` the window height over the reference height.
     pub(crate) fn pose(&self, now_ns: u64, theme: &Theme, scale: f32) -> TypePose {
-        let elapsed = now_ns.saturating_sub(self.since_ns);
+        let elapsed = now_ns.saturating_sub(self.since_ns.unwrap_or(now_ns));
         match self.change {
             Change::None => TypePose::SETTLED,
             Change::Typed => {
@@ -140,7 +171,8 @@ pub(crate) fn caret_rect(x: f32, y: f32, line_height: f32, theme: &Theme, scale:
     }
 }
 
-/// Draws a text caret (see [`caret_rect`]); `opacity` is the layer's.
+/// Draws a text caret (see [`caret_rect`]); `opacity` is the layer's times the caret's
+/// own ([`TypeFeedback::caret_alpha`]).
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn push_caret(
     shapes: &mut ShapeBatch,
@@ -193,6 +225,7 @@ mod tests {
     fn typing_slides_the_new_character_in_and_settles() {
         let theme = Theme::default();
         let mut f = TypeFeedback::new();
+        f.reset(0);
         f.observe("a", 0);
         assert_eq!(f.pose(0, &theme, 1.0), TypePose::SETTLED, "the first text");
         f.observe("ab", 10 * MS);
@@ -217,35 +250,63 @@ mod tests {
     }
 
     #[test]
-    fn the_caret_is_solid_after_a_key_then_blinks() {
+    fn the_caret_is_solid_after_a_key_then_blinks_softly() {
         let theme = Theme::default();
         let mut f = TypeFeedback::new();
         f.observe("a", 0);
         f.observe("ab", 100 * MS);
-        // Solid for the hold after the key, whatever the blink phase would say.
         let blink = theme.caret_blink_ms as u64;
         for t in [100, 300, 599] {
-            assert!(f.caret_on(t * MS, &theme), "{t}");
+            assert_eq!(f.caret_alpha(t * MS, &theme, true), 1.0, "{t}");
         }
         let start = 100 + theme.caret_solid_ms as u64;
-        assert!(f.caret_on(start * MS, &theme));
-        assert!(!f.caret_on((start + blink + 5) * MS, &theme));
-        assert!(f.caret_on((start + 2 * blink + 5) * MS, &theme));
+        assert_eq!(f.caret_alpha(start * MS, &theme, true), 1.0);
+        // Half way through the fade-out it is neither on nor off.
+        let mid = start + blink - theme.caret_fade_ms as u64 / 2;
+        let a = f.caret_alpha(mid * MS, &theme, true);
+        assert!(a > 0.1 && a < 0.9, "{a}");
+        assert_eq!(f.caret_alpha((start + blink + 5) * MS, &theme, true), 0.0);
+        assert_eq!(
+            f.caret_alpha((start + 2 * blink + 5) * MS, &theme, true),
+            1.0
+        );
     }
 
     #[test]
-    fn an_idle_caret_blinks_from_the_start() {
+    fn an_empty_idle_field_shows_no_caret() {
         let theme = Theme::default();
-        let f = TypeFeedback::new();
+        let mut f = TypeFeedback::new();
+        assert_eq!(f.caret_alpha(MS, &theme, false), 0.0, "never used");
+        // With text in it, it counts as used.
+        assert!(f.caret_alpha(MS, &theme, true) > 0.0);
+        // Erased to empty: the caret stays for a while, then fades away.
+        f.observe("a", 0);
+        f.observe("", 10 * MS);
+        assert_eq!(f.caret_alpha(11 * MS, &theme, false), 1.0);
+        let gone = 10 + (theme.caret_active_ms + theme.caret_fade_ms) as u64 + 1;
+        for t in [gone, gone + 700, gone + 5_000] {
+            assert_eq!(f.caret_alpha(t * MS, &theme, false), 0.0, "{t}");
+        }
+        // Typing wakes it.
+        f.observe("x", (gone + 6_000) * MS);
+        assert_eq!(f.caret_alpha((gone + 6_001) * MS, &theme, false), 1.0);
+    }
+
+    #[test]
+    fn a_reset_field_blinks_from_the_start() {
+        let theme = Theme::default();
+        let mut f = TypeFeedback::new();
+        f.reset(0);
         let blink = theme.caret_blink_ms as u64;
-        assert!(f.caret_on(MS, &theme));
-        assert!(!f.caret_on((blink + 1) * MS, &theme));
-        assert!(f.caret_on((2 * blink + 1) * MS, &theme));
+        assert_eq!(f.caret_alpha(MS, &theme, true), 1.0);
+        assert_eq!(f.caret_alpha((blink + 1) * MS, &theme, true), 0.0);
+        assert_eq!(f.caret_alpha((2 * blink + 1) * MS, &theme, true), 1.0);
     }
 
     #[test]
     fn an_unchanged_text_starts_nothing() {
         let mut f = TypeFeedback::new();
+        f.reset(0);
         f.observe("ab", 0);
         f.observe("ab", MS);
         assert_eq!(f.pose(MS, &Theme::default(), 1.0), TypePose::SETTLED);

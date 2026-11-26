@@ -123,8 +123,10 @@ fn labels() -> SongSelectLabels {
         loading: "loading".into(),
         empty: "empty".into(),
         choose_folder: "choose folder".into(),
-        hint: "hint".into(),
         no_audio: "no audio".into(),
+        footer_back: "Back".into(),
+        footer_pin: "+".into(),
+        footer_reset: "Reset mods".into(),
         pp_suffix: "pp".into(),
         search_placeholder: "search...".into(),
         search_no_matches: "no matches".into(),
@@ -421,17 +423,16 @@ fn settings_panel_input_does_not_allocate() {
     put(&mut screen, list_of(10));
     *screen.mods_mut() = slam_ui::song_select::ModSelect::new(MOD_COLUMNS);
     let rows = setting_rows();
+    // The panel opens where the pointer is (ADR-0177).
     let [hx, hy] = layout.mods.customise.header.centre();
-    let track = layout
-        .mods
-        .customise
-        .slider(&layout.mods.customise.row_rect(1))
-        .hit;
+    let at = layout.mods.customise.at((hx, hy), rows.len());
+    let track = at.slider(&at.row_rect(1)).hit;
     assert_no_alloc(|| {
         screen.mods_mut().set_setting_rows(&rows);
         for (now, input) in [
             SongSelectInput::ToggleMods,
             SongSelectInput::PointerMove { x: hx, y: hy },
+            SongSelectInput::ToggleCustomisation,
             SongSelectInput::Down,
             SongSelectInput::Right,
             SongSelectInput::Left,
@@ -444,8 +445,16 @@ fn settings_panel_input_does_not_allocate() {
                 x: track.x + 10.0,
                 y: track.y + 2.0,
             },
-            SongSelectInput::PointerMove { x: 5.0, y: 700.0 },
+            SongSelectInput::PointerMove { x: 5.0, y: 600.0 },
             SongSelectInput::PointerRelease,
+            // Drag the panel by its header, then close it with a right click.
+            SongSelectInput::PointerPress {
+                x: at.header.x + 8.0,
+                y: at.header.y + 4.0,
+            },
+            SongSelectInput::PointerMove { x: 300.0, y: 300.0 },
+            SongSelectInput::PointerRelease,
+            SongSelectInput::SecondaryPress { x: 300.0, y: 300.0 },
             SongSelectInput::ToggleCustomisation,
             SongSelectInput::ToggleCustomisation,
         ]
@@ -955,7 +964,9 @@ fn panel_alphas(
             now_ns,
         },
     );
-    let (shapes_at, text_at) = split.unwrap_or((rig.shapes.len() as u32, rig.text.len() as u32));
+    let (shapes_at, text_at) = split
+        .panel
+        .unwrap_or((rig.shapes.len() as u32, rig.text.len() as u32));
     let shapes = rig.shapes.vertices()[shapes_at as usize * 4..]
         .iter()
         .map(|v| v.colour[3])
@@ -1019,4 +1030,52 @@ fn the_mod_panel_fades_its_plates_and_texts_as_one_layer() {
     for r in &ratios {
         assert!((r - first).abs() < 1e-3, "{r} vs {first}");
     }
+}
+
+#[test]
+fn the_footer_works_and_draws_without_allocating() {
+    let mut rig = Rig::new();
+    let mut screen = SongSelect::new();
+    put(&mut screen, list_of(10));
+    screen.set_status(SongSelectStatus::Ready);
+    *screen.mods_mut() = slam_ui::song_select::ModSelect::new(MOD_COLUMNS);
+    screen.mods_mut().set_active(0, 0, true);
+    let presets: Arc<[Arc<str>]> = Arc::from([Arc::from("HD DT"), Arc::from("EZ")]);
+    screen.set_mod_presets(Arc::clone(&presets));
+    let layout = SongSelectLayout::new(1280.0, 720.0, &Theme::default());
+    let buttons = screen.footer_buttons(&layout);
+    assert!(buttons.pin.is_some() && buttons.reset.is_some());
+    let hovered = screen.snapshot();
+    // Warm: laid out presets, mods label and the slide.
+    rig.now_ns = 1_000_000;
+    rig.frame(&hovered);
+    rig.frame(&hovered);
+    let at = |r: slam_ui::menu::Rect| {
+        let [x, y] = r.centre();
+        (x, y)
+    };
+    let points = [
+        at(buttons.back),
+        at(buttons.mods),
+        at(buttons.presets[0]),
+        at(buttons.pin.unwrap()),
+        at(buttons.reset.unwrap()),
+    ];
+    assert_no_alloc(|| {
+        for (x, y) in points {
+            for input in [
+                SongSelectInput::PointerMove { x, y },
+                SongSelectInput::PointerPress { x, y },
+                SongSelectInput::PointerRelease,
+                SongSelectInput::SecondaryPress { x, y },
+            ] {
+                std::hint::black_box(screen.input(input, &layout));
+                std::hint::black_box(screen.footer_state());
+            }
+            // The Mods button toggled the panel; draw a frame of the state.
+            rig.now_ns += 16_000_000;
+            rig.frame(&screen.snapshot());
+        }
+    });
+    assert!(rig.shapes.len() > 8);
 }

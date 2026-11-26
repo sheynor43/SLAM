@@ -879,7 +879,7 @@ fn the_sizes_match_lazers_at_full_hd() {
 /// The leaning list's reach, left of `list.x`, over all of its height.
 fn leftmost(l: &SongSelectLayout) -> f32 {
     let top = l.header.y;
-    let bottom = l.hint.y + l.hint.height;
+    let bottom = l.footer.bar.y;
     l.list.x + l.lean_x(top).min(l.lean_x(bottom))
 }
 
@@ -891,9 +891,9 @@ fn the_panels_do_not_overlap_at_any_size_scale_or_skew() {
                 let theme = Theme::new(Default::default(), ui_scale).with_skew(degrees);
                 let l = SongSelectLayout::new(w, h, &theme);
                 let at = format!("{w}x{h} scale {ui_scale} skew {degrees}");
-                assert!(l.header.y + l.header.height <= l.search.y, "{at}");
+                assert_eq!(l.header, l.search, "{at}");
                 assert!(l.search.y + l.search.height <= l.list.y, "{at}");
-                assert!(l.list.y + l.list.height <= l.hint.y, "{at}");
+                assert!(l.list.y + l.list.height <= l.footer.bar.y, "{at}");
                 assert!(l.list.height > set_row(&l) * 2.0, "{at}: {}", l.list.height);
                 assert!(l.info.x + l.info.width <= leftmost(&l), "{at}");
                 assert!(l.list.x + l.list.width <= w, "{at}");

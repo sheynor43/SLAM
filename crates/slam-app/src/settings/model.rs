@@ -836,6 +836,9 @@ pub struct SongSelect {
     pub thumbnails: Thumbnails,
     /// Where a set's thumbnail goes: left of the text or over the whole plate (ADR-0174).
     pub thumbnail_style: ThumbnailStyle,
+    /// The footer's pinned mod presets (ADR-0175): each a set of mods with their settings
+    /// as text (`HD DT(speed_change=1.3)`), at most [`crate::mod_presets::MAX`].
+    pub mod_presets: Vec<String>,
 }
 
 impl Default for SongSelect {
@@ -852,6 +855,7 @@ impl Default for SongSelect {
             mod_hotkeys: ModHotkeyStyle::Sequential,
             thumbnails: Thumbnails::default(),
             thumbnail_style: ThumbnailStyle::default(),
+            mod_presets: Vec::new(),
         }
     }
 }

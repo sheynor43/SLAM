@@ -595,7 +595,9 @@ impl SliderView {
             faded(theme.text, opacity),
             glyphs,
         );
-        if self.edit_type.caret_on(now_ns, theme) {
+        // The value being edited is always in use.
+        let caret_alpha = self.edit_type.caret_alpha(now_ns, theme, true);
+        if caret_alpha > 0.0 {
             let end = layout.value.x + layout.value.width - layout.value_pad;
             crate::typing::push_caret(
                 shapes,
@@ -603,7 +605,7 @@ impl SliderView {
                 end + s,
                 layout.value.y + layout.value.height / 2.0,
                 self.edit_line.layout.height().max(theme.caption_size * s),
-                opacity,
+                opacity * caret_alpha,
                 theme,
                 s,
             );
