@@ -182,6 +182,19 @@ fn rows_carry_what_the_results_of_a_score_show() {
 }
 
 #[test]
+fn rows_carry_the_multiplier_of_the_mods() {
+    let hd_dt = rows_of(&[record(5)]).rows[0].unwrap();
+    let expected = crate::multipliers::acronyms_multiplier(["HD", "DT"]);
+    assert!(hd_dt.multiplier > 1.0);
+    assert_eq!(hd_dt.multiplier, expected);
+    let plain = Record {
+        mods: Vec::new(),
+        ..record(5)
+    };
+    assert_eq!(rows_of(&[plain]).rows[0].unwrap().multiplier, 1.0);
+}
+
+#[test]
 fn a_record_saved_without_the_perfect_counts_still_reads() {
     let json = r#"{"date":1,"total_score":5,"accuracy":0.5,"max_combo":3,"rank":"A",
         "mods":[],"statistics":{"great":3},"player":"Guest","replay":null}"#;

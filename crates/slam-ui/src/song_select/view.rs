@@ -20,7 +20,8 @@ use slam_text::{FontRegistry, Glyph, GlyphCache, GlyphKey, push_layout};
 
 use super::info_panel::InfoPanel;
 use super::mod_select::{
-    CustomisationState, MAX_COLUMNS, MAX_SETTING_ROWS, SettingRowKind, TileDetail, TileDetails,
+    CustomisationState, MAX_COLUMNS, MAX_SETTING_ROWS, MultiplierTone, SettingRowKind, TileDetail,
+    TileDetails, TileMultipliers, push_multiplier,
 };
 use super::{
     MAX_VISIBLE_ROWS, ModColumns, ModSelectSnapshot, Row, SearchQuery, SongList, SongSelectLayout,
@@ -45,6 +46,9 @@ pub(crate) const FADES: usize = 64;
 /// How much of the accent a thumbnail's placeholder shows.
 const PLACEHOLDER_ALPHA: f32 = 0.25;
 /// What the settings values are made of; asked for up front.
+/// Room for a tile's "1.12x".
+const MULTIPLIER_CAPACITY: usize = 16;
+
 const VALUE_CHARS: &str = "0123456789.-x";
 
 /// The screen's localised texts, already formatted.
@@ -68,6 +72,8 @@ pub struct SongSelectLabels {
     /// The mod select panel's title; also prefixes the selected mods shown under the list.
     pub mods_title: String,
     pub mods_hint: String,
+    /// The label before the selection's score multiplier.
+    pub mods_multiplier: String,
     /// The header of the settings panel.
     pub mods_customise: String,
     /// The texts of the settings panel by Fluent key: section headers (mod names), setting
@@ -191,6 +197,12 @@ pub struct SongSelectView {
     search_no_matches: Line,
     mods_title: Line,
     mods_hint: Line,
+    /// "Score multiplier 1.12x" of the selection, and the multipliers shown on the tiles.
+    mods_multiplier: Line,
+    mods_multiplier_label: String,
+    tile_multipliers: Vec<Vec<Line>>,
+    /// What the multiplier lines were written for.
+    multipliers_for: Option<(TileMultipliers, f64)>,
     mod_column_titles: [Line; MAX_COLUMNS],
     customise_title: Line,
     setting_lines: Vec<(&'static str, Line)>,
@@ -398,6 +410,14 @@ impl SongSelectView {
             search_no_matches: Line::new(&labels.search_no_matches),
             mods_title: Line::new(&labels.mods_title),
             mods_hint: Line::new(&labels.mods_hint),
+            mods_multiplier: Line::new(""),
+            mods_multiplier_label: labels.mods_multiplier.clone(),
+            tile_multipliers: labels
+                .mod_columns
+                .iter()
+                .map(|c| c.iter().map(|_| Line::new("")).collect())
+                .collect(),
+            multipliers_for: None,
             mod_column_titles: std::array::from_fn(|i| Line::new(&labels.mod_column_titles[i])),
             customise_title: Line::new(&labels.mods_customise),
             setting_lines: labels
@@ -446,6 +466,10 @@ impl SongSelectView {
         view.scanning.text.reserve(TEXT_CAPACITY);
         view.search.text.reserve(TEXT_CAPACITY);
         view.mods_selected.text.reserve(TEXT_CAPACITY);
+        view.mods_multiplier.text.reserve(TEXT_CAPACITY);
+        for line in view.tile_multipliers.iter_mut().flatten() {
+            line.text.reserve(MULTIPLIER_CAPACITY);
+        }
         view.lay_out();
         view
     }
@@ -505,10 +529,12 @@ impl SongSelectView {
         for slot in &mut self.value_slots {
             slot.shown = None;
         }
+        let text_scale = self.theme.mod_tile_text_scale;
         for line in self.mod_tiles.iter_mut().flatten() {
             self.type_setter
-                .lay_out_face(line, self.theme.caption_face(scale));
+                .lay_out_face(line, enlarged(self.theme.caption_face(scale), text_scale));
         }
+        self.multipliers_for = None;
         self.mods_selected_for = None;
         // The ellipsis widths and the row slots depend on the scale and the window.
         let mut probe = Line::new(&ELLIPSIS.to_string());
@@ -528,15 +554,20 @@ impl SongSelectView {
         self.ellipsis[3] = probe.layout.width();
         // A tile's name and description, cut to the room right of its switch (ADR-0152).
         let tile = self.layout.mods.tile_rect(0, 0);
-        let room =
-            (tile.width - tile.height - mod_text_gap(&self.theme, tile.height, scale)).max(0.0);
+        // The multiplier at the tile's right end takes room from the texts.
+        let multiplier_room = self.theme.note_size * text_scale * scale * MULTIPLIER_ROOM_EMS;
+        let room = (tile.width
+            - tile.height
+            - mod_text_gap(&self.theme, tile.height, scale)
+            - multiplier_room)
+            .max(0.0);
         for (lines, texts) in self.mod_names.iter_mut().zip(&self.mod_texts) {
             for ((name, desc), (name_text, desc_text)) in lines.iter_mut().zip(texts) {
                 name.text.clone_from(name_text);
                 desc.text.clone_from(desc_text);
-                let caption = self.theme.caption_face(scale);
+                let caption = enlarged(self.theme.caption_face(scale), text_scale);
                 fit_face(&mut self.type_setter, name, caption, room, self.ellipsis[2]);
-                let note = self.theme.note_face(scale);
+                let note = enlarged(self.theme.note_face(scale), text_scale);
                 fit_face(&mut self.type_setter, desc, note, room, self.ellipsis[3]);
             }
         }
@@ -568,6 +599,8 @@ impl SongSelectView {
             .mod_column_titles
             .iter()
             .chain(self.mod_tiles.iter().flatten())
+            .chain(self.tile_multipliers.iter().flatten())
+            .chain([&self.mods_multiplier])
             .chain(
                 self.mod_names
                     .iter()
@@ -726,6 +759,7 @@ impl SongSelectView {
         }
 
         self.refresh_selected(&snapshot.mods);
+        self.refresh_multipliers(&snapshot.mods);
         self.refresh_search(&snapshot.query);
         // The mod select panel's slide (ADR-0152): the backdrop without delay, the last
         // shown column with the most.
@@ -1255,6 +1289,13 @@ impl SongSelectView {
             left(&self.mods_title, x, y, theme.text);
             let (x, y) = centred(&self.mods_hint, &panel.hint);
             left(&self.mods_hint, x, y, theme.disabled_text);
+            // The selection's score multiplier at the left of the title's row.
+            left(
+                &self.mods_multiplier,
+                panel.title.x,
+                panel.title.y + panel.title.height / 2.0,
+                tone_colour(theme, snapshot.mods.total_multiplier),
+            );
             let custom = &snapshot.mods.customise;
             let expanded = custom.state != CustomisationState::Collapsed;
             let dim = if expanded { DIMMED } else { 1.0 };
@@ -1263,7 +1304,9 @@ impl SongSelectView {
                 if !panel.is_shown(column) {
                     continue;
                 }
-                // Each column after the first a little later, from below (ADR-0152).
+                // Each column after the first a little later, from below and above in turn
+                // (ADR-0152, ADR-0167).
+                let direction = slide_direction(slot);
                 let delay = slot as f32 * theme.mod_column_stagger_ms;
                 slot += 1;
                 let shown = self.mods_slide.visibility(now_ns, delay, theme);
@@ -1271,7 +1314,7 @@ impl SongSelectView {
                     continue;
                 }
                 layer.set(shown);
-                let dy = (1.0 - shown) * theme.mod_panel_distance * scale;
+                let dy = direction * (1.0 - shown) * theme.mod_panel_distance * scale;
                 let down = |r: Rect| Rect { y: r.y + dy, ..r };
                 // Each column in the colour of its mod type (ADR-0136): a plate with a
                 // header in that colour, as lazer's `ModColumn`.
@@ -1331,6 +1374,27 @@ impl SongSelectView {
                         left(line, x, y, faded(ink, dim));
                     } else {
                         left(line, x, y, faded(tint, dim));
+                    }
+                    if let Some(line) = self.tile_multipliers.get(column).and_then(|c| c.get(index))
+                    {
+                        let value = snapshot.mods.multipliers[column][index];
+                        let ink = if on {
+                            Color {
+                                a: 1.0,
+                                ..theme.background
+                            }
+                        } else {
+                            tone_colour(theme, value)
+                        };
+                        left(
+                            line,
+                            area.x + area.width
+                                - theme.widget_pad * scale
+                                - line.layout.width()
+                                - mod_text_gap(theme, area.height, scale) * 0.5,
+                            area.y + area.height / 2.0,
+                            faded(ink, dim),
+                        );
                     }
                     if let Some((name, desc)) = self
                         .mod_names
@@ -1548,6 +1612,31 @@ impl SongSelectView {
         );
     }
 
+    /// Writes the tiles' multipliers and the selection's unless they already show them.
+    fn refresh_multipliers(&mut self, mods: &ModSelectSnapshot) {
+        let key = (mods.multipliers, mods.total_multiplier);
+        if self.multipliers_for == Some(key) {
+            return;
+        }
+        self.multipliers_for = Some(key);
+        let scale = self.layout.scale;
+        let face = enlarged(self.theme.note_face(scale), self.theme.mod_tile_text_scale);
+        for (lines, values) in self.tile_multipliers.iter_mut().zip(&mods.multipliers) {
+            for (line, &value) in lines.iter_mut().zip(values) {
+                line.text.clear();
+                push_multiplier(&mut line.text, value);
+                self.type_setter.lay_out_face(line, face);
+            }
+        }
+        let line = &mut self.mods_multiplier;
+        line.text.clear();
+        line.text.push_str(&self.mods_multiplier_label);
+        line.text.push(' ');
+        push_multiplier(&mut line.text, mods.total_multiplier);
+        self.type_setter
+            .lay_out(line, self.theme.song_status_size * scale);
+    }
+
     /// Writes "Mods: HD DT 1.05x" for the active tiles and their details unless it already
     /// shows them.
     fn refresh_selected(&mut self, mods: &ModSelectSnapshot) {
@@ -1576,6 +1665,32 @@ impl SongSelectView {
 
 /// The room between a mod tile's switch and its texts: the switch leans with the tile, so its
 /// top corner reaches right by half its height times the skew; then a little padding.
+/// How many ems of the note face a tile's multiplier ("1.00x" and its padding) is given.
+const MULTIPLIER_ROOM_EMS: f32 = 3.6;
+
+/// `face` made `by` times larger.
+fn enlarged(face: crate::menu::view::Face, by: f32) -> crate::menu::view::Face {
+    crate::menu::view::Face {
+        size: face.size * by,
+        ..face
+    }
+}
+
+/// Which way the column in `slot` (among the shown ones) slides in from: below for the first,
+/// above for the second, and so on (ADR-0167).
+fn slide_direction(slot: usize) -> f32 {
+    if slot.is_multiple_of(2) { 1.0 } else { -1.0 }
+}
+
+/// The colour of a multiplier's text.
+fn tone_colour(theme: &Theme, multiplier: f64) -> Color {
+    match MultiplierTone::of(multiplier) {
+        MultiplierTone::Up => theme.mod_multiplier_up,
+        MultiplierTone::Down => theme.mod_multiplier_down,
+        MultiplierTone::Neutral => theme.text,
+    }
+}
+
 fn mod_text_gap(theme: &Theme, tile_height: f32, scale: f32) -> f32 {
     theme.button_skew().tan() * tile_height / 2.0 + theme.widget_pad * scale * 0.5
 }
@@ -2068,6 +2183,27 @@ mod tests {
         let mut short = Line::new("short");
         fit_tail(&mut type_setter, &mut short, 20.0, avail, ellipsis);
         assert_eq!(short.text, "short");
+    }
+
+    #[test]
+    fn columns_slide_in_from_below_and_above_in_turn() {
+        assert_eq!(slide_direction(0), 1.0);
+        assert_eq!(slide_direction(1), -1.0);
+        assert_eq!(slide_direction(2), 1.0);
+        assert_eq!(slide_direction(3), -1.0);
+        let theme = Theme::default();
+        assert_eq!(theme.mod_column_stagger_ms, 30.0);
+        assert_eq!(theme.mod_panel_in_ms, 400.0);
+        assert_eq!(theme.mod_panel_distance, 700.0);
+        assert!(theme.mod_panel_out_ms <= 250.0);
+    }
+
+    #[test]
+    fn the_multiplier_is_coloured_by_its_side_of_one() {
+        let theme = Theme::default();
+        assert_eq!(tone_colour(&theme, 1.2), theme.mod_multiplier_up);
+        assert_eq!(tone_colour(&theme, 0.8), theme.mod_multiplier_down);
+        assert_eq!(tone_colour(&theme, 1.0), theme.text);
     }
 
     #[test]

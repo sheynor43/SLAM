@@ -54,6 +54,7 @@ fn row(score: u64) -> ScoreRow {
         max_combo: 1234,
         rank: *b"SH",
         mods: ScoreMods::from_acronyms(["HD", "DT"]),
+        multiplier: 1.1801,
         date_ms: 1_794_681_000_000,
         ..Default::default()
     }
@@ -184,7 +185,7 @@ fn no_scores_leave_the_rows_empty_and_scores_fill_them() {
     assert_eq!(first.accuracy.text, "98.45%");
     assert_eq!(
         first.extra.text,
-        "1234x  \u{b7}  HD DT  \u{b7}  2026-11-14 18:30"
+        "1234x  \u{b7}  HD DT  \u{b7}  1.19x  \u{b7}  2026-11-14 18:30"
     );
     assert_eq!(
         rig.panel.scores[1].extra.text,

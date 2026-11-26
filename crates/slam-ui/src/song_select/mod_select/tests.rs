@@ -259,7 +259,53 @@ fn a_column_plate_holds_its_header_and_tiles() {
         assert!(header.y + header.height <= l.tile_rect(column, 0).y);
     }
     // The columns stand in the lower part of the window, and lean.
-    assert!(l.column_rect(0, 4).y > 720.0 * 0.2);
+    assert!(l.column_rect(0, 4).y > 720.0 * 0.1);
     assert!(l.lean() > 0.0);
     assert!(l.tile_rect(1, 0).x > l.tile_rect(1, 5).x);
+}
+
+#[test]
+fn multipliers_are_formatted_as_lazer_does() {
+    let show = |x: f64| {
+        let mut text = String::new();
+        push_multiplier(&mut text, x);
+        text
+    };
+    assert_eq!(show(1.0), "1.00x");
+    assert_eq!(show(1.0001), "1.01x");
+    assert_eq!(show(1.055), "1.06x");
+    assert_eq!(show(0.9999), "0.99x");
+    assert_eq!(show(1.23), "1.23x");
+    assert_eq!(show(0.5), "0.50x");
+}
+
+#[test]
+fn multiplier_tones_follow_the_value() {
+    assert_eq!(MultiplierTone::of(1.12), MultiplierTone::Up);
+    assert_eq!(MultiplierTone::of(0.5), MultiplierTone::Down);
+    assert_eq!(MultiplierTone::of(1.0), MultiplierTone::Neutral);
+}
+
+#[test]
+fn the_panel_hands_its_multipliers_to_the_snapshot() {
+    let mut panel = open_panel();
+    assert_eq!(panel.snapshot().total_multiplier, 1.0);
+    panel.set_multiplier(1, 0, 1.06);
+    panel.set_multiplier(1, 9, 5.0);
+    panel.set_total_multiplier(1.12);
+    let snap = panel.snapshot();
+    assert_eq!(snap.multipliers[1][0], 1.06);
+    assert_eq!(snap.multipliers[1][9], 1.0);
+    assert_eq!(snap.total_multiplier, 1.12);
+}
+
+#[test]
+fn the_bigger_tiles_fit_the_window() {
+    let theme = Theme::default();
+    let l = layout();
+    let tile = l.tile_rect(0, 0);
+    assert!(tile.width <= theme.mod_tile_width * theme.scale(720.0) + 0.01);
+    assert!(tile.height > 50.0 * theme.scale(720.0) - 0.01);
+    let last = l.tile_rect(1, 6);
+    assert!(last.y + last.height <= 720.0);
 }

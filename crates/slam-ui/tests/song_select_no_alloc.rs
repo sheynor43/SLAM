@@ -123,6 +123,7 @@ fn labels() -> SongSelectLabels {
         search_no_matches: "no matches".into(),
         mods_title: "Mods".into(),
         mods_hint: "mods hint".into(),
+        mods_multiplier: "multiplier".into(),
         mods_customise: "Customise".into(),
         setting_texts: vec![
             ("mod-a", "Mod A".into()),

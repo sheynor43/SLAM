@@ -72,6 +72,7 @@ song-select-details-drain-rate = HP
 song-select-scores = Local scores
 song-select-no-scores = No local scores
 song-select-mods-title = Mods
+song-select-mods-multiplier = Score multiplier
 song-select-mods-hint = Tab: settings · Backspace: deselect all · Esc: close
 song-select-mods-reduction = Difficulty Reduction
 song-select-mods-increase = Difficulty Increase

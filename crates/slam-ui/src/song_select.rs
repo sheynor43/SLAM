@@ -32,8 +32,9 @@ pub use filter::{
 
 pub use mod_select::{
     CustomisationLayout, CustomisationSnapshot, CustomisationState, MAX_CHOICES, MAX_SETTING_ROWS,
-    ModColumns, ModSelect, ModSelectAction, ModSelectLayout, ModSelectSnapshot, SettingRow,
-    SettingRowKind, SettingValue, TileDetail, TileDetails, column_counts,
+    ModColumns, ModSelect, ModSelectAction, ModSelectLayout, ModSelectSnapshot, MultiplierTone,
+    SettingRow, SettingRowKind, SettingValue, TileDetail, TileDetails, TileMultipliers,
+    column_counts, push_multiplier,
 };
 pub use view::{DetailLabels, SongSelectLabels, SongSelectView};
 
@@ -714,6 +715,8 @@ pub struct ScoreRow {
     /// zeros.
     pub rank: [u8; 2],
     pub mods: ScoreMods,
+    /// The score multiplier of the mods; 1 for none (shown after them when it is not).
+    pub multiplier: f64,
     /// Unix milliseconds.
     pub date_ms: i64,
     /// Hits by kind, in [`crate::results::StatKind::ALL`] order.

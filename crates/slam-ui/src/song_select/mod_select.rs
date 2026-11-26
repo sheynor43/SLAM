@@ -242,15 +242,71 @@ pub enum TileDetail {
 /// The details of every tile, by column.
 pub type TileDetails = [[TileDetail; MAX_COLUMN_MODS]; MAX_COLUMNS];
 
+/// The score multiplier of every tile, by column.
+pub type TileMultipliers = [[f64; MAX_COLUMN_MODS]; MAX_COLUMNS];
+
+// Ported from osu!lazer 2026.1005.0-lazer: osu.Game/Utils/ModUtils.cs (FormatScoreMultiplier)
+/// Writes a score multiplier as lazer shows it: rounded to hundredths away from 1 (up above
+/// 1, down below), then "1.12x". Appends to `text`; does not allocate beyond it.
+pub fn push_multiplier(text: &mut String, multiplier: f64) {
+    use std::fmt::Write;
+    let hundredths = (multiplier * 100.0 * 1.0e4).round_ties_even() / 1.0e4;
+    let hundredths = if multiplier > 1.0 {
+        hundredths.ceil()
+    } else {
+        hundredths.floor()
+    };
+    let _ = write!(text, "{:.2}x", hundredths / 100.0);
+}
+
+/// Which colour a multiplier is shown in.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum MultiplierTone {
+    /// Above 1: harder, scores more.
+    Up,
+    Down,
+    Neutral,
+}
+
+// Ported from osu!lazer 2026.1005.0-lazer: osu.Game/Overlays/Mods/ModSelectOverlay.cs (updateMultiplier), osu.Game/Overlays/Mods/ModsEffectDisplay.cs
+impl MultiplierTone {
+    pub fn of(multiplier: f64) -> MultiplierTone {
+        if multiplier > 1.0 {
+            MultiplierTone::Up
+        } else if multiplier < 1.0 {
+            MultiplierTone::Down
+        } else {
+            MultiplierTone::Neutral
+        }
+    }
+}
+
 /// What the draw side needs; `Copy`, so a snapshot allocates nothing.
-#[derive(Clone, Copy, Debug, Default, PartialEq)]
+#[derive(Clone, Copy, Debug, PartialEq)]
 pub struct ModSelectSnapshot {
     pub open: bool,
     /// Bit `i` of column `c`: the tile `i` of that column is active.
     pub active: [u16; MAX_COLUMNS],
     pub details: TileDetails,
+    /// The score multiplier of each tile's mod, and of the whole selection.
+    pub multipliers: TileMultipliers,
+    pub total_multiplier: f64,
     pub hover: Option<(usize, usize)>,
     pub customise: CustomisationSnapshot,
+}
+
+impl Default for ModSelectSnapshot {
+    fn default() -> ModSelectSnapshot {
+        ModSelectSnapshot {
+            open: false,
+            active: [0; MAX_COLUMNS],
+            details: TileDetails::default(),
+            multipliers: [[1.0; MAX_COLUMN_MODS]; MAX_COLUMNS],
+            total_multiplier: 1.0,
+            hover: None,
+            customise: CustomisationSnapshot::default(),
+        }
+    }
 }
 
 /// The panel's state on the update thread.
@@ -260,6 +316,8 @@ pub struct ModSelect {
     open: bool,
     active: [u16; MAX_COLUMNS],
     details: TileDetails,
+    multipliers: TileMultipliers,
+    total_multiplier: f64,
     hover: Option<(usize, usize)>,
     customise: Customisation,
 }
@@ -278,6 +336,8 @@ impl ModSelect {
             open: false,
             active: [0; MAX_COLUMNS],
             details: TileDetails::default(),
+            multipliers: [[1.0; MAX_COLUMN_MODS]; MAX_COLUMNS],
+            total_multiplier: 1.0,
             hover: None,
             customise: Customisation::default(),
         }
@@ -355,6 +415,18 @@ impl ModSelect {
         }
     }
 
+    /// Sets the score multiplier of a tile's mod; out-of-range tiles are ignored.
+    pub fn set_multiplier(&mut self, column: usize, index: usize, multiplier: f64) {
+        if index < self.columns.get(column).map_or(0, |c| c.len()) {
+            self.multipliers[column][index] = multiplier;
+        }
+    }
+
+    /// Sets the score multiplier of the whole selection.
+    pub fn set_total_multiplier(&mut self, multiplier: f64) {
+        self.total_multiplier = multiplier;
+    }
+
     /// Every acronym of the panel, column by column, with its flag.
     pub fn iter(&self) -> impl Iterator<Item = (usize, usize, &'static str, bool)> + '_ {
         self.columns.iter().enumerate().flat_map(move |(c, mods)| {
@@ -369,6 +441,8 @@ impl ModSelect {
             open: self.open,
             active: self.active,
             details: self.details,
+            multipliers: self.multipliers,
+            total_multiplier: self.total_multiplier,
             hover: self.hover,
             customise: self.customise.snapshot(),
         }

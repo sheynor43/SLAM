@@ -76,6 +76,7 @@ song-select-details-drain-rate = HP
 song-select-scores = Локальные рекорды
 song-select-no-scores = Рекордов нет
 song-select-mods-title = Моды
+song-select-mods-multiplier = Множитель счёта
 song-select-mods-hint = Tab: настройки · Backspace: снять все · Esc: закрыть
 song-select-mods-reduction = Упрощение
 song-select-mods-increase = Усложнение

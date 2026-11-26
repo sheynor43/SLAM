@@ -208,6 +208,12 @@ pub struct Theme {
     pub mod_tile_height: f32,
     pub mod_tile_pitch: f32,
     pub mod_column_gap: f32,
+    /// How much larger a mod tile's texts are than the caption and note faces.
+    pub mod_tile_text_scale: f32,
+    /// The colour of a score multiplier above and below 1 (lazer's `#ff6666` and `#b2ff66`);
+    /// 1 itself is in the text colour (ADR-0167).
+    pub mod_multiplier_up: Color,
+    pub mod_multiplier_down: Color,
     /// Fill over the screen under the mod select panel: the song list stays seen under it,
     /// as in lazer (ADR-0152).
     pub mod_backdrop_fill: Color,
@@ -235,7 +241,7 @@ pub struct Theme {
     /// window, as lazer's (ADR-0152).
     pub mod_panel_top: f32,
     /// The columns' slide from below when the panel opens and closes: lazer's 400 ms in,
-    /// 500 ms out, 30 ms more for each next column, 700 px (ADR-0152).
+    /// 200 ms out, 30 ms more for each next column, 700 px (ADR-0152).
     pub mod_panel_in_ms: f32,
     pub mod_panel_out_ms: f32,
     pub mod_column_stagger_ms: f32,
@@ -693,10 +699,23 @@ impl Theme {
                 a: 0.16,
             },
             song_score_row_height: 30.0,
-            mod_tile_width: 210.0,
-            mod_tile_height: 40.0,
-            mod_tile_pitch: 45.0,
+            mod_tile_width: 290.0,
+            mod_tile_height: 56.0,
+            mod_tile_pitch: 62.0,
             mod_column_gap: 10.0,
+            mod_tile_text_scale: 1.25,
+            mod_multiplier_up: Color {
+                r: 1.0,
+                g: 0.4,
+                b: 0.4,
+                a: 1.0,
+            },
+            mod_multiplier_down: Color {
+                r: 0.698,
+                g: 1.0,
+                b: 0.4,
+                a: 1.0,
+            },
             mod_backdrop_fill: Color {
                 r: 0.0,
                 g: 0.0,
@@ -704,9 +723,9 @@ impl Theme {
                 a: 0.55,
             },
             mod_column_fill: alpha(p.panel, 0.94),
-            mod_column_header_height: 30.0,
+            mod_column_header_height: 42.0,
             mod_column_pad: 7.0,
-            mod_panel_top: 0.22,
+            mod_panel_top: 0.12,
             song_info_transition_ms: 400.0,
             song_info_text_fade_ms: 250.0,
             toast_width: 300.0,
@@ -717,7 +736,7 @@ impl Theme {
             toast_show_ms: 5000.0,
             mod_tile_active_darken: 1.2,
             mod_panel_in_ms: 400.0,
-            mod_panel_out_ms: 500.0,
+            mod_panel_out_ms: 200.0,
             mod_column_stagger_ms: 30.0,
             mod_panel_distance: 700.0,
             results_margin: 24.0,

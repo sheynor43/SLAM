@@ -1862,6 +1862,12 @@ fn ctrl_up_and_down_change_the_mod_speed() {
     s.tick(at(2), &[key(KEY_DOWN), key(KEY_DOWN)], &mut snap);
     assert_eq!(acronyms(&s), ["HT"]);
     assert_eq!(detail(&snap, 0, 2), TileDetail::Speed(95));
+    // The tile and the selection show the multiplier of Half Time at 0.95x.
+    let mods = song_view(&snap).mods;
+    assert!((mods.multipliers[0][2] - 0.83).abs() < 1e-9);
+    assert_eq!(mods.total_multiplier, mods.multipliers[0][2]);
+    // A tile off shows its mod's default multiplier.
+    assert!(mods.multipliers[1][3] > 1.0);
     // Released, Down moves through the list again.
     s.tick(at(3), &[key_up(KEY_LEFT_CTRL), key(KEY_DOWN)], &mut snap);
     assert_eq!(s.song_select().selected(), Some((0, 1)));
@@ -2943,6 +2949,7 @@ fn a_listed_score_opens_its_results_and_back_returns_to_the_song_select() {
         max_combo: 33,
         rank: *b"SH",
         mods: ScoreMods::from_acronyms(["HD", "DT"]),
+        multiplier: 1.18,
         date_ms: 1_794_681_000_000,
         hits,
         maximums,

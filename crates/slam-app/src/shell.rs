@@ -79,6 +79,7 @@ use crate::backgrounds::{
 use crate::details::DetailsPicker;
 use crate::displays::{ListsLink, ShownViews};
 use crate::loader::{LoaderConfig, LoaderLink, PlayOptions, SceneTrash, Trash};
+use crate::multipliers;
 use crate::play::fps::{
     AudioFeed, AudioMeter, AudioReading, FpsDisplay, FpsOverlay, FpsSource, MAX_FPS_GLYPHS,
 };
@@ -990,14 +991,23 @@ impl ShellState {
         self.slider_bounds.observe(&self.selected_mods);
         let before = self.song_select.mods().active_flags();
         let columns = *self.song_select.mods().columns();
+        let difficulty = self
+            .song_select
+            .selected()
+            .and_then(|(set, difficulty)| self.files.get(set)?.get(difficulty))
+            .map_or(multipliers::NEUTRAL_DIFFICULTY, multipliers::difficulty_of);
         for (c, acronyms) in columns.iter().enumerate() {
             for (i, acronym) in acronyms.iter().enumerate() {
                 let selected = self.selected_mods.get(acronym);
                 let mods = self.song_select.mods_mut();
                 mods.set_active(c, i, selected.is_some());
                 mods.set_detail(c, i, selected.map_or(TileDetail::None, tile_detail));
+                let shown = selected.unwrap_or_else(|| multipliers::default_mod(acronym));
+                mods.set_multiplier(c, i, multipliers::mod_multiplier(shown, &difficulty));
             }
         }
+        let total = multipliers::set_multiplier(&self.selected_mods, &difficulty);
+        self.song_select.mods_mut().set_total_multiplier(total);
         let after = self.song_select.mods().active_flags();
         if before != after {
             self.song_select.mods_mut().collapse_customisation();
