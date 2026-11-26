@@ -146,10 +146,15 @@ pub fn interface_views(
             Arc::clone(registry),
             theme,
             &slam_ui::toast::ToastLabels {
-                title: localizer.format("toast-replay-saved", None).into_owned(),
-                hint: localizer
-                    .format("toast-replay-saved-hint", None)
-                    .into_owned(),
+                entries: crate::import::toast_keys()
+                    .iter()
+                    .map(|(title, hint)| slam_ui::toast::ToastEntry {
+                        title: localizer.format(title, None).into_owned(),
+                        hint: hint
+                            .map(|hint| localizer.format(hint, None).into_owned())
+                            .unwrap_or_default(),
+                    })
+                    .collect(),
             },
         ),
         theme,

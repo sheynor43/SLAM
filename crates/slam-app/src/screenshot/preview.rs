@@ -426,6 +426,7 @@ impl State {
                     visible: true,
                     since_ns: 1,
                     hover: true,
+                    variant: slam_ui::toast::REPLAY_SAVED,
                 };
                 self.views.toast.push(
                     &mut self.shapes,

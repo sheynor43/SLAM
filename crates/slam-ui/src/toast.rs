@@ -27,7 +27,12 @@ pub struct ToastFrame {
     pub since_ns: u64,
     /// The pointer is over it.
     pub hover: bool,
+    /// Which entry of [`ToastLabels`] it shows: [`REPLAY_SAVED`] or an import notice.
+    pub variant: u8,
 }
+
+/// The variant of the replay toast; the others are notices of the app (ADR-0169).
+pub const REPLAY_SAVED: u8 = 0;
 
 /// Where the toast is: the window's lower right corner.
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -75,6 +80,12 @@ impl Toast {
 
     /// Shows it at `now_ns`, again if it is shown.
     pub fn show(&mut self, now_ns: u64) {
+        self.show_variant(REPLAY_SAVED, now_ns);
+    }
+
+    /// Shows the entry `variant` of the labels at `now_ns`, again if it is shown.
+    pub fn show_variant(&mut self, variant: u8, now_ns: u64) {
+        self.frame.variant = variant;
         self.frame.visible = true;
         self.frame.since_ns = now_ns;
         self.hide_at_ns = now_ns.saturating_add(self.show_ns);
@@ -122,11 +133,17 @@ impl Toast {
     }
 }
 
-/// The toast's texts, already localised.
+/// One text pair of the toast, already localised.
 #[derive(Clone, Debug)]
-pub struct ToastLabels {
+pub struct ToastEntry {
     pub title: String,
     pub hint: String,
+}
+
+/// The toast's texts, already localised: entry `i` is shown for the frame's variant `i`.
+#[derive(Clone, Debug)]
+pub struct ToastLabels {
+    pub entries: Vec<ToastEntry>,
 }
 
 /// The toast on the draw thread.
@@ -134,8 +151,8 @@ pub struct ToastView {
     theme: Theme,
     type_setter: Typesetter,
     scale: f32,
-    title: Line,
-    hint: Line,
+    title: Vec<Line>,
+    hint: Vec<Line>,
 }
 
 impl std::fmt::Debug for ToastView {
@@ -149,8 +166,8 @@ impl ToastView {
         let mut view = ToastView {
             type_setter: Typesetter::new(registry, theme.font_weight),
             scale: 0.0,
-            title: Line::new(&labels.title),
-            hint: Line::new(&labels.hint),
+            title: labels.entries.iter().map(|e| Line::new(&e.title)).collect(),
+            hint: labels.entries.iter().map(|e| Line::new(&e.hint)).collect(),
             theme,
         };
         view.lay_out(1.0);
@@ -168,8 +185,9 @@ impl ToastView {
 
     /// How many glyphs of its texts are not ready yet.
     pub fn request_glyphs(&self, glyphs: &mut GlyphCache) -> usize {
-        [&self.title, &self.hint]
-            .into_iter()
+        self.title
+            .iter()
+            .chain(&self.hint)
             .flat_map(|l| l.layout.glyphs())
             .filter(|g| matches!(glyphs.glyph(GlyphKey::of(g)), Glyph::Pending))
             .count()
@@ -177,10 +195,14 @@ impl ToastView {
 
     fn lay_out(&mut self, scale: f32) {
         self.scale = scale;
-        self.type_setter
-            .lay_out_face(&mut self.title, self.theme.caption_face(scale));
-        self.type_setter
-            .lay_out_face(&mut self.hint, self.theme.note_face(scale));
+        for title in &mut self.title {
+            self.type_setter
+                .lay_out_face(title, self.theme.caption_face(scale));
+        }
+        for hint in &mut self.hint {
+            self.type_setter
+                .lay_out_face(hint, self.theme.note_face(scale));
+        }
     }
 
     /// Draws the toast of `frame` at `now_ns` on a `width` x `height` window. Does not
@@ -212,6 +234,11 @@ impl ToastView {
         if layout.scale != self.scale {
             self.lay_out(layout.scale);
         }
+        let variant = usize::from(frame.variant);
+        let (Some(title), Some(hint_line)) = (self.title.get(variant), self.hint.get(variant))
+        else {
+            return;
+        };
         let theme = &self.theme;
         let scale = layout.scale;
         // From the right edge onto its place.
@@ -258,14 +285,7 @@ impl ToastView {
             y: rect.y + rect.height * 0.08,
             ..rect
         };
-        push_left(
-            text,
-            &self.title,
-            &half,
-            pad,
-            faded(theme.text, shown),
-            glyphs,
-        );
+        push_left(text, title, &half, pad, faded(theme.text, shown), glyphs);
         let lower = Rect {
             y: rect.y + rect.height * 0.46,
             ..half
@@ -275,7 +295,7 @@ impl ToastView {
         } else {
             theme.disabled_text
         };
-        push_left(text, &self.hint, &lower, pad, faded(hint, shown), glyphs);
+        push_left(text, hint_line, &lower, pad, faded(hint, shown), glyphs);
     }
 }
 

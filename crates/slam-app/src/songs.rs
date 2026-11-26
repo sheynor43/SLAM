@@ -129,6 +129,9 @@ pub struct StarsConfig {
 pub enum Command {
     /// Show the OS folder picker; a chosen folder is saved and listed (ADR-0064).
     PickFolder,
+    /// List the songs folder again, keeping the list shown until the new one is complete,
+    /// and list the skins again too (ADR-0169).
+    Rescan,
     /// Free the old values of a change, off the update thread.
     Retire(Box<FolderChange>),
 }
@@ -251,6 +254,12 @@ impl SongsLink {
     /// queued. Neither blocks nor allocates.
     pub fn pick_folder(&mut self) -> bool {
         self.commands.push(Command::PickFolder).is_ok()
+    }
+
+    /// Asks the library thread to list the songs and skins folders again (ADR-0169). Returns
+    /// whether the command was queued. Neither blocks nor allocates.
+    pub fn rescan(&mut self) -> bool {
+        self.commands.push(Command::Rescan).is_ok()
     }
 
     /// Hands search buffers back to the library thread to free. With the command ring full
@@ -557,6 +566,9 @@ struct Library {
     stars_pending: bool,
     /// The folder changed: the star run for the old one is to be dropped.
     cancel_stars: bool,
+    /// The sets of a rescan so far: the list in `sets` stays shown until the scan is done,
+    /// so the selection survives (ADR-0169).
+    rescan: Option<Vec<BeatmapSetEntry>>,
 }
 
 impl Library {
@@ -581,6 +593,7 @@ impl Library {
             mods_key: RatingMods::NONE.key(),
             stars_pending: false,
             cancel_stars: false,
+            rescan: None,
         };
         if let Some(root) = root {
             library.scan(root);
@@ -590,6 +603,7 @@ impl Library {
 
     /// Starts listing `root` from scratch; a scan of the previous folder is cancelled.
     fn scan(&mut self, root: PathBuf) {
+        self.rescan = None;
         self.scanner = match Scanner::spawn(root.clone()) {
             Ok(scanner) => Some(scanner),
             Err(e) => {
@@ -610,6 +624,41 @@ impl Library {
         self.retired_folders.push(old);
         self.root = Some(root);
         self.dirty = true;
+    }
+
+    /// Lists the folder again without clearing the shown list: the new sets collect on the
+    /// side and replace it when the scan is done, and the skins are listed again with them.
+    /// While the first scan is still running it simply starts over.
+    fn rescan(&mut self) {
+        let Some(root) = self.root.clone() else {
+            return;
+        };
+        if matches!(self.status, SongSelectStatus::Scanning { .. }) || self.sets.is_empty() {
+            self.scan(root);
+            return;
+        }
+        match Scanner::spawn(root) {
+            Ok(scanner) => {
+                self.scanner = Some(scanner);
+                self.rescan = Some(Vec::new());
+            }
+            Err(e) => tracing::warn!("songs rescan: {e}"),
+        }
+    }
+
+    /// Lists the skins next to the folder again, for the update thread's settings and the
+    /// draw thread's dropdown.
+    fn refresh_skins(&mut self) {
+        let Some(root) = self.root.clone() else {
+            return;
+        };
+        let skins = (self.folders.skins)(&root);
+        self.folders.relabel.names.clone_from(&skins.names);
+        self.change = Some(Box::new(FolderChange {
+            songs: Some(root),
+            skins: skins.names,
+        }));
+        self.skin_view = skins.view;
     }
 
     /// Opens the folder picker, unless one is open.
@@ -747,18 +796,23 @@ impl Library {
     /// Takes what the scanner found since the last poll.
     fn receive_scan(&mut self) -> bool {
         let mut finished = false;
+        let mut skins_due = false;
         let Some(scanner) = &self.scanner else {
             return false;
         };
-        while matches!(self.status, SongSelectStatus::Scanning { .. })
+        while (self.rescan.is_some() || matches!(self.status, SongSelectStatus::Scanning { .. }))
             && let Some(event) = scanner.try_recv()
         {
             match event {
                 ScanEvent::Batch(batch) => {
-                    self.sets.extend(batch);
-                    self.status = SongSelectStatus::Scanning {
-                        sets: self.sets.len(),
-                    };
+                    if let Some(found) = &mut self.rescan {
+                        found.extend(batch);
+                    } else {
+                        self.sets.extend(batch);
+                        self.status = SongSelectStatus::Scanning {
+                            sets: self.sets.len(),
+                        };
+                    }
                 }
                 ScanEvent::Done(summary) => {
                     tracing::info!(
@@ -768,15 +822,25 @@ impl Library {
                         summary.skipped_files,
                         summary.elapsed
                     );
+                    if let Some(found) = self.rescan.take() {
+                        self.sets = found;
+                        skins_due = true;
+                    }
                     self.status = SongSelectStatus::Ready;
                     finished = true;
                 }
                 ScanEvent::Failed(e) => {
                     tracing::warn!("songs scan: {e}");
-                    self.status = SongSelectStatus::Failed;
+                    // A failed rescan keeps the list that was shown.
+                    if self.rescan.take().is_none() {
+                        self.status = SongSelectStatus::Failed;
+                    }
                 }
             }
             self.dirty = true;
+        }
+        if skins_due {
+            self.refresh_skins();
         }
         finished
     }
@@ -817,6 +881,7 @@ fn run(
         while let Ok(command) = ends.commands.pop() {
             match command {
                 Command::PickFolder => library.pick_folder(),
+                Command::Rescan => library.rescan(),
                 Command::Retire(old) => drop(old),
             }
         }
@@ -1326,6 +1391,43 @@ mod tests {
             assert!(Instant::now() < deadline, "library thread did not finish");
             std::thread::sleep(Duration::from_millis(5));
         }
+    }
+
+    #[test]
+    fn a_rescan_lists_new_sets_and_skins_without_an_empty_list_between() {
+        let root = TempDir(
+            std::env::temp_dir().join(format!("slam-app-songs-rescan-{}", std::process::id())),
+        );
+        write_set(&root.0, "1 first", "First");
+        let mut folders = no_folders();
+        folders.skins = Box::new(|_| SkinList {
+            names: vec!["rescanned".to_owned()],
+            view: None,
+        });
+        let (mut link, _views, _thread) = spawn(
+            Some(root.0.clone()),
+            folders,
+            Box::new(|n| format!("{n} sets")),
+            None,
+            None,
+            None,
+        )
+        .unwrap();
+        let first = wait_for(&mut link, |p| p.status == SongSelectStatus::Ready);
+        assert_eq!(first.list.sets.len(), 1);
+
+        write_set(&root.0, "2 second", "Second");
+        assert!(link.rescan());
+        // Nothing published in between shows a scan in progress or fewer sets.
+        let mut done = wait_for(&mut link, |p| {
+            assert_ne!(p.status, SongSelectStatus::Scanning { sets: 0 });
+            p.list.sets.len() == 2
+        });
+        assert_eq!(done.status, SongSelectStatus::Ready);
+        let change = done.change.take().expect("the skins are listed again");
+        assert_eq!(change.skins, ["rescanned"]);
+        assert_eq!(change.songs.as_deref(), Some(root.0.as_path()));
+        link.retire(change);
     }
 
     #[test]

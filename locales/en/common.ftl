@@ -440,6 +440,13 @@ volume-meter-muted = MUTED
 toast-replay-saved = Replay saved
 toast-replay-saved-hint = Click to show the file
 
+# The toast after a dropped file was imported (ADR-0169).
+import-beatmap-imported = Beatmap imported
+import-skin-imported = Skin imported
+import-replay-imported = Replay imported
+import-failed = Import failed
+import-unsupported = Unsupported file
+
 ## Tablet section: OpenTabletDriver (ADR-0166)
 settings-otd-not-running = OpenTabletDriver was not found: it is not installed or not running.
 settings-otd-unsupported = This OpenTabletDriver version is not supported (0.6.x is needed).

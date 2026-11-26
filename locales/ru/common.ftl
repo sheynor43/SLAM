@@ -444,6 +444,13 @@ volume-meter-muted = БЕЗ ЗВУКА
 toast-replay-saved = Реплей сохранён
 toast-replay-saved-hint = Нажмите, чтобы показать файл
 
+# Уведомление после импорта перетащенного файла (ADR-0169).
+import-beatmap-imported = Карта импортирована
+import-skin-imported = Скин импортирован
+import-replay-imported = Реплей импортирован
+import-failed = Не удалось импортировать
+import-unsupported = Файл не поддерживается
+
 ## Tablet section: OpenTabletDriver (ADR-0166)
 settings-otd-not-running = OpenTabletDriver не найден: не установлен или не запущен.
 settings-otd-unsupported = Эта версия OpenTabletDriver не поддерживается (нужна 0.6.x).
