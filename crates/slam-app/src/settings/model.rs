@@ -422,25 +422,36 @@ impl HitsoundDelay {
     }
 }
 
-/// How the key overlay's keys animate (ADR-0113).
+/// How the key overlay looks (ADR-0113, ADR-0167): stable's four keys or lazer's three, each
+/// with stable's or lazer's animation.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "snake_case")]
 pub enum KeyOverlayAnimation {
-    /// As in stable.
+    /// Four keys, animated as in stable.
     #[default]
     Stable,
-    /// As in lazer.
+    /// Lazer's three keys, animated as in stable.
+    StableThree,
+    /// Lazer's three keys, animated as in lazer.
+    LazerThree,
+    /// Four keys, animated as in lazer.
     Lazer,
 }
 
 impl KeyOverlayAnimation {
-    pub const ALL: [KeyOverlayAnimation; 2] =
-        [KeyOverlayAnimation::Stable, KeyOverlayAnimation::Lazer];
+    pub const ALL: [KeyOverlayAnimation; 4] = [
+        KeyOverlayAnimation::Stable,
+        KeyOverlayAnimation::StableThree,
+        KeyOverlayAnimation::LazerThree,
+        KeyOverlayAnimation::Lazer,
+    ];
 
     /// The name in the settings file.
     pub fn name(self) -> &'static str {
         match self {
             KeyOverlayAnimation::Stable => "stable",
+            KeyOverlayAnimation::StableThree => "stable_three",
+            KeyOverlayAnimation::LazerThree => "lazer_three",
             KeyOverlayAnimation::Lazer => "lazer",
         }
     }
@@ -453,11 +464,18 @@ impl KeyOverlayAnimation {
     }
 }
 
-impl From<KeyOverlayAnimation> for slam_play::key_overlay::KeyAnimation {
-    fn from(animation: KeyOverlayAnimation) -> Self {
-        match animation {
-            KeyOverlayAnimation::Stable => slam_play::key_overlay::KeyAnimation::Stable,
-            KeyOverlayAnimation::Lazer => slam_play::key_overlay::KeyAnimation::Lazer,
+impl From<KeyOverlayAnimation> for slam_play::key_overlay::KeyStyle {
+    fn from(style: KeyOverlayAnimation) -> Self {
+        use slam_play::key_overlay::KeyAnimation;
+        let (animation, three_keys) = match style {
+            KeyOverlayAnimation::Stable => (KeyAnimation::Stable, false),
+            KeyOverlayAnimation::StableThree => (KeyAnimation::Stable, true),
+            KeyOverlayAnimation::LazerThree => (KeyAnimation::Lazer, true),
+            KeyOverlayAnimation::Lazer => (KeyAnimation::Lazer, false),
+        };
+        slam_play::key_overlay::KeyStyle {
+            animation,
+            three_keys,
         }
     }
 }

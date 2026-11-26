@@ -874,6 +874,8 @@ fn break_display_key(display: BreakDisplay) -> &'static str {
 fn key_animation_key(animation: KeyOverlayAnimation) -> &'static str {
     match animation {
         KeyOverlayAnimation::Stable => "settings-option-key-overlay-animation-stable",
+        KeyOverlayAnimation::StableThree => "settings-option-key-overlay-animation-stable-three",
+        KeyOverlayAnimation::LazerThree => "settings-option-key-overlay-animation-lazer-three",
         KeyOverlayAnimation::Lazer => "settings-option-key-overlay-animation-lazer",
     }
 }
@@ -2756,7 +2758,7 @@ mod tests {
         rows.apply(&mut s, index(Row::SnakingOut), RowValue::Toggle(true));
         rows.apply(&mut s, index(Row::HitLighting), RowValue::Toggle(false));
         rows.apply(&mut s, index(Row::KeyOverlay), RowValue::Toggle(true));
-        rows.apply(&mut s, index(Row::KeyOverlayAnimation), RowValue::Choice(1));
+        rows.apply(&mut s, index(Row::KeyOverlayAnimation), RowValue::Choice(3));
         rows.apply(&mut s, index(Row::HudAnimations), RowValue::Toggle(false));
         rows.apply(
             &mut s,

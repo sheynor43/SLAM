@@ -161,7 +161,7 @@ pub struct LiveInput {
     /// Actions held: the union of `held_inputs`.
     held: Actions,
     /// Presses per key of the overlay (ADR-0113).
-    key_presses: [u32; crate::key_overlay::KEYS],
+    key_presses: [u32; crate::key_overlay::SLOTS],
     /// Time of the previous step: no event of a later step is earlier.
     last_time: f64,
     /// Events not delivered yet because a step was full, oldest first (a ring).
@@ -212,7 +212,7 @@ impl LiveInput {
             }; MAX_HELD_INPUTS],
             held_len: 0,
             held: Actions::NONE,
-            key_presses: [0; crate::key_overlay::KEYS],
+            key_presses: [0; crate::key_overlay::SLOTS],
             last_time: f64::NEG_INFINITY,
             pending: [no_event; MAX_PENDING_EVENTS],
             pending_start: 0,
@@ -283,10 +283,10 @@ impl LiveInput {
     pub fn keys(
         &self,
     ) -> (
-        [u32; crate::key_overlay::KEYS],
-        [bool; crate::key_overlay::KEYS],
+        [u32; crate::key_overlay::SLOTS],
+        [bool; crate::key_overlay::SLOTS],
     ) {
-        let mut held = [false; crate::key_overlay::KEYS];
+        let mut held = [false; crate::key_overlay::SLOTS];
         for h in &self.held_inputs[..self.held_len] {
             if let Some(i) = crate::key_overlay::slot(h.input, h.actions) {
                 held[i] = true;
@@ -452,7 +452,7 @@ impl LiveInput {
         }
         self.held_len = 0;
         self.held = Actions::NONE;
-        self.key_presses = [0; crate::key_overlay::KEYS];
+        self.key_presses = [0; crate::key_overlay::SLOTS];
         self.last_time = f64::NEG_INFINITY;
         self.pending_start = 0;
         self.pending_len = 0;
@@ -779,26 +779,32 @@ mod tests {
                 mouse(2.0, MouseButton::Left, true),
                 key(3.0, SCANCODE_X, true),
                 key(3.5, SCANCODE_X, false),
-                // Smoke and an unbound key count nothing.
+                // Smoke counts in its own slot (lazer's third key); an unbound key nothing.
                 key(4.0, SCANCODE_C, true),
                 key(4.5, 4, true),
             ],
             ms(5.0),
             &Linear,
         );
-        assert_eq!(input.keys(), ([1, 1, 1, 0], [true, false, true, false]));
+        assert_eq!(
+            input.keys(),
+            ([1, 1, 1, 0, 1], [true, false, true, false, true])
+        );
         let _ = input.step(
             &[key(6.0, SCANCODE_Z, false), key(7.0, SCANCODE_Z, true)],
             ms(8.0),
             &Linear,
         );
-        assert_eq!(input.keys(), ([2, 1, 1, 0], [true, false, true, false]));
+        assert_eq!(
+            input.keys(),
+            ([2, 1, 1, 0, 1], [true, false, true, false, true])
+        );
         // Disabled mouse buttons press nothing.
         input.set_mouse_buttons_disabled(true);
         let _ = input.step(&[mouse(9.0, MouseButton::Right, true)], ms(10.0), &Linear);
         assert_eq!(input.keys().0[3], 0);
         input.reset();
-        assert_eq!(input.keys(), ([0; 4], [false; 4]));
+        assert_eq!(input.keys(), ([0; 5], [false; 5]));
     }
 
     #[test]

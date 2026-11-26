@@ -39,7 +39,7 @@ use crate::hit_error::{
     HitErrorMeter, HitErrorStyle, LAZER_PIXELS_PER_UNIT, MAX_HIT_ERROR_SPRITES, MeterTextures,
     SpinnerHiding,
 };
-use crate::key_overlay::{self, KEYS, KeyAnimation, KeyOverlay, KeyOverlayTextures, LABELS};
+use crate::key_overlay::{self, KEYS, KeyOverlay, KeyOverlayTextures, KeyStyle};
 use crate::legacy_text::{FontSprites, LegacyFont};
 use crate::menu_overlay::MenuLabels;
 use crate::offset::{OffsetPanel, OffsetWording, format_offset};
@@ -113,7 +113,7 @@ const WARM_TEXT: &str = "0123456789.%x-0123456789";
 /// none (the combo's `x` is Latin).
 const WARM_DIGITS: &str = "0123456789.%-";
 /// The key overlay's captions and counts.
-const WARM_KEYS: &str = "K1K2M1M2 4294967295";
+const WARM_KEYS: &str = "K1K2M1M2B3 4294967295";
 /// The key overlay's text size in lazer's HUD pixels: McOsu's 0.3 of the key's height (46).
 const KEY_TEXT_SIZE: f32 = 13.8;
 
@@ -474,7 +474,7 @@ pub struct HudSetup<'a> {
     pub song_progress: SongProgress,
     /// The key overlay's animation; `None`: the overlay is off and its elements are left
     /// out (ADR-0113).
-    pub key_overlay: Option<KeyAnimation>,
+    pub key_overlay: Option<KeyStyle>,
     /// Whether the counters roll, the combo pops and the health bar eases, bulges and
     /// flashes; off, they show their values at once.
     pub animations: bool,
@@ -853,7 +853,7 @@ impl HudView {
             }
             counter.shown = Some(key);
             counter.text = if count == 0 {
-                number_text(format_args!("{}", LABELS[i]))
+                number_text(format_args!("{}", self.key_overlay.labels()[i]))
             } else {
                 number_text(format_args!("{count}"))
             };
@@ -960,7 +960,7 @@ impl HudView {
                 [side, side]
             }
             Part::KeyCounter => {
-                let [w, h] = key_overlay::size(&textures.keys);
+                let [w, h] = key_overlay::size(&textures.keys, self.key_overlay.key_count());
                 [w * scale, h * scale]
             }
             Part::SkipButton => [SKIP_BUTTON[0] * scale, SKIP_BUTTON[1] * scale],
@@ -1343,8 +1343,9 @@ impl HudView {
                 // No captions without the keys under them.
                 Part::KeyCounter if textures.keys.key.is_none() => continue,
                 Part::KeyCounter => {
-                    let [width, _] = key_overlay::size(&textures.keys);
-                    for (i, counter) in self.key_texts.iter().enumerate() {
+                    let keys = self.key_overlay.key_count();
+                    let [width, _] = key_overlay::size(&textures.keys, keys);
+                    for (i, counter) in self.key_texts.iter().enumerate().take(keys) {
                         let key_first = batch.len();
                         let [cx, cy] = key_overlay::key_centre(width, i);
                         let centre = [cx * scale, cy * scale];
@@ -1502,7 +1503,7 @@ mod tests {
                 windows: &HitWindows::new(5.0),
                 meter_hiding: &SpinnerHiding::default(),
                 song_progress: SongProgress::default(),
-                key_overlay: Some(KeyAnimation::Stable),
+                key_overlay: Some(crate::key_overlay::KeyAnimation::Stable.into()),
                 animations,
             },
         )

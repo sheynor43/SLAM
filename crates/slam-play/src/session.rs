@@ -49,7 +49,7 @@ use crate::judgements::{
     JudgementRing, JudgementTextures, JudgementView, MAX_JUDGEMENT_FRAMES, PIECE_SLOTS, PieceKind,
     PieceSprites, PopupTargets, piece_sources,
 };
-use crate::key_overlay::{KEYS, KeyOverlayTextures, KeyValues};
+use crate::key_overlay::{KeyOverlayTextures, KeyValues, SLOTS};
 use crate::legacy_hit_error::triangle_image;
 use crate::legacy_text::{self, FontSprites};
 use crate::menu_overlay::{
@@ -538,8 +538,8 @@ pub struct PlaySession {
     passed: bool,
     restarts: u32,
     /// The overlay keys' presses counted this attempt, and the presses of the input seen.
-    key_counts: [u32; KEYS],
-    key_presses_seen: [u32; KEYS],
+    key_counts: [u32; SLOTS],
+    key_presses_seen: [u32; SLOTS],
     /// The pause or fail menu.
     menu: GameplayMenu,
     /// The menu's retry was pressed: the play restarts at the end of the tick.
@@ -709,8 +709,8 @@ impl PlaySession {
             restart_on_fail: false,
             passed: false,
             restarts: 0,
-            key_counts: [0; KEYS],
-            key_presses_seen: [0; KEYS],
+            key_counts: [0; SLOTS],
+            key_presses_seen: [0; SLOTS],
             menu: GameplayMenu::default(),
             menu_restart: false,
             playable,
@@ -1771,8 +1771,8 @@ impl PlaySession {
         self.passed = false;
         self.failed_replay_saved = false;
         self.restarts += 1;
-        self.key_counts = [0; KEYS];
-        self.key_presses_seen = [0; KEYS];
+        self.key_counts = [0; SLOTS];
+        self.key_presses_seen = [0; SLOTS];
         // A new player shows no panel and no menu.
         self.offset_panel.reset();
         self.menu.reset();

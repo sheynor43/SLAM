@@ -13,18 +13,27 @@ use slam_render::{Blend, Color};
 use crate::circles::SkinSprite;
 use crate::input::Input;
 
-/// Keys of the overlay: K1, K2, M1, M2.
+/// Keys of the overlay at most: K1, K2, M1, M2.
 pub const KEYS: usize = 4;
+/// Inputs counted: K1, K2, M1, M2 and smoke, which lazer's three keys show (ADR-0167).
+pub const SLOTS: usize = 5;
+/// The slot of smoke.
+const SMOKE_SLOT: usize = 4;
 /// The keys' captions before their first press: key names, not translated text.
 pub const LABELS: [&str; KEYS] = ["K1", "K2", "M1", "M2"];
+/// Lazer's captions of its three keys, one per action (`KeyCounterActionTrigger`).
+// Ported from osu!lazer 2026.1005.0-lazer: osu.Game/Screens/Play/HUD/KeyCounterActionTrigger.cs
+pub const LAZER_LABELS: [&str; KEYS] = ["B1", "B2", "B3", ""];
 
-/// The overlay key of `input` pressing `actions`: the keyboard's or the mouse's, for the left
-/// or right action. Smoke has none.
+/// The slot of `input` pressing `actions`: the keyboard's or the mouse's, for the left or
+/// right action, or smoke's.
 pub fn slot(input: Input, actions: Actions) -> Option<usize> {
     let side = if actions.contains(Actions::LEFT) {
         0
     } else if actions.contains(Actions::RIGHT) {
         1
+    } else if actions.contains(Actions::SMOKE) {
+        return Some(SMOKE_SLOT);
     } else {
         return None;
     };
@@ -37,11 +46,51 @@ pub fn slot(input: Input, actions: Actions) -> Option<usize> {
 /// The keys as gameplay last saw them.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub struct KeyValues {
-    /// Presses ever, for the animation.
-    pub presses: [u32; KEYS],
+    /// Presses ever, for the animation, by [`slot`].
+    pub presses: [u32; SLOTS],
     /// Presses counted: during gameplay, outside breaks and the skippable intro.
-    pub counts: [u32; KEYS],
-    pub held: [bool; KEYS],
+    pub counts: [u32; SLOTS],
+    pub held: [bool; SLOTS],
+}
+
+impl KeyValues {
+    /// The values of the keys shown: stable's four as they are, or lazer's three, one per
+    /// action, keyboard and mouse together.
+    fn keys(&self, three: bool) -> ([u32; KEYS], [u32; KEYS], [bool; KEYS]) {
+        if !three {
+            let four = |i: usize| i;
+            return (
+                std::array::from_fn(|i| self.presses[four(i)]),
+                std::array::from_fn(|i| self.counts[four(i)]),
+                std::array::from_fn(|i| self.held[four(i)]),
+            );
+        }
+        // Left: K1 and M1; right: K2 and M2; then smoke.
+        let pairs: [&[usize]; KEYS] = [&[0, 2], &[1, 3], &[SMOKE_SLOT], &[]];
+        (
+            pairs.map(|p| p.iter().map(|&i| self.presses[i]).sum()),
+            pairs.map(|p| p.iter().map(|&i| self.counts[i]).sum()),
+            pairs.map(|p| p.iter().any(|&i| self.held[i])),
+        )
+    }
+}
+
+/// How the overlay looks: its keys' animation and whether it shows stable's four keys or
+/// lazer's three (ADR-0167).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub struct KeyStyle {
+    pub animation: KeyAnimation,
+    pub three_keys: bool,
+}
+
+impl From<KeyAnimation> for KeyStyle {
+    /// Stable's four keys with `animation`.
+    fn from(animation: KeyAnimation) -> KeyStyle {
+        KeyStyle {
+            animation,
+            three_keys: false,
+        }
+    }
 }
 
 /// How the keys animate.
@@ -249,6 +298,7 @@ pub struct KeyOverlayTextures {
 #[derive(Debug, Clone, PartialEq)]
 pub struct KeyOverlay {
     animation: KeyAnimation,
+    three_keys: bool,
     keys: [Key; KEYS],
     /// The presses last seen; `None` before the first frame.
     presses: Option<[u32; KEYS]>,
@@ -256,9 +306,10 @@ pub struct KeyOverlay {
 }
 
 impl KeyOverlay {
-    pub fn new(animation: KeyAnimation) -> Self {
+    pub fn new(style: KeyStyle) -> Self {
         KeyOverlay {
-            animation,
+            animation: style.animation,
+            three_keys: style.three_keys,
             keys: [Key::IDLE; KEYS],
             presses: None,
             counts: [0; KEYS],
@@ -268,26 +319,41 @@ impl KeyOverlay {
     /// Takes `values` at `time`. A press since the last frame animates even when the key is
     /// released again already. Call once a frame, with times that do not go back.
     pub fn update(&mut self, values: &KeyValues, time: f64) {
+        let (presses, counts, held) = values.keys(self.three_keys);
         let seen = self.presses.unwrap_or([0; KEYS]);
         for (i, key) in self.keys.iter_mut().enumerate() {
-            let (now, before) = (values.presses[i], seen[i]);
+            let (now, before) = (presses[i], seen[i]);
             // A count going back is a new attempt: pressed if it pressed at all.
             let pressed = if now < before { now > 0 } else { now > before };
             if pressed {
                 key.press(self.animation, time);
             }
-            if key.held && !values.held[i] {
+            if key.held && !held[i] {
                 key.release(self.animation, time);
-            } else if !key.held && values.held[i] {
+            } else if !key.held && held[i] {
                 key.press(self.animation, time);
             }
         }
-        self.presses = Some(values.presses);
-        self.counts = values.counts;
+        self.presses = Some(presses);
+        self.counts = counts;
     }
 
     pub fn animation(&self) -> KeyAnimation {
         self.animation
+    }
+
+    /// Keys shown: four as stable, three as lazer.
+    pub fn key_count(&self) -> usize {
+        if self.three_keys { 3 } else { KEYS }
+    }
+
+    /// The keys' captions before their first press.
+    pub fn labels(&self) -> &'static [&'static str; KEYS] {
+        if self.three_keys {
+            &LAZER_LABELS
+        } else {
+            &LABELS
+        }
     }
 
     /// The presses counted per key.
@@ -306,8 +372,9 @@ impl KeyOverlay {
 
 /// The overlay's box at a scale of 1 with `textures`: the keys' column and the turned
 /// background, whichever reaches further.
-pub fn size(textures: &KeyOverlayTextures) -> [f32; 2] {
-    let keys_height = KEYS_TOP + KEYS as f32 * KEY_SIZE + (KEYS - 1) as f32 * KEY_SPACING;
+pub fn size(textures: &KeyOverlayTextures, keys: usize) -> [f32; 2] {
+    let keys = keys.clamp(1, KEYS);
+    let keys_height = KEYS_TOP + keys as f32 * KEY_SIZE + (keys - 1) as f32 * KEY_SPACING;
     let (bg_width, bg_height) = textures
         .background
         .map_or((0.0, 0.0), |b| (b.size.x * BACKGROUND_SCALE_X, b.size.y));
@@ -343,7 +410,7 @@ impl KeyOverlay {
         scale: f32,
         time: f64,
     ) {
-        let [width, _] = size(textures);
+        let [width, _] = size(textures, self.key_count());
         if let Some(bg) = textures.background {
             let mut sprite = Sprite::new(
                 bg.texture,
@@ -357,7 +424,7 @@ impl KeyOverlay {
         let Some(key) = textures.key else {
             return;
         };
-        for i in 0..KEYS {
+        for i in 0..self.key_count() {
             let pose = self.pose(i, time);
             let [cx, cy] = key_centre(width, i);
             let active = active_colour(i);
@@ -402,14 +469,37 @@ mod tests {
             slot(Input::Mouse(MouseButton::Right), Actions::RIGHT),
             Some(3)
         );
-        assert_eq!(slot(Input::Key(6), Actions::SMOKE), None);
+        assert_eq!(slot(Input::Key(6), Actions::SMOKE), Some(SMOKE_SLOT));
+    }
+
+    #[test]
+    fn lazers_three_keys_join_keyboard_and_mouse_and_add_smoke() {
+        let style = KeyStyle {
+            animation: KeyAnimation::Lazer,
+            three_keys: true,
+        };
+        let mut overlay = KeyOverlay::new(style);
+        assert_eq!(overlay.key_count(), 3);
+        assert_eq!(overlay.labels()[..3], ["B1", "B2", "B3"]);
+        overlay.update(
+            &KeyValues {
+                presses: [2, 1, 3, 0, 4],
+                counts: [2, 1, 3, 0, 4],
+                held: [false, false, true, false, false],
+            },
+            0.0,
+        );
+        assert_eq!(overlay.counts(), [5, 1, 4, 0]);
+        assert_eq!(overlay.pose(0, 1000.0).colour, 1.0, "M1 holds the left key");
+        let four = KeyOverlay::new(KeyAnimation::Stable.into());
+        assert_eq!((four.key_count(), four.labels()[3]), (4, "M2"));
     }
 
     fn values(presses: u32, held: bool) -> KeyValues {
         KeyValues {
-            presses: [presses, 0, 0, 0],
-            counts: [presses, 0, 0, 0],
-            held: [held, false, false, false],
+            presses: [presses, 0, 0, 0, 0],
+            counts: [presses, 0, 0, 0, 0],
+            held: [held, false, false, false, false],
         }
     }
 
@@ -419,7 +509,7 @@ mod tests {
 
     #[test]
     fn stable_shrinks_every_press_and_fades_the_colour_after_the_release() {
-        let mut overlay = KeyOverlay::new(KeyAnimation::Stable);
+        let mut overlay = KeyOverlay::new(KeyAnimation::Stable.into());
         overlay.update(&values(0, false), 0.0);
         overlay.update(&values(1, true), 100.0);
         assert_eq!(overlay.pose(0, 100.0).scale, 1.0);
@@ -450,7 +540,7 @@ mod tests {
 
     #[test]
     fn a_press_drops_the_release_waiting_for_the_shrink() {
-        let mut overlay = KeyOverlay::new(KeyAnimation::Stable);
+        let mut overlay = KeyOverlay::new(KeyAnimation::Stable.into());
         overlay.update(&values(0, false), 0.0);
         overlay.update(&values(1, true), 0.0);
         overlay.update(&values(1, false), 20.0);
@@ -461,7 +551,7 @@ mod tests {
         assert!(close(overlay.pose(0, 300.0).scale, 0.8));
 
         // Lazer presses from where the release got to.
-        let mut overlay = KeyOverlay::new(KeyAnimation::Lazer);
+        let mut overlay = KeyOverlay::new(KeyAnimation::Lazer.into());
         overlay.update(&values(0, false), 0.0);
         overlay.update(&values(1, true), 0.0);
         overlay.update(&values(1, false), 200.0);
@@ -472,7 +562,7 @@ mod tests {
 
     #[test]
     fn stable_released_after_the_shrink_grows_back_over_the_full_time() {
-        let mut overlay = KeyOverlay::new(KeyAnimation::Stable);
+        let mut overlay = KeyOverlay::new(KeyAnimation::Stable.into());
         overlay.update(&values(0, false), 0.0);
         overlay.update(&values(1, true), 0.0);
         overlay.update(&values(1, false), 500.0);
@@ -483,7 +573,7 @@ mod tests {
 
     #[test]
     fn lazer_eases_both_ways_and_switches_the_colour() {
-        let mut overlay = KeyOverlay::new(KeyAnimation::Lazer);
+        let mut overlay = KeyOverlay::new(KeyAnimation::Lazer.into());
         overlay.update(&values(0, false), 0.0);
         overlay.update(&values(1, true), 0.0);
         assert_eq!(overlay.pose(0, 0.0).colour, 1.0);
@@ -512,7 +602,7 @@ mod tests {
             }),
             key: None,
         };
-        let [w, h] = size(&textures);
+        let [w, h] = size(&textures, KEYS);
         assert!(close(w, 54.5));
         assert!(close(h, 202.65));
         assert_eq!(key_centre(w, 0), [54.5 - 23.0, 30.0]);

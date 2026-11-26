@@ -117,7 +117,7 @@ pub struct PlaySettings {
     /// Rate of the mixer the samples are prepared for (ADR-0102).
     pub sample_rate: u32,
     /// The key overlay's animation; `None`: no key overlay (ADR-0113).
-    pub key_overlay: Option<slam_play::key_overlay::KeyAnimation>,
+    pub key_overlay: Option<slam_play::key_overlay::KeyStyle>,
     /// Rolling counters, the combo's pops and the health bar's easing (on by default).
     pub hud_animations: bool,
 }
