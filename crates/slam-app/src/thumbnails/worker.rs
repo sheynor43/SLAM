@@ -25,6 +25,8 @@ pub const QUEUE: usize = 32;
 pub struct ThumbRequest {
     pub id: u32,
     pub height: u32,
+    /// A full-plate thumbnail (ADR-0174): a wider crop with its own cache.
+    pub wide: bool,
     pub files: Arc<SongFiles>,
     pub set: usize,
     pub difficulty: usize,
@@ -164,7 +166,7 @@ fn run(
             .and_then(|set| set.get(request.difficulty))
             .and_then(|file| {
                 let name = file.background.as_deref()?;
-                maker.make(file.path.parent()?, name, request.height)
+                maker.make(file.path.parent()?, name, request.height, request.wide)
             })
             .map_or(Made::Missing, Made::Image);
         outbox.push_back(WorkerOut {

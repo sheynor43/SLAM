@@ -178,6 +178,7 @@ struct Rig {
     shapes: ShapeBatch,
     text: SpriteBatch,
     thumbs: bool,
+    full: bool,
     rows: [Option<RowThumb>; MAX_VISIBLE_ROWS],
     now_ns: u64,
 }
@@ -200,6 +201,7 @@ impl Rig {
             shapes: ShapeBatch::with_capacity(256),
             text: SpriteBatch::with_capacity(8192),
             thumbs: false,
+            full: false,
             rows: [None; MAX_VISIBLE_ROWS],
             now_ns: 0,
         }
@@ -224,6 +226,7 @@ impl Rig {
             white(),
             Thumbs {
                 enabled: self.thumbs,
+                full: self.full,
                 rows: &self.rows,
                 now_ns: self.now_ns,
             },
@@ -774,6 +777,80 @@ fn thumbnails_do_not_allocate_once_warm_and_add_shapes() {
     assert!(with > rig.shapes.len(), "{with} vs {}", rig.shapes.len());
 }
 
+#[test]
+fn the_scrollbar_does_not_allocate_in_input_or_view() {
+    let mut rig = Rig::new();
+    let mut screen = SongSelect::new();
+    put(&mut screen, list_of(200));
+    screen.set_status(SongSelectStatus::Ready);
+    let layout = SongSelectLayout::new(1280.0, 720.0, &Theme::default());
+    let (x, y) = (
+        layout.scrollbar.x + layout.scrollbar.width / 2.0,
+        layout.scrollbar.y + layout.scrollbar.height / 2.0,
+    );
+    let pass = |rig: &mut Rig, screen: &mut SongSelect| {
+        for i in 0..60u64 {
+            rig.now_ns = i * 8_000_000;
+            for input in [
+                SongSelectInput::PointerMove { x, y },
+                SongSelectInput::PointerPress { x, y },
+                SongSelectInput::PointerMove { x, y: y + 30.0 },
+                SongSelectInput::PointerRelease,
+            ] {
+                std::hint::black_box(screen.input(input, &layout));
+            }
+            rig.frame(&screen.snapshot());
+        }
+    };
+    pass(&mut rig, &mut screen);
+    slam_testkit::assert_no_alloc(|| pass(&mut rig, &mut screen));
+}
+
+#[test]
+fn full_plate_thumbnails_do_not_allocate_do_not_shift_texts_and_cover_the_plate() {
+    let mut rig = Rig::new();
+    let mut screen = SongSelect::new();
+    put(&mut screen, list_of(200));
+    screen.set_status(SongSelectStatus::Ready);
+    let layout = SongSelectLayout::new(1280.0, 720.0, &Theme::default());
+    screen.input(SongSelectInput::Home, &layout);
+    let snapshot = screen.snapshot();
+    let (mut device, mut textures) = (UploadDevice::default(), Textures::with_capacity(16));
+    let mut warm = |rig: &mut Rig| {
+        // Glyphs are made on another thread: frame until the texts are all there.
+        for i in 0..2000 {
+            rig.now_ns = 10_000_000_000 + i * 600_000_000;
+            rig.frame(&snapshot);
+            if rig.glyphs.all_ready() && !rig.text.vertices().is_empty() {
+                break;
+            }
+            rig.glyphs.process(&mut device, &mut textures);
+            std::thread::sleep(std::time::Duration::from_millis(1));
+        }
+        // And once more, past every fade.
+        rig.now_ns += 5_000_000_000;
+        rig.frame(&snapshot);
+    };
+    // The texts without thumbnails, in a warm frame.
+    warm(&mut rig);
+    let plain_text: Vec<[f32; 2]> = rig.text.vertices().iter().map(|v| v.position).collect();
+    let plain_shapes = rig.shapes.len();
+    assert!(!plain_text.is_empty());
+    // Small thumbnails push the set rows' texts to the right.
+    rig.thumbs = true;
+    rig.rows = thumbnail_rows();
+    warm(&mut rig);
+    let small: Vec<[f32; 2]> = rig.text.vertices().iter().map(|v| v.position).collect();
+    assert_ne!(small, plain_text);
+    // Full plates leave them where they were, and add one image per loaded set row.
+    rig.full = true;
+    warm(&mut rig);
+    let full: Vec<[f32; 2]> = rig.text.vertices().iter().map(|v| v.position).collect();
+    assert_eq!(full, plain_text);
+    assert!(rig.shapes.len() > plain_shapes);
+    slam_testkit::assert_no_alloc(|| warm(&mut rig));
+}
+
 /// Takes texture uploads, so that glyphs get ready; nothing else is reached.
 #[derive(Default)]
 struct UploadDevice {
@@ -873,6 +950,7 @@ fn panel_alphas(
         white(),
         Thumbs {
             enabled: false,
+            full: false,
             rows: &rig.rows,
             now_ns,
         },

@@ -742,7 +742,8 @@ impl SettingsView {
             self.type_setter.lay_out(line, text);
         }
         for line in &mut self.headers {
-            let face = self.theme.heading_face(text * HEADER_TEXT);
+            // Section headers are Regular in lazer (ADR-0174).
+            let face = self.theme.regular_face(text * HEADER_TEXT);
             self.type_setter.lay_out_face(line, face);
         }
         for line in [
@@ -765,7 +766,9 @@ impl SettingsView {
         }
         for view in &mut self.views {
             if let RowView::Button(line) = view {
-                self.type_setter.lay_out(line, text);
+                // Button labels are Bold (ADR-0174).
+                self.type_setter
+                    .lay_out_face(line, self.theme.heading_face(text));
             }
         }
         if let Some(value) = &mut self.value {

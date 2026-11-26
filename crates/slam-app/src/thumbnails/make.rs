@@ -111,34 +111,52 @@ pub fn fnv_start() -> u64 {
 pub struct Maker {
     /// The `cache` folder; `None` without one: nothing is cached.
     cache: Option<PathBuf>,
-    /// Width over height.
+    /// Width over height of the small thumbnails left of a row's text.
     aspect: f32,
+    /// Width over height of the full-plate thumbnails (ADR-0174).
+    wide_aspect: f32,
     limits: ImageLimits,
 }
 
+/// The cache folder name of thumbnails `height` tall: the full-plate ones (a wider crop)
+/// are kept apart from the small ones (ADR-0174).
+pub fn cache_dir_name(height: u32, wide: bool) -> String {
+    if wide {
+        format!("full-{height}")
+    } else {
+        height.to_string()
+    }
+}
+
 impl Maker {
-    pub fn new(cache: Option<PathBuf>, aspect: f32, limits: ImageLimits) -> Maker {
+    pub fn new(
+        cache: Option<PathBuf>,
+        aspect: f32,
+        wide_aspect: f32,
+        limits: ImageLimits,
+    ) -> Maker {
         Maker {
             cache,
             aspect,
+            wide_aspect,
             limits,
         }
     }
 
     /// The cached file for key `key` at `height`.
-    fn cache_file(&self, height: u32, key: u64) -> Option<PathBuf> {
+    fn cache_file(&self, height: u32, wide: bool, key: u64) -> Option<PathBuf> {
         let cache = self.cache.as_ref()?;
         Some(
             cache
                 .join("thumbnails")
-                .join(height.to_string())
+                .join(cache_dir_name(height, wide))
                 .join(format!("{key:016x}.png")),
         )
     }
 
     /// The thumbnail of the background called `name` in the set folder `dir`; `None` when
     /// the file is missing or is not an image.
-    pub fn make(&self, dir: &Path, name: &str, height: u32) -> Option<Image> {
+    pub fn make(&self, dir: &Path, name: &str, height: u32, wide: bool) -> Option<Image> {
         let path = find_beatmap_file(dir, name)?;
         let meta = std::fs::metadata(&path).ok()?;
         let modified = meta
@@ -147,7 +165,7 @@ impl Maker {
             .and_then(|t| t.duration_since(UNIX_EPOCH).ok())
             .map_or(0, |d| d.as_nanos());
         let key = cache_key(&path, meta.len(), modified);
-        let cached = self.cache_file(height, key);
+        let cached = self.cache_file(height, wide, key);
         if let Some(file) = &cached
             && let Ok(bytes) = std::fs::read(file)
         {
@@ -161,7 +179,10 @@ impl Maker {
             .inspect_err(|e| tracing::warn!("thumbnail of {}: {e}", path.display()))
             .ok()?;
         drop(bytes);
-        let crop = cover_crop((source.size.width, source.size.height), self.aspect);
+        let crop = cover_crop(
+            (source.size.width, source.size.height),
+            if wide { self.wide_aspect } else { self.aspect },
+        );
         let (w, h) = output_size(crop.2, crop.3, height);
         let image = downscale(&source, crop, w, h);
         if let Some(file) = cached {

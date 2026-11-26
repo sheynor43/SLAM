@@ -130,6 +130,8 @@ pub struct Theme {
     pub font_weight: u16,
     /// Font weight of titles and section headers (ADR-0167).
     pub heading_weight: u16,
+    /// Weight of lazer's SemiBold texts: artists, notes, captions (ADR-0174).
+    pub semibold_weight: u16,
     /// Milliseconds a newly typed character of a search takes to fade and slide in.
     pub type_in_ms: f32,
     /// Pixels (at the reference height) a newly typed character slides up from.
@@ -162,6 +164,17 @@ pub struct Theme {
     pub scrollbar_drag_alpha: f32,
     /// Milliseconds the thumb takes to change between those.
     pub scrollbar_fade_ms: f32,
+    /// The song list's scrollbar after lazer's `Carousel.ScrollBar` (ADR-0174): the width
+    /// of its track and of its thumb pointed at, reference px.
+    pub song_scrollbar_width: f32,
+    /// The thumb's width at rest, as a part of `song_scrollbar_width`.
+    pub song_scrollbar_rest_width: f32,
+    /// Grey levels of the thumb at rest and pointed at (lazer's gray8 and grayF).
+    pub song_scrollbar_rest: f32,
+    pub song_scrollbar_hover: f32,
+    /// Gap above the track and below it (the logo's place in lazer), reference px.
+    pub song_scrollbar_pad_top: f32,
+    pub song_scrollbar_pad_bottom: f32,
     /// Width of the accent bar at the left edge of the selected settings tab (ADR-0173).
     pub settings_tab_bar_width: f32,
     /// The icon's side as a share of its tab's.
@@ -224,10 +237,19 @@ pub struct Theme {
     pub song_text_pad: f32,
     /// Width over height of a song row's thumbnail (ADR-0127).
     pub song_thumbnail_aspect: f32,
+    /// Width over height of a full-plate thumbnail's crop: about a set plate (ADR-0174).
+    pub song_thumbnail_wide_aspect: f32,
     /// Gap between a row's edge and its thumbnail.
     pub song_thumbnail_inset: f32,
     /// How long a thumbnail fades in, in milliseconds.
     pub song_thumbnail_fade_ms: f32,
+    /// How long a full-plate thumbnail fades in, in milliseconds (ADR-0174; lazer: 400,
+    /// out-quint).
+    pub song_plate_fade_ms: f32,
+    /// How bright a full-plate thumbnail is at the plate's left end and at its right end:
+    /// lazer's darkening of black 0.5 on the left and 0.2 on the right, as a multiplier.
+    pub song_plate_dim_left: f32,
+    pub song_plate_dim_right: f32,
     /// Milliseconds a set's difficulties take to slide open (ADR-0136).
     pub song_expand_ms: f32,
     /// Size of the artist and title, and of version texts.
@@ -690,10 +712,29 @@ impl Theme {
         }
     }
 
-    /// The note face at layout scale `scale`.
+    /// The regular face at `size` pixels: lazer's Regular texts (ADR-0174).
+    pub(crate) fn regular_face(&self, size: f32) -> crate::menu::view::Face {
+        crate::menu::view::Face {
+            size,
+            weight: self.font_weight,
+            width: slam_text::NORMAL_WIDTH,
+        }
+    }
+
+    /// The semibold face at `size` pixels: lazer's SemiBold texts (ADR-0174).
+    pub(crate) fn semibold_face(&self, size: f32) -> crate::menu::view::Face {
+        crate::menu::view::Face {
+            size,
+            weight: self.semibold_weight,
+            width: slam_text::NORMAL_WIDTH,
+        }
+    }
+
+    /// The note face at layout scale `scale`: SemiBold, as lazer's notes and captions.
     pub(crate) fn note_face(&self, scale: f32) -> crate::menu::view::Face {
         crate::menu::view::Face {
             size: self.note_size * scale,
+            weight: self.semibold_weight,
             ..self.caption_face(scale)
         }
     }
@@ -724,6 +765,7 @@ impl Theme {
             reference_height: 768.0,
             font_weight: 500,
             heading_weight: 700,
+            semibold_weight: 600,
             type_in_ms: 120.0,
             type_slide: 5.0,
             erase_pop_ms: 140.0,
@@ -741,6 +783,12 @@ impl Theme {
             scrollbar_hover_alpha: 0.42,
             scrollbar_drag_alpha: 0.65,
             scrollbar_fade_ms: 200.0,
+            song_scrollbar_width: 10.0,
+            song_scrollbar_rest_width: 0.5,
+            song_scrollbar_rest: 0.533,
+            song_scrollbar_hover: 0.941,
+            song_scrollbar_pad_top: 5.0,
+            song_scrollbar_pad_bottom: 70.0,
             settings_tab_bar_width: 3.0,
             settings_tab_icon_share: 0.5,
             settings_tab_idle_alpha: 0.5,
@@ -789,8 +837,12 @@ impl Theme {
             song_indent: 24.0,
             song_text_pad: 16.0,
             song_thumbnail_aspect: 1.6,
+            song_thumbnail_wide_aspect: 7.0,
             song_thumbnail_inset: 3.0,
             song_thumbnail_fade_ms: 200.0,
+            song_plate_fade_ms: 400.0,
+            song_plate_dim_left: 0.5,
+            song_plate_dim_right: 0.8,
             song_expand_ms: 250.0,
             song_title_size: 20.0,
             song_detail_size: 13.0,
@@ -1151,7 +1203,8 @@ mod tests {
         assert!(theme.caption_size < theme.widget_text_size);
         assert!(theme.note_size < theme.caption_size);
         assert!(theme.caption_weight <= theme.font_weight);
-        assert!(theme.font_weight < theme.heading_weight);
+        assert!(theme.font_weight < theme.semibold_weight);
+        assert!(theme.semibold_weight < theme.heading_weight);
         let face = theme.caption_face(2.0);
         assert_eq!(face.size, theme.caption_size * 2.0);
         assert_eq!(theme.note_face(2.0).size, theme.note_size * 2.0);

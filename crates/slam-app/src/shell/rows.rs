@@ -22,7 +22,7 @@ use crate::settings::model::ModHotkeyStyle;
 use crate::settings::{
     BreakDisplay, DrawRate, FpsScreens, HitsoundDelay, InputSettings, KeyOverlayAnimation, KeySlot,
     MenuBackground, MenuSounds, PauseMenuStyle, RendererChoice, ResultsStyle, Settings,
-    SkipButtonStyle, Thumbnails, Timing, skins,
+    SkipButtonStyle, ThumbnailStyle, Thumbnails, Timing, skins,
 };
 use slam_ui::cursor::CursorStyle;
 use slam_ui::screen::TransitionStyle;
@@ -339,6 +339,8 @@ pub enum Row {
     SongSelectModHotkeys,
     /// Height of the song list's thumbnails (ADR-0127).
     SongSelectThumbnails,
+    /// Where a set's thumbnail goes (ADR-0174).
+    SongSelectThumbnailStyle,
     AlwaysPlayFirstComboBreak,
     /// Shows the skin's warning arrows before a break ends (ADR-0142).
     WarningArrows,
@@ -375,7 +377,7 @@ const _: () =
     assert!(Row::ALL.len() + super::otd::OtdRow::ALL.len() <= slam_ui::settings_screen::MAX_ROWS);
 
 impl Row {
-    pub const ALL: [Row; 111] = [
+    pub const ALL: [Row; 112] = [
         Row::MasterVolume,
         Row::MusicVolume,
         Row::MenuMusic,
@@ -468,6 +470,7 @@ impl Row {
         Row::SongSelectDifficultyInfo,
         Row::SongSelectModHotkeys,
         Row::SongSelectThumbnails,
+        Row::SongSelectThumbnailStyle,
         Row::AlwaysPlayFirstComboBreak,
         Row::WarningArrows,
         Row::Countdown,
@@ -667,6 +670,7 @@ impl Row {
             | Row::SongSelectDifficultyInfo
             | Row::SongSelectModHotkeys
             | Row::SongSelectThumbnails
+            | Row::SongSelectThumbnailStyle
             | Row::AlwaysPlayFirstComboBreak
             | Row::WarningArrows
             | Row::Countdown
@@ -769,6 +773,7 @@ impl Row {
             Row::SongSelectDifficultyInfo => "settings-song-select-difficulty-info",
             Row::SongSelectModHotkeys => "settings-song-select-mod-hotkeys",
             Row::SongSelectThumbnails => "settings-song-select-thumbnails",
+            Row::SongSelectThumbnailStyle => "settings-song-select-thumbnail-style",
             Row::BeatmapSkins => "settings-gameplay-beatmap-skins",
             Row::BeatmapColours => "settings-gameplay-beatmap-colours",
             Row::BeatmapHitsounds => "settings-gameplay-beatmap-hitsounds",
@@ -963,6 +968,14 @@ fn thumbnails_key(thumbnails: Thumbnails) -> &'static str {
         Thumbnails::H64 => "settings-option-thumbnails-64",
         Thumbnails::H128 => "settings-option-thumbnails-128",
         Thumbnails::H256 => "settings-option-thumbnails-256",
+    }
+}
+
+/// The Fluent key of a thumbnail style option (ADR-0174).
+fn thumbnail_style_key(style: ThumbnailStyle) -> &'static str {
+    match style {
+        ThumbnailStyle::Left => "settings-option-thumbnail-style-left",
+        ThumbnailStyle::Full => "settings-option-thumbnail-style-full",
     }
 }
 
@@ -1351,6 +1364,12 @@ impl Rows {
                 Thumbnails::ALL
                     .iter()
                     .position(|t| *t == s.song_select.thumbnails),
+            ),
+            Row::SongSelectThumbnailStyle => choice(
+                ThumbnailStyle::ALL.len(),
+                ThumbnailStyle::ALL
+                    .iter()
+                    .position(|t| *t == s.song_select.thumbnail_style),
             ),
             Row::MenuBackground => choice(
                 MenuBackground::ALL.len(),
@@ -1807,6 +1826,11 @@ impl Rows {
                     settings.song_select.thumbnails = *thumbnails;
                 }
             }
+            (Row::SongSelectThumbnailStyle, RowValue::Choice(i)) => {
+                if let Some(style) = ThumbnailStyle::ALL.get(i) {
+                    settings.song_select.thumbnail_style = *style;
+                }
+            }
             (Row::MenuCursor, RowValue::Choice(i)) => {
                 if let Some(style) = CursorStyle::ALL.get(i) {
                     settings.general.menu_cursor = *style;
@@ -2101,6 +2125,10 @@ impl Rows {
                     Row::SongSelectThumbnails => Thumbnails::ALL
                         .iter()
                         .map(|t| text(thumbnails_key(*t)))
+                        .collect(),
+                    Row::SongSelectThumbnailStyle => ThumbnailStyle::ALL
+                        .iter()
+                        .map(|t| text(thumbnail_style_key(*t)))
                         .collect(),
                     Row::MenuCursor | Row::CursorStyle => CursorStyle::ALL
                         .iter()
@@ -3157,6 +3185,35 @@ mod tests {
         localizer.set_language("ru").unwrap();
         let labels = rows.labels(&localizer);
         assert_eq!(labels.rows[at].options[0], "Выкл.");
+        assert!(!labels.rows[at].label.is_empty());
+    }
+
+    #[test]
+    fn the_thumbnail_style_row_follows_the_thumbnails_row_in_both_languages() {
+        let (rows, mut s) = rows();
+        let at = index(Row::SongSelectThumbnailStyle);
+        assert_eq!(at, index(Row::SongSelectThumbnails) + 1);
+        assert_eq!(s.song_select.thumbnail_style, ThumbnailStyle::Left);
+        assert_eq!(
+            rows.specs(&s)[at].kind,
+            RowKind::Dropdown {
+                options: 2,
+                selected: 0
+            }
+        );
+        rows.apply(&mut s, at, RowValue::Choice(1));
+        assert_eq!(s.song_select.thumbnail_style, ThumbnailStyle::Full);
+        rows.apply(&mut s, at, RowValue::Choice(7));
+        assert_eq!(s.song_select.thumbnail_style, ThumbnailStyle::Full);
+        let localizer = Localizer::builtin().unwrap();
+        localizer.set_language("en").unwrap();
+        assert_eq!(
+            rows.labels(&localizer).rows[at].options,
+            ["Small, left", "Full plate"]
+        );
+        localizer.set_language("ru").unwrap();
+        let labels = rows.labels(&localizer);
+        assert_eq!(labels.rows[at].options[1], "На всю плашку");
         assert!(!labels.rows[at].label.is_empty());
     }
 

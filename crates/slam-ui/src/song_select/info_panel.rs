@@ -393,15 +393,22 @@ impl InfoPanel {
     /// Lays the static texts out for `scale` and forgets what the others showed.
     pub(super) fn lay_out(&mut self, type_setter: &mut Typesetter, theme: &Theme, scale: f32) {
         let detail = theme.song_info_detail_size * scale;
-        for line in self.bar_labels.iter_mut().chain([
+        for line in self.bar_labels.iter_mut() {
+            // The wedge's statistic captions are SemiBold (ADR-0174).
+            type_setter.lay_out_face(line, theme.semibold_face(detail));
+        }
+        for line in [
             &mut self.scores_title,
             &mut self.no_scores,
             &mut self.charset,
-        ]) {
+        ] {
             type_setter.lay_out(line, detail);
         }
         for line in [&mut self.accuracy_label, &mut self.combo_label] {
-            type_setter.lay_out(line, theme.song_score_caption_size * scale);
+            type_setter.lay_out_face(
+                line,
+                theme.semibold_face(theme.song_score_caption_size * scale),
+            );
         }
         self.name_for = None;
         self.details_for = None;
@@ -465,9 +472,11 @@ impl InfoPanel {
                 }
                 let _ = write!(self.artist.text, "{} - {}", set.artist, set.title);
             }
-            type_setter.lay_out(&mut self.stars, detail);
-            type_setter.lay_out_face(&mut self.name, theme.heading_face(title));
-            type_setter.lay_out(&mut self.artist, artist_size);
+            // Lazer's wedge: the pill Bold, the title Regular, the artist SemiBold
+            // (ADR-0174).
+            type_setter.lay_out_face(&mut self.stars, theme.heading_face(detail));
+            type_setter.lay_out_face(&mut self.name, theme.regular_face(title));
+            type_setter.lay_out_face(&mut self.artist, theme.semibold_face(artist_size));
         }
         if self.details_for != Some(snapshot.details) {
             self.details_for = Some(snapshot.details);

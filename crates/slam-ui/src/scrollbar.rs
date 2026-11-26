@@ -12,9 +12,9 @@
 //! Extents and offsets are in one unit of the caller's choice (pixels, lines); the bar
 //! works in fractions. Nothing here allocates.
 
-use slam_render::Color;
 use slam_render::atlas::AtlasRegion;
-use slam_render::shape::ShapeBatch;
+use slam_render::shape::{Shape, ShapeBatch};
+use slam_render::{Blend, Color};
 
 use crate::anim::{Towards, ease_out_cubic};
 use crate::menu::Rect;
@@ -199,13 +199,38 @@ impl ScrollbarLook {
         theme: &Theme,
         scale: f32,
     ) -> (f32, f32) {
+        self.ease(
+            hovered,
+            dragging,
+            now_ns,
+            theme,
+            scale,
+            [
+                (theme.scrollbar_alpha, theme.scrollbar_width),
+                (theme.scrollbar_hover_alpha, theme.scrollbar_active_width),
+                (theme.scrollbar_drag_alpha, theme.scrollbar_active_width),
+            ],
+        )
+    }
+
+    /// Eases to the (level, width in reference pixels) of the state: `[rest, hovered,
+    /// held]`.
+    fn ease(
+        &mut self,
+        hovered: bool,
+        dragging: bool,
+        now_ns: u64,
+        theme: &Theme,
+        scale: f32,
+        states: [(f32, f32); 3],
+    ) -> (f32, f32) {
         let fade = (theme.scrollbar_fade_ms.max(0.0) * 1.0e6) as u64;
         let (alpha, width) = if dragging {
-            (theme.scrollbar_drag_alpha, theme.scrollbar_active_width)
+            states[2]
         } else if hovered {
-            (theme.scrollbar_hover_alpha, theme.scrollbar_active_width)
+            states[1]
         } else {
-            (theme.scrollbar_alpha, theme.scrollbar_width)
+            states[0]
         };
         if !self.ready {
             // The first frame: start at rest rather than fading in from nothing.
@@ -257,9 +282,199 @@ impl ScrollbarLook {
     }
 }
 
+impl ScrollbarLook {
+    /// Draws the bar as lazer's carousel does (`Carousel.ScrollBar`, ADR-0174): the thumb
+    /// is a capsule centred in the track, half as wide as it at rest and as wide as it
+    /// when pointed at or held, added to what is under it; grey at rest, lighter pointed
+    /// at, the accent held. Nothing for content that does not scroll.
+    #[allow(clippy::too_many_arguments)]
+    pub fn push_carousel(
+        &mut self,
+        shapes: &mut ShapeBatch,
+        white: AtlasRegion,
+        bar: &Scrollbar,
+        offset: f32,
+        pointer: [f32; 2],
+        dragging: bool,
+        opacity: f32,
+        theme: &Theme,
+        scale: f32,
+        now_ns: u64,
+    ) {
+        if !bar.is_scrollable() {
+            return;
+        }
+        let hovered = bar.track.contains(pointer[0], pointer[1]);
+        let full = theme.song_scrollbar_width;
+        // The "alpha" eased here is the colour's level: 0 rest, 1 pointed at, 2 held.
+        let (level, width) = self.ease(
+            hovered,
+            dragging,
+            now_ns,
+            theme,
+            scale,
+            [
+                (0.0, full * theme.song_scrollbar_rest_width),
+                (1.0, full),
+                (2.0, full),
+            ],
+        );
+        let thumb = bar.thumb(offset);
+        let rect = Rect {
+            x: thumb.x + (thumb.width - width) / 2.0,
+            width,
+            ..thumb
+        };
+        draw_carousel(shapes, white, &rect, level, opacity, theme);
+    }
+}
+
+/// The carousel thumb's colour at `level` (0 rest, 1 pointed at, 2 held): grey, lighter,
+/// the accent.
+pub(crate) fn carousel_colour(level: f32, theme: &Theme) -> Color {
+    let grey = |v: f32| Color::rgb(v, v, v);
+    let mix = |a: Color, b: Color, t: f32| Color {
+        r: a.r + (b.r - a.r) * t,
+        g: a.g + (b.g - a.g) * t,
+        b: a.b + (b.b - a.b) * t,
+        a: 1.0,
+    };
+    let (rest, hover) = (
+        grey(theme.song_scrollbar_rest),
+        grey(theme.song_scrollbar_hover),
+    );
+    if level <= 1.0 {
+        mix(rest, hover, level.clamp(0.0, 1.0))
+    } else {
+        mix(hover, theme.accent, (level - 1.0).clamp(0.0, 1.0))
+    }
+}
+
+fn draw_carousel(
+    shapes: &mut ShapeBatch,
+    white: AtlasRegion,
+    rect: &Rect,
+    level: f32,
+    opacity: f32,
+    theme: &Theme,
+) {
+    let colour = Color {
+        a: opacity,
+        ..carousel_colour(level, theme)
+    };
+    shapes.push_shape(&Shape {
+        radius: rect.width.min(rect.height) / 2.0,
+        blend: Blend::Additive,
+        ..Shape::new(
+            white.texture,
+            white.uv,
+            [rect.x, rect.y],
+            [rect.width, rect.height],
+            colour,
+        )
+    });
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn the_carousel_thumb_is_grey_lighter_pointed_at_and_the_accent_held() {
+        let theme = Theme::default();
+        let rest = carousel_colour(0.0, &theme);
+        let hover = carousel_colour(1.0, &theme);
+        let held = carousel_colour(2.0, &theme);
+        assert_eq!(rest.r, theme.song_scrollbar_rest);
+        assert_eq!(hover.r, theme.song_scrollbar_hover);
+        assert!(rest.r < hover.r);
+        assert!((held.g - theme.accent.g).abs() < 1e-5 && (held.b - theme.accent.b).abs() < 1e-5);
+    }
+
+    #[test]
+    fn the_carousel_thumb_is_half_as_wide_at_rest_and_added() {
+        let theme = Theme::default();
+        let white = AtlasRegion {
+            texture: slam_render::textures::TextureId(0),
+            origin: slam_render::Origin::new(0, 0),
+            size: slam_render::Extent::new(1, 1),
+            uv: slam_render::atlas::UvRect::FULL,
+        };
+        let track = Rect {
+            x: 100.0,
+            y: 10.0,
+            width: theme.song_scrollbar_width,
+            height: 200.0,
+        };
+        let bar = Scrollbar::new(track, 800.0, 200.0, 10.0);
+        let mut look = ScrollbarLook::new();
+        let mut shapes = ShapeBatch::with_capacity(4);
+        let ms = 1_000_000;
+        look.push_carousel(
+            &mut shapes,
+            white,
+            &bar,
+            0.0,
+            [0.0, 0.0],
+            false,
+            1.0,
+            &theme,
+            1.0,
+            0,
+        );
+        assert_eq!(shapes.len(), 1);
+        let rest = shapes.vertices().to_vec();
+        // The quad reaches a margin past the shape, so widths are compared to each other.
+        let rest_width = rest[1].position[0] - rest[0].position[0];
+        // Pointed at: the full width, after the fade.
+        shapes.clear();
+        look.push_carousel(
+            &mut shapes,
+            white,
+            &bar,
+            0.0,
+            [104.0, 50.0],
+            false,
+            1.0,
+            &theme,
+            1.0,
+            5000 * ms,
+        );
+        shapes.clear();
+        look.push_carousel(
+            &mut shapes,
+            white,
+            &bar,
+            0.0,
+            [104.0, 50.0],
+            false,
+            1.0,
+            &theme,
+            1.0,
+            6000 * ms,
+        );
+        let hovered = shapes.vertices();
+        let width = hovered[1].position[0] - hovered[0].position[0];
+        let grown = width - rest_width;
+        let expected = theme.song_scrollbar_width * (1.0 - theme.song_scrollbar_rest_width);
+        assert!((grown - expected).abs() < 1e-3, "{grown}");
+        // A list that fits has none.
+        shapes.clear();
+        let short = Scrollbar::new(track, 100.0, 200.0, 10.0);
+        look.push_carousel(
+            &mut shapes,
+            white,
+            &short,
+            0.0,
+            [0.0, 0.0],
+            false,
+            1.0,
+            &theme,
+            1.0,
+            0,
+        );
+        assert_eq!(shapes.len(), 0);
+    }
 
     fn bar() -> Scrollbar {
         // 100 px track; content 400, view 100: thumb of 25 px.
