@@ -1981,3 +1981,14 @@ fn a_bad_results_style_falls_back_with_a_warning() {
         loaded.warnings
     );
 }
+
+#[test]
+fn the_discord_presence_setting_defaults_on_and_round_trips() {
+    assert!(Settings::default().general.discord_presence);
+    let loaded = file::from_toml_str("[general]\ndiscord_presence = false\n");
+    assert!(!loaded.settings.general.discord_presence);
+    let mut settings = Settings::default();
+    settings.general.discord_presence = false;
+    let text = file::to_toml_string(&settings).unwrap();
+    assert!(text.contains("discord_presence = false"), "{text}");
+}

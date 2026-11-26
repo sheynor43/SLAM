@@ -7,6 +7,7 @@ pub mod bench;
 pub mod click;
 pub mod default_skin;
 pub mod details;
+pub mod discord;
 pub mod displays;
 pub mod feedback;
 pub mod gpu;

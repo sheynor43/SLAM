@@ -359,6 +359,8 @@ pub enum Row {
     FeedbackBug,
     /// Opens the feature request form.
     FeedbackFeature,
+    /// Whether the Discord status shows what the player does; applies live (ADR-0170).
+    DiscordPresence,
 }
 
 // The screen ignores rows past its capacity.
@@ -366,7 +368,7 @@ const _: () =
     assert!(Row::ALL.len() + super::otd::OtdRow::ALL.len() <= slam_ui::settings_screen::MAX_ROWS);
 
 impl Row {
-    pub const ALL: [Row; 105] = [
+    pub const ALL: [Row; 106] = [
         Row::MasterVolume,
         Row::MusicVolume,
         Row::MenuMusic,
@@ -472,6 +474,7 @@ impl Row {
         Row::FeedbackHome,
         Row::FeedbackBug,
         Row::FeedbackFeature,
+        Row::DiscordPresence,
     ];
 
     /// The page a Feedback row opens.
@@ -617,7 +620,9 @@ impl Row {
             | Row::HoldToConfirm
             | Row::RestartAnimation => section::GAMEPLAY,
             Row::SongsFolder => section::LIBRARY,
-            Row::FeedbackHome | Row::FeedbackBug | Row::FeedbackFeature => section::FEEDBACK,
+            Row::FeedbackHome | Row::FeedbackBug | Row::FeedbackFeature | Row::DiscordPresence => {
+                section::FEEDBACK
+            }
         }
     }
 
@@ -727,6 +732,7 @@ impl Row {
             Row::FeedbackHome => "settings-feedback-home",
             Row::FeedbackBug => "settings-feedback-bug",
             Row::FeedbackFeature => "settings-feedback-feature",
+            Row::DiscordPresence => "settings-feedback-discord",
         }
     }
 
@@ -1149,6 +1155,9 @@ impl Rows {
             | Row::FeedbackBug
             | Row::FeedbackFeature => RowKind::Button,
             Row::NotFullscreenNote => RowKind::Note,
+            Row::DiscordPresence => RowKind::Toggle {
+                value: s.general.discord_presence,
+            },
             Row::MasterVolume => percent(s.audio.master_volume),
             Row::MusicVolume => percent(s.audio.music_volume),
             Row::MenuMusic => RowKind::Toggle {
@@ -1614,6 +1623,7 @@ impl Rows {
                 }
             },
             (Row::Intro, RowValue::Toggle(v)) => settings.general.intro = v,
+            (Row::DiscordPresence, RowValue::Toggle(v)) => settings.general.discord_presence = v,
             (Row::Effects, RowValue::Toggle(v)) => settings.general.effects = v,
             (Row::ParallaxEnabled, RowValue::Toggle(v)) => settings.general.parallax_enabled = v,
             (Row::Parallax, RowValue::Slider(v)) => {
@@ -2424,6 +2434,7 @@ mod tests {
             (Row::HudAnimations, true),
             (Row::RestartAnimation, true),
             (Row::Intro, true),
+            (Row::DiscordPresence, true),
             (Row::Effects, true),
             (Row::AlwaysPlayFirstComboBreak, true),
             (Row::WarningArrows, true),

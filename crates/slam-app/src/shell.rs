@@ -2914,6 +2914,16 @@ fn blocks_win_key(state: PlayState, is_break_time: bool) -> bool {
 }
 
 impl PlayHost {
+    /// The title and mods of the running play, for the Discord status.
+    fn discord_play(&self) -> Option<crate::discord::Play> {
+        let game = self.game.as_ref()?;
+        let mods = game.mods.iter().map(|m| m.as_str()).collect::<Vec<_>>();
+        Some(crate::discord::Play {
+            title: game.title.clone(),
+            mods: mods.join(","),
+        })
+    }
+
     /// Whether the play shows its pause or fail menu, over which the settings panel may
     /// open (ADR-0095).
     fn menu_shown(&self) -> bool {
@@ -3677,6 +3687,8 @@ impl PlayHost {
 /// The update thread's side.
 struct Shell {
     state: ShellState,
+    /// The Discord status (ADR-0170).
+    discord: crate::discord::Discord,
     /// Without an audio output, the song select does not play.
     host: Option<PlayHost>,
     /// Surface size in pixels the draw thread last drew at, see [`pack_size`].
@@ -3779,6 +3791,29 @@ impl Shell {
         if self.state.window_reported(before, after) {
             self.window_save_at = Some(now_ns.saturating_add(WINDOW_SAVE_DELAY_NS));
         }
+    }
+
+    /// Tells the Discord status what the player does; sends only on a change.
+    fn follow_discord(&mut self) {
+        use crate::discord::Scene;
+        let Some(localizer) = self.state.localizer.as_deref() else {
+            return;
+        };
+        let menu_shown = self.host.as_ref().is_some_and(PlayHost::menu_shown);
+        let scene = match self.state.stack.top() {
+            AppScreen::Menu(_) => Scene::Menu,
+            AppScreen::SongSelect => Scene::SongSelect,
+            AppScreen::Results(_) => Scene::Results,
+            AppScreen::Play(id) if menu_shown => Scene::Paused(*id),
+            AppScreen::Play(id) => Scene::Playing(*id),
+        };
+        let host = self.host.as_ref();
+        self.discord.follow(
+            self.state.settings().general.discord_presence,
+            scene,
+            || host.and_then(PlayHost::discord_play).unwrap_or_default(),
+            localizer,
+        );
     }
 
     /// Asks for the draw rate the visible screens call for, hands changed settings to the
@@ -3889,6 +3924,7 @@ impl Update for Shell {
             }
         }
         self.apply_settings(now);
+        self.follow_discord();
         let play = self
             .host
             .as_ref()
@@ -5506,6 +5542,7 @@ fn run_with<B: render::Backend>(
     let counters = Arc::<slam_engine::EngineCounters>::default();
     let shell = Shell {
         state,
+        discord: crate::discord::Discord::spawn(),
         host,
         surface: Arc::clone(&surface_size),
         layout_size: initial_size,
