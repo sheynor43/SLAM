@@ -155,6 +155,8 @@ pub struct General {
     pub menu_cursor: CursorStyle,
     /// Which look the results screen takes (ADR-0163). Applies live.
     pub results_style: ResultsStyle,
+    /// Whether the Discord status shows what the player does (ADR-0170). Applies live.
+    pub discord_presence: bool,
 }
 
 impl Default for General {
@@ -183,6 +185,7 @@ impl Default for General {
             menu_background: MenuBackground::default(),
             menu_cursor: CursorStyle::Slam,
             results_style: ResultsStyle::default(),
+            discord_presence: true,
         }
     }
 }

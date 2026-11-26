@@ -355,6 +355,15 @@ settings-feedback-bug = Нашли ошибку?
 settings-feedback-bug-button = Сообщить об ошибке
 settings-feedback-feature = Есть идея?
 settings-feedback-feature-button = Предложить функцию
+settings-feedback-discord = Статус в Discord
+
+discord-menu = В главном меню
+discord-song-select = Выбирает карту
+discord-playing = Играет
+discord-playing-mods = Играет с { $mods }
+discord-paused = Пауза
+discord-paused-mods = Пауза, { $mods }
+discord-results = Смотрит результаты
 settings-option-default-skin = Стандартный
 settings-keybind-empty = Не задано
 settings-keybind-conflict-title = Этот ввод уже назначен:

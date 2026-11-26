@@ -189,6 +189,7 @@ use slam_ui::settings_screen::RowKind;
 
 pub(super) fn shell_with(link: crate::settings::saver::SaveLink) -> Shell {
     Shell {
+        discord: crate::discord::Discord::disabled(),
         state: state(),
         host: None,
         surface: Arc::new(AtomicU64::new(0)),

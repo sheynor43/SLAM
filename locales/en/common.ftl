@@ -351,6 +351,15 @@ settings-feedback-bug = Found a bug?
 settings-feedback-bug-button = Report a bug
 settings-feedback-feature = Have an idea?
 settings-feedback-feature-button = Suggest a feature
+settings-feedback-discord = Discord status
+
+discord-menu = In the main menu
+discord-song-select = Choosing a beatmap
+discord-playing = Playing
+discord-playing-mods = Playing with { $mods }
+discord-paused = Paused
+discord-paused-mods = Paused with { $mods }
+discord-results = Looking at the results
 settings-option-default-skin = Default
 settings-keybind-empty = Not set
 settings-keybind-conflict-title = This input is already bound to:

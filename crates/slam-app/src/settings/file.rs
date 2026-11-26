@@ -327,6 +327,13 @@ fn from_table(mut table: Table) -> Loaded {
         &mut settings.general.cursor_ripple,
         |_| Ok(()),
     );
+    cx.field(
+        &mut general,
+        "general",
+        "discord_presence",
+        &mut settings.general.discord_presence,
+        |_| Ok(()),
+    );
     let mut scheme: Option<String> = None;
     cx.opt(&mut general, "general", "colour_scheme", &mut scheme);
     if let Some(name) = scheme {
