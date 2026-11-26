@@ -71,6 +71,17 @@ impl SearchQuery {
         true
     }
 
+    /// Removes the trailing spaces and the word before them (Ctrl+Backspace); returns
+    /// whether anything was removed.
+    pub fn pop_word(&mut self) -> bool {
+        let text = self.as_str();
+        let words = text.trim_end();
+        let start = words.trim_end_matches(|c: char| !c.is_whitespace()).len();
+        let erased = start != text.len();
+        self.len = start as u8;
+        erased
+    }
+
     pub fn clear(&mut self) {
         self.len = 0;
     }

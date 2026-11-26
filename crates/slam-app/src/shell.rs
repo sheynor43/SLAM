@@ -462,6 +462,9 @@ pub struct ShellState {
         bool,
         usize,
     ),
+    /// Characters in the song select's search and the settings' search at the last tick,
+    /// for the typing sounds (ADR-0167).
+    ui_typed: (usize, usize),
     /// Asks for the song select's background; without a menu texture loader `None`.
     backgrounds: Option<BackgroundPicker>,
     /// Asks for the song list's thumbnails; without a menu texture loader `None` (ADR-0127).
@@ -567,6 +570,7 @@ impl ShellState {
             menu_skin_of: (None, None),
             ui_sounds: ui_sounds::UiSoundQueue::default(),
             ui_seen: (1, slam_ui::menu::MenuItem::ALL[0], None, false, 0),
+            ui_typed: (0, 0),
             backgrounds: None,
             thumbnails: None,
             thumb_seq: 0,
@@ -1729,6 +1733,30 @@ impl ShellState {
             }
         }
         self.ui_seen = (depth, item, selected, open, focus);
+        self.note_typing_sounds();
+    }
+
+    /// Notes a key sound when the length of a search grew or shrank (ADR-0167).
+    fn note_typing_sounds(&mut self) {
+        use crate::menu_sounds::MenuSound;
+        let songs = self.song_select.query().as_str().chars().count();
+        // A closed panel has no search: its count restarts, silently.
+        let settings = self
+            .settings_screen()
+            .map(|screen| screen.search().as_str().chars().count());
+        let shown = settings.unwrap_or(0);
+        let mut note = |now: usize, before: usize| {
+            if now > before {
+                self.ui_sounds.push(MenuSound::Type);
+            } else if now < before {
+                self.ui_sounds.push(MenuSound::Erase);
+            }
+        };
+        note(songs, self.ui_typed.0);
+        if settings.is_some() {
+            note(shown, self.ui_typed.1);
+        }
+        self.ui_typed = (songs, shown);
     }
 
     /// The theme the screens are laid out with.
@@ -1811,6 +1839,7 @@ impl ShellState {
         // the open settings panel has them instead.
         let song_select =
             matches!(self.stack.top(), AppScreen::SongSelect) && !self.settings_open();
+        let ctrl = self.mods().contains(Mods::CTRL);
         if let InputKind::Key {
             scancode,
             down: true,
@@ -1848,6 +1877,9 @@ impl ShellState {
             }
             return Some(ScreenInput::Repeat(match scancode {
                 // Holding Backspace keeps erasing the search (ADR-0065).
+                KEY_BACKSPACE if (song_select || self.settings_open()) && ctrl => {
+                    SongSelectInput::EraseWord
+                }
                 KEY_BACKSPACE if song_select || self.settings_open() => SongSelectInput::Erase,
                 KEY_UP => SongSelectInput::Up,
                 KEY_DOWN => SongSelectInput::Down,
@@ -1865,6 +1897,15 @@ impl ShellState {
             } => match scancode {
                 KEY_R if !song_select => return Some(ScreenInput::Retry),
                 KEY_F1 => SongSelectInput::ToggleMods,
+                // With a query typed, Ctrl+Backspace erases a word; without, it deselects
+                // the mods like Backspace.
+                KEY_BACKSPACE
+                    if ctrl
+                        && (self.settings_open()
+                            || (song_select && !self.song_select.query().is_empty())) =>
+                {
+                    SongSelectInput::EraseWord
+                }
                 KEY_BACKSPACE => SongSelectInput::DeselectMods,
                 KEY_TAB if song_select => SongSelectInput::ToggleCustomisation,
                 KEY_DELETE if song_select => SongSelectInput::ResetSetting,
@@ -2603,6 +2644,7 @@ fn settings_input(input: ScreenInput) -> Option<SettingsInput> {
             SongSelectInput::Scroll { lines } => SettingsInput::Scroll { lines },
             // Backspace, as the song select's search takes it.
             SongSelectInput::DeselectMods => SettingsInput::Erase,
+            SongSelectInput::EraseWord => SettingsInput::EraseWord,
             _ => return None,
         },
         ScreenInput::Repeat(input) => match input {
@@ -2613,6 +2655,7 @@ fn settings_input(input: ScreenInput) -> Option<SettingsInput> {
             SongSelectInput::PageUp => SettingsInput::PrevSection,
             SongSelectInput::PageDown => SettingsInput::NextSection,
             SongSelectInput::Erase => SettingsInput::Erase,
+            SongSelectInput::EraseWord => SettingsInput::EraseWord,
             _ => return None,
         },
     })
@@ -3847,6 +3890,8 @@ struct Shell {
     language: language::AppliedLanguage,
     /// Typed text is on in the menus and off during plays (ADR-0065).
     text_input: TextInput,
+    /// The tick's events without the mouse side buttons, while they are off (ADR-0167).
+    side_filtered: Vec<InputEvent>,
     /// Relative mouse mode and sensitivity, for the input thread (ADR-0069).
     mouse: MouseSettings,
     /// Mode, display and sizes of the window, for the input thread (ADR-0070).
@@ -3996,6 +4041,34 @@ impl Shell {
     }
 }
 
+/// Events of a tick the side-button filter keeps room for; one tick has far fewer.
+const SIDE_FILTER_CAPACITY: usize = 256;
+
+/// Whether `event` is a press or release of a mouse side button.
+fn is_side_button(event: &InputEvent) -> bool {
+    matches!(
+        event.kind,
+        InputKind::MouseButton {
+            button: MouseButton::X1 | MouseButton::X2,
+            ..
+        }
+    )
+}
+
+/// `events` without the mouse side buttons. Copies into `scratch` only when there is one to
+/// drop, so a tick without them does not touch it.
+fn without_side_buttons<'a>(
+    events: &'a [InputEvent],
+    scratch: &'a mut Vec<InputEvent>,
+) -> &'a [InputEvent] {
+    if !events.iter().any(is_side_button) {
+        return events;
+    }
+    scratch.clear();
+    scratch.extend(events.iter().filter(|e| !is_side_button(e)));
+    scratch
+}
+
 impl Update for Shell {
     type Snapshot = ShellSnapshot;
 
@@ -4009,6 +4082,13 @@ impl Update for Shell {
             return;
         }
         let now = info.now_ns;
+        // The mouse side buttons do nothing while they are off: not in the menus, not as
+        // gameplay bindings (ADR-0167).
+        let events = if self.state.live_settings().input.mouse_side_buttons {
+            events
+        } else {
+            without_side_buttons(events, &mut self.side_filtered)
+        };
         let playing = self.state.playing();
         // The settings panel may open over the pause and fail menus, not over the play
         // itself (ADR-0095); the play's last tick tells which shows.
@@ -4517,7 +4597,7 @@ impl<B: render::Backend> Draw<ShellSnapshot> for View<B> {
         }
         // The screens' layers and the settings panel's.
         // Two per screen (the song select's mod panel is a layer of its own), and the panel.
-        let mut ends = [(0_u32, 0_u32, false); 2 * MAX_LAYERS + 1];
+        let mut ends = [(0_u32, 0_u32, false); 2 * MAX_LAYERS + 2];
         let mut layers = 0;
         for layer in snapshot.layers.iter().flatten() {
             // Where the screen's own quads start: its background is not scaled.
@@ -4691,7 +4771,7 @@ impl<B: render::Backend> Draw<ShellSnapshot> for View<B> {
                 height,
                 panel.openness,
             );
-            self.settings.push(
+            let tip = self.settings.push(
                 &mut self.shapes,
                 &mut self.text,
                 &mut self.glyphs,
@@ -4702,6 +4782,11 @@ impl<B: render::Backend> Draw<ShellSnapshot> for View<B> {
                 r.white,
                 info.wait.woke_ns,
             );
+            // The tab's tooltip over the rows' texts.
+            if let Some((shapes_at, text_at)) = tip {
+                ends[layers] = (shapes_at, text_at, false);
+                layers += 1;
+            }
             ends[layers] = (self.shapes.len() as u32, self.text.len() as u32, false);
             layers += 1;
         }
@@ -5699,6 +5784,7 @@ fn run_with<B: render::Backend>(
         pixels_per_point,
         exited: Arc::clone(&exited),
         text_input: window.text_input(),
+        side_filtered: Vec::with_capacity(SIDE_FILTER_CAPACITY),
         mouse: {
             let mouse = window.mouse_settings();
             mouse.set_relative(settings.input.high_precision_mouse);

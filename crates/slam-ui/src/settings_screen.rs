@@ -216,6 +216,8 @@ pub enum SettingsInput {
     Type(char),
     /// Backspace: erases the last character of the search.
     Erase,
+    /// Ctrl+Backspace: erases the last word of the search.
+    EraseWord,
     PointerRelease,
     /// An input the application captured while a key row listens. `Empty` is ignored.
     Captured(KeyValue),
@@ -873,6 +875,12 @@ impl SettingsScreen {
         }
     }
 
+    fn erase_word(&mut self) {
+        if self.search.pop_word() {
+            self.refilter();
+        }
+    }
+
     /// Clears the search; returns whether there was one.
     fn clear_search(&mut self) -> bool {
         if self.search.is_empty() {
@@ -1340,6 +1348,7 @@ impl SettingsScreen {
                 | SettingsInput::Down
                 | SettingsInput::Type(_)
                 | SettingsInput::Erase
+                | SettingsInput::EraseWord
                 | SettingsInput::Back
                 | SettingsInput::NextSection
                 | SettingsInput::PrevSection
@@ -1432,6 +1441,10 @@ impl SettingsScreen {
             }
             SettingsInput::Erase => {
                 self.erase();
+                None
+            }
+            SettingsInput::EraseWord => {
+                self.erase_word();
                 None
             }
             SettingsInput::NextSection => {

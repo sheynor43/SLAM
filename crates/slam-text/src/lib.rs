@@ -22,4 +22,4 @@ pub use registry::{
     FALLBACK_FAMILY, FamilyId, FontError, FontId, FontRegistry, HEADING_FAMILY, NORMAL_WIDTH,
     ResolvedFace, UI_FAMILY, match_weight,
 };
-pub use render::{Clip, TextStats, push_layout, push_layout_clipped};
+pub use render::{Clip, TextStats, push_layout, push_layout_clipped, push_layout_styled};

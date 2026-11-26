@@ -1057,9 +1057,12 @@ fn mouse_settings_round_trip_next_to_the_bindings() {
     let mut s = Settings::default();
     s.input.high_precision_mouse = !s.input.high_precision_mouse;
     s.input.sensitivity = 1.5;
+    assert!(s.input.mouse_side_buttons, "on by default");
+    s.input.mouse_side_buttons = false;
     let text = file::to_toml_string(&s).unwrap();
     assert!(text.contains("sensitivity = 1.5"), "{text}");
     assert!(text.contains("high_precision_mouse"), "{text}");
+    assert!(text.contains("mouse_side_buttons = false"), "{text}");
     let loaded = file::from_toml_str(&text);
     assert_eq!(loaded.status, LoadStatus::Ok, "{:?}", loaded.warnings);
     assert_eq!(loaded.settings, s);

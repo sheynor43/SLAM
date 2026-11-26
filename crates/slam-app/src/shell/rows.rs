@@ -222,6 +222,7 @@ pub enum Row {
     GlobalOffset,
     MouseButtons,
     HighPrecisionMouse,
+    MouseSideButtons,
     Sensitivity,
     LeftKey1,
     LeftKey2,
@@ -368,7 +369,7 @@ const _: () =
     assert!(Row::ALL.len() + super::otd::OtdRow::ALL.len() <= slam_ui::settings_screen::MAX_ROWS);
 
 impl Row {
-    pub const ALL: [Row; 106] = [
+    pub const ALL: [Row; 107] = [
         Row::MasterVolume,
         Row::MusicVolume,
         Row::MenuMusic,
@@ -383,6 +384,7 @@ impl Row {
         Row::GlobalOffset,
         Row::MouseButtons,
         Row::HighPrecisionMouse,
+        Row::MouseSideButtons,
         Row::Sensitivity,
         Row::LeftKey1,
         Row::LeftKey2,
@@ -530,6 +532,7 @@ impl Row {
             Row::GlobalOffset => section::OFFSET,
             Row::MouseButtons
             | Row::HighPrecisionMouse
+            | Row::MouseSideButtons
             | Row::Sensitivity
             | Row::LeftKey1
             | Row::LeftKey2
@@ -642,6 +645,7 @@ impl Row {
             Row::GlobalOffset => "settings-offset-global",
             Row::MouseButtons => "settings-keys-mouse-buttons",
             Row::HighPrecisionMouse => "settings-input-high-precision",
+            Row::MouseSideButtons => "settings-input-mouse-side-buttons",
             Row::Sensitivity => "settings-input-sensitivity",
             Row::LeftKey1 => "settings-keys-left-1",
             Row::LeftKey2 => "settings-keys-left-2",
@@ -1372,6 +1376,9 @@ impl Rows {
             Row::HighPrecisionMouse => RowKind::Toggle {
                 value: s.input.high_precision_mouse,
             },
+            Row::MouseSideButtons => RowKind::Toggle {
+                value: s.input.mouse_side_buttons,
+            },
             Row::MinimiseOnFocusLoss => RowKind::Toggle {
                 value: s.window.minimise_on_focus_loss,
             },
@@ -1559,6 +1566,9 @@ impl Rows {
             (Row::MouseButtons, RowValue::Toggle(v)) => settings.gameplay.mouse_buttons = v,
             (Row::HighPrecisionMouse, RowValue::Toggle(v)) => {
                 settings.input.high_precision_mouse = v;
+            }
+            (Row::MouseSideButtons, RowValue::Toggle(v)) => {
+                settings.input.mouse_side_buttons = v;
             }
             (Row::Sensitivity, RowValue::Slider(v)) => {
                 settings.input.sensitivity = InputSettings::clean_sensitivity(v);
@@ -1858,34 +1868,26 @@ impl Rows {
         }
     }
 
-    /// What the search of the settings panel looks in, per row (ADR-0095): the row's name
-    /// and its section's, in the language shown and in English, lowercased. Allocates: the
-    /// panel asks for it as it opens.
+    /// What the search of the settings panel looks in, per row (ADR-0095, ADR-0167): the
+    /// row's name and its section's, in every built-in language (so a Russian word finds a
+    /// row under an English interface and the other way round) and in the language shown,
+    /// lowercased. Allocates: the panel asks for it as it opens.
     pub fn search_texts(localizer: &Localizer) -> Arc<[Box<str>]> {
+        let text = |key: &str, section: &str| {
+            let mut fields = vec![localizer.format(key, None)];
+            fields.extend(localizer.format_every_language(key));
+            fields.push(localizer.format(section, None));
+            fields.extend(localizer.format_every_language(section));
+            let fields: Vec<&str> = fields.iter().map(|f| f.as_ref()).collect();
+            slam_ui::song_select::search_text(&fields).into_boxed_str()
+        };
         Row::ALL
             .iter()
             .map(|row| {
                 let section = SECTION_KEYS[row.section().min(SECTION_KEYS.len() - 1)];
-                let fields = [
-                    localizer.format(row.label_key(), None),
-                    localizer.format(section, None),
-                    localizer.format_english(row.label_key()),
-                    localizer.format_english(section),
-                ];
-                let fields: Vec<&str> = fields.iter().map(|f| f.as_ref()).collect();
-                slam_ui::song_select::search_text(&fields).into_boxed_str()
+                text(row.label_key(), section)
             })
-            .chain(super::otd::search_keys().map(|key| {
-                let section = super::otd::SECTION_KEY;
-                let fields = [
-                    localizer.format(key, None),
-                    localizer.format(section, None),
-                    localizer.format_english(key),
-                    localizer.format_english(section),
-                ];
-                let fields: Vec<&str> = fields.iter().map(|f| f.as_ref()).collect();
-                slam_ui::song_select::search_text(&fields).into_boxed_str()
-            }))
+            .chain(super::otd::search_keys().map(|key| text(key, super::otd::SECTION_KEY)))
             .collect()
     }
 
@@ -2388,6 +2390,19 @@ mod tests {
         s.window.display = 1;
         rows.refresh(&mut screen, &s);
         assert_eq!(dropdown(&screen, Row::FullscreenSize), (2, 0));
+    }
+
+    #[test]
+    fn the_search_finds_rows_by_their_names_in_both_languages() {
+        let localizer = Localizer::builtin().unwrap();
+        let row = index(Row::Skin);
+        let english_ui = Rows::search_texts(&localizer);
+        assert!(english_ui[row].contains("skin"));
+        assert!(english_ui[row].contains("\u{441}\u{43a}\u{438}\u{43d}"));
+        localizer.set_language("ru").unwrap();
+        let russian_ui = Rows::search_texts(&localizer);
+        assert!(russian_ui[row].contains("skin"));
+        assert!(russian_ui[row].contains("\u{441}\u{43a}\u{438}\u{43d}"));
     }
 
     #[test]

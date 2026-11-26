@@ -203,6 +203,7 @@ pub(super) fn shell_with(link: crate::settings::saver::SaveLink) -> Shell {
         update_rate: AppliedUpdateRate::new(UpdateRateControl::new(), 1000.0),
         saver: Some(link),
         text_input: slam_input::TextInput::default(),
+        side_filtered: Vec::new(),
         mouse: slam_input::MouseSettings::default(),
         window: slam_input::WindowSettings::default(),
         window_sent: Settings::default().window.state(),
@@ -460,6 +461,7 @@ fn on_keys(s: &mut ShellState, snap: &mut ShellSnapshot) {
         &[
             key(KEY_TAB),
             key(KEY_TAB),
+            key(KEY_DOWN),
             key(KEY_DOWN),
             key(KEY_DOWN),
             key(KEY_DOWN),
@@ -916,10 +918,18 @@ fn the_sensitivity_slider_is_locked_with_a_hint_until_high_precision_is_on() {
     assert!(settings_screen(&s).is_hinted(slider));
     assert!(!settings_screen(&s).is_hinted(toggle));
     // The slider does not move while it is locked.
-    s.tick(LATER, &[key(KEY_DOWN), key(KEY_RIGHT)], &mut snap);
+    s.tick(
+        LATER,
+        &[key(KEY_DOWN), key(KEY_DOWN), key(KEY_RIGHT)],
+        &mut snap,
+    );
     assert_eq!(edited(&s).input.sensitivity, 1.0);
     // Turning high precision on unlocks it; the platform warning shows where it applies.
-    s.tick(LATER, &[key(KEY_UP), key(KEY_ENTER)], &mut snap);
+    s.tick(
+        LATER,
+        &[key(KEY_UP), key(KEY_UP), key(KEY_ENTER)],
+        &mut snap,
+    );
     assert!(edited(&s).input.high_precision_mouse);
     assert!(!settings_screen(&s).is_disabled(slider));
     assert!(!settings_screen(&s).is_hinted(slider));
@@ -927,7 +937,11 @@ fn the_sensitivity_slider_is_locked_with_a_hint_until_high_precision_is_on() {
         settings_screen(&s).is_hinted(toggle),
         cfg!(any(target_os = "linux", target_os = "macos"))
     );
-    s.tick(LATER, &[key(KEY_DOWN), key(KEY_RIGHT)], &mut snap);
+    s.tick(
+        LATER,
+        &[key(KEY_DOWN), key(KEY_DOWN), key(KEY_RIGHT)],
+        &mut snap,
+    );
     assert_eq!(edited(&s).input.sensitivity, 1.01);
 }
 
@@ -958,7 +972,7 @@ fn mouse_edits_reach_the_input_thread_at_once() {
     }
     shell.state.tick(
         LATER,
-        &[key(KEY_DOWN), key(KEY_RIGHT), key(KEY_RIGHT)],
+        &[key(KEY_DOWN), key(KEY_DOWN), key(KEY_RIGHT), key(KEY_RIGHT)],
         &mut snap,
     );
     // The screen is still open, nothing is committed.

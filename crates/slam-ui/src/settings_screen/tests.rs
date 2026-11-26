@@ -1682,6 +1682,14 @@ fn dynamic_view() -> SettingsView {
 }
 
 fn push_view(view: &mut SettingsView, snapshot: &SettingsSnapshot) -> usize {
+    push_view_split(view, snapshot).0
+}
+
+/// Shapes drawn, texts drawn and the start of the tooltip layer.
+fn push_view_split(
+    view: &mut SettingsView,
+    snapshot: &SettingsSnapshot,
+) -> (usize, usize, Option<(u32, u32)>) {
     use slam_render::atlas::{AtlasRegion, UvRect};
     use slam_render::hal::Origin;
     use slam_render::shape::ShapeBatch;
@@ -1704,7 +1712,7 @@ fn push_view(view: &mut SettingsView, snapshot: &SettingsSnapshot) -> usize {
     };
     let mut shapes = ShapeBatch::with_capacity(4096);
     let mut text = SpriteBatch::with_capacity(4096);
-    view.push(
+    let split = view.push(
         &mut shapes,
         &mut text,
         &mut glyphs,
@@ -1715,7 +1723,24 @@ fn push_view(view: &mut SettingsView, snapshot: &SettingsSnapshot) -> usize {
         white,
         0,
     );
-    shapes.len()
+    (shapes.len(), text.len(), split)
+}
+
+#[test]
+fn the_tab_tooltip_is_its_own_layer_and_hides_no_row_text() {
+    let mut view = dynamic_view();
+    let mut s = SettingsScreen::new(&[toggle(0, false), toggle(0, false)], 1);
+    let (_, plain_text, none) = push_view_split(&mut view, &s.snapshot());
+    assert_eq!(none, None);
+    let (x, y) = centre(layout().tabs[0]);
+    input(&mut s, SettingsInput::PointerMove { x, y });
+    let (shapes, text, split) = push_view_split(&mut view, &s.snapshot());
+    let (shapes_at, text_at) = split.expect("a tooltip is shown over the hovered tab");
+    // Every text of the rows is drawn before the tooltip layer, which only adds its plate
+    // and its own text.
+    assert_eq!(text_at as usize, plain_text);
+    assert!(text >= plain_text);
+    assert!((shapes_at as usize) < shapes);
 }
 
 #[test]

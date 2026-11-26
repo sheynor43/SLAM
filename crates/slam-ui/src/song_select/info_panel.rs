@@ -410,10 +410,10 @@ impl InfoPanel {
             }
             type_setter.lay_out(&mut self.stars, detail);
             let pill = pill_width(&self.stars, theme, scale);
-            fit(
+            super::view::fit_face(
                 type_setter,
                 &mut self.name,
-                title,
+                theme.heading_face(title),
                 (parts.name.width - pill).max(0.0),
                 ellipsis[0],
             );

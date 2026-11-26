@@ -36,11 +36,15 @@ pub enum MenuSound {
     ToggleOff,
     /// A slider moves by a step.
     SliderStep,
+    /// A character is typed into a search (lazer's `key-press`).
+    Type,
+    /// A character or a word is erased from a search (lazer's `key-delete`).
+    Erase,
 }
 
 impl MenuSound {
     /// Every sound, in the order of [`render_all`].
-    pub const ALL: [MenuSound; 7] = [
+    pub const ALL: [MenuSound; 9] = [
         MenuSound::Hover,
         MenuSound::Click,
         MenuSound::Enter,
@@ -48,6 +52,8 @@ impl MenuSound {
         MenuSound::ToggleOn,
         MenuSound::ToggleOff,
         MenuSound::SliderStep,
+        MenuSound::Type,
+        MenuSound::Erase,
     ];
 
     /// The skin sample names standing for it, in lookup order (ADR-0120).
@@ -59,6 +65,8 @@ impl MenuSound {
             MenuSound::Back => &["menuback"],
             MenuSound::ToggleOn => &["check-on"],
             MenuSound::ToggleOff => &["check-off"],
+            MenuSound::Type => &["key-press-1"],
+            MenuSound::Erase => &["key-delete"],
         }
     }
 }
@@ -71,6 +79,8 @@ pub fn render(sound: MenuSound, rate: u32) -> Vec<f32> {
         MenuSound::Hover => (0.03, click(2_200.0, 0.006, 0.5)),
         MenuSound::SliderStep => (0.025, click(1_700.0, 0.005, 0.4)),
         MenuSound::Click => (0.06, click(1_300.0, 0.012, 1.0)),
+        MenuSound::Type => (0.025, click(2_600.0, 0.005, 0.6)),
+        MenuSound::Erase => (0.035, click(1_500.0, 0.007, 0.6)),
         MenuSound::Enter => (0.32, enter(rate)),
         MenuSound::Back => (0.15, glide(520.0, 330.0, 0.15, 0.05)),
         MenuSound::ToggleOn => (0.09, blip([660.0, 990.0])),
@@ -111,7 +121,7 @@ pub fn render(sound: MenuSound, rate: u32) -> Vec<f32> {
 }
 
 /// Every sound rendered into a [`Sample`], in [`MenuSound::ALL`] order.
-pub fn render_all(rate: u32) -> [Arc<Sample>; 7] {
+pub fn render_all(rate: u32) -> [Arc<Sample>; 9] {
     MenuSound::ALL.map(|sound| {
         let data = render(sound, rate);
         Arc::new(
@@ -243,6 +253,8 @@ mod tests {
         let ranges = [
             (MenuSound::Hover, 0.025, 0.040),
             (MenuSound::SliderStep, 0.025, 0.040),
+            (MenuSound::Type, 0.02, 0.03),
+            (MenuSound::Erase, 0.03, 0.04),
             (MenuSound::Click, 0.05, 0.07),
             (MenuSound::Enter, 0.25, 0.40),
             (MenuSound::Back, 0.13, 0.17),

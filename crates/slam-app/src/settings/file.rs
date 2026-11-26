@@ -920,6 +920,13 @@ fn from_table(mut table: Table) -> Loaded {
         &mut settings.input.high_precision_mouse,
         |_| Ok(()),
     );
+    cx.field(
+        &mut input,
+        "input",
+        "mouse_side_buttons",
+        &mut settings.input.mouse_side_buttons,
+        |_| Ok(()),
+    );
     cx.float(
         &mut input,
         "input",

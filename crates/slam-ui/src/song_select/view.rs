@@ -193,6 +193,8 @@ pub struct SongSelectView {
     /// The query, for the query it was laid out for.
     search: Line,
     search_for: Option<SearchQuery>,
+    /// The typing feedback of the search text (ADR-0167).
+    search_type: crate::typing::TypeFeedback,
     search_placeholder: Line,
     search_no_matches: Line,
     mods_title: Line,
@@ -406,6 +408,7 @@ impl SongSelectView {
             pp_suffix: labels.pp_suffix.clone(),
             search: Line::new(""),
             search_for: None,
+            search_type: crate::typing::TypeFeedback::new(),
             search_placeholder: Line::new(&labels.search_placeholder),
             search_no_matches: Line::new(&labels.search_no_matches),
             mods_title: Line::new(&labels.mods_title),
@@ -760,7 +763,7 @@ impl SongSelectView {
 
         self.refresh_selected(&snapshot.mods);
         self.refresh_multipliers(&snapshot.mods);
-        self.refresh_search(&snapshot.query);
+        self.refresh_search(&snapshot.query, thumbs.now_ns);
         // The mod select panel's slide (ADR-0152): the backdrop without delay, the last
         // shown column with the most.
         let now = thumbs.now_ns;
@@ -876,17 +879,31 @@ impl SongSelectView {
             // The search line.
             let search = leaned(&layout.search);
             rect(&search, theme.song_search_fill, Look::Round);
-            let line = if snapshot.query.is_empty() {
-                (&self.search_placeholder, theme.disabled_text)
+            if snapshot.query.is_empty() {
+                left(
+                    &self.search_placeholder,
+                    search.x + pad,
+                    search.y + search.height / 2.0,
+                    theme.disabled_text,
+                );
             } else {
-                (&self.search, theme.text)
-            };
-            left(
-                line.0,
-                search.x + pad,
-                search.y + search.height / 2.0,
-                line.1,
-            );
+                // The newest character slides in; an erase pops the text (ADR-0167).
+                let line = &self.search;
+                let pose = self.search_type.pose(now_ns, theme, scale);
+                let colour = faded(theme.text, opacity * row_alpha.get() * layer.get());
+                let position = [
+                    search.x + pad + shift,
+                    search.y + search.height / 2.0 - line.layout.height() / 2.0,
+                ];
+                let (text, glyphs) = &mut *target.borrow_mut();
+                slam_text::push_layout_styled(
+                    text,
+                    &line.layout,
+                    position,
+                    glyphs,
+                    crate::typing::styler(&line.layout, colour, pose),
+                );
+            }
             if list.sets.is_empty() {
                 if snapshot.status == SongSelectStatus::Ready {
                     let y = layout.list.y + theme.song_set_height * scale / 2.0;
@@ -1594,11 +1611,12 @@ impl SongSelectView {
     }
 
     /// Lays the query out unless it already shows it.
-    fn refresh_search(&mut self, query: &SearchQuery) {
+    fn refresh_search(&mut self, query: &SearchQuery, now_ns: u64) {
         if self.search_for == Some(*query) {
             return;
         }
         self.search_for = Some(*query);
+        self.search_type.observe(query.as_str(), now_ns);
         let scale = self.layout.scale;
         let pad = self.theme.song_text_pad * scale;
         self.search.text.clear();
