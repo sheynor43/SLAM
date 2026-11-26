@@ -17,6 +17,7 @@ use crate::theme::Theme;
 use drag::{ListDrag, Release};
 pub use geometry::RowGeometry;
 
+pub mod beat;
 pub mod drag;
 pub mod filter;
 pub mod geometry;
@@ -537,6 +538,9 @@ pub struct SongSelectSnapshot {
     pub mods: ModSelectSnapshot,
     /// The selected difficulty's details, as [`SongSelect::set_details`] gave them.
     pub details: Option<BeatmapDetails>,
+    /// How much the selection's glow flares with the music's beat, 0 to 1 (ADR-0167);
+    /// `None` without a beat to follow, when it pulses with the clock.
+    pub beat: Option<f32>,
     /// The "no audio output" message takes the hints' place, as
     /// [`SongSelect::set_no_audio`] set it.
     pub no_audio: bool,
@@ -798,6 +802,7 @@ pub struct SongSelect {
     /// pixels.
     pitches: (f32, f32, f32),
     details: Option<BeatmapDetails>,
+    beat: Option<f32>,
     /// A play was refused for want of an audio output (#317).
     no_audio: bool,
     /// What the rows' marquees take from the pointer (ADR-0148).
@@ -848,6 +853,7 @@ impl SongSelect {
             viewport: 600.0,
             pitches: (75.0, 48.0, 3.0),
             details: None,
+            beat: None,
             no_audio: false,
             text: TextScroll::default(),
             text_press: None,
@@ -858,6 +864,11 @@ impl SongSelect {
     /// the end of a text).
     pub fn scroll_text(&mut self, notches: f32) {
         self.text.wheel(notches);
+    }
+
+    /// Sets the beat the selection's glow follows for the next snapshots (ADR-0167).
+    pub fn set_beat(&mut self, beat: Option<f32>) {
+        self.beat = beat;
     }
 
     /// Sets the selected difficulty's details for the next snapshots.
@@ -1179,6 +1190,7 @@ impl SongSelect {
             generation: self.generation,
             mods: self.mods.snapshot(),
             details: self.details,
+            beat: self.beat,
             no_audio: self.no_audio,
             text: self.text,
         }

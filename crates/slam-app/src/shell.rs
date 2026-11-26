@@ -439,6 +439,10 @@ pub struct ShellState {
     size: [f32; 2],
     /// The beatmap whose music plays in the menus (ADR-0119).
     menu_track: Option<(usize, usize)>,
+    /// Where the menu music is, in ms of its track.
+    menu_track_ms: Option<f64>,
+    /// The selected difficulty's beat, once read (ADR-0167).
+    beat_timing: Option<slam_ui::song_select::beat::BeatTiming>,
     /// The chosen skin's folder, for its menu background, and the songs folder and skin
     /// name it was made from (ADR-0119).
     menu_skin: Option<Arc<Path>>,
@@ -550,6 +554,8 @@ impl ShellState {
             pixels_per_point,
             size: [width, height],
             menu_track: None,
+            menu_track_ms: None,
+            beat_timing: None,
             menu_skin: None,
             skin_cursor: None,
             ranking_link: None,
@@ -657,6 +663,7 @@ impl ShellState {
             .map(|details| details.tick(now_ns, &self.files, selected))
             .unwrap_or_default();
         let (statistics, scores) = (read.statistics, read.scores);
+        self.beat_timing = read.timing;
         let (set, difficulty) = selected?;
         let file = self.files.get(set)?.get(difficulty)?;
         let base = Difficulty {
@@ -1618,6 +1625,11 @@ impl ShellState {
         self.menu_track = at;
     }
 
+    /// Where the menu music is, in ms of its track (ADR-0167).
+    pub fn set_menu_track_ms(&mut self, ms: Option<f64>) {
+        self.menu_track_ms = ms;
+    }
+
     /// The skin folder whose menu background the menu shows; made again only when the
     /// songs folder or the skin changes (allocates then).
     pub(crate) fn menu_skin(&mut self) -> Option<&Arc<Path>> {
@@ -2309,6 +2321,13 @@ impl ShellState {
             .background_dim as f32;
         let details = self.beatmap_details(now_ns);
         self.song_select.set_details(details);
+        // The selection glows with the beat of its own music only (ADR-0167).
+        let beat = self
+            .beat_timing
+            .filter(|_| self.menu_track.is_some() && self.menu_track == self.song_select.selected())
+            .zip(self.menu_track_ms)
+            .map(|(timing, ms)| timing.pulse_at(ms));
+        self.song_select.set_beat(beat);
         // The main menu shows the menu music's beatmap or the skin's background
         // (ADR-0119); the other screens the song select's selection.
         let live_general = &self.editing.as_ref().unwrap_or(&self.settings).general;
@@ -3055,6 +3074,7 @@ impl PlayHost {
         self.intro_sound(state);
         self.menu_music(now_ns, state);
         state.set_menu_track(self.music_at);
+        state.set_menu_track_ms(self.menu_track_ms(now_ns));
         let noted = state.take_ui_sounds();
         let mode = state.live_settings().audio.menu_sounds;
         let skin = state.menu_skin().cloned();
@@ -3597,6 +3617,22 @@ impl PlayHost {
             .iter_mut()
             .all(|deck| slam_play::fail::apply_mod_track(deck, tempo, frequency).is_ok());
         self.preview_speed = applied.then_some(want);
+    }
+
+    /// Where the menu music is heard at `now_ns`, in ms of its track; `None` while nothing
+    /// plays. Lock-free reads only.
+    fn menu_track_ms(&self, now_ns: u64) -> Option<f64> {
+        if self.no_output {
+            return None;
+        }
+        let deck = &self.audio.previews[self.menu_music.active()];
+        let output = self.audio.output.read()?;
+        let music = deck.position().read()?;
+        if music.ended || music.generation != deck.generation() || output.sample_rate == 0 {
+            return None;
+        }
+        let frame = music.track_frame_at(output.output_frame_at(now_ns));
+        Some(frame / f64::from(output.sample_rate) * 1000.0)
     }
 
     /// Frees a prepared play nobody waits for.

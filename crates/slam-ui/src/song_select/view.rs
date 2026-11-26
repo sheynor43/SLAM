@@ -1000,6 +1000,15 @@ impl SongSelectView {
                     };
                     let seed = index as f32 * 0.29;
                     let look = match row {
+                        // The selected difficulty glows with the beat (ADR-0167).
+                        Row::Difficulty { .. } if selected && snapshot.beat.is_some() => {
+                            Look::BeatButton {
+                                seed,
+                                fade: opacity * alpha,
+                                tint: crate::star_colour::glow_for(stars, theme.accent),
+                                beat: snapshot.beat.unwrap_or(0.0),
+                            }
+                        }
                         // A difficulty glows and is outlined in its star colour (ADR-0131).
                         Row::Difficulty { .. } => Look::TintedButton {
                             highlighted: selected,
@@ -1057,9 +1066,16 @@ impl SongSelectView {
                                 thumbs.now_ns,
                                 theme.song_thumbnail_fade_ms,
                             );
+                            // Upright in the leaning plate (ADR-0167): the image spans the
+                            // plate's bounding box, so it keeps its aspect by losing as much
+                            // of its height.
                             let uv = image.region.uv;
-                            let dv = uv.v1 - uv.v0;
-                            let cut = |at: f32| uv.v0 + (at - full_top) / thumb.height * dv;
+                            let lean = (theme.button_skew().tan() * thumb.height).abs();
+                            let kept = thumb.width / (thumb.width + lean);
+                            let middle = (uv.v0 + uv.v1) / 2.0;
+                            let dv = (uv.v1 - uv.v0) * kept;
+                            let v0 = middle - dv / 2.0;
+                            let cut = |at: f32| v0 + (at - full_top) / thumb.height * dv;
                             thumb_shapes[thumb_count] = Some(Shape {
                                 colour: faded(Color::rgb(1.0, 1.0, 1.0), alpha * opacity),
                                 texture: image.region.texture,
@@ -1068,6 +1084,7 @@ impl SongSelectView {
                                     v1: cut(bottom),
                                     ..uv
                                 },
+                                upright: true,
                                 ..base
                             });
                             thumb_count += 1;

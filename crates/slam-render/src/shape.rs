@@ -172,6 +172,10 @@ pub struct Shape {
     pub kind: ShapeKind,
     /// The colour across the shape, if not even (ADR-0136).
     pub gradient: Option<Gradient>,
+    /// The texture stays upright on a skewed shape: `uv` spans the shape's bounding box
+    /// and the skewed edges cut it, instead of the texture leaning with the shape
+    /// (thumbnails, ADR-0167).
+    pub upright: bool,
 }
 
 impl Shape {
@@ -198,6 +202,7 @@ impl Shape {
             phase: 0.0,
             glow: 0.0,
             pattern: 0.0,
+            upright: false,
             pattern_seed: 0,
             kind: ShapeKind::Rect,
             gradient: None,
@@ -362,14 +367,22 @@ impl ShapeBatch {
             let mix = |x: f32, y: f32| x + (y - x) * t;
             [mix(r, end.r), mix(g, end.g), mix(b, end.b), mix(a, end.a)]
         };
+        // An upright texture runs across the bounding box of the skewed shape.
+        let box_width = w + (tan * h).abs();
         for (fx, fy) in [(0.0, 0.0), (1.0, 0.0), (1.0, 1.0), (0.0, 1.0)] {
             let tx = if fx == 0.0 { -mx } else { 1.0 + mx };
             let ty = if fy == 0.0 { -my } else { 1.0 + my };
             let local = [(tx - 0.5) * w, (ty - 0.5) * h];
+            let across = local[0] - local[1] * tan;
+            let u = if shape.upright {
+                0.5 + across / box_width
+            } else {
+                tx
+            };
             self.vertices.push(ShapeVertex {
-                position: [centre[0] + local[0] - local[1] * tan, centre[1] + local[1]],
+                position: [centre[0] + across, centre[1] + local[1]],
                 colour: corner_colour(tx, ty),
-                uv: [u0 + (u1 - u0) * tx, v0 + (v1 - v0) * ty],
+                uv: [u0 + (u1 - u0) * u, v0 + (v1 - v0) * ty],
                 local,
                 half_size: half,
                 params,
@@ -588,6 +601,28 @@ mod tests {
         assert_eq!(runs, [(0, 2), (2, 1), (3, 1)]);
         assert_eq!(batch.quad_count(), 4);
         assert_eq!(batch.vertex_bytes().len(), 4 * 4 * 64);
+    }
+
+    #[test]
+    fn an_upright_texture_runs_with_the_screen_not_the_skew() {
+        let mut batch = ShapeBatch::new();
+        let skewed = Shape {
+            skew: 0.5_f32.atan(),
+            upright: true,
+            ..shape([0.0, 0.0], [20.0, 10.0])
+        };
+        batch.push_shape(&skewed);
+        let v = batch.vertices();
+        // u grows with x at one rate on all four corners: the image does not lean.
+        let rate = |a: &ShapeVertex, b: &ShapeVertex| {
+            (b.uv[0] - a.uv[0]) / (b.position[0] - a.position[0])
+        };
+        let (top, bottom) = (rate(&v[0], &v[1]), rate(&v[3], &v[2]));
+        assert!((top - bottom).abs() < 1e-6);
+        assert!(
+            (rate(&v[0], &v[3]) - top).abs() < 1e-6,
+            "left edge runs at the same rate"
+        );
     }
 
     #[test]

@@ -12,6 +12,7 @@ use std::sync::atomic::{AtomicU32, Ordering};
 use slam_osu::Beatmap;
 use slam_osu::statistics::BeatmapStatistics;
 use slam_ui::song_select::LocalScores;
+use slam_ui::song_select::beat::{BeatPoint, BeatTiming};
 
 use crate::backgrounds::SELECTION_DEBOUNCE_NS;
 use crate::songs::SongFiles;
@@ -35,6 +36,8 @@ pub struct DetailsReply {
     pub statistics: Option<BeatmapStatistics>,
     /// The best local scores; `None` when the file does not read or no folder is known.
     pub scores: Option<LocalScores>,
+    /// The beat from the preview on, for the selection's glow (ADR-0167).
+    pub timing: Option<BeatTiming>,
 }
 
 /// The answer for the selection: what the song select shows besides the difficulty values.
@@ -42,6 +45,7 @@ pub struct DetailsReply {
 pub struct Details {
     pub statistics: Option<BeatmapStatistics>,
     pub scores: Option<LocalScores>,
+    pub timing: Option<BeatTiming>,
 }
 
 /// Connects the two ends.
@@ -121,6 +125,7 @@ impl DetailsPicker {
                 self.details = Details {
                     statistics: reply.statistics,
                     scores: reply.scores,
+                    timing: reply.timing,
                 };
             }
         }
@@ -206,30 +211,40 @@ impl DetailsReader {
             newest = Some(request);
         }
         let Some(request) = newest else { return };
-        let (statistics, scores) = match file_of(&request.files, request.set, request.difficulty)
-            .and_then(|path| {
+        let preview_ms = request
+            .files
+            .get(request.set)
+            .and_then(|set| set.get(request.difficulty))
+            .map_or(0.0, |file| f64::from(file.preview_ms.max(0)));
+        let (statistics, timing, scores) =
+            match file_of(&request.files, request.set, request.difficulty).and_then(|path| {
                 std::fs::read(path)
                     .inspect_err(|e| tracing::warn!("details {}: {e}", path.display()))
                     .ok()
                     .map(|bytes| (path, bytes))
             }) {
-            Some((path, bytes)) => (
-                statistics_of(path, &bytes),
-                self.scores.as_deref().map(|dir| {
-                    let hash = crate::replays::md5_hex(&bytes);
-                    crate::scores::rows_of(&crate::scores::load_top(
-                        dir,
-                        &hash,
-                        slam_ui::song_select::MAX_LOCAL_SCORES,
-                    ))
-                }),
-            ),
-            None => (None, None),
-        };
+                Some((path, bytes)) => {
+                    let (statistics, timing) = statistics_of(path, &bytes, preview_ms).unzip();
+                    (
+                        statistics,
+                        timing,
+                        self.scores.as_deref().map(|dir| {
+                            let hash = crate::replays::md5_hex(&bytes);
+                            crate::scores::rows_of(&crate::scores::load_top(
+                                dir,
+                                &hash,
+                                slam_ui::song_select::MAX_LOCAL_SCORES,
+                            ))
+                        }),
+                    )
+                }
+                None => (None, None, None),
+            };
         let reply = DetailsReply {
             generation: request.generation,
             statistics,
             scores,
+            timing,
         };
         if let Err(rtrb::PushError::Full(reply)) = self.replies.push(reply) {
             self.unsent = Some(reply);
@@ -237,12 +252,22 @@ impl DetailsReader {
     }
 }
 
-/// The statistics of the beatmap file `bytes` read from `path`.
-fn statistics_of(path: &Path, bytes: &[u8]) -> Option<BeatmapStatistics> {
+/// The statistics of the beatmap file `bytes` read from `path`, and its beat from
+/// `preview_ms` on.
+fn statistics_of(
+    path: &Path,
+    bytes: &[u8],
+    preview_ms: f64,
+) -> Option<(BeatmapStatistics, BeatTiming)> {
     // A file that breaks the decoder must not take the library thread with it: the scan
     // and the backgrounds live there too.
     let statistics = std::panic::catch_unwind(|| {
-        Beatmap::decode(bytes).map(|beatmap| BeatmapStatistics::of(&beatmap))
+        Beatmap::decode(bytes).map(|beatmap| {
+            (
+                BeatmapStatistics::of(&beatmap),
+                beat_timing(&beatmap, preview_ms),
+            )
+        })
     });
     match statistics {
         Ok(Ok(statistics)) => Some(statistics),
@@ -255,6 +280,32 @@ fn statistics_of(path: &Path, bytes: &[u8]) -> Option<BeatmapStatistics> {
             None
         }
     }
+}
+
+/// The red lines and kiai sections of `beatmap` that matter from `from_ms` on: the red line
+/// in force there and the ones after, as many as [`BeatTiming`] keeps.
+fn beat_timing(beatmap: &Beatmap, from_ms: f64) -> BeatTiming {
+    let mut timing = BeatTiming::default();
+    let points = beatmap.control_points.timing_points();
+    let first = points.iter().rposition(|p| p.time <= from_ms).unwrap_or(0);
+    for p in &points[first..] {
+        timing.push_point(BeatPoint {
+            time: p.time,
+            beat_length: p.beat_length,
+            meter: u32::try_from(p.time_signature).unwrap_or(4),
+        });
+    }
+    let effects = beatmap.control_points.effect_points();
+    for (i, e) in effects.iter().enumerate().filter(|(_, e)| e.kiai) {
+        let end = effects
+            .get(i + 1..)
+            .and_then(|rest| rest.iter().find(|n| !n.kiai))
+            .map_or(f64::INFINITY, |n| n.time);
+        if end > from_ms {
+            timing.push_kiai(e.time, end);
+        }
+    }
+    timing
 }
 
 #[cfg(test)]

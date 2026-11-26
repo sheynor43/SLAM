@@ -83,6 +83,7 @@ impl Rig {
             generation,
             statistics: Some(statistics(circles)),
             scores: None,
+            timing: None,
         };
         self.replies.push(reply).unwrap();
     }
@@ -199,6 +200,7 @@ fn the_reader_answers_the_newest_request_from_the_file() {
             generation: 3,
             statistics: None,
             scores: None,
+            timing: None,
         }
     );
     assert_eq!(Arc::strong_count(&files), 1);
@@ -223,6 +225,7 @@ fn the_pickers_answer_carries_the_scores_of_its_own_selection() {
         generation: 1,
         statistics: Some(statistics(7)),
         scores: Some(scores),
+        timing: None,
     };
     rig.replies.push(reply).unwrap();
     let answer = rig.picker.tick(160 * MS, &rig.files, Some((0, 0)));

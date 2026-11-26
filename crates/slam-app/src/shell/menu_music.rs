@@ -188,6 +188,11 @@ impl Default for MenuMusic {
 }
 
 impl MenuMusic {
+    /// The deck heard, or about to be.
+    pub fn active(&self) -> usize {
+        self.active
+    }
+
     /// Follows `want` at `now_ns`; `pick` gives a random beatmap for the menu.
     pub fn tick<D: Deck>(
         &mut self,
