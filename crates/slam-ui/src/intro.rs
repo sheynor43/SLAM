@@ -26,6 +26,8 @@ pub const IMPACT_S: f32 = 2.0;
 pub const END_S: f32 = 2.6;
 /// The black starts fading out.
 const BACKDROP_FADE_S: f32 = 2.2;
+/// The menu starts to show under the fading black, and its toolbar slides in (ADR-0178).
+pub const REVEAL_NS: u64 = 2_200_000_000;
 
 /// When the first letter appears: the glyphs are generated meanwhile.
 const FIRST_APPEAR_S: f32 = 0.15;
@@ -98,6 +100,18 @@ impl Intro {
             .skip_ns
             .is_some_and(|skip| now_ns >= skip.saturating_add(SKIP_NS));
         skipped || now_ns >= start.saturating_add(LENGTH_NS)
+    }
+
+    /// When the menu starts to show under the intro: its black starts fading out, or the
+    /// intro was skipped. `None` before the start.
+    pub fn reveal_at(&self) -> Option<u64> {
+        let start = self.start_ns?;
+        Some(
+            self.skip_ns
+                .map_or(start.saturating_add(REVEAL_NS), |skip| {
+                    skip.min(start.saturating_add(REVEAL_NS))
+                }),
+        )
     }
 
     /// Whether the menu's music may start: from the impact, or once skipped.
@@ -450,5 +464,23 @@ mod tests {
         over.start(0);
         over.skip(LENGTH_NS);
         assert!(!over.is_skipped());
+    }
+
+    #[test]
+    fn the_menu_is_revealed_when_the_black_starts_to_fade_or_at_a_skip() {
+        let mut intro = Intro::new();
+        assert_eq!(intro.reveal_at(), None);
+        intro.start(1_000);
+        assert_eq!(intro.reveal_at(), Some(1_000 + REVEAL_NS));
+        // The black starts fading exactly then.
+        assert!(backdrop(REVEAL_NS as f32 / 1e9 - 0.001) >= 1.0 - 1e-6);
+        assert!(backdrop(REVEAL_NS as f32 / 1e9 + 0.05) < 1.0);
+        // A skip reveals at once, and a late one does not push it later.
+        intro.skip(1_000 + 300 * MS);
+        assert_eq!(intro.reveal_at(), Some(1_000 + 300 * MS));
+        let mut late = Intro::new();
+        late.start(0);
+        late.skip(REVEAL_NS + 50 * MS);
+        assert_eq!(late.reveal_at(), Some(REVEAL_NS));
     }
 }

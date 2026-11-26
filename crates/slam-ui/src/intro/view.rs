@@ -7,7 +7,7 @@ use std::sync::Arc;
 use slam_render::atlas::AtlasRegion;
 use slam_render::shape::ShapeBatch;
 use slam_render::sprite::{Sprite, SpriteBatch};
-use slam_text::{EM_PX, FontRegistry, Glyph, GlyphCache, GlyphKey};
+use slam_text::{EM_PX_HIRES, FontRegistry, Glyph, GlyphCache, GlyphKey};
 
 use super::{BIG_SCALE, IntroSnapshot, LetterPose, backdrop, letter_pose};
 
@@ -48,6 +48,17 @@ impl IntroView {
         };
         view.lay_out();
         view
+    }
+
+    /// Asks `glyphs` for the letters at the resolution the intro draws them at; how many
+    /// are not ready yet.
+    pub fn request_glyphs(&self, glyphs: &mut GlyphCache) -> usize {
+        self.title
+            .layout
+            .glyphs()
+            .iter()
+            .filter(|g| matches!(glyphs.glyph(GlyphKey::hires_of(g)), Glyph::Pending))
+            .count()
     }
 
     /// How many letters the intro animates: the title's glyphs, as [`super::cues`] takes.
@@ -100,7 +111,10 @@ impl IntroView {
             title_centre[1] - layout.height() / 2.0,
         ];
         let screen_centre = [width / 2.0, height / 2.0];
-        let scale = layout.font_size() / EM_PX;
+        // The letters grow to several times the menu's title, so they are made at
+        // `EM_PX_HIRES` atlas pixels per em, not the 32 the menu's text is: scaled up from
+        // those they show the field's wobble as jagged edges (ADR-0178).
+        let scale = layout.font_size() / EM_PX_HIRES;
         let count = layout.glyphs().len();
         // The big row within most of the window's width.
         let widest = layout.width() * BIG_SCALE;
@@ -110,7 +124,7 @@ impl IntroView {
             1.0
         };
         for (index, g) in layout.glyphs().iter().enumerate() {
-            let Glyph::Ready { region, offset } = glyphs.glyph(GlyphKey::of(g)) else {
+            let Glyph::Ready { region, offset } = glyphs.glyph(GlyphKey::hires_of(g)) else {
                 continue;
             };
             // The glyph's sprite in the menu's title, as `push_layout` writes it.
@@ -178,10 +192,48 @@ fn place(at: Placement, pose: &LetterPose) -> ([f32; 2], [f32; 2]) {
     )
 }
 
+/// The largest size, in pixels per em, the intro draws a letter at in a `height` pixels
+/// high window: the big row before the flight.
+#[cfg(test)]
+fn largest_em_px(theme: &Theme, height: f32) -> f32 {
+    theme.title_size * theme.scale(height) * BIG_SCALE
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::intro::{END_S, IMPACT_S};
+
+    #[test]
+    fn the_letters_are_made_at_least_as_big_as_they_are_ever_drawn_up_to_4k() {
+        let theme = Theme::default();
+        for height in [720.0, 1080.0, 1440.0, 2160.0] {
+            let drawn = largest_em_px(&theme, height);
+            // Never scaled up more than 3 times, where 32 pixels per em showed 10-fold
+            // enlargement as a pixelated edge.
+            assert!(
+                drawn / EM_PX_HIRES <= 3.0,
+                "{height}: drawn {drawn} from {EM_PX_HIRES}"
+            );
+            assert!(
+                drawn / slam_text::EM_PX > 3.0,
+                "{height}: low res was enough"
+            );
+        }
+    }
+
+    #[test]
+    fn the_intro_asks_for_the_hires_glyphs_not_the_menus() {
+        use slam_text::{FontRegistry, GlyphKey};
+        use std::sync::Arc;
+        let registry = Arc::new(FontRegistry::with_builtin());
+        let view = IntroView::new(registry, Theme::default(), "SLAM");
+        assert_eq!(view.letters(), 4);
+        for g in view.title.layout.glyphs() {
+            assert!(GlyphKey::hires_of(g).hires);
+            assert_ne!(GlyphKey::hires_of(g), GlyphKey::of(g));
+        }
+    }
 
     const AT: Placement = Placement {
         top_left: [612.25, 301.5],

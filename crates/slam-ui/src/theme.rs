@@ -423,6 +423,20 @@ pub struct Theme {
     pub toolbar_clock_size: f32,
     pub toolbar_popup_ms: f32,
     pub toolbar_popup_slide: f32,
+    /// How long the toolbar takes to slide in (with the main menu after the intro, or back
+    /// after the results) or out, in milliseconds (ADR-0178).
+    pub toolbar_slide_ms: f32,
+    /// The toolbar's music player popup (ADR-0178): its width and height, the padding
+    /// inside, the sizes of the title and the artist, the progress bar's height, a
+    /// button's side, and how dark the beatmap's background under the texts is, 0 to 1.
+    pub player_width: f32,
+    pub player_height: f32,
+    pub player_pad: f32,
+    pub player_title_size: f32,
+    pub player_artist_size: f32,
+    pub player_bar_height: f32,
+    pub player_button: f32,
+    pub player_cover_dim: f32,
     /// Fill of the curtain's slats while the language switches (ADR-0091).
     pub curtain_fill: Color,
     /// Height of the accent edge leading each slat.
@@ -967,6 +981,15 @@ impl Theme {
             toolbar_clock_size: 18.0,
             toolbar_popup_ms: 200.0,
             toolbar_popup_slide: 10.0,
+            toolbar_slide_ms: 500.0,
+            player_width: 400.0,
+            player_height: 140.0,
+            player_pad: 14.0,
+            player_title_size: 20.0,
+            player_artist_size: 14.0,
+            player_bar_height: 6.0,
+            player_button: 36.0,
+            player_cover_dim: 0.62,
             curtain_fill: p.raised,
             curtain_edge: 4.0,
             intro_backdrop: Color::rgb(0.0, 0.0, 0.0),

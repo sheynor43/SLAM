@@ -472,6 +472,8 @@ import-unsupported = Unsupported file
 # The toolbar over the menus and the settings pinned to it (ADR-0168).
 toolbar-settings = Settings
 toolbar-home = Main menu
+toolbar-player = Now playing
+player-nothing-playing = Nothing is playing
 settings-row-pin = Pinned to the toolbar
 settings-row-pin-hint = Right-click the row again to unpin
 settings-row-unpin = Removed from the toolbar

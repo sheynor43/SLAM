@@ -168,6 +168,8 @@ pub fn interface_views(
             &slam_ui::toolbar::ToolbarLabels {
                 settings: text("toolbar-settings"),
                 home: text("toolbar-home"),
+                player: text("toolbar-player"),
+                nothing_playing: text("player-nothing-playing"),
             },
         ),
         theme,

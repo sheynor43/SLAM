@@ -1,7 +1,7 @@
 use skrifa::{FontRef, MetadataProvider};
 use slam_text::{
-    DISTANCE_RANGE, EM_PX, FALLBACK_FAMILY, FontId, FontRegistry, GlyphBitmap, GlyphError,
-    GlyphKey, PADDING, UI_FAMILY, generate_glyph,
+    DISTANCE_RANGE, EM_PX, EM_PX_HIRES, FALLBACK_FAMILY, FontId, FontRegistry, GlyphBitmap,
+    GlyphError, GlyphKey, PADDING, UI_FAMILY, generate_glyph,
 };
 
 fn key(reg: &FontRegistry, weight: u16, c: char) -> GlyphKey {
@@ -18,6 +18,7 @@ fn key_in(reg: &FontRegistry, family: &str, weight: u16, c: char) -> GlyphKey {
         weight,
         width: face.width,
         glyph_id: gid.to_u32() as u16,
+        hires: false,
     }
 }
 
@@ -62,6 +63,31 @@ fn a_narrow_glyph_is_a_narrower_bitmap_under_another_key() {
         a.image.size.width
     );
     assert_eq!(b.image.size.height, a.image.size.height);
+}
+
+#[test]
+fn a_hires_glyph_is_the_same_glyph_at_a_larger_scale() {
+    let reg = FontRegistry::with_builtin();
+    let low = key(&reg, 700, 'A');
+    let high = GlyphKey { hires: true, ..low };
+    assert_ne!(low, high);
+    assert_eq!(high.em_px(), EM_PX_HIRES);
+    assert_eq!(low.em_px(), EM_PX);
+    let a = generate_glyph(&reg, low).unwrap().unwrap();
+    let b = generate_glyph(&reg, high).unwrap().unwrap();
+    let ratio = f64::from(EM_PX_HIRES / EM_PX);
+    // The ink without the padding scales by the ratio, within the rounding of each edge.
+    let ink = |g: &GlyphBitmap| f64::from(g.image.size.width) - 2.0 * f64::from(PADDING);
+    assert!(
+        (ink(&b) / ink(&a) - ratio).abs() < 0.5,
+        "{} vs {}",
+        ink(&b),
+        ink(&a)
+    );
+    // The offset (the bitmap's corner from the pen) scales alike, so the glyph lands at
+    // the same place: the corner of the ink is within one low-resolution pixel.
+    let corner = |g: &GlyphBitmap, em: f32| g.offset[0] / em + PADDING as f32 / em;
+    assert!((corner(&b, EM_PX_HIRES) - corner(&a, EM_PX)).abs() < 1.5 / EM_PX);
 }
 
 #[test]
@@ -145,6 +171,7 @@ fn unknown_font_is_an_error() {
         weight: 400,
         width: 100,
         glyph_id: 1,
+        hires: false,
     };
     assert!(matches!(
         generate_glyph(&reg, k),

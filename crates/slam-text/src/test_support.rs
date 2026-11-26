@@ -125,6 +125,7 @@ pub fn key_in(registry: &FontRegistry, family: &str, weight: u16, c: char) -> Gl
         weight: face.weight,
         width: face.width,
         glyph_id: font.charmap().map(c).unwrap().to_u32() as u16,
+        hires: false,
     }
 }
 

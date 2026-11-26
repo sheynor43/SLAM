@@ -5,6 +5,7 @@ use slam_ui::screen::TRANSITION_NS;
 use slam_ui::toast::ToastFrame;
 
 use super::super::*;
+use super::MusicCommands;
 
 const LATER: u64 = 10 * TRANSITION_NS;
 
@@ -85,6 +86,8 @@ fn the_toolbar_shows_on_the_menus_and_not_in_a_play() {
     assert!(snap.toolbar.visible, "on the song select too");
     s.stack.navigate(Nav::Push(AppScreen::Play(1)), 0);
     s.tick(LATER, &[], &mut snap);
+    // It slides out first, then nothing of it shows.
+    s.tick(2 * LATER, &[], &mut snap);
     assert!(!snap.toolbar.visible);
 }
 
@@ -325,10 +328,158 @@ fn the_toolbar_takes_clicks_on_it_and_the_menu_below_still_works() {
     assert_eq!(*s.stack().top(), AppScreen::SongSelect);
 }
 
+/// Opens the player's popup by clicking its button, the bar being in.
+fn open_player(s: &mut ShellState, snap: &mut ShellSnapshot, now: u64) {
+    let point = s.toolbar_layout().player.centre();
+    click(s, snap, now, point);
+    assert!(snap.toolbar.player.is_some());
+}
+
+/// Clicks the player's button `button` (0 previous, 1 play/pause, 2 next).
+fn click_player_button(s: &mut ShellState, snap: &mut ShellSnapshot, now: u64, button: usize) {
+    let point = s.toolbar_layout().player_rects(0.0).buttons[button].centre();
+    click(s, snap, now, point);
+}
+
+#[test]
+fn the_player_button_opens_its_popup_and_a_click_outside_or_escape_closes_it() {
+    let mut s = state(&[]);
+    let mut snap = ShellSnapshot::default();
+    open_player(&mut s, &mut snap, LATER);
+    click(&mut s, &mut snap, 2 * LATER, [5.0, 700.0]);
+    assert!(snap.toolbar.player.is_none());
+    open_player(&mut s, &mut snap, 3 * LATER);
+    s.tick(4 * LATER, &[key(KEY_ESCAPE)], &mut snap);
+    assert!(snap.toolbar.player.is_none());
+    // Escape closed the popup only: the menu is still there.
+    assert!(matches!(s.stack().top(), AppScreen::Menu(_)));
+    // The button again closes it.
+    open_player(&mut s, &mut snap, 5 * LATER);
+    let point = s.toolbar_layout().player.centre();
+    click(&mut s, &mut snap, 6 * LATER, point);
+    assert!(snap.toolbar.player.is_none());
+}
+
+#[test]
+fn the_player_and_a_setting_popup_do_not_show_together() {
+    let mut s = state(&[MUSIC]);
+    let mut snap = ShellSnapshot::default();
+    click_pin(&mut s, &mut snap, LATER, 0);
+    assert!(snap.toolbar.popup.is_some());
+    open_player(&mut s, &mut snap, 2 * LATER);
+    assert!(snap.toolbar.popup.is_none());
+    click_pin(&mut s, &mut snap, 3 * LATER, 0);
+    assert!(snap.toolbar.popup.is_some() && snap.toolbar.player.is_none());
+}
+
+#[test]
+fn the_players_buttons_and_seek_reach_the_menu_music_once() {
+    let mut s = state(&[]);
+    let mut snap = ShellSnapshot::default();
+    open_player(&mut s, &mut snap, LATER);
+    assert_eq!(s.take_music_commands(), MusicCommands::default());
+    click_player_button(&mut s, &mut snap, 2 * LATER, 2);
+    assert_eq!(
+        s.take_music_commands(),
+        MusicCommands {
+            next: true,
+            ..MusicCommands::default()
+        }
+    );
+    assert_eq!(s.take_music_commands(), MusicCommands::default());
+    click_player_button(&mut s, &mut snap, 3 * LATER, 0);
+    assert!(s.take_music_commands().previous);
+    click_player_button(&mut s, &mut snap, 4 * LATER, 1);
+    assert!(s.take_music_commands().play_pause);
+    assert!(snap.toolbar.player.is_some(), "the buttons keep it open");
+    // A drag along the bar keeps its latest position.
+    let rects = s.toolbar_layout().player_rects(0.0);
+    let y = rects.bar.y + rects.bar.height / 2.0;
+    let x_at = |share: f32| rects.bar.x + rects.bar.width * share;
+    s.tick(
+        5 * LATER,
+        &[
+            at(x_at(0.2), y),
+            button(MouseButton::Left, true),
+            at(x_at(0.5), y),
+            at(x_at(0.75), y),
+            button(MouseButton::Left, false),
+            at(x_at(0.9), y),
+        ],
+        &mut snap,
+    );
+    let seek = s.take_music_commands().seek.expect("a seek");
+    assert!((seek - 0.75).abs() < 1e-3, "{seek}");
+}
+
+#[test]
+fn on_the_song_select_previous_and_next_move_the_selection_by_set() {
+    let (mut s, mut snap, _producer) = super::super::tests::in_song_select();
+    let t = 4 * LATER;
+    s.tick(t, &[], &mut snap);
+    assert_eq!(s.song_select().selected(), Some((0, 0)));
+    open_player(&mut s, &mut snap, t + LATER);
+    click_player_button(&mut s, &mut snap, t + 2 * LATER, 2);
+    assert_eq!(s.song_select().selected().map(|(set, _)| set), Some(1));
+    click_player_button(&mut s, &mut snap, t + 3 * LATER, 0);
+    assert_eq!(s.song_select().selected().map(|(set, _)| set), Some(0));
+    // The music is not asked to change track itself: the selection does that.
+    let commands = s.take_music_commands();
+    assert!(!commands.next && !commands.previous);
+    // Play/pause and seek still go to the music.
+    click_player_button(&mut s, &mut snap, t + 4 * LATER, 1);
+    assert!(s.take_music_commands().play_pause);
+}
+
+#[test]
+fn the_player_shows_the_title_and_artist_of_the_playing_set() {
+    let (mut s, mut snap, _producer) = super::super::tests::in_song_select();
+    s.set_menu_track(Some((1, 0)));
+    s.tick(5 * LATER, &[], &mut snap);
+    assert_eq!(&*snap.now_playing.title, "b");
+    assert_eq!(&*snap.now_playing.artist, "b");
+    let key = snap.now_playing.key;
+    s.set_menu_track(Some((0, 1)));
+    s.tick(6 * LATER, &[], &mut snap);
+    assert_eq!(&*snap.now_playing.title, "a");
+    assert_ne!(snap.now_playing.key, key);
+    // The same set again keeps the same strings, without a new allocation.
+    let title = Arc::clone(&snap.now_playing.title);
+    s.tick(7 * LATER, &[], &mut snap);
+    assert!(Arc::ptr_eq(&title, &snap.now_playing.title));
+    s.set_menu_track(None);
+    s.tick(8 * LATER, &[], &mut snap);
+    assert!(snap.now_playing.title.is_empty());
+}
+
+#[test]
+fn the_playing_state_reaches_the_frame() {
+    let mut s = state(&[]);
+    let mut snap = ShellSnapshot::default();
+    s.set_now_playing(true, true, Some(12_000.0), Some(60_000.0));
+    s.tick(LATER, &[], &mut snap);
+    let now = snap.toolbar.now_playing;
+    assert!(now.available && now.paused);
+    assert_eq!((now.position_ms, now.length_ms), (12_000.0, 60_000.0));
+    assert_eq!(now.progress(), 0.2);
+    s.set_now_playing(false, false, None, None);
+    s.tick(2 * LATER, &[], &mut snap);
+    assert_eq!(snap.toolbar.now_playing, Default::default());
+}
+
+#[test]
+fn leaving_for_a_play_closes_the_players_popup() {
+    let mut s = state(&[]);
+    let mut snap = ShellSnapshot::default();
+    open_player(&mut s, &mut snap, LATER);
+    s.stack.navigate(Nav::Push(AppScreen::Play(1)), 0);
+    s.tick(2 * LATER, &[], &mut snap);
+    assert!(snap.toolbar.player.is_none());
+}
+
 #[test]
 fn the_song_select_makes_room_for_the_bar() {
     let s = state(&[]);
     let bar = s.toolbar_layout().height();
     assert!(s.song_layout.header.y >= bar);
-    assert!(s.results_layout.title.y >= bar);
 }

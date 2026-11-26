@@ -353,6 +353,8 @@ pub struct ShellSnapshot {
     pub toast: slam_ui::toast::ToastFrame,
     /// The menus' toolbar (ADR-0168).
     pub toolbar: slam_ui::toolbar::ToolbarFrame,
+    /// The texts of the playing track, for the toolbar's player (ADR-0178).
+    pub now_playing: slam_ui::toolbar::NowPlayingText,
 }
 
 /// The update logic without the window: input to navigation to snapshot.
@@ -431,6 +433,14 @@ pub struct ShellState {
     popup_editing: bool,
     clock: u16,
     clock_at_ns: u64,
+    /// How far the toolbar is in (ADR-0178), and the music player's state: what plays, the
+    /// texts of its set (by the set's key) and what the player asked for since the shell
+    /// last took it.
+    toolbar_slide: slam_ui::toolbar::Slide,
+    now_playing: slam_ui::toolbar::NowPlayingFrame,
+    now_text: slam_ui::toolbar::NowPlayingText,
+    now_key: Option<u64>,
+    music_commands: toolbar::MusicCommands,
     /// Files dropped on the window and the thread that imports them (ADR-0169).
     imports: Option<crate::import::Imports>,
     /// The mods the next play takes: they outlast a play and the results, and are not saved.
@@ -572,6 +582,11 @@ impl ShellState {
             popup_editing: false,
             clock: slam_ui::toolbar::NO_CLOCK,
             clock_at_ns: 0,
+            toolbar_slide: slam_ui::toolbar::Slide::default(),
+            now_playing: slam_ui::toolbar::NowPlayingFrame::default(),
+            now_text: slam_ui::toolbar::NowPlayingText::default(),
+            now_key: None,
+            music_commands: toolbar::MusicCommands::default(),
             imports: None,
             // An empty set is always compatible; the capacity keeps a toggle from allocating.
             selected_mods: ModSet::new(Vec::with_capacity(SELECTED_MODS_CAPACITY))
@@ -3040,6 +3055,9 @@ struct PlayHost {
     rng: u64,
     /// The beatmap whose music plays in the menus, by set and difficulty (ADR-0119).
     music_at: Option<(usize, usize)>,
+    /// Where the menu music was last heard, ms: the player keeps showing it for the few
+    /// milliseconds a seek leaves the position unknown (ADR-0178).
+    player_ms: f64,
     /// The tempo and frequency the preview decks have (ADR-0167); `None` until both
     /// took them, so a failed send is retried.
     preview_speed: Option<(f64, f64)>,
@@ -3273,9 +3291,12 @@ impl PlayHost {
             state.set_no_audio(false);
         }
         self.intro_sound(state);
-        self.menu_music(now_ns, state);
+        let commands = state.take_music_commands();
+        self.menu_music(now_ns, state, commands);
         state.set_menu_track(self.music_at);
-        state.set_menu_track_ms(self.menu_track_ms(now_ns));
+        let track_ms = self.menu_track_ms(now_ns);
+        state.set_menu_track_ms(track_ms);
+        self.tell_player(state, track_ms);
         let noted = state.take_ui_sounds();
         let mode = state.live_settings().audio.menu_sounds;
         let skin = state.menu_skin().cloned();
@@ -3738,7 +3759,7 @@ impl PlayHost {
 
     /// Plays the menus' music the screens call for (ADR-0090). Allocates only when another
     /// track starts; frees failed tracks' messages on the loader thread.
-    fn menu_music(&mut self, now_ns: u64, state: &ShellState) {
+    fn menu_music(&mut self, now_ns: u64, state: &ShellState, commands: toolbar::MusicCommands) {
         // Without an output nothing takes the decks' commands: they would only fill up.
         if self.no_output {
             return;
@@ -3788,6 +3809,9 @@ impl PlayHost {
         if matches!(want, Want::Preview { .. }) {
             self.music_at = selected;
         }
+        if want != Want::Silence {
+            self.player_commands(now_ns, state, commands);
+        }
         self.preview_speed(state);
         let rng = &mut self.rng;
         let music_at = &mut self.music_at;
@@ -3799,6 +3823,63 @@ impl PlayHost {
                 }
                 picked
             });
+    }
+
+    /// Carries out what the toolbar's player asked of the menu music (ADR-0178): a seek, a
+    /// pause or play, and on the main menu the previous and next track (the song select
+    /// moves its selection instead, and the music follows).
+    fn player_commands(
+        &mut self,
+        now_ns: u64,
+        state: &ShellState,
+        commands: toolbar::MusicCommands,
+    ) {
+        if commands == toolbar::MusicCommands::default() {
+            return;
+        }
+        let decks = &mut self.audio.previews;
+        if let Some(share) = commands.seek
+            && let Some(length) = self.menu_music.length_ms(decks)
+        {
+            self.menu_music
+                .seek_ms(f64::from(share.clamp(0.0, 1.0)) * length, decks);
+        }
+        if commands.play_pause {
+            self.menu_music.toggle_pause(now_ns, decks);
+        }
+        if commands.previous
+            && let menu_music::Previous::Started(at) =
+                self.menu_music
+                    .previous(now_ns, Some(self.player_ms), decks)
+        {
+            self.music_at = Some(at);
+        }
+        if commands.next {
+            let rng = &mut self.rng;
+            if let Some(at) = self
+                .menu_music
+                .next(now_ns, decks, || random_track(rng, state.files()))
+            {
+                self.music_at = Some(at);
+            }
+        }
+    }
+
+    /// Tells the toolbar's player what the menu music is doing.
+    fn tell_player(&mut self, state: &mut ShellState, track_ms: Option<f64>) {
+        let available = !self.no_output && self.menu_music.has_track();
+        match track_ms {
+            Some(ms) => self.player_ms = ms,
+            None if !available => self.player_ms = 0.0,
+            None => {}
+        }
+        let length = self.menu_music.length_ms(&self.audio.previews);
+        state.set_now_playing(
+            available,
+            self.menu_music.is_paused(),
+            available.then_some(self.player_ms),
+            length,
+        );
     }
 
     /// Gives the preview decks the selected rate mods' tempo and frequency in the song
@@ -4833,12 +4914,29 @@ impl<B: render::Backend> Draw<ShellSnapshot> for View<B> {
         // The toolbar over the menus, under the settings panel (ADR-0168); its tooltip is a
         // layer of its own, over the popup's texts.
         if snapshot.toolbar.visible {
+            // The player's popup lies on the playing beatmap's background, which is the
+            // one the menus show (ADR-0178).
+            let cover = snapshot
+                .toolbar
+                .player
+                .and(self.backgrounds.as_ref())
+                .and_then(|(uploads, fade)| {
+                    fade.visible(info.wait.woke_ns)
+                        .into_iter()
+                        .flatten()
+                        .find_map(|h| match uploads.get(h) {
+                            TextureState::Ready(region) => Some(region),
+                            _ => None,
+                        })
+                });
             let tip = self.toolbar.push(
                 &mut self.shapes,
                 &mut self.text,
                 &mut self.glyphs,
                 &mut self.settings,
                 &snapshot.toolbar,
+                &snapshot.now_playing,
+                cover,
                 width,
                 height,
                 info.wait.woke_ns,
@@ -5089,7 +5187,7 @@ impl<B: render::Backend> Draw<ShellSnapshot> for View<B> {
 
 impl<B: render::Backend> View<B> {
     fn request_glyphs(&mut self) -> usize {
-        glyphs_pending(
+        let screens = glyphs_pending(
             &mut self.glyphs,
             &self.menu,
             &self.song_select,
@@ -5099,7 +5197,13 @@ impl<B: render::Backend> View<B> {
             &self.volume,
             &self.toast,
             &self.toolbar,
-        )
+        );
+        // The intro's letters are made large (ADR-0178): ready before it starts.
+        let intro = self
+            .intro
+            .as_ref()
+            .map_or(0, |intro| intro.request_glyphs(&mut self.glyphs));
+        screens + intro
     }
 }
 
@@ -5838,6 +5942,7 @@ fn run_with<B: render::Backend>(
             // Any non-zero seed; the clock makes each run's first track differ.
             rng: now_ns() | 1,
             music_at: None,
+            player_ms: 0.0,
             preview_speed: None,
             ui_sounds: ui_sounds::UiSoundPlayer::new(audio_rate),
             loader,

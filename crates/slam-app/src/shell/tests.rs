@@ -738,6 +738,7 @@ fn host(name: &str, with_track: bool) -> HostFixture {
         selection: (None, 0),
         rng: 1,
         music_at: None,
+        player_ms: 0.0,
         preview_speed: None,
         ui_sounds: ui_sounds::UiSoundPlayer::new(SAMPLE_RATE),
         loader,
@@ -3084,4 +3085,86 @@ fn the_mod_select_overlay_pops_in_and_out_with_sounds() {
     s.tick(t + 3, &[], &mut snap);
     let noted = s.take_ui_sounds();
     assert!(noted[at(MenuSound::ModsClose)] && !noted[at(MenuSound::ModColumn)]);
+}
+
+#[test]
+fn the_toolbar_is_hidden_on_the_results_and_slides_back_on_the_song_select() {
+    let (mut s, mut snap, _producer, now) = in_results();
+    // The slide out takes its time; after it nothing of the bar shows.
+    let ms = (s.theme.toolbar_slide_ms * 1e6) as u64;
+    s.tick(now + 1, &[], &mut snap);
+    s.tick(now + 1 + ms, &[], &mut snap);
+    assert!(!snap.toolbar.visible);
+    assert_eq!(snap.toolbar.slide, 0.0);
+    // Input on the bar's place goes to the results, not to the toolbar.
+    assert!(!s.toolbar_input(
+        InputKind::MouseButton {
+            button: MouseButton::Left,
+            down: true
+        },
+        now + 1 + ms
+    ));
+    s.tick(now + 2 + ms, &[key(KEY_ESCAPE)], &mut snap);
+    assert_eq!(*s.stack().top(), AppScreen::SongSelect);
+    // Back on the song select it comes in again, easing over the theme's slide time.
+    let later = now + 2 + ms;
+    assert!(snap.toolbar.visible);
+    s.tick(later + ms / 2, &[], &mut snap);
+    assert!(snap.toolbar.slide > 0.0 && snap.toolbar.slide < 1.0);
+    s.tick(later + ms, &[], &mut snap);
+    assert_eq!(snap.toolbar.slide, 1.0);
+}
+
+#[test]
+fn the_results_start_at_the_top_without_the_toolbars_offset() {
+    let s = state();
+    assert_eq!(
+        s.results_layout.title.y,
+        s.theme.results_margin * s.theme.scale(720.0)
+    );
+}
+
+#[test]
+fn the_toolbar_is_there_as_the_menu_shows_after_the_intro() {
+    use slam_ui::intro::{LENGTH_NS, REVEAL_NS};
+    let mut s = state().with_intro(Arc::new(AtomicBool::new(true)));
+    let mut snap = ShellSnapshot::default();
+    let t0 = 1_000;
+    s.tick(t0, &[], &mut snap);
+    // Under the intro's black nothing of the bar moves yet.
+    s.tick(t0 + REVEAL_NS - 1, &[], &mut snap);
+    assert_eq!(snap.toolbar.slide, 0.0);
+    assert!(!snap.toolbar.visible);
+    // As the black starts to fade the bar starts sliding in with the menu.
+    s.tick(t0 + REVEAL_NS, &[], &mut snap);
+    assert!(snap.toolbar.visible);
+    let ms = (s.theme.toolbar_slide_ms * 1e6) as u64;
+    s.tick(t0 + REVEAL_NS + ms / 2, &[], &mut snap);
+    assert!(snap.toolbar.slide > 0.0 && snap.toolbar.slide < 1.0);
+    // The intro ends before the bar is in, and it goes on rather than popping.
+    assert!(t0 + LENGTH_NS < t0 + REVEAL_NS + ms);
+    s.tick(t0 + LENGTH_NS, &[], &mut snap);
+    assert_eq!(snap.intro, None);
+    assert!(snap.toolbar.slide > 0.0 && snap.toolbar.slide < 1.0);
+    s.tick(t0 + REVEAL_NS + ms, &[], &mut snap);
+    assert_eq!(snap.toolbar.slide, 1.0);
+}
+
+#[test]
+fn a_skipped_intro_brings_the_toolbar_with_the_menu() {
+    let mut s = state().with_intro(Arc::new(AtomicBool::new(true)));
+    let mut snap = ShellSnapshot::default();
+    s.tick(1_000, &[], &mut snap);
+    s.tick(1_000_000, &[key(KEY_ENTER)], &mut snap);
+    assert!(snap.intro.is_some_and(|i| i.skipped));
+    s.tick(1_000_000 + 1, &[], &mut snap);
+    assert!(snap.toolbar.visible, "the bar comes in with the skip");
+    // The bar does not take the skipping click, nor any press while the intro shows.
+    assert!(!s.toolbar_input(
+        InputKind::MouseButton {
+            button: MouseButton::Left,
+            down: true
+        },
+        1_000_000 + 2
+    ));
 }
