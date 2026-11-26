@@ -846,3 +846,94 @@ fn score_rows_come_in_staggered_and_only_new_rows_animate_again() {
     let again = row_starts(&mut rig, &other, 3000 * ms);
     assert_eq!(again[0], 3000 * ms + delay);
 }
+
+#[test]
+fn the_panel_does_not_move_sideways_when_scores_come_or_go() {
+    let mut rig = Rig::new();
+    let layout = SongSelectLayout::new(1280.0, 768.0, &rig.theme);
+    let wedge_x = |rig: &mut Rig, details: BeatmapDetails| {
+        rig.show(details);
+        let mut screen = rig.screen.clone();
+        screen.set_details(Some(details));
+        let snapshot = screen.snapshot();
+        let mut first = None;
+        rig.panel.push(
+            &layout,
+            &rig.theme,
+            &snapshot,
+            1.0,
+            0,
+            &mut |r, _, look| {
+                if first.is_none() && matches!(look, Look::Wedge { .. }) {
+                    first = Some(r.x + r.width);
+                }
+            },
+            &mut |_, _, _, _| {},
+            &mut |_, _, _, _, _, _| {},
+        );
+        first.unwrap()
+    };
+    let none = wedge_x(&mut rig, details(None));
+    let empty = wedge_x(&mut rig, details(Some(LocalScores::default())));
+    let mut some = LocalScores::default();
+    some.rows[0] = Some(row(1_000_000));
+    let one = wedge_x(&mut rig, details(Some(some)));
+    assert!(
+        (none - empty).abs() < 1e-3 && (empty - one).abs() < 1e-3,
+        "{none} {empty} {one}"
+    );
+}
+
+#[test]
+fn a_new_star_rating_eases_the_pills_colour() {
+    let mut rig = Rig::new();
+    let layout = SongSelectLayout::new(1280.0, 768.0, &rig.theme);
+    let with_stars = |stars: f32| {
+        let mut difficulty = DifficultyRow::new(SearchSource {
+            difficulty: "Insane",
+            ..SearchSource::default()
+        });
+        difficulty.stars = Some(stars);
+        Arc::new(SongList {
+            sets: vec![SetRow {
+                key: 1,
+                artist: "Artist".into(),
+                title: "Title".into(),
+                creator: "mapper".into(),
+                difficulties: vec![difficulty],
+            }],
+        })
+    };
+    let pill = |rig: &mut Rig, now_ns: u64| {
+        let snapshot = rig.screen.snapshot();
+        let mut colour = None;
+        rig.panel.push(
+            &layout,
+            &rig.theme,
+            &snapshot,
+            1.0,
+            now_ns,
+            &mut |_, c, look| {
+                if colour.is_none() && matches!(look, Look::Pill) {
+                    colour = Some(c);
+                }
+            },
+            &mut |_, _, _, _| {},
+            &mut |_, _, _, _, _, _| {},
+        );
+        colour.expect("a star pill")
+    };
+    let list = with_stars(2.0);
+    let filter = SongFilter::for_list(&list);
+    rig.screen.set_list(list, filter);
+    let low = pill(&mut rig, 1_000_000_000);
+    let list = with_stars(7.0);
+    let filter = SongFilter::for_list(&list);
+    rig.screen.refresh_list(list, filter);
+    let start = pill(&mut rig, 1_001_000_000);
+    let end = pill(&mut rig, 3_000_000_000);
+    let far = |a: Color, b: Color| (a.r - b.r).abs() + (a.g - b.g).abs() + (a.b - b.b).abs();
+    assert!(far(start, low) < 0.05, "no jump at once");
+    assert!(far(end, low) > 0.2, "it gets there");
+    assert_eq!(end, crate::star_colour::for_stars(7.0));
+}

@@ -64,9 +64,9 @@ pub fn score_row_at(
         .take_while(|r| r.is_some())
         .count()
         .min(parts.row_count);
-    let last = parts.rows.get(shown.checked_sub(1)?)?;
-    // The wedges lean along one line through the board's bottom edge (see `push`).
-    let anchor = last.y + last.height + layout.info_inset;
+    shown.checked_sub(1)?;
+    // The wedges lean along one line through the board's lowest bottom (see `push`).
+    let anchor = full_board_bottom(parts) + layout.info_inset;
     parts.rows[..shown].iter().position(|r| {
         let lean = (anchor - (r.y + r.height / 2.0)) * layout.info_tan;
         let moved = Rect {
@@ -75,6 +75,14 @@ pub fn score_row_at(
         };
         moved.contains(x, y)
     })
+}
+
+/// The bottom of the scores' wedge with as many rows as fit: the line the panel leans from.
+fn full_board_bottom(parts: &InfoLayout) -> f32 {
+    match parts.row_count.checked_sub(1) {
+        Some(last) => parts.rows[last].y + parts.rows[last].height,
+        None => parts.empty.y + parts.empty.height,
+    }
 }
 
 /// One difficulty bar: its name, the track and the number.
@@ -339,13 +347,16 @@ struct InfoMotion {
     bars: [Towards; 4],
     /// The panel's colour, by channel.
     colour: [Towards; 4],
+    /// The star rating the pill and the outline are coloured by, easing to a new rating as
+    /// lazer's `StarRatingDisplay` does (ADR-0167).
+    stars: Towards,
+    /// Whether `stars` had a rating to start from.
+    stars_started: bool,
     /// Whether the bars and colour had a value to start from.
     started: bool,
     /// The panel's width, following its texts (ADR-0167).
     width: Towards,
-    /// The height the wedges lean from, moving when the scores' wedge comes or goes.
-    anchor: Towards,
-    /// Whether the width and anchor had a value to start from.
+    /// Whether the width had a value to start from.
     sized: bool,
     /// The difficulty the score rows came in for, and how many rows they had then: a
     /// refreshed list of the same difficulty animates only the rows it gained.
@@ -585,8 +596,21 @@ impl InfoPanel {
         let mut parts = InfoLayout::new(&info, theme, scale);
         let tan = theme.button_skew().tan();
         let inset = theme.song_margin * scale / 2.0;
+        // The rating's colour eases to a new rating (lazer: 750 ms OutQuint); its number
+        // shows at once.
         let stars = snapshot.selected_stars();
-        let outline = match (snapshot.selected, stars) {
+        let star_ns = ms(theme.star_colour_ease_ms);
+        let shown_stars = stars.map(|to| {
+            let m = &mut self.motion;
+            if m.stars_started {
+                m.stars.aim(to, now_ns, star_ns, ease_out_quint);
+            } else {
+                m.stars = Towards::rest(to, now_ns);
+                m.stars_started = true;
+            }
+            m.stars.at(now_ns, star_ns, ease_out_quint)
+        });
+        let outline = match (snapshot.selected, shown_stars) {
             (None, _) => Color {
                 a: 0.0,
                 ..theme.accent
@@ -684,26 +708,14 @@ impl InfoPanel {
                 ..theme.accent
             },
         };
-        // Everything leans with the wedges along one line through their lowest bottom
-        // edge, which stays at the margin: nothing reaches past the window's left edge.
-        let anchor = if snapshot.details.is_some() {
-            board.y + board.height
-        } else {
-            wedge.y + wedge.height
-        };
-        // Between two selections the details are gone for a moment: the lean moves, not
-        // jumps, so the texts do not slide sideways at once.
-        let anchor = if self.motion.sized {
-            self.motion
-                .anchor
-                .aim(anchor, now_ns, move_ns, ease_out_quint);
-            self.motion.anchor.at(now_ns, move_ns, ease_out_quint)
-        } else {
+        // Everything leans with the wedges along one line through the lowest bottom edge
+        // the scores' wedge can have, which stays at the margin: nothing reaches past the
+        // window's left edge, and the lean stays put whether scores come or go (ADR-0167).
+        let anchor = full_board_bottom(&parts) + inset;
+        if !self.motion.sized {
             self.motion.width = Towards::rest(wanted, now_ns);
-            self.motion.anchor = Towards::rest(anchor, now_ns);
             self.motion.sized = true;
-            anchor
-        };
+        }
         let lean_of = |y: f32| (anchor - y) * tan;
         let mut rect = |r: &Rect, colour: Color, look: Look| {
             let moved = Rect {
@@ -777,7 +789,7 @@ impl InfoPanel {
             centre(&parts.name),
             ink(theme.text),
         );
-        if let Some(stars) = stars {
+        if let Some(stars) = shown_stars {
             push_star_pill(
                 rect,
                 left,
