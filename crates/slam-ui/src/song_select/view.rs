@@ -24,8 +24,8 @@ use super::mod_select::{
     TileDetails, TileMultipliers, push_multiplier,
 };
 use super::{
-    MAX_VISIBLE_ROWS, ModColumns, ModSelectSnapshot, Row, SearchQuery, SongList, SongSelectLayout,
-    SongSelectSnapshot, SongSelectStatus, Thumbs, can_choose_folder,
+    FooterButton, FooterState, MAX_VISIBLE_ROWS, ModColumns, ModSelectSnapshot, Row, SearchQuery,
+    SongList, SongSelectLayout, SongSelectSnapshot, SongSelectStatus, Thumbs, can_choose_folder,
 };
 use crate::marquee::{Marquee, MarqueeParams, ScrollTracker, push_marquee};
 use crate::menu::Rect;
@@ -51,6 +51,19 @@ const MULTIPLIER_CAPACITY: usize = 16;
 
 const VALUE_CHARS: &str = "0123456789.-x";
 
+/// Where a frame's quads divide into layers drawn one over the other: each is the count of
+/// shapes and of glyph quads so far (ADR-0152, ADR-0177).
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct Splits {
+    /// Under it the list and the footer; over it the mod select panel.
+    pub panel: Option<(u32, u32)>,
+    /// Under it the panel; over it the floating settings panel.
+    pub popup: Option<(u32, u32)>,
+}
+
+/// How long the screen may go undrawn before its footer slides in again.
+const FOOTER_AWAY_NS: u64 = 250_000_000;
+
 /// The screen's localised texts, already formatted.
 #[derive(Clone)]
 pub struct SongSelectLabels {
@@ -60,9 +73,12 @@ pub struct SongSelectLabels {
     pub empty: String,
     /// The button shown when there is nothing to play.
     pub choose_folder: String,
-    pub hint: String,
-    /// Shown instead of the hints after a play was refused for want of an audio output.
+    /// Shown above the footer after a play was refused for want of an audio output.
     pub no_audio: String,
+    /// The footer's buttons (ADR-0175): back, the pin of the current mods, reset.
+    pub footer_back: String,
+    pub footer_pin: String,
+    pub footer_reset: String,
     /// Follows a difficulty's SS performance: "pp" in "412pp" (ADR-0151).
     pub pp_suffix: String,
     /// Shown in the search line while the query is empty.
@@ -112,7 +128,7 @@ pub struct DetailLabels {
 impl std::fmt::Debug for SongSelectLabels {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("SongSelectLabels")
-            .field("hint", &self.hint)
+            .field("no_audio", &self.no_audio)
             .finish_non_exhaustive()
     }
 }
@@ -189,8 +205,17 @@ pub struct SongSelectView {
     loading: Line,
     empty: Line,
     choose_folder: Line,
-    hint: Line,
     no_audio: Line,
+    /// The footer's labels, and the pinned presets' (ADR-0175).
+    footer_back: Line,
+    footer_pin: Line,
+    footer_reset: Line,
+    presets: Vec<Line>,
+    /// How many of `presets` hold a label.
+    preset_count: usize,
+    /// When the footer started sliding in, and when the view was last drawn.
+    footer_since: u64,
+    last_push: Option<u64>,
     /// [`SongSelectLabels::pp_suffix`].
     pp_suffix: String,
     /// The query, for the query it was laid out for.
@@ -220,7 +245,7 @@ pub struct SongSelectView {
     mod_texts: [Vec<(String, String)>; MAX_COLUMNS],
     /// "Mods: HD DT" under the list, for the flags it was written for.
     mods_selected: Line,
-    mods_selected_for: Option<([u16; MAX_COLUMNS], TileDetails)>,
+    mods_selected_for: Option<([u16; MAX_COLUMNS], TileDetails, u64)>,
     mod_columns: ModColumns,
     slots: Vec<RowSlot>,
     /// Widths of the ellipsis at the title and detail sizes and in the caption and note
@@ -495,8 +520,20 @@ impl SongSelectView {
             loading: Line::new(&labels.loading),
             empty: Line::new(&labels.empty),
             choose_folder: Line::new(&labels.choose_folder),
-            hint: Line::new(&labels.hint),
             no_audio: Line::new(&labels.no_audio),
+            footer_back: Line::new(&labels.footer_back),
+            footer_pin: Line::new(&labels.footer_pin),
+            footer_reset: Line::new(&labels.footer_reset),
+            presets: (0..super::MAX_PRESETS)
+                .map(|_| {
+                    let mut line = Line::new("");
+                    line.text.reserve(TEXT_CAPACITY);
+                    line
+                })
+                .collect(),
+            preset_count: 0,
+            footer_since: 0,
+            last_push: None,
             pp_suffix: labels.pp_suffix.clone(),
             search: Line::new(""),
             search_for: None,
@@ -600,10 +637,19 @@ impl SongSelectView {
         // The button's label is Bold (ADR-0174).
         self.type_setter
             .lay_out_face(&mut self.choose_folder, self.theme.heading_face(status));
-        for line in [&mut self.hint, &mut self.no_audio] {
+        for line in [
+            &mut self.no_audio,
+            &mut self.footer_back,
+            &mut self.footer_pin,
+            &mut self.footer_reset,
+        ] {
             self.type_setter
                 .lay_out(line, self.theme.song_detail_size * scale);
         }
+        for line in &mut self.presets {
+            line.text.clear();
+        }
+        self.preset_count = 0;
         self.info.lay_out(&mut self.type_setter, &self.theme, scale);
         for line in [&mut self.search_placeholder, &mut self.search_no_matches] {
             self.type_setter
@@ -689,8 +735,10 @@ impl SongSelectView {
             &self.loading,
             &self.empty,
             &self.choose_folder,
-            &self.hint,
             &self.no_audio,
+            &self.footer_back,
+            &self.footer_pin,
+            &self.footer_reset,
             &self.search,
             &self.search_placeholder,
             &self.search_no_matches,
@@ -704,6 +752,7 @@ impl SongSelectView {
             .chain(self.mod_tiles.iter().flatten())
             .chain(self.tile_multipliers.iter().flatten())
             .chain([&self.mods_multiplier])
+            .chain(&self.presets)
             .chain(
                 self.mod_names
                     .iter()
@@ -850,7 +899,7 @@ impl SongSelectView {
         pose: Pose,
         white: AtlasRegion,
         thumbs: Thumbs<'_>,
-    ) -> Option<(u32, u32)> {
+    ) -> Splits {
         let frame = Frame { width, height };
         if frame != self.frame {
             self.frame = frame;
@@ -876,6 +925,7 @@ impl SongSelectView {
         }
 
         self.refresh_selected(&snapshot.mods);
+        self.refresh_presets(&snapshot.presets, &snapshot.footer);
         self.refresh_multipliers(&snapshot.mods);
         self.refresh_search(&snapshot.query, thumbs.now_ns);
         // The mod select panel's slide (ADR-0152): the backdrop without delay, the last
@@ -895,6 +945,21 @@ impl SongSelectView {
             [self.ellipsis[0], self.ellipsis[1]],
             snapshot,
         );
+        // The footer slides in with the screen: from the first frame it shows, or the first
+        // after the screen was away (ADR-0175).
+        let entered = pose.opacity > 0.0
+            && self
+                .last_push
+                .is_none_or(|last| now.saturating_sub(last) > FOOTER_AWAY_NS);
+        if entered {
+            self.footer_since = now;
+        }
+        self.last_push = Some(now);
+        let footer_slide = crate::anim::ease_out_quint(crate::anim::progress(
+            self.footer_since,
+            now,
+            (self.theme.footer_slide_ms.max(0.0) * 1.0e6) as u64,
+        ));
         let shift = pose.offset * width;
         let opacity = pose.opacity;
         let theme = &self.theme;
@@ -938,36 +1003,6 @@ impl SongSelectView {
             let (text, glyphs) = &mut *target.borrow_mut();
             push_layout(text, &line.layout, position, colour, glyphs);
         };
-        // Like `left`, but cut at `cut` (a screen x) when the text's row is in `rows`: the
-        // texts of the plates a popup covers must not show over it, as all texts are drawn
-        // after all shapes of a layer.
-        let left_cut =
-            |line: &Line, x: f32, centre_y: f32, colour: Color, cut: Option<(f32, f32, f32)>| {
-                let position = [x + shift, centre_y - line.layout.height() / 2.0];
-                let colour = faded(colour, opacity * row_alpha.get() * layer.get());
-                let (text, glyphs) = &mut *target.borrow_mut();
-                match cut {
-                    Some((right, top, bottom)) if centre_y >= top && centre_y <= bottom => {
-                        let clip = slam_text::Clip {
-                            left: f32::MIN,
-                            right,
-                            fade_left: 0.0,
-                            fade_right: 0.0,
-                        };
-                        slam_text::push_layout_clipped(
-                            text,
-                            &line.layout,
-                            position,
-                            colour,
-                            &clip,
-                            glyphs,
-                        );
-                    }
-                    _ => {
-                        push_layout(text, &line.layout, position, colour, glyphs);
-                    }
-                }
-            };
         // Draws a text that rides in `avail` pixels from `x`, centred on `centre_y`.
         let ride = |line: &Line,
                     marquee: &mut Marquee,
@@ -1005,17 +1040,6 @@ impl SongSelectView {
                 SongSelectStatus::Loading => Some(&self.loading),
                 SongSelectStatus::Ready => None,
             };
-            if let Some(line) = status_line {
-                left(
-                    line,
-                    lean(
-                        layout.header.x,
-                        layout.header.y + layout.header.height / 2.0,
-                    ),
-                    layout.header.y + layout.header.height / 2.0,
-                    theme.text,
-                );
-            }
             // The selected difficulty's statistics and local scores, on the left; they give
             // way to the mod panel, whose multiplier stands over them (ADR-0152).
             layer.set(1.0 - panel_back);
@@ -1034,12 +1058,12 @@ impl SongSelectView {
             let search = leaned(&layout.search);
             rect(&search, theme.song_search_fill, Look::Round);
             if snapshot.query.is_empty() {
-                left(
-                    &self.search_placeholder,
-                    search.x + pad,
-                    search.y + search.height / 2.0,
-                    theme.disabled_text,
-                );
+                // The status line takes the placeholder's place (ADR-0177).
+                let (line, colour) = match status_line {
+                    Some(line) => (line, theme.text),
+                    None => (&self.search_placeholder, theme.disabled_text),
+                };
+                left(line, search.x + pad, search.y + search.height / 2.0, colour);
             } else {
                 // The newest character slides in; an erase pops the text (ADR-0167).
                 let line = &self.search;
@@ -1059,7 +1083,10 @@ impl SongSelectView {
                 );
             }
             // The caret: at the end of the typed text, at the start of the placeholder.
-            if self.search_type.caret_on(now_ns, theme) {
+            let caret_alpha =
+                self.search_type
+                    .caret_alpha(now_ns, theme, !snapshot.query.is_empty());
+            if caret_alpha > 0.0 {
                 let reach = if snapshot.query.is_empty() {
                     0.0
                 } else {
@@ -1072,7 +1099,11 @@ impl SongSelectView {
                     theme,
                     scale,
                 );
-                rect(&caret, theme.caret, Look::Pill);
+                let colour = Color {
+                    a: theme.caret.a * caret_alpha,
+                    ..theme.caret
+                };
+                rect(&caret, colour, Look::Pill);
             }
             if list.sets.is_empty() {
                 if snapshot.status == SongSelectStatus::Ready {
@@ -1499,32 +1530,107 @@ impl SongSelectView {
                     now_ns,
                 );
             }
-            // The hint line gives way to the mod panel's own (ADR-0152).
-            layer.set(1.0 - panel_back);
-            // The refused play's reason stands out from the hints it replaces.
-            let (hint, colour) = if snapshot.no_audio {
-                (&self.no_audio, theme.text)
-            } else {
-                (&self.hint, theme.song_hint_text)
-            };
-            left(
-                hint,
-                lean(layout.hint.x, layout.hint.y + layout.hint.height / 2.0),
-                layout.hint.y + layout.hint.height / 2.0,
-                colour,
+            layer.set(1.0);
+            // The refused play's reason, above the footer, on a backing of its own.
+            if snapshot.no_audio {
+                let hint = layout.hint;
+                rect(&hint, theme.song_search_fill, Look::Round);
+                let line = &self.no_audio;
+                left(line, hint.x + pad, hint.y + hint.height / 2.0, theme.text);
+            }
+            // The footer bar slides up from below with the screen (ADR-0175).
+            let bar = layout.footer.bar;
+            let up = (1.0 - footer_slide) * bar.height;
+            rect(
+                &Rect {
+                    y: bar.y + up,
+                    ..bar
+                },
+                theme.footer_fill,
+                Look::Plain,
             );
-            // The selection, left of the list panel.
-            if snapshot.mods.active != [0; MAX_COLUMNS] {
-                let margin = theme.song_margin * layout.scale;
+            let buttons = layout.footer.buttons(snapshot.footer);
+            let ink = |button: FooterButton| {
+                let busy = snapshot.footer_pressed == Some(button);
+                let on = busy || (button == FooterButton::Mods && snapshot.mods.open);
+                let hot = snapshot.footer_hover == Some(button);
+                let fill = if hot || busy {
+                    theme.button_hover_fill
+                } else {
+                    theme.button_fill
+                };
+                (fill, on)
+            };
+            let draw_button = |rect_of: Rect, button: FooterButton, seed: f32| {
+                let (fill, on) = ink(button);
+                rect(
+                    &Rect {
+                        y: rect_of.y + up,
+                        ..rect_of
+                    },
+                    fill,
+                    Look::Button {
+                        highlighted: on,
+                        seed,
+                        fade: opacity,
+                    },
+                );
+            };
+            let centred_label = |line: &Line, area: &Rect| {
+                (
+                    area.x + (area.width - line.layout.width()) / 2.0,
+                    area.y + area.height / 2.0 + up,
+                )
+            };
+            draw_button(buttons.back, FooterButton::Back, 0.1);
+            let (x, y) = centred_label(&self.footer_back, &buttons.back);
+            left(&self.footer_back, x, y, theme.text);
+            draw_button(buttons.mods, FooterButton::Mods, 0.2);
+            let selected = snapshot.mods.active != [0; MAX_COLUMNS];
+            let inset = buttons.mods.height * theme.button_skew().tan() / 2.0 + pad;
+            if selected {
+                left(
+                    &self.mods_title,
+                    buttons.mods.x + inset,
+                    buttons.mods.y + up + buttons.mods.height * 0.3,
+                    theme.text,
+                );
                 left(
                     &self.mods_selected,
-                    margin,
-                    layout.hint.y + layout.hint.height / 2.0,
+                    buttons.mods.x + inset,
+                    buttons.mods.y + up + buttons.mods.height * 0.71,
+                    tone_colour(theme, snapshot.mods.total_multiplier),
+                );
+            } else {
+                left(
+                    &self.mods_title,
+                    buttons.mods.x + inset,
+                    buttons.mods.y + up + buttons.mods.height / 2.0,
                     theme.text,
                 );
             }
+            for i in 0..buttons.preset_count.min(self.preset_count) {
+                draw_button(
+                    buttons.presets[i],
+                    FooterButton::Preset(i),
+                    0.3 + i as f32 * 0.07,
+                );
+                let (x, y) = centred_label(&self.presets[i], &buttons.presets[i]);
+                left(&self.presets[i], x, y, theme.text);
+            }
+            if let Some(area) = buttons.pin {
+                draw_button(area, FooterButton::Pin, 0.7);
+                let (x, y) = centred_label(&self.footer_pin, &area);
+                left(&self.footer_pin, x, y, theme.text);
+            }
+            if let Some(area) = buttons.reset {
+                draw_button(area, FooterButton::Reset, 0.8);
+                let (x, y) = centred_label(&self.footer_reset, &area);
+                left(&self.footer_reset, x, y, theme.text);
+            }
         }
         let panel = panel_back > 0.0 || panel_columns;
+        let mut popup_split = None;
         let split = panel.then(|| {
             (
                 shape_target.borrow().len() as u32,
@@ -1534,11 +1640,12 @@ impl SongSelectView {
         if panel {
             // The backdrop, title, hint and settings fade; the columns slide (ADR-0152).
             layer.set(panel_back);
+            // Down to the footer, which stays in reach (ADR-0175).
             let full = Rect {
                 x: 0.0,
                 y: 0.0,
                 width,
-                height,
+                height: layout.footer.bar.y,
             };
             rect(&full, theme.mod_backdrop_fill, Look::Plain);
             let panel = &layout.mods;
@@ -1562,12 +1669,6 @@ impl SongSelectView {
             let custom = &snapshot.mods.customise;
             let expanded = custom.state != CustomisationState::Collapsed;
             let dim = if expanded { DIMMED } else { 1.0 };
-            // The expanded settings popup covers part of the columns: their texts stop at
-            // its left edge.
-            let popup = expanded.then(|| {
-                let area = panel.customise.panel(custom.len);
-                (area.x, area.y, area.y + area.height)
-            });
             let mut slot = 0;
             for (column, titles) in self.mod_column_titles.iter().enumerate() {
                 if !panel.is_shown(column) {
@@ -1606,7 +1707,7 @@ impl SongSelectView {
                     a: 1.0,
                     ..theme.mod_column_fill
                 };
-                left_cut(titles, x, y, faded(on_tint, dim), popup);
+                left(titles, x, y, faded(on_tint, dim));
                 for (index, line) in self.mod_tiles[column].iter().enumerate() {
                     let area = down(panel.tile_rect(column, index));
                     let on = snapshot.mods.active[column] >> index & 1 != 0;
@@ -1640,9 +1741,9 @@ impl SongSelectView {
                             a: 1.0,
                             ..theme.background
                         };
-                        left_cut(line, x, y, faded(ink, dim), popup);
+                        left(line, x, y, faded(ink, dim));
                     } else {
-                        left_cut(line, x, y, faded(tint, dim), popup);
+                        left(line, x, y, faded(tint, dim));
                     }
                     if let Some(line) = self.tile_multipliers.get(column).and_then(|c| c.get(index))
                     {
@@ -1655,7 +1756,7 @@ impl SongSelectView {
                         } else {
                             tone_colour(theme, value)
                         };
-                        left_cut(
+                        left(
                             line,
                             area.x + area.width
                                 - theme.widget_pad * scale
@@ -1663,7 +1764,6 @@ impl SongSelectView {
                                 - mod_text_gap(theme, area.height, scale) * 0.5,
                             area.y + area.height / 2.0,
                             faded(ink, dim),
-                            popup,
                         );
                     }
                     if let Some((name, desc)) = self
@@ -1683,41 +1783,48 @@ impl SongSelectView {
                         } else {
                             (theme.text, theme.disabled_text)
                         };
-                        left_cut(
+                        left(
                             name,
                             text_x,
                             area.y + area.height * 0.34,
                             faded(name_ink, dim),
-                            popup,
                         );
-                        left_cut(
+                        left(
                             desc,
                             text_x,
                             area.y + area.height * 0.72,
                             faded(desc_ink, dim),
-                            popup,
                         );
                     }
                 }
             }
             layer.set(panel_back);
-            // The settings panel: its header, and the rows while expanded.
-            let cl = &panel.customise;
-            let enabled = custom.is_enabled();
-            let header_fill = if custom.header_hover || expanded {
-                theme.button_hover_fill
-            } else {
-                theme.button_fill
-            };
-            let active = if enabled { 1.0 } else { DIMMED };
-            rect(&cl.header, faded(header_fill, active), Look::Round);
-            left(
-                &self.customise_title,
-                cl.header.x + cl.pad,
-                cl.header.y + cl.header.height / 2.0,
-                faded(theme.text, active),
-            );
+            // The floating settings panel (ADR-0177) is a layer of its own, so that the
+            // columns' texts do not show through its plate.
+            let cl = &panel.customise.at(custom.origin, custom.len);
             if expanded {
+                popup_split = Some((
+                    shape_target.borrow().len() as u32,
+                    target.borrow().0.len() as u32,
+                ));
+                rect(
+                    &cl.header,
+                    Color {
+                        a: 1.0,
+                        ..if custom.moving {
+                            theme.button_fill
+                        } else {
+                            theme.button_hover_fill
+                        }
+                    },
+                    Look::Round,
+                );
+                left(
+                    &self.customise_title,
+                    cl.header.x + cl.pad,
+                    cl.header.y + cl.header.height / 2.0,
+                    theme.text,
+                );
                 rect(
                     &cl.content(custom.len),
                     // Opaque: the columns' plates and tiles must not show through.
@@ -1866,7 +1973,10 @@ impl SongSelectView {
                 }
             }
         }
-        split
+        Splits {
+            panel: split,
+            popup: popup_split,
+        }
     }
 
     /// Lays the query out unless it already shows it.
@@ -1914,29 +2024,70 @@ impl SongSelectView {
             .lay_out(line, self.theme.song_status_size * scale);
     }
 
-    /// Writes "Mods: HD DT 1.05x" for the active tiles and their details unless it already
-    /// shows them.
+    /// Writes "HD DT1.05x  1.12x" for the active tiles, their details and the multiplier of
+    /// the selection (the footer's Mods button) unless it already shows them.
     fn refresh_selected(&mut self, mods: &ModSelectSnapshot) {
-        let key = (mods.active, mods.details);
+        let key = (mods.active, mods.details, mods.total_multiplier.to_bits());
         if self.mods_selected_for == Some(key) {
             return;
         }
         self.mods_selected_for = Some(key);
         let line = &mut self.mods_selected;
         line.text.clear();
-        line.text.push_str(&self.mods_title.text);
-        line.text.push(':');
         for (column, acronyms) in self.mod_columns.iter().enumerate() {
             for (index, acronym) in acronyms.iter().enumerate() {
                 if mods.active[column] >> index & 1 != 0 {
-                    line.text.push(' ');
+                    if !line.text.is_empty() {
+                        line.text.push(' ');
+                    }
                     line.text.push_str(acronym);
                     push_detail(&mut line.text, mods.details[column][index]);
                 }
             }
         }
+        if !line.text.is_empty() {
+            line.text.push_str("  ");
+            push_multiplier(&mut line.text, mods.total_multiplier);
+        }
         let size = self.theme.song_detail_size * self.layout.scale;
-        self.type_setter.lay_out(line, size);
+        let room = self.layout.footer.buttons(Default::default()).mods.width
+            - 2.0 * self.theme.widget_pad * self.layout.scale
+            - self.layout.footer.bar.height * 0.3;
+        fit_tail(
+            &mut self.type_setter,
+            line,
+            size,
+            room.max(0.0),
+            self.ellipsis[1],
+        );
+    }
+
+    /// Lays the pinned presets' labels out for the footer's buttons unless they show them.
+    fn refresh_presets(&mut self, presets: &[Arc<str>], footer: &FooterState) {
+        let count = footer.presets.min(presets.len()).min(self.presets.len());
+        let same = count == self.preset_count
+            && self.presets[..count]
+                .iter()
+                .zip(presets)
+                .all(|(line, label)| line.text == **label);
+        if same {
+            return;
+        }
+        self.preset_count = count;
+        let size = self.theme.song_detail_size * self.layout.scale;
+        let room = self.theme.footer_preset_width * self.layout.scale
+            - 2.0 * self.theme.widget_pad * self.layout.scale;
+        for (line, label) in self.presets.iter_mut().zip(presets).take(count) {
+            line.text.clear();
+            line.text.push_str(label);
+            fit_tail(
+                &mut self.type_setter,
+                line,
+                size,
+                room.max(0.0),
+                self.ellipsis[1],
+            );
+        }
     }
 }
 

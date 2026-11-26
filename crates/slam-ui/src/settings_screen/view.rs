@@ -1043,7 +1043,10 @@ impl SettingsView {
             );
         }
         // The caret: at the end of the typed text, at the start of the placeholder.
-        if self.search_type.caret_on(now_ns, &theme) {
+        let caret_alpha = self
+            .search_type
+            .caret_alpha(now_ns, &theme, !snapshot.search.is_empty());
+        if caret_alpha > 0.0 {
             let reach = if snapshot.search.is_empty() {
                 0.0
             } else {
@@ -1056,7 +1059,7 @@ impl SettingsView {
                 search.x + pad + reach,
                 search.y + search.height / 2.0,
                 height,
-                opacity,
+                opacity * caret_alpha,
                 &theme,
                 layout.scale,
             );

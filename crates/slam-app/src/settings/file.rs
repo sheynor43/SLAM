@@ -974,6 +974,17 @@ fn from_table(mut table: Table) -> Loaded {
             )),
         }
     }
+    let mut presets: Option<Vec<String>> = None;
+    cx.opt(&mut song_select, "song_select", "mod_presets", &mut presets);
+    if let Some(presets) = presets {
+        let count = presets.len();
+        settings.song_select.mod_presets = crate::mod_presets::sanitise(presets);
+        if settings.song_select.mod_presets.len() != count {
+            cx.warn(
+                "song_select.mod_presets: dropped unknown, repeated or surplus presets".to_owned(),
+            );
+        }
+    }
     cx.unknown(&song_select, "song_select");
 
     read_window(&mut cx, &mut table, &mut settings.window);

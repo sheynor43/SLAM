@@ -11,9 +11,8 @@ use crate::theme::Theme;
 mod settings;
 
 pub use settings::{
-    COLLAPSE_DISTANCE, COLLAPSE_GRACE_NS, Customisation, CustomisationLayout,
-    CustomisationSnapshot, CustomisationState, MAX_CHOICES, MAX_SETTING_ROWS, SettingRow,
-    SettingRowKind, SettingValue,
+    Customisation, CustomisationLayout, CustomisationSnapshot, CustomisationState, MAX_CHOICES,
+    MAX_SETTING_ROWS, SettingRow, SettingRowKind, SettingValue,
 };
 
 /// Columns of the panel, lazer's: difficulty reduction, difficulty increase, automation,
@@ -36,6 +35,14 @@ pub enum ModSelectAction {
         index: usize,
     },
     DeselectAll,
+    /// The tile `index` of `column` was right-clicked at `x`, `y`: the application shows
+    /// that mod's settings there ([`ModSelect::open_customisation_at`]).
+    Settings {
+        column: usize,
+        index: usize,
+        x: f32,
+        y: f32,
+    },
     /// The settings panel changed the row `row` it was given.
     SetSetting {
         row: usize,
@@ -56,7 +63,7 @@ pub struct ModSelectLayout {
     /// The columns' headers, in their colours; a column not shown has an empty one.
     pub column_titles: [Rect; MAX_COLUMNS],
     pub hint: Rect,
-    /// The settings panel.
+    /// The settings panel, as it stands before the player places it.
     pub customise: CustomisationLayout,
     /// Left edge of each column at the columns' middle height, before the lean.
     column_x: [f32; MAX_COLUMNS],
@@ -93,18 +100,20 @@ impl ModSelectLayout {
         let scale = theme.scale(height);
         let margin = theme.song_margin * scale;
         let gap = theme.mod_column_gap * scale;
+        // Under the toolbar (ADR-0168), above the footer (ADR-0175, ADR-0177).
         let title = Rect {
             x: margin,
-            y: margin,
+            y: (theme.toolbar_height + theme.song_top_gap) * scale,
             width: width - 2.0 * margin,
             height: theme.song_header_height * scale,
         };
         let label_height = theme.song_detail_size * scale * 1.5;
         let header_height = theme.mod_column_header_height * scale;
         let pad = theme.mod_column_pad * scale;
+        let footer_top = height - theme.footer_height * scale;
         let hint = Rect {
             x: margin,
-            y: height - margin - label_height,
+            y: footer_top - margin / 2.0 - label_height,
             width: width - 2.0 * margin,
             height: label_height,
         };
@@ -362,6 +371,11 @@ pub struct ModSelect {
     total_multiplier: f64,
     hover: Option<(usize, usize)>,
     customise: Customisation,
+    /// Where the pointer was last, where a settings panel opened by the keyboard or by a
+    /// mod's selection goes.
+    pointer: Option<(f32, f32)>,
+    /// Where the settings panel goes without a pointer: its place in the layout last seen.
+    anchor: (f32, f32),
 }
 
 impl Default for ModSelect {
@@ -382,7 +396,14 @@ impl ModSelect {
             total_multiplier: 1.0,
             hover: None,
             customise: Customisation::default(),
+            pointer: None,
+            anchor: (0.0, 0.0),
         }
+    }
+
+    /// Tells the panel where the settings panel goes when nothing else says.
+    pub fn set_anchor(&mut self, layout: &ModSelectLayout) {
+        self.anchor = layout.customise.origin();
     }
 
     pub fn columns(&self) -> &ModColumns {
@@ -413,18 +434,23 @@ impl ModSelect {
         self.customise.collapse();
     }
 
-    /// Expands the settings panel for a mod that needs configuring.
+    /// Opens the settings panel with its header's corner at `(x, y)`; its place before is
+    /// forgotten (ADR-0177). Does nothing without a setting, or while the mod select is
+    /// closed.
+    pub fn open_customisation_at(&mut self, x: f32, y: f32) {
+        if self.open {
+            self.customise.open_at((x, y));
+        }
+    }
+
+    /// Opens the settings panel for a mod that needs configuring, at the pointer.
     pub fn expand_customisation_by_mod(&mut self) {
-        self.customise.expand_by_mod();
+        let (x, y) = self.pointer.unwrap_or(self.anchor);
+        self.open_customisation_at(x, y);
     }
 
     pub fn customisation(&self) -> &Customisation {
         &self.customise
-    }
-
-    /// Advances the settings panel's collapse delay to `now_ns`. Does not allocate.
-    pub fn tick(&mut self, now_ns: u64, layout: &ModSelectLayout) {
-        self.customise.tick(now_ns, &layout.customise);
     }
 
     /// Whether the tile `index` of `column` is active.
@@ -510,6 +536,9 @@ impl ModSelect {
                 self.close();
                 return None;
             }
+            if let I::PointerMove { x, y } | I::PointerPress { x, y } = input {
+                self.pointer = Some((x, y));
+            }
             return self.customise.input_expanded(input, &layout.customise);
         }
         match input {
@@ -524,26 +553,32 @@ impl ModSelect {
                 && index < self.columns[column].len())
             .then_some(ModSelectAction::Toggle { column, index }),
             I::ToggleCustomisation => {
-                self.customise.expand_by_key();
+                // From the keyboard: where the pointer is, or the top right without one.
+                let origin = self.pointer.unwrap_or_else(|| layout.customise.origin());
+                self.customise.open_at(origin);
                 None
             }
             I::PointerMove { x, y } => {
-                self.customise.hover_header(x, y, &layout.customise);
-                self.hover = if self.customise.is_expanded() {
-                    None
-                } else {
-                    layout.tile_at(x, y, self.counts())
-                };
+                self.pointer = Some((x, y));
+                self.hover = layout.tile_at(x, y, self.counts());
                 None
             }
             I::PointerPress { x, y } => {
-                if self.customise.press_header(x, y, &layout.customise) {
-                    self.hover = None;
-                    return None;
-                }
+                self.pointer = Some((x, y));
                 self.hover = layout.tile_at(x, y, self.counts());
                 self.hover
                     .map(|(column, index)| ModSelectAction::Toggle { column, index })
+            }
+            I::SecondaryPress { x, y } => {
+                self.pointer = Some((x, y));
+                layout.tile_at(x, y, self.counts()).map(|(column, index)| {
+                    ModSelectAction::Settings {
+                        column,
+                        index,
+                        x,
+                        y,
+                    }
+                })
             }
             _ => None,
         }

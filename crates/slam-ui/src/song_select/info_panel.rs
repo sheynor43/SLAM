@@ -189,7 +189,7 @@ impl ScoreSizes {
             score: theme.song_score_size * scale,
             caption: theme.song_score_caption_size * scale,
             value: theme.song_score_value_size * scale,
-            rank: theme.song_info_artist_size * scale * 2.2,
+            rank: theme.song_score_rank_width * scale,
             gap: theme.song_text_pad * scale / 2.0,
         }
     }
@@ -358,6 +358,10 @@ struct InfoMotion {
     width: Towards,
     /// Whether the width had a value to start from.
     sized: bool,
+    /// The local scores board's height, easing between the heights its rows give it
+    /// (ADR-0177), and whether it had one to start from.
+    board: Towards,
+    board_sized: bool,
     /// The difficulty the score rows came in for, and how many rows they had then: a
     /// refreshed list of the same difficulty animates only the rows it gained.
     scores_key: Option<u64>,
@@ -704,11 +708,22 @@ impl InfoPanel {
             let last = &parts.rows[shown - 1];
             last.y + last.height
         };
+        // The board grows and shrinks to its rows' height before they fade in (ADR-0177).
+        let board_height = bottom - parts.scores_title.y;
+        let board_ns = ms(theme.song_board_ms);
+        if self.motion.board_sized {
+            self.motion
+                .board
+                .aim(board_height, now_ns, board_ns, ease_out_quint);
+        } else {
+            self.motion.board = Towards::rest(board_height, now_ns);
+            self.motion.board_sized = true;
+        }
         let board = Rect {
             x: wedge.x,
             y: parts.scores_title.y - inset,
             width: wedge.width,
-            height: bottom - parts.scores_title.y + 2.0 * inset,
+            height: self.motion.board.at(now_ns, board_ns, ease_out_quint) + 2.0 * inset,
         };
         let board_look = Look::Wedge {
             lean: tan,
@@ -930,9 +945,10 @@ impl InfoPanel {
             };
             rect(&area, fade(fill), Look::Round);
             let (top, bottom) = (area.y + area.height * 0.3, area.y + area.height * 0.72);
+            // The rank centred in its column, as lazer's rank label.
             left(
                 &lines.rank,
-                area.x + pad / 2.0,
+                area.x + pad / 2.0 + (sizes.rank - lines.rank.layout.width()) / 2.0,
                 centre(&area),
                 fade(theme.text),
             );
@@ -942,7 +958,7 @@ impl InfoPanel {
                 centre(&area),
                 fade(theme.text),
             );
-            let x = area.x + sizes.rank;
+            let x = area.x + pad / 2.0 + sizes.rank;
             left(&lines.date, x, top, fade(theme.song_hint_text));
             left(
                 &lines.extra,

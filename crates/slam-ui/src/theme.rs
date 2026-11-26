@@ -150,6 +150,10 @@ pub struct Theme {
     pub caret_blink_ms: f32,
     /// Milliseconds the caret stays solid after a key.
     pub caret_solid_ms: f32,
+    /// Milliseconds one fade of the blinking caret takes (ADR-0177).
+    pub caret_fade_ms: f32,
+    /// Milliseconds an empty field keeps its caret after its last change (ADR-0177).
+    pub caret_active_ms: f32,
     /// Width of a scrollbar's thumb at rest, reference px (ADR-0173).
     pub scrollbar_width: f32,
     /// Width of the thumb while pointed at or dragged.
@@ -204,6 +208,8 @@ pub struct Theme {
     /// Text of the song select key hints.
     pub song_hint_text: Color,
     /// Margin around the song select panel.
+    /// Gap between the toolbar and the search line, reference px (ADR-0177).
+    pub song_top_gap: f32,
     pub song_margin: f32,
     /// Height of a set row's plate in the song list, without the gap (ADR-0149: lazer's 72).
     pub song_set_height: f32,
@@ -283,6 +289,10 @@ pub struct Theme {
     pub song_score_enter_delay_ms: f32,
     pub song_score_enter_stagger_ms: f32,
     pub song_score_enter_ms: f32,
+    /// Width of a local score row's rank column, and how long the board takes to ease to
+    /// another height (ADR-0177).
+    pub song_score_rank_width: f32,
+    pub song_board_ms: f32,
     pub song_score_enter_offset: f32,
     /// Width of a mod tile of the mod select panel, and the gap between its columns.
     pub mod_tile_width: f32,
@@ -410,6 +420,18 @@ pub struct Theme {
     pub settings_dim_fill: Color,
     /// How long the settings panel slides in or out, in milliseconds.
     pub settings_panel_ms: f32,
+    /// The song select's footer bar (ADR-0175): its height, fill, the buttons' height share
+    /// (of the bar), their widths (back and reset, mods, a preset, the pin), the gap between
+    /// them, and how long the bar takes to slide in.
+    pub footer_height: f32,
+    pub footer_fill: Color,
+    pub footer_button_share: f32,
+    pub footer_button_width: f32,
+    pub footer_mods_width: f32,
+    pub footer_preset_width: f32,
+    pub footer_pin_width: f32,
+    pub footer_gap: f32,
+    pub footer_slide_ms: f32,
     /// The menus' toolbar (ADR-0168): its height, the share of a button an icon takes, the gap
     /// between its buttons, its fill, the size of its clock text, and how long a popup
     /// takes to fade in and how far it slides.
@@ -772,9 +794,14 @@ impl Theme {
             type_slide: 5.0,
             erase_pop_ms: 140.0,
             erase_pop: 3.0,
-            caret: Color::WHITE,
-            caret_width: 1.5,
-            caret_height: 0.85,
+            caret: Color {
+                a: 0.6,
+                ..Color::WHITE
+            },
+            caret_width: 1.25,
+            caret_height: 0.8,
+            caret_fade_ms: 150.0,
+            caret_active_ms: 3000.0,
             caret_blink_ms: 530.0,
             caret_solid_ms: 500.0,
             scrollbar_width: 4.0,
@@ -822,6 +849,7 @@ impl Theme {
                 b: 1.0,
                 a: 0.7,
             },
+            song_top_gap: 5.0,
             song_margin: 24.0,
             song_set_height: 72.0,
             song_difficulty_height: 45.0,
@@ -869,6 +897,8 @@ impl Theme {
             song_score_enter_delay_ms: 200.0,
             song_score_enter_stagger_ms: 30.0,
             song_score_enter_ms: 300.0,
+            song_score_rank_width: 40.0,
+            song_board_ms: 300.0,
             song_score_enter_offset: 20.0,
             mod_tile_width: 290.0,
             mod_tile_height: 56.0,
@@ -956,6 +986,20 @@ impl Theme {
                 a: 0.5,
             },
             settings_panel_ms: 250.0,
+            footer_height: 50.0,
+            footer_fill: Color {
+                r: 0.04,
+                g: 0.04,
+                b: 0.06,
+                a: 0.9,
+            },
+            footer_button_share: 0.76,
+            footer_button_width: 120.0,
+            footer_mods_width: 250.0,
+            footer_preset_width: 96.0,
+            footer_pin_width: 44.0,
+            footer_gap: 10.0,
+            footer_slide_ms: 400.0,
             toolbar_height: 40.0,
             toolbar_icon_share: 0.5,
             toolbar_gap: 2.0,

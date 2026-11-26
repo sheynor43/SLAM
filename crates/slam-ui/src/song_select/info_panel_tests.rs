@@ -245,17 +245,18 @@ fn the_panel_fits_and_keeps_clear_of_the_list_at_common_sizes() {
                 info.x + info.width + inset <= layout.header.x - inset,
                 "{tag}"
             );
-            // The info content stays above the hint row, which shows the mods.
-            assert!(info.y + info.height <= layout.hint.y, "{tag}");
-            assert!(
-                layout.search.y >= layout.header.y + layout.header.height,
-                "{tag}"
-            );
+            // The info content stays above the footer bar (ADR-0175).
+            assert!(info.y + info.height <= layout.footer.bar.y, "{tag}");
+            // The status line shares the search line's place (ADR-0177).
+            assert_eq!(layout.search, layout.header, "{tag}");
             assert!(
                 layout.list.y > layout.search.y + layout.search.height,
                 "{tag}"
             );
-            assert!(layout.list.y + layout.list.height <= layout.hint.y, "{tag}");
+            assert!(
+                layout.list.y + layout.list.height <= layout.footer.bar.y,
+                "{tag}"
+            );
             let parts = InfoLayout::new(&info, &theme, layout.scale);
             let bottom = info.y + info.height;
             // The two wedges keep apart (ADR-0136).
@@ -936,4 +937,70 @@ fn a_new_star_rating_eases_the_pills_colour() {
     assert!(far(start, low) < 0.05, "no jump at once");
     assert!(far(end, low) > 0.2, "it gets there");
     assert_eq!(end, crate::star_colour::for_stars(7.0));
+}
+
+/// The height of the scores' wedge (the second wedge drawn) at `now`.
+fn board_height(rig: &mut Rig, screen: &SongSelect, now: u64) -> f32 {
+    let snapshot = screen.snapshot();
+    let layout = SongSelectLayout::new(1280.0, 768.0, &rig.theme);
+    let mut heights = Vec::new();
+    rig.panel.push(
+        &layout,
+        &rig.theme,
+        &snapshot,
+        1.0,
+        now,
+        &mut |r, _, look| {
+            if matches!(look, Look::Wedge { .. }) {
+                heights.push(r.height);
+            }
+        },
+        &mut |_, _, _, _| {},
+        &mut |_, _, _, _, _, _| {},
+    );
+    assert_eq!(heights.len(), 2, "the info wedge and the board");
+    heights[1]
+}
+
+#[test]
+fn the_board_eases_its_height_instead_of_jumping() {
+    let mut rig = Rig::new();
+    let ms = 1_000_000u64;
+    let mut screen = rig.screen.clone();
+    // No scores: the board holds the empty line.
+    screen.set_details(Some(details(Some(LocalScores::default()))));
+    let empty = board_height(&mut rig, &screen, 10 * ms);
+    assert_eq!(board_height(&mut rig, &screen, 5000 * ms), empty);
+    // Scores arrive: the board grows to the rows' height, over the theme's time.
+    let mut scores = LocalScores::default();
+    for (i, slot) in scores.rows.iter_mut().enumerate().take(3) {
+        *slot = Some(row(100 - i as u64));
+    }
+    screen.set_details(Some(details(Some(scores))));
+    let start = 6000 * ms;
+    let at_start = board_height(&mut rig, &screen, start);
+    assert!((at_start - empty).abs() < 0.5, "starts where it was");
+    let span = rig.theme.song_board_ms as u64 * ms;
+    let middle = board_height(&mut rig, &screen, start + span / 4);
+    let done = board_height(&mut rig, &screen, start + span);
+    assert!(done > empty + 10.0, "the rows make it taller");
+    assert!(middle > empty && middle < done, "{empty} {middle} {done}");
+    assert_eq!(board_height(&mut rig, &screen, start + 3 * span), done);
+    // Fewer rows shrink it the same way.
+    let mut one = scores;
+    one.rows[1] = None;
+    one.rows[2] = None;
+    screen.set_details(Some(details(Some(one))));
+    let shrinking = board_height(&mut rig, &screen, start + 4 * span);
+    let settled = board_height(&mut rig, &screen, start + 4 * span + span / 4);
+    assert!((shrinking - done).abs() < 0.5);
+    assert!(settled < done && settled > shrinking - 1000.0);
+}
+
+#[test]
+fn the_rank_column_is_lazers_forty_wide() {
+    let theme = Theme::default();
+    assert_eq!(theme.song_score_rank_width, 40.0);
+    let sizes = ScoreSizes::new(&theme, 1.0);
+    assert_eq!(sizes.rank, 40.0);
 }

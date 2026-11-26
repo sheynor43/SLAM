@@ -1920,13 +1920,20 @@ fn the_preview_reaches_the_snapshot_and_is_drawn_inside_its_rows() {
 #[test]
 fn the_search_box_shows_a_blinking_caret() {
     let mut view = dynamic_view();
-    let s = SettingsScreen::new(&[toggle(0, false), toggle(0, false)], 1);
-    let snap = s.snapshot();
+    let mut s = SettingsScreen::new(&[toggle(0, false), toggle(0, false)], 1);
+    let ms = 1_000_000;
     let blink = (theme().caret_blink_ms * 1.0e6) as u64;
-    let on = push_view_at(&mut view, &snap, 1_000_000).0;
-    let off = push_view_at(&mut view, &snap, blink + 1_000_000).0;
-    let on_again = push_view_at(&mut view, &snap, 2 * blink + 1_000_000).0;
-    // Empty search: the caret waits at the placeholder's start.
+    let solid = (theme().caret_solid_ms * 1.0e6) as u64;
+    // An empty search that nobody types in shows no caret (ADR-0177).
+    let idle = push_view_at(&mut view, &s.snapshot(), ms).0;
+    assert_eq!(push_view_at(&mut view, &s.snapshot(), 20_000 * ms).0, idle);
+    type_str(&mut s, "a");
+    let typed = s.snapshot();
+    let t = 10 * ms;
+    // A key makes it solid, then it blinks; the search holds text now.
+    let on = push_view_at(&mut view, &typed, t).0;
+    let off = push_view_at(&mut view, &typed, t + solid + blink + 5 * ms).0;
+    let on_again = push_view_at(&mut view, &typed, t + solid + 2 * blink + 5 * ms).0;
     assert_eq!(on, off + 1);
     assert_eq!(on, on_again);
 }

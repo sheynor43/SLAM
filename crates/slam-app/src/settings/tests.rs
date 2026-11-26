@@ -1970,6 +1970,36 @@ fn the_mod_hotkeys_setting_round_trips_and_falls_back() {
 }
 
 #[test]
+fn mod_presets_round_trip_and_unknown_ones_are_dropped() {
+    assert!(Settings::default().song_select.mod_presets.is_empty());
+    let text = "[song_select]\nmod_presets = [\"HD DT(speed_change=1.3)\", \"ZZ\", \"EZ\", \"EZ\", \"\"]\n";
+    let loaded = file::from_toml_str(text);
+    assert_eq!(loaded.status, LoadStatus::Recovered);
+    assert_eq!(
+        loaded.settings.song_select.mod_presets,
+        ["HD DT(speed_change=1.3)", "EZ"]
+    );
+    let written = file::to_toml_string(&loaded.settings).unwrap();
+    assert!(written.contains("mod_presets"), "{written}");
+    let again = file::from_toml_str(&written);
+    assert_eq!(again.status, LoadStatus::Ok, "{:?}", again.warnings);
+    assert_eq!(again.settings, loaded.settings);
+    // No more than the footer holds.
+    let many: Vec<String> = ["HD", "HR", "EZ", "HT", "SD", "PF", "DT", "NC"]
+        .into_iter()
+        .map(|m| format!("\"{m}\""))
+        .collect();
+    let loaded = file::from_toml_str(&format!(
+        "[song_select]\nmod_presets = [{}]\n",
+        many.join(", ")
+    ));
+    assert_eq!(
+        loaded.settings.song_select.mod_presets.len(),
+        crate::mod_presets::MAX
+    );
+}
+
+#[test]
 fn hold_to_confirm_defaults_to_lazers_200_ms_and_stays_in_range() {
     assert_eq!(Settings::default().gameplay.hold_to_confirm_ms, 200.0);
     let missing = file::from_toml_str("[gameplay]\ndim = 0.2\n");

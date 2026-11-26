@@ -2,8 +2,6 @@ use super::*;
 use crate::song_select::{ModSelect, ModSelectLayout};
 use SongSelectInput as I;
 
-const MS: u64 = 1_000_000;
-
 fn layout() -> ModSelectLayout {
     ModSelectLayout::new(1280.0, 720.0, &Theme::default())
 }
@@ -69,15 +67,18 @@ fn panel() -> ModSelect {
     panel
 }
 
-fn header_point(l: &ModSelectLayout) -> (f32, f32) {
-    let [x, y] = l.customise.header.centre();
-    (x, y)
+/// Opens the panel with its header at `(400, 200)`.
+fn open(panel: &mut ModSelect) {
+    panel.open_customisation_at(400.0, 100.0);
+    assert_eq!(panel.customisation().state(), CustomisationState::Expanded);
 }
 
-fn expand_by_hover(panel: &mut ModSelect, l: &ModSelectLayout) {
-    let (x, y) = header_point(l);
-    panel.input(I::PointerMove { x, y }, l);
-    assert_eq!(panel.customisation().state(), CustomisationState::Expanded);
+/// The panel's layout where it stands now.
+fn placed(panel: &ModSelect, l: &ModSelectLayout) -> CustomisationLayout {
+    l.customise.at(
+        panel.snapshot().customise.origin,
+        panel.customisation().rows().len(),
+    )
 }
 
 fn far() -> I {
@@ -100,119 +101,196 @@ fn set(row: usize, value: SettingValue) -> Option<ModSelectAction> {
 }
 
 #[test]
-fn hovering_the_header_expands_when_a_setting_exists() {
+fn nothing_opens_without_a_setting() {
     let l = layout();
-    let mut p = panel();
-    expand_by_hover(&mut p, &l);
     let mut empty = ModSelect::new([&["EZ"], &[], &[], &[], &[]]);
     empty.open();
     empty.set_setting_rows(&[header()]);
-    let (x, y) = header_point(&l);
-    empty.input(I::PointerMove { x, y }, &l);
+    empty.open_customisation_at(400.0, 200.0);
     assert!(!empty.customisation().is_expanded());
     empty.input(I::ToggleCustomisation, &l);
     assert!(!empty.customisation().is_expanded());
     assert!(!empty.snapshot().customise.is_enabled());
+    // Nor while the mod select is closed.
+    let mut closed = panel();
+    closed.close();
+    closed.open_customisation_at(400.0, 200.0);
+    assert!(!closed.customisation().is_expanded());
 }
 
 #[test]
 fn rows_without_settings_collapse_the_panel() {
-    let l = layout();
     let mut p = panel();
-    expand_by_hover(&mut p, &l);
+    open(&mut p);
     p.set_setting_rows(&[header()]);
     assert!(!p.customisation().is_expanded());
 }
 
 #[test]
-fn the_pointer_collapses_after_the_grace_time() {
+fn the_pointer_wandering_off_does_not_collapse_it() {
     let l = layout();
     let mut p = panel();
-    expand_by_hover(&mut p, &l);
+    open(&mut p);
     p.input(far(), &l);
-    p.tick(1000 * MS, &l);
-    p.tick(1179 * MS, &l);
     assert!(p.customisation().is_expanded());
-    p.tick(1180 * MS, &l);
+}
+
+#[test]
+fn right_click_on_a_tile_asks_for_that_mods_settings() {
+    let l = layout();
+    let mut p = panel();
+    let [x, y] = l.tile_rect(0, 1).centre();
+    assert_eq!(
+        p.input(I::SecondaryPress { x, y }, &l),
+        Some(ModSelectAction::Settings {
+            column: 0,
+            index: 1,
+            x,
+            y
+        })
+    );
+    // Nowhere near a tile: nothing.
+    assert_eq!(p.input(I::SecondaryPress { x: 2.0, y: 2.0 }, &l), None);
     assert!(!p.customisation().is_expanded());
 }
 
 #[test]
-fn coming_back_restarts_the_grace_time() {
+fn right_click_again_closes_the_open_panel() {
     let l = layout();
     let mut p = panel();
-    expand_by_hover(&mut p, &l);
-    p.input(far(), &l);
-    p.tick(0, &l);
-    p.tick(100 * MS, &l);
-    let (x, y) = header_point(&l);
-    p.input(I::PointerMove { x, y }, &l);
-    p.tick(150 * MS, &l);
-    p.input(far(), &l);
-    p.tick(200 * MS, &l);
-    p.tick(379 * MS, &l);
-    assert!(p.customisation().is_expanded());
-    p.tick(380 * MS, &l);
+    open(&mut p);
+    let [x, y] = placed(&p, &l).row_rect(1).centre();
+    assert_eq!(p.input(I::SecondaryPress { x, y }, &l), None);
     assert!(!p.customisation().is_expanded());
+    // Also over a tile, and the mod select itself stays.
+    open(&mut p);
+    let [x, y] = l.tile_rect(0, 0).centre();
+    assert_eq!(p.input(I::SecondaryPress { x, y }, &l), None);
+    assert!(!p.customisation().is_expanded());
+    assert!(p.is_open());
 }
 
 #[test]
-fn a_pointer_near_the_panel_does_not_collapse_it() {
+fn the_panel_opens_at_the_pointer_and_stays_in_the_window() {
     let l = layout();
     let mut p = panel();
-    expand_by_hover(&mut p, &l);
-    let panel_rect = l.customise.panel(6);
+    p.open_customisation_at(300.0, 90.0);
+    let at = placed(&p, &l);
+    assert_eq!((at.header.x, at.header.y), (300.0, 90.0));
+    // Opened in a corner, it is moved to lie inside the window.
+    p.open_customisation_at(1270.0, 715.0);
+    let inside = placed(&p, &l);
+    let panel_rect = inside.panel(6);
+    assert!(panel_rect.x + panel_rect.width <= 1280.0);
+    assert!(panel_rect.y + panel_rect.height <= 720.0);
+    assert!(panel_rect.x >= 0.0 && panel_rect.y >= 0.0);
+}
+
+#[test]
+fn dragging_the_header_moves_the_panel() {
+    let l = layout();
+    let mut p = panel();
+    open(&mut p);
+    let start = placed(&p, &l);
+    let (hx, hy) = (start.header.x + 30.0, start.header.y + 5.0);
+    assert_eq!(p.input(I::PointerPress { x: hx, y: hy }, &l), None);
+    assert!(p.snapshot().customise.moving);
     p.input(
         I::PointerMove {
-            x: panel_rect.x - COLLAPSE_DISTANCE * l.customise.scale + 1.0,
-            y: panel_rect.y + 5.0,
+            x: hx - 100.0,
+            y: hy + 40.0,
         },
         &l,
     );
-    p.tick(0, &l);
-    p.tick(10_000 * MS, &l);
+    let moved = placed(&p, &l);
+    assert_eq!(moved.header.x, start.header.x - 100.0);
+    assert_eq!(moved.header.y, start.header.y + 40.0);
+    // The panel stays open and a release lets go.
+    p.input(I::PointerRelease, &l);
+    assert!(!p.snapshot().customise.moving);
     assert!(p.customisation().is_expanded());
+    p.input(
+        I::PointerMove {
+            x: hx - 500.0,
+            y: hy,
+        },
+        &l,
+    );
+    assert_eq!(placed(&p, &l), moved);
 }
 
 #[test]
-fn tab_expands_and_the_pointer_collapses_only_after_it_moves() {
+fn the_panel_cannot_be_dragged_out_of_the_window() {
     let l = layout();
     let mut p = panel();
-    p.input(far(), &l);
-    p.input(I::ToggleCustomisation, &l);
-    assert_eq!(p.customisation().state(), CustomisationState::Expanded);
-    p.tick(0, &l);
-    p.tick(10_000 * MS, &l);
-    assert!(p.customisation().is_expanded());
-    p.input(far(), &l);
-    p.tick(10_001 * MS, &l);
-    p.tick(10_200 * MS, &l);
-    assert!(!p.customisation().is_expanded());
-    p.input(I::ToggleCustomisation, &l);
-    p.input(I::ToggleCustomisation, &l);
-    assert!(!p.customisation().is_expanded());
+    open(&mut p);
+    let start = placed(&p, &l);
+    p.input(
+        I::PointerPress {
+            x: start.header.x + 5.0,
+            y: start.header.y + 5.0,
+        },
+        &l,
+    );
+    p.input(
+        I::PointerMove {
+            x: -5000.0,
+            y: -5000.0,
+        },
+        &l,
+    );
+    let at = placed(&p, &l);
+    assert!(at.header.x >= 0.0 && at.header.y >= 0.0);
 }
 
 #[test]
-fn the_pointer_does_not_collapse_a_panel_expanded_by_a_mod() {
+fn reopening_forgets_where_the_panel_was_dragged() {
     let l = layout();
     let mut p = panel();
-    p.expand_customisation_by_mod();
-    p.input(far(), &l);
-    p.tick(0, &l);
-    p.tick(10_000 * MS, &l);
-    assert_eq!(p.customisation().state(), CustomisationState::ExpandedByMod);
-    p.collapse_customisation();
+    open(&mut p);
+    let start = placed(&p, &l);
+    p.input(
+        I::PointerPress {
+            x: start.header.x + 5.0,
+            y: start.header.y + 5.0,
+        },
+        &l,
+    );
+    p.input(
+        I::PointerMove {
+            x: start.header.x + 205.0,
+            y: start.header.y + 105.0,
+        },
+        &l,
+    );
+    p.input(I::PointerRelease, &l);
+    assert_ne!(placed(&p, &l), start);
+    p.input(I::Back, &l);
     assert!(!p.customisation().is_expanded());
+    open(&mut p);
+    assert_eq!(placed(&p, &l), start);
 }
 
 #[test]
-fn dragging_a_slider_holds_the_panel_open() {
+fn tab_opens_at_the_pointer_or_the_top_right() {
     let l = layout();
     let mut p = panel();
-    expand_by_hover(&mut p, &l);
-    let row = l.customise.row_rect(1);
-    let hit = l.customise.slider(&row).hit;
+    p.input(I::ToggleCustomisation, &l);
+    assert_eq!(placed(&p, &l), l.customise);
+    p.input(I::ToggleCustomisation, &l);
+    assert!(!p.customisation().is_expanded());
+    p.input(I::PointerMove { x: 100.0, y: 90.0 }, &l);
+    p.input(I::ToggleCustomisation, &l);
+    assert_eq!(placed(&p, &l).origin(), (100.0, 90.0));
+}
+
+#[test]
+fn dragging_a_slider_works_in_the_floating_panel() {
+    let l = layout();
+    let mut p = panel();
+    open(&mut p);
+    let at = placed(&p, &l);
+    let hit = at.slider(&at.row_rect(1)).hit;
     let action = p.input(
         I::PointerPress {
             x: hit.x + hit.width * 0.25,
@@ -229,21 +307,15 @@ fn dragging_a_slider_holds_the_panel_open() {
         &l,
     );
     assert_eq!(action, set(1, SettingValue::Number(7.5)));
-    p.tick(0, &l);
-    p.tick(10_000 * MS, &l);
-    assert!(p.customisation().is_expanded());
     p.input(I::PointerRelease, &l);
-    // The release does not move the pointer, so the clock starts at the next tick.
-    p.tick(10_001 * MS, &l);
-    p.tick(10_181 * MS, &l);
-    assert!(!p.customisation().is_expanded());
+    assert!(p.customisation().is_expanded());
 }
 
 #[test]
 fn clicking_outside_collapses_without_toggling_a_tile() {
     let l = layout();
     let mut p = panel();
-    expand_by_hover(&mut p, &l);
+    open(&mut p);
     let [x, y] = l.tile_rect(0, 0).centre();
     assert_eq!(p.input(I::PointerPress { x, y }, &l), None);
     assert!(!p.customisation().is_expanded());
@@ -261,7 +333,7 @@ fn clicking_outside_collapses_without_toggling_a_tile() {
 fn back_collapses_first_and_closes_second() {
     let l = layout();
     let mut p = panel();
-    expand_by_hover(&mut p, &l);
+    open(&mut p);
     assert_eq!(p.input(I::Back, &l), None);
     assert!(p.is_open());
     assert!(!p.customisation().is_expanded());
@@ -354,20 +426,21 @@ fn delete_resets_the_selected_row() {
 fn clicks_change_rows_and_select_them() {
     let l = layout();
     let mut p = panel();
-    expand_by_hover(&mut p, &l);
-    let [x, y] = l.customise.row_rect(2).centre();
+    open(&mut p);
+    let at = placed(&p, &l);
+    let [x, y] = at.row_rect(2).centre();
     assert_eq!(
         p.input(I::PointerPress { x, y }, &l),
         set(2, SettingValue::Toggle(true))
     );
     assert_eq!(p.customisation().selected(), 2);
-    let [x, y] = l.customise.row_rect(3).centre();
+    let [x, y] = at.row_rect(3).centre();
     assert_eq!(
         p.input(I::PointerPress { x, y }, &l),
         set(3, SettingValue::Choice(1))
     );
     // A header does nothing.
-    let [x, y] = l.customise.row_rect(0).centre();
+    let [x, y] = at.row_rect(0).centre();
     assert_eq!(p.input(I::PointerPress { x, y }, &l), None);
     assert!(p.customisation().is_expanded());
 }
@@ -405,7 +478,7 @@ fn rows_past_the_capacity_are_dropped() {
 fn closing_the_mod_select_collapses_the_panel() {
     let l = layout();
     let mut p = panel();
-    expand_by_hover(&mut p, &l);
+    open(&mut p);
     p.input(I::ToggleMods, &l);
     assert!(!p.is_open());
     assert!(!p.customisation().is_expanded());

@@ -21,6 +21,7 @@ pub use geometry::RowGeometry;
 pub mod beat;
 pub mod drag;
 pub mod filter;
+pub mod footer;
 pub mod geometry;
 pub mod info_panel;
 pub mod mod_select;
@@ -30,6 +31,7 @@ pub mod view;
 pub use filter::{
     Field, QUERY_CAPACITY, SearchFields, SearchQuery, SearchSource, SongFilter, search_text,
 };
+pub use footer::{FooterButton, FooterButtons, FooterLayout, FooterState, MAX_PRESETS};
 
 pub use mod_select::{
     CustomisationLayout, CustomisationSnapshot, CustomisationState, MAX_CHOICES, MAX_SETTING_ROWS,
@@ -206,6 +208,12 @@ pub enum SongSelectInput {
     /// The primary button was released: clicks what was pressed unless the press dragged
     /// the list, and ends a slider drag in the settings panel.
     PointerRelease,
+    /// The secondary button went down: removes a pinned preset, opens the settings of a mod
+    /// tile, closes the open settings panel (ADR-0175, ADR-0177).
+    SecondaryPress {
+        x: f32,
+        y: f32,
+    },
 }
 
 /// What the screen asks the application to do; indices are into the current list.
@@ -233,6 +241,20 @@ pub enum SongSelectAction {
     /// The settings panel resets row `row` to its default.
     ResetModSetting {
         row: usize,
+    },
+    /// The footer's preset at this position was clicked: select its mods.
+    ApplyPreset(usize),
+    /// The footer's preset at this position was right-clicked: remove it.
+    RemovePreset(usize),
+    /// The footer's "+" was clicked: pin the selected mods as a preset.
+    PinPreset,
+    /// A mod tile was right-clicked at `x`, `y`: show that mod's settings there (selecting
+    /// the mod first when it is not selected).
+    ModSettings {
+        column: usize,
+        index: usize,
+        x: f32,
+        y: f32,
     },
     /// The "choose folder" button was used: the application shows its folder picker.
     ChooseFolder,
@@ -272,7 +294,7 @@ enum PressedKeys {
 /// shared by hit testing (update) and drawing.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct SongSelectLayout {
-    /// Status line at the top of the list panel.
+    /// Status line at the top of the list panel: the search line's place (ADR-0177).
     pub header: Rect,
     /// The content of the info panel on the left: the selected difficulty's statistics
     /// and local scores (ADR-0067, ADR-0125). Ends above the hint row, whose left end shows
@@ -282,8 +304,11 @@ pub struct SongSelectLayout {
     pub search: Rect,
     /// The rows' area; row 0 is at its top when not scrolled.
     pub list: Rect,
-    /// Key hints below the list.
+    /// Where the refused play's message shows, above the footer; the key hints gave way
+    /// to the footer (ADR-0175).
     pub hint: Rect,
+    /// The footer bar (ADR-0175); the content stands above it.
+    pub footer: FooterLayout,
     /// The "choose folder" button: the list's second row, below the empty-list text.
     pub choose_folder: Rect,
     /// The mod select panel.
@@ -332,16 +357,22 @@ impl SongSelectLayout {
         let panel = width * theme.song_panel_ratio;
         let x = width - margin - panel;
         let hint_height = theme.song_detail_size * scale * 1.5;
-        // The toolbar (ADR-0168) takes the strip above the content.
+        // The toolbar (ADR-0168) takes the strip above the content; the search line sits
+        // right under it, as lazer's filter control (ADR-0177). The status line shares the
+        // search line's place.
         let header = Rect {
             x,
-            y: margin + theme.toolbar_height * scale,
+            y: (theme.toolbar_height + theme.song_top_gap) * scale,
             width: panel,
-            height: hint_height,
+            height: theme.song_search_height * scale,
         };
+        let footer = FooterLayout::new(width, height, theme);
+        // The content ends a half margin above the footer, which takes the bottom margin's
+        // place.
+        let content_bottom = footer.bar.y - margin / 2.0;
         let hint = Rect {
             x,
-            y: height - margin - hint_height,
+            y: content_bottom - hint_height,
             width: panel,
             height: hint_height,
         };
@@ -351,12 +382,12 @@ impl SongSelectLayout {
         let lean = 0.0;
         // The list's lowest and highest rows lean left of its edge by this much; the info
         // panel keeps clear of them.
-        let lean_reach = (hint.y + hint.height - header.y) / 2.0 * lean;
+        let lean_reach = (content_bottom - header.y) / 2.0 * lean;
         // The two panels' backings are `margin / 2` larger on every side; keep them apart by
         // as much.
         // As wide as lazer's wedge at most (ADR-0136). The wedges lean by the buttons' skew
         // from their bottom edge, so their top reaches right by their height's lean.
-        let info_height = (hint.y - margin / 2.0 - header.y).max(0.0);
+        let info_height = (content_bottom - header.y).max(0.0);
         let wedge_lean = (info_height + margin) * theme.button_skew().tan();
         // Lazer's left column: half the window at most, 700 and a widescreen bonus at its
         // scale (ADR-0168); the user's multiplier comes on top.
@@ -376,16 +407,16 @@ impl SongSelectLayout {
         };
         let search = Rect {
             x,
-            y: header.y + header.height + margin / 2.0,
+            y: header.y,
             width: panel,
-            height: theme.song_search_height * scale,
+            height: header.height,
         };
         let top = search.y + search.height + margin / 2.0;
         let list = Rect {
             x,
             y: top,
             width: panel,
-            height: (hint.y - margin / 2.0 - top).max(0.0),
+            height: (content_bottom - top).max(0.0),
         };
         let choose_folder = Rect {
             x,
@@ -399,6 +430,7 @@ impl SongSelectLayout {
             search,
             list,
             hint,
+            footer,
             choose_folder,
             mods: ModSelectLayout::new(width, height, theme),
             info_parts: info_panel::InfoLayout::new(&info, theme, scale),
@@ -443,7 +475,7 @@ impl SongSelectLayout {
     /// Horizontal shift of the panel at height `y`: none at its middle, between the top
     /// of the status line and the bottom of the hints (ADR-0121).
     pub fn lean_x(&self, y: f32) -> f32 {
-        let middle = (self.header.y + self.hint.y + self.hint.height) / 2.0;
+        let middle = (self.header.y + self.footer.bar.y) / 2.0;
         (middle - y) * self.lean
     }
 
@@ -616,6 +648,14 @@ pub struct SongSelectSnapshot {
     pub text: TextScroll,
     /// The scrollbar's thumb is held (ADR-0174).
     pub scrollbar_held: bool,
+    /// The footer's pinned presets, as [`SongSelect::set_mod_presets`] gave them: their
+    /// labels. The view lays them out again when the `Arc` changes (by identity).
+    pub presets: Arc<[Arc<str>]>,
+    /// Which of the footer's buttons are shown beyond Back and Mods.
+    pub footer: FooterState,
+    /// The footer button under the pointer, and the one held down.
+    pub footer_hover: Option<FooterButton>,
+    pub footer_pressed: Option<FooterButton>,
 }
 
 /// What a difficulty row shows beside its name (ADR-0151).
@@ -884,6 +924,12 @@ pub struct SongSelect {
     text_press: Option<[f32; 2]>,
     /// The list's scrollbar being dragged (ADR-0174).
     bar: ScrollbarDrag,
+    /// The footer's pinned mod presets: their labels (ADR-0175).
+    presets: Arc<[Arc<str>]>,
+    /// The selected mods are one of the presets already.
+    current_pinned: bool,
+    footer_hover: Option<FooterButton>,
+    footer_pressed: Option<FooterButton>,
 }
 
 impl Default for SongSelect {
@@ -932,6 +978,99 @@ impl SongSelect {
             text: TextScroll::default(),
             text_press: None,
             bar: ScrollbarDrag::new(),
+            presets: Arc::from([]),
+            current_pinned: false,
+            footer_hover: None,
+            footer_pressed: None,
+        }
+    }
+
+    /// Gives the footer the labels of the pinned mod presets (the first [`MAX_PRESETS`]
+    /// show). Replace the `Arc` only when they change: the view lays the labels out again
+    /// then.
+    pub fn set_mod_presets(&mut self, presets: Arc<[Arc<str>]>) {
+        self.presets = presets;
+    }
+
+    /// Tells the footer whether the selected mods are pinned already (no "+" then).
+    pub fn set_current_pinned(&mut self, pinned: bool) {
+        self.current_pinned = pinned;
+    }
+
+    /// Which footer buttons show: the "+" with mods selected that are not a preset yet and
+    /// room for one more, the reset button with mods selected (ADR-0175).
+    pub fn footer_state(&self) -> FooterState {
+        let selected = self.mods.active_flags() != [0; mod_select::MAX_COLUMNS];
+        let presets = self.presets.len().min(MAX_PRESETS);
+        FooterState {
+            presets,
+            pin: selected && !self.current_pinned && presets < MAX_PRESETS,
+            reset: selected,
+        }
+    }
+
+    /// The footer's buttons as the screen is laid out now.
+    pub fn footer_buttons(&self, layout: &SongSelectLayout) -> FooterButtons {
+        layout.footer.buttons(self.footer_state())
+    }
+
+    /// The footer's part of the input (ADR-0175): returns whether it took the event, with
+    /// what it asks for. Back works always; the rest not while a difficulty loads.
+    fn footer_input(
+        &mut self,
+        input: SongSelectInput,
+        layout: &SongSelectLayout,
+    ) -> Option<Option<SongSelectAction>> {
+        use SongSelectInput as I;
+        let buttons = self.footer_buttons(layout);
+        let loading = self.status == SongSelectStatus::Loading;
+        let usable =
+            |button: Option<FooterButton>| button.filter(|b| !loading || *b == FooterButton::Back);
+        match input {
+            I::PointerMove { x, y } => {
+                self.footer_hover = usable(buttons.at(x, y));
+                None
+            }
+            I::PointerPress { x, y } if buttons.on_bar(x, y) => {
+                self.pointer = Some((x, y));
+                self.footer_hover = usable(buttons.at(x, y));
+                self.footer_pressed = self.footer_hover;
+                self.drag.cancel();
+                self.pressed = None;
+                Some(None)
+            }
+            I::PointerRelease => {
+                let pressed = self.footer_pressed.take()?;
+                let [x, y] = self.pointer.map_or([f32::MIN; 2], |(x, y)| [x, y]);
+                if buttons.at(x, y) != Some(pressed) {
+                    return Some(None);
+                }
+                Some(match pressed {
+                    FooterButton::Back if self.mods.is_open() => {
+                        self.mods.close();
+                        None
+                    }
+                    FooterButton::Back => Some(SongSelectAction::Back),
+                    FooterButton::Mods => {
+                        if self.mods.is_open() {
+                            self.mods.close();
+                        } else {
+                            self.mods.open();
+                        }
+                        None
+                    }
+                    FooterButton::Preset(i) => Some(SongSelectAction::ApplyPreset(i)),
+                    FooterButton::Pin => Some(SongSelectAction::PinPreset),
+                    FooterButton::Reset => Some(SongSelectAction::DeselectMods),
+                })
+            }
+            I::SecondaryPress { x, y } if buttons.on_bar(x, y) => {
+                Some(match usable(buttons.at(x, y)) {
+                    Some(FooterButton::Preset(i)) => Some(SongSelectAction::RemovePreset(i)),
+                    _ => None,
+                })
+            }
+            _ => None,
         }
     }
 
@@ -1278,6 +1417,10 @@ impl SongSelect {
             no_audio: self.no_audio,
             text: self.text,
             scrollbar_held: self.bar.is_dragging(),
+            presets: Arc::clone(&self.presets),
+            footer: self.footer_state(),
+            footer_hover: self.footer_hover,
+            footer_pressed: self.footer_pressed,
         }
     }
 
@@ -1291,9 +1434,7 @@ impl SongSelect {
     /// `now_ns`, a monotonic clock in nanoseconds. Does not allocate.
     pub fn tick(&mut self, now_ns: u64, layout: &SongSelectLayout) {
         self.measure(layout);
-        if self.mods.is_open() {
-            self.mods.tick(now_ns, &layout.mods);
-        }
+        self.mods.set_anchor(&layout.mods);
         let elapsed = now_ns.saturating_sub(self.shown_ns);
         self.shown_ns = now_ns;
         if std::mem::take(&mut self.rehover) {
@@ -1380,6 +1521,10 @@ impl SongSelect {
         layout: &SongSelectLayout,
     ) -> Option<SongSelectAction> {
         use SongSelectInput as I;
+        self.mods.set_anchor(&layout.mods);
+        if let Some(done) = self.footer_input(input, layout) {
+            return done;
+        }
         // The open panel takes every input; Back closes it instead of leaving.
         if self.mods.is_open() {
             if let I::PointerMove { x, y } | I::PointerPress { x, y } = input {
@@ -1392,6 +1537,17 @@ impl SongSelect {
                     ModSelectAction::Toggle { column, index } => {
                         SongSelectAction::ToggleMod { column, index }
                     }
+                    ModSelectAction::Settings {
+                        column,
+                        index,
+                        x,
+                        y,
+                    } => SongSelectAction::ModSettings {
+                        column,
+                        index,
+                        x,
+                        y,
+                    },
                     ModSelectAction::DeselectAll => SongSelectAction::DeselectMods,
                     ModSelectAction::SetSetting { row, value } => {
                         SongSelectAction::SetModSetting { row, value }
@@ -1438,9 +1594,12 @@ impl SongSelect {
                     self.play()
                 }
             }
-            I::Back | I::ModHotkey { .. } | I::ToggleCustomisation | I::ResetSetting | I::Space => {
-                moved = false
-            }
+            I::Back
+            | I::ModHotkey { .. }
+            | I::ToggleCustomisation
+            | I::ResetSetting
+            | I::Space
+            | I::SecondaryPress { .. } => moved = false,
             I::Type(c) => {
                 self.type_char(c);
                 moved = false;
@@ -1645,6 +1804,8 @@ impl SongSelect {
     }
 }
 
+#[cfg(test)]
+mod footer_tests;
 #[cfg(test)]
 mod layout_tests;
 #[cfg(test)]
