@@ -23,6 +23,9 @@ use crate::songs::SongFiles;
 // Ported from osu!lazer 2026.1005.0-lazer: osu.Game/Screens/Select/SongSelect.cs (SELECTION_DEBOUNCE)
 /// How long the selection stays on one background before it is loaded.
 pub const SELECTION_DEBOUNCE_NS: u64 = 150_000_000;
+/// While the selection keeps changing (a held arrow key), the background still follows it
+/// this often, rather than staying on the last settled one (ADR-0167).
+pub const SELECTION_MAX_WAIT_NS: u64 = 400_000_000;
 
 // Ported from osu!lazer 2026.1005.0-lazer: osu.Game/Screens/Backgrounds/BackgroundScreenBeatmap.cs (switchBackground)
 /// How long a new background fades in (`OutQuint`).
@@ -201,6 +204,8 @@ pub struct BackgroundPicker {
     seen_ns: u64,
     /// The selection the newest generation is for.
     asked: Option<Selected>,
+    /// When the newest generation was asked for.
+    asked_ns: u64,
 }
 
 impl BackgroundPicker {
@@ -220,6 +225,7 @@ impl BackgroundPicker {
             seen: None,
             seen_ns: 0,
             asked: None,
+            asked_ns: 0,
         }
     }
 
@@ -276,14 +282,17 @@ impl BackgroundPicker {
         if self.seen.is_none() || now_at != seen_at {
             self.seen = Some(Selected::of(source));
             self.seen_ns = now_ns;
-        } else if now_ns.saturating_sub(self.seen_ns) >= SELECTION_DEBOUNCE_NS {
-            self.ask(now_at.is_some());
+        }
+        let settled = now_ns.saturating_sub(self.seen_ns) >= SELECTION_DEBOUNCE_NS;
+        let overdue = now_ns.saturating_sub(self.asked_ns) >= SELECTION_MAX_WAIT_NS;
+        if settled || overdue {
+            self.ask(now_ns, now_at.is_some());
         }
         self.target
     }
 
     /// Asks for the settled selection's background unless it was asked for already.
-    fn ask(&mut self, has_background: bool) {
+    fn ask(&mut self, now_ns: u64, has_background: bool) {
         // Never asked counts as asked for none: the first target is the default background.
         let asked_at = self.asked.as_ref().and_then(Selected::background);
         let seen_at = self.seen.as_ref().and_then(Selected::background);
@@ -325,6 +334,7 @@ impl BackgroundPicker {
             });
         }
         self.asked = self.seen.clone();
+        self.asked_ns = now_ns;
     }
 
     fn replace_target(&mut self, target: BackgroundTarget) {

@@ -608,3 +608,19 @@ fn a_zoomed_background_grows_about_the_middle_and_shows_as_visible() {
     assert!(((top + bottom) / 2.0 - 300.0).abs() < 1e-3);
     assert!(right - left >= 800.0 * 1.25 - 1e-3 && bottom - top >= 600.0 * 1.25 - 1e-3);
 }
+
+#[test]
+fn a_selection_that_keeps_changing_still_loads_now_and_then() {
+    let mut rig = Rig::new();
+    // A held arrow key: another background every 50 ms, never settling.
+    rig.tick(SECOND, Some((0, 0)));
+    rig.tick(SECOND + 200 * MS, Some((0, 0)));
+    let _ = rig.sent();
+    for step in 1..=20u64 {
+        let at = if step % 2 == 0 { (0, 0) } else { (0, 2) };
+        rig.tick(SECOND + 200 * MS + step * 50 * MS, Some(at));
+    }
+    let (loads, _) = rig.sent();
+    // A second of changes: two or three loads, not none and not one per change.
+    assert!((2..=3).contains(&loads.len()), "{loads:?}");
+}
