@@ -904,6 +904,22 @@ impl SongSelectView {
                     crate::typing::styler(&line.layout, colour, pose),
                 );
             }
+            // The caret: at the end of the typed text, at the start of the placeholder.
+            if self.search_type.caret_on(now_ns, theme) {
+                let reach = if snapshot.query.is_empty() {
+                    0.0
+                } else {
+                    self.search.layout.width()
+                };
+                let caret = crate::typing::caret_rect(
+                    search.x + pad + reach,
+                    search.y + search.height / 2.0,
+                    self.search.layout.height(),
+                    theme,
+                    scale,
+                );
+                rect(&caret, theme.caret, Look::Pill);
+            }
             if list.sets.is_empty() {
                 if snapshot.status == SongSelectStatus::Ready {
                     let y = layout.list.y + theme.song_set_height * scale / 2.0;

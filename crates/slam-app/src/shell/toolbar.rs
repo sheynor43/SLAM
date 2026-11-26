@@ -92,6 +92,32 @@ impl ShellState {
                 let [px, py] = self.cursor;
                 return self.toolbar.scroll(-y, px, py, &layout);
             }
+            // A slider of the popup typed into (ADR-0172): Enter starts and commits, text and
+            // Backspace edit.
+            InputKind::Key {
+                scancode: KEY_ENTER | KEY_KEYPAD_ENTER,
+                down: true,
+            } => self.toolbar.key(SettingsInput::Activate, &layout),
+            InputKind::Key {
+                scancode: KEY_BACKSPACE,
+                down: true,
+            }
+            | InputKind::KeyRepeat {
+                scancode: KEY_BACKSPACE,
+            } => {
+                let erase = if self.mods().contains(Mods::CTRL) {
+                    SettingsInput::EraseWord
+                } else {
+                    SettingsInput::Erase
+                };
+                self.toolbar.key(erase, &layout)
+            }
+            InputKind::Text(text) if self.toolbar.is_editing() => {
+                for c in text.as_str().chars() {
+                    self.toolbar.key(SettingsInput::Type(c), &layout);
+                }
+                Some(ToolbarEvent::Absorbed)
+            }
             _ => None,
         };
         match event {

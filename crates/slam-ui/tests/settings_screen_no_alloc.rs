@@ -238,6 +238,11 @@ fn the_view_pushes_without_allocating_once_warm() {
         frame(&screen, 1280.0, 720.0, &mut glyphs);
         screen.input(SettingsInput::Right, &layout);
         frame(&screen, 800.0, 600.0, &mut glyphs);
+        // Typing into the slider's value (ADR-0172).
+        screen.input(SettingsInput::Activate, &layout);
+        screen.input(SettingsInput::Type('1'), &layout);
+        frame(&screen, 1280.0, 720.0, &mut glyphs);
+        screen.input(SettingsInput::Back, &layout);
         screen.input(SettingsInput::NextSection, &layout);
         screen.input(SettingsInput::Activate, &layout);
         frame(&screen, 1280.0, 720.0, &mut glyphs);
@@ -566,14 +571,14 @@ fn a_name_too_long_for_its_column_is_kept_whole_to_ride() {
     let layout = SettingsLayout::new(640.0, 480.0, &theme);
     let column = layout.label(0).width;
     let (shown, width) = view.shown_label(0).unwrap();
-    // Not cut: it shrinks to its floor and the rest rides (ADR-0148).
+    // Not cut and not shrunk: it keeps its size and rides (ADR-0172). A bigger window
+    // scales the size and the column together, so it still overflows.
     assert_eq!(shown, long);
     assert!(width > column, "{width} <= {column}");
-    // A wide window shows it whole in its column.
     view.lay_out_for(3840.0, 2160.0);
     let (shown, width) = view.shown_label(0).unwrap();
     assert_eq!(shown, long);
-    assert!(width <= SettingsLayout::new(3840.0, 2160.0, &theme).label(0).width);
+    assert!(width > SettingsLayout::new(3840.0, 2160.0, &theme).label(0).width);
 }
 
 /// Wheel scrolling, category clicks, the easing tick and the frames drawn along the way

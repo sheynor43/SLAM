@@ -10,6 +10,7 @@ use std::sync::Arc;
 
 use crate::marquee::TextScroll;
 use crate::menu::Rect;
+use crate::scrollbar::{Scrollbar, ScrollbarDrag};
 use crate::song_select::filter::with_term_pairs;
 use crate::song_select::{SearchQuery, ease_scroll};
 use crate::theme::Theme;
@@ -440,6 +441,18 @@ impl SettingsLayout {
         layout
     }
 
+    /// The strip at the list's right edge where the scrollbar answers (ADR-0172).
+    pub fn scrollbar_track(&self) -> Rect {
+        let width =
+            (self.theme.scrollbar_active_width + 2.0 * self.theme.scrollbar_margin) * self.scale;
+        Rect {
+            x: self.content.x + self.content.width - width,
+            y: self.content.y,
+            width,
+            height: self.content.height,
+        }
+    }
+
     /// The whole row at position `slot` in its section.
     pub fn row(&self, slot: usize) -> Rect {
         Rect {
@@ -573,6 +586,11 @@ pub struct SettingsSnapshot {
     pub dynamic_generation: u64,
     /// The tablet-area preview's data.
     pub preview: AreaPreview,
+    /// The list's length and how much of it is in view, in lines: what the scrollbar draws.
+    pub scroll_lines: f32,
+    pub scroll_view: f32,
+    /// The scrollbar's thumb is held.
+    pub scrollbar_held: bool,
 }
 
 /// The screen's state on the update thread.
@@ -617,6 +635,8 @@ pub struct SettingsScreen {
     dynamic_labels: Arc<[Box<str>]>,
     dynamic_generation: u64,
     preview: AreaPreview,
+    /// The scrollbar's drag (ADR-0172).
+    bar: ScrollbarDrag,
 }
 
 /// The widget state a row of `kind` starts with.
@@ -665,6 +685,11 @@ pub fn route_value(
             let input = match input {
                 SettingsInput::Left => SliderInput::Decrease,
                 SettingsInput::Right => SliderInput::Increase,
+                SettingsInput::Activate => SliderInput::Activate,
+                SettingsInput::Type(c) => SliderInput::Type(c),
+                SettingsInput::Erase => SliderInput::Erase,
+                SettingsInput::EraseWord => SliderInput::EraseWord,
+                SettingsInput::Back => SliderInput::Back,
                 SettingsInput::PointerPress { x, y } => SliderInput::PointerPress { x, y },
                 SettingsInput::PointerMove { x, y } => SliderInput::PointerMove { x, y },
                 SettingsInput::PointerRelease => SliderInput::PointerRelease,
@@ -738,6 +763,7 @@ impl SettingsScreen {
             dynamic_labels: Arc::from([]),
             dynamic_generation: 0,
             preview: AreaPreview::default(),
+            bar: ScrollbarDrag::new(),
         };
         screen.recompute_slots();
         screen.focus = screen.first_shown().unwrap_or(0);
@@ -819,6 +845,9 @@ impl SettingsScreen {
             dynamic_labels: Arc::clone(&self.dynamic_labels),
             dynamic_generation: self.dynamic_generation,
             preview: self.preview,
+            scroll_lines: self.lines as f32,
+            scroll_view: self.visible_lines,
+            scrollbar_held: self.bar.is_dragging(),
         }
     }
 
@@ -1387,23 +1416,76 @@ impl SettingsScreen {
     ) -> Option<SettingsAction> {
         self.visible_lines = layout.visible_rows();
         let layout = layout.scrolled(self.shown);
+        if self.scrollbar_input(input, &layout) {
+            self.scroll = self.scroll.clamp(0.0, self.max_scroll());
+            return None;
+        }
         self.track_text(input, &layout);
+        let was_editing = self.editing_row().is_some();
         let action = self.input_scrolled(input, &layout);
-        if matches!(
-            input,
-            SettingsInput::Up
-                | SettingsInput::Down
-                | SettingsInput::Type(_)
-                | SettingsInput::Erase
-                | SettingsInput::EraseWord
-                | SettingsInput::Back
-                | SettingsInput::NextSection
-                | SettingsInput::PrevSection
-        ) {
+        if !was_editing
+            && matches!(
+                input,
+                SettingsInput::Up
+                    | SettingsInput::Down
+                    | SettingsInput::Type(_)
+                    | SettingsInput::Erase
+                    | SettingsInput::EraseWord
+                    | SettingsInput::Back
+                    | SettingsInput::NextSection
+                    | SettingsInput::PrevSection
+            )
+        {
             self.scroll_to_focus();
         }
         self.scroll = self.scroll.clamp(0.0, self.max_scroll());
         action
+    }
+
+    /// The scrollbar over the list's right edge, as the screen is laid out now.
+    pub fn scrollbar(&self, layout: &SettingsLayout) -> Scrollbar {
+        Scrollbar::new(
+            layout.scrollbar_track(),
+            self.lines as f32,
+            self.visible_lines,
+            layout.theme.scrollbar_min_thumb * layout.scale,
+        )
+    }
+
+    /// The scrollbar's part of the pointer input (ADR-0172): a press on its track takes hold
+    /// of the thumb (jumping first outside it), moves drag it, the release lets go. The
+    /// list follows at once. Returns whether the bar took the input.
+    fn scrollbar_input(&mut self, input: SettingsInput, layout: &SettingsLayout) -> bool {
+        let bar = self.scrollbar(layout);
+        let offset = match input {
+            SettingsInput::PointerPress { x, y } => {
+                if self.conflict.is_some()
+                    || self.listening_row().is_some()
+                    || self.open_dropdown().is_some()
+                {
+                    return false;
+                }
+                self.text.pointer([x, y]);
+                self.bar.press(&bar, self.shown, x, y)
+            }
+            SettingsInput::PointerMove { x, y } if self.bar.is_dragging() => {
+                self.text.pointer([x, y]);
+                self.bar.drag(&bar, y)
+            }
+            SettingsInput::PointerRelease if self.bar.is_dragging() => {
+                self.bar.release();
+                return true;
+            }
+            _ => None,
+        };
+        let Some(offset) = offset else {
+            return false;
+        };
+        let offset = offset.clamp(0.0, self.max_scroll());
+        self.scroll = offset;
+        self.shown = offset;
+        self.pinned = None;
+        true
     }
 
     /// Keeps the marquees' view of the pointer: where it is, and a press on a row's name
@@ -1463,6 +1545,9 @@ impl SettingsScreen {
         }
         if let Some(row) = self.listening_row() {
             return self.listen(row, input);
+        }
+        if let Some(row) = self.editing_row() {
+            return self.edit_value(row, input, layout);
         }
         match input {
             SettingsInput::Up | SettingsInput::Down => {
@@ -1550,6 +1635,49 @@ impl SettingsScreen {
                 }
                 action
             }
+        }
+    }
+
+    /// The slider row whose value is being typed (ADR-0172).
+    pub fn editing_row(&self) -> Option<usize> {
+        (0..self.len)
+            .find(|row| matches!(&self.widgets[*row], RowWidget::Slider(s) if s.is_editing()))
+    }
+
+    /// Input while the value of slider row `row` is typed: keys type, Enter commits, Escape
+    /// drops the text (it does not close the screen), a press outside the value commits (a
+    /// commit that changed the value takes the press; otherwise the press goes on), the
+    /// wheel scrolls. The rest waits.
+    fn edit_value(
+        &mut self,
+        row: usize,
+        input: SettingsInput,
+        layout: &SettingsLayout,
+    ) -> Option<SettingsAction> {
+        match input {
+            SettingsInput::Type(_)
+            | SettingsInput::Erase
+            | SettingsInput::EraseWord
+            | SettingsInput::Activate
+            | SettingsInput::Back => self.route_widget(row, input, layout),
+            SettingsInput::PointerPress { x, y } => {
+                let on_value = self.row_at(layout, x, y) == Some(row)
+                    && layout.slider(self.slot(row)).value.contains(x, y);
+                if on_value {
+                    return None;
+                }
+                let committed = self.route_widget(row, SettingsInput::Activate, layout);
+                if committed.is_some() {
+                    return committed;
+                }
+                self.input_scrolled(input, layout)
+            }
+            SettingsInput::Scroll { lines } => {
+                self.scroll += lines;
+                self.pinned = None;
+                None
+            }
+            _ => None,
         }
     }
 

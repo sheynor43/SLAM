@@ -20,6 +20,7 @@ pub mod dropdown;
 pub mod keybind;
 pub mod slider;
 pub mod toggle;
+pub mod value_edit;
 
 pub use dropdown::{
     Dropdown, DropdownAction, DropdownInput, DropdownLayout, DropdownView, MAX_VISIBLE_OPTIONS,
@@ -27,6 +28,7 @@ pub use dropdown::{
 pub use keybind::{KeyBind, KeyBindAction, KeyBindInput, KeyBindLayout, KeyBindView};
 pub use slider::{Slider, SliderAction, SliderInput, SliderLayout, SliderView};
 pub use toggle::{Toggle, ToggleAction, ToggleInput, ToggleLayout, ToggleView};
+pub use value_edit::{EDIT_CAPACITY, ValueEdit};
 
 /// Bytes reserved up front in every dynamic text buffer.
 pub(crate) const TEXT_CAPACITY: usize = 64;

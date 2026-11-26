@@ -138,6 +138,38 @@ pub struct Theme {
     pub erase_pop_ms: f32,
     /// Pixels (at the reference height) the search text jumps up on an erase.
     pub erase_pop: f32,
+    /// Colour of the text caret of a text field (ADR-0172).
+    pub caret: Color,
+    /// Width of the caret, reference px.
+    pub caret_width: f32,
+    /// Height of the caret as a share of the text's line height.
+    pub caret_height: f32,
+    /// Milliseconds the caret stays on, and then off, while the field idles.
+    pub caret_blink_ms: f32,
+    /// Milliseconds the caret stays solid after a key.
+    pub caret_solid_ms: f32,
+    /// Width of a scrollbar's thumb at rest, reference px (ADR-0172).
+    pub scrollbar_width: f32,
+    /// Width of the thumb while pointed at or dragged.
+    pub scrollbar_active_width: f32,
+    /// Gap between the thumb and the edge of its track.
+    pub scrollbar_margin: f32,
+    /// The shortest the thumb gets, reference px.
+    pub scrollbar_min_thumb: f32,
+    /// Opacity of the thumb at rest, pointed at, dragged.
+    pub scrollbar_alpha: f32,
+    pub scrollbar_hover_alpha: f32,
+    pub scrollbar_drag_alpha: f32,
+    /// Milliseconds the thumb takes to change between those.
+    pub scrollbar_fade_ms: f32,
+    /// Width of the accent bar at the left edge of the selected settings tab (ADR-0172).
+    pub settings_tab_bar_width: f32,
+    /// The icon's side as a share of its tab's.
+    pub settings_tab_icon_share: f32,
+    /// Opacity of a settings tab's icon at rest; hovered and selected ones are fully lit.
+    pub settings_tab_idle_alpha: f32,
+    /// Milliseconds a tab takes to light up or dim (ease-out).
+    pub settings_tab_fade_ms: f32,
     pub title_size: f32,
     pub button_text_size: f32,
     /// Text of a screen that is only a message.
@@ -672,6 +704,23 @@ impl Theme {
             type_slide: 5.0,
             erase_pop_ms: 140.0,
             erase_pop: 3.0,
+            caret: Color::WHITE,
+            caret_width: 1.5,
+            caret_height: 0.85,
+            caret_blink_ms: 530.0,
+            caret_solid_ms: 500.0,
+            scrollbar_width: 4.0,
+            scrollbar_active_width: 7.0,
+            scrollbar_margin: 2.0,
+            scrollbar_min_thumb: 24.0,
+            scrollbar_alpha: 0.22,
+            scrollbar_hover_alpha: 0.42,
+            scrollbar_drag_alpha: 0.65,
+            scrollbar_fade_ms: 200.0,
+            settings_tab_bar_width: 3.0,
+            settings_tab_icon_share: 0.5,
+            settings_tab_idle_alpha: 0.5,
+            settings_tab_fade_ms: 200.0,
             title_size: 96.0,
             button_text_size: 28.0,
             message_size: 28.0,

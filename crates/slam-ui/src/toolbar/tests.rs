@@ -268,3 +268,100 @@ fn the_frame_carries_the_state() {
     assert_eq!(frame.clock, 125);
     assert_eq!(ToolbarFrame::default().clock, NO_CLOCK);
 }
+
+fn slider_popup() -> (Toolbar, ToolbarLayout) {
+    let layout = layout(1);
+    let mut bar = with_pins(&[3]);
+    let slider = widget_of(RowKind::Slider {
+        min: 0.0,
+        max: 100.0,
+        step: 1.0,
+        value: 10.0,
+    });
+    bar.show_popup(0, slider, 0);
+    (bar, layout)
+}
+
+fn type_into(bar: &mut Toolbar, layout: &ToolbarLayout, text: &str) {
+    for c in text.chars() {
+        bar.key(SettingsInput::Type(c), layout);
+    }
+}
+
+#[test]
+fn a_click_on_the_value_types_it_and_enter_commits() {
+    let (mut bar, layout) = slider_popup();
+    // The value text is at the right end of the widget.
+    let widget = layout.row(0, 0.0).widget(0);
+    let [x, y] = [
+        widget.x + widget.width - 10.0,
+        widget.y + widget.height / 2.0,
+    ];
+    assert_eq!(bar.press(x, y, &layout), Some(ToolbarEvent::Absorbed));
+    assert!(bar.is_editing());
+    type_into(&mut bar, &layout, "64.6");
+    assert_eq!(
+        bar.key(SettingsInput::Activate, &layout),
+        Some(ToolbarEvent::Changed {
+            row: 3,
+            value: RowValue::Slider(65.0)
+        })
+    );
+    assert!(!bar.is_editing());
+    assert!(bar.popup_open());
+}
+
+#[test]
+fn enter_starts_typing_but_text_keys_are_not_taken_otherwise() {
+    let (mut bar, layout) = slider_popup();
+    assert_eq!(bar.key(SettingsInput::Type('5'), &layout), None);
+    assert_eq!(bar.key(SettingsInput::Erase, &layout), None);
+    assert_eq!(
+        bar.key(SettingsInput::Activate, &layout),
+        Some(ToolbarEvent::Absorbed)
+    );
+    assert!(bar.is_editing());
+    type_into(&mut bar, &layout, "9");
+    assert_eq!(
+        bar.key(SettingsInput::Erase, &layout),
+        Some(ToolbarEvent::Absorbed)
+    );
+    // A toggle's popup takes no Enter.
+    let mut bar = with_pins(&[1]);
+    bar.show_popup(0, toggle(), 0);
+    assert_eq!(bar.key(SettingsInput::Activate, &layout), None);
+}
+
+#[test]
+fn escape_drops_the_typed_value_before_it_closes_the_popup() {
+    let (mut bar, layout) = slider_popup();
+    bar.key(SettingsInput::Activate, &layout);
+    type_into(&mut bar, &layout, "99");
+    assert_eq!(bar.back(&layout), Some(ToolbarEvent::Absorbed));
+    assert!(bar.popup_open() && !bar.is_editing());
+    let Some(RowWidget::Slider(slider)) = bar.popup_widget_mut() else {
+        panic!("a slider");
+    };
+    assert_eq!(slider.value(), 10.0);
+    assert_eq!(bar.back(&layout), Some(ToolbarEvent::ClosePopup));
+}
+
+#[test]
+fn a_click_outside_commits_the_typed_value_instead_of_closing() {
+    let (mut bar, layout) = slider_popup();
+    bar.key(SettingsInput::Activate, &layout);
+    type_into(&mut bar, &layout, "30");
+    assert_eq!(
+        bar.press(5.0, 600.0, &layout),
+        Some(ToolbarEvent::Changed {
+            row: 3,
+            value: RowValue::Slider(30.0)
+        })
+    );
+    assert!(bar.popup_open());
+    // The next click outside closes as before.
+    assert_eq!(
+        bar.press(5.0, 600.0, &layout),
+        Some(ToolbarEvent::ClosePopup)
+    );
+}

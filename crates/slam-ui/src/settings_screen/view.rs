@@ -10,13 +10,15 @@ use slam_render::sprite::{Affine, SpriteBatch};
 use slam_text::{FontRegistry, Glyph, GlyphCache, GlyphKey};
 
 use super::{
-    AreaPreview, Conflict, KeyValue, MAX_ROWS, MouseKey, PREVIEW_LINES, RowKind, RowSpec,
-    RowWidget, SettingsLayout, SettingsScreen, SettingsSnapshot, icons,
+    AreaPreview, Conflict, KeyValue, MAX_ROWS, MAX_SECTIONS, MouseKey, PREVIEW_LINES, RowKind,
+    RowSpec, RowWidget, SettingsLayout, SettingsScreen, SettingsSnapshot, icons,
 };
+use crate::anim::{Towards, ease_out_cubic};
 use crate::marquee::{Marquee, MarqueeParams, ScrollTracker, push_marquee};
 use crate::menu::Rect;
-use crate::menu::view::{Face, Frame, Line, Typesetter};
+use crate::menu::view::{Frame, Line, Typesetter};
 use crate::screen::Pose;
+use crate::scrollbar::{Scrollbar, ScrollbarLook};
 use crate::song_select::{QUERY_CAPACITY, SearchQuery};
 use crate::theme::{Theme, faded};
 use crate::widgets::{
@@ -231,8 +233,20 @@ enum RowView {
 /// How much larger than a row's text a section header's is (ADR-0133).
 const HEADER_TEXT: f32 = 1.25;
 
-/// The icon's side as a share of its tab's.
-const ICON_SHARE: f32 = 0.56;
+/// How much (0 to 1) of the preview that starts at `slot` shows: the share of its height
+/// inside the content area, eased so that its first visible pixels already read. The
+/// preview has no clipping, so a part scrolled out is faded rather than cut.
+pub(crate) fn preview_share(layout: &SettingsLayout, slot: usize) -> f32 {
+    let first = layout.row(slot);
+    let last = layout.row(slot + PREVIEW_LINES - 1);
+    let height = last.y + last.height - first.y;
+    if height <= 0.0 {
+        return 0.0;
+    }
+    let top = first.y.max(layout.content.y);
+    let bottom = (last.y + last.height).min(layout.content.y + layout.content.height);
+    ((bottom - top) / height).clamp(0.0, 1.0).sqrt()
+}
 
 /// Draws the tablet-area preview in `rect`: the surface fitted to it, the area turned about
 /// its centre. Does not allocate; nothing is drawn for a surface without area.
@@ -334,6 +348,12 @@ pub struct SettingsView {
     search_seen: SearchQuery,
     /// The typing feedback of the search text (ADR-0167).
     search_type: crate::typing::TypeFeedback,
+    /// The scrollbar's fades.
+    bar_look: ScrollbarLook,
+    /// Per tab: how lit its icon is, and how much of its accent bar shows (ADR-0172).
+    tab_lit: [Towards; MAX_SECTIONS],
+    tab_bar: [Towards; MAX_SECTIONS],
+    tabs_ready: bool,
     tabs: Vec<Line>,
     /// The section names as headers of the list, larger than the tabs'.
     headers: Vec<Line>,
@@ -364,29 +384,6 @@ impl std::fmt::Debug for SettingsView {
         f.debug_struct("SettingsView")
             .field("placeholder", &self.placeholder.text)
             .finish_non_exhaustive()
-    }
-}
-
-/// The smallest a text shrinks to fit its place, as a share of its size; past it, it
-/// overflows.
-const MIN_FIT: f32 = 0.7;
-
-/// Lays `line` out at `size`, smaller if that is wider than `width`, down to [`MIN_FIT`].
-fn lay_out_fitted(type_setter: &mut Typesetter, line: &mut Line, size: f32, width: f32) {
-    let face = Face {
-        size,
-        weight: type_setter.weight(),
-        width: slam_text::NORMAL_WIDTH,
-    };
-    lay_out_fitted_face(type_setter, line, face, width);
-}
-
-/// [`lay_out_fitted`] in `face`.
-fn lay_out_fitted_face(type_setter: &mut Typesetter, line: &mut Line, face: Face, width: f32) {
-    type_setter.lay_out_face(line, face);
-    let laid = line.layout.width();
-    if laid > width && laid > 0.0 && width > 0.0 {
-        type_setter.lay_out_face(line, face.scaled((width / laid).max(MIN_FIT)));
     }
 }
 
@@ -482,6 +479,10 @@ impl SettingsView {
             },
             search_seen: SearchQuery::default(),
             search_type: crate::typing::TypeFeedback::new(),
+            bar_look: ScrollbarLook::new(),
+            tab_lit: [Towards::default(); MAX_SECTIONS],
+            tab_bar: [Towards::default(); MAX_SECTIONS],
+            tabs_ready: false,
             tabs: labels.sections.iter().map(|s| Line::new(s)).collect(),
             headers: labels.sections.iter().map(|s| Line::new(s)).collect(),
             labels: (0..rows.len())
@@ -644,7 +645,9 @@ impl SettingsView {
             }
             (RowView::Slider(view), RowWidget::Slider(slider)) => {
                 let bounds = SliderLayout::new(layout.widget(0), &theme, scale);
-                view.push(shapes, text, glyphs, slider, &bounds, opacity, white);
+                view.push(
+                    shapes, text, glyphs, slider, &bounds, opacity, white, now_ns,
+                );
             }
             (RowView::Dropdown(view), RowWidget::Dropdown(dropdown)) => {
                 let bounds = layout.dropdown_at(0, dropdown.count());
@@ -728,14 +731,12 @@ impl SettingsView {
         self.layout = SettingsLayout::new(width, height, &self.theme);
         let scale = self.layout.scale;
         let text = self.theme.widget_text_size * scale;
-        let pad = 2.0 * self.theme.widget_pad * scale;
-        // In the panel a long name may not fit its column: it shrinks, down to a floor, and
-        // past that it rides (ADR-0148).
-        let label = self.layout.label(0).width - pad;
+        // Every text class has one size: a name that does not fit its column rides
+        // (ADR-0148, ADR-0172).
         let caption = self.theme.caption_face(scale);
         for (line, whole) in self.labels.iter_mut().zip(&self.label_texts) {
             line.text.clone_from(whole);
-            lay_out_fitted_face(&mut self.type_setter, line, caption, label);
+            self.type_setter.lay_out_face(line, caption);
         }
         for line in &mut self.tabs {
             self.type_setter.lay_out(line, text);
@@ -757,22 +758,14 @@ impl SettingsView {
             self.type_setter.lay_out(line, text);
         }
         let note = self.theme.note_face(scale);
-        let widget = self.layout.widget(0).width - pad;
-        // A hint shares the widget column with a toggle, which keeps the right end; it
-        // shrinks to fit the rest, down to a floor.
-        let toggle = (self.theme.widget_toggle_width + self.theme.widget_pad) * scale;
-        for (lines, view) in self.hints.iter_mut().zip(&self.views) {
-            let room = match view {
-                RowView::Toggle(_) => widget - toggle,
-                _ => widget,
-            };
+        for lines in &mut self.hints {
             for line in lines {
-                lay_out_fitted_face(&mut self.type_setter, line, note, room.max(0.0));
+                self.type_setter.lay_out_face(line, note);
             }
         }
         for view in &mut self.views {
             if let RowView::Button(line) = view {
-                lay_out_fitted(&mut self.type_setter, line, text, widget);
+                self.type_setter.lay_out(line, text);
             }
         }
         if let Some(value) = &mut self.value {
@@ -790,8 +783,6 @@ impl SettingsView {
     /// grown the buffers (but for font caches meeting a new fallback font).
     fn refresh_dynamic(&mut self, overrides: &[Box<str>]) {
         let scale = self.layout.scale;
-        let pad = 2.0 * self.theme.widget_pad * scale;
-        let label = self.layout.label(0).width - pad;
         let caption = self.theme.caption_face(scale);
         for (row, fallback) in &self.dynamic {
             let (Some(whole), Some(line)) =
@@ -816,7 +807,7 @@ impl SettingsView {
                 whole.push(ELLIPSIS);
             }
             line.text.clone_from(whole);
-            lay_out_fitted_face(&mut self.type_setter, line, caption, label);
+            self.type_setter.lay_out_face(line, caption);
         }
     }
 
@@ -1048,46 +1039,82 @@ impl SettingsView {
                 crate::typing::styler(&line.layout, faded(theme.text, opacity), pose),
             );
         }
+        // The caret: at the end of the typed text, at the start of the placeholder.
+        if self.search_type.caret_on(now_ns, &theme) {
+            let reach = if snapshot.search.is_empty() {
+                0.0
+            } else {
+                self.search.layout.width()
+            };
+            let height = self.search.layout.height();
+            crate::typing::push_caret(
+                shapes,
+                white,
+                search.x + pad + reach,
+                search.y + search.height / 2.0,
+                height,
+                opacity,
+                &theme,
+                layout.scale,
+            );
+        }
         let pointer = snapshot.text.pointer;
         let mut hovered = None;
-        for i in 0..self.tabs.len() {
-            // One colour for all tabs; the current section is highlighted, the hovered one
-            // lit like any button (ADR-0165).
+        let fade = (theme.settings_tab_fade_ms.max(0.0) * 1.0e6) as u64;
+        for i in 0..self.tabs.len().min(MAX_SECTIONS) {
+            // Flat tabs after lazer's sidebar (ADR-0172): the icon alone, brightening when
+            // pointed at, and a thin accent bar at the left edge of the section at the top.
             let rect = layout.tabs[i];
             let hover = rect.contains(pointer[0], pointer[1]);
             if hover {
                 hovered = Some(i);
             }
             let current = i == snapshot.section;
-            let fill_colour = if hover || current {
-                theme.button_hover_fill
-            } else {
-                theme.button_fill
-            };
-            let look = Look::Button {
-                highlighted: current,
-                seed: i as f32 * 0.41,
-                fade: opacity,
-            };
-            draw(
-                shapes,
-                white,
-                &rect,
-                faded(fill_colour, opacity),
-                look,
-                &theme,
-                layout.scale,
+            let (lit, bar) = (
+                f32::from(u8::from(hover || current)),
+                f32::from(u8::from(current)),
             );
-            let ink = theme.text;
+            if !self.tabs_ready {
+                self.tab_lit[i] = Towards::rest(lit, now_ns);
+                self.tab_bar[i] = Towards::rest(bar, now_ns);
+            }
+            self.tab_lit[i].aim(lit, now_ns, fade, ease_out_cubic);
+            self.tab_bar[i].aim(bar, now_ns, fade, ease_out_cubic);
+            let lit = self.tab_lit[i].at(now_ns, fade, ease_out_cubic);
+            let bar = self.tab_bar[i].at(now_ns, fade, ease_out_cubic);
+            if bar > 0.0 {
+                let width = theme.settings_tab_bar_width * layout.scale;
+                let mark = Rect {
+                    x: rect.x,
+                    y: rect.y + rect.height * 0.2,
+                    width,
+                    height: rect.height * 0.6,
+                };
+                let colour = Color {
+                    a: theme.accent.a * bar * opacity,
+                    ..theme.accent
+                };
+                draw(
+                    shapes,
+                    white,
+                    &mark,
+                    colour,
+                    Look::Pill,
+                    &theme,
+                    layout.scale,
+                );
+            }
+            let alpha = theme.settings_tab_idle_alpha + (1.0 - theme.settings_tab_idle_alpha) * lit;
             icons::push_icon(
                 shapes,
                 white,
                 &rect,
-                ICON_SHARE,
-                faded(ink, opacity),
+                theme.settings_tab_icon_share,
+                faded(theme.text, opacity * alpha),
                 icons::icon(i),
             );
         }
+        self.tabs_ready = true;
         // The name of the hovered section, in a plate beside its tab; the plate and its text
         // are drawn last:
         // the caller draws the rest first, then the shapes and texts from the returned split
@@ -1153,7 +1180,34 @@ impl SettingsView {
             let (_, _, restart) = self.meta[i];
             let slot = usize::from(snapshot.slots[i]);
             any |= !snapshot.hidden[i];
-            if snapshot.hidden[i] || !visible.contains(&slot) {
+            if snapshot.hidden[i] {
+                continue;
+            }
+            if matches!(self.views[i], RowView::Preview) {
+                // The preview spans several lines and shows as soon as any of them is in the
+                // content area, not only when its first line is (a stale check on the first
+                // line made it pop in late when scrolling up).
+                let share = preview_share(&layout, slot);
+                if share > 0.0 {
+                    let first = layout.row(slot);
+                    let end = layout.row(slot + PREVIEW_LINES - 1);
+                    let rect = Rect {
+                        height: (end.y + end.height - first.y).max(0.0),
+                        ..first
+                    };
+                    push_preview(
+                        shapes,
+                        white,
+                        &rect,
+                        &snapshot.preview,
+                        &theme,
+                        layout.scale,
+                        opacity * share,
+                    );
+                }
+                continue;
+            }
+            if !visible.contains(&slot) {
                 continue;
             }
             let covered =
@@ -1166,27 +1220,6 @@ impl SettingsView {
             let opacity = opacity * fraction;
             // A note runs the whole row, under the list too.
             if covered && matches!(self.views[i], RowView::Note) {
-                continue;
-            }
-            if matches!(self.views[i], RowView::Preview) {
-                // The preview spans this row and the ones after it, which are notes.
-                let last = layout.fraction(slot + PREVIEW_LINES - 1);
-                let rect = {
-                    let (first, end) = (layout.row(slot), layout.row(slot + PREVIEW_LINES - 1));
-                    Rect {
-                        height: (end.y + end.height - first.y).max(0.0),
-                        ..first
-                    }
-                };
-                push_preview(
-                    shapes,
-                    white,
-                    &rect,
-                    &snapshot.preview,
-                    &theme,
-                    layout.scale,
-                    opacity * last,
-                );
                 continue;
             }
             if matches!(self.views[i], RowView::Note) {
@@ -1311,7 +1344,16 @@ impl SettingsView {
                 (RowView::Slider(_), RowWidget::Slider(_)) if hinted => {}
                 (RowView::Slider(view), RowWidget::Slider(slider)) => {
                     let bounds = SliderLayout::new(widget, &theme, layout.scale);
-                    view.push(shapes, text, glyphs, slider, &bounds, widget_opacity, white);
+                    view.push(
+                        shapes,
+                        text,
+                        glyphs,
+                        slider,
+                        &bounds,
+                        widget_opacity,
+                        white,
+                        now_ns,
+                    );
                 }
                 (RowView::Dropdown(view), RowWidget::Dropdown(dropdown)) => {
                     if dropdown.is_open() {
@@ -1370,6 +1412,25 @@ impl SettingsView {
                 glyphs,
             );
         }
+        // The scrollbar over the rows, under an open list.
+        let bar = Scrollbar::new(
+            layout.scrollbar_track(),
+            snapshot.scroll_lines,
+            snapshot.scroll_view,
+            theme.scrollbar_min_thumb * layout.scale,
+        );
+        self.bar_look.push(
+            shapes,
+            white,
+            &bar,
+            snapshot.scroll,
+            snapshot.text.pointer,
+            snapshot.scrollbar_held,
+            opacity,
+            &theme,
+            layout.scale,
+            now_ns,
+        );
         if let Some(i) = open_row
             && let (RowView::Dropdown(view), RowWidget::Dropdown(dropdown)) =
                 (&mut self.views[i], &snapshot.widgets[i])
