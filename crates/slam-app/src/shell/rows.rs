@@ -1824,6 +1824,8 @@ impl Rows {
                 Row::DisableWinKey => screen.set_hidden(i, !WIN_KEY_ROW),
                 Row::VideoDriver => screen.set_hidden(i, !VIDEO_DRIVER_ROW),
                 Row::Renderer => screen.set_hidden(i, !RENDERER_ROW),
+                // The idle spin is gone (ADR-0167); the key stays readable in old files.
+                Row::MenuCursorSpin => screen.set_hidden(i, true),
                 Row::Display | Row::FullscreenSize | Row::WindowedSize => {
                     let (options, selected) = self.display_choice(*row, settings);
                     if let Some(RowWidget::Dropdown(dropdown)) = screen.widget(i)
@@ -3166,7 +3168,6 @@ mod tests {
             Row::Blur,
             Row::Shadows,
             Row::MenuCursorRotate,
-            Row::MenuCursorSpin,
             Row::MenuCursorTrail,
             Row::MenuCursorRipple,
         ] {

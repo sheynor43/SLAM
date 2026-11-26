@@ -55,7 +55,7 @@ pub const MAX_RIPPLES: usize = 3;
 // The pointer in units of its height, tip at the origin, y down, before the tilt: an
 // arrowhead (`ShapeKind::Arrow`) this wide, rounded by this much.
 const ARROW_WIDTH: f32 = 0.74;
-const ARROW_RADIUS: f32 = 0.07;
+const ARROW_RADIUS: f32 = 0.13;
 
 /// The height of the pointer as drawn at `size`: for placing it by its hot spot.
 pub const fn arrow_height_units() -> f32 {
@@ -504,9 +504,10 @@ pub fn push_slam_cursor(
         shapes.push_shape(&Shape {
             position: [body.position[0], body.position[1] + drop],
             glow: height * 0.12 * (0.5 + 0.5 * theme.shadow),
+            // A shadow is dark whatever the rim's colour.
             colour: Color {
                 a: (theme.shadow_alpha * theme.shadow).min(0.95),
-                ..theme.cursor_outline_colour
+                ..Color::rgb(0.0, 0.0, 0.0)
             },
             gradient: None,
             ..body
@@ -928,7 +929,11 @@ mod tests {
 
     #[test]
     fn a_resting_pointer_spins_and_faces_front_again_when_moved() {
-        let theme = Theme::default();
+        // The spin is off by default (ADR-0167); a theme may still turn it on.
+        let theme = Theme::default().with_cursor_fx(CursorFx {
+            spin: true,
+            ..CursorFx::default()
+        });
         let mut m = MenuCursorMotion::default();
         m.update(&theme, 1.0, Some([0.0; 2]), false, 0);
         m.update(&theme, 1.0, Some([5.0, 0.0]), false, 10 * MS);
@@ -952,7 +957,11 @@ mod tests {
 
     #[test]
     fn a_long_rest_spins_as_smoothly_as_a_short_one() {
-        let theme = Theme::default();
+        // The spin is off by default (ADR-0167); a theme may still turn it on.
+        let theme = Theme::default().with_cursor_fx(CursorFx {
+            spin: true,
+            ..CursorFx::default()
+        });
         let mut m = MenuCursorMotion::default();
         m.update(&theme, 1.0, Some([0.0; 2]), false, 0);
         m.update(&theme, 1.0, Some([5.0, 0.0]), false, MS);

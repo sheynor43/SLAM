@@ -21,7 +21,11 @@ fn drawing_the_cursor_does_not_allocate() {
         size: Extent::new(1, 1),
         uv: UvRect::FULL,
     };
-    let theme = Theme::default();
+    // The spin is off by default (ADR-0167); on here so that its drawing is covered too.
+    let theme = Theme::default().with_cursor_fx(slam_ui::theme::CursorFx {
+        spin: true,
+        ..slam_ui::theme::CursorFx::default()
+    });
     let mut shapes = ShapeBatch::with_capacity(2 * MAX_CURSOR_SHAPES);
     let mut motion = MenuCursorMotion::default();
     assert_no_alloc(|| {

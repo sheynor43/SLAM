@@ -523,7 +523,7 @@ impl Default for CursorFx {
     fn default() -> Self {
         CursorFx {
             rotate: true,
-            spin: true,
+            spin: false,
             trail: true,
             ripple: true,
         }
@@ -822,14 +822,15 @@ impl Theme {
             menu_panel_fill: alpha(p.panel, 0.62),
             menu_panel_pad: 28.0,
             cursor_size: 30.0,
-            cursor_fill: Color::rgb(0.96, 0.97, 1.0),
+            // Dark with a light rim (ADR-0167).
+            cursor_fill: Color::rgb(0.11, 0.12, 0.16),
             cursor_outline_colour: Color {
-                r: 0.04,
-                g: 0.05,
-                b: 0.09,
-                a: 0.9,
+                r: 0.94,
+                g: 0.95,
+                b: 1.0,
+                a: 0.92,
             },
-            cursor_outline: 0.055,
+            cursor_outline: 0.06,
             cursor_tilt_degrees: 24.3,
             cursor_press_scale: 0.9,
             cursor_press_in_ms: 800.0,

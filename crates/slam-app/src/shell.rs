@@ -5283,7 +5283,8 @@ pub fn interface_theme(live: &Settings, committed: &Settings) -> Theme {
         })
         .with_cursor_fx(CursorFx {
             rotate: general.cursor_rotate,
-            spin: general.cursor_spin,
+            // The menu pointer no longer spins while resting (ADR-0167).
+            spin: false,
             trail: general.cursor_trail,
             ripple: general.cursor_ripple,
         });

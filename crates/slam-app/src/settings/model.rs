@@ -172,7 +172,7 @@ impl Default for General {
             shadows: true,
             shadow_strength: 1.0,
             cursor_rotate: true,
-            cursor_spin: true,
+            cursor_spin: false,
             cursor_trail: true,
             cursor_ripple: true,
             transitions: TransitionStyle::default(),

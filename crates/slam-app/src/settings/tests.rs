@@ -1832,7 +1832,9 @@ fn the_skew_defaults_snaps_to_degrees_and_falls_back() {
 fn the_look_settings_default_on_and_round_trip() {
     let g = Settings::default().general;
     assert!(g.parallax_enabled && g.blur && g.shadows);
-    assert!(g.cursor_rotate && g.cursor_spin && g.cursor_trail && g.cursor_ripple);
+    assert!(g.cursor_rotate && g.cursor_trail && g.cursor_ripple);
+    // The idle spin is gone (ADR-0167).
+    assert!(!g.cursor_spin);
     assert_eq!((g.blur_strength, g.shadow_strength), (1.0, 1.0));
     // An old file without the keys loads the defaults.
     let old = file::from_toml_str("[general]\neffects = false\n");
