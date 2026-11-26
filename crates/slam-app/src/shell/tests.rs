@@ -3060,3 +3060,28 @@ fn the_side_button_filter_keeps_other_events() {
     let plain = [left];
     assert_eq!(without_side_buttons(&plain, &mut Vec::new()), plain);
 }
+
+#[test]
+fn the_mod_select_overlay_pops_in_and_out_with_sounds() {
+    use crate::menu_sounds::MenuSound;
+    let at = |sound| {
+        MenuSound::ALL
+            .iter()
+            .position(|s| *s == sound)
+            .expect("listed")
+    };
+    let (mut s, mut snap, _producer) = in_song_select();
+    let _ = s.take_ui_sounds();
+    let t = TRANSITION_NS;
+    s.song_select.mods_mut().open();
+    s.tick(t + 1, &[], &mut snap);
+    let noted = s.take_ui_sounds();
+    assert!(noted[at(MenuSound::ModsOpen)] && noted[at(MenuSound::ModColumn)]);
+    assert!(!noted[at(MenuSound::ModsClose)]);
+    s.tick(t + 2, &[], &mut snap);
+    assert!(!s.take_ui_sounds()[at(MenuSound::ModsOpen)]);
+    s.song_select.mods_mut().close();
+    s.tick(t + 3, &[], &mut snap);
+    let noted = s.take_ui_sounds();
+    assert!(noted[at(MenuSound::ModsClose)] && !noted[at(MenuSound::ModColumn)]);
+}

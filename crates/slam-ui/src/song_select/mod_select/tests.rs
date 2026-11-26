@@ -161,7 +161,11 @@ fn mouse_toggles_the_tile_under_the_cursor_and_hovers() {
     assert_eq!(panel.snapshot().hover, None);
     assert_eq!(l.tile_at(0.0, 0.0, column_counts(&COLUMNS)), None);
     assert_eq!(
-        l.tile_at(r.x + 1.0, r.y - 100.0, column_counts(&COLUMNS)),
+        l.tile_at(
+            r.x + 1.0,
+            l.column_titles[1].y - 5.0,
+            column_counts(&COLUMNS)
+        ),
         None
     );
 }
@@ -169,10 +173,11 @@ fn mouse_toggles_the_tile_under_the_cursor_and_hovers() {
 #[test]
 fn tiles_fit_the_window_and_do_not_overlap() {
     let l = layout();
+    let counts = column_counts(&COLUMNS);
     for column in (0..MAX_COLUMNS).filter(|&c| l.is_shown(c)) {
-        let a = l.tile_rect(column, 6);
+        let a = l.tile_rect(column, counts[column] - 1);
         assert!(a.y + a.height < l.hint.y);
-        let b = l.tile_rect(column, 7);
+        let b = l.tile_rect(column, counts[column]);
         assert!(b.y >= a.y + a.height);
     }
     assert!(l.tile_rect(0, 0).x + l.tile_rect(0, 0).width <= l.tile_rect(1, 0).x);
@@ -306,6 +311,44 @@ fn the_bigger_tiles_fit_the_window() {
     let tile = l.tile_rect(0, 0);
     assert!(tile.width <= theme.mod_tile_width * theme.scale(720.0) + 0.01);
     assert!(tile.height > 50.0 * theme.scale(720.0) - 0.01);
-    let last = l.tile_rect(1, 6);
+    let last = l.tile_rect(1, 2);
     assert!(last.y + last.height <= 720.0);
+}
+
+#[test]
+fn the_columns_are_as_tall_as_their_content_and_stand_above_the_hint() {
+    let theme = Theme::default();
+    for (width, height) in [(1920.0, 1080.0), (1280.0, 720.0)] {
+        let mut l = ModSelectLayout::new(width, height, &theme);
+        let counts = column_counts(&COLUMNS);
+        l.place(counts);
+        let scale = theme.scale(height);
+        let tallest = (0..MAX_COLUMNS).max_by_key(|&c| counts[c]).unwrap();
+        let last = l.tile_rect(tallest, counts[tallest] - 1);
+        let plate = l.column_rect(tallest, counts[tallest]);
+        // No band under the last tile but the padding.
+        let slack = plate.y + plate.height - (last.y + last.height);
+        assert!(
+            slack <= theme.mod_column_pad * scale + 0.01,
+            "{height}: {slack}"
+        );
+        assert_eq!(l.content_bottom(), plate.y + plate.height);
+        // The block stands on the hint: the gap is a margin at most.
+        let gap = l.hint.y - l.content_bottom();
+        assert!(
+            (0.0..=2.0 * theme.song_margin * scale).contains(&gap),
+            "{height}: {gap}"
+        );
+        // A shorter column's plate ends after its own last tile, not the tallest's.
+        let short = (0..MAX_COLUMNS).find(|&c| counts[c] == 2).unwrap();
+        let end = l.tile_rect(short, 1);
+        let short_plate = l.column_rect(short, 2);
+        assert!(short_plate.y + short_plate.height < plate.y + plate.height);
+        assert!(
+            short_plate.y + short_plate.height - (end.y + end.height)
+                <= theme.mod_column_pad * scale + 0.01
+        );
+        // The settings panel's header is clear of the columns.
+        assert!(l.customise.header.y + l.customise.header.height <= plate.y);
+    }
 }
