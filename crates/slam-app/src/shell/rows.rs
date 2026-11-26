@@ -329,6 +329,7 @@ pub enum Row {
     SongSelectDifficultyHeight,
     /// Multipliers of the info panel's width and height, and whether its width follows
     /// its texts (ADR-0168).
+    SongSelectCurve,
     SongSelectInfoWidth,
     SongSelectInfoHeight,
     SongSelectInfoAutoWidth,
@@ -374,7 +375,7 @@ const _: () =
     assert!(Row::ALL.len() + super::otd::OtdRow::ALL.len() <= slam_ui::settings_screen::MAX_ROWS);
 
 impl Row {
-    pub const ALL: [Row; 110] = [
+    pub const ALL: [Row; 111] = [
         Row::MasterVolume,
         Row::MusicVolume,
         Row::MenuMusic,
@@ -460,6 +461,7 @@ impl Row {
         Row::SongSelectDim,
         Row::SongSelectSetHeight,
         Row::SongSelectDifficultyHeight,
+        Row::SongSelectCurve,
         Row::SongSelectInfoWidth,
         Row::SongSelectInfoHeight,
         Row::SongSelectInfoAutoWidth,
@@ -658,6 +660,7 @@ impl Row {
             | Row::SongSelectDim
             | Row::SongSelectSetHeight
             | Row::SongSelectDifficultyHeight
+            | Row::SongSelectCurve
             | Row::SongSelectInfoWidth
             | Row::SongSelectInfoHeight
             | Row::SongSelectInfoAutoWidth
@@ -759,6 +762,7 @@ impl Row {
             Row::SongSelectDim => "settings-song-select-dim",
             Row::SongSelectSetHeight => "settings-song-select-set-height",
             Row::SongSelectDifficultyHeight => "settings-song-select-difficulty-height",
+            Row::SongSelectCurve => "settings-song-select-curve",
             Row::SongSelectInfoWidth => "settings-song-select-info-width",
             Row::SongSelectInfoHeight => "settings-song-select-info-height",
             Row::SongSelectInfoAutoWidth => "settings-song-select-info-auto-width",
@@ -1259,6 +1263,12 @@ impl Rows {
                 step: 1.0,
                 value: f64::from(s.song_select.difficulty_height).round(),
             },
+            Row::SongSelectCurve => RowKind::Slider {
+                min: 0.0,
+                max: 2.0,
+                step: 0.1,
+                value: round_to(f64::from(s.song_select.curve), 1),
+            },
             Row::SongSelectInfoWidth => RowKind::Slider {
                 min: 0.5,
                 max: 1.5,
@@ -1634,6 +1644,9 @@ impl Rows {
             }
             (Row::SongSelectDifficultyHeight, RowValue::Slider(v)) => {
                 settings.song_select.difficulty_height = v.round().clamp(30.0, 90.0) as f32;
+            }
+            (Row::SongSelectCurve, RowValue::Slider(v)) => {
+                settings.song_select.curve = (v.clamp(0.0, 2.0) * 10.0).round() as f32 / 10.0;
             }
             (Row::SongSelectInfoWidth, RowValue::Slider(v)) => {
                 settings.song_select.info_width = (v.clamp(0.5, 1.5) * 20.0).round() as f32 / 20.0;
@@ -3118,7 +3131,7 @@ mod tests {
     fn the_thumbnails_row_chooses_the_height_and_is_labelled_in_both_languages() {
         let (rows, mut s) = rows();
         let at = index(Row::SongSelectThumbnails);
-        assert_eq!(at, index(Row::SongSelectDim) + 8);
+        assert_eq!(at, index(Row::SongSelectDim) + 9);
         assert_eq!(s.song_select.thumbnails, Thumbnails::H128);
         assert_eq!(
             rows.specs(&s)[at].kind,
@@ -3207,7 +3220,7 @@ mod tests {
     fn the_difficulty_info_row_chooses_the_info_and_is_labelled_in_both_languages() {
         let (rows, mut s) = rows();
         let at = index(Row::SongSelectDifficultyInfo);
-        assert_eq!(at, index(Row::SongSelectDifficultyHeight) + 4);
+        assert_eq!(at, index(Row::SongSelectDifficultyHeight) + 5);
         assert_eq!(s.song_select.difficulty_info, DifficultyInfo::Stars);
         assert_eq!(
             rows.specs(&s)[at].kind,

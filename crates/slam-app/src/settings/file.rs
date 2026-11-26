@@ -897,6 +897,15 @@ fn from_table(mut table: Table) -> Loaded {
         );
         *slot = ((multiplier * 20.0).round() / 20.0) as f32;
     }
+    let mut curve = f64::from(settings.song_select.curve);
+    cx.float(
+        &mut song_select,
+        "song_select",
+        "curve",
+        &mut curve,
+        0.0..=2.0,
+    );
+    settings.song_select.curve = ((curve * 10.0).round() / 10.0) as f32;
     cx.field(
         &mut song_select,
         "song_select",

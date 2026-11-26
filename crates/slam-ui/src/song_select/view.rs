@@ -233,6 +233,8 @@ pub struct SongSelectView {
     fade_next: usize,
     /// The set whose difficulties are opening, and the one closing (ADR-0136).
     expansion: Expansion,
+    /// Where each row shown is drawn, easing to its place (ADR-0172).
+    row_motion: RowMotion,
     /// The mod select panel's slide in and out (ADR-0152).
     mods_slide: PanelSlide,
     shift: Shift,
@@ -462,6 +464,7 @@ impl SongSelectView {
             info: InfoPanel::new(&labels.details),
             fades: [None; FADES],
             expansion: Expansion::default(),
+            row_motion: RowMotion::default(),
             mods_slide: PanelSlide::default(),
             shift: Shift::default(),
             fade_next: 0,
@@ -1002,6 +1005,10 @@ impl SongSelectView {
                 let reach = expansion.reach();
                 let rows_to_draw = visible.start.saturating_sub(reach)
                     ..(visible.end + reach).min(snapshot.row_count);
+                // Rows ease to their places, each on its own, as lazer's panels do: a quick
+                // change of selection moves them, never leaves holes (ADR-0172).
+                let ease = self.row_motion.begin(thumbs.now_ns, theme.song_row_ease_ms);
+                let mut set_top: Option<(usize, f32)> = None;
                 for index in rows_to_draw {
                     let Some(row) = snapshot.row_at(index) else {
                         continue;
@@ -1035,20 +1042,39 @@ impl SongSelectView {
                         Row::Set(_) => 0.0,
                         Row::Difficulty { .. } => layout.indent,
                     };
-                    let (shift_rows, alpha) = expansion.offset(row);
+                    // The opening set's difficulties fade in (ADR-0136); where rows are is
+                    // the easing's.
+                    let (_, alpha) = expansion.offset(row);
                     row_alpha.set(alpha);
-                    // The expansion moves rows by whole difficulty rows.
-                    let y = layout.row_y(geometry, index, snapshot.shown_scroll)
-                        + shift_rows * layout.difficulty_pitch * scale;
+                    let target = geometry.top(index);
+                    let (key, start) = match row {
+                        Row::Set(set) => {
+                            (list.sets.get(set).map_or(0, |s| s.key) | SET_KEY_BIT, None)
+                        }
+                        // A difficulty new to the list slides out from under its set.
+                        Row::Difficulty { set, difficulty } => (
+                            list.sets
+                                .get(set)
+                                .and_then(|s| s.difficulties.get(difficulty))
+                                .map_or(0, |d| d.key)
+                                & !SET_KEY_BIT,
+                            set_top.filter(|&(s, _)| s == set).map(|(_, top)| top),
+                        ),
+                    };
+                    let top = self.row_motion.track(key, target, start, ease);
+                    if let Row::Set(set) = row {
+                        set_top = Some((set, top));
+                    }
+                    let y = layout.list.y + (top - snapshot.shown_scroll) * scale;
                     let height = layout.plate_height(geometry, index);
-                    // The list leans along the rows' skew (ADR-0121).
-                    let lean = layout.lean_x(y + height / 2.0);
+                    // The rows sit on an arc (ADR-0172).
+                    let lean = layout.arc_x(y + height / 2.0);
                     // Rows that are not selected start further right (ADR-0149).
                     let moved = slide.of(row) * scale;
                     let area = Rect {
                         x: layout.list.x + indent + moved + lean,
                         y,
-                        width: (layout.list.width - indent - moved).max(0.0),
+                        width: (layout.list.width - indent - moved - lean).max(0.0),
                         height,
                     };
                     // Rows scrolled part-way out are cut at the list's edges, and their texts
@@ -1126,7 +1152,15 @@ impl SongSelectView {
                             ),
                         },
                     };
-                    rect(&clipped, fill, look);
+                    // The plate runs on past the window's right edge, as lazer's; the
+                    // texts keep to the list.
+                    let plate = Rect {
+                        width: (layout.window_right - clipped.x
+                            + 2.0 * theme.button_radius * scale)
+                            .max(clipped.width),
+                        ..clipped
+                    };
+                    rect(&plate, fill, look);
                     let x = area.x + pad + text_shift;
                     if thumbs.enabled
                         && matches!(row, Row::Set(_))
@@ -1873,6 +1907,77 @@ impl PanelSlide {
     }
 }
 
+/// Marks a set row's key in [`RowMotion`], apart from its difficulties'.
+const SET_KEY_BIT: u64 = 1 << 63;
+/// Rows [`RowMotion`] follows at once.
+const MOTION_ROWS: usize = 4 * MAX_VISIBLE_ROWS;
+
+/// Where the rows shown are drawn, by key, in the list's reference pixels: each eases to its
+/// place (lazer's `DampContinuously` of a panel's `DrawYPosition`, ADR-0172). Rows not drawn
+/// for a frame are forgotten. Allocation-free.
+#[derive(Clone, Debug)]
+struct RowMotion {
+    keys: [u64; MOTION_ROWS],
+    tops: [f32; MOTION_ROWS],
+    /// The frame each row was last drawn in; 0: free.
+    seen: [u32; MOTION_ROWS],
+    frame: u32,
+    last_ns: u64,
+}
+
+impl Default for RowMotion {
+    fn default() -> Self {
+        RowMotion {
+            keys: [0; MOTION_ROWS],
+            tops: [0.0; MOTION_ROWS],
+            seen: [0; MOTION_ROWS],
+            frame: 0,
+            last_ns: 0,
+        }
+    }
+}
+
+impl RowMotion {
+    /// Starts a frame at `now_ns`; the part of the way left each row goes this frame, with
+    /// `half_ms` the time it takes to halve it.
+    // Ported from osu!lazer 2026.1005.0-lazer: osu.Game/Graphics/Carousel/Carousel.cs (Update: DampContinuously)
+    fn begin(&mut self, now_ns: u64, half_ms: f32) -> f32 {
+        let elapsed_ms = now_ns.saturating_sub(self.last_ns) as f64 / 1e6;
+        let first = self.last_ns == 0;
+        self.last_ns = now_ns;
+        self.frame = self.frame.wrapping_add(1).max(2);
+        if first || half_ms <= 0.0 {
+            return 1.0;
+        }
+        (1.0 - 0.5f64.powf(elapsed_ms / f64::from(half_ms))) as f32
+    }
+
+    /// Where row `key` is drawn this frame, going to `target`; a row not drawn last frame
+    /// starts at `start` (or at its place).
+    fn track(&mut self, key: u64, target: f32, start: Option<f32>, ease: f32) -> f32 {
+        let last = self.frame.wrapping_sub(1);
+        if let Some(i) = (0..MOTION_ROWS)
+            .find(|&i| self.keys[i] == key && (self.seen[i] == last || self.seen[i] == self.frame))
+        {
+            if self.seen[i] != self.frame {
+                self.tops[i] += (target - self.tops[i]) * ease;
+                self.seen[i] = self.frame;
+            }
+            return self.tops[i];
+        }
+        let top = start.unwrap_or(target);
+        // A slot no row of this frame or the last holds.
+        if let Some(i) =
+            (0..MOTION_ROWS).find(|&i| self.seen[i] != last && self.seen[i] != self.frame)
+        {
+            self.keys[i] = key;
+            self.tops[i] = top;
+            self.seen[i] = self.frame;
+        }
+        top
+    }
+}
+
 /// The expanded set and when it changed, so its difficulties slide out from under its row
 /// and the rows below follow, while the set that closed slides shut (ADR-0136).
 #[derive(Clone, Copy, Debug, Default)]
@@ -2168,6 +2273,27 @@ mod tests {
     }
 
     const MS: u64 = 1_000_000;
+
+    #[test]
+    fn rows_ease_to_new_places_and_new_ones_start_where_asked() {
+        let mut m = RowMotion::default();
+        let e = m.begin(1_000 * MS, 50.0);
+        assert_eq!(e, 1.0, "the first frame is in place");
+        assert_eq!(m.track(1, 100.0, None, e), 100.0);
+        // The row's place moves 60 down: after one half time it is half way.
+        let e = m.begin(1_050 * MS, 50.0);
+        let y = m.track(1, 160.0, None, e);
+        assert!((y - 130.0).abs() < 1e-3, "{y}");
+        // A new row starts where it is told, then eases.
+        assert_eq!(m.track(2, 200.0, Some(130.0), e), 130.0);
+        let e = m.begin(1_100 * MS, 50.0);
+        let y = m.track(2, 200.0, None, e);
+        assert!((y - 165.0).abs() < 1e-3, "{y}");
+        // A row not drawn for a frame is forgotten: back at its place at once.
+        let e = m.begin(1_150 * MS, 50.0);
+        let _ = m.begin(1_200 * MS, 50.0);
+        assert_eq!(m.track(1, 300.0, None, e), 300.0);
+    }
 
     #[test]
     fn the_first_selection_opens_at_once() {

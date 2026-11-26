@@ -302,6 +302,7 @@ settings-gameplay-dim = Затемнение фона
 settings-song-select-dim = Затемнение фона на выборе песни
 settings-song-select-set-height = Высота строки набора карт
 settings-song-select-difficulty-height = Высота строки сложности
+settings-song-select-curve = Изгиб списка песен
 settings-song-select-info-width = Ширина панели информации
 settings-song-select-info-height = Высота панели информации
 settings-song-select-info-auto-width = Ширина панели по её текстам

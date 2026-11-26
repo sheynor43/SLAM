@@ -174,6 +174,10 @@ pub struct Theme {
     /// What a difficulty row shows beside its name; the setting
     /// `song_select.difficulty_info` (ADR-0151).
     pub song_difficulty_info: crate::song_select::DifficultyInfo,
+    /// Strength of the song list's arc (ADR-0172): 1 is lazer's, 0 a straight column.
+    pub song_curve: f32,
+    /// Half-time of the rows' vertical easing to their places, ms (lazer's 50).
+    pub song_row_ease_ms: f32,
     /// How far right a set row that is not selected starts (ADR-0149: lazer's 100).
     pub song_set_shift: f32,
     /// How far right a difficulty row that is not selected starts (ADR-0149: lazer's 50).
@@ -727,6 +731,8 @@ impl Theme {
             difficulty_star_spacing: 2.0,
             difficulty_star_gap: 3.0,
             difficulty_star_dim: 0.2,
+            song_curve: 1.0,
+            song_row_ease_ms: 50.0,
             song_set_shift: 100.0,
             song_difficulty_shift: 50.0,
             song_shift_ms: 400.0,

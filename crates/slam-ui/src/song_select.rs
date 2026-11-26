@@ -300,8 +300,12 @@ pub struct SongSelectLayout {
     /// Pixels per reference unit.
     pub scale: f32,
     /// How far the list leans (`tan` of half the buttons' skew): rows lower down sit
-    /// further left (ADR-0121).
+    /// further left (ADR-0121). 0 since the rows follow an arc instead (ADR-0172).
     pub lean: f32,
+    /// Strength of the rows' arc (ADR-0172): 1 is lazer's, 0 a straight column.
+    pub curve: f32,
+    /// The window's right edge: the rows' plates run past it, as lazer's.
+    pub window_right: f32,
 }
 
 impl SongSelectLayout {
@@ -333,7 +337,8 @@ impl SongSelectLayout {
         };
         let gap = theme.song_row_gap;
         let set_pitch = theme.song_set_height + gap;
-        let lean = (theme.button_skew() * LEAN_OF_SKEW).tan();
+        // The rows follow an arc now (ADR-0172), not a lean.
+        let lean = 0.0;
         // The list's lowest and highest rows lean left of its edge by this much; the info
         // panel keeps clear of them.
         let lean_reach = (hint.y + hint.height - header.y) / 2.0 * lean;
@@ -395,7 +400,24 @@ impl SongSelectLayout {
             indent: theme.song_indent * scale,
             scale,
             lean,
+            curve: theme.song_curve,
+            window_right: width,
         }
+    }
+
+    /// How far right a row centred at height `y` sits on the arc lazer's carousel follows
+    /// (ADR-0172): none at the middle of the list, about a sixth of its half height at its
+    /// ends, times the curve's strength.
+    // Ported from osu!lazer 2026.1005.0-lazer: osu.Game/Graphics/Carousel/Carousel.cs (offsetX)
+    pub fn arc_x(&self, y: f32) -> f32 {
+        const CIRCLE_RADIUS: f32 = 3.0;
+        let half = self.list.height / 2.0;
+        if half <= 0.0 || self.curve <= 0.0 {
+            return 0.0;
+        }
+        let dist = ((y - (self.list.y + half)) / half).abs();
+        let discriminant = (CIRCLE_RADIUS * CIRCLE_RADIUS - dist * dist).max(0.0);
+        (CIRCLE_RADIUS - discriminant.sqrt()) * half * self.curve
     }
 
     /// Horizontal shift of the panel at height `y`: none at its middle, between the top
@@ -460,7 +482,9 @@ impl SongSelectLayout {
         filter: &SongFilter,
         selected_set: usize,
     ) -> Option<Row> {
-        if !self.list.contains(x - self.lean_x(y), y) {
+        // The rows sit on the arc and run on to the window's edge.
+        let left = self.list.x + self.arc_x(y);
+        if !(left..=self.window_right).contains(&x) || !self.list.contains(self.list.x, y) {
             return None;
         }
         let index = self

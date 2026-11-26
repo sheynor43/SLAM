@@ -298,6 +298,7 @@ settings-gameplay-dim = Background dim
 settings-song-select-dim = Song select background dim
 settings-song-select-set-height = Beatmap set row height
 settings-song-select-difficulty-height = Difficulty row height
+settings-song-select-curve = Song list arc
 settings-song-select-info-width = Info panel width
 settings-song-select-info-height = Info panel height
 settings-song-select-info-auto-width = Info panel width follows its texts

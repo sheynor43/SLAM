@@ -813,19 +813,24 @@ fn the_scroll_eases_towards_its_target_and_lands() {
 }
 
 #[test]
-fn the_list_leans_and_hit_tests_with_it() {
+fn the_rows_follow_an_arc_and_hit_test_on_it() {
     let layout = layout();
-    let middle = (layout.header.y + layout.hint.y + layout.hint.height) / 2.0;
+    let middle = layout.list.y + layout.list.height / 2.0;
+    // No lean: the rows sit on lazer's arc instead (ADR-0172).
     assert_eq!(layout.lean_x(middle), 0.0);
-    assert!(
-        layout.lean_x(layout.list.y) > 0.0,
-        "the top sits further right"
-    );
-    assert!(layout.lean_x(layout.list.y + layout.list.height) < 0.0);
-    // Just inside the list's left edge at its top, shifted right: outside unless leaned.
-    let y = layout.list.y + 1.0;
-    let x = layout.list.x + layout.lean_x(y) + 1.0;
-    assert!(layout.list.contains(x - layout.lean_x(y), y));
+    assert_eq!(layout.arc_x(middle), 0.0);
+    let top = layout.arc_x(layout.list.y);
+    let bottom = layout.arc_x(layout.list.y + layout.list.height);
+    assert!(top > 0.0 && (top - bottom).abs() < 1e-3, "{top} {bottom}");
+    // Lazer's: (3 - sqrt(8)) of the half height at the ends.
+    let half = layout.list.height / 2.0;
+    assert!((top - (3.0 - 8f32.sqrt()) * half).abs() < 1e-3);
+    // Flat without a curve.
+    let flat = SongSelectLayout {
+        curve: 0.0,
+        ..layout
+    };
+    assert_eq!(flat.arc_x(layout.list.y), 0.0);
 }
 
 #[test]
@@ -845,14 +850,12 @@ fn a_dragged_list_follows_the_hand_without_easing() {
 }
 
 #[test]
-fn the_lean_is_half_the_buttons_skew() {
+fn the_list_does_not_lean() {
     let theme = Theme::default();
     let l = SongSelectLayout::new(1280.0, 720.0, &theme);
-    let half = (theme.button_skew() * crate::song_select::LEAN_OF_SKEW).tan();
-    assert!((l.lean - half).abs() < 1e-6);
+    assert_eq!(l.lean, 0.0);
 }
 
-/// Sizes of lazer's song select at 1920x1080 (ADR-0130), in pixels.
 #[test]
 fn the_sizes_match_lazers_at_full_hd() {
     let theme = Theme::default();
@@ -909,7 +912,7 @@ fn rows_hit_test_sanely_at_no_skew_and_at_the_largest() {
         let filter = SongFilter::for_list(&list(&[(1, 1), (2, 1), (3, 1)]));
         for index in 0..3 {
             let (cx, cy) = centre_of(&l, &s, index, 0.0);
-            let x = cx + l.lean_x(cy);
+            let x = cx + l.arc_x(cy);
             assert_eq!(
                 l.row_at(x, cy, 0.0, &filter, 0).map(|r| match r {
                     Row::Set(i) => i,
@@ -925,10 +928,10 @@ fn rows_hit_test_sanely_at_no_skew_and_at_the_largest() {
         // Left of the list at the row's height: no row.
         let (_, cy) = centre_of(&l, &s, 0, 0.0);
         assert_eq!(
-            l.row_at(l.list.x - 10.0 + l.lean_x(cy), cy, 0.0, &filter, 0),
+            l.row_at(l.list.x - 10.0 + l.arc_x(cy), cy, 0.0, &filter, 0),
             None
         );
-        assert_eq!(l.lean == 0.0, degrees == 0.0);
+        assert_eq!(l.lean, 0.0);
     }
 }
 
