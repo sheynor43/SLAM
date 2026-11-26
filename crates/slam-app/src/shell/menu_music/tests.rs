@@ -507,3 +507,28 @@ fn a_preview_does_not_enter_the_history() {
     open(&mut m, &mut d);
     assert_eq!(m.history_len(), 0);
 }
+
+#[test]
+fn a_new_preview_plays_even_after_the_player_paused() {
+    let (mut m, mut d) = playing_a();
+    m.toggle_pause(MS, &mut d);
+    assert!(m.is_paused());
+    // A play (silence), then the song select's next difficulty: lazer plays a new track
+    // whatever the pause.
+    m.tick(MS + RETRY_NS, Want::Silence, &mut d, none);
+    m.tick(2 * MS + RETRY_NS, preview("b.mp3", 0), &mut d, none);
+    assert!(!m.is_paused());
+    d.iter_mut().for_each(|deck| deck.log.clear());
+    open(&mut m, &mut d);
+    assert!(take(&mut d[m.active()]).contains(&"play".to_string()));
+}
+
+#[test]
+fn previous_on_a_loading_track_does_nothing() {
+    let mut m = MenuMusic::default();
+    let mut d = decks();
+    m.tick(0, Want::Menu, &mut d, || Some(pick("a.mp3", 0)));
+    take(&mut d[1]);
+    assert_eq!(m.previous(MS, None, &mut d), Previous::Nothing);
+    assert!(take(&mut d[1]).is_empty());
+}

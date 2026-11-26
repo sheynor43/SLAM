@@ -364,7 +364,12 @@ impl MenuMusic {
         slot.preview_ms = preview_ms;
         slot.looping = looping;
         slot.length = None;
-        // A track chosen while the player has paused waits paused at its start.
+        // A menu track chosen while the player has paused waits paused at its start; a new
+        // preview plays and ends the pause, as lazer's song select does
+        // (`ensurePlayingSelected`: a new track plays whatever `UserPauseRequested` says).
+        if looping {
+            self.user_paused = false;
+        }
         slot.phase = Phase::Loading {
             entry,
             held: self.user_paused,
@@ -461,7 +466,10 @@ impl MenuMusic {
         let picked = pick()?;
         let at = picked.at;
         self.menu_next = true;
-        self.start_menu(now_ns, picked, decks).then_some(at)
+        let started = self.start_menu(now_ns, picked, decks);
+        // A full queue starts nothing: the next track comes in as usual.
+        self.menu_next &= started;
+        started.then_some(at)
     }
 
     /// The player's Previous on the main menu: past [`RESTART_AFTER_MS`] into the track, or
@@ -477,6 +485,13 @@ impl MenuMusic {
         }
         let far = position_ms.is_some_and(|ms| ms > RESTART_AFTER_MS);
         if far || self.history.is_empty() {
+            // A track still loading would seek to its own start point once open.
+            if !matches!(
+                self.slots[self.active].phase,
+                Phase::Playing | Phase::Paused
+            ) {
+                return Previous::Nothing;
+            }
             decks[self.active].seek(0);
             return Previous::Restarted;
         }
@@ -489,6 +504,7 @@ impl MenuMusic {
             self.current = Some(picked);
             Previous::Started(at)
         } else {
+            self.menu_next = false;
             self.history.push_back(picked);
             Previous::Nothing
         }

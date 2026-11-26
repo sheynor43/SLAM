@@ -624,3 +624,18 @@ fn a_selection_that_keeps_changing_still_loads_now_and_then() {
     // A second of changes: two or three loads, not none and not one per change.
     assert!((2..=3).contains(&loads.len()), "{loads:?}");
 }
+
+#[test]
+fn one_change_after_a_long_rest_still_waits_the_debounce() {
+    let mut rig = Rig::new();
+    rig.tick(SECOND, Some((0, 0)));
+    rig.tick(SECOND + 200 * MS, Some((0, 0)));
+    let _ = rig.sent();
+    // Ten seconds later, one change: nothing before 150 ms, the load after.
+    let later = 11 * SECOND;
+    rig.tick(later, Some((0, 2)));
+    rig.tick(later + 100 * MS, Some((0, 2)));
+    assert!(rig.sent().0.is_empty());
+    rig.tick(later + 150 * MS, Some((0, 2)));
+    assert_eq!(rig.sent().0.len(), 1);
+}

@@ -204,8 +204,9 @@ pub struct BackgroundPicker {
     seen_ns: u64,
     /// The selection the newest generation is for.
     asked: Option<Selected>,
-    /// When the newest generation was asked for.
-    asked_ns: u64,
+    /// When the selection first moved away from the one asked for: the longest wait runs
+    /// from there, so one change after a long rest still waits the debounce.
+    unsettled_ns: Option<u64>,
 }
 
 impl BackgroundPicker {
@@ -225,7 +226,7 @@ impl BackgroundPicker {
             seen: None,
             seen_ns: 0,
             asked: None,
-            asked_ns: 0,
+            unsettled_ns: None,
         }
     }
 
@@ -282,21 +283,26 @@ impl BackgroundPicker {
         if self.seen.is_none() || now_at != seen_at {
             self.seen = Some(Selected::of(source));
             self.seen_ns = now_ns;
+            self.unsettled_ns.get_or_insert(now_ns);
         }
         let settled = now_ns.saturating_sub(self.seen_ns) >= SELECTION_DEBOUNCE_NS;
-        let overdue = now_ns.saturating_sub(self.asked_ns) >= SELECTION_MAX_WAIT_NS;
+        let overdue = self
+            .unsettled_ns
+            .is_some_and(|since| now_ns.saturating_sub(since) >= SELECTION_MAX_WAIT_NS);
         if settled || overdue {
-            self.ask(now_ns, now_at.is_some());
+            self.ask(now_at.is_some());
         }
         self.target
     }
 
     /// Asks for the settled selection's background unless it was asked for already.
-    fn ask(&mut self, now_ns: u64, has_background: bool) {
+    fn ask(&mut self, has_background: bool) {
         // Never asked counts as asked for none: the first target is the default background.
         let asked_at = self.asked.as_ref().and_then(Selected::background);
         let seen_at = self.seen.as_ref().and_then(Selected::background);
         if asked_at == seen_at {
+            // Back on the background asked for: nothing waits.
+            self.unsettled_ns = None;
             return;
         }
         // Wait until the draw thread lets go of the older backgrounds.
@@ -334,7 +340,8 @@ impl BackgroundPicker {
             });
         }
         self.asked = self.seen.clone();
-        self.asked_ns = now_ns;
+        // Asked for what is selected: a new series of changes starts the wait anew.
+        self.unsettled_ns = None;
     }
 
     fn replace_target(&mut self, target: BackgroundTarget) {
