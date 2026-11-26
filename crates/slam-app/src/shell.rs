@@ -2830,6 +2830,9 @@ struct PlayHost {
     rng: u64,
     /// The beatmap whose music plays in the menus, by set and difficulty (ADR-0119).
     music_at: Option<(usize, usize)>,
+    /// The tempo and frequency the preview decks have (ADR-0167); `None` until both
+    /// took them, so a failed send is retried.
+    preview_speed: Option<(f64, f64)>,
     /// Plays the menus' sounds (ADR-0120).
     ui_sounds: ui_sounds::UiSoundPlayer,
     loader: LoaderLink,
@@ -3472,6 +3475,8 @@ impl PlayHost {
             }
         }
         std::mem::swap(&mut self.audio, &mut new);
+        // The new preview decks play at the speed of a new player.
+        self.preview_speed = None;
         // Voice ids count anew in the new mixer.
         self.intro_voice = VoiceId::NONE;
         // The new decks start from nothing: the menu music starts over.
@@ -3562,6 +3567,7 @@ impl PlayHost {
         if matches!(want, Want::Preview { .. }) {
             self.music_at = selected;
         }
+        self.preview_speed(state);
         let rng = &mut self.rng;
         let music_at = &mut self.music_at;
         self.menu_music
@@ -3572,6 +3578,25 @@ impl PlayHost {
                 }
                 picked
             });
+    }
+
+    /// Gives the preview decks the selected rate mods' tempo and frequency in the song
+    /// select, and plain speed elsewhere, as lazer's song select (ADR-0167).
+    fn preview_speed(&mut self, state: &ShellState) {
+        let want = match state.stack().top() {
+            AppScreen::SongSelect => slam_play::fail::mod_track_speed(state.selected_mods()),
+            _ => (1.0, 1.0),
+        };
+        if self.preview_speed == Some(want) {
+            return;
+        }
+        let (tempo, frequency) = want;
+        let applied = self
+            .audio
+            .previews
+            .iter_mut()
+            .all(|deck| slam_play::fail::apply_mod_track(deck, tempo, frequency).is_ok());
+        self.preview_speed = applied.then_some(want);
     }
 
     /// Frees a prepared play nobody waits for.
@@ -5458,6 +5483,7 @@ fn run_with<B: render::Backend>(
             // Any non-zero seed; the clock makes each run's first track differ.
             rng: now_ns() | 1,
             music_at: None,
+            preview_speed: None,
             ui_sounds: ui_sounds::UiSoundPlayer::new(audio_rate),
             loader,
             scenes: scene_tx,

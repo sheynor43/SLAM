@@ -684,13 +684,18 @@ impl Library {
         stars.start(sets);
     }
 
-    /// Follows the selected mods: ratings with other mods are dropped, and the list goes
-    /// back to the nomod ones until the new ones arrive (ADR-0151).
+    /// Follows the selected mods (ADR-0151). From one set of mods to another the ratings
+    /// with the old ones stay until the new ones replace them, so stepping the speed does
+    /// not flash the nomod ratings (ADR-0167); picking mods first or dropping them all
+    /// starts from the nomod ones.
     fn follow_mods(&mut self, mods: &RatingMods) {
         let key = mods.key();
         if key != self.mods_key {
+            let none = RatingMods::NONE.key();
+            if self.mods_key == none || key == none {
+                self.mod_map.clear();
+            }
             self.mods_key = key;
-            self.mod_map.clear();
             self.stars_pending = true;
         }
     }
@@ -1467,6 +1472,18 @@ mod tests {
         let rows = &published.list.sets[0].difficulties;
         assert_eq!(rows[0].stars, Some(1.0));
         assert_eq!((rows[2].stars, rows[2].pp), (Some(9.0), Some(900.0)));
+        // Another speed: the old ratings stay until the new ones come.
+        let faster = RatingMods { rate: 1.6, ..dt };
+        library.follow_mods(&faster);
+        assert_eq!(
+            library
+                .shown_mods()
+                .and_then(|m| m.get(&PathBuf::from("s").join("b.osu"))),
+            Some(&Rating {
+                stars: 9.0,
+                pp: 900.0
+            })
+        );
         // Back to no mods: the modded ratings are gone.
         library.follow_mods(&RatingMods::NONE);
         assert!(library.mod_map.is_empty() && library.shown_mods().is_none());

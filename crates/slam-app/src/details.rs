@@ -7,6 +7,7 @@
 
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicU32, Ordering};
 
 use slam_osu::Beatmap;
 use slam_osu::statistics::BeatmapStatistics;
@@ -56,6 +57,8 @@ pub fn link() -> (DetailsPicker, DetailsReader) {
             seen_ns: 0,
             asked: None,
             details: Details::default(),
+            scores_written: &crate::scores::SCORES_WRITTEN,
+            scores_seen: crate::scores::SCORES_WRITTEN.load(Ordering::Acquire),
         },
         DetailsReader {
             requests: requests_rx,
@@ -96,6 +99,10 @@ pub struct DetailsPicker {
     asked: Option<Selected>,
     /// The answer for `asked`.
     details: Details,
+    /// Counts the scores saved ([`crate::scores::SCORES_WRITTEN`]).
+    scores_written: &'static AtomicU32,
+    /// Its count when `asked` was asked for.
+    scores_seen: u32,
 }
 
 impl DetailsPicker {
@@ -136,13 +143,16 @@ impl DetailsPicker {
         }
     }
 
-    /// Asks for the settled selection unless it was asked for already.
+    /// Asks for the settled selection unless it was asked for already and no score was
+    /// saved since (a play's new score shows on the way back, ADR-0167).
     fn ask(&mut self) {
         let asked_at = self.asked.as_ref().and_then(Selected::file);
         let Some(seen) = &self.seen else { return };
-        if seen.file() == asked_at {
+        let written = self.scores_written.load(Ordering::Acquire);
+        if seen.file() == asked_at && written == self.scores_seen {
             return;
         }
+        let renew = seen.file() == asked_at;
         let generation = self.generation.wrapping_add(1);
         if let Some((set, difficulty)) = seen.at.filter(|_| seen.file().is_some()) {
             let request = DetailsRequest {
@@ -156,8 +166,12 @@ impl DetailsPicker {
             }
         }
         self.generation = generation;
-        self.details = Details::default();
+        // The same difficulty keeps showing its old answer until the new one comes.
+        if !renew {
+            self.details = Details::default();
+        }
         self.asked = self.seen.clone();
+        self.scores_seen = written;
     }
 }
 

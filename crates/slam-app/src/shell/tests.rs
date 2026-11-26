@@ -738,6 +738,7 @@ fn host(name: &str, with_track: bool) -> HostFixture {
         selection: (None, 0),
         rng: 1,
         music_at: None,
+        preview_speed: None,
         ui_sounds: ui_sounds::UiSoundPlayer::new(SAMPLE_RATE),
         loader,
         scenes: scene_tx,

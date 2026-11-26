@@ -158,7 +158,6 @@ fn push_button(
         });
     }
     shapes.push_shape(&Shape {
-        sheen: if effects { theme.button_sheen } else { 0.0 },
         gradient: Some(Gradient::Horizontal(shaded(fill, theme.button_shade))),
         ..shape
     });

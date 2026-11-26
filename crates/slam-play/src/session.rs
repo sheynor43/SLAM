@@ -585,11 +585,11 @@ struct Speed {
 impl Speed {
     // Ported from osu!lazer 2026.1005.0-lazer: osu.Game/Rulesets/Mods/ModRateAdjust.cs (ApplyToTrack)
     fn of(mods: &ModSet) -> Speed {
-        let change = mods.rate();
+        let (tempo, frequency) = crate::fail::mod_track_speed(mods);
         Speed {
             rate: mods.true_gameplay_rate(),
-            tempo: change.rate / change.frequency,
-            frequency: change.frequency,
+            tempo,
+            frequency,
         }
     }
 }
