@@ -40,11 +40,17 @@ pub enum MenuSound {
     Type,
     /// A character or a word is erased from a search (lazer's `key-delete`).
     Erase,
+    /// The mod select overlay slides in (lazer's `mod-select-overlay-pop-in`).
+    ModsOpen,
+    /// The mod select overlay slides out (lazer's `mod-select-overlay-pop-out`).
+    ModsClose,
+    /// The mod select's columns pop in (lazer's `mod-column-pop-in`).
+    ModColumn,
 }
 
 impl MenuSound {
     /// Every sound, in the order of [`render_all`].
-    pub const ALL: [MenuSound; 9] = [
+    pub const ALL: [MenuSound; 12] = [
         MenuSound::Hover,
         MenuSound::Click,
         MenuSound::Enter,
@@ -54,6 +60,9 @@ impl MenuSound {
         MenuSound::SliderStep,
         MenuSound::Type,
         MenuSound::Erase,
+        MenuSound::ModsOpen,
+        MenuSound::ModsClose,
+        MenuSound::ModColumn,
     ];
 
     /// The skin sample names standing for it, in lookup order (ADR-0120).
@@ -67,6 +76,18 @@ impl MenuSound {
             MenuSound::ToggleOff => &["check-off"],
             MenuSound::Type => &["key-press-1"],
             MenuSound::Erase => &["key-delete"],
+            MenuSound::ModsOpen => &["mod-select-overlay-pop-in"],
+            MenuSound::ModsClose => &["mod-select-overlay-pop-out"],
+            MenuSound::ModColumn => &["mod-column-pop-in"],
+        }
+    }
+
+    /// Playback rate of the voice; `jitter` in 0 ..= 1 is a random draw. Lazer pitches the
+    /// column pop by `1.3 - progress * 0.3 + random 0.1` (here the progress is the middle).
+    pub fn voice_rate(self, jitter: f32) -> f64 {
+        match self {
+            MenuSound::ModColumn => f64::from(1.15 + 0.1 * jitter.clamp(0.0, 1.0)),
+            _ => 1.0,
         }
     }
 }
@@ -85,6 +106,9 @@ pub fn render(sound: MenuSound, rate: u32) -> Vec<f32> {
         MenuSound::Back => (0.15, glide(520.0, 330.0, 0.15, 0.05)),
         MenuSound::ToggleOn => (0.09, blip([660.0, 990.0])),
         MenuSound::ToggleOff => (0.09, blip([880.0, 550.0])),
+        MenuSound::ModsOpen => (0.2, glide(380.0, 640.0, 0.2, 0.09)),
+        MenuSound::ModsClose => (0.16, glide(600.0, 380.0, 0.16, 0.06)),
+        MenuSound::ModColumn => (0.05, click(1_900.0, 0.01, 0.7)),
     };
     let frames = (length_s * rate) as usize;
     let fade = ((FADE_OUT_S * rate) as usize).clamp(1, frames.max(1));
@@ -121,7 +145,7 @@ pub fn render(sound: MenuSound, rate: u32) -> Vec<f32> {
 }
 
 /// Every sound rendered into a [`Sample`], in [`MenuSound::ALL`] order.
-pub fn render_all(rate: u32) -> [Arc<Sample>; 9] {
+pub fn render_all(rate: u32) -> [Arc<Sample>; 12] {
     MenuSound::ALL.map(|sound| {
         let data = render(sound, rate);
         Arc::new(
@@ -260,6 +284,9 @@ mod tests {
             (MenuSound::Back, 0.13, 0.17),
             (MenuSound::ToggleOn, 0.08, 0.10),
             (MenuSound::ToggleOff, 0.08, 0.10),
+            (MenuSound::ModsOpen, 0.18, 0.22),
+            (MenuSound::ModsClose, 0.14, 0.18),
+            (MenuSound::ModColumn, 0.04, 0.06),
         ];
         for rate in [44_100, 48_000] {
             for (sound, min, max) in ranges {
@@ -319,6 +346,23 @@ mod tests {
         assert_eq!(MenuSound::ToggleOn.skin_names(), ["check-on"]);
         assert_eq!(MenuSound::ToggleOff.skin_names(), ["check-off"]);
         assert_eq!(MenuSound::SliderStep.skin_names(), ["click-short"]);
+        assert_eq!(
+            MenuSound::ModsOpen.skin_names(),
+            ["mod-select-overlay-pop-in"]
+        );
+        assert_eq!(
+            MenuSound::ModsClose.skin_names(),
+            ["mod-select-overlay-pop-out"]
+        );
+        assert_eq!(MenuSound::ModColumn.skin_names(), ["mod-column-pop-in"]);
+    }
+
+    #[test]
+    fn the_column_pop_is_pitched_up_with_a_random_spread() {
+        let low = MenuSound::ModColumn.voice_rate(0.0);
+        let high = MenuSound::ModColumn.voice_rate(1.0);
+        assert!(low >= 1.15 - 1e-6 && high <= 1.25 + 1e-6 && high > low);
+        assert_eq!(MenuSound::Click.voice_rate(0.7), 1.0);
     }
 
     #[test]

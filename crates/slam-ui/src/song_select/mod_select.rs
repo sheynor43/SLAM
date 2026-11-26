@@ -62,12 +62,18 @@ pub struct ModSelectLayout {
     column_x: [f32; MAX_COLUMNS],
     /// Which columns are shown: those with tiles.
     shown: [bool; MAX_COLUMNS],
+    /// The tiles in each column, from the last [`ModSelectLayout::place`].
+    counts: [usize; MAX_COLUMNS],
     width: f32,
     margin: f32,
     max_tile_width: f32,
     tile_width: f32,
     gap: f32,
-    /// Top and bottom of the columns: they reach from below the title to above the hint.
+    /// The highest the columns may reach (below the title) and the lowest (above the hint).
+    min_top: f32,
+    floor: f32,
+    /// Top and bottom of the tallest column: the block of columns stands on `floor` and is
+    /// as tall as its tallest column, set by [`ModSelectLayout::place`].
     top: f32,
     bottom: f32,
     header_height: f32,
@@ -102,8 +108,9 @@ impl ModSelectLayout {
             width: width - 2.0 * margin,
             height: label_height,
         };
-        let top = (height * theme.mod_panel_top).max(title.y + title.height + margin);
-        let bottom = (hint.y - margin / 2.0).max(top + header_height);
+        let min_top = (height * theme.mod_panel_top).max(title.y + title.height + margin);
+        let floor = (hint.y - margin / 2.0).max(min_top + header_height);
+        let (top, bottom) = (min_top, floor);
         let mut layout = ModSelectLayout {
             title,
             column_titles: [Rect::default(); MAX_COLUMNS],
@@ -111,16 +118,19 @@ impl ModSelectLayout {
             customise: CustomisationLayout::new(width, height, theme),
             column_x: [0.0; MAX_COLUMNS],
             shown: [false; MAX_COLUMNS],
+            counts: [0; MAX_COLUMNS],
             width,
             margin,
             max_tile_width: theme.mod_tile_width * scale,
             tile_width: theme.mod_tile_width * scale,
             gap,
+            min_top,
+            floor,
             top,
             bottom,
             header_height,
             pad,
-            tiles_top: top + header_height + pad,
+            tiles_top: min_top + header_height + pad,
             tile_height: theme.mod_tile_height * scale,
             pitch: theme.mod_tile_pitch * scale,
             lean: theme.button_skew().tan(),
@@ -132,6 +142,14 @@ impl ModSelectLayout {
     /// Shows the columns with tiles (`counts` per column), centred in the window and narrowed
     /// to fit it. Does not allocate.
     pub fn place(&mut self, counts: [usize; MAX_COLUMNS]) {
+        // The columns are as tall as their content; the block stands on the floor, like
+        // lazer's, so no empty band lies under the tiles.
+        self.counts = counts;
+        let tallest = counts.iter().copied().max().unwrap_or(0);
+        let content = self.column_height(tallest);
+        self.top = (self.floor - content).max(self.min_top);
+        self.bottom = self.top + content;
+        self.tiles_top = self.top + self.header_height + self.pad;
         let shown = counts.iter().filter(|&&n| n > 0).count();
         let gaps = self.gap * shown.saturating_sub(1) as f32;
         // The lean pushes the top right and the bottom left: room for both.
@@ -158,18 +176,22 @@ impl ModSelectLayout {
             let x = left + slot as f32 * (column_width + self.gap);
             slot += 1;
             self.column_x[column] = x;
-            self.column_titles[column] = self.leaned(Rect {
-                x,
-                y: self.top,
-                width: column_width,
-                height: self.header_height,
-            });
+            self.column_titles[column] = self.leaned(
+                column,
+                Rect {
+                    x,
+                    y: self.top,
+                    width: column_width,
+                    height: self.header_height,
+                },
+            );
         }
     }
 
-    /// `rect` moved sideways by the lean at its middle height.
-    fn leaned(&self, rect: Rect) -> Rect {
-        let middle = (self.top + self.bottom) / 2.0;
+    /// `rect` of `column` moved sideways by the lean at its middle height; a column leans
+    /// about the middle of its own plate.
+    fn leaned(&self, column: usize, rect: Rect) -> Rect {
+        let middle = self.top + self.column_height(self.counts[column.min(MAX_COLUMNS - 1)]) / 2.0;
         Rect {
             x: rect.x + (middle - (rect.y + rect.height / 2.0)) * self.lean,
             ..rect
@@ -186,25 +208,45 @@ impl ModSelectLayout {
         self.shown.get(column).copied().unwrap_or(false)
     }
 
-    /// The plate of `column`, from the top of its header down to the columns' bottom, as
-    /// lazer's full height columns; `count` is not needed but kept for the call sites.
-    pub fn column_rect(&self, column: usize, _count: usize) -> Rect {
+    /// Height of a column plate holding `count` tiles: its header, the tiles and the padding.
+    fn column_height(&self, count: usize) -> f32 {
+        if count == 0 {
+            return self.header_height;
+        }
+        self.header_height
+            + self.pad
+            + (count - 1) as f32 * self.pitch
+            + self.tile_height
+            + self.pad
+    }
+
+    /// The plate of `column` holding `count` tiles, from the top of its header down to its
+    /// last tile and a padding.
+    pub fn column_rect(&self, column: usize, count: usize) -> Rect {
         Rect {
             x: self.column_x[column.min(MAX_COLUMNS - 1)],
             y: self.top,
             width: self.tile_width + 2.0 * self.pad,
-            height: self.bottom - self.top,
+            height: self.column_height(count),
         }
+    }
+
+    /// The bottom of the tallest column plate.
+    pub fn content_bottom(&self) -> f32 {
+        self.bottom
     }
 
     /// The tile `index` of `column`, moved by the lean at its height.
     pub fn tile_rect(&self, column: usize, index: usize) -> Rect {
-        self.leaned(Rect {
-            x: self.column_x[column.min(MAX_COLUMNS - 1)] + self.pad,
-            y: self.tiles_top + index as f32 * self.pitch,
-            width: self.tile_width,
-            height: self.tile_height,
-        })
+        self.leaned(
+            column,
+            Rect {
+                x: self.column_x[column.min(MAX_COLUMNS - 1)] + self.pad,
+                y: self.tiles_top + index as f32 * self.pitch,
+                width: self.tile_width,
+                height: self.tile_height,
+            },
+        )
     }
 
     /// The tile under the point, with `counts` tiles in each column.

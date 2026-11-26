@@ -827,6 +827,36 @@ impl SongSelectView {
             let (text, glyphs) = &mut *target.borrow_mut();
             push_layout(text, &line.layout, position, colour, glyphs);
         };
+        // Like `left`, but cut at `cut` (a screen x) when the text's row is in `rows`: the
+        // texts of the plates a popup covers must not show over it, as all texts are drawn
+        // after all shapes of a layer.
+        let left_cut =
+            |line: &Line, x: f32, centre_y: f32, colour: Color, cut: Option<(f32, f32, f32)>| {
+                let position = [x + shift, centre_y - line.layout.height() / 2.0];
+                let colour = faded(colour, opacity * row_alpha.get() * layer.get());
+                let (text, glyphs) = &mut *target.borrow_mut();
+                match cut {
+                    Some((right, top, bottom)) if centre_y >= top && centre_y <= bottom => {
+                        let clip = slam_text::Clip {
+                            left: f32::MIN,
+                            right,
+                            fade_left: 0.0,
+                            fade_right: 0.0,
+                        };
+                        slam_text::push_layout_clipped(
+                            text,
+                            &line.layout,
+                            position,
+                            colour,
+                            &clip,
+                            glyphs,
+                        );
+                    }
+                    _ => {
+                        push_layout(text, &line.layout, position, colour, glyphs);
+                    }
+                }
+            };
         // Draws a text that rides in `avail` pixels from `x`, centred on `centre_y`.
         let ride = |line: &Line,
                     marquee: &mut Marquee,
@@ -875,7 +905,9 @@ impl SongSelectView {
                     theme.text,
                 );
             }
-            // The selected difficulty's statistics and local scores, on the left.
+            // The selected difficulty's statistics and local scores, on the left; they give
+            // way to the mod panel, whose multiplier stands over them (ADR-0152).
+            layer.set(1.0 - panel_back);
             self.info.push(
                 layout,
                 theme,
@@ -886,6 +918,7 @@ impl SongSelectView {
                 &mut left,
                 &mut |line, marquee, avail, x, y, colour| ride(line, marquee, avail, x, y, colour),
             );
+            layer.set(1.0);
             // The search line.
             let search = leaned(&layout.search);
             rect(&search, theme.song_search_fill, Look::Round);
@@ -1326,6 +1359,12 @@ impl SongSelectView {
             let custom = &snapshot.mods.customise;
             let expanded = custom.state != CustomisationState::Collapsed;
             let dim = if expanded { DIMMED } else { 1.0 };
+            // The expanded settings popup covers part of the columns: their texts stop at
+            // its left edge.
+            let popup = expanded.then(|| {
+                let area = panel.customise.panel(custom.len);
+                (area.x, area.y, area.y + area.height)
+            });
             let mut slot = 0;
             for (column, titles) in self.mod_column_titles.iter().enumerate() {
                 if !panel.is_shown(column) {
@@ -1364,7 +1403,7 @@ impl SongSelectView {
                     a: 1.0,
                     ..theme.mod_column_fill
                 };
-                left(titles, x, y, faded(on_tint, dim));
+                left_cut(titles, x, y, faded(on_tint, dim), popup);
                 for (index, line) in self.mod_tiles[column].iter().enumerate() {
                     let area = down(panel.tile_rect(column, index));
                     let on = snapshot.mods.active[column] >> index & 1 != 0;
@@ -1398,9 +1437,9 @@ impl SongSelectView {
                             a: 1.0,
                             ..theme.background
                         };
-                        left(line, x, y, faded(ink, dim));
+                        left_cut(line, x, y, faded(ink, dim), popup);
                     } else {
-                        left(line, x, y, faded(tint, dim));
+                        left_cut(line, x, y, faded(tint, dim), popup);
                     }
                     if let Some(line) = self.tile_multipliers.get(column).and_then(|c| c.get(index))
                     {
@@ -1413,7 +1452,7 @@ impl SongSelectView {
                         } else {
                             tone_colour(theme, value)
                         };
-                        left(
+                        left_cut(
                             line,
                             area.x + area.width
                                 - theme.widget_pad * scale
@@ -1421,6 +1460,7 @@ impl SongSelectView {
                                 - mod_text_gap(theme, area.height, scale) * 0.5,
                             area.y + area.height / 2.0,
                             faded(ink, dim),
+                            popup,
                         );
                     }
                     if let Some((name, desc)) = self
@@ -1440,17 +1480,19 @@ impl SongSelectView {
                         } else {
                             (theme.text, theme.disabled_text)
                         };
-                        left(
+                        left_cut(
                             name,
                             text_x,
                             area.y + area.height * 0.34,
                             faded(name_ink, dim),
+                            popup,
                         );
-                        left(
+                        left_cut(
                             desc,
                             text_x,
                             area.y + area.height * 0.72,
                             faded(desc_ink, dim),
+                            popup,
                         );
                     }
                 }
@@ -1475,7 +1517,11 @@ impl SongSelectView {
             if expanded {
                 rect(
                     &cl.content(custom.len),
-                    theme.widget_popup_fill,
+                    // Opaque: the columns' plates and tiles must not show through.
+                    Color {
+                        a: 1.0,
+                        ..theme.widget_popup_fill
+                    },
                     Look::Panel,
                 );
                 let text_of = |key: &str| {

@@ -3,10 +3,17 @@
 
 use std::sync::Arc;
 
+use std::ops::Range;
+
 use slam_render::atlas::{AtlasRegion, UvRect};
 use slam_render::shape::{EDGE_MARGIN, ShapeBatch};
 use slam_render::sprite::SpriteBatch;
 use slam_render::textures::TextureId;
+use slam_render::textures::Textures;
+use slam_render::{
+    BufferDesc, Color, DescError, Device, DeviceError, DrawError, IndexFormat, PipelineDesc,
+    RenderTargetDesc, TextureDesc,
+};
 use slam_render::{Extent, Limits, Origin};
 use slam_testkit::assert_no_alloc;
 use slam_text::{FontRegistry, GlyphAtlasConfig, glyph_atlas};
@@ -177,18 +184,18 @@ struct Rig {
 
 impl Rig {
     fn new() -> Rig {
+        Rig::with_theme(Theme {
+            song_difficulty_info: slam_ui::song_select::DifficultyInfo::StarsAndPp,
+            ..Theme::default()
+        })
+    }
+
+    fn with_theme(theme: Theme) -> Rig {
         let registry = Arc::new(FontRegistry::with_builtin());
         let glyphs = glyph_atlas(Arc::clone(&registry), &GlyphAtlasConfig::new(LIMITS)).unwrap();
         Rig {
             // Stars and pp: every text a difficulty row can show (ADR-0151).
-            view: SongSelectView::new(
-                registry,
-                Theme {
-                    song_difficulty_info: slam_ui::song_select::DifficultyInfo::StarsAndPp,
-                    ..Theme::default()
-                },
-                &labels(),
-            ),
+            view: SongSelectView::new(registry, theme, &labels()),
             glyphs,
             shapes: ShapeBatch::with_capacity(256),
             text: SpriteBatch::with_capacity(8192),
@@ -765,4 +772,173 @@ fn thumbnails_do_not_allocate_once_warm_and_add_shapes() {
     rig.thumbs = false;
     rig.frame(&snapshot);
     assert!(with > rig.shapes.len(), "{with} vs {}", rig.shapes.len());
+}
+
+/// Takes texture uploads, so that glyphs get ready; nothing else is reached.
+#[derive(Default)]
+struct UploadDevice {
+    next: u32,
+}
+
+impl Device for UploadDevice {
+    type Texture = u32;
+    type Buffer = ();
+    type Pipeline = ();
+    type RenderTarget = ();
+
+    fn limits(&self) -> Limits {
+        LIMITS
+    }
+    fn create_texture(&mut self, _: &TextureDesc, _: Option<&[u8]>) -> Result<u32, DeviceError> {
+        self.next += 1;
+        Ok(self.next)
+    }
+    fn destroy_texture(&mut self, _: u32) {}
+    fn write_texture(&mut self, _: &u32, _: Origin, _: Extent, _: &[u8]) -> Result<(), DescError> {
+        Ok(())
+    }
+    fn create_buffer(&mut self, _: &BufferDesc, _: Option<&[u8]>) -> Result<(), DeviceError> {
+        unimplemented!()
+    }
+    fn destroy_buffer(&mut self, _: ()) {
+        unimplemented!()
+    }
+    fn write_buffer(&mut self, _: &(), _: u64, _: &[u8]) -> Result<(), DescError> {
+        unimplemented!()
+    }
+    fn create_pipeline(&mut self, _: &PipelineDesc<'_>) -> Result<(), DeviceError> {
+        unimplemented!()
+    }
+    fn destroy_pipeline(&mut self, _: ()) {
+        unimplemented!()
+    }
+    fn create_render_target(&mut self, _: &RenderTargetDesc) -> Result<(), DeviceError> {
+        unimplemented!()
+    }
+    fn destroy_render_target(&mut self, _: ()) {
+        unimplemented!()
+    }
+    fn render_target_texture<'a>(&self, _: &'a ()) -> &'a u32 {
+        unimplemented!()
+    }
+    fn begin_frame(&mut self, _: Color) -> Extent {
+        unimplemented!()
+    }
+    fn begin_pass(&mut self, _: Option<&()>, _: Option<Color>) -> Extent {
+        unimplemented!()
+    }
+    fn set_pipeline(&mut self, _: &()) {
+        unimplemented!()
+    }
+    fn set_vertex_buffer(&mut self, _: &(), _: u64) -> Result<(), DrawError> {
+        unimplemented!()
+    }
+    fn set_index_buffer(&mut self, _: &(), _: IndexFormat) -> Result<(), DrawError> {
+        unimplemented!()
+    }
+    fn set_uniform_buffer(&mut self, _: u32, _: &()) -> Result<(), DrawError> {
+        unimplemented!()
+    }
+    fn set_texture(&mut self, _: u32, _: &u32) -> Result<(), DrawError> {
+        unimplemented!()
+    }
+    fn draw(&mut self, _: Range<u32>) -> Result<(), DrawError> {
+        unimplemented!()
+    }
+    fn draw_indexed(&mut self, _: Range<u32>) -> Result<(), DrawError> {
+        unimplemented!()
+    }
+    fn present(&mut self) -> Result<(), DeviceError> {
+        unimplemented!()
+    }
+}
+
+/// One frame at `now_ns` with the pose shown; returns the alphas of the panel layer's shape
+/// and text vertices.
+fn panel_alphas(
+    rig: &mut Rig,
+    snapshot: &slam_ui::song_select::SongSelectSnapshot,
+    now_ns: u64,
+) -> (Vec<f32>, Vec<f32>) {
+    rig.shapes.clear();
+    rig.text.clear();
+    let split = rig.view.push(
+        &mut rig.shapes,
+        &mut rig.text,
+        &mut rig.glyphs,
+        1280.0,
+        720.0,
+        snapshot,
+        Pose::SHOWN,
+        white(),
+        Thumbs {
+            enabled: false,
+            rows: &rig.rows,
+            now_ns,
+        },
+    );
+    let (shapes_at, text_at) = split.unwrap_or((rig.shapes.len() as u32, rig.text.len() as u32));
+    let shapes = rig.shapes.vertices()[shapes_at as usize * 4..]
+        .iter()
+        .map(|v| v.colour[3])
+        .collect();
+    let text = rig.text.vertices()[text_at as usize * 4..]
+        .iter()
+        .map(|v| v.colour[3])
+        .collect();
+    (shapes, text)
+}
+
+#[test]
+fn the_mod_panel_fades_its_plates_and_texts_as_one_layer() {
+    // Without the stagger every part of the panel slides together, so one factor scales all.
+    let theme = Theme {
+        mod_column_stagger_ms: 0.0,
+        ..Theme::default()
+    };
+    let in_ms = theme.mod_panel_in_ms as u64;
+    let mut rig = Rig::with_theme(theme);
+    let mut screen = SongSelect::new();
+    put(&mut screen, list_of(10));
+    screen.set_status(SongSelectStatus::Ready);
+    *screen.mods_mut() = slam_ui::song_select::ModSelect::new(MOD_COLUMNS);
+    let closed = screen.snapshot();
+    screen.mods_mut().open();
+    let open = screen.snapshot();
+    let ms = 1_000_000u64;
+    panel_alphas(&mut rig, &closed, 1000 * ms);
+    // The slide starts when the view first sees the panel open.
+    panel_alphas(&mut rig, &open, 1000 * ms);
+    // Warm the glyph cache at the end of the slide, then look part way through it.
+    let (mut device, mut textures) = (UploadDevice::default(), Textures::with_capacity(16));
+    for _ in 0..2000 {
+        panel_alphas(&mut rig, &open, 1000 * ms + (in_ms + 100) * ms);
+        if rig.glyphs.all_ready() && !rig.text.vertices().is_empty() {
+            break;
+        }
+        rig.glyphs.process(&mut device, &mut textures);
+        std::thread::sleep(std::time::Duration::from_millis(1));
+    }
+    let (mid_shapes, mid_text) = panel_alphas(&mut rig, &open, 1000 * ms + 60 * ms);
+    let (full_shapes, full_text) = panel_alphas(&mut rig, &open, 1000 * ms + (in_ms + 100) * ms);
+    assert_eq!(mid_shapes.len(), full_shapes.len());
+    assert_eq!(mid_text.len(), full_text.len());
+    assert!(
+        mid_text.len() > 40,
+        "{} of {} sprites",
+        mid_text.len(),
+        rig.text.len()
+    );
+    let ratios: Vec<f32> = mid_shapes
+        .iter()
+        .zip(&full_shapes)
+        .chain(mid_text.iter().zip(&full_text))
+        .filter(|(_, full)| **full > 0.0)
+        .map(|(mid, full)| mid / full)
+        .collect();
+    let first = ratios[0];
+    assert!(first > 0.0 && first < 1.0, "{first}");
+    for r in &ratios {
+        assert!((r - first).abs() < 1e-3, "{r} vs {first}");
+    }
 }

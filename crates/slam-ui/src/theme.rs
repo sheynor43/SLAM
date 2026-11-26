@@ -259,8 +259,8 @@ pub struct Theme {
     /// colour take to move, and its texts to fade in.
     pub song_info_transition_ms: f32,
     pub song_info_text_fade_ms: f32,
-    /// Where the columns start, as a part of the window height: the lower part of the
-    /// window, as lazer's (ADR-0152).
+    /// The highest the columns may reach, as a part of the window height. They are as tall
+    /// as their content and stand in the lower part of the window, as lazer's (ADR-0152).
     pub mod_panel_top: f32,
     /// The columns' slide from below when the panel opens and closes: lazer's 400 ms in,
     /// 200 ms out, 30 ms more for each next column, 700 px (ADR-0152).

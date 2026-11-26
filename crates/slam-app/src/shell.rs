@@ -478,6 +478,8 @@ pub struct ShellState {
     menu_skin_of: (Option<PathBuf>, Option<String>),
     /// Interface sounds noted this tick (ADR-0120).
     ui_sounds: ui_sounds::UiSoundQueue,
+    /// Whether the mod select overlay was open at the last tick.
+    ui_mods_open: bool,
     /// What the sounds compare with: stack depth, menu item, song select selection,
     /// settings panel open and its focus, as of the last tick.
     ui_seen: (
@@ -598,6 +600,7 @@ impl ShellState {
             ranking_link: None,
             menu_skin_of: (None, None),
             ui_sounds: ui_sounds::UiSoundQueue::default(),
+            ui_mods_open: false,
             ui_seen: (1, slam_ui::menu::MenuItem::ALL[0], None, false, 0),
             ui_typed: (0, 0),
             backgrounds: None,
@@ -1766,6 +1769,19 @@ impl ShellState {
             }
         }
         self.ui_seen = (depth, item, selected, open, focus);
+        // The mod select overlay's pops (lazer's `ModSelectOverlay`).
+        let mods_open = self.song_select.mods().is_open();
+        if mods_open != self.ui_mods_open && !playing {
+            self.ui_sounds.push(if mods_open {
+                MenuSound::ModsOpen
+            } else {
+                MenuSound::ModsClose
+            });
+            if mods_open {
+                self.ui_sounds.push(MenuSound::ModColumn);
+            }
+        }
+        self.ui_mods_open = mods_open;
         self.note_typing_sounds();
     }
 
