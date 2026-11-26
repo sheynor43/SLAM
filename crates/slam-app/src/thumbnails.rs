@@ -67,6 +67,8 @@ pub struct ThumbSnapshot {
     pub seq: u32,
     /// The rows have room for thumbnails.
     pub enabled: bool,
+    /// The thumbnails cover the whole set plate (ADR-0174).
+    pub full: bool,
     /// By snapshot row.
     pub handles: [Option<TextureHandle>; MAX_VISIBLE_ROWS],
 }
@@ -76,6 +78,7 @@ impl Default for ThumbSnapshot {
         Self {
             seq: 0,
             enabled: false,
+            full: false,
             handles: [None; MAX_VISIBLE_ROWS],
         }
     }
@@ -139,6 +142,8 @@ pub struct Thumbnails {
     shown: Arc<AtomicU32>,
     /// The height asked for; `None`: off.
     height: Option<u32>,
+    /// Full-plate thumbnails are asked for (ADR-0174).
+    wide: bool,
     entries: [Entry; CAPACITY],
     in_flight: usize,
     next_id: u32,
@@ -165,6 +170,7 @@ impl Thumbnails {
             releases,
             shown,
             height: None,
+            wide: false,
             entries: [EMPTY; CAPACITY],
             in_flight: 0,
             next_id: 0,
@@ -172,6 +178,16 @@ impl Thumbnails {
             releasing: [None; RELEASING],
             overflow: [None; CAPACITY],
             wake: None,
+        }
+    }
+
+    /// Chooses the thumbnails' style (ADR-0174): `true` asks for full-plate ones, which
+    /// are another crop and cached apart; a change forgets the loaded thumbnails like a
+    /// change of height does.
+    pub fn set_wide(&mut self, wide: bool, seq: u32) {
+        if wide != self.wide {
+            self.reset(seq);
+            self.wide = wide;
         }
     }
 
@@ -229,6 +245,7 @@ impl Thumbnails {
             let request = ThumbRequest {
                 id,
                 height,
+                wide: self.wide,
                 files: Arc::clone(files),
                 set,
                 difficulty: 0,
@@ -421,11 +438,12 @@ fn queue(requests: &mut TextureRequests, image: Image) -> Outcome {
 }
 
 /// Connects the ends and starts the thumbnail thread. `cache` is the `cache` folder (none:
-/// nothing is cached), `aspect` the thumbnails' width over height and `limits` those of
-/// the texture loader's decoder.
+/// nothing is cached), `aspect` and `wide_aspect` the small and the full-plate thumbnails'
+/// width over height and `limits` those of the texture loader's decoder.
 pub fn link(
     cache: Option<std::path::PathBuf>,
     aspect: f32,
+    wide_aspect: f32,
     limits: ImageLimits,
 ) -> std::io::Result<(Thumbnails, ThumbBridge, ThumbWorker, ThumbShown)> {
     let (requests, requests_rx) = rtrb::RingBuffer::new(REQUEST_RING);
@@ -433,7 +451,11 @@ pub fn link(
     let (replies_tx, replies) = rtrb::RingBuffer::new(REPLY_RING);
     let (releases, releases_rx) = rtrb::RingBuffer::new(RELEASE_RING);
     let shown = Arc::new(AtomicU32::new(0));
-    let worker = worker::spawn(make::Maker::new(cache, aspect, limits), requests_rx, out_tx)?;
+    let worker = worker::spawn(
+        make::Maker::new(cache, aspect, wide_aspect, limits),
+        requests_rx,
+        out_tx,
+    )?;
     let mut thumbnails = Thumbnails::new(requests, replies, releases, Arc::clone(&shown));
     thumbnails.wake = worker.thread();
     Ok((

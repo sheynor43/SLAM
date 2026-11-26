@@ -712,7 +712,7 @@ fn thumbnails_are_asked_for_and_handed_over_without_allocating_on_the_update_thr
     let (requests, _uploads) = texture_loader(&config).unwrap();
     let (picker, loader, _fade) = link(requests);
     let (thumbnails, bridge, _worker, _shown) =
-        slam_app::thumbnails::link(None, 1.6, ImageLimits::default()).unwrap();
+        slam_app::thumbnails::link(None, 1.6, 7.0, ImageLimits::default()).unwrap();
     let mut loader = loader.with_thumbnails(bridge);
     let (mut producer, songs) = songs_link();
     let mut state = ShellState::new(Theme::default(), 1280.0, 720.0, 1.0)

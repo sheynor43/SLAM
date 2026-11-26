@@ -240,6 +240,8 @@ pub struct SongSelectView {
     shift: Shift,
     /// The thumbnails were on at the last frame: the row texts are cut for it.
     thumbs_on: bool,
+    /// The list scrollbar's fades (ADR-0174).
+    bar_look: crate::scrollbar::ScrollbarLook,
     /// Applies the snapshot's sideways wheel and drags to the rows' marquees.
     scroll_tracker: ScrollTracker,
 }
@@ -284,6 +286,91 @@ impl ThumbGeometry {
         let top = area.y + self.inset;
         let (top, bottom) = (top.max(top_edge), (top + self.height).min(bottom_edge));
         (bottom > top).then_some((top, bottom))
+    }
+}
+
+/// The part of an image a full-plate thumbnail shows (ADR-0174): the image covers the
+/// shape's bounding box (`width` plus the skew's lean over `full_height`) as `cover` does,
+/// centred, and the shape shows the rows `top` to `bottom` (fractions of `full_height`,
+/// for a plate scrolled part-way out of the list). `uv` is the image's place in its
+/// texture and `image` its size in pixels. The scale stays the same whatever is cut off.
+pub(crate) fn plate_uv(
+    uv: UvRect,
+    image: [f32; 2],
+    width: f32,
+    full_height: f32,
+    tan: f32,
+    (top, bottom): (f32, f32),
+) -> UvRect {
+    let lean = tan.abs();
+    let box_full = (width + lean * full_height).max(f32::EPSILON);
+    let box_cut = width + lean * full_height * (bottom - top).clamp(0.0, 1.0);
+    let target = box_full / full_height.max(f32::EPSILON);
+    let aspect = image[0] / image[1].max(1.0);
+    let (keep_u, keep_v) = if aspect >= target {
+        (target / aspect.max(f32::EPSILON), 1.0)
+    } else {
+        (1.0, aspect / target.max(f32::EPSILON))
+    };
+    let du = (uv.u1 - uv.u0) * keep_u * box_cut / box_full;
+    let dv = (uv.v1 - uv.v0) * keep_v;
+    let (cu, cv) = ((uv.u0 + uv.u1) / 2.0, (uv.v0 + uv.v1) / 2.0);
+    let v_top = cv - dv / 2.0;
+    UvRect {
+        u0: cu - du / 2.0,
+        u1: cu + du / 2.0,
+        v0: v_top + top * dv,
+        v1: v_top + bottom * dv,
+    }
+}
+
+/// The shape of a full-plate thumbnail over the plate `plate` (cut to the list), whose
+/// whole height is `full_height` from `full_top` (ADR-0174): the plate's rounding and
+/// `song_plate_dim_right` at the right, at `alpha`.
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn plate_shape(
+    image: AtlasRegion,
+    plate: &Rect,
+    full_top: f32,
+    full_height: f32,
+    shift: f32,
+    alpha: f32,
+    theme: &Theme,
+    scale: f32,
+) -> Shape {
+    let tan = theme.button_skew().tan();
+    let top = ((plate.y - full_top) / full_height.max(f32::EPSILON)).clamp(0.0, 1.0);
+    let bottom =
+        ((plate.y + plate.height - full_top) / full_height.max(f32::EPSILON)).clamp(top, 1.0);
+    let dim = |level: f32| Color {
+        r: level,
+        g: level,
+        b: level,
+        a: alpha,
+    };
+    Shape {
+        radius: theme.button_radius * scale,
+        skew: theme.button_skew(),
+        upright: true,
+        gradient: Some(slam_render::shape::Gradient::Horizontal(dim(
+            theme.song_plate_dim_right
+        ))),
+        texture: image.texture,
+        uv: plate_uv(
+            image.uv,
+            [image.size.width as f32, image.size.height as f32],
+            plate.width,
+            full_height,
+            tan,
+            (top, bottom),
+        ),
+        ..Shape::new(
+            image.texture,
+            image.uv,
+            [plate.x + shift, plate.y],
+            [plate.width, plate.height],
+            dim(theme.song_plate_dim_left),
+        )
     }
 }
 
@@ -469,6 +556,7 @@ impl SongSelectView {
             shift: Shift::default(),
             fade_next: 0,
             thumbs_on: false,
+            bar_look: crate::scrollbar::ScrollbarLook::new(),
             scroll_tracker: ScrollTracker::default(),
             theme,
         };
@@ -506,10 +594,12 @@ impl SongSelectView {
             &mut self.failed,
             &mut self.loading,
             &mut self.empty,
-            &mut self.choose_folder,
         ] {
             self.type_setter.lay_out(line, status);
         }
+        // The button's label is Bold (ADR-0174).
+        self.type_setter
+            .lay_out_face(&mut self.choose_folder, self.theme.heading_face(status));
         for line in [&mut self.hint, &mut self.no_audio] {
             self.type_setter
                 .lay_out(line, self.theme.song_detail_size * scale);
@@ -574,7 +664,11 @@ impl SongSelectView {
             for ((name, desc), (name_text, desc_text)) in lines.iter_mut().zip(texts) {
                 name.text.clone_from(name_text);
                 desc.text.clone_from(desc_text);
-                let caption = enlarged(self.theme.caption_face(scale), text_scale);
+                // Mod tile names are SemiBold (ADR-0174).
+                let caption = Face {
+                    weight: self.theme.semibold_weight,
+                    ..enlarged(self.theme.caption_face(scale), text_scale)
+                };
                 fit_face(&mut self.type_setter, name, caption, room, self.ellipsis[2]);
                 let note = enlarged(self.theme.note_face(scale), text_scale);
                 fit_face(&mut self.type_setter, desc, note, room, self.ellipsis[3]);
@@ -689,7 +783,11 @@ impl SongSelectView {
                     && let Some(stars) = d.stars
                 {
                     super::push_stars(&mut slot.secondary.text, stars);
-                    type_setter.lay_out(&mut slot.secondary, theme.song_detail_size * layout.scale);
+                    // The star pill is Bold in lazer (ADR-0174).
+                    type_setter.lay_out_face(
+                        &mut slot.secondary,
+                        theme.heading_face(theme.song_detail_size * layout.scale),
+                    );
                     avail = (avail
                         - super::info_panel::pill_width(&slot.secondary, theme, layout.scale))
                     .max(0.0);
@@ -706,17 +804,25 @@ impl SongSelectView {
         }
         let scale = layout.scale;
         if matches!(row, Row::Set(_)) {
-            fit(
+            // The set's title is Bold (lazer's Heading1, ADR-0174).
+            fit_face(
                 type_setter,
                 &mut slot.primary,
-                theme.song_title_size * scale,
+                theme.heading_face(theme.song_title_size * scale),
                 avail,
                 ellipsis[0],
             );
             // The mapper is a note (lazer: 14 SemiBold); too long, it rides.
             type_setter.lay_out_face(&mut slot.secondary, theme.note_face(scale));
         } else {
-            type_setter.lay_out_face(&mut slot.primary, theme.caption_face(scale));
+            // The difficulty's name is SemiBold (ADR-0174).
+            type_setter.lay_out_face(
+                &mut slot.primary,
+                Face {
+                    weight: theme.semibold_weight,
+                    ..theme.caption_face(scale)
+                },
+            );
         }
         slot.avail = avail;
         slot.marquee.restart(now_ns);
@@ -750,9 +856,11 @@ impl SongSelectView {
             self.frame = frame;
             self.lay_out();
         }
-        if thumbs.enabled != self.thumbs_on {
+        // Only the small thumbnails take room from the texts (ADR-0174).
+        let reserves = thumbs.enabled && !thumbs.full;
+        if reserves != self.thumbs_on {
             // The texts of the set rows are cut to another width.
-            self.thumbs_on = thumbs.enabled;
+            self.thumbs_on = reserves;
             for slot in &mut self.slots {
                 slot.holds = None;
             }
@@ -1031,7 +1139,7 @@ impl SongSelectView {
                     };
                     let slot_count = self.slots.len();
                     let slot = &mut self.slots[index % slot_count];
-                    let text_shift = if thumbs.enabled && matches!(row, Row::Set(_)) {
+                    let text_shift = if reserves && matches!(row, Row::Set(_)) {
                         thumb.text_shift
                     } else {
                         0.0
@@ -1179,6 +1287,35 @@ impl SongSelectView {
                     rect(&plate, fill, look);
                     let x = area.x + pad + text_shift;
                     if thumbs.enabled
+                        && thumbs.full
+                        && matches!(row, Row::Set(_))
+                        && let Some(image) = index
+                            .checked_sub(snapshot.first_row)
+                            .and_then(|i| thumbs.rows.get(i))
+                            .copied()
+                            .flatten()
+                    {
+                        // The set's background over the whole plate, fading in (ADR-0174).
+                        let alpha = fade_alpha(
+                            &mut self.fades,
+                            &mut self.fade_next,
+                            image.handle,
+                            thumbs.now_ns,
+                            theme.song_plate_fade_ms,
+                        );
+                        thumb_shapes[thumb_count] = Some(plate_shape(
+                            image.region,
+                            &plate,
+                            area.y,
+                            area.height,
+                            shift,
+                            ease_out_quint(alpha) * opacity,
+                            theme,
+                            scale,
+                        ));
+                        thumb_count += 1;
+                    } else if thumbs.enabled
+                        && !thumbs.full
                         && matches!(row, Row::Set(_))
                         && let Some((top, bottom)) = thumb.span(&area, top_edge, bottom_edge)
                     {
@@ -1345,6 +1482,22 @@ impl SongSelectView {
                     };
                     shape_target.borrow_mut().push_shape(&shape);
                 }
+                // The scrollbar over the plates, which run past the window's edge
+                // (ADR-0174); it follows the rows in the mod panel's fade.
+                let mut bar = super::scrollbar_of(geometry, layout);
+                bar.track.x += shift;
+                self.bar_look.push_carousel(
+                    &mut shape_target.borrow_mut(),
+                    white,
+                    &bar,
+                    snapshot.shown_scroll,
+                    snapshot.text.pointer,
+                    snapshot.scrollbar_held,
+                    opacity * layer.get(),
+                    theme,
+                    scale,
+                    now_ns,
+                );
             }
             // The hint line gives way to the mod panel's own (ADR-0152).
             layer.set(1.0 - panel_back);
@@ -2268,6 +2421,154 @@ fn push_detail(text: &mut String, detail: TileDetail) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn thumb(width: u32, height: u32) -> AtlasRegion {
+        use slam_render::{Extent, Origin};
+        AtlasRegion {
+            texture: slam_render::textures::TextureId(5),
+            origin: Origin::new(0, 0),
+            size: Extent::new(width, height),
+            uv: UvRect::FULL,
+        }
+    }
+
+    /// The width of `text` laid out in `face`.
+    fn width_in(type_setter: &mut Typesetter, text: &str, face: Face) -> f32 {
+        let mut line = Line::new(text);
+        type_setter.lay_out_face(&mut line, face);
+        line.layout.width()
+    }
+
+    #[test]
+    fn lazers_faces_are_used_per_element() {
+        use crate::song_select::{DifficultyRow, SearchSource, SetRow};
+        let theme = Theme::default();
+        let layout = SongSelectLayout::new(1280.0, 720.0, &theme);
+        let mut type_setter =
+            Typesetter::new(Arc::new(FontRegistry::with_builtin()), theme.font_weight);
+        let list = SongList {
+            sets: vec![SetRow {
+                key: 1,
+                artist: "Artist".to_owned(),
+                title: "Title of the song".to_owned(),
+                creator: "mapper".to_owned(),
+                difficulties: vec![DifficultyRow::new(SearchSource {
+                    difficulty: "Insane difficulty",
+                    ..SearchSource::default()
+                })],
+            }],
+        };
+        let mut fill = |row: Row| {
+            let mut slot = RowSlot::new();
+            let ellipsis = [0.0; 4];
+            assert!(SongSelectView::fill(
+                &mut slot,
+                &mut type_setter,
+                &theme,
+                &layout,
+                ellipsis,
+                "pp",
+                1,
+                &list,
+                row,
+                0.0,
+                0,
+            ));
+            slot
+        };
+        let set = fill(Row::Set(0));
+        let difficulty = fill(Row::Difficulty {
+            set: 0,
+            difficulty: 0,
+        });
+        let scale = layout.scale;
+        // The set's title is bold: as wide as the heading face makes it, wider than regular.
+        let title = set.primary.text.clone();
+        let bold = width_in(
+            &mut type_setter,
+            &title,
+            theme.heading_face(theme.song_title_size * scale),
+        );
+        let regular = width_in(
+            &mut type_setter,
+            &title,
+            theme.regular_face(theme.song_title_size * scale),
+        );
+        assert!((set.primary.layout.width() - bold).abs() < 1e-3);
+        assert!(bold > regular);
+        // The mapper and the difficulty's name are semibold.
+        let semibold = |text: &str, face: Face, type_setter: &mut Typesetter| {
+            width_in(
+                type_setter,
+                text,
+                Face {
+                    weight: theme.semibold_weight,
+                    ..face
+                },
+            )
+        };
+        let note = semibold("mapper", theme.note_face(scale), &mut type_setter);
+        assert!((set.secondary.layout.width() - note).abs() < 1e-3);
+        let name = semibold(
+            "Insane difficulty",
+            theme.caption_face(scale),
+            &mut type_setter,
+        );
+        assert!((difficulty.primary.layout.width() - name).abs() < 1e-3);
+        assert!(
+            name > width_in(
+                &mut type_setter,
+                "Insane difficulty",
+                theme.caption_face(scale)
+            )
+        );
+    }
+
+    #[test]
+    fn a_full_plate_thumbnail_is_the_plate_dimmed_from_left_to_right() {
+        let theme = Theme::default();
+        let plate = Rect {
+            x: 100.0,
+            y: 40.0,
+            width: 500.0,
+            height: 72.0,
+        };
+        let shape = plate_shape(thumb(700, 100), &plate, 40.0, 72.0, 3.0, 0.8, &theme, 1.0);
+        assert_eq!(shape.position, [103.0, 40.0]);
+        assert_eq!(shape.size, [500.0, 72.0]);
+        assert_eq!(shape.skew, theme.button_skew());
+        assert_eq!(shape.radius, theme.button_radius);
+        assert!(shape.upright);
+        assert_eq!(shape.texture, slam_render::textures::TextureId(5));
+        // Darker on the left than on the right, faded as a whole.
+        assert_eq!(shape.colour.r, theme.song_plate_dim_left);
+        assert_eq!(shape.colour.a, 0.8);
+        match shape.gradient {
+            Some(slam_render::shape::Gradient::Horizontal(end)) => {
+                assert_eq!(end.r, theme.song_plate_dim_right);
+                assert_eq!(end.a, 0.8);
+            }
+            other => panic!("{other:?}"),
+        }
+    }
+
+    #[test]
+    fn a_full_plate_image_covers_the_plate_whatever_its_aspect() {
+        let (w, h, tan) = (500.0, 72.0, 0.2);
+        let box_aspect = (w + tan * h) / h;
+        for (iw, ih) in [(1000.0, 100.0), (100.0, 1000.0), (1920.0, 1080.0)] {
+            let uv = plate_uv(UvRect::FULL, [iw, ih], w, h, tan, (0.0, 1.0));
+            let shown = ((uv.u1 - uv.u0) * iw) / ((uv.v1 - uv.v0) * ih);
+            assert!((shown - box_aspect).abs() < 1e-3, "{iw}x{ih}: {shown}");
+            assert!(uv.u0 >= -1e-6 && uv.u1 <= 1.0 + 1e-6, "{uv:?}");
+            assert!(uv.v0 >= -1e-6 && uv.v1 <= 1.0 + 1e-6, "{uv:?}");
+        }
+        // A plate cut at the top shows the lower part of the same window, at the same scale.
+        let whole = plate_uv(UvRect::FULL, [1920.0, 1080.0], w, h, tan, (0.0, 1.0));
+        let cut = plate_uv(UvRect::FULL, [1920.0, 1080.0], w, h, tan, (0.5, 1.0));
+        assert!((cut.v1 - whole.v1).abs() < 1e-6);
+        assert!((cut.v0 - (whole.v0 + whole.v1) / 2.0).abs() < 1e-6);
+    }
 
     fn sets(counts: &[usize]) -> SongList {
         use crate::song_select::{DifficultyRow, SearchSource, SetRow};

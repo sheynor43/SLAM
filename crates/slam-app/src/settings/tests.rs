@@ -1765,6 +1765,38 @@ fn the_thumbnails_setting_defaults_to_128_and_round_trips() {
 }
 
 #[test]
+fn the_thumbnail_style_defaults_to_left_and_round_trips() {
+    use super::ThumbnailStyle;
+    assert_eq!(
+        Settings::default().song_select.thumbnail_style,
+        ThumbnailStyle::Left
+    );
+    for (name, value) in [
+        ("left", ThumbnailStyle::Left),
+        ("full", ThumbnailStyle::Full),
+    ] {
+        let loaded = file::from_toml_str(&format!("[song_select]\nthumbnail_style = \"{name}\"\n"));
+        assert_eq!(loaded.status, LoadStatus::Ok, "{:?}", loaded.warnings);
+        assert_eq!(loaded.settings.song_select.thumbnail_style, value);
+        let mut settings = Settings::default();
+        settings.song_select.thumbnail_style = value;
+        let text = file::to_toml_string(&settings).unwrap();
+        assert!(
+            text.contains(&format!("thumbnail_style = \"{name}\"")),
+            "{text}"
+        );
+        assert_eq!(file::from_toml_str(&text).settings, settings);
+    }
+    let bad = file::from_toml_str("[song_select]\nthumbnail_style = \"huge\"\n");
+    assert_eq!(bad.status, LoadStatus::Recovered);
+    assert!(
+        bad.warnings
+            .iter()
+            .any(|w| w.starts_with("song_select.thumbnail_style"))
+    );
+}
+
+#[test]
 fn a_bad_thumbnails_value_falls_back_with_a_warning() {
     for text in ["\"huge\"", "128", "true"] {
         let loaded = file::from_toml_str(&format!("[song_select]\nthumbnails = {text}\n"));

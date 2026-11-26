@@ -244,6 +244,10 @@ const CLASSIC_MOD_HOTKEYS: [(u16, &[&str]); 9] = [
 ];
 
 /// The song select input of a mod hotkey.
+/// The least height of a full-plate thumbnail in pixels: the plate is wide and sharp
+/// enough only from here (ADR-0174).
+const FULL_THUMB_MIN_HEIGHT: u32 = 128;
+
 fn mod_hotkey(scancode: u16) -> Option<SongSelectInput> {
     MOD_HOTKEY_ROWS
         .iter()
@@ -672,13 +676,17 @@ impl ShellState {
             return;
         };
         self.thumb_seq = self.thumb_seq.wrapping_add(1);
-        let height = self
-            .editing
-            .as_ref()
-            .unwrap_or(&self.settings)
-            .song_select
-            .thumbnails
-            .height();
+        let song_select = &self.editing.as_ref().unwrap_or(&self.settings).song_select;
+        let full = song_select.thumbnail_style == crate::settings::ThumbnailStyle::Full;
+        // Full-plate thumbnails are a wide, larger crop (ADR-0174).
+        let height = song_select.thumbnails.height().map(|h| {
+            if full {
+                h.max(FULL_THUMB_MIN_HEIGHT)
+            } else {
+                h
+            }
+        });
+        thumbnails.set_wide(full, self.thumb_seq);
         let first = self.song_select.first_row();
         let mut wanted = [None; WANTED];
         for (i, slot) in wanted.iter_mut().enumerate() {
@@ -691,6 +699,7 @@ impl ShellState {
         let handles = thumbnails.tick(self.thumb_seq, height, &self.files, &wanted);
         out.seq = self.thumb_seq;
         out.enabled = height.is_some();
+        out.full = full;
         out.handles.copy_from_slice(&handles[MARGIN..]);
     }
 
@@ -4734,6 +4743,7 @@ impl<B: render::Backend> Draw<ShellSnapshot> for View<B> {
                         r.white,
                         Thumbs {
                             enabled: snapshot.thumbnails.enabled,
+                            full: snapshot.thumbnails.full,
                             rows: &thumb_rows,
                             now_ns: info.wait.woke_ns,
                         },
@@ -5626,6 +5636,7 @@ fn run_with<B: render::Backend>(
                 let loader = match crate::thumbnails::link(
                     cache,
                     theme.song_thumbnail_aspect,
+                    theme.song_thumbnail_wide_aspect,
                     loader_config.image_limits(),
                 ) {
                     Ok((thumbnails, bridge, worker, shown)) => {

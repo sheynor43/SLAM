@@ -20,7 +20,8 @@ use super::keys;
 use super::model::{
     BindingEntry, BreakDisplay, Combo, DrawRate, FpsScreens, General, HitsoundDelay, InputSettings,
     KeyOverlayAnimation, KeySlot, MenuBackground, MenuSounds, PauseMenuStyle, RendererChoice,
-    Settings, Thumbnails, Timing, Window, corner_from_name, parse_size, window_mode_from_name,
+    Settings, ThumbnailStyle, Thumbnails, Timing, Window, corner_from_name, parse_size,
+    window_mode_from_name,
 };
 
 /// The schema version this build writes.
@@ -955,6 +956,21 @@ fn from_table(mut table: Table) -> Loaded {
             Some(thumbnails) => settings.song_select.thumbnails = thumbnails,
             None => cx.warn(format!(
                 "song_select.thumbnails: unknown value \"{name}\", using the default"
+            )),
+        }
+    }
+    let mut thumbnail_style: Option<String> = None;
+    cx.opt(
+        &mut song_select,
+        "song_select",
+        "thumbnail_style",
+        &mut thumbnail_style,
+    );
+    if let Some(name) = thumbnail_style {
+        match ThumbnailStyle::from_name(&name) {
+            Some(style) => settings.song_select.thumbnail_style = style,
+            None => cx.warn(format!(
+                "song_select.thumbnail_style: unknown value \"{name}\", using the default"
             )),
         }
     }

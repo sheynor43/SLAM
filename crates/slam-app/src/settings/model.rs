@@ -834,6 +834,8 @@ pub struct SongSelect {
     pub mod_hotkeys: ModHotkeyStyle,
     /// Height of the beatmap thumbnails in the song list (ADR-0127).
     pub thumbnails: Thumbnails,
+    /// Where a set's thumbnail goes: left of the text or over the whole plate (ADR-0174).
+    pub thumbnail_style: ThumbnailStyle,
 }
 
 impl Default for SongSelect {
@@ -849,7 +851,41 @@ impl Default for SongSelect {
             difficulty_info: DifficultyInfo::Stars,
             mod_hotkeys: ModHotkeyStyle::Sequential,
             thumbnails: Thumbnails::default(),
+            thumbnail_style: ThumbnailStyle::default(),
         }
+    }
+}
+
+/// Where a set row's thumbnail goes (ADR-0174).
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum ThumbnailStyle {
+    /// A small picture left of the texts (ADR-0127).
+    #[default]
+    Left,
+    /// The set's background over the whole plate, as lazer's.
+    Full,
+}
+
+impl Serialize for ThumbnailStyle {
+    fn serialize<S: Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        serializer.serialize_str(self.name())
+    }
+}
+
+impl ThumbnailStyle {
+    pub const ALL: [ThumbnailStyle; 2] = [ThumbnailStyle::Left, ThumbnailStyle::Full];
+
+    /// The name in the settings file.
+    pub fn name(self) -> &'static str {
+        match self {
+            ThumbnailStyle::Left => "left",
+            ThumbnailStyle::Full => "full",
+        }
+    }
+
+    /// The value called `name`.
+    pub fn from_name(name: &str) -> Option<ThumbnailStyle> {
+        ThumbnailStyle::ALL.into_iter().find(|t| t.name() == name)
     }
 }
 

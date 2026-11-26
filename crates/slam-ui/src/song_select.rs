@@ -13,6 +13,7 @@ use std::sync::Arc;
 
 use crate::marquee::TextScroll;
 use crate::menu::Rect;
+use crate::scrollbar::{Scrollbar, ScrollbarDrag};
 use crate::theme::Theme;
 use drag::{ListDrag, Release};
 pub use geometry::RowGeometry;
@@ -51,6 +52,9 @@ pub struct RowThumb {
 pub struct Thumbs<'a> {
     /// Whether the rows reserve room for thumbnails: when not, the old layout.
     pub enabled: bool,
+    /// The thumbnails cover the whole set plate instead of sitting left of the text
+    /// (ADR-0174).
+    pub full: bool,
     /// By snapshot row (`SongSelectSnapshot::rows`); `None` where not loaded (yet).
     pub rows: &'a [Option<RowThumb>],
     /// The frame's time, for the fade-in.
@@ -61,6 +65,7 @@ impl Thumbs<'_> {
     /// No thumbnails: rows as they were before ADR-0127.
     pub const OFF: Thumbs<'static> = Thumbs {
         enabled: false,
+        full: false,
         rows: &[],
         now_ns: 0,
     };
@@ -306,6 +311,11 @@ pub struct SongSelectLayout {
     pub curve: f32,
     /// The window's right edge: the rows' plates run past it, as lazer's.
     pub window_right: f32,
+    /// The strip at the window's right edge where the list's scrollbar answers
+    /// (ADR-0174).
+    pub scrollbar: Rect,
+    /// The shortest the scrollbar's thumb gets, pixels.
+    pub scrollbar_min_thumb: f32,
 }
 
 impl SongSelectLayout {
@@ -402,6 +412,16 @@ impl SongSelectLayout {
             lean,
             curve: theme.song_curve,
             window_right: width,
+            scrollbar: Rect {
+                x: width - theme.song_scrollbar_width * scale,
+                y: list.y + theme.song_scrollbar_pad_top * scale,
+                width: theme.song_scrollbar_width * scale,
+                height: (height
+                    - theme.song_scrollbar_pad_bottom * scale
+                    - (list.y + theme.song_scrollbar_pad_top * scale))
+                    .max(0.0),
+            },
+            scrollbar_min_thumb: theme.scrollbar_min_thumb * scale,
         }
     }
 
@@ -494,6 +514,18 @@ impl SongSelectLayout {
     }
 }
 
+/// The scrollbar of a list laid out as `geometry` in `layout`: the content is the rows'
+/// height up to the furthest scroll, the view the list's height (reference pixels).
+pub fn scrollbar_of(geometry: &RowGeometry, layout: &SongSelectLayout) -> Scrollbar {
+    let view = layout.viewport();
+    Scrollbar::new(
+        layout.scrollbar,
+        geometry.max_scroll(view) + view,
+        view,
+        layout.scrollbar_min_thumb,
+    )
+}
+
 /// The list leans by this part of the buttons' skew: the full angle leaves a wide empty
 /// wedge at the bottom right of the window (ADR-0121).
 pub const LEAN_OF_SKEW: f32 = 0.5;
@@ -582,6 +614,8 @@ pub struct SongSelectSnapshot {
     pub no_audio: bool,
     /// The pointer, sideways wheel and text drags for the rows' marquees (ADR-0148).
     pub text: TextScroll,
+    /// The scrollbar's thumb is held (ADR-0174).
+    pub scrollbar_held: bool,
 }
 
 /// What a difficulty row shows beside its name (ADR-0151).
@@ -848,6 +882,8 @@ pub struct SongSelect {
     /// Where the held press went down on a row: a sideways move past the drag distance
     /// turns it into a text drag.
     text_press: Option<[f32; 2]>,
+    /// The list's scrollbar being dragged (ADR-0174).
+    bar: ScrollbarDrag,
 }
 
 impl Default for SongSelect {
@@ -895,6 +931,7 @@ impl SongSelect {
             no_audio: false,
             text: TextScroll::default(),
             text_press: None,
+            bar: ScrollbarDrag::new(),
         }
     }
 
@@ -1240,6 +1277,7 @@ impl SongSelect {
             beat: self.beat,
             no_audio: self.no_audio,
             text: self.text,
+            scrollbar_held: self.bar.is_dragging(),
         }
     }
 
@@ -1376,6 +1414,10 @@ impl SongSelect {
             return None;
         }
         self.measure(layout);
+        if self.scrollbar_input(input, layout) {
+            self.update_hover(layout);
+            return None;
+        }
         let page = ((self.viewport / self.pitches.0.max(1.0)) as usize).max(1);
         let last = self.filter.set_count().saturating_sub(1);
         let mut action = None;
@@ -1474,6 +1516,49 @@ impl SongSelect {
         action
     }
 
+    /// The list's scrollbar at its right edge, as the screen is laid out now (ADR-0174):
+    /// a track the length of the list in view, a thumb the share of it in view. Hidden
+    /// (not scrollable) for a list that fits.
+    pub fn scrollbar(&self, layout: &SongSelectLayout) -> Scrollbar {
+        scrollbar_of(&self.geometry(), layout)
+    }
+
+    /// The scrollbar's part of the pointer input (ADR-0174): a press on its track takes
+    /// hold of the thumb (jumping first outside it), moves drag it, the release lets go.
+    /// The list follows at once, without easing. Returns whether the bar took the input.
+    fn scrollbar_input(&mut self, input: SongSelectInput, layout: &SongSelectLayout) -> bool {
+        let bar = self.scrollbar(layout);
+        let offset = match input {
+            SongSelectInput::PointerPress { x, y } => {
+                let taken = self.bar.press(&bar, self.shown, x, y);
+                if taken.is_some() {
+                    self.pointer = Some((x, y));
+                    self.text.pointer([x, y]);
+                    self.drag.cancel();
+                    self.pressed = None;
+                    self.text_press = None;
+                }
+                taken
+            }
+            SongSelectInput::PointerMove { x, y } if self.bar.is_dragging() => {
+                self.pointer = Some((x, y));
+                self.text.pointer([x, y]);
+                self.bar.drag(&bar, y)
+            }
+            SongSelectInput::PointerRelease if self.bar.is_dragging() => {
+                self.bar.release();
+                return true;
+            }
+            _ => None,
+        };
+        let Some(offset) = offset else {
+            return false;
+        };
+        self.scroll = offset.clamp(0.0, self.max_scroll());
+        self.shown = self.scroll;
+        true
+    }
+
     /// A press on a row that moves sideways past the drag distance, more than it moves
     /// along the list, drags the row's text instead of the list; the release is no click.
     fn begin_text_drag(&mut self, x: f32, y: f32) {
@@ -1566,6 +1651,8 @@ mod layout_tests;
 mod matching_tests;
 #[cfg(test)]
 mod query_tests;
+#[cfg(test)]
+mod scrollbar_tests;
 #[cfg(test)]
 mod search_tests;
 #[cfg(test)]

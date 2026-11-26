@@ -745,7 +745,7 @@ fn texts_that_do_not_fit_ride_instead_of_being_cut() {
     rig.panel.name.text = "A very long difficulty name that cannot fit the panel at all".into();
     rig.type_setter.lay_out_face(
         &mut rig.panel.name,
-        rig.theme.heading_face(rig.theme.song_info_title_size),
+        rig.theme.regular_face(rig.theme.song_info_title_size),
     );
     assert!(!rig.panel.name.text.contains('\u{2026}'));
     let mut screen = rig.screen.clone();

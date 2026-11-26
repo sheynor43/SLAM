@@ -505,8 +505,10 @@ impl ToolbarView {
     fn lay_out(&mut self, scale: f32) {
         self.scale = scale;
         let text = self.theme.widget_text_size * scale;
-        self.type_setter.lay_out(&mut self.settings, text);
-        self.type_setter.lay_out(&mut self.home, text);
+        // Toolbar buttons are Bold (ADR-0174).
+        let bold = self.theme.heading_face(text);
+        self.type_setter.lay_out_face(&mut self.settings, bold);
+        self.type_setter.lay_out_face(&mut self.home, bold);
         self.lay_out_clock();
         self.type_setter
             .lay_out(&mut self.warm, self.theme.toolbar_clock_size * scale);
