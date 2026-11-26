@@ -591,6 +591,87 @@ impl SettingsView {
             .map(|line| (line.text.as_str(), line.layout.width()))
     }
 
+    /// The section row `row` is in, if the row exists.
+    pub fn section_of(&self, row: usize) -> Option<usize> {
+        self.meta.get(row).map(|(section, _, _)| *section)
+    }
+
+    /// Draws row `row` alone, as the toolbar's popup shows it (ADR-0168): its name and its
+    /// widget in the state `widget`, laid out by `layout` ([`SettingsLayout::single`]) at
+    /// slot 0. `panel_width` and `height` are the sizes the texts are laid out for, as
+    /// [`SettingsView::push`] takes them. Buttons, keys and notes draw nothing but the
+    /// name. Does not allocate once laid out.
+    #[allow(clippy::too_many_arguments)]
+    pub fn push_row(
+        &mut self,
+        shapes: &mut ShapeBatch,
+        text: &mut SpriteBatch,
+        glyphs: &mut GlyphCache,
+        layout: &SettingsLayout,
+        panel_width: f32,
+        height: f32,
+        row: usize,
+        widget: &RowWidget,
+        opacity: f32,
+        white: AtlasRegion,
+        now_ns: u64,
+    ) {
+        let frame = Frame {
+            width: panel_width,
+            height,
+        };
+        if frame != self.frame {
+            self.frame = frame;
+            self.lay_out();
+        }
+        let (theme, scale) = (self.theme, layout.scale);
+        let pad = theme.widget_pad * scale;
+        let (Some(view), Some(label)) = (self.views.get_mut(row), self.labels.get(row)) else {
+            return;
+        };
+        push_left(
+            text,
+            label,
+            &layout.label(0),
+            pad,
+            faded(theme.text, opacity),
+            glyphs,
+        );
+        match (view, widget) {
+            (RowView::Toggle(view), RowWidget::Toggle(toggle)) => {
+                let bounds = ToggleLayout::new(layout.row(0), &theme, scale);
+                view.push(shapes, toggle, &bounds, opacity, white);
+            }
+            (RowView::Slider(view), RowWidget::Slider(slider)) => {
+                let bounds = SliderLayout::new(layout.widget(0), &theme, scale);
+                view.push(shapes, text, glyphs, slider, &bounds, opacity, white);
+            }
+            (RowView::Dropdown(view), RowWidget::Dropdown(dropdown)) => {
+                let bounds = layout.dropdown_at(0, dropdown.count());
+                view.set_theme(&theme);
+                view.push(
+                    shapes, text, glyphs, dropdown, &bounds, opacity, white, now_ns,
+                );
+            }
+            _ => {}
+        }
+    }
+
+    /// Draws row `row`'s name in `rect`, `pad` from its left edge.
+    pub fn push_label(
+        &self,
+        text: &mut SpriteBatch,
+        glyphs: &mut GlyphCache,
+        row: usize,
+        rect: &Rect,
+        pad: f32,
+        colour: Color,
+    ) {
+        if let Some(line) = self.labels.get(row) {
+            push_left(text, line, rect, pad, colour, glyphs);
+        }
+    }
+
     /// The width of line `line` of row `row`'s hint as laid out, if it exists.
     pub fn hint_width(&self, row: usize, line: usize) -> Option<f32> {
         self.hints

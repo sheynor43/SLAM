@@ -132,6 +132,23 @@ pub(crate) const TABLET: &[Part] = &[
     leaning(0.82, 0.2, 0.1, 0.62, 20.0),
 ];
 
+/// Cog: a ring with four teeth round a dot (the toolbar's settings button, ADR-0168).
+pub(crate) const GEAR: &[Part] = &[
+    ring(0.24, 0.24, 0.52, 0.52, 0.5),
+    fill(0.43, 0.43, 0.14, 0.14, 0.5),
+    fill(0.42, 0.04, 0.16, 0.2, 0.04),
+    fill(0.42, 0.76, 0.16, 0.2, 0.04),
+    fill(0.04, 0.42, 0.2, 0.16, 0.04),
+    fill(0.76, 0.42, 0.2, 0.16, 0.04),
+];
+/// House: a roof of two leaning strokes over a body with a door (the toolbar's home button).
+pub(crate) const HOME: &[Part] = &[
+    leaning(0.2, 0.08, 0.13, 0.4, 50.0),
+    leaning(0.67, 0.08, 0.13, 0.4, -50.0),
+    ring(0.2, 0.4, 0.6, 0.5, 0.06),
+    fill(0.43, 0.62, 0.14, 0.28, 0.03),
+];
+
 /// Number of icons: one per section.
 pub const ICONS: usize = 10;
 

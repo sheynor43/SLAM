@@ -38,6 +38,8 @@ pub struct InterfaceViews {
     pub volume: VolumeView,
     /// The replay toast (ADR-0154).
     pub toast: slam_ui::toast::ToastView,
+    /// The menus' toolbar (ADR-0168).
+    pub toolbar: slam_ui::toolbar::ToolbarView,
     /// The theme they were laid out with: the draw side's from the swap on.
     pub theme: Theme,
     /// The switch ([`AppliedLanguage::switches`]) they were laid out for.
@@ -158,6 +160,14 @@ pub fn interface_views(
                     .collect(),
             },
         ),
+        toolbar: slam_ui::toolbar::ToolbarView::new(
+            Arc::clone(registry),
+            theme,
+            &slam_ui::toolbar::ToolbarLabels {
+                settings: text("toolbar-settings"),
+                home: text("toolbar-home"),
+            },
+        ),
         theme,
         switch: 0,
     }
@@ -183,6 +193,7 @@ impl InterfaceViews {
         self.settings.lay_out_for_panel(width, height);
         self.volume.lay_out_for(width, height);
         self.toast.lay_out_for(width, height);
+        self.toolbar.lay_out_for(width, height);
     }
 }
 

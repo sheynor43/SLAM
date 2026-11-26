@@ -234,8 +234,16 @@ pub fn toast_keys() -> &'static [(&'static str, Option<&'static str>)] {
         ("import-replay-imported", None),
         ("import-failed", None),
         ("import-unsupported", None),
+        ("settings-row-pin", Some("settings-row-pin-hint")),
+        ("settings-row-unpin", None),
+        ("settings-row-pin-full", None),
     ]
 }
+
+/// The toast variants of the toolbar's pins (ADR-0168), after the import ones.
+pub const TOAST_PINNED: u8 = 6;
+pub const TOAST_UNPINNED: u8 = 7;
+pub const TOAST_PIN_FULL: u8 = 8;
 
 /// The toast variant telling the outcome of an import.
 pub fn variant(result: &Result<Kind, ImportError>) -> u8 {
@@ -541,7 +549,8 @@ mod tests {
 
     #[test]
     fn every_variant_has_toast_keys() {
-        assert_eq!(toast_keys().len(), 6);
+        assert_eq!(toast_keys().len(), 9);
+        assert_eq!(usize::from(TOAST_PIN_FULL), toast_keys().len() - 1);
         assert_eq!(variant(&Err(ImportError::Unsupported)), 5);
         assert_eq!(variant(&Err(ImportError::Empty)), 4);
     }

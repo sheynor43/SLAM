@@ -515,8 +515,53 @@ impl Row {
         Row::ALL.iter().position(|row| row.key_slot() == Some(slot))
     }
 
+    /// The row's name in the settings file (ADR-0168): its label key without the `settings-`
+    /// prefix, unique among the rows and stable: a renamed key keeps the old name here.
+    pub fn name(self) -> &'static str {
+        match self {
+            // The two share a label.
+            Row::FullscreenSize => return "layout-resolution-fullscreen",
+            Row::WindowedSize => return "layout-resolution-windowed",
+            _ => {}
+        }
+        let key = self.label_key();
+        key.strip_prefix("settings-").unwrap_or(key)
+    }
+
+    /// The row called `name` in the settings file.
+    pub fn from_name(name: &str) -> Option<Row> {
+        Row::ALL.into_iter().find(|row| row.name() == name)
+    }
+
+    /// Whether the row can be pinned to the toolbar (ADR-0168): a toggle, a slider or a
+    /// dropdown that applies as it changes and whose options are fixed. Not the rows with
+    /// lists that come from outside (skin, device, displays), the language (it switches
+    /// behind a curtain), the sensitivity (disabled without high precision), and the rows
+    /// this platform does not show.
+    pub fn pinnable(self) -> bool {
+        let hidden = match self {
+            Row::VideoDriver => !VIDEO_DRIVER_ROW,
+            Row::Renderer => !RENDERER_ROW,
+            Row::DisableWinKey => !WIN_KEY_ROW,
+            Row::MenuCursorSpin => true,
+            _ => false,
+        };
+        !hidden
+            && self.key_slot().is_none()
+            && !matches!(
+                self,
+                Row::Skin
+                    | Row::Device
+                    | Row::Display
+                    | Row::FullscreenSize
+                    | Row::WindowedSize
+                    | Row::Language
+                    | Row::Sensitivity
+            )
+    }
+
     /// The section of the screen the row is in: one of the `section::*` indices.
-    fn section(self) -> usize {
+    pub fn section(self) -> usize {
         match self {
             Row::MasterVolume
             | Row::MusicVolume
@@ -1136,6 +1181,20 @@ impl Rows {
             })
             .chain(super::otd::specs())
             .collect()
+    }
+
+    /// The widget a pinned `row` shows in the toolbar's popup, in the state `settings` have;
+    /// `None` for a row that cannot be pinned (ADR-0168).
+    pub fn pin_widget(&self, row: Row, settings: &Settings) -> Option<RowWidget> {
+        if !row.pinnable() {
+            return None;
+        }
+        let kind = self.kind(row, settings);
+        matches!(
+            kind,
+            RowKind::Toggle { .. } | RowKind::Slider { .. } | RowKind::Dropdown { .. }
+        )
+        .then(|| slam_ui::settings_screen::widget_of(kind))
     }
 
     fn kind(&self, row: Row, s: &Settings) -> RowKind {
@@ -2167,6 +2226,57 @@ mod tests {
 
     fn index(row: Row) -> usize {
         Row::ALL.iter().position(|r| *r == row).unwrap()
+    }
+
+    #[test]
+    fn row_names_are_unique_and_round_trip() {
+        let mut seen = std::collections::HashSet::new();
+        for row in Row::ALL {
+            let name = row.name();
+            assert!(!name.is_empty() && !name.starts_with("settings-"), "{name}");
+            assert!(seen.insert(name), "{name} names two rows");
+            assert_eq!(Row::from_name(name), Some(row));
+        }
+        assert_eq!(Row::from_name("no-such-row"), None);
+        assert_eq!(Row::from_name(""), None);
+    }
+
+    #[test]
+    fn pinnable_rows_have_a_popup_widget_and_the_others_do_not() {
+        let (rows, settings) = rows();
+        assert!(Row::MenuCursor.pinnable());
+        assert!(Row::MasterVolume.pinnable());
+        for row in [Row::Skin, Row::Device, Row::Language, Row::LeftKey1] {
+            assert!(!row.pinnable(), "{row:?}");
+            assert!(rows.pin_widget(row, &settings).is_none());
+        }
+        // Buttons and notes are not pinnable whatever the table says.
+        for row in [Row::SongsFolder, Row::ResetKeys, Row::NotFullscreenNote] {
+            assert!(rows.pin_widget(row, &settings).is_none(), "{row:?}");
+        }
+        assert!(matches!(
+            rows.pin_widget(Row::MenuCursor, &settings),
+            Some(RowWidget::Dropdown(_))
+        ));
+        assert!(matches!(
+            rows.pin_widget(Row::MasterVolume, &settings),
+            Some(RowWidget::Slider(_))
+        ));
+        assert!(matches!(
+            rows.pin_widget(Row::MenuMusic, &settings),
+            Some(RowWidget::Toggle(_))
+        ));
+    }
+
+    #[test]
+    fn a_popup_value_applies_like_the_panels() {
+        let (rows, mut settings) = rows();
+        let row = index(Row::MenuMusic);
+        rows.apply(&mut settings, row, RowValue::Toggle(false));
+        assert!(!settings.audio.menu_music);
+        let row = index(Row::MenuCursor);
+        rows.apply(&mut settings, row, RowValue::Choice(0));
+        assert_eq!(settings.general.menu_cursor, CursorStyle::ALL[0]);
     }
 
     fn sizes(fullscreen: &[[u16; 2]], windowed: &[[u16; 2]]) -> crate::displays::SizeLists {

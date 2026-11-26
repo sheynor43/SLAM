@@ -11,6 +11,21 @@ pub fn now_text() -> String {
     text_at(seconds)
 }
 
+/// The local time of day now as minutes since midnight, for the toolbar's clock
+/// (ADR-0168): in UTC where the zone is not known. Does not allocate.
+pub fn minute_now() -> u16 {
+    let seconds = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map_or(0, |d| d.as_secs() as i64);
+    minute_at(seconds)
+}
+
+/// [`minute_now`] for the Unix time `seconds`.
+pub fn minute_at(seconds: i64) -> u16 {
+    let local = seconds + utc_offset(seconds).unwrap_or(0);
+    (local.rem_euclid(86_400) / 60) as u16
+}
+
 /// [`now_text`]'s format for the Unix time `seconds`.
 pub fn text_at(seconds: i64) -> String {
     match utc_offset(seconds) {
@@ -96,6 +111,16 @@ mod tests {
         assert_eq!(format_seconds(1_795_211_712), "2026-11-20 21:55:12");
         // A leap day.
         assert_eq!(format_seconds(951_782_400), "2000-02-29 00:00:00");
+    }
+
+    #[test]
+    fn the_minute_of_the_day_is_the_local_one() {
+        let at = |seconds: i64| (seconds + utc_offset(seconds).unwrap_or(0)).rem_euclid(86_400);
+        for seconds in [0, 59, 3_600, 951_782_400, 1_795_211_712] {
+            assert_eq!(i64::from(minute_at(seconds)), at(seconds) / 60);
+            assert!(minute_at(seconds) < 24 * 60);
+        }
+        assert!(minute_now() < 24 * 60);
     }
 
     #[test]
