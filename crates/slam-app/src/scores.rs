@@ -193,6 +193,7 @@ pub fn rows_of(records: &[Record]) -> LocalScores {
             max_combo: r.max_combo,
             rank,
             mods: ScoreMods::from_acronyms(r.mods.iter().map(String::as_str)),
+            multiplier: crate::multipliers::acronyms_multiplier(r.mods.iter().map(String::as_str)),
             date_ms: r.date,
             hits: StatKind::ALL.map(|k| count_in(&r.statistics, hit_result(k))),
             maximums: StatKind::ALL.map(|k| count_in(&r.maximum_statistics, hit_result(k))),

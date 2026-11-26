@@ -7,6 +7,7 @@ use std::fmt::Write as _;
 
 use slam_render::Color;
 
+use super::mod_select::push_multiplier;
 use super::view::{DetailLabels, TEXT_CAPACITY, fit};
 use super::{
     BeatmapDetails, DetailStats, LocalScores, MAX_LOCAL_SCORES, ScoreRow, SongSelectLayout,
@@ -833,6 +834,8 @@ fn write_score(lines: &mut ScoreLines, row: Option<&ScoreRow>) {
             }
             lines.extra.text.push_str(acronym);
         }
+        lines.extra.text.push_str(SEPARATOR);
+        push_multiplier(&mut lines.extra.text, row.multiplier);
     }
     lines.extra.text.push_str(SEPARATOR);
     push_date(&mut lines.extra.text, row.date_ms);

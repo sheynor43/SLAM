@@ -115,11 +115,15 @@ pub struct CustomisationLayout {
     track_height: f32,
 }
 
+/// The panel's width in tile widths: the tiles' former width, so enlarging the tiles does not
+/// widen the settings panel (ADR-0167).
+const SETTINGS_TILE_BASIS: f32 = 210.0;
+
 impl CustomisationLayout {
     pub fn new(width: f32, height: f32, theme: &Theme) -> CustomisationLayout {
         let scale = theme.scale(height);
         let margin = theme.song_margin * scale;
-        let panel_width = (2.0 * theme.mod_tile_width + theme.mod_column_gap) * scale;
+        let panel_width = (2.0 * SETTINGS_TILE_BASIS + theme.mod_column_gap) * scale;
         let header = Rect {
             x: width - margin - panel_width,
             y: margin,

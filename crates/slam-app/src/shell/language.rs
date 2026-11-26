@@ -75,6 +75,7 @@ pub fn interface_views(
         search_no_matches: text("song-select-search-no-matches"),
         mods_title: text("song-select-mods-title"),
         mods_hint: text("song-select-mods-hint"),
+        mods_multiplier: text("song-select-mods-multiplier"),
         mods_customise: text("song-select-mods-customise"),
         setting_texts: mod_settings::TEXT_KEYS
             .iter()
