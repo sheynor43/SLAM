@@ -31,7 +31,7 @@ use slam_ui::theme::{ColourScheme, MAX_SKEW_DEGREES, UI_SCALE_RANGE};
 use slam_ui::volume::{Edge, MeterStyle};
 
 /// Sections, in order; the keys of their names are in [`SECTION_KEYS`].
-const SECTION_KEYS: [&str; 9] = [
+const SECTION_KEYS: [&str; 10] = [
     "settings-section-audio",
     "settings-section-offset",
     "settings-section-keys",
@@ -40,6 +40,7 @@ const SECTION_KEYS: [&str; 9] = [
     "settings-section-frame",
     "settings-section-gameplay",
     "settings-section-library",
+    super::otd::SECTION_KEY,
     "settings-section-feedback",
 ];
 /// The indices of the sections, in the order they show; [`SECTION_KEYS`] has their names in
@@ -54,8 +55,11 @@ mod section {
     pub const FRAME: usize = 5;
     pub const GAMEPLAY: usize = 6;
     pub const LIBRARY: usize = 7;
-    pub const FEEDBACK: usize = 8;
+    /// OpenTabletDriver (ADR-0166): its rows follow `Row::ALL`, see `super::otd`.
+    pub const TABLET: usize = 8;
+    pub const FEEDBACK: usize = 9;
 }
+const _: () = assert!(section::TABLET == super::otd::SECTION);
 
 /// The index of the skin row.
 pub fn skin_row() -> usize {
@@ -358,7 +362,8 @@ pub enum Row {
 }
 
 // The screen ignores rows past its capacity.
-const _: () = assert!(Row::ALL.len() <= slam_ui::settings_screen::MAX_ROWS);
+const _: () =
+    assert!(Row::ALL.len() + super::otd::OtdRow::ALL.len() <= slam_ui::settings_screen::MAX_ROWS);
 
 impl Row {
     pub const ALL: [Row; 105] = [
@@ -1117,6 +1122,7 @@ impl Rows {
                 kind: self.kind(*row, settings),
                 restart_required: row.restart_required(),
             })
+            .chain(super::otd::specs())
             .collect()
     }
 
@@ -1855,6 +1861,17 @@ impl Rows {
                 let fields: Vec<&str> = fields.iter().map(|f| f.as_ref()).collect();
                 slam_ui::song_select::search_text(&fields).into_boxed_str()
             })
+            .chain(super::otd::search_keys().map(|key| {
+                let section = super::otd::SECTION_KEY;
+                let fields = [
+                    localizer.format(key, None),
+                    localizer.format(section, None),
+                    localizer.format_english(key),
+                    localizer.format_english(section),
+                ];
+                let fields: Vec<&str> = fields.iter().map(|f| f.as_ref()).collect();
+                slam_ui::song_select::search_text(&fields).into_boxed_str()
+            }))
             .collect()
     }
 
@@ -2054,8 +2071,10 @@ impl Rows {
                     trim_zeros: matches!(row, Row::Sensitivity | Row::CursorSize),
                     zero_text,
                     hint,
+                    dynamic_label: false,
                 }
             })
+            .chain(super::otd::labels(localizer))
             .collect();
         SettingsLabels {
             search_placeholder: text("settings-search-placeholder"),
@@ -2381,7 +2400,10 @@ mod tests {
         settings.gameplay.mouse_buttons = false;
         let rows = Rows::new(&settings);
         let specs = rows.specs(&settings);
-        assert_eq!(specs.len(), Row::ALL.len());
+        assert_eq!(
+            specs.len(),
+            Row::ALL.len() + super::super::otd::OtdRow::ALL.len()
+        );
         assert!(matches!(
             specs[index(Row::MusicVolume)].kind,
             RowKind::Slider { value, max, .. } if value == 35.0 && max == 100.0
@@ -3040,7 +3062,8 @@ mod tests {
             .expect("the section has rows");
         assert_eq!(*first, Row::Skin);
         // Every section has rows, and a row's index is its place in `Row::ALL`.
-        for s in 0..SECTIONS {
+        for s in (0..SECTIONS).filter(|s| *s != section::TABLET) {
+            // The tablet section's rows follow `Row::ALL` (`super::otd`).
             assert!(Row::ALL.iter().any(|row| row.section() == s), "{s}");
         }
         for (i, row) in Row::ALL.iter().enumerate() {
@@ -3079,7 +3102,7 @@ mod tests {
     #[test]
     fn the_songs_folder_row_is_a_button_in_its_own_section() {
         let (rows, s) = rows();
-        assert_eq!(Row::SongsFolder.section(), SECTIONS - 2);
+        assert_eq!(Row::SongsFolder.section(), SECTIONS - 3);
         assert_eq!(
             rows.specs(&s)[index(Row::SongsFolder)].kind,
             RowKind::Button
@@ -3091,7 +3114,7 @@ mod tests {
         assert_eq!(row.label, "Songs folder");
         assert_eq!(row.button, "Not selected");
         assert!(row.shows_value);
-        assert_eq!(labels.sections[SECTIONS - 2], "Library");
+        assert_eq!(labels.sections[SECTIONS - 3], "Library");
         // Only this row shows a value.
         assert_eq!(labels.rows.iter().filter(|r| r.shows_value).count(), 1);
     }
@@ -3254,9 +3277,9 @@ mod tests {
                     &labels.no_results,
                     &labels.restart,
                 ])
+                // The tablet section's preview lines are empty: its own test covers it.
                 .chain(
-                    labels
-                        .rows
+                    labels.rows[..Row::ALL.len()]
                         .iter()
                         .flat_map(|r| [&r.label].into_iter().chain(&r.options)),
                 );

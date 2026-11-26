@@ -1735,6 +1735,7 @@ dependencies = [
  "slam-ipc",
  "slam-library",
  "slam-osu",
+ "slam-otd",
  "slam-play",
  "slam-plugins",
  "slam-render",
@@ -1835,6 +1836,15 @@ dependencies = [
  "slam-testkit",
  "thiserror",
  "toml",
+]
+
+[[package]]
+name = "slam-otd"
+version = "0.1.4-alpha"
+dependencies = [
+ "serde_json",
+ "thiserror",
+ "tracing",
 ]
 
 [[package]]

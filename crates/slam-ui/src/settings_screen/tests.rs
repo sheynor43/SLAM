@@ -1597,7 +1597,6 @@ fn tabs_are_square_icon_buttons_in_a_narrow_column() {
 
 #[test]
 fn every_section_has_its_own_icon() {
-    assert!(icons::ICONS >= MAX_SECTIONS.min(9));
     for section in 0..icons::ICONS {
         assert!(!icons::icon(section).is_empty(), "section {section}");
     }
@@ -1609,4 +1608,231 @@ fn every_section_has_its_own_icon() {
             );
         }
     }
+}
+
+#[test]
+fn the_tablet_icon_comes_before_the_feedback_one() {
+    // The sections' order: ..., library (7), tablet (8), feedback (9).
+    assert_eq!(
+        format!("{:?}", icons::icon(8)),
+        format!("{:?}", icons::TABLET)
+    );
+    assert_eq!(
+        format!("{:?}", icons::icon(9)),
+        format!("{:?}", icons::FEEDBACK)
+    );
+}
+
+#[test]
+fn ten_sections_have_ten_tabs_and_icons() {
+    assert_eq!((MAX_SECTIONS, MAX_ROWS, icons::ICONS), (10, 304, 10));
+    let rows: Vec<RowSpec> = (0..10).map(|i| toggle(i, false)).collect();
+    let s = SettingsScreen::new(&rows, 10);
+    assert_eq!(s.sections(), 10);
+    let l = layout();
+    for i in 0..10 {
+        assert_eq!(l.tab_at(10, l.tabs[i].x + 1.0, l.tabs[i].y + 1.0), Some(i));
+    }
+    assert!(s.snapshot().headers.iter().all(Option::is_some));
+}
+
+fn labels_arc(texts: &[&str]) -> Arc<[Box<str>]> {
+    texts.iter().map(|t| Box::<str>::from(*t)).collect()
+}
+
+#[test]
+fn dynamic_labels_bump_the_generation_and_reach_the_snapshot() {
+    let mut s = screen();
+    let before = s.snapshot();
+    assert_eq!(
+        (before.dynamic_generation, before.dynamic_labels.len()),
+        (0, 0)
+    );
+    s.set_dynamic_labels(labels_arc(&["one", ""]));
+    s.set_dynamic_labels(labels_arc(&["two", ""]));
+    let snap = s.snapshot();
+    assert_eq!(snap.dynamic_generation, 2);
+    assert_eq!(&*snap.dynamic_labels[0], "two");
+    assert!(snap.dynamic_labels[1].is_empty());
+}
+
+fn dynamic_view() -> SettingsView {
+    let registry = Arc::new(slam_text::FontRegistry::with_builtin());
+    let labels = SettingsLabels {
+        sections: vec!["A".to_owned()],
+        rows: vec![
+            RowLabels {
+                label: "Static".to_owned(),
+                dynamic_label: true,
+                ..RowLabels::default()
+            },
+            RowLabels {
+                label: "Fixed".to_owned(),
+                ..RowLabels::default()
+            },
+        ],
+        ..SettingsLabels::default()
+    };
+    SettingsView::new(
+        registry,
+        theme(),
+        &[toggle(0, false), toggle(0, false)],
+        &labels,
+    )
+}
+
+fn push_view(view: &mut SettingsView, snapshot: &SettingsSnapshot) -> usize {
+    use slam_render::atlas::{AtlasRegion, UvRect};
+    use slam_render::hal::Origin;
+    use slam_render::shape::ShapeBatch;
+    use slam_render::sprite::SpriteBatch;
+    use slam_render::textures::TextureId;
+    use slam_text::{GlyphAtlasConfig, glyph_atlas};
+    let limits = slam_render::Limits {
+        max_texture_size: 4096,
+        max_uniform_block_size: 16384,
+        max_uniform_buffer_slots: 12,
+        max_texture_slots: 16,
+    };
+    let registry = Arc::new(slam_text::FontRegistry::with_builtin());
+    let mut glyphs = glyph_atlas(registry, &GlyphAtlasConfig::new(limits)).unwrap();
+    let white = AtlasRegion {
+        texture: TextureId(0),
+        origin: Origin::new(0, 0),
+        size: slam_render::Extent::new(1, 1),
+        uv: UvRect::FULL,
+    };
+    let mut shapes = ShapeBatch::with_capacity(4096);
+    let mut text = SpriteBatch::with_capacity(4096);
+    view.push(
+        &mut shapes,
+        &mut text,
+        &mut glyphs,
+        1280.0,
+        720.0,
+        snapshot,
+        crate::screen::Pose::SHOWN,
+        white,
+        0,
+    );
+    shapes.len()
+}
+
+#[test]
+fn a_dynamic_row_changes_its_name_and_cuts_a_long_one_with_an_ellipsis() {
+    use view::DYNAMIC_LABEL_CAPACITY;
+    let mut view = dynamic_view();
+    let mut s = SettingsScreen::new(&[toggle(0, false), toggle(0, false)], 1);
+    push_view(&mut view, &s.snapshot());
+    assert_eq!(view.shown_label(0).unwrap().0, "Static");
+    s.set_dynamic_labels(labels_arc(&["Tablet 7", "ignored"]));
+    push_view(&mut view, &s.snapshot());
+    assert_eq!(view.shown_label(0).unwrap().0, "Tablet 7");
+    // A row without the flag keeps its name.
+    assert_eq!(view.shown_label(1).unwrap().0, "Fixed");
+    // Empty falls back to the static label.
+    s.set_dynamic_labels(labels_arc(&[""]));
+    push_view(&mut view, &s.snapshot());
+    assert_eq!(view.shown_label(0).unwrap().0, "Static");
+    // Too long: cut at a character boundary, with an ellipsis, within the capacity.
+    let long = "\u{0436}".repeat(100);
+    s.set_dynamic_labels(labels_arc(&[long.as_str()]));
+    push_view(&mut view, &s.snapshot());
+    let shown = view.shown_label(0).unwrap().0;
+    assert!(shown.ends_with('\u{2026}'), "{shown}");
+    assert!(shown.len() <= DYNAMIC_LABEL_CAPACITY, "{}", shown.len());
+    assert!(shown.starts_with('\u{0436}'));
+}
+
+#[test]
+fn set_slider_range_keeps_the_value_clamped_and_ignores_other_rows() {
+    let mut s = screen();
+    s.set_slider_range(0, 0.0, 10.0, 0.5);
+    let Some(RowWidget::Slider(slider)) = s.widget(0) else {
+        panic!("row 0 is a slider")
+    };
+    assert_eq!(
+        (slider.min(), slider.max(), slider.step(), slider.value()),
+        (0.0, 10.0, 0.5, 10.0)
+    );
+    s.set_slider_range(0, 0.0, 200.0, 1.0);
+    let Some(RowWidget::Slider(slider)) = s.widget(0) else {
+        panic!()
+    };
+    // The value was clamped to the first range and stays.
+    assert_eq!((slider.max(), slider.value()), (200.0, 10.0));
+    let before = s.clone();
+    s.set_slider_range(1, 0.0, 5.0, 1.0);
+    s.set_slider_range(99, 0.0, 5.0, 1.0);
+    assert_eq!(s, before);
+}
+
+fn preview_row(section: usize) -> RowSpec {
+    RowSpec {
+        section,
+        kind: RowKind::Preview,
+        restart_required: false,
+    }
+}
+
+/// Toggle, preview with its notes, toggle.
+fn preview_screen() -> SettingsScreen {
+    let mut rows = vec![toggle(0, false), preview_row(0)];
+    rows.extend((1..PREVIEW_LINES).map(|_| note(0)));
+    rows.push(toggle(0, false));
+    SettingsScreen::new(&rows, 1)
+}
+
+#[test]
+fn a_preview_row_takes_no_focus_pointer_or_action() {
+    let mut s = preview_screen();
+    let last = 1 + PREVIEW_LINES;
+    input(&mut s, SettingsInput::Down);
+    assert_eq!(s.focus(), last);
+    input(&mut s, SettingsInput::Up);
+    assert_eq!(s.focus(), 0);
+    let l = layout();
+    let (x, y) = centre(l.row(s.slot(1)));
+    assert_eq!(input(&mut s, SettingsInput::PointerPress { x, y }), None);
+    input(&mut s, SettingsInput::PointerMove { x, y });
+    assert_eq!(s.focus(), 0);
+    s.focus = 1;
+    for i in [
+        SettingsInput::Activate,
+        SettingsInput::Left,
+        SettingsInput::Right,
+    ] {
+        assert_eq!(input(&mut s, i), None);
+    }
+    // Hiding and showing works as for any row.
+    s.set_hidden(1, true);
+    assert!(s.snapshot().hidden[1]);
+    s.set_hidden(1, false);
+    assert!(!s.snapshot().hidden[1]);
+}
+
+#[test]
+fn the_preview_reaches_the_snapshot_and_is_drawn_inside_its_rows() {
+    let mut s = preview_screen();
+    let preview = AreaPreview {
+        surface: [200.0, 100.0],
+        centre: [100.0, 50.0],
+        size: [60.0, 40.0],
+        rotation_deg: 30.0,
+    };
+    s.set_preview(preview);
+    assert_eq!(s.snapshot().preview, preview);
+    let registry = Arc::new(slam_text::FontRegistry::with_builtin());
+    let mut rows = vec![toggle(0, false), preview_row(0)];
+    rows.extend((1..PREVIEW_LINES).map(|_| note(0)));
+    let labels = SettingsLabels {
+        sections: vec!["A".to_owned()],
+        ..SettingsLabels::default()
+    };
+    let mut view = SettingsView::new(registry, theme(), &rows, &labels);
+    let drawn = push_view(&mut view, &s.snapshot());
+    s.set_preview(AreaPreview::default());
+    let empty = push_view(&mut view, &s.snapshot());
+    // Plate, outline, area fill, area outline and the centre dot.
+    assert_eq!(drawn - empty, 5);
 }

@@ -26,9 +26,30 @@ pub mod view;
 pub use view::{KeyLabels, RowLabels, SettingsLabels, SettingsView};
 
 /// Most rows; more are ignored.
-pub const MAX_ROWS: usize = 112;
+pub const MAX_ROWS: usize = 304;
 /// Most sections; rows of later ones go into the last.
-pub const MAX_SECTIONS: usize = 9;
+pub const MAX_SECTIONS: usize = 10;
+
+/// How many lines the area preview spans: its own row and the `PREVIEW_LINES - 1` rows after
+/// it, which the application fills with empty notes.
+pub const PREVIEW_LINES: usize = 4;
+
+/// The tablet-area preview's data, in arbitrary units shared by all fields (millimetres of a
+/// tablet): `surface` is the whole tablet's width and height with the origin at its top-left,
+/// X to the right, Y down; the area is a rectangle of `size` centred at `centre`, turned by
+/// `rotation_deg` degrees clockwise on screen about its centre.
+#[derive(Clone, Copy, Debug, PartialEq, Default)]
+pub struct AreaPreview {
+    pub surface: [f32; 2],
+    pub centre: [f32; 2],
+    pub size: [f32; 2],
+    pub rotation_deg: f32,
+}
+
+/// Rows that take no focus, pointer or action.
+fn is_inert(widget: &RowWidget) -> bool {
+    matches!(widget, RowWidget::Note | RowWidget::Preview)
+}
 
 /// A mouse button, as the screen names it; the application converts to and from its own.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -96,6 +117,9 @@ pub enum RowKind {
     /// A line of text (the row's [`RowLabels::label`]) across the whole row: never focused,
     /// never pointed at, never gives an action.
     Note,
+    /// The tablet-area preview (see [`AreaPreview`]), drawn over this row's slot and the
+    /// next [`PREVIEW_LINES`]` - 1`: never focused, never pointed at, never gives an action.
+    Preview,
     Toggle {
         value: bool,
     },
@@ -127,6 +151,7 @@ pub enum RowWidget {
     Key(KeyRow),
     Button,
     Note,
+    Preview,
     Toggle(Toggle),
     Slider(Slider),
     Dropdown(Dropdown),
@@ -513,6 +538,14 @@ pub struct SettingsSnapshot {
     pub scroll: f32,
     /// The pointer, sideways wheel and text drags for the marquees (ADR-0148).
     pub text: TextScroll,
+    /// Per row: the text that replaces the name of a row with
+    /// [`RowLabels::dynamic_label`]; empty or missing keeps the static label.
+    pub dynamic_labels: Arc<[Box<str>]>,
+    /// Bumped by every [`SettingsScreen::set_dynamic_labels`]; the view re-reads the texts
+    /// when it changes.
+    pub dynamic_generation: u64,
+    /// The tablet-area preview's data.
+    pub preview: AreaPreview,
 }
 
 /// The screen's state on the update thread.
@@ -554,6 +587,9 @@ pub struct SettingsScreen {
     /// Where the held press went down on a row's name: a sideways move past the drag
     /// distance turns it into a text drag.
     text_press: Option<[f32; 2]>,
+    dynamic_labels: Arc<[Box<str>]>,
+    dynamic_generation: u64,
+    preview: AreaPreview,
 }
 
 impl SettingsScreen {
@@ -576,6 +612,7 @@ impl SettingsScreen {
                 }),
                 RowKind::Button => RowWidget::Button,
                 RowKind::Note => RowWidget::Note,
+                RowKind::Preview => RowWidget::Preview,
                 RowKind::Toggle { value } => RowWidget::Toggle(Toggle::new(value)),
                 RowKind::Slider {
                     min,
@@ -612,6 +649,9 @@ impl SettingsScreen {
             shown_ns: 0,
             text: TextScroll::default(),
             text_press: None,
+            dynamic_labels: Arc::from([]),
+            dynamic_generation: 0,
+            preview: AreaPreview::default(),
         };
         screen.recompute_slots();
         screen.focus = screen.first_shown().unwrap_or(0);
@@ -690,6 +730,9 @@ impl SettingsScreen {
             searching: self.searching(),
             scroll: self.shown,
             text: self.text,
+            dynamic_labels: Arc::clone(&self.dynamic_labels),
+            dynamic_generation: self.dynamic_generation,
+            preview: self.preview,
         }
     }
 
@@ -783,7 +826,7 @@ impl SettingsScreen {
         // Every word, as typed or as read on the other keyboard layout (ADR-0137).
         with_term_pairs(&self.search, |terms| {
             for row in 0..self.len {
-                self.matched[row] = !matches!(self.widgets[row], RowWidget::Note)
+                self.matched[row] = !is_inert(&self.widgets[row])
                     && texts.get(row).is_some_and(|text| {
                         terms
                             .iter()
@@ -842,8 +885,7 @@ impl SettingsScreen {
 
     /// The rows shown that can take the focus: not notes.
     fn shown_rows(&self) -> impl Iterator<Item = usize> + '_ {
-        (0..self.len)
-            .filter(|row| self.shown(*row) && !matches!(self.widgets[*row], RowWidget::Note))
+        (0..self.len).filter(|row| self.shown(*row) && !is_inert(&self.widgets[*row]))
     }
 
     /// The first row of the list that can take the focus.
@@ -1012,6 +1054,38 @@ impl SettingsScreen {
         }
     }
 
+    /// Gives the rows with [`RowLabels::dynamic_label`] their names, indexed by row: an
+    /// empty or missing entry keeps the static label. The application builds the `Arc` off
+    /// the update thread; this stores it and bumps the generation the view watches.
+    pub fn set_dynamic_labels(&mut self, labels: Arc<[Box<str>]>) {
+        self.dynamic_labels = labels;
+        self.dynamic_generation = self.dynamic_generation.wrapping_add(1);
+    }
+
+    /// The texts set by [`Self::set_dynamic_labels`].
+    pub fn dynamic_labels(&self) -> &Arc<[Box<str>]> {
+        &self.dynamic_labels
+    }
+
+    /// The number of times the dynamic labels were set.
+    pub fn dynamic_generation(&self) -> u64 {
+        self.dynamic_generation
+    }
+
+    /// Replaces the range of the slider row `row`, keeping its value (clamped and snapped to
+    /// the new range). Other rows are left alone. The view's number of decimals stays the one
+    /// from the row's construction step, so choose a step no finer than that.
+    pub fn set_slider_range(&mut self, row: usize, min: f64, max: f64, step: f64) {
+        if let Some(RowWidget::Slider(slider)) = self.widgets[..self.len].get_mut(row) {
+            *slider = Slider::new(min, max, step, slider.value());
+        }
+    }
+
+    /// Sets what the area preview row draws.
+    pub fn set_preview(&mut self, preview: AreaPreview) {
+        self.preview = preview;
+    }
+
     /// The text set by [`Self::set_value_text`].
     pub fn value_text(&self) -> &str {
         &self.value_text
@@ -1083,9 +1157,7 @@ impl SettingsScreen {
     /// The rows of `section` that can take the focus: shown and not notes.
     fn rows_of(&self, section: usize) -> impl Iterator<Item = usize> + '_ {
         (0..self.len).filter(move |row| {
-            self.section_of(*row) == section
-                && self.shown(*row)
-                && !matches!(self.widgets[*row], RowWidget::Note)
+            self.section_of(*row) == section && self.shown(*row) && !is_inert(&self.widgets[*row])
         })
     }
 
@@ -1169,7 +1241,7 @@ impl SettingsScreen {
         input: SettingsInput,
         layout: &SettingsLayout,
     ) -> Option<SettingsAction> {
-        if !self.shown(row) || matches!(self.widgets[row], RowWidget::Note) {
+        if !self.shown(row) || is_inert(&self.widgets[row]) {
             return None;
         }
         self.route_widget(row, input, layout)
@@ -1199,7 +1271,7 @@ impl SettingsScreen {
                 );
                 return None;
             }
-            RowWidget::Note => return None,
+            RowWidget::Note | RowWidget::Preview => return None,
             RowWidget::Button => {
                 return matches!(
                     input,

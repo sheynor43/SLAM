@@ -89,6 +89,7 @@ graph TD
   osu --> formats
   app --> ipc[slam-ipc]
   ipc --> osu
+  app --> otd[slam-otd]
   app --> play[slam-play]
   play --> osu
   play --> ui
@@ -114,6 +115,7 @@ graph TD
 | `slam-ui` | Экраны, виджеты, HUD и его редактор, темы, анимации переходов | `slam-render`, `slam-skin`, `slam-text` |
 | `slam-play` | Игровой процесс: раскладка поля, отрисовка объектов и курсора из скина, живой ввод в правила, хитсаунды, экран игры и данные HUD ([ADR-0032](adr/0032-play-crate.md)) | `slam-osu`, `slam-ui`, `slam-render`, `slam-skin`, `slam-text`, `slam-input` (только типы событий), `slam-audio` |
 | `slam-ipc` | JSON-RPC для внешнего редактора | `slam-osu` |
+| `slam-otd` | Клиент демона OpenTabletDriver 0.6.x: канал, JSON-RPC, модель настроек, фоновый поток ([ADR-0166](adr/0166-opentabletdriver-settings.md)) | — |
 | `slam-app` | Точка входа, сборка всего вместе, настройки | всё |
 | `slam-shader-build` | Только сборка (`[build-dependencies]`): трансляция WGSL через `naga` в языки бэкендов и генерация таблиц привязок ([ADR-0019](adr/0019-wgsl-shaders-and-coordinates.md)) | — |
 | `slam-testkit` | Только тесты (`[dev-dependencies]`): счётчик аллокаций `assert_no_alloc` ([ADR-0016](adr/0016-testkit-alloc-counter.md)) | — |

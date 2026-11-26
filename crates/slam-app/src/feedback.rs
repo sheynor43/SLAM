@@ -8,6 +8,8 @@ use std::sync::{Mutex, PoisonError};
 
 /// The project page.
 pub const REPO_URL: &str = "https://github.com/sheynor43/SLAM";
+/// OpenTabletDriver's official site, its downloads for every platform.
+pub const OTD_URL: &str = "https://opentabletdriver.net/";
 
 /// The longest URL opened. Browsers and GitHub take far more, but `xdg-open` and the
 /// Windows shell are safer well below it.
@@ -22,6 +24,8 @@ pub enum Kind {
     Bug,
     /// The feature request form.
     Feature,
+    /// OpenTabletDriver's download page, offered when its daemon is not found (ADR-0166).
+    OpenTabletDriver,
 }
 
 /// What the bug report form is filled with. Every field is plain text.
@@ -104,6 +108,7 @@ pub fn encode(text: &str) -> String {
 pub fn url(kind: Kind, env: &Environment) -> String {
     let (template, fields) = match kind {
         Kind::Github => return REPO_URL.to_owned(),
+        Kind::OpenTabletDriver => return OTD_URL.to_owned(),
         Kind::Bug => (
             "bug_report.yml",
             vec![
@@ -183,6 +188,14 @@ mod tests {
         assert_eq!(encode("aZ09-_.~"), "aZ09-_.~");
         assert_eq!(encode("a b&c=d/é"), "a%20b%26c%3Dd%2F%C3%A9");
         assert_eq!(encode("\n#"), "%0A%23");
+    }
+
+    #[test]
+    fn the_otd_link_is_its_official_site() {
+        assert_eq!(
+            url(Kind::OpenTabletDriver, &env()),
+            "https://opentabletdriver.net/"
+        );
     }
 
     #[test]
