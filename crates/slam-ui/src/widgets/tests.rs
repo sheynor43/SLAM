@@ -338,6 +338,31 @@ mod slider_tests {
         s.input(SliderInput::Activate, &layout());
         assert_eq!(s.edit_text(), Some("3"));
     }
+
+    #[test]
+    fn a_free_slider_keeps_typed_values_exact_and_beyond_the_range() {
+        let mut s = Slider::new(0.0, 100.0, 10.0, 20.0).with_free(true);
+        for (typed, want) in [("18", 18.0), ("1000", 1000.0), ("2.125", 2.125)] {
+            s.input(SliderInput::Activate, &layout());
+            for c in typed.chars() {
+                s.input(SliderInput::Type(c), &layout());
+            }
+            assert_eq!(
+                s.input(SliderInput::Activate, &layout()),
+                Some(SliderAction::Changed(want))
+            );
+            assert_eq!(s.value(), want);
+            assert!(s.fraction() <= 1.0);
+        }
+        // Without the flag the same typing snaps and clamps.
+        let mut s = Slider::new(0.0, 100.0, 10.0, 20.0);
+        s.input(SliderInput::Activate, &layout());
+        for c in "18".chars() {
+            s.input(SliderInput::Type(c), &layout());
+        }
+        s.input(SliderInput::Activate, &layout());
+        assert_eq!(s.value(), 20.0);
+    }
 }
 
 mod dropdown_tests {

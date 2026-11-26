@@ -1198,7 +1198,16 @@ impl SettingsScreen {
     /// from the row's construction step, so choose a step no finer than that.
     pub fn set_slider_range(&mut self, row: usize, min: f64, max: f64, step: f64) {
         if let Some(RowWidget::Slider(slider)) = self.widgets[..self.len].get_mut(row) {
-            *slider = Slider::new(min, max, step, slider.value());
+            *slider = Slider::new(min, max, step, slider.value()).with_free(slider.is_free());
+        }
+    }
+
+    /// Makes slider `row` keep typed and set values exact, outside its range too (ADR-0176).
+    pub fn set_slider_free(&mut self, row: usize) {
+        if let Some(RowWidget::Slider(slider)) = self.widgets[..self.len].get_mut(row)
+            && !slider.is_free()
+        {
+            *slider = slider.with_free(true);
         }
     }
 

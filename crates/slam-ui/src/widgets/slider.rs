@@ -111,7 +111,13 @@ pub struct Slider {
     dragging: bool,
     /// The value being typed (ADR-0173).
     edit: Option<ValueEdit>,
+    /// Typed and set values are kept exact (ADR-0176): not snapped to the step, and a typed
+    /// value may lie outside the range, which the owner then widens. Dragging still snaps.
+    free: bool,
 }
+
+/// The largest magnitude a free slider takes from typing.
+pub const FREE_BOUND: f64 = 1.0e9;
 
 impl Slider {
     /// A slider over `min..=max` in steps of `step` (counted from `min`), at `value`
@@ -133,6 +139,7 @@ impl Slider {
             value: min,
             dragging: false,
             edit: None,
+            free: false,
         };
         slider.value = slider.snap(value);
         slider
@@ -140,6 +147,16 @@ impl Slider {
 
     pub fn value(&self) -> f64 {
         self.value
+    }
+
+    /// Makes typed and set values exact (see the `free` field).
+    pub fn with_free(mut self, free: bool) -> Slider {
+        self.free = free;
+        self
+    }
+
+    pub fn is_free(&self) -> bool {
+        self.free
     }
 
     pub fn min(&self) -> f64 {
@@ -161,7 +178,7 @@ impl Slider {
     /// The value as a fraction of the range, `0.0..=1.0`.
     pub fn fraction(&self) -> f32 {
         if self.max > self.min {
-            ((self.value - self.min) / (self.max - self.min)) as f32
+            (((self.value - self.min) / (self.max - self.min)) as f32).clamp(0.0, 1.0)
         } else {
             0.0
         }
@@ -169,7 +186,15 @@ impl Slider {
 
     /// Sets the value (clamped and snapped) without reporting an action.
     pub fn set(&mut self, value: f64) {
-        self.value = self.snap(value);
+        self.value = if self.free {
+            if value.is_nan() {
+                self.value
+            } else {
+                value.clamp(self.min, self.max)
+            }
+        } else {
+            self.snap(value)
+        };
     }
 
     /// `value` clamped to the range and rounded to the nearest step. The grid point is
@@ -204,13 +229,14 @@ impl Slider {
 
     /// Digits after the point that tell the steps apart.
     fn decimals(&self) -> usize {
+        // A free slider shows what was typed: three digits cover the rows' construction step.
         let mut decimals = 0;
         let mut scaled = self.step;
         while decimals < 6 && (scaled - scaled.round()).abs() > 1e-9 {
             scaled *= 10.0;
             decimals += 1;
         }
-        decimals
+        if self.free { decimals.max(3) } else { decimals }
     }
 
     /// Whether the value is being typed.
@@ -238,6 +264,14 @@ impl Slider {
     /// step; text that is no number leaves the value alone.
     pub fn commit_edit(&mut self) -> Option<SliderAction> {
         let typed = self.edit.take()?.parse()?;
+        if self.free {
+            let typed = typed.clamp(-FREE_BOUND, FREE_BOUND);
+            if typed == self.value {
+                return None;
+            }
+            self.value = typed;
+            return Some(SliderAction::Changed(typed));
+        }
         self.change(typed)
     }
 

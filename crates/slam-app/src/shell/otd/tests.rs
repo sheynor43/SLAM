@@ -400,11 +400,17 @@ fn a_failed_apply_keeps_the_draft() {
 #[test]
 fn param_ranges_cover_the_value() {
     assert_eq!(param_range(&SettingValue::Float(0.5)), (0.0, 1.0, 0.01));
-    assert_eq!(param_range(&SettingValue::Int(10)), (0.0, 100.0, 1.0));
-    assert_eq!(param_range(&SettingValue::Int(3)), (0.0, 10.0, 1.0));
-    assert_eq!(param_range(&SettingValue::Float(5.0)), (0.0, 10.0, 0.01));
-    assert_eq!(param_range(&SettingValue::Float(-2.0)), (-10.0, 10.0, 0.01));
-    assert_eq!(param_range(&SettingValue::Float(150.0)), (0.0, 1000.0, 1.0));
+    assert_eq!(param_range(&SettingValue::Int(10)), (0.0, 1000.0, 1.0));
+    assert_eq!(param_range(&SettingValue::Int(3)), (0.0, 1000.0, 1.0));
+    assert_eq!(param_range(&SettingValue::Float(5.0)), (0.0, 1000.0, 0.1));
+    assert_eq!(
+        param_range(&SettingValue::Float(-2.0)),
+        (-1000.0, 1000.0, 0.1)
+    );
+    assert_eq!(
+        param_range(&SettingValue::Float(150.0)),
+        (0.0, 10000.0, 1.0)
+    );
 }
 
 /// A daemon connection that takes every write and never answers a read.
@@ -426,4 +432,120 @@ impl std::io::Write for Stuck {
     fn flush(&mut self) -> std::io::Result<()> {
         Ok(())
     }
+}
+
+/// The latency setting of the Antichatter filter (filter 4, setting 0) is 18.0.
+fn latency() -> OtdRow {
+    OtdRow::ParamNumber(4, 0)
+}
+
+#[test]
+fn typed_filter_values_stay_exact_and_may_exceed_the_range() {
+    let (mut otd, mut screen) = ready();
+    // Antichatter is on, so its settings show.
+    otd.refresh(&mut screen);
+    assert!((slider(&screen, latency()) - 18.0).abs() < 1e-9);
+    let row = latency().index();
+    for typed in [18.0, 1000.0, 2500.5] {
+        otd.apply(latency(), RowValue::Slider(typed));
+        otd.refresh(&mut screen);
+        assert!((slider(&screen, latency()) - typed).abs() < 1e-9, "{typed}");
+        let p = otd.draft.as_ref().unwrap().profile(0).unwrap();
+        assert_eq!(p.filters[4].settings[0].value, SettingValue::Float(typed));
+    }
+    assert!(matches!(screen.widget(row), Some(RowWidget::Slider(s)) if s.is_free()));
+}
+
+#[test]
+fn a_preset_round_trips_through_its_file() {
+    let dir = std::env::temp_dir().join(format!("slam-otd-presets-{}", std::process::id()));
+    let path = presets::file_in(&dir);
+    assert!(presets::read(&path).is_empty());
+    let snap = snapshot();
+    let list = vec![
+        Preset {
+            name: "Preset 1".into(),
+            profile: snap.settings.profile_preset(0).unwrap(),
+        },
+        Preset {
+            name: "Smooth".into(),
+            profile: snap.settings.profile_preset(1).unwrap(),
+        },
+    ];
+    presets::write(&path, &list).unwrap();
+    assert_eq!(presets::read(&path), list);
+    std::fs::write(&path, b"not json").unwrap();
+    assert!(presets::read(&path).is_empty());
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn auto_names_skip_taken_ones() {
+    let mk = |n: &str| Preset {
+        name: n.into(),
+        profile: serde_json::Value::Null,
+    };
+    assert_eq!(presets::auto_name(&[]), "Preset 1");
+    assert_eq!(presets::auto_name(&[mk("Preset 1"), mk("x")]), "Preset 2");
+    assert_eq!(presets::auto_name(&[mk("Preset 2")]), "Preset 1");
+}
+
+#[test]
+fn presets_save_apply_and_delete_through_the_draft() {
+    let (mut otd, mut screen) = ready();
+    assert!(!shown(&screen, OtdRow::PresetApply));
+    assert!(shown(&screen, OtdRow::PresetSave));
+    otd.press(OtdRow::PresetSave);
+    otd.refresh(&mut screen);
+    assert_eq!(otd.presets.len(), 1);
+    assert_eq!(otd.presets[0].name, "Preset 1");
+    assert!(shown(&screen, OtdRow::PresetApply));
+    assert!(otd.names[OtdRow::PresetName.index()].starts_with("Preset 1 (1/1)"));
+    // Saving a preset does not touch the draft.
+    assert!(!otd.dirty);
+
+    otd.apply(OtdRow::TabletWidth, RowValue::Slider(50.0));
+    otd.apply(latency(), RowValue::Slider(33.0));
+    otd.press(OtdRow::PresetApply);
+    otd.refresh(&mut screen);
+    let p = otd.draft.as_ref().unwrap().profile(0).unwrap();
+    assert_eq!(p.absolute.unwrap().tablet.width, 60.0);
+    assert_eq!(p.filters[4].settings[0].value, SettingValue::Float(18.0));
+    // Loaded into the draft, not sent: it waits for Save.
+    assert!(otd.dirty);
+    assert!(shown(&screen, OtdRow::Unsaved));
+    assert!(!screen.is_disabled(OtdRow::Apply.index()));
+
+    otd.press(OtdRow::PresetDelete);
+    otd.refresh(&mut screen);
+    assert!(otd.presets.is_empty());
+    assert!(!shown(&screen, OtdRow::PresetDelete));
+}
+
+#[test]
+fn a_preset_with_filters_the_profile_lacks_applies_the_rest() {
+    let (mut otd, mut screen) = ready();
+    // A preset with a filter the profile does not have, and a new area.
+    let mut profile = otd
+        .snapshot
+        .as_ref()
+        .unwrap()
+        .settings
+        .profile_preset(0)
+        .unwrap();
+    profile["Filters"]
+        .as_array_mut()
+        .unwrap()
+        .push(serde_json::json!({"Path": "Gone.Filter", "Settings": [], "Enable": true}));
+    profile["AbsoluteModeSettings"]["Tablet"]["Width"] = serde_json::json!(40.0);
+    otd.presets.push(Preset {
+        name: "Odd".into(),
+        profile,
+    });
+    otd.press(OtdRow::PresetApply);
+    otd.refresh(&mut screen);
+    let p = otd.draft.as_ref().unwrap().profile(0).unwrap();
+    assert_eq!(p.filters.len(), 5);
+    assert_eq!(p.absolute.unwrap().tablet.width, 40.0);
+    assert!(otd.dirty);
 }
