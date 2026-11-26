@@ -92,7 +92,7 @@ fn arrow(p: vec2<f32>, hs: vec2<f32>) -> f32 {
     var v = array<vec2<f32>, 4>(
         vec2<f32>(0.0, -hs.y),
         vec2<f32>(hs.x, hs.y),
-        vec2<f32>(0.0, hs.y * 0.42),
+        vec2<f32>(0.0, hs.y * 0.70),
         vec2<f32>(-hs.x, hs.y),
     );
     var d = dot(p - v[0], p - v[0]);

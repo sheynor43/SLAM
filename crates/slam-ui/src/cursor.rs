@@ -9,7 +9,7 @@
 use slam_render::Blend;
 use slam_render::atlas::AtlasRegion;
 use slam_render::hal::Color;
-use slam_render::shape::{Gradient, Shape, ShapeBatch, ShapeKind};
+use slam_render::shape::{Shape, ShapeBatch, ShapeKind};
 use slam_render::sprite::Affine;
 
 use crate::anim::{ease_out_elastic, ease_out_elastic_quarter, ease_out_quint, progress};
@@ -54,8 +54,8 @@ pub const MAX_RIPPLES: usize = 3;
 
 // The pointer in units of its height, tip at the origin, y down, before the tilt: an
 // arrowhead (`ShapeKind::Arrow`) this wide, rounded by this much.
-const ARROW_WIDTH: f32 = 0.74;
-const ARROW_RADIUS: f32 = 0.13;
+const ARROW_WIDTH: f32 = 0.66;
+const ARROW_RADIUS: f32 = 0.12;
 
 /// The height of the pointer as drawn at `size`: for placing it by its hot spot.
 pub const fn arrow_height_units() -> f32 {
@@ -537,20 +537,13 @@ pub fn push_slam_cursor(
     place(shapes, first, theme, tip, motion.scale, motion, motion.spin);
 }
 
-/// The pointer's arrowhead with its tip at `tip`, `height` pixels high, before the tilt,
-/// lit from above: `colour` darkening a little towards the bottom.
+/// The pointer's arrowhead with its tip at `tip`, `height` pixels high, before the tilt:
+/// flat `colour`, as modern pointers (Breeze, macOS) are (ADR-0167).
 fn arrow(white: AtlasRegion, tip: [f32; 2], height: f32, colour: Color) -> Shape {
     let width = ARROW_WIDTH * height;
-    let shade = 0.82;
     Shape {
         kind: ShapeKind::Arrow,
         radius: ARROW_RADIUS * height,
-        gradient: Some(Gradient::Vertical(Color {
-            r: colour.r * shade,
-            g: colour.g * shade,
-            b: colour.b * shade,
-            a: colour.a,
-        })),
         ..Shape::new(
             white.texture,
             white.uv,
@@ -681,7 +674,7 @@ mod tests {
     }
 
     #[test]
-    fn the_pointer_is_a_shadowed_arrowhead_lit_from_above_with_a_dark_outline() {
+    fn the_pointer_is_a_shadowed_flat_arrowhead_with_a_light_rim() {
         let theme = Theme::default();
         let mut shapes = batch();
         push_slam_cursor(
@@ -698,12 +691,9 @@ mod tests {
         let kind = |quad: usize| slam_render::shape::unpack_effects(v[quad * 4].params[2]).3;
         assert!((0..3).all(|q| kind(q) == ShapeKind::Arrow));
         assert!(v[0].params[1] < 0.0, "the shadow is a glow");
-        // The corners lie a margin past the edges, so the gradient's colour there is close
-        // to the fill's.
+        // Flat: every corner of the fill has its colour.
         let f = theme.cursor_fill;
-        assert!((v[4].colour[1] - f.g).abs() < 0.05, "{:?}", v[4].colour);
-        // Darker at the bottom.
-        assert!(v[4 + 3].colour[0] < v[4].colour[0]);
+        assert!((0..4).all(|i| v[4 + i].colour[..3] == [f.r, f.g, f.b]));
         let c = theme.cursor_outline_colour;
         assert_eq!(v[8].colour[..3], [c.r, c.g, c.b]);
         assert!(v[8].params[1] > 0.0, "an outline");

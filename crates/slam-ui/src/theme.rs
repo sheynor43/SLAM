@@ -873,7 +873,7 @@ impl Theme {
                 b: 1.0,
                 a: 0.92,
             },
-            cursor_outline: 0.06,
+            cursor_outline: 0.075,
             cursor_tilt_degrees: 24.3,
             cursor_press_scale: 0.9,
             cursor_press_in_ms: 800.0,
