@@ -103,6 +103,7 @@ mod menu_music;
 mod mod_settings;
 mod ui_sounds;
 use menu_music::{MenuMusic, Picked, Want};
+mod otd;
 mod output;
 pub(crate) mod results;
 mod rows;
@@ -388,6 +389,8 @@ pub struct ShellState {
     settings: Settings,
     /// The options of the settings screen's dropdowns, fixed for the run.
     rows: Rows,
+    /// The "Tablet" section: OpenTabletDriver through its daemon (ADR-0166).
+    otd: otd::OtdSection,
     /// The settings being edited while the screen is open; committed when it closes.
     editing: Option<Settings>,
     /// Settings to write to the file, not yet taken by [`ShellState::take_save_request`].
@@ -517,6 +520,7 @@ impl ShellState {
             feedback_request: None,
             settings: Settings::default(),
             rows: Rows::new(&Settings::default()),
+            otd: otd::OtdSection::default(),
             editing: None,
             save_request: None,
             volume: VolumeMixer::new(),
@@ -1171,6 +1175,8 @@ impl ShellState {
         self.editing = Some(self.settings.clone());
         let mut screen = SettingsScreen::new(&self.rows.specs(&self.settings), SECTIONS);
         self.rows.refresh(&mut screen, &self.settings);
+        self.otd.panel_opened();
+        self.otd.refresh(&mut screen);
         screen.set_value_text(Arc::clone(&self.songs_folder));
         if let Some(localizer) = &self.localizer {
             screen.set_search_texts(Rows::search_texts(localizer));
@@ -1887,6 +1893,21 @@ impl ShellState {
         }
     }
 
+    /// Takes the OpenTabletDriver worker's news and shows it on the open settings panel
+    /// (ADR-0166).
+    fn receive_otd(&mut self, now_ns: u64) {
+        let Some(panel) = &mut self.panel else {
+            return;
+        };
+        // The daemon is asked once the section shows, not on every opening of the panel.
+        if panel.screen.section() == otd::SECTION {
+            self.otd.section_shown();
+        }
+        if self.otd.poll(now_ns) {
+            self.otd.refresh(&mut panel.screen);
+        }
+    }
+
     /// Takes the newest list the library thread published, if any.
     fn receive_songs(&mut self) {
         let Some(published) = self.songs.as_mut().and_then(SongsLink::latest) else {
@@ -2010,10 +2031,22 @@ impl ShellState {
                     slam_ui::settings_screen::RowValue::Slider(_) => MenuSound::SliderStep,
                     slam_ui::settings_screen::RowValue::Choice(_) => MenuSound::Click,
                 });
-                if let Some(editing) = &mut self.editing {
+                if let Some(row) = otd::OtdRow::at(row) {
+                    self.otd.apply(row, value);
+                    self.otd.refresh(screen);
+                } else if let Some(editing) = &mut self.editing {
                     self.rows.apply(editing, row, value);
                     self.rows.refresh(screen, editing);
                 }
+            }
+            Some(SettingsAction::Pressed { row }) if otd::OtdRow::at(row).is_some() => {
+                self.ui_sounds.push(crate::menu_sounds::MenuSound::Click);
+                if let Some(row) = otd::OtdRow::at(row)
+                    && self.otd.press(row) == otd::Pressed::Download
+                {
+                    self.feedback_request = Some(crate::feedback::Kind::OpenTabletDriver);
+                }
+                self.otd.refresh(screen);
             }
             Some(SettingsAction::Pressed { row })
                 if Row::ALL.get(row) == Some(&Row::SongsFolder) =>
@@ -2242,6 +2275,7 @@ impl ShellState {
         }
         self.receive_songs();
         self.receive_displays();
+        self.receive_otd(now_ns);
         let navigated = self.handle(events, now_ns);
         self.tick_volume(now_ns, snapshot);
         self.note_ui_sounds(events);

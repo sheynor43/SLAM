@@ -70,6 +70,7 @@ fn labels() -> SettingsLabels {
         trim_zeros: false,
         zero_text: String::new(),
         hint: String::new(),
+        dynamic_label: false,
     };
     SettingsLabels {
         search_placeholder: "Type to search".into(),
@@ -679,6 +680,114 @@ fn the_continuous_list_scrolls_and_draws_without_allocating() {
                 screen.input(SettingsInput::Scroll { lines: -1000.0 }, &layout);
             }
             frame(&mut screen, &mut glyphs);
+        }
+    });
+}
+
+#[test]
+fn new_dynamic_names_lay_out_without_allocating() {
+    let registry = Arc::new(FontRegistry::with_builtin());
+    let limits = Limits {
+        max_texture_size: 4096,
+        max_uniform_block_size: 16384,
+        max_uniform_buffer_slots: 12,
+        max_texture_slots: 16,
+    };
+    let mut glyphs = glyph_atlas(Arc::clone(&registry), &GlyphAtlasConfig::new(limits)).unwrap();
+    let theme = Theme::default();
+    let specs = vec![
+        RowSpec {
+            section: 0,
+            kind: RowKind::Toggle { value: false },
+            restart_required: false,
+        };
+        3
+    ];
+    let row = |label: &str| RowLabels {
+        label: label.into(),
+        unit: String::new(),
+        options: Vec::new(),
+        button: String::new(),
+        shows_value: false,
+        trim_zeros: false,
+        zero_text: String::new(),
+        hint: String::new(),
+        dynamic_label: true,
+    };
+    let labels = SettingsLabels {
+        search_placeholder: "Type to search".into(),
+        no_results: "Nothing found".into(),
+        sections: vec!["Tablet".into()],
+        rows: vec![row("Filter"), row("Filter"), row("Filter")],
+        restart: "after restart".into(),
+        keys: labels().keys,
+    };
+    let mut screen = SettingsScreen::new(&specs, 1);
+    let make = || SettingsView::new(Arc::clone(&registry), theme, &specs, &labels);
+    let white = AtlasRegion {
+        texture: TextureId(0),
+        origin: Origin::new(0, 0),
+        size: Extent::new(1, 1),
+        uv: UvRect {
+            u0: 0.0,
+            v0: 0.0,
+            u1: 1.0,
+            v1: 1.0,
+        },
+    };
+    let (mut shapes, mut text) = (
+        ShapeBatch::with_capacity(256),
+        SpriteBatch::with_capacity(1024),
+    );
+    let pose = Pose {
+        opacity: 1.0,
+        offset: 0.0,
+        scale: 1.0,
+    };
+    let names: [Arc<[Box<str>]>; 2] = [
+        Arc::from(vec![
+            "RadialFollowSmoothingTabletSpace".into(),
+            "Antichatter".into(),
+            "NoiseReduction with a name much longer than any column can show at once".into(),
+        ]),
+        Arc::from(vec!["".into(), "Smoothing".into(), "OuterRadius".into()]),
+    ];
+    let mut frame = |view: &mut SettingsView, screen: &SettingsScreen, glyphs: &mut _| {
+        shapes.clear();
+        text.clear();
+        view.push(
+            &mut shapes,
+            &mut text,
+            glyphs,
+            1280.0,
+            720.0,
+            &screen.snapshot(),
+            pose,
+            white,
+            next_now(),
+        );
+    };
+    // Warm the glyph atlas with every name on another view: the atlas grows for new
+    // glyphs, which is not what is checked here.
+    let mut warm = make();
+    for names in &names {
+        screen.set_dynamic_labels(Arc::clone(names));
+        frame(&mut warm, &screen, &mut glyphs);
+        frame(&mut warm, &screen, &mut glyphs);
+    }
+    // A fresh view has laid its dynamic rows out only with the static labels and its own
+    // warm-up; the names must fit its buffers.
+    let mut view = make();
+    // Kept alive: freeing the screen's last labels is not the view's business.
+    let none: Arc<[Box<str>]> = Arc::from(Vec::<Box<str>>::new());
+    screen.set_dynamic_labels(Arc::clone(&none));
+    frame(&mut view, &screen, &mut glyphs);
+    assert_no_alloc(|| {
+        for _ in 0..3 {
+            for names in &names {
+                screen.set_dynamic_labels(Arc::clone(names));
+                frame(&mut view, &screen, &mut glyphs);
+            }
         }
     });
 }

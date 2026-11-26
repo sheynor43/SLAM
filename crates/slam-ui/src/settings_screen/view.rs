@@ -5,13 +5,13 @@ use std::sync::Arc;
 
 use slam_render::Color;
 use slam_render::atlas::AtlasRegion;
-use slam_render::shape::ShapeBatch;
-use slam_render::sprite::SpriteBatch;
+use slam_render::shape::{Shape, ShapeBatch};
+use slam_render::sprite::{Affine, SpriteBatch};
 use slam_text::{FontRegistry, Glyph, GlyphCache, GlyphKey};
 
 use super::{
-    Conflict, KeyValue, MAX_ROWS, MouseKey, RowKind, RowSpec, RowWidget, SettingsLayout,
-    SettingsScreen, SettingsSnapshot, icons,
+    AreaPreview, Conflict, KeyValue, MAX_ROWS, MouseKey, PREVIEW_LINES, RowKind, RowSpec,
+    RowWidget, SettingsLayout, SettingsScreen, SettingsSnapshot, icons,
 };
 use crate::marquee::{Marquee, MarqueeParams, ScrollTracker, push_marquee};
 use crate::menu::Rect;
@@ -46,7 +46,13 @@ pub struct RowLabels {
     /// a slider (which is then not drawn), beside a toggle. Lines are split by `\n`, at
     /// most [`MAX_HINT_LINES`]; each must fit the widget column on one line.
     pub hint: String,
+    /// The row's name can be replaced at runtime ([`SettingsScreen::set_dynamic_labels`]);
+    /// the view reserves room for it up front.
+    pub dynamic_label: bool,
 }
+
+/// Bytes reserved up front for a row's runtime name; longer ones are cut with an ellipsis.
+pub const DYNAMIC_LABEL_CAPACITY: usize = 64;
 
 /// Most lines of a hint; more are dropped.
 pub const MAX_HINT_LINES: usize = 2;
@@ -216,6 +222,7 @@ enum RowView {
     Key,
     Button(Line),
     Note,
+    Preview,
     Toggle(ToggleView),
     Slider(SliderView),
     Dropdown(DropdownView),
@@ -226,6 +233,93 @@ const HEADER_TEXT: f32 = 1.25;
 
 /// The icon's side as a share of its tab's.
 const ICON_SHARE: f32 = 0.56;
+
+/// Draws the tablet-area preview in `rect`: the surface fitted to it, the area turned about
+/// its centre. Does not allocate; nothing is drawn for a surface without area.
+fn push_preview(
+    shapes: &mut ShapeBatch,
+    white: AtlasRegion,
+    rect: &Rect,
+    preview: &AreaPreview,
+    theme: &Theme,
+    scale: f32,
+    opacity: f32,
+) {
+    let [sw, sh] = preview.surface;
+    if !(sw > 0.0 && sh > 0.0 && rect.width > 0.0 && rect.height > 0.0 && opacity > 0.0) {
+        return;
+    }
+    let pad = theme.widget_pad * scale;
+    let room = [
+        (rect.width - 2.0 * pad).max(0.0),
+        (rect.height - 2.0 * pad).max(0.0),
+    ];
+    let fit = (room[0] / sw).min(room[1] / sh);
+    if !(fit > 0.0 && fit.is_finite()) {
+        return;
+    }
+    let size = [sw * fit, sh * fit];
+    let origin = [
+        rect.x + (rect.width - size[0]) / 2.0,
+        rect.y + (rect.height - size[1]) / 2.0,
+    ];
+    let outline = (theme.widget_track_height * scale / 3.0).max(1.0);
+    let radius = theme.widget_pad * scale;
+    let plate =
+        |position: [f32; 2], size: [f32; 2], colour: Color, outline: f32, radius: f32| Shape {
+            radius: radius.min(size[0].min(size[1]) / 2.0),
+            outline,
+            ..Shape::new(white.texture, white.uv, position, size, colour)
+        };
+    shapes.push_shape(&plate(
+        origin,
+        size,
+        faded(theme.button_fill, opacity),
+        0.0,
+        radius,
+    ));
+    shapes.push_shape(&plate(
+        origin,
+        size,
+        faded(theme.row_hover_fill, opacity),
+        outline,
+        radius,
+    ));
+    let area = [preview.size[0] * fit, preview.size[1] * fit];
+    let centre = [
+        origin[0] + preview.centre[0] * fit,
+        origin[1] + preview.centre[1] * fit,
+    ];
+    let corner = [centre[0] - area[0] / 2.0, centre[1] - area[1] / 2.0];
+    let first = shapes.len();
+    shapes.push_shape(&plate(
+        corner,
+        area,
+        faded(theme.widget_accent_fill, opacity * AREA_FILL_OPACITY),
+        0.0,
+        0.0,
+    ));
+    shapes.push_shape(&plate(
+        corner,
+        area,
+        faded(theme.accent, opacity),
+        outline,
+        0.0,
+    ));
+    let turn = Affine::about(centre, 1.0, preview.rotation_deg.to_radians(), [0.0; 2]);
+    shapes.transform_from(first, &turn, [1.0; 4]);
+    let dot = (2.0 * outline).max(3.0 * scale);
+    shapes.push_shape(&plate(
+        [centre[0] - dot / 2.0, centre[1] - dot / 2.0],
+        [dot, dot],
+        faded(theme.accent, opacity),
+        0.0,
+        dot / 2.0,
+    ));
+}
+
+/// How opaque the area's fill is, against its outline.
+const AREA_FILL_OPACITY: f32 = 0.35;
 
 /// The draw side of [`SettingsScreen`].
 pub struct SettingsView {
@@ -257,6 +351,10 @@ pub struct SettingsView {
     scroll_tracker: ScrollTracker,
     value: Option<ValueButton>,
     keys: KeyLines,
+    /// The rows whose names can change, with their static labels.
+    dynamic: Vec<(usize, Box<str>)>,
+    /// The generation of the dynamic labels laid out.
+    dynamic_seen: u64,
 }
 
 impl std::fmt::Debug for SettingsView {
@@ -328,6 +426,7 @@ impl SettingsView {
                     RowKind::Key { .. } => RowView::Key,
                     RowKind::Button => RowView::Button(Line::new(&row.button)),
                     RowKind::Note => RowView::Note,
+                    RowKind::Preview => RowView::Preview,
                     RowKind::Toggle { .. } => RowView::Toggle(ToggleView::new(theme)),
                     RowKind::Slider { step, .. } => {
                         let view = SliderView::new(
@@ -387,12 +486,32 @@ impl SettingsView {
                     let mut line = Line::new(labels.rows.get(i).map_or("", |r| &r.label));
                     // Room for the ellipsis a cut name ends with.
                     line.text.reserve(ELLIPSIS.len_utf8());
+                    if labels.rows.get(i).is_some_and(|r| r.dynamic_label) {
+                        line.text.reserve(DYNAMIC_LABEL_CAPACITY);
+                    }
                     line
                 })
                 .collect(),
             label_texts: (0..rows.len())
-                .map(|i| labels.rows.get(i).map_or("", |r| &r.label).to_owned())
+                .map(|i| {
+                    let row = labels.rows.get(i);
+                    let mut text = String::new();
+                    if row.is_some_and(|r| r.dynamic_label) {
+                        text.reserve(DYNAMIC_LABEL_CAPACITY);
+                    }
+                    text.push_str(row.map_or("", |r| &r.label));
+                    text
+                })
                 .collect(),
+            dynamic: labels
+                .rows
+                .iter()
+                .enumerate()
+                .take(rows.len())
+                .filter(|(_, r)| r.dynamic_label)
+                .map(|(i, r)| (i, r.label.as_str().into()))
+                .collect(),
+            dynamic_seen: 0,
             marker: Line::new(&labels.restart),
             keys: KeyLines::new(&labels.keys),
             meta,
@@ -420,7 +539,27 @@ impl SettingsView {
             .map(|lines| vec![Marquee::default(); lines.len()])
             .collect();
         view.lay_out();
+        view.warm_dynamic();
         view
+    }
+
+    /// Lays every dynamic row out once with a name as long as [`DYNAMIC_LABEL_CAPACITY`]
+    /// allows, so that their layouts' buffers hold any later name and
+    /// [`SettingsView::refresh_dynamic`] does not grow them on the draw thread; then puts
+    /// the static labels back. A name in a fallback font not seen before may still grow
+    /// the font caches once. Allocates: called by [`SettingsView::new`].
+    fn warm_dynamic(&mut self) {
+        let Some(last) = self.dynamic.iter().map(|(row, _)| *row).max() else {
+            return;
+        };
+        // The widest glyphs, then the most words (a line break after every space): the
+        // most glyphs and break opportunities a name can bring.
+        for unit in ["W", "W "] {
+            let long: Box<str> = unit.repeat(DYNAMIC_LABEL_CAPACITY / unit.len()).into();
+            let names = vec![long; last + 1];
+            self.refresh_dynamic(&names);
+        }
+        self.refresh_dynamic(&[]);
     }
 
     /// Lays the texts out for a `width` × `height` window ahead of the first `push`, so that
@@ -560,6 +699,42 @@ impl SettingsView {
         self.lay_out_value();
     }
 
+    /// Copies the runtime names of the dynamic rows from the snapshot into their reserved
+    /// buffers (cut at a character boundary to [`DYNAMIC_LABEL_CAPACITY`], with an ellipsis)
+    /// and lays them out again. Does not allocate once [`SettingsView::warm_dynamic`] has
+    /// grown the buffers (but for font caches meeting a new fallback font).
+    fn refresh_dynamic(&mut self, overrides: &[Box<str>]) {
+        let scale = self.layout.scale;
+        let pad = 2.0 * self.theme.widget_pad * scale;
+        let label = self.layout.label(0).width - pad;
+        let caption = self.theme.caption_face(scale);
+        for (row, fallback) in &self.dynamic {
+            let (Some(whole), Some(line)) =
+                (self.label_texts.get_mut(*row), self.labels.get_mut(*row))
+            else {
+                continue;
+            };
+            let source = overrides
+                .get(*row)
+                .map(|text| &**text)
+                .filter(|text| !text.is_empty())
+                .unwrap_or(fallback);
+            whole.clear();
+            if source.len() <= DYNAMIC_LABEL_CAPACITY {
+                whole.push_str(source);
+            } else {
+                let mut cut = DYNAMIC_LABEL_CAPACITY - ELLIPSIS.len_utf8();
+                while !source.is_char_boundary(cut) {
+                    cut -= 1;
+                }
+                whole.push_str(&source[..cut]);
+                whole.push(ELLIPSIS);
+            }
+            line.text.clone_from(whole);
+            lay_out_fitted_face(&mut self.type_setter, line, caption, label);
+        }
+    }
+
     /// Lays the value text out, cut from the left with an ellipsis to fit its button. Reuses
     /// the buffers.
     fn lay_out_value(&mut self) {
@@ -646,7 +821,7 @@ impl SettingsView {
             .views
             .iter()
             .map(|view| match view {
-                RowView::Toggle(_) | RowView::Key | RowView::Note => 0,
+                RowView::Toggle(_) | RowView::Key | RowView::Note | RowView::Preview => 0,
                 RowView::Button(line) => line
                     .layout
                     .glyphs()
@@ -688,6 +863,10 @@ impl SettingsView {
         if frame != self.frame {
             self.frame = frame;
             self.lay_out();
+        }
+        if self.dynamic_seen != snapshot.dynamic_generation {
+            self.dynamic_seen = snapshot.dynamic_generation;
+            self.refresh_dynamic(&snapshot.dynamic_labels);
         }
         if self
             .value
@@ -898,6 +1077,27 @@ impl SettingsView {
             let opacity = opacity * fraction;
             // A note runs the whole row, under the list too.
             if covered && matches!(self.views[i], RowView::Note) {
+                continue;
+            }
+            if matches!(self.views[i], RowView::Preview) {
+                // The preview spans this row and the ones after it, which are notes.
+                let last = layout.fraction(slot + PREVIEW_LINES - 1);
+                let rect = {
+                    let (first, end) = (layout.row(slot), layout.row(slot + PREVIEW_LINES - 1));
+                    Rect {
+                        height: (end.y + end.height - first.y).max(0.0),
+                        ..first
+                    }
+                };
+                push_preview(
+                    shapes,
+                    white,
+                    &rect,
+                    &snapshot.preview,
+                    &theme,
+                    layout.scale,
+                    opacity * last,
+                );
                 continue;
             }
             if matches!(self.views[i], RowView::Note) {

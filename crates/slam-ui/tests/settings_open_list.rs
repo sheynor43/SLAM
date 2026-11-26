@@ -163,6 +163,7 @@ fn an_open_list_hides_only_the_texts_under_it() {
         trim_zeros: false,
         zero_text: String::new(),
         hint: String::new(),
+        dynamic_label: false,
     };
     let with_rows = |rows: Vec<RowLabels>| SettingsLabels {
         sections: vec!["Frame".into()],

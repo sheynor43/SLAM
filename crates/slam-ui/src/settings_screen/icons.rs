@@ -118,21 +118,27 @@ const LIBRARY: &[Part] = &[
     fill(0.02, 0.9, 0.96, 0.08, 0.03),
 ];
 /// Speech bubble with its tail.
-const FEEDBACK: &[Part] = &[
+pub(crate) const FEEDBACK: &[Part] = &[
     ring(0.04, 0.1, 0.92, 0.62, 0.2),
     leaning(0.2, 0.68, 0.16, 0.24, -30.0),
     fill(0.24, 0.32, 0.12, 0.12, 0.5),
     fill(0.44, 0.32, 0.12, 0.12, 0.5),
     fill(0.64, 0.32, 0.12, 0.12, 0.5),
 ];
+/// Tablet with its active area and a leaning pen.
+pub(crate) const TABLET: &[Part] = &[
+    ring(0.04, 0.14, 0.7, 0.72, 0.1),
+    fill(0.18, 0.3, 0.34, 0.4, 0.05),
+    leaning(0.82, 0.2, 0.1, 0.62, 20.0),
+];
 
 /// Number of icons: one per section.
-pub const ICONS: usize = 9;
+pub const ICONS: usize = 10;
 
 /// The parts of the icon of section `section`; the last one's for any further section.
 pub fn icon(section: usize) -> &'static [Part] {
     const ALL: [&[Part]; ICONS] = [
-        AUDIO, OFFSET, KEYS, LAYOUT, SKIN, FRAME, GAMEPLAY, LIBRARY, FEEDBACK,
+        AUDIO, OFFSET, KEYS, LAYOUT, SKIN, FRAME, GAMEPLAY, LIBRARY, TABLET, FEEDBACK,
     ];
     ALL[section.min(ICONS - 1)]
 }

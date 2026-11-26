@@ -48,6 +48,7 @@ const ALLOWED: &[(&str, Option<&[&str]>)] = &[
         ]),
     ),
     ("slam-ipc", Some(&["slam-osu"])),
+    ("slam-otd", Some(&[])),
     ("slam-app", None),
     ("slam-shader-build", Some(&[])),
     ("slam-testkit", Some(&[])),

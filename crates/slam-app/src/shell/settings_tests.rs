@@ -829,8 +829,9 @@ fn the_songs_folder_row_shows_the_folder_and_opens_the_picker() {
     assert_eq!(settings_screen(&s).value_text(), "/games/osu/Songs");
     let view = &snap.panel.as_ref().expect("the panel").settings;
     assert_eq!(&*view.value_text, "/games/osu/Songs");
-    // The library section is the last but one (Feedback follows); its only row is the focused one.
-    let tabs = [key(KEY_TAB); SECTIONS - 2];
+    // The library section is the third from the end (Tablet and Feedback follow); its only row
+    // is the focused one.
+    let tabs = [key(KEY_TAB); SECTIONS - 3];
     s.tick(LATER, &tabs, &mut snap);
     assert_eq!(settings_screen(&s).focus(), Row::SongsFolder as usize);
     s.tick(LATER, &[key(KEY_ENTER)], &mut snap);

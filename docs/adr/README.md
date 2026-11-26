@@ -169,6 +169,7 @@
 | [0163](0163-results-style-setting.md) | Настройка `general.results_style`: вид результатов по скину (`skin`) или всегда SLAM (`slam`) | Принято |
 | [0164](0164-restart-animation.md) | Рестарт: затемнение при удержании, проявление после рестарта (как `PlayerLoader` лазера) и звук `Gameplay/restart`/`pause-retry-click`; настройка `gameplay.restart_animation` | Принято |
 | [0165](0165-settings-icon-tabs.md) | Вкладки настроек — квадратные кнопки со значками одного цвета, название — подсказкой; панель уже | Принято |
+| [0166](0166-opentabletdriver-settings.md) | Настройка OpenTabletDriver 0.6.x из раздела «Планшет» через IPC демона: крейт `slam-otd`, подключение на операцию, черновик поверх дерева JSON, запись `settings.json` и `SetSettings` | Принято |
 
 ## Шаблон
 
