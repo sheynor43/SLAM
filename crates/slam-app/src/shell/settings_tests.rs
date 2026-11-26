@@ -1544,3 +1544,25 @@ fn the_sideways_wheel_over_the_panel_moves_its_texts_and_not_the_song_select() {
     assert_eq!(settings_screen(&s).snapshot().text.wheel, 2.0);
     assert!(settings_screen(&s).scroll() > 0.0);
 }
+
+#[test]
+fn the_screen_slides_right_with_the_panel_and_back_when_it_closes() {
+    let offset = |snap: &ShellSnapshot| snap.layers.iter().flatten().next().unwrap().pose.offset;
+    let mut s = state();
+    let mut snap = ShellSnapshot::default();
+    s.tick(0, &[], &mut snap);
+    assert_eq!(offset(&snap), 0.0);
+    s.tick(TRANSITION_NS, &[key(KEY_DOWN), key(KEY_ENTER)], &mut snap);
+    let settled = TRANSITION_NS + PANEL_NS * 2;
+    s.tick(settled, &[], &mut snap);
+    let full = offset(&snap);
+    assert!(full > 0.0, "{full}");
+    // Part of the way through the slide out it is part of the shift.
+    s.tick(settled + LATER, &[key(KEY_ESCAPE)], &mut snap);
+    s.tick(settled + LATER + PANEL_NS / 4, &[], &mut snap);
+    let mid = offset(&snap);
+    assert!(mid > 0.0 && mid < full, "{mid} {full}");
+    // Closed: back at rest.
+    s.tick(settled + LATER + PANEL_NS * 3, &[], &mut snap);
+    assert_eq!(offset(&snap), 0.0);
+}

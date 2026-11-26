@@ -404,6 +404,9 @@ pub struct Theme {
     pub settings_marker_size: f32,
     /// Width of the settings panel that slides in from the left (ADR-0095).
     pub settings_panel_width: f32,
+    /// How far the screens under the open settings panel move to the right, as a part of
+    /// the panel's width (ADR-0179): lazer's `SIDE_OVERLAY_OFFSET_RATIO`.
+    pub settings_screen_shift: f32,
     /// Fill of the settings panel.
     pub settings_panel_fill: Color,
     /// Fill over the screen under the open settings panel, at full opacity once it is in.
@@ -948,6 +951,7 @@ impl Theme {
             settings_label_ratio: 0.45,
             settings_marker_size: 14.0,
             settings_panel_width: 560.0,
+            settings_screen_shift: 0.05,
             settings_panel_fill: alpha(p.panel, 0.9),
             settings_dim_fill: Color {
                 r: 0.0,
