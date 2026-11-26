@@ -441,12 +441,13 @@ impl SettingsLayout {
         layout
     }
 
-    /// The strip at the list's right edge where the scrollbar answers (ADR-0173).
+    /// The strip at the list's left edge, in the gap to the tab column, where the scrollbar
+    /// answers (ADR-0173, ADR-0179).
     pub fn scrollbar_track(&self) -> Rect {
         let width =
             (self.theme.scrollbar_active_width + 2.0 * self.theme.scrollbar_margin) * self.scale;
         Rect {
-            x: self.content.x + self.content.width - width,
+            x: self.content.x - width,
             y: self.content.y,
             width,
             height: self.content.height,
@@ -1451,7 +1452,7 @@ impl SettingsScreen {
         action
     }
 
-    /// The scrollbar over the list's right edge, as the screen is laid out now.
+    /// The scrollbar over the list's left edge, as the screen is laid out now.
     pub fn scrollbar(&self, layout: &SettingsLayout) -> Scrollbar {
         Scrollbar::new(
             layout.scrollbar_track(),

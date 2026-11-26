@@ -479,7 +479,7 @@ impl SettingsView {
             },
             search_seen: SearchQuery::default(),
             search_type: crate::typing::TypeFeedback::new(),
-            bar_look: ScrollbarLook::new(),
+            bar_look: ScrollbarLook::on_left(),
             tab_lit: [Towards::default(); MAX_SECTIONS],
             tab_bar: [Towards::default(); MAX_SECTIONS],
             tabs_ready: false,

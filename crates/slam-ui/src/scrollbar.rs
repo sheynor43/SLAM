@@ -173,6 +173,8 @@ pub struct ScrollbarLook {
     alpha: Towards,
     width: Towards,
     ready: bool,
+    /// Which edge of its track the thumb hugs (see [`ScrollbarLook::on_left`]).
+    left: bool,
 }
 
 impl Default for ScrollbarLook {
@@ -187,6 +189,15 @@ impl ScrollbarLook {
             alpha: Towards::default(),
             width: Towards::default(),
             ready: false,
+            left: false,
+        }
+    }
+
+    /// A look whose thumb hugs the track's left edge, for a list with its bar on the left.
+    pub fn on_left() -> ScrollbarLook {
+        ScrollbarLook {
+            left: true,
+            ..ScrollbarLook::new()
         }
     }
 
@@ -246,7 +257,7 @@ impl ScrollbarLook {
         )
     }
 
-    /// Draws the bar at `offset`: a white rounded thumb on the track's right edge, the
+    /// Draws the bar at `offset`: a white rounded thumb on the track's edge (right, or left for [`ScrollbarLook::on_left`]), the
     /// layer faded by `opacity`. Nothing for content that does not scroll.
     #[allow(clippy::too_many_arguments)]
     pub fn push(
@@ -269,11 +280,12 @@ impl ScrollbarLook {
         let (alpha, width) = self.pose(hovered, dragging, now_ns, theme, scale);
         let hit = bar.thumb(offset);
         let margin = theme.scrollbar_margin * scale;
-        let rect = Rect {
-            x: hit.x + hit.width - margin - width,
-            width,
-            ..hit
+        let x = if self.left {
+            hit.x + margin
+        } else {
+            hit.x + hit.width - margin - width
         };
+        let rect = Rect { x, width, ..hit };
         let colour = Color {
             a: alpha * opacity,
             ..Color::WHITE
@@ -585,5 +597,48 @@ mod tests {
         let (drag_a, _) = look.pose(true, true, 3000 * ms, &theme, 1.0);
         assert!((drag_a - theme.scrollbar_drag_alpha).abs() < 1e-4);
         assert!(rest_a < hover_a && hover_a < drag_a);
+    }
+}
+
+#[cfg(test)]
+mod left_tests {
+    use super::*;
+    use slam_render::atlas::AtlasRegion;
+
+    #[test]
+    fn a_left_look_hugs_the_left_edge_of_the_track() {
+        let theme = Theme::default();
+        let track = Rect {
+            x: 100.0,
+            y: 0.0,
+            width: 11.0,
+            height: 100.0,
+        };
+        let bar = Scrollbar::new(track, 400.0, 100.0, 8.0);
+        let white = AtlasRegion {
+            texture: slam_render::textures::TextureId(0),
+            origin: slam_render::Origin::new(0, 0),
+            size: slam_render::Extent::new(1, 1),
+            uv: slam_render::atlas::UvRect::FULL,
+        };
+        let mut shapes = ShapeBatch::new();
+        ScrollbarLook::on_left().push(
+            &mut shapes,
+            white,
+            &bar,
+            0.0,
+            [0.0, 0.0],
+            false,
+            1.0,
+            &theme,
+            1.0,
+            0,
+        );
+        let v = shapes.vertices();
+        let left = v.iter().map(|p| p.position[0]).fold(f32::MAX, f32::min);
+        assert!(
+            left >= 100.0 && left < 100.0 + theme.scrollbar_margin + 1.0,
+            "{left}"
+        );
     }
 }

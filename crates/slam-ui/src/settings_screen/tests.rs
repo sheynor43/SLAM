@@ -2161,3 +2161,18 @@ fn the_preview_shows_as_soon_as_any_of_its_lines_is_in_view() {
     // Wholly above the content area: nothing.
     assert_eq!(drawn_at(&mut view, &s, slot + PREVIEW_LINES as f32), 0);
 }
+
+#[test]
+fn the_scrollbar_sits_between_the_tab_column_and_the_rows() {
+    let l = layout();
+    let track = l.scrollbar_track();
+    let tab = l.tabs[0];
+    assert!(track.x >= tab.x + tab.width);
+    assert_eq!(track.x + track.width, l.content.x);
+    // A press on the row side of the old right edge no longer takes hold of the bar.
+    let mut s = tall_screen();
+    s.tick(0, &l);
+    let (x, y) = (l.content.x + l.content.width - 3.0, l.content.y + 5.0);
+    input(&mut s, SettingsInput::PointerPress { x, y });
+    assert!(!s.snapshot().scrollbar_held);
+}

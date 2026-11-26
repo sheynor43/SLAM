@@ -52,7 +52,7 @@ use slam_ui::results::{
 };
 use slam_ui::screen::{MAX_LAYERS, Nav, Navigated, Pose, ScreenStack, TransitionFx};
 use slam_ui::settings_screen::panel::{
-    PanelMotion, panel_layout, panel_pose, panel_width, push_backdrop,
+    PanelMotion, panel_layout, panel_pose, panel_width, push_backdrop, screen_shift,
 };
 use slam_ui::settings_screen::{
     KeyValue, RowWidget, SettingsAction, SettingsInput, SettingsLayout, SettingsScreen,
@@ -2584,9 +2584,20 @@ impl ShellState {
         if self.ranking_art.is_some() && matches!(self.stack.top(), AppScreen::Results(_)) {
             snapshot.background_dim = 1.0 - 0x99 as f32 / 255.0;
         }
+        // The screens move aside under the open settings panel (ADR-0179).
+        let aside = self.panel.as_ref().map_or(0.0, |p| {
+            let [w, h] = self.size;
+            screen_shift(
+                p.motion.openness(now_ns),
+                panel_width(w, h, &self.theme),
+                w,
+                &self.theme,
+            )
+        });
         let top: *const AppScreen = self.stack.top();
         for (slot, layer) in snapshot.layers.iter_mut().zip(self.stack.layers(now_ns)) {
-            *slot = layer.and_then(|(screen, pose)| {
+            *slot = layer.and_then(|(screen, mut pose)| {
+                pose.offset += aside;
                 let view = match screen {
                     AppScreen::Menu(menu) => ScreenView::Menu(menu.snapshot()),
                     AppScreen::SongSelect => ScreenView::SongSelect(self.song_select.snapshot()),
