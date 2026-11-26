@@ -1692,8 +1692,22 @@ struct Expansion {
     key: Option<u64>,
     /// When it last changed; 0 before any change.
     start_ns: u64,
-    /// Key and difficulty count of the set that closed then.
-    closed: Option<(u64, usize)>,
+    /// Sets still closing, newest first: a quick change closes a half-open set from where
+    /// it is, and the ones closing before go on (ADR-0167).
+    closing: [Option<Closing>; CLOSING],
+}
+
+/// Sets closing at once at most; an older one is shut at once.
+const CLOSING: usize = 4;
+
+/// A set closing: its key, difficulty count, how far open it was when it began to close
+/// (0 to 1) and when that was.
+#[derive(Clone, Copy, Debug)]
+struct Closing {
+    key: u64,
+    count: usize,
+    from: f32,
+    start_ns: u64,
 }
 
 /// One frame of an [`Expansion`]: where the opening and the closing sets are in the list.
@@ -1703,8 +1717,8 @@ struct ExpansionFrame {
     t: f32,
     /// The opening set's index and difficulty count.
     open: Option<(usize, usize)>,
-    /// The closing set's index and difficulty count.
-    closed: Option<(usize, usize)>,
+    /// The closing sets' indices, difficulty counts and how open they still are, 0 to 1.
+    closed: [Option<(usize, usize, f32)>; CLOSING],
 }
 
 impl Expansion {
@@ -1719,44 +1733,59 @@ impl Expansion {
     ) -> ExpansionFrame {
         let open = selected.and_then(|(set, _)| Some((set, list.sets.get(set)?)));
         let key = open.map(|(_, s)| s.key);
+        let duration = (theme.song_expand_ms.max(0.0) * 1e6) as u64;
+        let eased = |start: u64| {
+            if start == 0 {
+                1.0
+            } else {
+                ease_out_quint(progress(start, now_ns, duration))
+            }
+        };
         if key != self.key {
             let closed = self.key.and_then(|old| {
                 let count = list.sets.iter().find(|s| s.key == old)?.difficulties.len();
-                Some((old, count))
+                Some(Closing {
+                    key: old,
+                    count,
+                    from: eased(self.start_ns),
+                    start_ns: now_ns.max(1),
+                })
             });
+            self.closing.rotate_right(1);
+            self.closing[0] = closed;
             // The first selection opens at once.
-            let start_ns = if self.key.is_some() { now_ns.max(1) } else { 0 };
-            *self = Expansion {
-                key,
-                start_ns,
-                closed,
-            };
+            self.start_ns = if self.key.is_some() { now_ns.max(1) } else { 0 };
+            self.key = key;
         }
-        let duration = (theme.song_expand_ms.max(0.0) * 1e6) as u64;
-        let t = if self.start_ns == 0 {
-            1.0
-        } else {
-            ease_out_quint(progress(self.start_ns, now_ns, duration))
-        };
-        if t >= 1.0 {
+        // Shut ones are forgotten.
+        for slot in &mut self.closing {
+            if slot.is_some_and(|c| eased(c.start_ns) >= 1.0) {
+                *slot = None;
+            }
+        }
+        let t = eased(self.start_ns);
+        if t >= 1.0 && self.closing.iter().all(Option::is_none) {
             // Settled: nothing moves, and the list is not searched.
             return ExpansionFrame {
-                t,
+                t: 1.0,
                 open: None,
-                closed: None,
+                closed: [None; CLOSING],
             };
         }
-        let closed = self.closed.and_then(|(old, count)| {
-            let index = list.sets.iter().position(|s| s.key == old)?;
-            Some((index, count))
-        });
         // No further than the snapshot carries rows past the window, so nothing slides in
         // from where there is no row to draw.
         let cap = |count: usize| count.min(super::ROW_PAD);
+        let closed = self.closing.map(|slot| {
+            let c = slot?;
+            let index = list.sets.iter().position(|s| s.key == c.key)?;
+            Some((index, cap(c.count), c.from * (1.0 - eased(c.start_ns))))
+        });
         ExpansionFrame {
             t,
-            open: open.map(|(index, s)| (index, cap(s.difficulties.len()))),
-            closed: closed.map(|(index, count)| (index, cap(count))),
+            open: open
+                .filter(|_| t < 1.0)
+                .map(|(index, s)| (index, cap(s.difficulties.len()))),
+            closed,
         }
     }
 }
@@ -1773,6 +1802,9 @@ struct Shift {
     /// When the set and the difficulty last changed; 0 before any change (no slide).
     set_start_ns: u64,
     difficulty_start_ns: u64,
+    /// How far the old set and difficulty had slid in when they were left, 0 to 1.
+    old_set_from: f32,
+    old_difficulty_from: f32,
 }
 
 /// One frame of a [`Shift`]: the selection by index and the slides' progress.
@@ -1784,6 +1816,8 @@ struct ShiftFrame {
     old_difficulty: Option<(usize, usize)>,
     set_t: f32,
     difficulty_t: f32,
+    old_set_from: f32,
+    old_difficulty_from: f32,
     set_shift: f32,
     difficulty_shift: f32,
 }
@@ -1798,21 +1832,6 @@ impl Shift {
     ) -> ShiftFrame {
         let set_key = selected.and_then(|(set, _)| Some(list.sets.get(set)?.key));
         let difficulty = selected.zip(set_key).map(|((_, d), key)| (key, d));
-        // The first selection is there at once.
-        if set_key != self.set {
-            self.old_set = self.set;
-            self.set_start_ns = if self.set.is_some() { now_ns.max(1) } else { 0 };
-            self.set = set_key;
-        }
-        if difficulty != self.difficulty {
-            self.old_difficulty = self.difficulty;
-            self.difficulty_start_ns = if self.difficulty.is_some() {
-                now_ns.max(1)
-            } else {
-                0
-            };
-            self.difficulty = difficulty;
-        }
         let duration = (theme.song_shift_ms.max(0.0) * 1e6) as u64;
         let t = |start: u64| {
             if start == 0 {
@@ -1821,6 +1840,24 @@ impl Shift {
                 ease_out_quint(progress(start, now_ns, duration))
             }
         };
+        // The first selection is there at once. One left before its slide ended slides
+        // back from where it got to (ADR-0167).
+        if set_key != self.set {
+            self.old_set = self.set;
+            self.old_set_from = t(self.set_start_ns);
+            self.set_start_ns = if self.set.is_some() { now_ns.max(1) } else { 0 };
+            self.set = set_key;
+        }
+        if difficulty != self.difficulty {
+            self.old_difficulty = self.difficulty;
+            self.old_difficulty_from = t(self.difficulty_start_ns);
+            self.difficulty_start_ns = if self.difficulty.is_some() {
+                now_ns.max(1)
+            } else {
+                0
+            };
+            self.difficulty = difficulty;
+        }
         let (set_t, difficulty_t) = (t(self.set_start_ns), t(self.difficulty_start_ns));
         let index = |key: u64| list.sets.iter().position(|s| s.key == key);
         // Only while a slide runs is the list searched for the old keys.
@@ -1836,6 +1873,8 @@ impl Shift {
             old_difficulty,
             set_t,
             difficulty_t,
+            old_set_from: self.old_set_from,
+            old_difficulty_from: self.old_difficulty_from,
             set_shift: theme.song_set_shift,
             difficulty_shift: theme.song_difficulty_shift,
         }
@@ -1851,7 +1890,7 @@ impl ShiftFrame {
                 if self.set == Some(set) {
                     full * (1.0 - self.set_t)
                 } else if self.old_set == Some(set) {
-                    full * self.set_t
+                    full * (1.0 - self.old_set_from * (1.0 - self.set_t))
                 } else {
                     full
                 }
@@ -1861,7 +1900,7 @@ impl ShiftFrame {
                 if self.difficulty == Some((set, difficulty)) {
                     full * (1.0 - self.difficulty_t)
                 } else if self.old_difficulty == Some((set, difficulty)) {
-                    full * self.difficulty_t
+                    full * (1.0 - self.old_difficulty_from * (1.0 - self.difficulty_t))
                 } else {
                     full
                 }
@@ -1873,23 +1912,17 @@ impl ShiftFrame {
 impl ExpansionFrame {
     /// Rows the list may move by: drawn past the window's ends meanwhile.
     fn reach(&self) -> usize {
-        if self.t >= 1.0 {
-            return 0;
-        }
-        self.open.map_or(0, |o| o.1) + self.closed.map_or(0, |c| c.1)
+        self.open.map_or(0, |o| o.1) + self.closed.iter().flatten().map(|c| c.1).sum::<usize>()
     }
 
     /// Rows `row` is moved down by (negative: up), and its opacity.
     fn offset(&self, row: Row) -> (f32, f32) {
-        let left = 1.0 - self.t;
-        if left <= 0.0 {
-            return (0.0, 1.0);
-        }
         let set = match row {
             Row::Set(set) | Row::Difficulty { set, .. } => set,
         };
         let mut rows = 0.0;
         let mut alpha = 1.0;
+        let left = 1.0 - self.t;
         if let Some((open, count)) = self.open {
             match row {
                 // Out from under the set's row, the later ones from further.
@@ -1901,10 +1934,10 @@ impl ExpansionFrame {
                 _ => {}
             }
         }
-        if let Some((closed, count)) = self.closed
-            && set > closed
-        {
-            rows += left * count as f32;
+        for &(closed, count, still_open) in self.closed.iter().flatten() {
+            if set > closed {
+                rows += still_open * count as f32;
+            }
         }
         (rows, alpha)
     }
@@ -1997,6 +2030,42 @@ mod tests {
         let done = e.track(&list, Some((2, 1)), 2_000 * MS, &theme);
         assert_eq!(done.reach(), 0);
         assert_eq!(done.offset(Row::Set(1)), (0.0, 1.0));
+    }
+
+    #[test]
+    fn a_quick_change_closes_a_half_open_set_from_where_it_is() {
+        let theme = Theme::default();
+        let list = sets(&[3, 2, 4]);
+        let mut e = Expansion::default();
+        e.track(&list, Some((0, 0)), 0, &theme);
+        // Set 1 opens at 1 s, and is left for set 2 a little later, half open.
+        e.track(&list, Some((1, 0)), 1_000 * MS, &theme);
+        let half = e.track(&list, Some((1, 0)), 1_000 * MS + 20 * MS, &theme);
+        let open_part = half.t;
+        assert!(open_part > 0.0 && open_part < 1.0);
+        // Set 2 stays where it is drawn: its row moves up by set 1's two difficulties in
+        // the list, and the offset makes up for them and for set 0 still closing.
+        let before = half.offset(Row::Set(2)).0;
+        let after = e
+            .track(&list, Some((2, 0)), 1_000 * MS + 20 * MS, &theme)
+            .offset(Row::Set(2))
+            .0;
+        assert!((before - (after - 2.0)).abs() < 1e-4, "{before} -> {after}");
+    }
+
+    #[test]
+    fn a_selection_left_mid_slide_slides_back_from_there() {
+        let theme = Theme::default();
+        let list = sets(&[3, 2, 4]);
+        let mut shift = Shift::default();
+        shift.track(&list, Some((0, 0)), 0, &theme);
+        shift.track(&list, Some((1, 0)), 1_000 * MS, &theme);
+        let mid = shift.track(&list, Some((1, 0)), 1_000 * MS + 20 * MS, &theme);
+        let before = mid.of(Row::Set(1));
+        let after = shift
+            .track(&list, Some((2, 0)), 1_000 * MS + 20 * MS, &theme)
+            .of(Row::Set(1));
+        assert!((before - after).abs() < 1e-4, "{before} -> {after}");
     }
 
     #[test]
