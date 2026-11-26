@@ -282,12 +282,18 @@ fn statistics_of(
     }
 }
 
-/// The red lines and kiai sections of `beatmap` that matter from `from_ms` on: the red line
-/// in force there and the ones after, as many as [`BeatTiming`] keeps.
+/// The red lines and kiai sections of `beatmap` that matter from `from_ms` on, as many as
+/// [`BeatTiming`] keeps.
 fn beat_timing(beatmap: &Beatmap, from_ms: f64) -> BeatTiming {
     let mut timing = BeatTiming::default();
     let points = beatmap.control_points.timing_points();
-    let first = points.iter().rposition(|p| p.time <= from_ms).unwrap_or(0);
+    // All of them when they fit, so that music started before the preview (the menu's
+    // track) keeps its beat; else from the one in force at the preview.
+    let first = if points.len() <= slam_ui::song_select::beat::MAX_BEAT_POINTS {
+        0
+    } else {
+        points.iter().rposition(|p| p.time <= from_ms).unwrap_or(0)
+    };
     for p in &points[first..] {
         timing.push_point(BeatPoint {
             time: p.time,

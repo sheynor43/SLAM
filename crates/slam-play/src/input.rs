@@ -14,6 +14,9 @@ use crate::cursor::CursorPath;
 use crate::playfield::PlayfieldLayout;
 use crate::time::{Offsets, game_time};
 
+/// The actions lazer's key overlay counts, in its order (ADR-0171).
+const OVERLAY_ACTIONS: [Actions; 3] = [Actions::LEFT, Actions::RIGHT, Actions::SMOKE];
+
 /// SDL scancodes (USB HID usage ids) of the default keys.
 const SCANCODE_Z: u16 = 29;
 const SCANCODE_X: u16 = 27;
@@ -291,6 +294,9 @@ impl LiveInput {
             if let Some(i) = crate::key_overlay::slot(h.input, h.actions) {
                 held[i] = true;
             }
+        }
+        for (k, action) in OVERLAY_ACTIONS.iter().enumerate() {
+            held[crate::key_overlay::ACTION_SLOTS + k] = self.held.contains(*action);
         }
         (self.key_presses, held)
     }
@@ -659,6 +665,13 @@ impl LiveInput {
             if let Some(i) = crate::key_overlay::slot(input, bound) {
                 self.key_presses[i] = self.key_presses[i].wrapping_add(1);
             }
+            // Lazer's counters: an action pressed while not held already (ADR-0171).
+            for (k, action) in OVERLAY_ACTIONS.iter().enumerate() {
+                if held_after.contains(*action) && !self.held.contains(*action) {
+                    let i = crate::key_overlay::ACTION_SLOTS + k;
+                    self.key_presses[i] = self.key_presses[i].wrapping_add(1);
+                }
+            }
         } else if let Some(index) = held_index {
             self.held_inputs
                 .copy_within(index + 1..self.held_len, index);
@@ -775,11 +788,11 @@ mod tests {
         let _ = input.step(
             &[
                 key(1.0, SCANCODE_Z, true),
-                // The left action is held already: still M1's press.
+                // The left action is held already: M1's press, not another for lazer's B1.
                 mouse(2.0, MouseButton::Left, true),
                 key(3.0, SCANCODE_X, true),
                 key(3.5, SCANCODE_X, false),
-                // Smoke counts in its own slot (lazer's third key); an unbound key nothing.
+                // Smoke counts for lazer's third key only; an unbound key nothing.
                 key(4.0, SCANCODE_C, true),
                 key(4.5, 4, true),
             ],
@@ -788,7 +801,10 @@ mod tests {
         );
         assert_eq!(
             input.keys(),
-            ([1, 1, 1, 0, 1], [true, false, true, false, true])
+            (
+                [1, 1, 1, 0, 1, 1, 1],
+                [true, false, true, false, true, false, true]
+            )
         );
         let _ = input.step(
             &[key(6.0, SCANCODE_Z, false), key(7.0, SCANCODE_Z, true)],
@@ -797,14 +813,18 @@ mod tests {
         );
         assert_eq!(
             input.keys(),
-            ([2, 1, 1, 0, 1], [true, false, true, false, true])
+            // M1 kept the left action held: lazer's B1 does not count Z again.
+            (
+                [2, 1, 1, 0, 1, 1, 1],
+                [true, false, true, false, true, false, true]
+            )
         );
         // Disabled mouse buttons press nothing.
         input.set_mouse_buttons_disabled(true);
         let _ = input.step(&[mouse(9.0, MouseButton::Right, true)], ms(10.0), &Linear);
         assert_eq!(input.keys().0[3], 0);
         input.reset();
-        assert_eq!(input.keys(), ([0; 5], [false; 5]));
+        assert_eq!(input.keys(), ([0; 7], [false; 7]));
     }
 
     #[test]

@@ -319,6 +319,8 @@ impl Drops {
 pub struct Imports {
     pub drops: Drops,
     pub importer: Importer,
+    /// Where dropped replays go, found once at start: the update tick touches no files.
+    pub replays: Option<PathBuf>,
 }
 
 #[cfg(test)]

@@ -2653,7 +2653,15 @@ fn a_skinned_hud_animates_and_draws_without_allocating() {
             snapshot.health = (f64::from(frame % 100) / 100.0).max(0.1);
             snapshot.keys.presses[frame as usize % 4] += u32::from(frame % 3 == 0);
             snapshot.keys.counts = snapshot.keys.presses;
-            snapshot.keys.held = [frame % 2 == 0, frame % 5 == 0, false, frame % 7 == 0, false];
+            snapshot.keys.held = [
+                frame % 2 == 0,
+                frame % 5 == 0,
+                false,
+                frame % 7 == 0,
+                false,
+                false,
+                false,
+            ];
             snapshot.skip_available = frame < 50;
             if frame == 300 {
                 snapshot.restarts += 1;
@@ -4322,14 +4330,18 @@ fn overlay_keys_count_while_playing_and_start_over_on_a_retry() {
     let map = beatmap();
     let mut d = Driver::new(&map, ModSet::default());
     d.tap(Z);
-    assert_eq!(d.snapshot.keys.presses, [1, 0, 0, 0, 0]);
-    assert_eq!(d.snapshot.keys.counts, [1, 0, 0, 0, 0]);
+    // K1 and lazer's B1.
+    assert_eq!(d.snapshot.keys.presses, [1, 0, 0, 0, 1, 0, 0]);
+    assert_eq!(d.snapshot.keys.counts, [1, 0, 0, 0, 1, 0, 0]);
     let pressed = d.key(Z, true);
     d.tick(&[pressed]);
-    assert_eq!(d.snapshot.keys.held, [true, false, false, false, false]);
+    assert_eq!(
+        d.snapshot.keys.held,
+        [true, false, false, false, true, false, false]
+    );
     let released = d.key(Z, false);
     d.tick(&[released]);
-    assert_eq!(d.snapshot.keys.counts, [2, 0, 0, 0, 0]);
+    assert_eq!(d.snapshot.keys.counts, [2, 0, 0, 0, 2, 0, 0]);
     d.hold(None, GRAVE, 300);
     assert_eq!(d.snapshot.restarts, 1);
     assert_eq!(

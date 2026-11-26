@@ -15,25 +15,25 @@ use crate::input::Input;
 
 /// Keys of the overlay at most: K1, K2, M1, M2.
 pub const KEYS: usize = 4;
-/// Inputs counted: K1, K2, M1, M2 and smoke, which lazer's three keys show (ADR-0167).
-pub const SLOTS: usize = 5;
-/// The slot of smoke.
-const SMOKE_SLOT: usize = 4;
+/// Counters: stable's K1, K2, M1, M2 by input, then lazer's B1, B2, B3 by action (left,
+/// right, smoke), which count a press only when the action was not held already, as lazer's
+/// `SimultaneousBindingMode.Unique` (ADR-0171).
+pub const SLOTS: usize = 7;
+/// The first of lazer's action counters.
+pub const ACTION_SLOTS: usize = 4;
 /// The keys' captions before their first press: key names, not translated text.
 pub const LABELS: [&str; KEYS] = ["K1", "K2", "M1", "M2"];
 /// Lazer's captions of its three keys, one per action (`KeyCounterActionTrigger`).
 // Ported from osu!lazer 2026.1005.0-lazer: osu.Game/Screens/Play/HUD/KeyCounterActionTrigger.cs
 pub const LAZER_LABELS: [&str; KEYS] = ["B1", "B2", "B3", ""];
 
-/// The slot of `input` pressing `actions`: the keyboard's or the mouse's, for the left or
-/// right action, or smoke's.
+/// The stable slot of `input` pressing `actions`: the keyboard's or the mouse's, for the
+/// left or right action. Smoke has none.
 pub fn slot(input: Input, actions: Actions) -> Option<usize> {
     let side = if actions.contains(Actions::LEFT) {
         0
     } else if actions.contains(Actions::RIGHT) {
         1
-    } else if actions.contains(Actions::SMOKE) {
-        return Some(SMOKE_SLOT);
     } else {
         return None;
     };
@@ -57,20 +57,13 @@ impl KeyValues {
     /// The values of the keys shown: stable's four as they are, or lazer's three, one per
     /// action, keyboard and mouse together.
     fn keys(&self, three: bool) -> ([u32; KEYS], [u32; KEYS], [bool; KEYS]) {
-        if !three {
-            let four = |i: usize| i;
-            return (
-                std::array::from_fn(|i| self.presses[four(i)]),
-                std::array::from_fn(|i| self.counts[four(i)]),
-                std::array::from_fn(|i| self.held[four(i)]),
-            );
-        }
-        // Left: K1 and M1; right: K2 and M2; then smoke.
-        let pairs: [&[usize]; KEYS] = [&[0, 2], &[1, 3], &[SMOKE_SLOT], &[]];
+        // Lazer's three by action, and nothing in the fourth.
+        let first = if three { ACTION_SLOTS } else { 0 };
+        let shown = |i: usize| i < 3 || !three;
         (
-            pairs.map(|p| p.iter().map(|&i| self.presses[i]).sum()),
-            pairs.map(|p| p.iter().map(|&i| self.counts[i]).sum()),
-            pairs.map(|p| p.iter().any(|&i| self.held[i])),
+            std::array::from_fn(|i| if shown(i) { self.presses[first + i] } else { 0 }),
+            std::array::from_fn(|i| if shown(i) { self.counts[first + i] } else { 0 }),
+            std::array::from_fn(|i| shown(i) && self.held[first + i]),
         )
     }
 }
@@ -469,7 +462,7 @@ mod tests {
             slot(Input::Mouse(MouseButton::Right), Actions::RIGHT),
             Some(3)
         );
-        assert_eq!(slot(Input::Key(6), Actions::SMOKE), Some(SMOKE_SLOT));
+        assert_eq!(slot(Input::Key(6), Actions::SMOKE), None);
     }
 
     #[test]
@@ -483,23 +476,28 @@ mod tests {
         assert_eq!(overlay.labels()[..3], ["B1", "B2", "B3"]);
         overlay.update(
             &KeyValues {
-                presses: [2, 1, 3, 0, 4],
-                counts: [2, 1, 3, 0, 4],
-                held: [false, false, true, false, false],
+                presses: [2, 1, 3, 0, 4, 1, 6],
+                counts: [2, 1, 3, 0, 4, 1, 6],
+                held: [false, false, true, false, true, false, false],
             },
             0.0,
         );
-        assert_eq!(overlay.counts(), [5, 1, 4, 0]);
-        assert_eq!(overlay.pose(0, 1000.0).colour, 1.0, "M1 holds the left key");
+        // The action counters, not the inputs.
+        assert_eq!(overlay.counts(), [4, 1, 6, 0]);
+        assert_eq!(
+            overlay.pose(0, 1000.0).colour,
+            1.0,
+            "the left action is held"
+        );
         let four = KeyOverlay::new(KeyAnimation::Stable.into());
         assert_eq!((four.key_count(), four.labels()[3]), (4, "M2"));
     }
 
     fn values(presses: u32, held: bool) -> KeyValues {
         KeyValues {
-            presses: [presses, 0, 0, 0, 0],
-            counts: [presses, 0, 0, 0, 0],
-            held: [held, false, false, false, false],
+            presses: [presses, 0, 0, 0, 0, 0, 0],
+            counts: [presses, 0, 0, 0, 0, 0, 0],
+            held: [held, false, false, false, false, false, false],
         }
     }
 

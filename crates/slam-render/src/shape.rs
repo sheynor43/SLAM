@@ -368,7 +368,7 @@ impl ShapeBatch {
             [mix(r, end.r), mix(g, end.g), mix(b, end.b), mix(a, end.a)]
         };
         // An upright texture runs across the bounding box of the skewed shape.
-        let box_width = w + (tan * h).abs();
+        let box_width = (w + (tan * h).abs()).max(f32::EPSILON);
         for (fx, fy) in [(0.0, 0.0), (1.0, 0.0), (1.0, 1.0), (0.0, 1.0)] {
             let tx = if fx == 0.0 { -mx } else { 1.0 + mx };
             let ty = if fy == 0.0 { -my } else { 1.0 + my };

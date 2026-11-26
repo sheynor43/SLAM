@@ -1957,13 +1957,12 @@ impl ShellState {
         let Some(imports) = &self.imports else {
             return;
         };
-        while let Some(path) = imports.drops.poll() {
-            if matches!(self.stack.top(), AppScreen::Play(_)) {
-                continue;
-            }
+        // Files dropped during a play wait in the queue for the way out (ADR-0169).
+        let playing = matches!(self.stack.top(), AppScreen::Play(_));
+        while !playing && let Some(path) = imports.drops.poll() {
             let targets = crate::import::Targets {
                 songs: self.settings.paths.songs.clone(),
-                replays: Dirs::detect().map(|dirs| dirs.replays()),
+                replays: imports.replays.clone(),
             };
             imports
                 .importer
@@ -5530,7 +5529,11 @@ fn run_with<B: render::Backend>(
         Ok(importer) => {
             let (drops, callback) = crate::import::drop_queue();
             window.set_drop_callback(callback);
-            state = state.with_imports(crate::import::Imports { drops, importer });
+            state = state.with_imports(crate::import::Imports {
+                drops,
+                importer,
+                replays: Dirs::detect().map(|dirs| dirs.replays()),
+            });
         }
         Err(e) => tracing::warn!("import: cannot start the thread: {e}"),
     }

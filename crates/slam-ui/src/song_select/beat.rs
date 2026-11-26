@@ -2,15 +2,16 @@
 
 use crate::anim::ease_out_quad;
 
-/// Timing points kept; later ones are dropped (a preview rarely crosses that many).
-pub const MAX_BEAT_POINTS: usize = 32;
+/// Timing points kept; later ones are dropped (few beatmaps have more red lines).
+pub const MAX_BEAT_POINTS: usize = 96;
 /// Kiai sections kept.
 pub const MAX_KIAI: usize = 16;
 
-/// Lazer's pulsing panel fades in this fast before the beat, and takes it as its start.
-// Ported from osu!lazer 2026.1005.0-lazer: osu.Game/Screens/Select/Carousel/Panel.cs (PulsatingBox)
+/// Lazer's pulsing panel (`Panel.PulsatingBox`) fades in this fast before the beat. The
+/// pulse follows it loosely (it is decoration, not a port): short beats pulse every other
+/// beat, and the bar's first beat and kiai pulse fullest.
 const RISE_MS: f64 = 40.0;
-/// A beat shorter than this pulses every other beat (lazer doubles `length` while short).
+/// A beat shorter than this pulses every other beat (lazer only stretches the fade).
 const MIN_PULSE_MS: f64 = 250.0;
 /// How strong a beat off the bar's first is, and the boost of kiai.
 const OFF_BEAT: f32 = 0.6;
@@ -48,13 +49,14 @@ impl Default for BeatTiming {
 
 impl BeatTiming {
     /// Adds a red line, in time order; past [`MAX_BEAT_POINTS`] or with a beat length
-    /// that is not positive, it is skipped.
+    /// that is not finite, it is skipped. The beat length is kept within lazer's bounds
+    /// (`TimingControlPoint`: 6 to 60 000 ms).
     pub fn push_point(&mut self, point: BeatPoint) {
-        if self.point_count < MAX_BEAT_POINTS
-            && point.beat_length.is_finite()
-            && point.beat_length > 0.0
-        {
-            self.points[self.point_count] = point;
+        if self.point_count < MAX_BEAT_POINTS && point.beat_length.is_finite() {
+            self.points[self.point_count] = BeatPoint {
+                beat_length: point.beat_length.clamp(6.0, 60_000.0),
+                ..point
+            };
             self.point_count += 1;
         }
     }
