@@ -5391,6 +5391,9 @@ pub fn interface_theme(live: &Settings, committed: &Settings) -> Theme {
     theme.song_set_height = live.song_select.set_height;
     theme.song_difficulty_height = live.song_select.difficulty_height;
     theme.song_difficulty_info = live.song_select.difficulty_info;
+    theme.song_info_width_mult = live.song_select.info_width.clamp(0.5, 1.5);
+    theme.song_info_height_mult = live.song_select.info_height.clamp(0.5, 1.5);
+    theme.song_info_auto_width = live.song_select.info_auto_width;
     theme
 }
 

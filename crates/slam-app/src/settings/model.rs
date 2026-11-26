@@ -810,6 +810,11 @@ pub struct SongSelect {
     pub set_height: f32,
     /// Height of a difficulty row, 30..=90 (ADR-0149: lazer's 45).
     pub difficulty_height: f32,
+    /// Multipliers of the info panel's width and height, 0.5..=1.5 (ADR-0168).
+    pub info_width: f32,
+    pub info_height: f32,
+    /// Whether the info panel's width follows its texts (ADR-0168).
+    pub info_auto_width: bool,
     /// What a difficulty row shows beside its name (ADR-0151).
     #[serde(serialize_with = "serialize_difficulty_info")]
     pub difficulty_info: DifficultyInfo,
@@ -826,6 +831,9 @@ impl Default for SongSelect {
             background_dim: 0.7,
             set_height: 72.0,
             difficulty_height: 45.0,
+            info_width: 1.0,
+            info_height: 1.0,
+            info_auto_width: false,
             difficulty_info: DifficultyInfo::Stars,
             mod_hotkeys: ModHotkeyStyle::Sequential,
             thumbnails: Thumbnails::default(),

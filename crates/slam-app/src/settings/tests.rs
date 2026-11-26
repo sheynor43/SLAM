@@ -1997,3 +1997,24 @@ fn the_discord_presence_setting_defaults_on_and_round_trips() {
     let text = file::to_toml_string(&settings).unwrap();
     assert!(text.contains("discord_presence = false"), "{text}");
 }
+
+#[test]
+fn song_select_info_panel_settings_round_trip_and_are_validated() {
+    let defaults = Settings::default();
+    assert_eq!(defaults.song_select.info_width, 1.0);
+    assert_eq!(defaults.song_select.info_height, 1.0);
+    assert!(!defaults.song_select.info_auto_width);
+    let loaded = file::from_toml_str(
+        "[song_select]\ninfo_width = 1.25\ninfo_height = 0.75\ninfo_auto_width = true\n",
+    );
+    assert_eq!(loaded.settings.song_select.info_width, 1.25);
+    assert_eq!(loaded.settings.song_select.info_height, 0.75);
+    assert!(loaded.settings.song_select.info_auto_width);
+    let bad = file::from_toml_str("[song_select]\ninfo_width = 3.0\n");
+    assert_eq!(bad.settings.song_select.info_width, 1.0);
+    assert!(
+        bad.warnings
+            .iter()
+            .any(|w| w.starts_with("song_select.info_width"))
+    );
+}

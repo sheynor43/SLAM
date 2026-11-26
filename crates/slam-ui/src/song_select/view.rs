@@ -104,6 +104,9 @@ pub struct DetailLabels {
     /// The title of the local scores list, and the line shown when there are none.
     pub scores: String,
     pub no_scores: String,
+    /// The labels before a score row's accuracy and max combo.
+    pub accuracy: String,
+    pub combo: String,
 }
 
 impl std::fmt::Debug for SongSelectLabels {
@@ -874,7 +877,14 @@ impl SongSelectView {
             }
             // The selected difficulty's statistics and local scores, on the left.
             self.info.push(
-                layout, theme, snapshot, opacity, now_ns, &mut rect, &mut left,
+                layout,
+                theme,
+                snapshot,
+                opacity,
+                now_ns,
+                &mut rect,
+                &mut left,
+                &mut |line, marquee, avail, x, y, colour| ride(line, marquee, avail, x, y, colour),
             );
             // The search line.
             let search = leaned(&layout.search);

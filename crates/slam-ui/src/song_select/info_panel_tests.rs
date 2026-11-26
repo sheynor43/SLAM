@@ -21,6 +21,8 @@ fn labels() -> DetailLabels {
         drain_rate: "HP".into(),
         scores: "Local scores".into(),
         no_scores: "No local scores".into(),
+        accuracy: "ACCURACY".into(),
+        combo: "MAX COMBO".into(),
     }
 }
 
@@ -115,7 +117,7 @@ impl Rig {
         screen.set_details(Some(details));
         let snapshot = screen.snapshot();
         let layout = SongSelectLayout::new(1280.0, 768.0, &self.theme);
-        let (mut rects, mut texts) = (0, 0);
+        let (mut rects, texts) = (0, std::cell::Cell::new(0));
         self.panel.push(
             &layout,
             &self.theme,
@@ -123,9 +125,10 @@ impl Rig {
             1.0,
             0,
             &mut |_, _, _| rects += 1,
-            &mut |line, _, _, _| texts += usize::from(!line.text.is_empty()),
+            &mut |line, _, _, _| texts.set(texts.get() + usize::from(!line.text.is_empty())),
+            &mut |line, _, _, _, _, _| texts.set(texts.get() + usize::from(!line.text.is_empty())),
         );
-        (rects, texts)
+        (rects, texts.get())
     }
 
     /// The outlines of the wedges drawn at `opacity`.
@@ -147,6 +150,7 @@ impl Rig {
                 }
             },
             &mut |_, _, _, _| {},
+            &mut |_, _, _, _, _, _| {},
         );
         found
     }
@@ -183,14 +187,11 @@ fn no_scores_leave_the_rows_empty_and_scores_fill_them() {
     assert_eq!(first.rank.text, "SH");
     assert_eq!(first.score.text, "1,234,567");
     assert_eq!(first.accuracy.text, "98.45%");
-    assert_eq!(
-        first.extra.text,
-        "1234x  \u{b7}  HD DT  \u{b7}  1.19x  \u{b7}  2026-11-14 18:30"
-    );
-    assert_eq!(
-        rig.panel.scores[1].extra.text,
-        "1234x  \u{b7}  2026-11-14 18:30"
-    );
+    assert_eq!(first.combo.text, "1234x");
+    assert_eq!(first.date.text, "2026-11-14 18:30");
+    assert_eq!(first.extra.text, "HD DT  \u{b7}  1.19x");
+    assert_eq!(rig.panel.scores[1].extra.text, "");
+    assert_eq!(rig.panel.scores[1].date.text, "2026-11-14 18:30");
     assert!(rig.panel.scores[2].score.text.is_empty());
 }
 
@@ -426,6 +427,7 @@ fn the_wedges_run_off_the_left_edge_from_top_to_bottom() {
             }
         },
         &mut |_, _, _, _| {},
+        &mut |_, _, _, _, _, _| {},
     );
     assert_eq!(lefts.len(), 2);
     for (top, bottom) in lefts {
@@ -444,7 +446,7 @@ fn the_difficulty_lines_keep_a_text_pad_from_the_leaning_edge() {
     let pad = rig.theme.song_text_pad * layout.scale;
     let inset = rig.theme.song_margin * layout.scale / 2.0;
     let mut wedges = Vec::new();
-    let mut lines = Vec::new();
+    let lines = std::cell::RefCell::new(Vec::new());
     rig.panel.push(
         &layout,
         &rig.theme,
@@ -458,7 +460,17 @@ fn the_difficulty_lines_keep_a_text_pad_from_the_leaning_edge() {
         },
         &mut |line, x, centre_y, _| {
             if !line.text.is_empty() {
-                lines.push((x, x + line.layout.width(), centre_y));
+                lines
+                    .borrow_mut()
+                    .push((x, x + line.layout.width(), centre_y));
+            }
+        },
+        &mut |line, marquee, avail, x, centre_y, _| {
+            if !line.text.is_empty() {
+                // The visible part: the room when the text rides.
+                let width = line.layout.width().min(avail);
+                assert!(marquee.overflow() >= 0.0);
+                lines.borrow_mut().push((x, x + width, centre_y));
             }
         },
     );
@@ -466,6 +478,7 @@ fn the_difficulty_lines_keep_a_text_pad_from_the_leaning_edge() {
     let (wedge, lean) = wedges[0];
     let edge = |y: f32| wedge.x + wedge.width + (wedge.y + wedge.height / 2.0 - y) * lean;
     let inside: Vec<_> = lines
+        .into_inner()
         .into_iter()
         .filter(|&(_, _, y)| y > wedge.y && y < wedge.y + wedge.height)
         .collect();
@@ -496,6 +509,7 @@ fn the_bars_move_to_new_values_and_the_first_shows_at_once() {
             now,
             &mut |_, _, _| {},
             &mut |_, _, _, _| {},
+            &mut |_, _, _, _, _, _| {},
         );
     };
     let duration = rig.theme.song_info_transition_ms as u64 * ms;
@@ -538,6 +552,7 @@ fn drawn_score_centres(
             }
         },
         &mut |_, _, _, _| {},
+        &mut |_, _, _, _, _, _| {},
     );
     centres
 }
@@ -591,18 +606,20 @@ fn the_hovered_score_row_takes_the_hover_fill() {
     screen.input(I::PointerMove { x, y }, &layout);
     let snapshot = screen.snapshot();
     let mut fills = Vec::new();
+    // Long after the rows came in.
     rig.panel.push(
         &layout,
         &rig.theme,
         &snapshot,
         1.0,
-        0,
+        5_000_000_000,
         &mut |_, colour, look| {
             if matches!(look, Look::Round) {
                 fills.push(colour);
             }
         },
         &mut |_, _, _, _| {},
+        &mut |_, _, _, _, _, _| {},
     );
     assert_eq!(
         fills,
@@ -613,6 +630,7 @@ fn the_hovered_score_row_takes_the_hover_fill() {
 #[test]
 fn short_texts_narrow_the_panel_and_a_new_width_moves_there() {
     let mut rig = Rig::new();
+    rig.theme.song_info_auto_width = true;
     rig.show(details(None));
     let layout = SongSelectLayout::new(1280.0, 768.0, &rig.theme);
     let snapshot = {
@@ -634,6 +652,7 @@ fn short_texts_narrow_the_panel_and_a_new_width_moves_there() {
                 }
             },
             &mut |_, _, _, _| {},
+            &mut |_, _, _, _, _, _| {},
         );
         edge
     };
@@ -649,4 +668,181 @@ fn short_texts_narrow_the_panel_and_a_new_width_moves_there() {
     let end = right_edge(&mut rig.panel, 2_000_000_000);
     assert!(start - first < 1.0, "no jump: {first} -> {start}");
     assert!(start < later && later < end, "{start} < {later} < {end}");
+}
+
+/// The right edge of the widest wedge the panel draws.
+fn wedge_edge(rig: &mut Rig) -> f32 {
+    let layout = SongSelectLayout::new(1280.0, 768.0, &rig.theme);
+    let mut screen = rig.screen.clone();
+    screen.set_details(Some(details(None)));
+    let snapshot = screen.snapshot();
+    let mut edge = 0.0_f32;
+    rig.panel.push(
+        &layout,
+        &rig.theme,
+        &snapshot,
+        1.0,
+        0,
+        &mut |r, _, look| {
+            if matches!(look, Look::Wedge { .. }) {
+                edge = edge.max(r.x + r.width);
+            }
+        },
+        &mut |_, _, _, _| {},
+        &mut |_, _, _, _, _, _| {},
+    );
+    edge
+}
+
+#[test]
+fn the_panel_does_not_follow_its_texts_unless_asked() {
+    let mut rig = Rig::new();
+    assert!(!rig.theme.song_info_auto_width);
+    rig.show(details(None));
+    let fixed = wedge_edge(&mut rig);
+    let mut auto = Rig::new();
+    auto.theme.song_info_auto_width = true;
+    auto.show(details(None));
+    assert!(
+        wedge_edge(&mut auto) < fixed - 1.0,
+        "short texts narrow it only when asked"
+    );
+}
+
+#[test]
+fn the_default_width_is_lazers_at_its_ui_scale_and_the_multipliers_scale_it() {
+    let theme = Theme::default();
+    // Lazer at 0.85: 700 * 0.85 on a 1080p window.
+    let at = |theme: &Theme| SongSelectLayout::new(1920.0, 1080.0, theme).info.width;
+    assert!((at(&theme) - 595.0).abs() < 8.0, "{}", at(&theme));
+    let narrow = Theme {
+        song_info_width_mult: 0.5,
+        ..Theme::default()
+    };
+    assert!((at(&narrow) - at(&theme) / 2.0).abs() < 1.0);
+    // Wider windows get lazer's bonus, up to half the window.
+    let wide = SongSelectLayout::new(2560.0, 1080.0, &theme).info.width;
+    assert!(wide > at(&theme) * 1.05, "{wide}");
+}
+
+#[test]
+fn the_height_multiplier_stretches_the_rows() {
+    let theme = Theme::default();
+    let tall = Theme {
+        song_info_height_mult: 1.5,
+        ..Theme::default()
+    };
+    let layout = SongSelectLayout::new(1280.0, 768.0, &theme);
+    let taller = SongSelectLayout::new(1280.0, 768.0, &tall);
+    assert!(taller.info_parts.bars[3].track.y > layout.info_parts.bars[3].track.y);
+    assert!(taller.info_parts.rows[0].height > layout.info_parts.rows[0].height);
+}
+
+#[test]
+fn texts_that_do_not_fit_ride_instead_of_being_cut() {
+    let mut rig = Rig::new();
+    rig.show(details(None));
+    rig.panel.name.text = "A very long difficulty name that cannot fit the panel at all".into();
+    rig.type_setter.lay_out_face(
+        &mut rig.panel.name,
+        rig.theme.heading_face(rig.theme.song_info_title_size),
+    );
+    assert!(!rig.panel.name.text.contains('\u{2026}'));
+    let mut screen = rig.screen.clone();
+    screen.set_details(Some(details(None)));
+    let snapshot = screen.snapshot();
+    let layout = SongSelectLayout::new(1280.0, 768.0, &rig.theme);
+    let params = crate::marquee::MarqueeParams::new(&rig.theme, layout.scale);
+    // The draw side hands each marquee the room; here it only reads the overflow.
+    let room = std::cell::Cell::new(0.0_f32);
+    rig.panel.push(
+        &layout,
+        &rig.theme,
+        &snapshot,
+        1.0,
+        0,
+        &mut |_, _, _| {},
+        &mut |_, _, _, _| {},
+        &mut |line, marquee, avail, _, _, _| {
+            if line.text.starts_with("A very long") {
+                room.set(avail);
+                marquee.set_overflow(line.layout.width() - avail, 0);
+            }
+        },
+    );
+    let mut marquee = crate::marquee::Marquee::default();
+    marquee.set_overflow(rig.panel.name.layout.width() - room.get(), 0);
+    assert!(marquee.overflow() > 0.0, "the name overflows its room");
+    // Held for the pause, then moving.
+    assert_eq!(marquee.offset(params.pause_ns / 2, &params), 0.0);
+    assert!(marquee.offset(params.pause_ns + 500_000_000, &params) > 0.0);
+}
+
+/// Per row, when its entrance started, after the frame at `now`.
+fn row_starts(rig: &mut Rig, screen: &SongSelect, now: u64) -> [u64; MAX_LOCAL_SCORES] {
+    let snapshot = screen.snapshot();
+    let layout = SongSelectLayout::new(1280.0, 768.0, &rig.theme);
+    rig.panel.push(
+        &layout,
+        &rig.theme,
+        &snapshot,
+        1.0,
+        now,
+        &mut |_, _, _| {},
+        &mut |_, _, _, _| {},
+        &mut |_, _, _, _, _, _| {},
+    );
+    rig.panel.motion.row_since
+}
+
+#[test]
+fn score_rows_come_in_staggered_and_only_new_rows_animate_again() {
+    let mut rig = Rig::new();
+    let ms = 1_000_000u64;
+    let mut scores = LocalScores::default();
+    for (i, slot) in scores.rows.iter_mut().enumerate().take(3) {
+        *slot = Some(row(100 - i as u64));
+    }
+    let mut screen = rig.screen.clone();
+    screen.set_details(Some(details(Some(scores))));
+    let t = &rig.theme;
+    let (delay, stagger) = (
+        t.song_score_enter_delay_ms as u64 * ms,
+        t.song_score_enter_stagger_ms as u64 * ms,
+    );
+    let now = 10 * ms;
+    let first = row_starts(&mut rig, &screen, now);
+    for (i, start) in first.iter().enumerate().take(3) {
+        assert_eq!(*start, now + delay + stagger * i as u64, "row {i}");
+    }
+    // The same difficulty with a refreshed list of the same length: nothing starts over.
+    let mut refreshed = scores;
+    refreshed.rows[0] = Some(row(5000));
+    screen.set_details(Some(details(Some(refreshed))));
+    assert_eq!(row_starts(&mut rig, &screen, 900 * ms), first);
+    // A new row comes in alone, after the delay.
+    refreshed.rows[3] = Some(row(1));
+    screen.set_details(Some(details(Some(refreshed))));
+    let more = row_starts(&mut rig, &screen, 2000 * ms);
+    assert_eq!(more[..3], first[..3]);
+    assert_eq!(more[3], 2000 * ms + delay);
+    // Another difficulty starts all over.
+    let mut other = screen.clone();
+    let list = Arc::new(SongList {
+        sets: vec![SetRow {
+            key: 2,
+            artist: "Artist".into(),
+            title: "Title".into(),
+            creator: "mapper".into(),
+            difficulties: vec![DifficultyRow {
+                key: 77,
+                ..DifficultyRow::new(SearchSource::default())
+            }],
+        }],
+    });
+    let filter = SongFilter::for_list(&list);
+    other.set_list(list, filter);
+    other.set_details(Some(details(Some(scores))));
+    let again = row_starts(&mut rig, &other, 3000 * ms);
+    assert_eq!(again[0], 3000 * ms + delay);
 }

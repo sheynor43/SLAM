@@ -212,6 +212,18 @@ pub struct Theme {
     pub song_bar_track_fill: Color,
     /// Pitch of the info panel's score rows.
     pub song_score_row_height: f32,
+    /// The score rows' text sizes: the total score, the captions (date and labels) and
+    /// the values after the labels (ADR-0168).
+    pub song_score_size: f32,
+    pub song_score_caption_size: f32,
+    pub song_score_value_size: f32,
+    /// Score rows come in one after another (ADR-0168, lazer's `BeatmapLeaderboardWedge`):
+    /// the delay before the first, the stagger between two, one row's fade and its slide
+    /// from this far left.
+    pub song_score_enter_delay_ms: f32,
+    pub song_score_enter_stagger_ms: f32,
+    pub song_score_enter_ms: f32,
+    pub song_score_enter_offset: f32,
     /// Width of a mod tile of the mod select panel, and the gap between its columns.
     pub mod_tile_width: f32,
     /// Height and pitch of a mod tile.
@@ -404,6 +416,14 @@ pub struct Theme {
     /// widest they get, their corner radius and how much of the fill's opacity is left at
     /// their right edge.
     pub song_info_width: f32,
+    /// Extra width per unit of aspect ratio past 2:1, as a part of `song_info_width`
+    /// (ADR-0168: lazer's `max(0, aspect - 2) * 100` on 700).
+    pub song_info_widescreen_bonus: f32,
+    /// The user's multipliers of the info panel's width and height (0.5 ..= 1.5), and
+    /// whether the panel's width follows its texts instead (ADR-0168).
+    pub song_info_width_mult: f32,
+    pub song_info_height_mult: f32,
+    pub song_info_auto_width: bool,
     pub wedge_radius: f32,
     pub wedge_fade: f32,
     /// Size of one difficulty dot on a set row and the gap between two.
@@ -722,7 +742,14 @@ impl Theme {
                 b: 1.0,
                 a: 0.16,
             },
-            song_score_row_height: 30.0,
+            song_score_row_height: 40.0,
+            song_score_size: 20.0,
+            song_score_caption_size: 9.5,
+            song_score_value_size: 11.5,
+            song_score_enter_delay_ms: 200.0,
+            song_score_enter_stagger_ms: 30.0,
+            song_score_enter_ms: 300.0,
+            song_score_enter_offset: 20.0,
             mod_tile_width: 290.0,
             mod_tile_height: 56.0,
             mod_tile_pitch: 62.0,
@@ -850,7 +877,12 @@ impl Theme {
             star_pill_pad: 7.0,
             star_icon_size: 10.0,
             star_icon_gap: 3.0,
-            song_info_width: 380.0,
+            // Lazer's 700 at its UI scale 0.85 on a 1080p window, in reference units.
+            song_info_width: 420.0,
+            song_info_widescreen_bonus: 100.0 / 700.0,
+            song_info_width_mult: 1.0,
+            song_info_height_mult: 1.0,
+            song_info_auto_width: false,
             wedge_radius: 10.0,
             wedge_fade: 0.67,
             difficulty_dot_size: 7.0,
