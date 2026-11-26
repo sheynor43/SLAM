@@ -12,6 +12,7 @@ pub mod feedback;
 pub mod gpu;
 pub mod hud_layouts;
 pub mod i18n;
+pub mod import;
 pub mod loader;
 pub mod local_time;
 pub mod logging;

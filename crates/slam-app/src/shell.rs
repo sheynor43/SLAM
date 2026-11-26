@@ -158,6 +158,7 @@ const KEY_BACKSPACE: u16 = 42;
 const KEY_F1: u16 = 58;
 const KEY_F3: u16 = 60;
 const KEY_F4: u16 = 61;
+const KEY_F5: u16 = 62;
 const KEY_TAB: u16 = 43;
 const KEY_SPACE: u16 = 44;
 const KEY_HOME: u16 = 74;
@@ -400,6 +401,8 @@ pub struct ShellState {
     /// The toast of the last saved replay and its file (ADR-0154).
     toast: slam_ui::toast::Toast,
     toast_path: Option<PathBuf>,
+    /// Files dropped on the window and the thread that imports them (ADR-0169).
+    imports: Option<crate::import::Imports>,
     /// The mods the next play takes: they outlast a play and the results, and are not saved.
     selected_mods: ModSet,
     /// The panel's mods with default settings, by column and tile: a toggle clones one
@@ -526,6 +529,7 @@ impl ShellState {
             volume: VolumeMixer::new(),
             toast: slam_ui::toast::Toast::new(&theme),
             toast_path: None,
+            imports: None,
             // An empty set is always compatible; the capacity keeps a toggle from allocating.
             selected_mods: ModSet::new(Vec::with_capacity(SELECTED_MODS_CAPACITY))
                 .unwrap_or_default(),
@@ -718,6 +722,12 @@ impl ShellState {
         self.library_status = SongSelectStatus::Scanning { sets: 0 };
         self.song_select.set_status(self.library_status);
         self.songs = Some(songs);
+        self
+    }
+
+    /// A shell that imports the files dropped on the window (ADR-0169).
+    pub fn with_imports(mut self, imports: crate::import::Imports) -> ShellState {
+        self.imports = Some(imports);
         self
     }
 
@@ -1347,7 +1357,9 @@ impl ShellState {
                 down: true,
             } if self.toast.press(x, y, &layout, now_ns) => {
                 // One copy per click, as opening a link (ADR-0154).
-                if let Some(path) = &self.toast_path {
+                if self.toast.frame().variant == slam_ui::toast::REPLAY_SAVED
+                    && let Some(path) = &self.toast_path
+                {
                     crate::reveal::reveal(path.clone());
                 }
                 true
@@ -1792,6 +1804,14 @@ impl ShellState {
                 _ => {}
             }
         }
+        if let InputKind::Key {
+            scancode: KEY_F5,
+            down: true,
+        } = kind
+            && song_select
+        {
+            return Some(ScreenInput::Rescan);
+        }
         // Lazer repeats the last pressed global action on OS key repeats. Here only the
         // steps and the walks repeat: a held Enter, Escape or letter acts once (ADR-0092).
         if let InputKind::KeyRepeat { scancode } = kind {
@@ -1905,6 +1925,39 @@ impl ShellState {
         }
         if self.otd.poll(now_ns) {
             self.otd.refresh(&mut panel.screen);
+        }
+    }
+
+    /// Hands the files dropped since the last tick to the import thread (none during a play)
+    /// and shows the outcome of the imports that finished; a new beatmap or skin makes the
+    /// library list its folders again (ADR-0169).
+    fn receive_imports(&mut self, now_ns: u64) {
+        let Some(imports) = &self.imports else {
+            return;
+        };
+        while let Some(path) = imports.drops.poll() {
+            if matches!(self.stack.top(), AppScreen::Play(_)) {
+                continue;
+            }
+            let targets = crate::import::Targets {
+                songs: self.settings.paths.songs.clone(),
+                replays: Dirs::detect().map(|dirs| dirs.replays()),
+            };
+            imports
+                .importer
+                .submit(crate::import::Job { path, targets });
+        }
+        let mut rescan = false;
+        while let Some(report) = imports.importer.poll() {
+            rescan |= matches!(
+                report.result,
+                Ok(crate::import::Kind::Beatmap | crate::import::Kind::Skin)
+            );
+            self.toast
+                .show_variant(crate::import::variant(&report.result), now_ns);
+        }
+        if rescan && let Some(songs) = &mut self.songs {
+            songs.rescan();
         }
     }
 
@@ -2169,6 +2222,12 @@ impl ShellState {
                     self.change_mod_speed(delta);
                     None
                 }
+                AppScreen::SongSelect if matches!(input, ScreenInput::Rescan) => {
+                    if let Some(songs) = &mut self.songs {
+                        songs.rescan();
+                    }
+                    None
+                }
                 AppScreen::SongSelect if let ScreenInput::ApproachRate(delta) = input => {
                     self.change_approach_rate(delta);
                     None
@@ -2274,6 +2333,7 @@ impl ShellState {
             self.intro_events.started = true;
         }
         self.receive_songs();
+        self.receive_imports(now_ns);
         self.receive_displays();
         self.receive_otd(now_ns);
         let navigated = self.handle(events, now_ns);
@@ -2447,6 +2507,8 @@ enum ScreenInput {
     ModSpeed(f64),
     /// Ctrl+F3/F4 on the song select: the approach rate by this much.
     ApproachRate(f64),
+    /// F5 on the song select: list the songs and skins folders again (ADR-0169).
+    Rescan,
     /// The FPS counter's hotkey, on any screen (ADR-0060).
     ToggleFps,
     /// The settings panel's hotkey (ADR-0095).
@@ -2494,6 +2556,7 @@ fn settings_input(input: ScreenInput) -> Option<SettingsInput> {
         ScreenInput::Retry
         | ScreenInput::ModSpeed(_)
         | ScreenInput::ApproachRate(_)
+        | ScreenInput::Rescan
         | ScreenInput::ToggleFps
         | ScreenInput::ToggleSettings => {
             return None;
@@ -2614,6 +2677,7 @@ fn results_input(input: ScreenInput) -> Option<ResultsInput> {
         | ScreenInput::Clear
         | ScreenInput::ModSpeed(_)
         | ScreenInput::ApproachRate(_)
+        | ScreenInput::Rescan
         | ScreenInput::ToggleFps
         | ScreenInput::ToggleSettings => {
             return None;
@@ -5353,6 +5417,15 @@ fn run_with<B: render::Backend>(
             None
         }
     };
+    // Files dropped on the window are imported on a thread of their own (ADR-0169).
+    match crate::import::Importer::spawn() {
+        Ok(importer) => {
+            let (drops, callback) = crate::import::drop_queue();
+            window.set_drop_callback(callback);
+            state = state.with_imports(crate::import::Imports { drops, importer });
+        }
+        Err(e) => tracing::warn!("import: cannot start the thread: {e}"),
+    }
     // Joined when `run` returns, after the engine. Without the thread the settings screen
     // hides the display and resolution rows.
     let (display_views, _displays) = {
