@@ -282,6 +282,8 @@ pub enum Row {
     ShadowStrength,
     /// How screens change (ADR-0126).
     Transitions,
+    /// How long the screen transitions take (ADR-0189); applies live.
+    TransitionLength,
     /// The scale of the menus (ADR-0118).
     MenuScale,
     /// The scale of the HUD and the pause and fail menus (ADR-0118).
@@ -289,6 +291,8 @@ pub enum Row {
     /// Skew of the buttons and rows; applies live (ADR-0130).
     Skew,
     Skin,
+    /// Whether the screen before play shows (ADR-0190).
+    PlayerLoader,
     BeatmapSkins,
     BeatmapColours,
     BeatmapHitsounds,
@@ -396,7 +400,7 @@ const _: () =
     assert!(Row::ALL.len() + super::otd::OtdRow::ALL.len() <= slam_ui::settings_screen::MAX_ROWS);
 
 impl Row {
-    pub const ALL: [Row; 120] = [
+    pub const ALL: [Row; 122] = [
         Row::MasterVolume,
         Row::MusicVolume,
         Row::MenuMusic,
@@ -449,10 +453,12 @@ impl Row {
         Row::Shadows,
         Row::ShadowStrength,
         Row::Transitions,
+        Row::TransitionLength,
         Row::MenuScale,
         Row::GameScale,
         Row::Skew,
         Row::Skin,
+        Row::PlayerLoader,
         Row::BeatmapSkins,
         Row::BeatmapColours,
         Row::BeatmapHitsounds,
@@ -671,6 +677,7 @@ impl Row {
             | Row::Shadows
             | Row::ShadowStrength
             | Row::Transitions
+            | Row::TransitionLength
             | Row::MenuScale
             | Row::GameScale
             | Row::Skew => section::LAYOUT,
@@ -705,6 +712,7 @@ impl Row {
             | Row::FpsScreens
             | Row::FpsMode => section::FRAME,
             Row::Dim
+            | Row::PlayerLoader
             | Row::SongSelectDim
             | Row::SongSelectSetHeight
             | Row::SongSelectDifficultyHeight
@@ -794,6 +802,7 @@ impl Row {
             Row::MenuCursorSize => "settings-menu-cursor-size",
             Row::MenuCursorRipple => "settings-general-cursor-ripple",
             Row::Transitions => "settings-general-transitions",
+            Row::TransitionLength => "settings-general-transition-length",
             Row::MenuScale => "settings-general-menu-scale",
             Row::GameScale => "settings-general-game-scale",
             Row::Skew => "settings-general-skew",
@@ -816,6 +825,7 @@ impl Row {
             Row::FpsScreens => "settings-frame-fps-screens",
             Row::FpsMode => "settings-frame-fps-mode",
             Row::Dim => "settings-gameplay-dim",
+            Row::PlayerLoader => "settings-gameplay-player-loader",
             Row::SongSelectDim => "settings-song-select-dim",
             Row::SongSelectSetHeight => "settings-song-select-set-height",
             Row::SongSelectDifficultyHeight => "settings-song-select-difficulty-height",
@@ -1302,6 +1312,17 @@ impl Rows {
         .then(|| slam_ui::settings_screen::widget_of(kind))
     }
 
+    /// The widget of row `row` with the values of `settings`, for the quick settings of the
+    /// screen before play (ADR-0190); `None` for a row without a value to change.
+    pub fn quick_widget(&self, row: Row, settings: &Settings) -> Option<RowWidget> {
+        let kind = self.kind(row, settings);
+        matches!(
+            kind,
+            RowKind::Toggle { .. } | RowKind::Slider { .. } | RowKind::Dropdown { .. }
+        )
+        .then(|| slam_ui::settings_screen::widget_of(kind))
+    }
+
     fn kind(&self, row: Row, s: &Settings) -> RowKind {
         let percent = |value: f64| RowKind::Slider {
             min: 0.0,
@@ -1438,6 +1459,12 @@ impl Rows {
                     .iter()
                     .position(|t| *t == s.general.transitions),
             ),
+            Row::TransitionLength => RowKind::Slider {
+                min: 50.0,
+                max: 200.0,
+                step: 10.0,
+                value: (s.general.transition_length * 100.0).round(),
+            },
             Row::SongSelectDifficultyInfo => choice(
                 DifficultyInfo::ALL.len(),
                 DifficultyInfo::ALL
@@ -1636,6 +1663,9 @@ impl Rows {
             Row::BeatmapSkins => RowKind::Toggle {
                 value: s.gameplay.beatmap_skins,
             },
+            Row::PlayerLoader => RowKind::Toggle {
+                value: s.gameplay.player_loader,
+            },
             Row::BeatmapColours => RowKind::Toggle {
                 value: s.gameplay.beatmap_colours,
             },
@@ -1808,6 +1838,7 @@ impl Rows {
             }
             (Row::ShowFps, RowValue::Toggle(v)) => settings.frame.show_fps = v,
             (Row::BeatmapSkins, RowValue::Toggle(v)) => settings.gameplay.beatmap_skins = v,
+            (Row::PlayerLoader, RowValue::Toggle(v)) => settings.gameplay.player_loader = v,
             (Row::BeatmapColours, RowValue::Toggle(v)) => settings.gameplay.beatmap_colours = v,
             (Row::BeatmapHitsounds, RowValue::Toggle(v)) => settings.gameplay.beatmap_hitsounds = v,
             (Row::AlwaysPlayFirstComboBreak, RowValue::Toggle(v)) => {
@@ -1922,6 +1953,9 @@ impl Rows {
                 if let Some(style) = TransitionStyle::ALL.get(i) {
                     settings.general.transitions = *style;
                 }
+            }
+            (Row::TransitionLength, RowValue::Slider(v)) => {
+                settings.general.transition_length = (v / 100.0).clamp(0.5, 2.0);
             }
             (Row::SongSelectDifficultyInfo, RowValue::Choice(i)) => {
                 if let Some(info) = DifficultyInfo::ALL.get(i) {
@@ -2302,6 +2336,7 @@ impl Rows {
                     | Row::HitsoundVolume
                     | Row::EffectsVolume
                     | Row::Parallax
+                    | Row::TransitionLength
                     | Row::BlurStrength
                     | Row::ShadowStrength
                     | Row::Dim
@@ -3051,8 +3086,28 @@ mod tests {
         assert_eq!(s.general.transitions, TransitionStyle::Random);
         rows.apply(&mut s, index(Row::Transitions), RowValue::Choice(2));
         assert_eq!(s.general.transitions, TransitionStyle::Band);
-        rows.apply(&mut s, index(Row::Transitions), RowValue::Choice(8));
+        rows.apply(&mut s, index(Row::Transitions), RowValue::Choice(9));
         assert_eq!(s.general.transitions, TransitionStyle::Band);
+        rows.apply(&mut s, index(Row::Transitions), RowValue::Choice(7));
+        assert_eq!(s.general.transitions, TransitionStyle::Fade);
+        assert!(matches!(
+            rows.specs(&s)[index(Row::TransitionLength)].kind,
+            RowKind::Slider { value, min, max, step } if value == 100.0 && min == 50.0 && max == 200.0 && step == 10.0
+        ));
+        rows.apply(
+            &mut s,
+            index(Row::TransitionLength),
+            RowValue::Slider(150.0),
+        );
+        assert_eq!(s.general.transition_length, 1.5);
+        rows.apply(&mut s, index(Row::TransitionLength), RowValue::Slider(10.0));
+        assert_eq!(s.general.transition_length, 0.5);
+        assert_eq!(Row::TransitionLength.section(), Row::Transitions.section());
+        assert!(s.gameplay.player_loader);
+        rows.apply(&mut s, index(Row::PlayerLoader), RowValue::Toggle(false));
+        assert!(!s.gameplay.player_loader);
+        assert_eq!(Row::PlayerLoader.section(), Row::Dim.section());
+        rows.apply(&mut s, index(Row::Transitions), RowValue::Choice(2));
         assert_eq!(Row::Transitions.section(), 3);
         assert!(matches!(
             rows.specs(&s)[index(Row::Transitions)].kind,

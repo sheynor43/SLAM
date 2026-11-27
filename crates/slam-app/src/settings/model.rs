@@ -131,6 +131,9 @@ pub struct General {
     /// How screens change (ADR-0126). Applies live.
     #[serde(serialize_with = "serialize_transitions")]
     pub transitions: TransitionStyle,
+    /// How long screen transitions take, as a share of their style's length, 0.5..=2.0
+    /// (ADR-0189). Applies live.
+    pub transition_length: f64,
     /// The interface colour scheme (ADR-0117).
     #[serde(serialize_with = "serialize_colour_scheme")]
     pub colour_scheme: ColourScheme,
@@ -190,6 +193,7 @@ impl Default for General {
             menu_cursor_size: 0.8,
             cursor_ripple: true,
             transitions: TransitionStyle::default(),
+            transition_length: 1.0,
             colour_scheme: ColourScheme::default(),
             volume_overlay: Edge::Left,
             volume_meter: MeterStyle::Arc,
@@ -958,6 +962,9 @@ pub struct Gameplay {
     /// Beatmap skin textures and configuration (lazer's `BeatmapSkins`): skin elements from the
     /// beatmap's folder. Colours stay under `beatmap_colours`, samples under `beatmap_hitsounds`.
     pub beatmap_skins: bool,
+    /// Whether the screen before play (beatmap info and quick settings, ADR-0190) shows before a
+    /// beatmap starts.
+    pub player_loader: bool,
     pub beatmap_colours: bool,
     /// Play the beatmap's own hitsound samples (lazer's `BeatmapHitsounds`).
     pub beatmap_hitsounds: bool,
@@ -1036,6 +1043,7 @@ impl Default for Gameplay {
         Gameplay {
             dim: BackgroundSettings::default().dim_level,
             beatmap_skins: true,
+            player_loader: true,
             beatmap_colours: true,
             beatmap_hitsounds: true,
             always_play_first_combo_break: true,

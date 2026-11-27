@@ -82,6 +82,8 @@ fn progress_follows_position_and_length() {
         paused: false,
         position_ms,
         length_ms,
+        beat: None,
+        stars: None,
     };
     assert_eq!(frame(1_000.0, 4_000.0).progress(), 0.25);
     assert_eq!(frame(9_000.0, 4_000.0).progress(), 1.0);
@@ -257,4 +259,85 @@ fn the_texts_and_bar_keep_inside_the_leaning_plate() {
     let lean = r.popup.height * layout.theme.button_skew().tan() / 2.0;
     assert!(r.title.x >= r.popup.x + lean);
     assert!(r.bar.x + r.bar.width <= r.popup.x + r.popup.width - lean + 0.01);
+}
+
+fn region(id: u32) -> AtlasRegion {
+    AtlasRegion {
+        texture: slam_render::textures::TextureId(id),
+        origin: slam_render::hal::Origin::new(0, 0),
+        size: slam_render::Extent::new(4, 4),
+        uv: UvRect::FULL,
+    }
+}
+
+#[test]
+fn a_cover_changed_while_open_cross_fades() {
+    let mut view = PlayerView::new("");
+    view.follow_cover(Some(region(1)), false);
+    assert_eq!(view.cover_presence(1.0), 1.0, "shown at once on opening");
+    view.anim.cover = 1.0;
+    view.follow_cover(Some(region(2)), true);
+    assert_eq!(view.old_cover, Some(region(1)));
+    assert_eq!(view.anim.cover, 0.0);
+    // The dim stays over two pictures.
+    assert_eq!(view.cover_presence(0.3), 1.0);
+}
+
+#[test]
+fn a_first_cover_fades_in_and_a_gone_one_fades_out() {
+    let mut view = PlayerView::new("");
+    view.follow_cover(Some(region(1)), true);
+    assert_eq!(view.old_cover, None);
+    assert_eq!(view.anim.cover, 0.0, "it fades in");
+    assert!((view.cover_presence(0.25) - 0.25).abs() < 1e-6);
+    view.anim.cover = 1.0;
+    view.follow_cover(None, true);
+    assert_eq!(view.old_cover, Some(region(1)));
+    assert!(
+        (view.cover_presence(0.25) - 0.75).abs() < 1e-6,
+        "it fades out"
+    );
+    assert_eq!(view.cover_presence(1.0), 0.0);
+}
+
+#[test]
+fn opening_shows_the_cover_of_now_without_a_cross_fade() {
+    let mut view = PlayerView::new("");
+    view.follow_cover(Some(region(1)), true);
+    view.anim.cover = 1.0;
+    // Changed while closed: the popup opening does not fade from the old one.
+    view.follow_cover(Some(region(2)), false);
+    assert_eq!(view.old_cover, None);
+    assert_eq!(view.anim.cover, 1.0);
+    assert_eq!(view.cover_presence(1.0), 1.0);
+}
+
+#[test]
+fn the_outline_eases_to_the_difficultys_colour() {
+    let theme = Theme::default();
+    let mut view = PlayerView::new("");
+    let playing = |stars| NowPlayingFrame {
+        available: true,
+        stars,
+        ..NowPlayingFrame::default()
+    };
+    // The first frame takes the colour at once; without stars it is the accent.
+    assert_eq!(view.step_tint(&playing(None), &theme, 0), theme.accent);
+    let easy = crate::star_colour::for_stars(1.5);
+    let hard = crate::star_colour::for_stars(7.0);
+    let mid = view.step_tint(&playing(Some(1.5)), &theme, 100 * 1_000_000);
+    assert_ne!(mid, easy, "on its way");
+    let ms = theme.player_outline_ms as u64;
+    let mut settled = mid;
+    for t in (116..=100 + ms).step_by(16) {
+        settled = view.step_tint(&playing(Some(1.5)), &theme, t * 1_000_000);
+    }
+    assert!((settled.r - easy.r).abs() < 0.02 && (settled.g - easy.g).abs() < 0.02);
+    // Without effects a change is at once.
+    let still = Theme {
+        effects: false,
+        ..theme
+    };
+    let now = view.step_tint(&playing(Some(7.0)), &still, (101 + ms) * 1_000_000);
+    assert_eq!(now, hard);
 }

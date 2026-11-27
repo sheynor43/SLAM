@@ -39,7 +39,10 @@ impl ShellState {
     /// the play and not on the results (ADR-0178). Over the intro it comes in when the
     /// black starts to fade, with the menu, so it is there as the menu is.
     pub(super) fn toolbar_wanted(&self, now_ns: u64) -> bool {
-        let screen = !matches!(self.stack.top(), AppScreen::Play(_) | AppScreen::Results(_));
+        let screen = !matches!(
+            self.stack.top(),
+            AppScreen::Play(_) | AppScreen::Results(_) | AppScreen::Loader(_)
+        );
         let revealed = match &self.intro {
             Some(intro) => intro.reveal_at().is_some_and(|at| now_ns >= at),
             None => true,
@@ -59,7 +62,12 @@ impl ShellState {
             .layers(now_ns)
             .iter()
             .flatten()
-            .filter(|(screen, _)| !matches!(screen, AppScreen::Play(_) | AppScreen::Results(_)))
+            .filter(|(screen, _)| {
+                !matches!(
+                    screen,
+                    AppScreen::Play(_) | AppScreen::Results(_) | AppScreen::Loader(_)
+                )
+            })
             .map(|(_, pose)| pose.opacity)
             .sum();
         Some(shown.clamp(0.0, 1.0))
@@ -84,7 +92,16 @@ impl ShellState {
             paused,
             position_ms: position_ms.unwrap_or(0.0) as f32,
             length_ms: length_ms.unwrap_or(0.0) as f32,
+            beat: self.now_playing.beat,
+            stars: self.now_playing.stars,
         };
+    }
+
+    /// The beat of what the menu music plays, 0 to 1, for the player's glow, and its
+    /// difficulty's star rating, for the outline; `None` when unknown.
+    pub fn set_now_playing_beat(&mut self, beat: Option<f32>, stars: Option<f32>) {
+        self.now_playing.beat = beat;
+        self.now_playing.stars = stars;
     }
 
     /// Follows the track the menu music plays: the player shows its set's title and artist.
@@ -224,6 +241,21 @@ impl ShellState {
                     SettingsInput::Erase
                 };
                 self.toolbar.key(erase, &layout)
+            }
+            // Arrows step a popup's slider, held ones repeat.
+            InputKind::Key {
+                scancode: code @ (KEY_LEFT | KEY_RIGHT),
+                down: true,
+            }
+            | InputKind::KeyRepeat {
+                scancode: code @ (KEY_LEFT | KEY_RIGHT),
+            } if !self.mods().contains(Mods::ALT) => {
+                let step = if code == KEY_LEFT {
+                    SettingsInput::Left
+                } else {
+                    SettingsInput::Right
+                };
+                self.toolbar.key(step, &layout)
             }
             InputKind::Text(text) if self.toolbar.is_editing() => {
                 for c in text.as_str().chars() {

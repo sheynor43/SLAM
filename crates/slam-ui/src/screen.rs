@@ -7,6 +7,7 @@
 
 use crate::anim::{ease_out_cubic, ease_out_quint, progress};
 use crate::theme::{Theme, faded, transition as fancy};
+use slam_render::Color;
 use slam_render::atlas::AtlasRegion;
 use slam_render::shape::{Shape, ShapeBatch};
 
@@ -16,6 +17,8 @@ pub const TRANSITION_NS: u64 = 200_000_000;
 pub const SLIDE: f32 = 0.1;
 /// Deepest stack; the screens' vector is allocated for it up front.
 pub const MAX_DEPTH: usize = 16;
+/// The shares of their style's length transitions can take (ADR-0189).
+pub const LENGTH_RANGE: std::ops::RangeInclusive<f32> = 0.5..=2.0;
 /// Most layers visible at once: the top screen and the one it replaces.
 pub const MAX_LAYERS: usize = 2;
 
@@ -61,6 +64,8 @@ pub enum TransitionStyle {
     Shards,
     /// Two skewed panels close and open.
     Shutter,
+    /// The screen fades to black and the new one fades in from it (ADR-0189).
+    Fade,
     /// Each transition takes one of the fancy ones, never the same twice in a row.
     #[default]
     Random,
@@ -76,7 +81,7 @@ const FANCY: [TransitionStyle; 5] = [
 ];
 
 impl TransitionStyle {
-    pub const ALL: [TransitionStyle; 8] = [
+    pub const ALL: [TransitionStyle; 9] = [
         TransitionStyle::None,
         TransitionStyle::Simple,
         TransitionStyle::Band,
@@ -84,6 +89,7 @@ impl TransitionStyle {
         TransitionStyle::Iris,
         TransitionStyle::Shards,
         TransitionStyle::Shutter,
+        TransitionStyle::Fade,
         TransitionStyle::Random,
     ];
 
@@ -97,6 +103,7 @@ impl TransitionStyle {
             TransitionStyle::Iris => "iris",
             TransitionStyle::Shards => "shards",
             TransitionStyle::Shutter => "shutter",
+            TransitionStyle::Fade => "fade",
             TransitionStyle::Random => "random",
         }
     }
@@ -119,6 +126,7 @@ impl TransitionStyle {
             TransitionStyle::Iris => "settings-option-transitions-iris",
             TransitionStyle::Shards => "settings-option-transitions-shards",
             TransitionStyle::Shutter => "settings-option-transitions-shutter",
+            TransitionStyle::Fade => "settings-option-transitions-fade",
             TransitionStyle::Random => "settings-option-transitions-random",
         }
     }
@@ -133,6 +141,7 @@ impl TransitionStyle {
             TransitionStyle::Iris => fancy::IRIS_NS,
             TransitionStyle::Shards => fancy::SHARDS_NS,
             TransitionStyle::Shutter => fancy::SHUTTER_NS,
+            TransitionStyle::Fade => fancy::FADE_NS,
         }
     }
 
@@ -144,6 +153,7 @@ impl TransitionStyle {
                 | TransitionStyle::Iris
                 | TransitionStyle::Shards
                 | TransitionStyle::Shutter
+                | TransitionStyle::Fade
         )
     }
 
@@ -168,6 +178,7 @@ impl TransitionStyle {
             TransitionStyle::Iris => (0.0, fancy::IRIS_SCALE_IN, fancy::IRIS_SCALE_OUT),
             TransitionStyle::Shards => (0.0, fancy::SHARDS_SCALE_IN, fancy::SHARDS_SCALE_OUT),
             TransitionStyle::Shutter => (0.0, 1.0, fancy::SHUTTER_SCALE_OUT),
+            TransitionStyle::Fade => (0.0, 1.0, 1.0),
             _ => (SLIDE, 1.0, 1.0),
         }
     }
@@ -177,7 +188,10 @@ impl TransitionStyle {
     /// Covering styles swap the screens' opacity while the shapes hide it.
     fn poses(self, p: f32, linear: f32, side: f32) -> (Pose, Pose) {
         let (slide, scale_in, scale_out) = self.motion();
-        let swap = if self.covers() {
+        let (black_from, black_to) = fancy::FADE_BLACK;
+        let swap = if self == TransitionStyle::Fade {
+            smooth((linear - black_from) / (black_to - black_from))
+        } else if self.covers() {
             smooth((linear - 0.4) / 0.2)
         } else {
             p
@@ -429,6 +443,23 @@ impl TransitionFx {
                     skew,
                 ));
             }
+            TransitionStyle::Fade => {
+                // Black over everything: eased in to whole, whole while the screens swap,
+                // eased away by the end.
+                let (from, to) = fancy::FADE_BLACK;
+                let alpha = smooth(t / from) * (1.0 - smooth((t - to) / (1.0 - to)));
+                if alpha > 0.0 {
+                    emit(shape(
+                        [0.0, 0.0],
+                        [width, height],
+                        Color {
+                            a: alpha,
+                            ..Color::rgb(0.0, 0.0, 0.0)
+                        },
+                        0.0,
+                    ));
+                }
+            }
             TransitionStyle::None | TransitionStyle::Simple | TransitionStyle::Random => {}
         }
     }
@@ -479,6 +510,8 @@ enum Direction {
 #[derive(Clone, Copy, Debug)]
 struct Transition {
     start_ns: u64,
+    /// How long it takes: the style's length times the length setting at its start.
+    duration_ns: u64,
     direction: Direction,
     /// The style the transition started in (never `Random`: that is resolved at the
     /// start); a setting changed meanwhile waits.
@@ -496,6 +529,8 @@ pub struct ScreenStack<S> {
     transition: Option<Transition>,
     /// The style the next transition starts in.
     style: TransitionStyle,
+    /// The share of their style's length the next transitions take (ADR-0189).
+    length: f32,
     /// Where the next transition's iris opens, in window pixels.
     origin: Option<[f32; 2]>,
     /// Random transitions so far, and the fancy style the last one took.
@@ -514,6 +549,7 @@ impl<S> ScreenStack<S> {
             transition: None,
             // The application sets the player's style before the first navigation.
             style: TransitionStyle::Simple,
+            length: 1.0,
             origin: None,
             random_count: 0,
             last_random: None,
@@ -523,6 +559,16 @@ impl<S> ScreenStack<S> {
     /// Sets the style of the transitions that start from now on; one running keeps its own.
     pub fn set_style(&mut self, style: TransitionStyle) {
         self.style = style;
+    }
+
+    /// How long the transitions that start from now on take, as a share of their style's
+    /// length (ADR-0189); kept within [`LENGTH_RANGE`]. One running keeps its own.
+    pub fn set_length(&mut self, length: f32) {
+        self.length = if length.is_finite() {
+            length.clamp(*LENGTH_RANGE.start(), *LENGTH_RANGE.end())
+        } else {
+            1.0
+        };
     }
 
     /// Where an iris opens in the transitions that start from now on, in window pixels; the
@@ -562,7 +608,7 @@ impl<S> ScreenStack<S> {
     /// Whether a transition is still running at `now_ns`.
     pub fn in_transition(&self, now_ns: u64) -> bool {
         self.transition
-            .is_some_and(|t| now_ns < t.start_ns.saturating_add(t.style.duration_ns()))
+            .is_some_and(|t| now_ns < t.start_ns.saturating_add(t.duration_ns))
     }
 
     /// Applies `nav` at `now_ns`. A transition already running ends at once: its leaving
@@ -597,14 +643,25 @@ impl<S> ScreenStack<S> {
                 TransitionStyle::Random => self.pick_random(),
                 style => style,
             };
+            let duration_ns = (style.duration_ns() as f64 * f64::from(self.length)) as u64;
             self.transition = Some(Transition {
                 start_ns: now_ns,
+                duration_ns,
                 direction,
                 style,
                 origin: self.origin,
             });
         }
         Navigated::Stay
+    }
+
+    /// Moves the running transition on to `fraction` (0 to 1) of its length at `now_ns`,
+    /// as if it had started earlier: a fade that should begin from black (ADR-0191).
+    pub fn advance_transition(&mut self, fraction: f32, now_ns: u64) {
+        if let Some(transition) = &mut self.transition {
+            let skip = (transition.duration_ns as f64 * f64::from(fraction.clamp(0.0, 1.0))) as u64;
+            transition.start_ns = now_ns.saturating_sub(skip);
+        }
     }
 
     /// Ends a finished transition: drops the leaving screen. Call once per tick.
@@ -622,7 +679,7 @@ impl<S> ScreenStack<S> {
         let Some(transition) = self.transition else {
             return [Some((top, Pose::SHOWN)), None];
         };
-        let linear = progress(transition.start_ns, now_ns, transition.style.duration_ns());
+        let linear = progress(transition.start_ns, now_ns, transition.duration_ns);
         let p = transition.style.shaped(linear);
         match transition.direction {
             Direction::Forward => {
@@ -650,7 +707,7 @@ impl<S> ScreenStack<S> {
         if transition.style != TransitionStyle::Band || !self.in_transition(now_ns) {
             return None;
         }
-        let linear = progress(transition.start_ns, now_ns, transition.style.duration_ns());
+        let linear = progress(transition.start_ns, now_ns, transition.duration_ns);
         Some(Band::at(linear, transition.direction == Direction::Forward))
     }
 
@@ -663,7 +720,7 @@ impl<S> ScreenStack<S> {
         Some(TransitionFx {
             style: transition.style,
             forward: transition.direction == Direction::Forward,
-            linear: progress(transition.start_ns, now_ns, transition.style.duration_ns()),
+            linear: progress(transition.start_ns, now_ns, transition.duration_ns),
             origin: transition.origin,
         })
     }

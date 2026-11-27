@@ -27,6 +27,7 @@ use crate::widgets::{Look, draw, push_left, push_right};
 
 mod player;
 
+pub(crate) use player::push_cover;
 pub use player::{NowPlayingFrame, NowPlayingText, PlayerAction, PlayerFrame, PlayerRects};
 use player::{PlayerOpen, PlayerView};
 
@@ -438,12 +439,14 @@ impl Toolbar {
 
     /// A key for the popup's slider: Enter starts typing its value or commits it, typed
     /// characters, Backspace and Ctrl+Backspace (`Type`, `Erase`, `EraseWord`) edit it while
-    /// typing. `None` when the toolbar does not take the key; a taken key that changed
-    /// nothing is [`ToolbarEvent::Absorbed`].
+    /// typing; Left and Right step the slider by its step, as in the settings. `None` when
+    /// the toolbar does not take the key; a taken key that changed nothing is
+    /// [`ToolbarEvent::Absorbed`].
     pub fn key(&mut self, input: SettingsInput, layout: &ToolbarLayout) -> Option<ToolbarEvent> {
         let slider = matches!(&self.popup, Some(p) if matches!(p.widget, RowWidget::Slider(_)));
         let taken = match input {
             SettingsInput::Activate => slider,
+            SettingsInput::Left | SettingsInput::Right => slider && !self.is_editing(),
             SettingsInput::Type(_) | SettingsInput::Erase | SettingsInput::EraseWord => {
                 self.is_editing()
             }

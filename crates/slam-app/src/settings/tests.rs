@@ -2220,3 +2220,32 @@ fn a_bad_update_channel_falls_back_with_a_warning() {
             .any(|w| w.starts_with("updates.channel"))
     );
 }
+
+#[test]
+fn transition_length_defaults_full_and_round_trips() {
+    assert_eq!(Settings::default().general.transition_length, 1.0);
+    let loaded = file::from_toml_str("[general]\ntransition_length = 1.5\n");
+    assert_eq!(loaded.status, LoadStatus::Ok, "{:?}", loaded.warnings);
+    assert_eq!(loaded.settings.general.transition_length, 1.5);
+    for text in ["2.5", "0.4", "nan"] {
+        let bad = file::from_toml_str(&format!("[general]\ntransition_length = {text}\n"));
+        assert_eq!(bad.status, LoadStatus::Recovered, "{text}");
+        assert_eq!(bad.settings.general.transition_length, 1.0, "{text}");
+    }
+    let mut settings = Settings::default();
+    settings.general.transition_length = 0.5;
+    let again = file::from_toml_str(&file::to_toml_string(&settings).unwrap());
+    assert_eq!(again.settings.general.transition_length, 0.5);
+}
+
+#[test]
+fn player_loader_defaults_on_and_round_trips() {
+    assert!(Settings::default().gameplay.player_loader);
+    let loaded = file::from_toml_str("[gameplay]\nplayer_loader = false\n");
+    assert_eq!(loaded.status, LoadStatus::Ok, "{:?}", loaded.warnings);
+    assert!(!loaded.settings.gameplay.player_loader);
+    let mut settings = Settings::default();
+    settings.gameplay.player_loader = false;
+    let again = file::from_toml_str(&file::to_toml_string(&settings).unwrap());
+    assert!(!again.settings.gameplay.player_loader);
+}

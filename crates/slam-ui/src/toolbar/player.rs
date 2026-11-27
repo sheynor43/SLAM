@@ -51,6 +51,12 @@ pub struct NowPlayingFrame {
     pub position_ms: f32,
     /// How long the track is, milliseconds; 0 when unknown.
     pub length_ms: f32,
+    /// How much the popup's glow flares on the music's beat, 0 to 1; `None` when the
+    /// beat of what plays is not known (the glow then breathes with the clock).
+    pub beat: Option<f32>,
+    /// The star rating of what plays: the outline and the glow take its colour, easing
+    /// to it when it changes (ADR-0191); the accent when unknown.
+    pub stars: Option<f32>,
 }
 
 impl NowPlayingFrame {
@@ -319,6 +325,10 @@ pub(super) struct PlayerView {
     /// The last open popup: what the closing animation goes on drawing.
     last: Option<(PlayerFrame, NowPlayingFrame)>,
     scale: f32,
+    /// The outline's colour as shown, easing to the playing difficulty's, and when it was
+    /// last stepped.
+    tint: Option<Color>,
+    tint_ns: Option<u64>,
 }
 
 impl PlayerView {
@@ -340,6 +350,8 @@ impl PlayerView {
             anim: PlayerAnim::default(),
             last: None,
             scale: 0.0,
+            tint: None,
+            tint_ns: None,
         }
     }
 
@@ -359,6 +371,7 @@ impl PlayerView {
         theme: &Theme,
         text: &NowPlayingText,
         now_ns: u64,
+        animate: bool,
     ) {
         let same = self.seen.as_ref().is_some_and(|(key, title, artist)| {
             *key == text.key && Arc::ptr_eq(title, &text.title) && Arc::ptr_eq(artist, &text.artist)
@@ -366,14 +379,17 @@ impl PlayerView {
         if same {
             return;
         }
-        // The texts shown go behind, to fade out; the first ones have nothing to replace.
-        if self.seen.is_some() {
+        // The texts shown go behind, to fade out; the first ones have nothing to replace,
+        // and a popup that opens shows what plays now, not the change it missed closed.
+        if self.seen.is_some() && animate {
             std::mem::swap(&mut self.title, &mut self.old_title);
             std::mem::swap(&mut self.artist, &mut self.old_artist);
             std::mem::swap(&mut self.title_marquee, &mut self.old_title_marquee);
             std::mem::swap(&mut self.artist_marquee, &mut self.old_artist_marquee);
             self.has_old = true;
             self.anim.text_changed();
+        } else {
+            self.has_old = false;
         }
         self.seen = Some((text.key, Arc::clone(&text.title), Arc::clone(&text.artist)));
         self.title.text.clear();
@@ -393,15 +409,28 @@ impl PlayerView {
         self.artist_marquee.restart(now_ns);
     }
 
-    /// Notes the cover shown: another picture fades in over the previous one.
-    fn follow_cover(&mut self, cover: Option<AtlasRegion>) {
+    /// Notes the cover shown: another picture fades in over the previous one, a first one
+    /// fades in and a cover that goes fades out. A popup that opens (`animate` false) shows
+    /// the cover of now at once.
+    fn follow_cover(&mut self, cover: Option<AtlasRegion>, animate: bool) {
         if cover == self.cover {
             return;
         }
-        self.old_cover = self.cover.filter(|_| cover.is_some());
+        self.old_cover = self.cover.filter(|_| animate);
         self.cover = cover;
-        if self.old_cover.is_some() {
+        if animate {
             self.anim.cover_changed();
+        }
+    }
+
+    /// How much of a cover the plate shows, 0 to 1, at cross-fade `mix`: what the dim over
+    /// it follows, so that it comes and goes with the picture.
+    fn cover_presence(&self, mix: f32) -> f32 {
+        match (self.old_cover.is_some() && mix < 1.0, self.cover.is_some()) {
+            (true, true) => 1.0,
+            (false, true) => mix,
+            (true, false) => 1.0 - mix,
+            (false, false) => 0.0,
         }
     }
 
@@ -425,6 +454,9 @@ impl PlayerView {
     ) {
         let theme = layout.theme;
         let scale = layout.scale;
+        // Fully closed until now: the popup opens on what plays, without the cross-fades
+        // of changes made while it was shut.
+        let animate = self.last.is_some();
         if let Some(popup) = popup {
             self.last = Some((*popup, *now));
         }
@@ -447,9 +479,9 @@ impl PlayerView {
         let first = (shapes.len(), text.len());
         let rects = layout.player_rects(0.0);
         if now.available {
-            self.follow(type_setter, &theme, words, now_ns);
+            self.follow(type_setter, &theme, words, now_ns, animate);
         }
-        self.follow_cover(cover);
+        self.follow_cover(cover, animate);
         let plate = Shape {
             radius: theme.panel_radius * scale,
             skew: theme.button_skew(),
@@ -462,18 +494,24 @@ impl PlayerView {
             )
         };
         push_shadow(shapes, &plate, &theme, scale, 1.0);
+        let tint = self.step_tint(&now, &theme, now_ns);
+        self.push_glow(shapes, &plate, &theme, scale, &now, tint, now_ns);
         shapes.push_shape(&plate);
         // The cover, cut by the plate's rounded and leaning edge, the previous one under
-        // the one fading in; then the dim.
+        // the one fading in (or fading out alone); then the dim, as strong as the cover.
         let mix = ease_out_cubic(self.anim.cover);
         if let Some(old) = self.old_cover.filter(|_| mix < 1.0) {
-            push_cover(shapes, old, &plate, 1.0);
+            let under = if self.cover.is_some() { 1.0 } else { 1.0 - mix };
+            push_cover(shapes, old, &plate, under);
         }
         if let Some(region) = self.cover {
             push_cover(shapes, region, &plate, mix);
+        }
+        let presence = self.cover_presence(mix);
+        if presence > 0.0 {
             shapes.push_shape(&Shape {
                 colour: Color {
-                    a: theme.player_cover_dim,
+                    a: theme.player_cover_dim * presence,
                     ..Color::rgb(0.0, 0.0, 0.0)
                 },
                 ..plate
@@ -538,6 +576,12 @@ impl PlayerView {
                 glyphs,
             );
         }
+        // The outline in the difficulty's colour, over the cover's edge.
+        shapes.push_shape(&Shape {
+            outline: theme.player_outline_width * scale,
+            colour: faded(tint, 0.9),
+            ..plate
+        });
         self.push_bar(shapes, &rects, &now, &theme, scale, white);
         self.push_buttons(shapes, text, glyphs, &rects, &now, &theme, scale, white);
         // Fade, slide and grow from the button the popup belongs to.
@@ -551,6 +595,72 @@ impl PlayerView {
             shapes.transform_from(first.0, &map, tint);
             text.transform_from(first.1, &map, tint);
         }
+    }
+
+    /// The accent glow around the plate, with the effects on (ADR-0123): it flares on the
+    /// music's beat like the song select's selection (ADR-0167), or breathes with the clock
+    /// when the beat is not known.
+    #[allow(clippy::too_many_arguments)]
+    fn push_glow(
+        &self,
+        shapes: &mut ShapeBatch,
+        plate: &Shape,
+        theme: &Theme,
+        scale: f32,
+        now: &NowPlayingFrame,
+        tint: Color,
+        now_ns: u64,
+    ) {
+        if !theme.effects {
+            return;
+        }
+        let strength = match now.beat.filter(|_| now.available && !now.paused) {
+            Some(beat) => {
+                theme.player_glow_rest + (1.0 - theme.player_glow_rest) * beat.clamp(0.0, 1.0)
+            }
+            None => {
+                let seconds = (now_ns as f64 / 1e9) as f32;
+                let wave =
+                    0.5 + 0.5 * (seconds * theme.player_glow_breath * std::f32::consts::TAU).sin();
+                theme.player_glow_rest * (0.75 + 0.25 * wave)
+            }
+        };
+        shapes.push_shape(&Shape {
+            glow: theme.player_glow_width * scale,
+            sheen: 0.0,
+            colour: faded(tint, theme.glow_alpha * strength),
+            ..*plate
+        });
+    }
+
+    /// Eases the outline's colour towards the playing difficulty's star colour (the accent
+    /// without one) by `now_ns`; at once without effects or on the first frame.
+    fn step_tint(&mut self, now: &NowPlayingFrame, theme: &Theme, now_ns: u64) -> Color {
+        let target = match now.stars.filter(|_| now.available) {
+            Some(stars) => crate::star_colour::for_stars(stars),
+            None => theme.accent,
+        };
+        let dt = self
+            .tint_ns
+            .map_or(0, |last| now_ns.saturating_sub(last).min(100_000_000));
+        self.tint_ns = Some(now_ns);
+        let ms = f64::from(theme.player_outline_ms.max(1.0));
+        let tint = match self.tint {
+            Some(shown) if theme.effects => {
+                // A share of the way per step: 99 % of it in `player_outline_ms`.
+                let keep = (-4.6 * dt as f64 / (ms * 1e6)).exp() as f32;
+                let mix = |a: f32, b: f32| b + (a - b) * keep;
+                Color {
+                    r: mix(shown.r, target.r),
+                    g: mix(shown.g, target.g),
+                    b: mix(shown.b, target.b),
+                    a: mix(shown.a, target.a),
+                }
+            }
+            _ => target,
+        };
+        self.tint = Some(tint);
+        tint
     }
 
     /// The progress bar: a track and the part played; it grows under the pointer.
@@ -678,7 +788,12 @@ impl PlayerView {
 
 /// The part of `region` that covers `plate` (centre crop), cut by the plate's rounded,
 /// leaning edge with the picture upright, at `opacity`.
-fn push_cover(shapes: &mut ShapeBatch, region: AtlasRegion, plate: &Shape, opacity: f32) {
+pub(crate) fn push_cover(
+    shapes: &mut ShapeBatch,
+    region: AtlasRegion,
+    plate: &Shape,
+    opacity: f32,
+) {
     let (iw, ih) = (region.size.width as f32, region.size.height as f32);
     let [w, h] = plate.size;
     // An upright texture runs across the plate's bounding box.

@@ -1203,6 +1203,8 @@ impl HudView {
                     self.health_bar
                         .push(batch, &textures.health, scale, self.time);
                 }
+                // The skin's bar is on its way: the plain one would flash first.
+                (Part::Health, _) if textures.health.pending => continue,
                 (Part::Health, Some(white)) => {
                     let bar = self.part_size(part, textures);
                     rect(batch, white, [0.0, 0.0], bar, SHADE);
@@ -1668,6 +1670,33 @@ mod tests {
         assert!(w > 0.0);
         let corner = map.apply([w, 0.0]);
         assert!(close(corner[0], 1920.0 - 5.0 * 2.25) && close(corner[1], 2.0 * 2.25));
+    }
+
+    #[test]
+    fn the_plain_health_bar_waits_for_the_skins_while_it_uploads() {
+        let layout = [element(ComponentKind::Health, Anchor::TopLeft, [0.0, 0.0])];
+        let mut hud = hud(&layout);
+        hud.update(1280.0, 720.0, &HudValues::default(), 0.0);
+        let snapshot = PlaySnapshot {
+            health: 1.0,
+            ..PlaySnapshot::default()
+        };
+        let mut uploading = HudTextures::default();
+        uploading.health.pending = true;
+        let mut batch = SpriteBatch::with_capacity(MAX_HUD_SHAPES);
+        hud.push_shapes(&mut batch, &snapshot, 0, Some(white()), None, &uploading);
+        assert_eq!(batch.len(), 0, "nothing while the skin's bar is on its way");
+        // Without the skin's textures for good, the plain bar shows.
+        let mut batch = SpriteBatch::with_capacity(MAX_HUD_SHAPES);
+        hud.push_shapes(
+            &mut batch,
+            &snapshot,
+            0,
+            Some(white()),
+            None,
+            &HudTextures::default(),
+        );
+        assert_eq!(batch.len(), 2);
     }
 
     #[test]

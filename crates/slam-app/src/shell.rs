@@ -107,6 +107,7 @@ mod ui_sounds;
 use menu_music::{MenuMusic, Picked, Want};
 mod otd;
 mod output;
+mod player_loader;
 pub(crate) mod results;
 mod rows;
 mod toolbar;
@@ -289,6 +290,8 @@ pub enum AppScreen {
     Play(u64),
     /// The score of a passed play.
     Results(Results),
+    /// The screen before play (ADR-0190), while the play is prepared.
+    Loader(slam_ui::player_loader::PlayerLoader),
 }
 
 /// What the draw thread needs to draw a screen.
@@ -301,6 +304,8 @@ pub enum ScreenView {
     /// a play going out leaves at once instead of sliding with a stale snapshot.
     Play(u64),
     Results(ResultsSnapshot),
+    /// The screen before play; its card is [`ShellSnapshot::loader_card`].
+    Loader(slam_ui::player_loader::LoaderFrame),
 }
 
 /// The settings panel as drawn (ADR-0095). Its snapshot is large (roughly 1 KB), but it is
@@ -366,6 +371,8 @@ pub struct ShellSnapshot {
     pub toolbar: slam_ui::toolbar::ToolbarFrame,
     /// The texts of the playing track, for the toolbar's player (ADR-0178).
     pub now_playing: slam_ui::toolbar::NowPlayingText,
+    /// The card of the screen before play (ADR-0190).
+    pub loader_card: slam_ui::player_loader::LoaderCard,
 }
 
 /// The update logic without the window: input to navigation to snapshot.
@@ -442,6 +449,15 @@ pub struct ShellState {
     /// read again at `clock_at_ns`.
     toolbar: slam_ui::toolbar::Toolbar,
     popup_editing: bool,
+    /// The screen before play edits a copy of the settings (ADR-0190).
+    loader_editing: bool,
+    /// Its quick settings changed after the play was asked for.
+    loader_dirty: bool,
+    /// Its card, and a counter that tells one card from the next.
+    loader_card: slam_ui::player_loader::LoaderCard,
+    loader_key: u64,
+    /// The difficulty last played from the song select.
+    last_play: Option<(usize, usize)>,
     clock: u16,
     clock_at_ns: u64,
     /// How far the toolbar is in (ADR-0178), and the music player's state: what plays, the
@@ -601,6 +617,11 @@ impl ShellState {
             toast_path: None,
             toolbar: slam_ui::toolbar::Toolbar::new(),
             popup_editing: false,
+            loader_editing: false,
+            loader_dirty: false,
+            loader_card: slam_ui::player_loader::LoaderCard::default(),
+            loader_key: 0,
+            last_play: None,
             clock: slam_ui::toolbar::NO_CLOCK,
             clock_at_ns: 0,
             toolbar_slide: slam_ui::toolbar::Slide::default(),
@@ -1213,6 +1234,11 @@ impl ShellState {
         self.set_loading(false);
         if let Some(id) = started {
             let play = AppScreen::Play(id);
+            self.stack.set_origin(Some(self.cursor));
+            if matches!(self.stack.top(), AppScreen::Loader(_)) {
+                self.replace_loader(play, now_ns);
+                return;
+            }
             let nav = if matches!(self.stack.top(), AppScreen::Results(_)) {
                 Nav::Replace(play)
             } else {
@@ -1220,8 +1246,12 @@ impl ShellState {
             };
             // A full stack cannot happen from the song select or the results: the play
             // would be unreachable then, so the shell's depth leaves room for it.
-            self.stack.set_origin(Some(self.cursor));
             self.stack.navigate(nav, now_ns);
+        } else if matches!(self.stack.top(), AppScreen::Loader(_)) {
+            // Not started: back to the song select.
+            self.commit_loader_now();
+            self.stack.set_origin(Some(self.cursor));
+            self.stack.navigate(Nav::Pop, now_ns);
         }
     }
 
@@ -1300,6 +1330,7 @@ impl ShellState {
     pub fn settings_allowed(&self) -> bool {
         match self.stack.top() {
             AppScreen::Play(_) => self.play_menu,
+            AppScreen::Loader(_) => false,
             _ => true,
         }
     }
@@ -2586,9 +2617,12 @@ impl ShellState {
                                 self.last_title = self.beatmap_title(set, difficulty);
                                 self.last_info = self.play_info(set, difficulty);
                                 self.play_request = Some((set, difficulty));
+                                self.last_play = Some((set, difficulty));
                                 self.set_loading(true);
+                                self.enter_loader(set, difficulty, now_ns)
+                            } else {
+                                None
                             }
-                            None
                         }
                         None => None,
                     }
@@ -2619,6 +2653,7 @@ impl ShellState {
                 }
                 // The play takes its input from the window's play host.
                 AppScreen::Play(_) => None,
+                AppScreen::Loader(_) => self.loader_input(input),
             };
             if open_panel {
                 self.open_settings(now_ns);
@@ -2657,6 +2692,10 @@ impl ShellState {
         let navigated = self.handle(events, now_ns);
         self.tick_volume(now_ns, snapshot);
         self.tick_toolbar(now_ns, snapshot);
+        self.tick_loader(now_ns);
+        if matches!(self.stack.top(), AppScreen::Loader(_)) {
+            snapshot.loader_card.clone_from(&self.loader_card);
+        }
         self.note_ui_sounds(events);
         if self.intro.is_some_and(|intro| intro.is_done(now_ns)) {
             self.intro = None;
@@ -2695,6 +2734,27 @@ impl ShellState {
             .zip(self.menu_track_ms)
             .map(|(timing, ms)| timing.pulse_at(ms));
         self.song_select.set_beat(beat);
+        // The player glows with the beat of what plays: the timing read is the menu
+        // music's on the main menu and when it plays the selection.
+        let on_menu_now = matches!(self.stack.top(), AppScreen::Menu(_));
+        let playing_beat = self
+            .beat_timing
+            .filter(|_| {
+                self.menu_track.is_some()
+                    && (on_menu_now || self.menu_track == self.song_select.selected())
+            })
+            .zip(self.menu_track_ms)
+            .map(|(timing, ms)| timing.pulse_at(ms));
+        let playing_stars = self.menu_track.and_then(|(set, difficulty)| {
+            self.song_select
+                .list()
+                .sets
+                .get(set)?
+                .difficulties
+                .get(difficulty)?
+                .stars
+        });
+        self.set_now_playing_beat(playing_beat, playing_stars);
         // The logos beat with the menu music (ADR-0186): the main menu's to whatever plays,
         // the song select's corner one to its selection's preview.
         let effects = self.theme.effects;
@@ -2723,6 +2783,7 @@ impl ShellState {
         let menu_background = live_general.menu_background;
         // Transitions started from now on; one running keeps its style (ADR-0126).
         self.stack.set_style(live_general.transitions);
+        self.stack.set_length(live_general.transition_length as f32);
         let on_menu = matches!(self.stack.top(), AppScreen::Menu(_));
         snapshot.menu_background = menu_background != MenuBackground::None;
         snapshot.parallax = if live_general.parallax_enabled {
@@ -2825,6 +2886,7 @@ impl ShellState {
                     AppScreen::Menu(menu) => ScreenView::Menu(menu.snapshot(&self.layout, now_ns)),
                     AppScreen::SongSelect => ScreenView::SongSelect(self.song_select.snapshot()),
                     AppScreen::Results(results) => ScreenView::Results(results.snapshot()),
+                    AppScreen::Loader(loader) => ScreenView::Loader(loader.frame()),
                     AppScreen::Play(id) if std::ptr::eq(screen, top) => ScreenView::Play(*id),
                     AppScreen::Play(_) => return None,
                 };
@@ -3146,12 +3208,14 @@ enum Pending {
     Idle,
     /// The loader prepares the play of this request.
     Preparing(u64),
-    /// Play `id` is prepared; its track of `generation` is opening since `since_ns`.
+    /// Play `id` is prepared; its track of `generation` is opening since `since_ns`, or
+    /// opened (`opened`) and waiting for the screen before play to go (ADR-0190).
     Track {
         id: u64,
         prepared: Box<Prepared>,
         generation: u32,
         since_ns: u64,
+        opened: bool,
     },
 }
 
@@ -3604,6 +3668,7 @@ impl PlayHost {
                                 prepared,
                                 generation,
                                 since_ns: now_ns,
+                                opened: false,
                             }
                         }
                         Err(error) => {
@@ -3637,6 +3702,7 @@ impl PlayHost {
             id,
             generation,
             since_ns,
+            opened,
             ..
         } = self.pending
         {
@@ -3644,24 +3710,21 @@ impl PlayHost {
                 self.free_pending();
                 return;
             }
-            match self.audio.player.poll_event() {
+            let event = if opened {
+                None
+            } else {
+                self.audio.player.poll_event()
+            };
+            match event {
                 Some(MusicEvent::Loaded { generation: g, .. }) if g == generation => {
-                    if self.scenes.slots() == 0 {
-                        // The draw thread has not taken the last scene (a reskin's of the
-                        // play before, ADR-0096): a play without a scene must not start.
-                        self.free_pending();
-                        state.finish_loading(now_ns, None);
-                    } else if let Pending::Track { prepared, .. } =
-                        std::mem::replace(&mut self.pending, Pending::Idle)
-                    {
-                        let title = state.last_title().to_owned();
-                        let info = state.last_info().clone();
-                        let map = state.last_file().cloned();
-                        let pointer = state.cursor_points();
-                        self.start(id, *prepared, title, info, map, pointer);
-                        state.finish_loading(now_ns, Some(id));
+                    if let Pending::Track { opened, .. } = &mut self.pending {
+                        *opened = true;
                     }
+                    // The screen before play may go now (ADR-0190).
+                    state.set_play_prepared();
+                    self.start_when_allowed(state, id, now_ns);
                 }
+                None if opened => self.start_when_allowed(state, id, now_ns),
                 Some(event @ MusicEvent::Failed { generation: g, .. }) => {
                     self.loader.free(Trash::Music(event));
                     if g == generation {
@@ -4001,25 +4064,27 @@ impl PlayHost {
         let settled = now_ns.saturating_sub(self.selection.1) >= SELECTION_DEBOUNCE_NS;
         let gameplay =
             self.game.is_some() || !matches!(self.pending, Pending::Idle) || state.is_loading();
-        let want =
-            if !state.settings().audio.menu_music || gameplay || state.intro_holds_music(now_ns) {
-                Want::Silence
-            } else {
-                match state.stack().top() {
-                    AppScreen::Play(_) | AppScreen::Results(_) => Want::Silence,
-                    AppScreen::SongSelect => selected
-                        .filter(|_| settled)
-                        .and_then(|(set, difficulty)| state.files().get(set)?.get(difficulty))
-                        .and_then(|file| {
-                            Some(Want::Preview {
-                                path: file.audio.as_deref()?,
-                                preview_ms: file.preview_ms,
-                            })
+        let want = if !state.settings().audio.menu_music
+            || gameplay
+            || state.intro_holds_music(now_ns)
+        {
+            Want::Silence
+        } else {
+            match state.stack().top() {
+                AppScreen::Play(_) | AppScreen::Results(_) | AppScreen::Loader(_) => Want::Silence,
+                AppScreen::SongSelect => selected
+                    .filter(|_| settled)
+                    .and_then(|(set, difficulty)| state.files().get(set)?.get(difficulty))
+                    .and_then(|file| {
+                        Some(Want::Preview {
+                            path: file.audio.as_deref()?,
+                            preview_ms: file.preview_ms,
                         })
-                        .unwrap_or(Want::Keep),
-                    AppScreen::Menu(_) => Want::Menu,
-                }
-            };
+                    })
+                    .unwrap_or(Want::Keep),
+                AppScreen::Menu(_) => Want::Menu,
+            }
+        };
         // The background behind the menu follows the music (ADR-0119).
         if matches!(want, Want::Preview { .. }) {
             self.music_at = selected;
@@ -4149,6 +4214,32 @@ impl PlayHost {
         }
         let frame = music.track_frame_at(output.output_frame_at(now_ns));
         deck.spectrum().read(deck.generation(), frame, out)
+    }
+
+    /// Starts the opened play `id` once the shell lets it (ADR-0190).
+    fn start_when_allowed(&mut self, state: &mut ShellState, id: u64, now_ns: u64) {
+        if !state.play_may_start(now_ns) {
+            return;
+        }
+        if self.scenes.slots() == 0 {
+            // The draw thread has not taken the last scene (a reskin's of the play before,
+            // ADR-0096): a play without a scene must not start.
+            self.free_pending();
+            state.finish_loading(now_ns, None);
+        } else if let Pending::Track { mut prepared, .. } =
+            std::mem::replace(&mut self.pending, Pending::Idle)
+        {
+            // Out of the screen before play's black: no flash of the background first.
+            if matches!(state.stack().top(), AppScreen::Loader(_)) {
+                prepared.scene.settle_background();
+            }
+            let title = state.last_title().to_owned();
+            let info = state.last_info().clone();
+            let map = state.last_file().cloned();
+            let pointer = state.cursor_points();
+            self.start(id, *prepared, title, info, map, pointer);
+            state.finish_loading(now_ns, Some(id));
+        }
     }
 
     /// Frees a prepared play nobody waits for.
@@ -4377,6 +4468,7 @@ impl Shell {
             AppScreen::Menu(_) => Scene::Menu,
             AppScreen::SongSelect => Scene::SongSelect,
             AppScreen::Results(_) => Scene::Results,
+            AppScreen::Loader(_) => Scene::SongSelect,
             AppScreen::Play(id) if menu_shown => Scene::Paused(*id),
             AppScreen::Play(id) => Scene::Playing(*id),
         };
@@ -4715,6 +4807,8 @@ struct View<B: render::Backend> {
     toast: slam_ui::toast::ToastView,
     /// The menus' toolbar (ADR-0168).
     toolbar: slam_ui::toolbar::ToolbarView,
+    /// The screen before play (ADR-0190).
+    loader: slam_ui::player_loader::PlayerLoaderView,
     /// Views laid out in a language switched to (ADR-0091).
     languages: Option<LanguageViews>,
     /// The curtain over a language switch and the views it waits for.
@@ -4892,6 +4986,7 @@ impl<B: render::Backend> Draw<ShellSnapshot> for View<B> {
             std::mem::swap(&mut self.volume, &mut views.volume);
             std::mem::swap(&mut self.toast, &mut views.toast);
             std::mem::swap(&mut self.toolbar, &mut views.toolbar);
+            std::mem::swap(&mut self.loader, &mut views.loader);
             self.theme = views.theme;
             languages.give_back(views);
         }
@@ -5164,6 +5259,50 @@ impl<B: render::Backend> Draw<ShellSnapshot> for View<B> {
                         ),
                     }
                 }
+                ScreenView::Loader(frame) => {
+                    // The song select's background stays under it, without the slide.
+                    // The card's cover is the background in view.
+                    let cover = self.backgrounds.as_ref().and_then(|(uploads, fade)| {
+                        fade.visible(info.wait.woke_ns)
+                            .into_iter()
+                            .flatten()
+                            .find_map(|h| match uploads.get(h) {
+                                TextureState::Ready(region) => Some(region),
+                                _ => None,
+                            })
+                    });
+                    if let Some((uploads, fade)) = &self.backgrounds {
+                        let from = self.shapes.len();
+                        fade.push(
+                            &mut self.shapes,
+                            width,
+                            height,
+                            info.wait.woke_ns,
+                            layer.pose.opacity,
+                            1.0,
+                            |h| match uploads.get(h) {
+                                TextureState::Ready(region) => Some(in_place(region, h)),
+                                _ => None,
+                            },
+                        );
+                        self.shapes.transform_from(from, &background_map, [1.0; 4]);
+                    }
+                    layer_from = (self.shapes.len(), self.text.len());
+                    self.loader.push(
+                        &mut self.shapes,
+                        &mut self.text,
+                        &mut self.glyphs,
+                        &mut self.settings,
+                        frame,
+                        &snapshot.loader_card,
+                        cover,
+                        width,
+                        height,
+                        layer.pose.opacity,
+                        info.wait.woke_ns,
+                        r.white,
+                    );
+                }
                 // Drawn whole, without the transition's slide.
                 ScreenView::Play(_) => {}
             }
@@ -5259,9 +5398,10 @@ impl<B: render::Backend> Draw<ShellSnapshot> for View<B> {
         }
         // Last, over every screen and the play (ADR-0060).
         let overlay_from = (self.shapes.len() as u32, self.text.len() as u32);
-        // A fancy transition's shapes cross over the layers; not without effects.
-        if self.theme.effects
-            && let Some(fx) = &snapshot.fx
+        // A fancy transition's shapes cross over the layers; not without effects, except
+        // the black of a fade, which is the transition itself (ADR-0189).
+        if let Some(fx) = &snapshot.fx
+            && (self.theme.effects || fx.style == slam_ui::screen::TransitionStyle::Fade)
         {
             fx.push(&mut self.shapes, &self.theme, r.white, width, height);
         }
@@ -5927,6 +6067,7 @@ fn run_with<B: render::Backend>(
         volume: mut volume_view,
         toast: mut toast_view,
         toolbar: mut toolbar_view,
+        loader: loader_view,
         ..
     } = language::interface_views(&registry, theme, &localizer, state.rows(), &settings);
     // Its first showing would otherwise lay out and grow its lines in a frame (ADR-0145).
@@ -6347,6 +6488,7 @@ fn run_with<B: render::Backend>(
         volume: volume_view,
         toast: toast_view,
         toolbar: toolbar_view,
+        loader: loader_view,
         languages: language_views,
         swap: LanguageSwap::default(),
         backgrounds,

@@ -40,6 +40,8 @@ pub struct InterfaceViews {
     pub toast: slam_ui::toast::ToastView,
     /// The menus' toolbar (ADR-0168).
     pub toolbar: slam_ui::toolbar::ToolbarView,
+    /// The screen before play (ADR-0190).
+    pub loader: slam_ui::player_loader::PlayerLoaderView,
     /// The theme they were laid out with: the draw side's from the swap on.
     pub theme: Theme,
     /// The switch ([`AppliedLanguage::switches`]) they were laid out for.
@@ -172,6 +174,20 @@ pub fn interface_views(
                 home: text("toolbar-home"),
                 player: text("toolbar-player"),
                 nothing_playing: text("player-nothing-playing"),
+            },
+        ),
+        loader: slam_ui::player_loader::PlayerLoaderView::new(
+            Arc::clone(registry),
+            theme,
+            &slam_ui::player_loader::LoaderLabels {
+                groups: [
+                    text("player-loader-group-visual"),
+                    text("player-loader-group-audio"),
+                    text("player-loader-group-input"),
+                ],
+                source: text("player-loader-source"),
+                mapper: text("player-loader-mapper"),
+                held: text("player-loader-held"),
             },
         ),
         theme,

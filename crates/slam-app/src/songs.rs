@@ -431,6 +431,7 @@ fn difficulty_row(d: &DifficultyEntry, rating: Option<Rating>) -> DifficultyRow 
     let m = &d.metadata;
     DifficultyRow {
         version: d.version.clone(),
+        source: m.source.clone(),
         search: SearchFields::new(SearchSource {
             difficulty: &d.version,
             creator: &m.creator,

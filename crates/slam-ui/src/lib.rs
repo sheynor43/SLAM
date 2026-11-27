@@ -9,6 +9,7 @@ pub mod intro;
 pub mod layout_swap;
 pub mod marquee;
 pub mod menu;
+pub mod player_loader;
 pub mod results;
 pub mod screen;
 pub mod scrollbar;

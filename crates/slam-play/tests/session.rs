@@ -572,6 +572,60 @@ fn end_ns(map: &Beatmap, start_time: f64) -> u64 {
 }
 
 #[test]
+fn waiting_writes_the_break_state_of_the_start() {
+    let map = beatmap();
+    let mut track = Track::default();
+    let mut session = session(&map, &track);
+    let mut sink = Sink::default();
+    // A slot of the snapshot buffer left in a break by a play before (ADR-0191). This map's
+    // gameplay starts with its clock (no intro), which lazer does not count as a break.
+    let mut snapshot = PlaySnapshot {
+        is_break_time: true,
+        ..PlaySnapshot::default()
+    };
+    let now = T0 - 10 * MS;
+    let (output, music) = reports(now, &track);
+    session.tick(
+        now,
+        &[],
+        output,
+        music,
+        &mut track,
+        &mut sink,
+        &mut snapshot,
+    );
+    assert_eq!(snapshot.state, PlayState::Waiting);
+    assert!(!snapshot.is_break_time);
+}
+
+#[test]
+fn waiting_on_a_lead_in_is_a_break() {
+    // The lead-in starts the clock long before gameplay: the intro is a break, also while
+    // waiting, whatever the snapshot's slot held before (ADR-0191).
+    let map = long_lead_in();
+    let mut track = Track::default();
+    let mut session = session(&map, &track);
+    let mut sink = Sink::default();
+    let mut snapshot = PlaySnapshot {
+        is_break_time: false,
+        ..PlaySnapshot::default()
+    };
+    let now = T0 - 10 * MS;
+    let (output, music) = reports(now, &track);
+    session.tick(
+        now,
+        &[],
+        output,
+        music,
+        &mut track,
+        &mut sink,
+        &mut snapshot,
+    );
+    assert_eq!(snapshot.state, PlayState::Waiting);
+    assert!(snapshot.is_break_time);
+}
+
+#[test]
 fn the_clock_starts_on_the_first_report_before_the_first_object() {
     let map = beatmap();
     let track = Track::default();

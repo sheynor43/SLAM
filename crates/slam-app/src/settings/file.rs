@@ -278,6 +278,13 @@ fn from_table(mut table: Table) -> Loaded {
     cx.float(
         &mut general,
         "general",
+        "transition_length",
+        &mut settings.general.transition_length,
+        0.5..=2.0,
+    );
+    cx.float(
+        &mut general,
+        "general",
         "blur_strength",
         &mut settings.general.blur_strength,
         0.0..=2.0,
@@ -646,6 +653,13 @@ fn from_table(mut table: Table) -> Loaded {
         "gameplay",
         "beatmap_skins",
         &mut settings.gameplay.beatmap_skins,
+        |_| Ok(()),
+    );
+    cx.field(
+        &mut gameplay,
+        "gameplay",
+        "player_loader",
+        &mut settings.gameplay.player_loader,
         |_| Ok(()),
     );
     cx.field(

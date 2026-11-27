@@ -10,7 +10,7 @@ body:
     id: version
     attributes:
       label: Client version
-      placeholder: slam-0.1.4
+      placeholder: slam-0.1.5
     validations:
       required: true
   - type: input

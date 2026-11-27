@@ -2,23 +2,18 @@
 
 ## English
 
-### What's new in 0.1.4
-**Skins and effects**
-- Results screen in stable's look when the skin has `ranking-panel`: its header, the beatmap's background, the skin's Back and Retry, the performance graph with a health line and a details page below (scroll down). Switch it off in **Settings → Skin → Results screen style**.
-- Kiai flashes on hit circles and on slider heads, tails and repeats.
-- Cursor effects: `star2` particles in kiai and breaks, cursor smoke (hold the smoke key) and ripples on presses (**Settings → Skin → Cursor ripples**).
-- Pause and fail menus play the skin's sounds and `pause-loop`.
+### What's new in 0.1.5
+**Before-play screen and transitions**
+- A new screen before playing shows the beatmap card and lets you adjust quick settings for visuals, sound and input.
+- Starting a map waits until preparation is complete and keeps a short minimum preview time, so the transition does not reveal an unready game.
+- The fade-to-black transition, player highlight and difficulty-colour outline are smoother and configurable through **Settings → General → Transition length**.
 
-**Gameplay**
-- The cursor is drawn at the mouse's latest position every frame: smoother, with less delay. Hits are judged as before.
-- Windows: in borderless mode the sensitivity no longer resets after the cursor reaches the screen edge.
-- Skipping the intro dips to black and fades the music; the skip button has three styles (skin, lazer, SLAM) in **Settings → Skin**.
-- Restarting darkens the screen while quick retry is held, then fades the new play in with a sound; switch it off in **Settings → Gameplay → Restart animation and sound**.
-- The hold delay of quick retry and quick exit can be set (**Settings → Gameplay**).
+**Self-update**
+- Signed updates are downloaded from GitHub Releases and verified with the project's Ed25519 key before installation.
 
-**Interface**
-- Local scores in song select open their results screen.
-- Settings: sections are icon buttons in a narrower panel.
+**Interface polish**
+- The player panel now opens and closes cleanly, including its cover animation and the transition from the previous track.
+- Quick-setting popups keep their arrows attached while they are open.
 
 **Known limitations**
 - Combo bursts are not drawn yet.
@@ -67,23 +62,18 @@ The quickest way is **Settings → Feedback**: it opens a form with the version 
 
 ## Русский
 
-### Что нового в 0.1.4
-**Скины и эффекты**
-- Экран результатов в виде stable, если в скине есть `ranking-panel`: шапка, фон карты, кнопки «Назад» и «Заново» из скина, график с линией здоровья и страница подробностей ниже (прокрутите вниз). Выключается в **Настройки → Скин → Вид экрана результатов**.
-- Вспышки kiai у кругов, головок, хвостов и повторов слайдеров.
-- Эффекты курсора: частицы `star2` в kiai и перерывах, дым курсора (удерживайте клавишу дыма) и рябь от нажатий (**Настройки → Скин → Рябь от нажатий**).
-- Меню паузы и провала играют звуки скина и `pause-loop`.
+### Что нового в 0.1.5
+**Экран перед игрой и переходы**
+- Новый экран перед игрой показывает карточку карты и позволяет быстро настроить визуал, звук и ввод.
+- Запуск карты ждёт завершения подготовки и минимального времени предпросмотра, поэтому переход не показывает неготовую игру.
+- Переход в чёрный, подсветка плеера и обводка цветом сложности стали плавнее; длина перехода настраивается в **Настройки → Общее → Длина перехода**.
 
-**Игра**
-- Курсор рисуется по самой свежей позиции мыши в каждом кадре: плавнее и с меньшей задержкой. Попадания считаются как раньше.
-- Windows: в безрамочном режиме чувствительность больше не сбрасывается, когда курсор доходит до края экрана.
-- Пропуск заставки уводит картинку в чёрное и приглушает музыку; у кнопки пропуска три вида (скин, лазер, SLAM) в **Настройки → Скин**.
-- Рестарт: пока удерживается быстрый рестарт, экран темнеет, затем новая игра проявляется со звуком; выключается в **Настройки → Игра → Анимация и звук рестарта**.
-- Задержку удержания для быстрого рестарта и выхода можно настроить (**Настройки → Игра**).
+**Обновление**
+- Подписанные обновления загружаются из GitHub Releases и проверяются ключом проекта Ed25519 перед установкой.
 
-**Интерфейс**
-- Локальные рекорды в выборе песни открывают свой экран результатов.
-- Настройки: разделы — кнопки со значками, панель уже.
+**Доработки интерфейса**
+- Панель плеера теперь аккуратно открывается и закрывается, включая анимацию обложки и смену предыдущего трека.
+- Стрелки всплывающих окон быстрых настроек остаются прикреплёнными во время открытия.
 
 **Известные ограничения**
 - Комбо-взрывы пока не рисуются.

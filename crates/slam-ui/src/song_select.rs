@@ -105,6 +105,8 @@ pub struct SetRow {
 #[derive(Clone, Debug, PartialEq)]
 pub struct DifficultyRow {
     pub version: String,
+    /// The beatmap's `Source`, as written (the screen before play shows it, ADR-0190).
+    pub source: String,
     /// The difficulty's own text fields, lowercased.
     pub search: SearchFields,
     pub approach_rate: f32,
@@ -131,6 +133,7 @@ impl DifficultyRow {
     pub fn new(source: SearchSource<'_>) -> DifficultyRow {
         DifficultyRow {
             version: source.difficulty.to_owned(),
+            source: source.source.to_owned(),
             search: SearchFields::new(source),
             approach_rate: 5.0,
             circle_size: 5.0,

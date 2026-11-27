@@ -94,7 +94,10 @@ fn out_quint(time: f64) -> f64 {
 /// The dim follows [`PlaySnapshot::is_break_time`] in real time: every change starts an
 /// [`BACKGROUND_FADE_DURATION`] fade from the current grey, as `UserDimContainer.UpdateVisuals`
 /// does. The first frame starts from no dim, as the player loader leaves the background
-/// (user settings ignored). No blur, parallax or storyboard yet. Does not allocate.
+/// (user settings ignored); a [`settled`](BackgroundView::settle) view starts at its dim
+/// instead, shown whole if its texture is ready on that frame: SLAM's screen before play
+/// goes to black, so lazer's start from white would flash (ADR-0191). No blur, parallax
+/// or storyboard yet. Does not allocate.
 #[derive(Debug, Clone)]
 pub struct BackgroundView {
     settings: BackgroundSettings,
@@ -102,6 +105,11 @@ pub struct BackgroundView {
     fade: Option<(Fade, bool)>,
     /// When the texture was first seen ready.
     appeared_ns: Option<u64>,
+    /// Starts at its dimmed grey and fully shown, without lazer's fade from white: the
+    /// play came in out of the black of the screen before play (ADR-0191).
+    settled: bool,
+    /// The first frame's time: a settled background ready then shows whole at once.
+    started_ns: Option<u64>,
 }
 
 impl BackgroundView {
@@ -110,7 +118,14 @@ impl BackgroundView {
             settings,
             fade: None,
             appeared_ns: None,
+            settled: false,
+            started_ns: None,
         }
+    }
+
+    /// The view starting at its dimmed grey, fully shown (ADR-0191).
+    pub fn settle(&mut self) {
+        self.settled = true;
     }
 
     pub fn settings(&self) -> BackgroundSettings {
@@ -120,8 +135,10 @@ impl BackgroundView {
     /// The background's grey level at `now_ns`, after taking the snapshot's break state.
     pub fn update(&mut self, snapshot: &PlaySnapshot, now_ns: u64) -> f32 {
         let is_break_time = snapshot.is_break_time;
+        self.started_ns.get_or_insert(now_ns);
         let current = match self.fade {
             Some((fade, _)) => fade.value_at(now_ns),
+            None if self.settled => 1.0 - self.settings.dim_level(is_break_time),
             None => 1.0,
         };
         if self
@@ -162,7 +179,13 @@ impl BackgroundView {
         if grey <= 0.0 && !over_layer {
             return;
         }
-        let alpha = fade_in(now_ns.saturating_sub(appeared) as f64 / NS_PER_MS);
+        // Settled and ready on the first frame: whole at once; a texture that comes later
+        // fades in as usual.
+        let alpha = if self.settled && self.started_ns == Some(appeared) {
+            1.0
+        } else {
+            fade_in(now_ns.saturating_sub(appeared) as f64 / NS_PER_MS)
+        };
         let (position, size) = cover(
             [region.size.width as f32, region.size.height as f32],
             [width, height],
@@ -180,6 +203,7 @@ impl BackgroundView {
     /// Restarts the fade-in, as for a newly loaded background.
     pub fn reset(&mut self) {
         self.appeared_ns = None;
+        self.settled = false;
     }
 }
 
@@ -546,6 +570,71 @@ mod tests {
         let (position, size) = cover([800.0, 1200.0], [1600.0, 900.0]);
         assert!(close(size[0], 1600.0));
         assert!(close(position[1], (900.0 - 2400.0) / 2.0));
+    }
+
+    #[test]
+    fn a_settled_background_starts_at_its_dim_without_fading_in() {
+        let mut view = BackgroundView::new(BackgroundSettings::default());
+        view.settle();
+        // Out of a break: straight at the dim, and it stays.
+        assert!(close(view.update(&snapshot(false), 0), 0.3));
+        assert!(close(view.update(&snapshot(false), 400 * MS), 0.3));
+        // Shown whole at once.
+        let mut batch = SpriteBatch::with_capacity(4);
+        view.push(
+            &mut batch,
+            [800.0, 600.0],
+            &snapshot(false),
+            0,
+            Some(region(1)),
+            false,
+        );
+        assert_eq!(batch.vertices()[0].colour[3], 1.0);
+        // A newly loaded background fades in again, as without settling.
+        view.reset();
+        let mut batch = SpriteBatch::with_capacity(4);
+        view.push(
+            &mut batch,
+            [800.0, 600.0],
+            &snapshot(false),
+            500 * MS,
+            Some(region(1)),
+            false,
+        );
+        assert_eq!(batch.vertices()[0].colour[3], 0.0);
+    }
+
+    #[test]
+    fn a_settled_background_follows_breaks_from_its_dim() {
+        let mut view = BackgroundView::new(BackgroundSettings::default());
+        view.settle();
+        // Starting in a break: the break's dim at once.
+        assert!(close(view.update(&snapshot(true), 0), 0.6));
+        assert!(close(view.update(&snapshot(true), 400 * MS), 0.6));
+        // The break ends: the usual fade from there.
+        assert!(close(view.update(&snapshot(false), 1_000 * MS), 0.6));
+        let mid = view.update(&snapshot(false), 1_100 * MS);
+        assert!(mid < 0.6 && mid > 0.3, "{mid}");
+        assert!(close(view.update(&snapshot(false), 1_900 * MS), 0.3));
+    }
+
+    #[test]
+    fn a_settled_background_that_loads_late_fades_in() {
+        let mut view = BackgroundView::new(BackgroundSettings::default());
+        view.settle();
+        let mut batch = SpriteBatch::with_capacity(4);
+        // Not ready on the first frame.
+        view.push(&mut batch, [800.0, 600.0], &snapshot(false), 0, None, false);
+        assert_eq!(batch.len(), 0);
+        view.push(
+            &mut batch,
+            [800.0, 600.0],
+            &snapshot(false),
+            50 * MS,
+            Some(region(1)),
+            false,
+        );
+        assert_eq!(batch.vertices()[0].colour[3], 0.0, "fades in");
     }
 
     #[test]

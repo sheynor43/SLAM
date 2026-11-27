@@ -126,6 +126,8 @@ fn input_and_drawing_do_not_allocate_once_warm() {
             paused: clock.is_multiple_of(2),
             position_ms: (now / MS) as f32,
             length_ms: 90_000.0,
+            beat: clock.is_multiple_of(3).then_some(0.5),
+            stars: clock.is_multiple_of(5).then_some(4.2),
         };
         view.push(
             &mut shapes,
