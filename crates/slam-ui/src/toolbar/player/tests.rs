@@ -201,3 +201,60 @@ fn the_frame_slides_fully_in_by_default() {
     assert_eq!(ToolbarFrame::default().slide, 1.0);
     assert_eq!(Toolbar::new().frame(true, 0).slide, 1.0);
 }
+
+#[test]
+fn the_plate_and_buttons_are_hit_with_their_skew() {
+    let (mut bar, layout) = open_bar(0);
+    let skew = layout.theme.button_skew();
+    assert!(skew > 0.0);
+    let rects = layout.player_rects(0.0);
+    let b = rects.buttons[0];
+    // The top edge leans right: just inside the top-right corner of the unskewed rectangle
+    // is outside a button, and just right of it is inside.
+    let shift = (b.height / 2.0) * skew.tan();
+    let y = b.y + 1.0;
+    let (inside, outside) = (b.x + b.width + shift - 2.0, b.x + 1.0);
+    bar.pointer(inside, y, &layout);
+    assert_eq!(bar.frame(true, 0).player.unwrap().hover, Some(0));
+    bar.pointer(outside, y, &layout);
+    assert_eq!(bar.frame(true, 0).player.unwrap().hover, None);
+    // The same for the plate: a press at the top-left corner of its bounding rectangle
+    // is outside, so it closes the popup.
+    let p = rects.popup;
+    assert_eq!(
+        bar.press(p.x + 1.0, p.y + 1.0, &layout),
+        Some(ToolbarEvent::ClosePlayer)
+    );
+    assert!(!bar.player_open());
+}
+
+#[test]
+fn a_held_button_is_pressed_until_release() {
+    let (mut bar, layout) = open_bar(0);
+    let [x, y] = layout.player_rects(0.0).buttons[1].centre();
+    assert_eq!(bar.frame(true, 0).player.unwrap().pressed, None);
+    bar.press(x, y, &layout);
+    assert_eq!(bar.frame(true, 0).player.unwrap().pressed, Some(1));
+    bar.release(&layout);
+    assert_eq!(bar.frame(true, 0).player.unwrap().pressed, None);
+}
+
+#[test]
+fn the_bar_knows_the_pointer_is_over_it() {
+    let (mut bar, layout) = open_bar(0);
+    let rects = layout.player_rects(0.0);
+    let (x, y) = (rects.bar.x + 40.0, rects.bar.y + rects.bar.height / 2.0);
+    bar.pointer(x, y, &layout);
+    assert!(bar.frame(true, 0).player.unwrap().bar_hover);
+    bar.pointer(x, y + 80.0, &layout);
+    assert!(!bar.frame(true, 0).player.unwrap().bar_hover);
+}
+
+#[test]
+fn the_texts_and_bar_keep_inside_the_leaning_plate() {
+    let layout = layout(0);
+    let r = layout.player_rects(0.0);
+    let lean = r.popup.height * layout.theme.button_skew().tan() / 2.0;
+    assert!(r.title.x >= r.popup.x + lean);
+    assert!(r.bar.x + r.bar.width <= r.popup.x + r.popup.width - lean + 0.01);
+}

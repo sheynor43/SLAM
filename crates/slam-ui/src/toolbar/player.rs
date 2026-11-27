@@ -8,21 +8,26 @@
 //! from a [`NowPlayingFrame`] and the texts of a [`NowPlayingText`]. Neither allocates once
 //! warm; the texts are laid out again (allocating) when the playing track changes.
 
+mod anim;
+
 use std::sync::Arc;
 
+use slam_render::Color;
 use slam_render::atlas::{AtlasRegion, UvRect};
+use slam_render::shape::Shape;
 use slam_render::shape::ShapeBatch;
-use slam_render::sprite::{Sprite, SpriteBatch};
+use slam_render::sprite::{Affine, SpriteBatch};
 use slam_text::GlyphCache;
 
+use self::anim::{PlayerAnim, Target as AnimTarget};
 use super::{Target, Toolbar, ToolbarEvent, ToolbarLayout};
-use crate::anim::{ease_out_cubic, progress};
+use crate::anim::{ease_out_cubic, ease_out_quint};
 use crate::marquee::{Marquee, MarqueeParams, push_marquee};
 use crate::menu::Rect;
 use crate::menu::view::{Line, Typesetter};
 use crate::settings_screen::icons;
 use crate::theme::{Theme, faded};
-use crate::widgets::{Look, draw, push_left};
+use crate::widgets::{Look, draw, push_left, push_shadow};
 
 /// What a press in the player's popup asks the application to do.
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -74,6 +79,10 @@ pub struct PlayerFrame {
     pub since_ns: u64,
     /// The button under the pointer: 0 previous, 1 play/pause, 2 next.
     pub hover: Option<u8>,
+    /// The button held down, same numbering.
+    pub pressed: Option<u8>,
+    /// The pointer is over the progress bar.
+    pub bar_hover: bool,
     /// The bar is being dragged.
     pub seeking: bool,
 }
@@ -83,6 +92,8 @@ pub struct PlayerFrame {
 pub(super) struct PlayerOpen {
     since_ns: u64,
     hover: Option<u8>,
+    pressed: Option<u8>,
+    bar_hover: bool,
     seeking: bool,
 }
 
@@ -115,11 +126,13 @@ impl ToolbarLayout {
             width,
             height,
         };
-        let inner = popup.width - 2.0 * pad;
+        // The plate leans: texts and bar keep clear of the edge at its leaning corners.
+        let lean = popup.height * theme.button_skew().tan().abs() / 2.0;
+        let inner = popup.width - 2.0 * (pad + lean);
         let title_h = theme.player_title_size * scale * 1.3;
         let artist_h = theme.player_artist_size * scale * 1.3;
         let title = Rect {
-            x: popup.x + pad,
+            x: popup.x + pad + lean,
             y: popup.y + pad,
             width: inner,
             height: title_h,
@@ -133,7 +146,7 @@ impl ToolbarLayout {
         let buttons_y = popup.y + popup.height - pad - side;
         let bar_h = theme.player_bar_height * scale;
         let bar = Rect {
-            x: popup.x + pad,
+            x: popup.x + pad + lean,
             y: (artist.y + artist_h + buttons_y) / 2.0 - bar_h / 2.0,
             width: inner,
             height: bar_h,
@@ -176,8 +189,11 @@ impl PlayerRects {
         }
     }
 
-    fn button_at(&self, x: f32, y: f32) -> Option<usize> {
-        self.buttons.iter().position(|b| b.contains(x, y))
+    /// The button under the point; the buttons lean by `skew` radians like the plate.
+    fn button_at(&self, x: f32, y: f32, skew: f32) -> Option<usize> {
+        self.buttons
+            .iter()
+            .position(|b| b.contains_skewed(x, y, skew))
     }
 }
 
@@ -193,6 +209,8 @@ impl Toolbar {
         self.player = Some(PlayerOpen {
             since_ns: now_ns,
             hover: None,
+            pressed: None,
+            bar_hover: false,
             seeking: false,
         });
     }
@@ -207,6 +225,8 @@ impl Toolbar {
         self.player.map(|p| PlayerFrame {
             since_ns: p.since_ns,
             hover: p.hover,
+            pressed: p.pressed,
+            bar_hover: p.bar_hover,
             seeking: p.seeking,
         })
     }
@@ -220,7 +240,9 @@ impl Toolbar {
     ) -> Option<ToolbarEvent> {
         let player = self.player.as_mut()?;
         let rects = layout.player_rects(0.0);
-        player.hover = rects.button_at(x, y).map(|i| i as u8);
+        let skew = layout.theme.button_skew();
+        player.hover = rects.button_at(x, y, skew).map(|i| i as u8);
+        player.bar_hover = rects.bar_hit(layout.scale * 6.0).contains(x, y);
         player
             .seeking
             .then(|| ToolbarEvent::Player(PlayerAction::Seek(layout.seek_fraction(x))))
@@ -234,7 +256,8 @@ impl Toolbar {
         layout: &ToolbarLayout,
     ) -> Option<ToolbarEvent> {
         let rects = layout.player_rects(0.0);
-        if !rects.popup.contains(x, y) {
+        let skew = layout.theme.button_skew();
+        if !rects.popup.contains_skewed(x, y, skew) {
             return None;
         }
         let player = self.player.as_mut()?;
@@ -245,7 +268,9 @@ impl Toolbar {
                 layout.seek_fraction(x),
             )));
         }
-        Some(match rects.button_at(x, y) {
+        let hit = rects.button_at(x, y, skew);
+        player.pressed = hit.map(|i| i as u8);
+        Some(match hit {
             Some(0) => ToolbarEvent::Player(PlayerAction::Previous),
             Some(1) => ToolbarEvent::Player(PlayerAction::PlayPause),
             Some(2) => ToolbarEvent::Player(PlayerAction::Next),
@@ -257,6 +282,7 @@ impl Toolbar {
     pub(super) fn player_release(&mut self) {
         if let Some(player) = &mut self.player {
             player.seeking = false;
+            player.pressed = None;
         }
     }
 
@@ -273,14 +299,25 @@ impl Toolbar {
     }
 }
 
-/// The draw side of the popup: its texts and their marquees.
+/// The draw side of the popup: its texts and their marquees, and the levels of its motion.
 pub(super) struct PlayerView {
     title: Line,
     artist: Line,
+    /// The texts of the previous track, fading out.
+    old_title: Line,
+    old_artist: Line,
+    has_old: bool,
     nothing: Line,
     seen: Option<(u64, Arc<str>, Arc<str>)>,
     title_marquee: Marquee,
     artist_marquee: Marquee,
+    old_title_marquee: Marquee,
+    old_artist_marquee: Marquee,
+    cover: Option<AtlasRegion>,
+    old_cover: Option<AtlasRegion>,
+    anim: PlayerAnim,
+    /// The last open popup: what the closing animation goes on drawing.
+    last: Option<(PlayerFrame, NowPlayingFrame)>,
     scale: f32,
 }
 
@@ -289,10 +326,19 @@ impl PlayerView {
         PlayerView {
             title: Line::new(""),
             artist: Line::new(""),
+            old_title: Line::new(""),
+            old_artist: Line::new(""),
+            has_old: false,
             nothing: Line::new(nothing),
             seen: None,
             title_marquee: Marquee::default(),
             artist_marquee: Marquee::default(),
+            old_title_marquee: Marquee::default(),
+            old_artist_marquee: Marquee::default(),
+            cover: None,
+            old_cover: None,
+            anim: PlayerAnim::default(),
+            last: None,
             scale: 0.0,
         }
     }
@@ -300,6 +346,7 @@ impl PlayerView {
     pub(super) fn lay_out(&mut self, type_setter: &mut Typesetter, theme: &Theme, scale: f32) {
         self.scale = scale;
         self.seen = None;
+        self.has_old = false;
         type_setter.lay_out_face(
             &mut self.nothing,
             theme.regular_face(theme.player_artist_size * scale),
@@ -319,6 +366,15 @@ impl PlayerView {
         if same {
             return;
         }
+        // The texts shown go behind, to fade out; the first ones have nothing to replace.
+        if self.seen.is_some() {
+            std::mem::swap(&mut self.title, &mut self.old_title);
+            std::mem::swap(&mut self.artist, &mut self.old_artist);
+            std::mem::swap(&mut self.title_marquee, &mut self.old_title_marquee);
+            std::mem::swap(&mut self.artist_marquee, &mut self.old_artist_marquee);
+            self.has_old = true;
+            self.anim.text_changed();
+        }
         self.seen = Some((text.key, Arc::clone(&text.title), Arc::clone(&text.artist)));
         self.title.text.clear();
         self.title.text.push_str(&text.title);
@@ -337,9 +393,21 @@ impl PlayerView {
         self.artist_marquee.restart(now_ns);
     }
 
-    /// Draws the popup of `frame` under the player button. `cover` is the playing
-    /// beatmap's background, if one is ready. Returns nothing; does not allocate once the
-    /// texts are laid out.
+    /// Notes the cover shown: another picture fades in over the previous one.
+    fn follow_cover(&mut self, cover: Option<AtlasRegion>) {
+        if cover == self.cover {
+            return;
+        }
+        self.old_cover = self.cover.filter(|_| cover.is_some());
+        self.cover = cover;
+        if self.old_cover.is_some() {
+            self.anim.cover_changed();
+        }
+    }
+
+    /// Draws the popup of `popup` under the player button, or goes on drawing the closing
+    /// one when it is `None`. `cover` is the playing beatmap's background, if one is
+    /// ready. Does not allocate once the texts are laid out.
     #[allow(clippy::too_many_arguments)]
     pub(super) fn push(
         &mut self,
@@ -348,7 +416,7 @@ impl PlayerView {
         text: &mut SpriteBatch,
         glyphs: &mut GlyphCache,
         layout: &ToolbarLayout,
-        popup: &PlayerFrame,
+        popup: Option<&PlayerFrame>,
         now: &NowPlayingFrame,
         words: &NowPlayingText,
         cover: Option<AtlasRegion>,
@@ -357,51 +425,93 @@ impl PlayerView {
     ) {
         let theme = layout.theme;
         let scale = layout.scale;
-        let ms = (f64::from(theme.toolbar_popup_ms.max(0.0)) * 1e6) as u64;
-        let t = if theme.effects {
-            ease_out_cubic(progress(popup.since_ns, now_ns, ms))
-        } else {
-            1.0
+        if let Some(popup) = popup {
+            self.last = Some((*popup, *now));
+        }
+        let Some((shown, now)) = self.last else {
+            return;
         };
-        let dy = (t - 1.0) * theme.toolbar_popup_slide * scale;
-        let rects = layout.player_rects(dy);
+        let target = AnimTarget {
+            open: popup.is_some(),
+            hover: popup.and(shown.hover).filter(|_| now.available),
+            pressed: popup.and(shown.pressed).filter(|_| now.available),
+            bar_hot: popup.is_some() && now.available && (shown.bar_hover || shown.seeking),
+            paused: now.paused,
+            progress: now.progress(),
+        };
+        self.anim.step(now_ns, &target, &theme);
+        if !self.anim.visible(&target) {
+            self.last = None;
+            return;
+        }
+        let first = (shapes.len(), text.len());
+        let rects = layout.player_rects(0.0);
         if now.available {
             self.follow(type_setter, &theme, words, now_ns);
         }
-        draw(
-            shapes,
-            white,
-            &rects.popup,
-            faded(theme.widget_popup_fill, t),
-            Look::Round,
-            &theme,
-            scale,
-        );
-        if let Some(region) = cover {
-            push_cover(shapes, region, &rects.popup, t);
-            let mut dim = Sprite::new(
+        self.follow_cover(cover);
+        let plate = Shape {
+            radius: theme.panel_radius * scale,
+            skew: theme.button_skew(),
+            ..Shape::new(
                 white.texture,
                 white.uv,
                 [rects.popup.x, rects.popup.y],
                 [rects.popup.width, rects.popup.height],
-            );
-            dim.colour = slam_render::Color {
-                r: 0.0,
-                g: 0.0,
-                b: 0.0,
-                a: theme.player_cover_dim * t,
-            };
-            shapes.push(&dim);
+                theme.widget_popup_fill,
+            )
+        };
+        push_shadow(shapes, &plate, &theme, scale, 1.0);
+        shapes.push_shape(&plate);
+        // The cover, cut by the plate's rounded and leaning edge, the previous one under
+        // the one fading in; then the dim.
+        let mix = ease_out_cubic(self.anim.cover);
+        if let Some(old) = self.old_cover.filter(|_| mix < 1.0) {
+            push_cover(shapes, old, &plate, 1.0);
         }
-        let pad = 0.0;
+        if let Some(region) = self.cover {
+            push_cover(shapes, region, &plate, mix);
+            shapes.push_shape(&Shape {
+                colour: Color {
+                    a: theme.player_cover_dim,
+                    ..Color::rgb(0.0, 0.0, 0.0)
+                },
+                ..plate
+            });
+        }
+        let params = MarqueeParams::new(&theme, scale);
+        let swap = ease_out_cubic(self.anim.text);
         if now.available {
-            let params = MarqueeParams::new(&theme, scale);
+            if self.has_old && swap < 1.0 {
+                push_marquee(
+                    text,
+                    &self.old_title,
+                    &rects.title,
+                    0.0,
+                    faded(theme.text, 1.0 - swap),
+                    glyphs,
+                    &mut self.old_title_marquee,
+                    &params,
+                    now_ns,
+                );
+                push_marquee(
+                    text,
+                    &self.old_artist,
+                    &rects.artist,
+                    0.0,
+                    faded(theme.text, 0.75 * (1.0 - swap)),
+                    glyphs,
+                    &mut self.old_artist_marquee,
+                    &params,
+                    now_ns,
+                );
+            }
             push_marquee(
                 text,
                 &self.title,
                 &rects.title,
-                pad,
-                faded(theme.text, t),
+                0.0,
+                faded(theme.text, swap),
                 glyphs,
                 &mut self.title_marquee,
                 &params,
@@ -411,8 +521,8 @@ impl PlayerView {
                 text,
                 &self.artist,
                 &rects.artist,
-                pad,
-                faded(theme.text, 0.75 * t),
+                0.0,
+                faded(theme.text, 0.75 * swap),
                 glyphs,
                 &mut self.artist_marquee,
                 &params,
@@ -423,69 +533,158 @@ impl PlayerView {
                 text,
                 &self.nothing,
                 &rects.title,
-                pad,
-                faded(theme.text, 0.75 * t),
+                0.0,
+                faded(theme.text, 0.75),
                 glyphs,
             );
         }
-        // The progress bar: a track and the part played.
-        let track = faded(theme.text, 0.2 * t);
-        draw(shapes, white, &rects.bar, track, Look::Pill, &theme, scale);
-        let played = now.progress();
-        if now.available && played > 0.0 {
+        self.push_bar(shapes, &rects, &now, &theme, scale, white);
+        self.push_buttons(shapes, &rects, &now, &theme, scale, white);
+        // Fade, slide and grow from the button the popup belongs to.
+        let t = ease_out_quint(self.anim.open);
+        if t < 1.0 {
+            let pivot = [layout.player.centre()[0], rects.popup.y];
+            let size = theme.player_scale_from + (1.0 - theme.player_scale_from) * t;
+            let dy = (1.0 - t) * theme.player_slide * scale;
+            let map = Affine::about(pivot, size, 0.0, [0.0, dy]);
+            let tint = [1.0, 1.0, 1.0, t];
+            shapes.transform_from(first.0, &map, tint);
+            text.transform_from(first.1, &map, tint);
+        }
+    }
+
+    /// The progress bar: a track and the part played; it grows under the pointer.
+    fn push_bar(
+        &self,
+        shapes: &mut ShapeBatch,
+        rects: &PlayerRects,
+        now: &NowPlayingFrame,
+        theme: &Theme,
+        scale: f32,
+        white: AtlasRegion,
+    ) {
+        let grow = 1.0 + (theme.player_bar_hot - 1.0) * self.anim.bar;
+        let height = rects.bar.height * grow;
+        let bar = Rect {
+            y: rects.bar.y + (rects.bar.height - height) / 2.0,
+            height,
+            ..rects.bar
+        };
+        draw(
+            shapes,
+            white,
+            &bar,
+            faded(theme.text, 0.2),
+            Look::Pill,
+            theme,
+            scale,
+        );
+        if now.available && self.anim.fill > 0.0 {
             let fill = Rect {
-                width: (rects.bar.width * played).max(rects.bar.height),
-                ..rects.bar
+                width: (bar.width * self.anim.fill).max(bar.height),
+                ..bar
             };
             draw(
                 shapes,
                 white,
                 &fill,
-                faded(theme.widget_accent_fill, t),
+                theme.widget_accent_fill,
                 Look::Pill,
-                &theme,
+                theme,
                 scale,
             );
         }
+    }
+
+    /// The three buttons: rounded leaning plates that brighten under the pointer and pop
+    /// when pressed, with a faint shadow; the play and pause icons cross-fade.
+    fn push_buttons(
+        &self,
+        shapes: &mut ShapeBatch,
+        rects: &PlayerRects,
+        now: &NowPlayingFrame,
+        theme: &Theme,
+        scale: f32,
+        white: AtlasRegion,
+    ) {
         let live = if now.available { 1.0 } else { 0.35 };
-        let middle = if now.paused {
-            icons::PLAY
-        } else {
-            icons::PAUSE
-        };
-        let faces = [icons::PREV, middle, icons::NEXT];
-        for (i, (rect, parts)) in rects.buttons.iter().zip(faces).enumerate() {
-            if popup.hover == Some(i as u8) && now.available {
-                draw(
-                    shapes,
-                    white,
-                    rect,
-                    faded(theme.button_hover_fill, t),
-                    Look::Round,
-                    &theme,
-                    scale,
-                );
-            }
-            icons::push_icon(
+        let skew = theme.button_skew();
+        let swap = ease_out_cubic(self.anim.play);
+        for (i, rect) in rects.buttons.iter().enumerate() {
+            let hover = self.anim.hover[i];
+            let press = self.anim.press[i];
+            // Held buttons shrink about their centre.
+            let size = 1.0 - (1.0 - theme.player_press_scale) * press;
+            let [cx, cy] = rect.centre();
+            let rect = Rect {
+                x: cx - rect.width * size / 2.0,
+                y: cy - rect.height * size / 2.0,
+                width: rect.width * size,
+                height: rect.height * size,
+            };
+            let mix = |a: f32, b: f32| a + (b - a) * hover;
+            let (base, lit) = (theme.button_fill, theme.button_hover_fill);
+            let plate = Shape {
+                radius: theme.button_radius * scale,
+                skew,
+                ..Shape::new(
+                    white.texture,
+                    white.uv,
+                    [rect.x, rect.y],
+                    [rect.width, rect.height],
+                    Color {
+                        r: mix(base.r, lit.r),
+                        g: mix(base.g, lit.g),
+                        b: mix(base.b, lit.b),
+                        a: mix(base.a * 0.6, lit.a) * (0.5 + 0.5 * live),
+                    },
+                )
+            };
+            push_shadow(
                 shapes,
-                white,
-                rect,
-                theme.toolbar_icon_share + 0.2,
-                faded(theme.text, live * t),
-                parts,
+                &plate,
+                theme,
+                scale,
+                theme.player_button_shadow * (1.0 - 0.6 * press),
             );
+            shapes.push_shape(&plate);
+            if theme.effects && hover > 0.0 {
+                shapes.push_shape(&Shape {
+                    outline: theme.outline_width * scale,
+                    colour: faded(theme.accent, 0.8 * hover),
+                    ..plate
+                });
+            }
+            let share = theme.toolbar_icon_share + 0.2 + 0.04 * hover;
+            if i == 1 {
+                let pause = faded(theme.text, live * (1.0 - swap));
+                let play = faded(theme.text, live * swap);
+                if swap < 1.0 {
+                    icons::push_icon(shapes, white, &rect, share, pause, icons::PAUSE);
+                }
+                if swap > 0.0 {
+                    icons::push_icon(shapes, white, &rect, share, play, icons::PLAY);
+                }
+            } else {
+                let parts = if i == 0 { icons::PREV } else { icons::NEXT };
+                icons::push_icon(shapes, white, &rect, share, faded(theme.text, live), parts);
+            }
         }
     }
 }
 
-/// The part of `region` that covers `rect` (centre crop), tinted white at `opacity`.
-fn push_cover(shapes: &mut ShapeBatch, region: AtlasRegion, rect: &Rect, opacity: f32) {
+/// The part of `region` that covers `plate` (centre crop), cut by the plate's rounded,
+/// leaning edge with the picture upright, at `opacity`.
+fn push_cover(shapes: &mut ShapeBatch, region: AtlasRegion, plate: &Shape, opacity: f32) {
     let (iw, ih) = (region.size.width as f32, region.size.height as f32);
-    if iw <= 0.0 || ih <= 0.0 || rect.width <= 0.0 || rect.height <= 0.0 {
+    let [w, h] = plate.size;
+    // An upright texture runs across the plate's bounding box.
+    let box_w = w + plate.skew_offset().abs();
+    if iw <= 0.0 || ih <= 0.0 || box_w <= 0.0 || h <= 0.0 {
         return;
     }
-    // Share of the image's width and height the rectangle shows.
-    let want = rect.width / rect.height;
+    // Share of the image's width and height the box shows.
+    let want = box_w / h;
     let have = iw / ih;
     let (share_w, share_h) = if have > want {
         (want / have, 1.0)
@@ -502,19 +701,18 @@ fn push_cover(shapes: &mut ShapeBatch, region: AtlasRegion, rect: &Rect, opacity
         u1: u0 + du * share_w,
         v1: v0 + dv * share_h,
     };
-    let mut sprite = Sprite::new(
-        region.texture,
-        crop,
-        [rect.x, rect.y],
-        [rect.width, rect.height],
-    );
-    sprite.colour = slam_render::Color {
-        r: 1.0,
-        g: 1.0,
-        b: 1.0,
-        a: opacity,
-    };
-    shapes.push(&sprite);
+    shapes.push_shape(&Shape {
+        texture: region.texture,
+        uv: crop,
+        colour: Color {
+            r: 1.0,
+            g: 1.0,
+            b: 1.0,
+            a: opacity,
+        },
+        upright: true,
+        ..*plate
+    });
 }
 
 #[cfg(test)]
