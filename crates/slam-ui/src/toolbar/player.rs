@@ -467,8 +467,8 @@ impl PlayerView {
                 );
             }
             icons::push_icon(
-                shapes,
-                white,
+                text,
+                glyphs,
                 rect,
                 theme.toolbar_icon_share + 0.2,
                 faded(theme.text, live * t),

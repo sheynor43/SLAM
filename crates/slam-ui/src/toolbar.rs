@@ -742,7 +742,12 @@ impl ToolbarView {
             scale,
         );
         let popup_pin = frame.popup.map(|p| usize::from(p.pin));
-        let button = |shapes: &mut ShapeBatch, rect: &Rect, lit: bool, parts: &[icons::Part]| {
+        let button = |shapes: &mut ShapeBatch,
+                      text: &mut SpriteBatch,
+                      glyphs: &mut GlyphCache,
+                      rect: &Rect,
+                      lit: bool,
+                      icon: icons::Icon| {
             if lit {
                 let inset = theme.toolbar_gap * scale;
                 let plate = Rect {
@@ -762,28 +767,34 @@ impl ToolbarView {
                 );
             }
             icons::push_icon(
-                shapes,
-                white,
+                text,
+                glyphs,
                 rect,
                 theme.toolbar_icon_share,
                 theme.text,
-                parts,
+                icon,
             );
         };
         button(
             shapes,
+            text,
+            glyphs,
             &layout.settings,
             frame.hover == Some(Target::Settings),
             icons::GEAR,
         );
         button(
             shapes,
+            text,
+            glyphs,
             &layout.home,
             frame.hover == Some(Target::Home),
             icons::HOME,
         );
         button(
             shapes,
+            text,
+            glyphs,
             &layout.player,
             frame.hover == Some(Target::Player) || frame.player.is_some(),
             icons::NOTE,
@@ -791,8 +802,8 @@ impl ToolbarView {
         for (i, rect) in layout.pins().iter().enumerate() {
             let row = usize::from(frame.pins[i]);
             let lit = frame.hover == Some(Target::Pin(i)) || popup_pin == Some(i);
-            let parts = icons::icon(rows.section_of(row).unwrap_or(0));
-            button(shapes, rect, lit, parts);
+            let icon = icons::icon(rows.section_of(row).unwrap_or(0));
+            button(shapes, text, glyphs, rect, lit, icon);
         }
         if frame.clock != NO_CLOCK {
             push_right(
