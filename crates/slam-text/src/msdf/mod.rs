@@ -37,8 +37,10 @@ pub const EM_PX: f32 = 32.0;
 /// Atlas pixels per em of the glyphs made for very large text (ADR-0178): the startup
 /// intro's letters, which grow to several hundred pixels and would show the 32-pixel
 /// field's wobble at [`EM_PX`]. The distance range stays [`DISTANCE_RANGE`] atlas pixels,
-/// so the shaders read both alike; the renderer scales by `font_size / EM_PX_HIRES`.
-pub const EM_PX_HIRES: f32 = 256.0;
+/// so the shaders read both alike; the renderer scales by `font_size / EM_PX_HIRES`. Not
+/// larger: the intro's outline is as wide as that range, about 0.036 em here, as wide as
+/// the 32-pixel glyphs' outline was.
+pub const EM_PX_HIRES: f32 = 112.0;
 /// Total distance range in atlas pixels: the field covers
 /// `[-DISTANCE_RANGE / 2, DISTANCE_RANGE / 2]` around the outline.
 pub const DISTANCE_RANGE: f64 = 4.0;

@@ -66,7 +66,8 @@ fn draws_rounded_skewed_outlined_shining_and_glowing_shapes() {
             outline: 3.0,
             ..shape([4.0, 34.0], [30.0, 26.0])
         });
-        // Shining, grey: 30x26 at (42, 34), the sheen's band in its middle.
+        // Grey with a sheen strength: 30x26 at (42, 34). Fills no longer sweep a sheen
+        // (ADR-0167): it stays flat grey.
         batch.push_shape(&Shape {
             sheen: 1.0,
             phase: 0.5,
@@ -109,8 +110,12 @@ fn draws_rounded_skewed_outlined_shining_and_glowing_shapes() {
         assert_eq!(frame.red(19, 47), 0);
         assert_eq!(frame.red(19, 35), 255);
 
-        // Shining: the middle is lit, the sides keep the grey.
-        assert!(frame.red(57, 47) > 200, "{}", frame.red(57, 47));
+        // No sheen band: the middle keeps the grey as the sides do.
+        assert!(
+            (60..=70).contains(&frame.red(57, 47)),
+            "{}",
+            frame.red(57, 47)
+        );
         assert!(
             (60..=70).contains(&frame.red(44, 47)),
             "{}",

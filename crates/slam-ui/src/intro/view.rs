@@ -40,7 +40,7 @@ impl IntroView {
     pub fn new(registry: Arc<FontRegistry>, theme: Theme, title: &str) -> IntroView {
         let (width, height) = (1280.0, theme.reference_height);
         let mut view = IntroView {
-            type_setter: Typesetter::new(registry, theme.font_weight),
+            type_setter: Typesetter::new(registry, theme.heading_weight),
             frame: Frame { width, height },
             layout: MenuLayout::new(width, height, &theme),
             title: Line::new(title),
@@ -205,14 +205,15 @@ mod tests {
     use crate::intro::{END_S, IMPACT_S};
 
     #[test]
-    fn the_letters_are_made_at_least_as_big_as_they_are_ever_drawn_up_to_4k() {
+    fn the_letters_are_never_enlarged_much_up_to_4k() {
         let theme = Theme::default();
         for height in [720.0, 1080.0, 1440.0, 2160.0] {
             let drawn = largest_em_px(&theme, height);
-            // Never scaled up more than 3 times, where 32 pixels per em showed 10-fold
-            // enlargement as a pixelated edge.
+            // At most about 6 times at 4K (a distance field keeps clean edges that far; the
+            // size is bounded by the outline's width, see `EM_PX_HIRES`), where 32 pixels per
+            // em showed 10-fold enlargement as a pixelated edge.
             assert!(
-                drawn / EM_PX_HIRES <= 3.0,
+                drawn / EM_PX_HIRES <= 6.0,
                 "{height}: drawn {drawn} from {EM_PX_HIRES}"
             );
             assert!(
