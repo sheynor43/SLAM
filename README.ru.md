@@ -1,8 +1,45 @@
-# SLAM — Stable Lazer Always Mythical
+<p align="center">
+  <img src="docs/images/logo.png" width="160" alt="SLAM logo">
+</p>
 
-[English](README.md) | **Русский**
+<h1 align="center">SLAM</h1>
 
-Самостоятельный клиент для режима osu!standard с открытым исходным кодом: низкая задержка, совместимость с картами, скинами и реплеями stable и lazer, расширяемость через плагины на Luau.
+<p align="center"><b>Stable Lazer Always Mythical</b></p>
+
+<p align="center">Самостоятельный клиент osu!standard с открытым кодом — низкая задержка, карты, скины и реплеи stable и lazer, плагины на Luau.</p>
+
+<p align="center">
+  <a href="https://github.com/sheynor43/SLAM/releases"><img src="https://img.shields.io/github/v/release/sheynor43/SLAM?include_prereleases&label=выпуск&color=b65ae6" alt="release"></a>
+  <a href="LICENSE"><img src="https://img.shields.io/badge/license-GPL--3.0--or--later-7034c8" alt="license"></a>
+  <img src="https://img.shields.io/badge/platform-Linux%20%7C%20Windows-e070e4" alt="platforms">
+</p>
+
+<p align="center"><a href="README.md">English</a> · <b>Русский</b> · <a href="https://github.com/sheynor43/SLAM/releases">Скачать</a></p>
+
+## Скриншоты
+
+<table>
+<tr>
+<td><img src="docs/images/menu.jpg" alt="Главное меню: логотип стучит в такт музыке"><br><sub>Главное меню: логотип стучит в такт музыке</sub></td>
+<td><img src="docs/images/menu-open.jpg" alt="Кнопки в стиле лазера"><br><sub>Кнопки в стиле лазера</sub></td>
+</tr>
+<tr>
+<td><img src="docs/images/song-select.jpg" alt="Выбор песни"><br><sub>Выбор песни</sub></td>
+<td><img src="docs/images/mods.jpg" alt="Выбор модов"><br><sub>Выбор модов</sub></td>
+</tr>
+<tr>
+<td><img src="docs/images/settings.jpg" alt="Настройки"><br><sub>Настройки</sub></td>
+<td><img src="docs/images/gameplay.jpg" alt="Игра с встроенным скином"><br><sub>Игра с встроенным скином</sub></td>
+</tr>
+</table>
+
+## Возможности
+
+- **Низкая задержка**: отдельные потоки ввода, обновления, отрисовки и звука; ограничитель кадров и обновление от 1000 Гц.
+- **Два профиля правил**: судейство лазера уже есть, правила stable в работе.
+- **Всё ваше как есть**: `Songs` из stable, `.osz`/`.olz`, скины stable и lazer, реплеи `.osr`.
+- **Интерфейс по лазеру и stable**: меню с логотипом в такт в любом из двух видов, изогнутый список песен, моды с пресетами, цветовые темы, в том числе SLAM.
+- **Настройка OpenTabletDriver** прямо в игре; Linux и Windows.
 
 > SLAM — независимый проект и не связан с ppy Pty Ltd. «osu!» — товарный знак ppy.
 

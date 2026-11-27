@@ -7,7 +7,7 @@
 use slam_engine::gl::SdlGlSurface;
 use slam_input::{InputWindow, PriorityOutcome, PriorityRequest};
 use slam_render::gl::{GlDebug, GlDevice};
-use slam_render::{Device, DeviceError, Limits};
+use slam_render::{Device, DeviceError, Extent, Limits};
 
 /// Which backend to use.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -80,6 +80,14 @@ pub trait Backend: Send + Sized + 'static {
 
     /// Waits until the GPU has run the frame's commands (`bench --finish`).
     fn finish(device: &mut Self::Device);
+
+    /// The frame drawn so far, `size` RGBA pixels top row first, before it is presented;
+    /// `None` where the backend cannot read it back. For the tour's screens
+    /// (`crate::tour`): stalls and allocates.
+    fn read_frame(device: &mut Self::Device, size: Extent) -> Option<Vec<u8>> {
+        let _ = (device, size);
+        None
+    }
 }
 
 /// What [`Backend::open`] made.
@@ -131,6 +139,10 @@ impl Backend for SdlGlSurface {
 
     fn finish(device: &mut Self::Device) {
         device.finish();
+    }
+
+    fn read_frame(device: &mut Self::Device, size: Extent) -> Option<Vec<u8>> {
+        Some(device.read_frame(size))
     }
 }
 
