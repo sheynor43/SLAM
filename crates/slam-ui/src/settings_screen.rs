@@ -1772,3 +1772,5 @@ impl SettingsScreen {
 
 #[cfg(test)]
 mod tests;
+#[cfg(test)]
+mod tests_layout;

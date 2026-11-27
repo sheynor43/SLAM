@@ -101,6 +101,14 @@ pub struct SettingsLabels {
 }
 
 /// The lines of [`KeyLabels`], laid out.
+/// The boxes of the parts of one row (see [`SettingsView::row_boxes`]).
+#[derive(Clone, Copy, Debug)]
+pub(crate) struct RowBoxes {
+    pub label: Rect,
+    pub marker: Option<Rect>,
+    pub hints: [Rect; MAX_HINT_LINES],
+}
+
 struct KeyLines {
     empty: Line,
     prompt: Line,
@@ -660,6 +668,54 @@ impl SettingsView {
         }
     }
 
+    /// Where the parts of row `row`, at `slot` in its section, go: the name (short of the
+    /// restart marker, which has a box of its own), the hint lines stacked below one
+    /// another and centred in the widget column. No two overlap (ADR-0180).
+    pub(crate) fn row_boxes(&self, layout: &SettingsLayout, row: usize, slot: usize) -> RowBoxes {
+        let pad = self.theme.widget_pad * layout.scale;
+        let mut label = layout.label(slot);
+        let mut marker = None;
+        if self.meta.get(row).is_some_and(|m| m.2) {
+            let width = (self.marker.layout.width() + 2.0 * pad).min(label.width * 0.5);
+            let rect = Rect {
+                x: label.x + label.width - width,
+                width,
+                ..label
+            };
+            label.width -= width;
+            marker = Some(rect);
+        }
+        let widget = layout.widget(slot);
+        let mut hints = [Rect::default(); MAX_HINT_LINES];
+        if let Some(lines) = self.hints.get(row) {
+            let total: f32 = lines.iter().map(|l| l.layout.height()).sum();
+            let mut y = widget.y + (widget.height - total) / 2.0;
+            // A toggle keeps the right end of the column.
+            let room = match self.views.get(row) {
+                Some(RowView::Toggle(_)) => {
+                    widget.width
+                        - (self.theme.widget_toggle_width + self.theme.widget_pad) * layout.scale
+                }
+                _ => widget.width,
+            };
+            for (slot, line) in hints.iter_mut().zip(lines) {
+                let height = line.layout.height();
+                *slot = Rect {
+                    y,
+                    height,
+                    width: room.max(0.0),
+                    ..widget
+                };
+                y += height;
+            }
+        }
+        RowBoxes {
+            label,
+            marker,
+            hints,
+        }
+    }
+
     /// Draws row `row`'s name in `rect`, `pad` from its left edge.
     pub fn push_label(
         &self,
@@ -1183,7 +1239,6 @@ impl SettingsView {
             );
         }
         for i in 0..snapshot.len.min(self.meta.len()) {
-            let (_, _, restart) = self.meta[i];
             let slot = usize::from(snapshot.slots[i]);
             any |= !snapshot.hidden[i];
             if snapshot.hidden[i] {
@@ -1255,7 +1310,8 @@ impl SettingsView {
             }
             let disabled = snapshot.disabled[i];
             let hinted = snapshot.hinted[i] && !self.hints[i].is_empty();
-            let label = layout.label(slot);
+            let boxes = self.row_boxes(&layout, i, slot);
+            let label = boxes.label;
             let label_colour = if disabled {
                 theme.disabled_text
             } else {
@@ -1277,11 +1333,11 @@ impl SettingsView {
             } else {
                 opacity
             };
-            if restart {
+            if let Some(marker) = boxes.marker {
                 push_right(
                     text,
                     &self.marker,
-                    &label,
+                    &marker,
                     pad,
                     faded(theme.disabled_text, opacity),
                     glyphs,
@@ -1299,6 +1355,7 @@ impl SettingsView {
                 continue;
             }
             match (&mut self.views[i], &snapshot.widgets[i]) {
+                (RowView::Key, RowWidget::Key(_)) if hinted => {}
                 (RowView::Key, RowWidget::Key(key)) => {
                     let colour = if key.is_listening() {
                         theme.button_hover_fill
@@ -1323,6 +1380,8 @@ impl SettingsView {
                             .push(text, key.value(), &widget, pad, text_colour, glyphs);
                     }
                 }
+                // A hint takes the room of a button too.
+                (RowView::Button(_), RowWidget::Button) if hinted => {}
                 (RowView::Button(line), RowWidget::Button) => {
                     let colour = if i == snapshot.focus {
                         theme.button_hover_fill
@@ -1375,24 +1434,11 @@ impl SettingsView {
                 _ => {}
             }
             if hinted {
-                // The lines are stacked and centred in the widget column.
                 let lines = &self.hints[i];
-                let total: f32 = lines.iter().map(|l| l.layout.height()).sum();
-                let mut y = widget.y + (widget.height - total) / 2.0;
-                // A toggle keeps the right end of the column.
-                let room = match self.views[i] {
-                    RowView::Toggle(_) => {
-                        widget.width - (theme.widget_toggle_width + theme.widget_pad) * layout.scale
-                    }
-                    _ => widget.width,
-                };
-                for (line, ride) in lines.iter().zip(&mut self.hint_rides[i]) {
-                    let rect = Rect {
-                        y,
-                        height: line.layout.height(),
-                        width: room.max(0.0),
-                        ..widget
-                    };
+                for (line, (ride, rect)) in lines
+                    .iter()
+                    .zip(self.hint_rides[i].iter_mut().zip(boxes.hints))
+                {
                     push_marquee(
                         text,
                         line,
@@ -1404,7 +1450,6 @@ impl SettingsView {
                         &params,
                         now_ns,
                     );
-                    y += rect.height;
                 }
             }
         }

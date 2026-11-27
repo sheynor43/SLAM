@@ -332,6 +332,9 @@ pub struct ShellSnapshot {
     pub menu_background: bool,
     /// Strength of the menus' parallax, 0 ..= 2: 0 with it off (ADR-0132, ADR-0136).
     pub parallax: f32,
+    /// How far the open settings panel moves the screens and the background aside, as a
+    /// part of the window's width (ADR-0179, ADR-0180).
+    pub aside: f32,
     /// The display lists the settings screen shows (ADR-0072).
     pub display_generation: u64,
     /// How many language switches asked for views so far: a new one closes the curtain
@@ -2644,6 +2647,7 @@ impl ShellState {
                 &self.theme,
             )
         });
+        snapshot.aside = aside;
         let top: *const AppScreen = self.stack.top();
         for (slot, layer) in snapshot.layers.iter_mut().zip(self.stack.layers(now_ns)) {
             *slot = layer.and_then(|(screen, mut pose)| {
@@ -4756,13 +4760,15 @@ impl<B: render::Backend> Draw<ShellSnapshot> for View<B> {
             self.theme.parallax_half_life,
         );
         let strength = snapshot.parallax;
-        let background_map = crate::parallax::layer_map(
-            pointer,
-            [width, height],
-            self.theme.parallax_background,
-            strength,
-            true,
-        );
+        // The background follows the screens aside under the settings panel (ADR-0180).
+        let background_map = crate::parallax::aside_map(snapshot.aside * width, [width, height])
+            .then_after(&crate::parallax::layer_map(
+                pointer,
+                [width, height],
+                self.theme.parallax_background,
+                strength,
+                true,
+            ));
         let menu_map = crate::parallax::layer_map(
             pointer,
             [width, height],
