@@ -1,5 +1,6 @@
-//! Draw side of the menu. Text is laid out again only
-//! when the window size changes; once warm, `push` does not allocate.
+//! Draw side of the menu (ADR-0186): the logo in layers with its visualiser, triangles and
+//! side flashes, and the buttons of either style. Text is laid out again only when the
+//! window size changes; once warm, `push` does not allocate.
 
 use std::sync::Arc;
 
@@ -11,7 +12,14 @@ use slam_text::{
     UI_FAMILY, push_layout,
 };
 
-use super::{MenuItem, MenuLayout, MenuSnapshot};
+use slam_render::Color;
+use slam_render::hal::Blend;
+use slam_render::shape::Shape;
+use slam_render::sprite::Sprite;
+use slam_text::Icon;
+
+use super::logo::{BAR_ALPHA, BAR_LENGTH, BARS, DEAD_ZONE, LogoSnapshot, ROUNDS};
+use super::{MenuItem, MenuSnapshot, MenuStyle};
 use crate::screen::Pose;
 use crate::theme::{Theme, faded};
 
@@ -112,23 +120,203 @@ pub(crate) struct Frame {
     pub(crate) height: f32,
 }
 
+/// The logo's images in the atlas (ADR-0186): its layers, back to front, the whole logo
+/// small (for small sizes) and the triangle it throws out. The layers' canvas is a bit
+/// larger than the disc: [`DISC_SHARE`] of it.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct LogoArt {
+    pub disc: AtlasRegion,
+    pub frame: AtlasRegion,
+    pub play: AtlasRegion,
+    pub facet: AtlasRegion,
+    pub accent: AtlasRegion,
+    pub small: AtlasRegion,
+    pub triangle: AtlasRegion,
+}
+
+impl LogoArt {
+    /// The mark's layers over the disc, back to front.
+    pub fn mark(&self) -> [AtlasRegion; 4] {
+        [self.frame, self.play, self.facet, self.accent]
+    }
+}
+
+/// The disc's diameter as a part of the logo images' side (`assets/logo`: 940 of 1000).
+pub const DISC_SHARE: f32 = 0.94;
+/// Below this many pixels the logo is drawn from its small image.
+const SMALL_BELOW: f32 = 300.0;
+
+/// Draws `image` centred on `centre`, its disc `size` across, turned `rotation` radians.
+pub fn push_layer(
+    shapes: &mut ShapeBatch,
+    image: AtlasRegion,
+    centre: [f32; 2],
+    size: f32,
+    rotation: f32,
+    colour: Color,
+    blend: Blend,
+) {
+    let side = size / DISC_SHARE;
+    let mut sprite = Sprite::new(image.texture, image.uv, centre, [side, side]);
+    sprite.origin = [side / 2.0, side / 2.0];
+    sprite.rotation = rotation;
+    sprite.colour = colour;
+    sprite.blend = blend;
+    shapes.push(&sprite);
+}
+
+/// Draws the beating logo `size` across at `centre`, faded by `opacity`: the side flashes
+/// across the `width` × `height` window (when `sides`), the visualiser and the triangles
+/// behind it, the logo, its ripple and flash. `white` is an opaque white image. Does not
+/// allocate once the batch has room.
+#[allow(clippy::too_many_arguments)]
+pub fn push_logo(
+    shapes: &mut ShapeBatch,
+    art: &LogoArt,
+    white: AtlasRegion,
+    theme: &Theme,
+    logo: &LogoSnapshot,
+    centre: [f32; 2],
+    size: f32,
+    opacity: f32,
+    sides: Option<[f32; 2]>,
+) {
+    if opacity <= 0.0 || size <= 0.0 {
+        return;
+    }
+    let scale = theme.scale(sides.map_or(768.0, |[_, h]| h));
+    if let Some([width, height]) = sides {
+        // lazer's MenuSideFlashes: 400 wide, from the edge's colour to nothing.
+        let flash_width = 400.0 * scale;
+        for (side, alpha) in logo.sides.iter().enumerate() {
+            let alpha = alpha * opacity;
+            if alpha <= 0.0 {
+                continue;
+            }
+            let edge = faded(theme.menu_side_flash, alpha);
+            let clear = faded(theme.menu_side_flash, 0.0);
+            let (x, from, to) = if side == 0 {
+                (0.0, edge, clear)
+            } else {
+                (width - flash_width, clear, edge)
+            };
+            let mut shape = Shape::new(
+                white.texture,
+                white.uv,
+                [x, 0.0],
+                [flash_width, height],
+                from,
+            );
+            shape.gradient = Some(slam_render::shape::Gradient::Horizontal(to));
+            shape.blend = Blend::Additive;
+            shapes.push_shape(&shape);
+        }
+    }
+    let drawn = size * logo.scale;
+    let radius = drawn / 2.0;
+    // lazer's LogoVisualisation: rounds of bars around the edge, outward.
+    let bar_width =
+        drawn * (2.0 * (1.0 - (360.0f32 / BARS as f32).to_radians().cos())).sqrt() / 2.0;
+    let bar_colour = faded(Color::WHITE, BAR_ALPHA * logo.visualiser_alpha * opacity);
+    if bar_colour.a > 0.0 {
+        for round in 0..ROUNDS {
+            for (i, &amplitude) in logo.bars.iter().enumerate() {
+                if amplitude < DEAD_ZONE {
+                    continue;
+                }
+                let angle = (i as f32 / BARS as f32 * 360.0 + round as f32 * 360.0 / ROUNDS as f32)
+                    .to_radians();
+                let (sin, cos) = angle.sin_cos();
+                let length = BAR_LENGTH * drawn * amplitude;
+                let mut bar = Sprite::new(
+                    white.texture,
+                    white.uv,
+                    [centre[0] + cos * radius, centre[1] + sin * radius],
+                    [bar_width, length],
+                );
+                bar.origin = [bar_width / 2.0, 0.0];
+                // The bar's length runs along +y; turn it to point outward.
+                bar.rotation = angle - std::f32::consts::FRAC_PI_2;
+                bar.colour = bar_colour;
+                bar.blend = Blend::Additive;
+                shapes.push(&bar);
+            }
+        }
+    }
+    for particle in logo.particles.iter().filter(|p| p.alpha > 0.0) {
+        let colour = theme.menu_particle_colours[usize::from(particle.colour) % 2];
+        let side = particle.size * size;
+        let mut sprite = Sprite::new(
+            art.triangle.texture,
+            art.triangle.uv,
+            [
+                centre[0] + particle.offset[0] * size,
+                centre[1] + particle.offset[1] * size,
+            ],
+            [side, side],
+        );
+        sprite.origin = [side / 2.0, side / 2.0];
+        sprite.rotation = particle.rotation;
+        sprite.colour = faded(colour, particle.alpha * opacity);
+        shapes.push(&sprite);
+    }
+    let tint = faded(Color::WHITE, opacity);
+    if drawn < SMALL_BELOW {
+        push_layer(shapes, art.small, centre, drawn, 0.0, tint, Blend::Alpha);
+    } else {
+        push_layer(shapes, art.disc, centre, drawn, 0.0, tint, Blend::Alpha);
+        for layer in art.mark() {
+            push_layer(shapes, layer, centre, drawn, 0.0, tint, Blend::Alpha);
+        }
+    }
+    if logo.ripple_alpha > 0.0 {
+        let ripple = faded(Color::WHITE, logo.ripple_alpha * opacity);
+        let image = if drawn < SMALL_BELOW {
+            art.small
+        } else {
+            art.disc
+        };
+        push_layer(
+            shapes,
+            image,
+            centre,
+            drawn * logo.ripple_scale,
+            0.0,
+            ripple,
+            Blend::Additive,
+        );
+    }
+    if logo.flash > 0.0 {
+        let mut flash = Shape::new(
+            white.texture,
+            white.uv,
+            [centre[0] - radius, centre[1] - radius],
+            [drawn, drawn],
+            faded(Color::WHITE, logo.flash * opacity),
+        );
+        flash.radius = radius;
+        flash.blend = Blend::Additive;
+        shapes.push_shape(&flash);
+    }
+}
+
+/// The icon of each item, in [`MenuItem::ALL`] order.
+const ICONS: [Icon; 3] = [Icon::Play, Icon::Gear, Icon::Power];
+
 /// The draw side of [`super::MainMenu`].
 pub struct MenuView {
     theme: Theme,
     type_setter: Typesetter,
     frame: Frame,
-    layout: MenuLayout,
-    title: Line,
+    scale: f32,
     buttons: [Line; MenuItem::ALL.len()],
-    /// The startup intro draws the title meanwhile (ADR-0114).
-    title_hidden: bool,
+    /// The startup intro draws the logo meanwhile (ADR-0186).
+    logo_hidden: bool,
 }
 
 impl std::fmt::Debug for MenuView {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_struct("MenuView")
-            .field("title", &self.title.text)
-            .finish_non_exhaustive()
+        f.debug_struct("MenuView").finish_non_exhaustive()
     }
 }
 
@@ -140,10 +328,9 @@ impl MenuView {
         let mut view = MenuView {
             type_setter: Typesetter::new(registry, theme.font_weight),
             frame: Frame { width, height },
-            layout: MenuLayout::new(width, height, &theme),
-            title: Line::new(&labels.title),
+            scale: theme.scale(height),
             buttons: labels.buttons.each_ref().map(|text| Line::new(text)),
-            title_hidden: false,
+            logo_hidden: false,
             theme,
         };
         view.lay_out();
@@ -162,39 +349,42 @@ impl MenuView {
     }
 
     fn lay_out(&mut self) {
-        let Frame { width, height } = self.frame;
-        self.layout = MenuLayout::new(width, height, &self.theme);
-        let scale = self.layout.scale;
-        self.type_setter
-            .lay_out(&mut self.title, self.theme.title_size * scale);
+        self.scale = self.theme.scale(self.frame.height);
         for button in &mut self.buttons {
             // Button labels are Bold (ADR-0174).
             self.type_setter.lay_out_face(
                 button,
-                self.theme.heading_face(self.theme.button_text_size * scale),
+                self.theme
+                    .heading_face(self.theme.button_text_size * self.scale),
             );
         }
     }
 
-    /// Leaves the title out of [`MenuView::push`] while the startup intro draws it
-    /// (ADR-0114).
-    pub fn set_title_hidden(&mut self, hidden: bool) {
-        self.title_hidden = hidden;
+    /// Leaves the logo out of [`MenuView::push`] while the startup intro draws it.
+    pub fn set_logo_hidden(&mut self, hidden: bool) {
+        self.logo_hidden = hidden;
     }
 
     /// Asks `glyphs` for every glyph the menu shows. Returns how many are not ready yet;
     /// repeat with [`GlyphCache::process`] in between until none are.
     pub fn request_glyphs(&self, glyphs: &mut GlyphCache) -> usize {
-        std::iter::once(&self.title)
-            .chain(&self.buttons)
-            .flat_map(|line| line.layout.glyphs())
-            .filter(|g| matches!(glyphs.glyph(GlyphKey::of(g)), Glyph::Pending))
-            .count()
+        let icons = ICONS
+            .iter()
+            .filter(|&&icon| matches!(glyphs.glyph(GlyphKey::icon(icon, false)), Glyph::Pending))
+            .count();
+        icons
+            + self
+                .buttons
+                .iter()
+                .flat_map(|line| line.layout.glyphs())
+                .filter(|g| matches!(glyphs.glyph(GlyphKey::of(g)), Glyph::Pending))
+                .count()
     }
 
-    /// Writes the menu at `pose` on a `width` × `height` window: button rectangles into
-    /// `shapes` (tinting `white`, an opaque white image) and texts into `text` (drawn with
-    /// the MSDF shader). Allocation-free once warm and once the batches have room.
+    /// Writes the menu at `pose` on a `width` × `height` window: shapes and the logo into
+    /// `shapes` (`white` is an opaque white image, `art` the logo's), texts and icons into
+    /// `text` (drawn with the MSDF shader). Allocation-free once warm and once the batches
+    /// have room.
     #[allow(clippy::too_many_arguments)]
     pub fn push(
         &mut self,
@@ -206,6 +396,7 @@ impl MenuView {
         snapshot: &MenuSnapshot,
         pose: Pose,
         white: AtlasRegion,
+        art: Option<&LogoArt>,
     ) {
         let frame = Frame { width, height };
         if frame != self.frame {
@@ -214,39 +405,37 @@ impl MenuView {
         }
         let shift = pose.offset * width;
         let theme = &self.theme;
-        let scale = self.layout.scale;
-        // One backing under the title and the buttons (ADR-0119).
-        let (first, last) = (
-            &self.layout.title,
-            &self.layout.buttons[MenuItem::ALL.len() - 1],
-        );
-        let pad = theme.menu_panel_pad * scale;
-        let skew = self.layout.button_skew_offset();
-        let backing = super::Rect {
-            x: first.x - pad - skew + shift,
-            y: first.y - pad,
-            width: first.width + 2.0 * (pad + skew),
-            height: last.y + last.height - first.y + 2.0 * pad,
-        };
-        crate::widgets::panel(
-            shapes,
-            white,
-            &backing,
-            theme,
-            scale,
-            theme.menu_panel_fill,
-            pose.opacity,
-        );
-        for (i, item) in MenuItem::ALL.into_iter().enumerate() {
-            let selected = item.enabled() && i == snapshot.selected;
-            let fill = if selected {
-                theme.button_hover_fill
-            } else {
-                theme.button_fill
-            };
-            let mut rect = self.layout.buttons[i];
+        let scale = self.scale;
+        let opacity = pose.opacity;
+        if snapshot.bar_alpha > 0.0 {
+            let bar = &snapshot.buttons[0].rect;
+            let fill = faded(theme.menu_bar_fill, snapshot.bar_alpha * opacity);
+            shapes.push_shape(&Shape::new(
+                white.texture,
+                white.uv,
+                [0.0, bar.y],
+                [width, bar.height],
+                fill,
+            ));
+        }
+        for (i, button) in snapshot.buttons.iter().enumerate() {
+            if button.rect.width <= 0.5 {
+                continue;
+            }
+            let mut rect = button.rect;
             rect.x += shift;
-            // Each button in its own colour (ADR-0136).
+            let (tint, fill) = match snapshot.style {
+                MenuStyle::Lazer => (theme.menu_lazer_tints[i], theme.menu_lazer_tints[i]),
+                // Stable's column: purple, the hovered button pink.
+                MenuStyle::Stable => {
+                    let tint = if button.hovered {
+                        theme.menu_lazer_tints[2]
+                    } else {
+                        theme.menu_lazer_tints[0]
+                    };
+                    (tint, tint)
+                }
+            };
             crate::widgets::tinted_button(
                 shapes,
                 white,
@@ -254,35 +443,84 @@ impl MenuView {
                 theme,
                 scale,
                 fill,
-                selected,
+                button.hovered,
                 i as f32 * 0.37,
-                pose.opacity,
-                theme.menu_button_tints[i % theme.menu_button_tints.len()],
+                // lazer's buttons come out by their width, stable's fade in as they slide.
+                match snapshot.style {
+                    MenuStyle::Lazer => opacity,
+                    MenuStyle::Stable => opacity * button.alpha.clamp(0.0, 1.0),
+                },
+                tint,
             );
+            let colour = faded(theme.text, opacity * button.alpha);
+            if colour.a <= 0.0 {
+                continue;
+            }
+            match snapshot.style {
+                MenuStyle::Lazer => {
+                    // Icon above, label below, as lazer's MainMenuButton.
+                    let side = 32.0 * scale;
+                    let [cx, cy] = rect.centre();
+                    slam_text::push_icon(
+                        text,
+                        glyphs,
+                        ICONS[i],
+                        [cx - side / 2.0, cy - side * 0.85],
+                        side,
+                        colour,
+                    );
+                    push_centred(
+                        text,
+                        &self.buttons[i],
+                        [cx, cy + side * 0.6],
+                        colour,
+                        glyphs,
+                    );
+                }
+                MenuStyle::Stable => {
+                    // The label right of the logo, the icon at the far end.
+                    let line = &self.buttons[i];
+                    let left = snapshot.logo_centre[0]
+                        + shift
+                        + snapshot.logo_size / 2.0
+                        + rect.height * 0.3;
+                    let [_, cy] = rect.centre();
+                    push_centred(
+                        text,
+                        line,
+                        [left + line.layout.width() / 2.0, cy],
+                        colour,
+                        glyphs,
+                    );
+                    let side = rect.height * 0.5;
+                    let right = rect.x + rect.width - rect.height * 0.4;
+                    if right - side > left + line.layout.width() {
+                        slam_text::push_icon(
+                            text,
+                            glyphs,
+                            ICONS[i],
+                            [right - side, cy - side / 2.0],
+                            side,
+                            colour,
+                        );
+                    }
+                }
+            }
         }
-        let shifted = |centre: [f32; 2]| [centre[0] + shift, centre[1]];
-        if !self.title_hidden {
-            let title = faded(theme.text, pose.opacity);
-            push_centred(
-                text,
-                &self.title,
-                shifted(self.layout.title.centre()),
-                title,
-                glyphs,
-            );
-        }
-        for (i, item) in MenuItem::ALL.into_iter().enumerate() {
-            let colour = if item.enabled() {
-                theme.text
-            } else {
-                theme.disabled_text
-            };
-            push_centred(
-                text,
-                &self.buttons[i],
-                shifted(self.layout.buttons[i].centre()),
-                faded(colour, pose.opacity),
-                glyphs,
+        if !self.logo_hidden
+            && let Some(art) = art
+        {
+            let [cx, cy] = snapshot.logo_centre;
+            push_logo(
+                shapes,
+                art,
+                white,
+                theme,
+                &snapshot.logo,
+                [cx + shift, cy],
+                snapshot.logo_size,
+                opacity,
+                Some([width, height]),
             );
         }
     }

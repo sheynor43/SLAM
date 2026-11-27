@@ -239,6 +239,7 @@ impl Rig {
                 full: self.full,
                 rows: &self.rows,
                 now_ns: self.now_ns,
+                logo: None,
             },
         );
     }
@@ -996,6 +997,7 @@ fn panel_alphas(
             full: false,
             rows: &rig.rows,
             now_ns,
+            logo: None,
         },
     );
     let (shapes_at, text_at) = split

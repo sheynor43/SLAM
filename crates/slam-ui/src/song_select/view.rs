@@ -1783,6 +1783,24 @@ impl SongSelectView {
                 left(&self.footer_reset, x, y, faded(theme.text, presence.reset));
             }
         }
+        // The beating logo in the corner, under the mod select panel (ADR-0186).
+        if let Some(art) = thumbs.logo {
+            let layout = &self.layout;
+            crate::menu::view::push_logo(
+                &mut shape_target.borrow_mut(),
+                art,
+                white,
+                theme,
+                &snapshot.logo,
+                [
+                    layout.logo_centre[0] + pose.offset * width,
+                    layout.logo_centre[1],
+                ],
+                layout.logo_size,
+                pose.opacity,
+                None,
+            );
+        }
         let panel = panel_back > 0.0 || panel_columns;
         let mut popup_split = None;
         let split = panel.then(|| {

@@ -15,7 +15,7 @@ use slam_render::{Color, Device, Extent, TextureFormat, shaders};
 use slam_text::{FontRegistry, GlyphAtlasConfig, GlyphCache, glyph_atlas};
 use slam_ui::i18n::Localizer;
 use slam_ui::intro::{IntroSnapshot, IntroView};
-use slam_ui::menu::{MenuLabels, MenuSnapshot, MenuView};
+use slam_ui::menu::{MainMenu, MenuLabels, MenuLayout, MenuView};
 use slam_ui::screen::Pose;
 use slam_ui::theme::Theme;
 
@@ -74,6 +74,8 @@ pub(crate) fn with_headless_gl<T: Send + 'static>(
 pub(crate) struct Gpu {
     pub(crate) textures: Textures<<Gl as Device>::Texture>,
     pub(crate) white: AtlasRegion,
+    /// The logo's images (ADR-0186).
+    pub(crate) logo: Option<slam_ui::menu::LogoArt>,
     pub(crate) shapes: SpriteRenderer<Gl>,
     pub(crate) text: SpriteRenderer<Gl>,
     pub(crate) outlines: SpriteRenderer<Gl>,
@@ -86,12 +88,14 @@ impl Gpu {
         let white = atlas
             .add(device, &mut textures, Extent::new(8, 8), &[255; 8 * 8 * 4])
             .map_err(|e| e.to_string())?;
+        let logo = crate::logo_art::upload(device, &mut textures).map(|(_, art)| art);
         let renderer = |device: &mut Gl, shader| {
             SpriteRenderer::with_shader(device, DEFAULT_SLOTS, shader).map_err(|e| e.to_string())
         };
         Ok(Gpu {
             textures,
             white,
+            logo,
             shapes: SpriteRenderer::with_layout(
                 device,
                 DEFAULT_SLOTS,
@@ -155,7 +159,7 @@ fn draw_on(
         )
         .map_err(|e| e.to_string())?,
         menu: MenuView::new(Arc::clone(&registry), theme, &labels),
-        intro: IntroView::new(registry, theme, &labels.title),
+        intro: IntroView::new(theme),
         shapes: ShapeBatch::with_capacity(64),
         text: SpriteBatch::with_capacity(64),
         outlines: SpriteBatch::with_capacity(64),
@@ -280,27 +284,28 @@ fn draw_frame(
     views.shapes.clear();
     views.text.clear();
     views.outlines.clear();
-    views.menu.set_title_hidden(snapshot.hides_menu_title());
+    views.menu.set_logo_hidden(snapshot.hides_menu_logo());
+    let layout = MenuLayout::new(width, height, &Theme::default());
     views.menu.push(
         &mut views.shapes,
         &mut views.text,
         &mut views.glyphs,
         width,
         height,
-        &MenuSnapshot { selected: 0 },
+        &MainMenu::new().snapshot(&layout, 0),
         Pose::SHOWN,
         gpu.white,
+        gpu.logo.as_ref(),
     );
     let menu = (views.shapes.len() as u32, views.text.len() as u32);
     views.intro.push(
         &mut views.shapes,
-        &mut views.text,
-        &mut views.outlines,
-        &mut views.glyphs,
         width,
         height,
         snapshot,
         gpu.white,
+        gpu.logo.as_ref(),
+        None,
     );
     for renderer in [&mut gpu.shapes, &mut gpu.text, &mut gpu.outlines] {
         renderer.begin_frame();

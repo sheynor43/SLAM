@@ -14,10 +14,11 @@ use slam_render::{Device, Extent};
 use slam_text::{FontRegistry, GlyphAtlasConfig, GlyphCache, glyph_atlas};
 use slam_ui::cursor::{CursorMotion, push_slam_cursor};
 use slam_ui::i18n::Localizer;
-use slam_ui::menu::MenuSnapshot;
+use slam_ui::menu::{LogoAudio, MainMenu, MenuInput, MenuLayout, MenuSnapshot, MenuStyle};
 use slam_ui::results::{Rank, ResultsData, ResultsMods, ResultsSnapshot, ResultsStat, StatKind};
 use slam_ui::screen::Pose;
 use slam_ui::settings_screen::SettingsScreen;
+use slam_ui::song_select::beat::{BeatPoint, BeatTiming};
 use slam_ui::song_select::{
     BeatmapDetails, DetailStats, DifficultyRow, LocalScores, MAX_LOCAL_SCORES, ScoreMods, ScoreRow,
     SearchSource, SetRow, SongFilter, SongList, SongSelect, SongSelectInput, SongSelectLayout,
@@ -96,7 +97,12 @@ pub fn run(options: &Options) -> Result<(), String> {
 /// What one preview shows.
 #[derive(Clone, Copy)]
 enum Scene {
-    Menu(usize),
+    /// The main menu (ADR-0186): the logo alone, or open in a style with the pointer over
+    /// one of its buttons, on a loud beat.
+    Menu {
+        style: MenuStyle,
+        open: bool,
+    },
     /// The mod select panel open over the song select, a few mods on (ADR-0152).
     Mods,
     /// The replay toast over the song select, hovered (ADR-0154).
@@ -129,9 +135,28 @@ impl Scene {
 }
 
 /// The names of the PNGs and what they show, in the order they are drawn.
-const SCENES: [(&str, Scene); 19] = [
-    ("menu-play", Scene::Menu(0)),
-    ("menu-settings", Scene::Menu(1)),
+const SCENES: [(&str, Scene); 20] = [
+    (
+        "menu-logo",
+        Scene::Menu {
+            style: MenuStyle::Lazer,
+            open: false,
+        },
+    ),
+    (
+        "menu-lazer",
+        Scene::Menu {
+            style: MenuStyle::Lazer,
+            open: true,
+        },
+    ),
+    (
+        "menu-stable",
+        Scene::Menu {
+            style: MenuStyle::Stable,
+            open: true,
+        },
+    ),
     ("song-select", Scene::SongSelect { effects: true }),
     ("mods", Scene::Mods),
     ("toast", Scene::Toast),
@@ -354,15 +379,16 @@ impl State {
         let mut split = None;
         let white = gpu.white;
         match scene {
-            Scene::Menu(selected) => self.views.menu.push(
+            Scene::Menu { style, open } => self.views.menu.push(
                 &mut self.shapes,
                 &mut self.text,
                 &mut self.glyphs,
                 width,
                 height,
-                &MenuSnapshot { selected },
+                &sample_menu(style, open, width, height, &self.views.theme),
                 Pose::SHOWN,
                 white,
+                gpu.logo.as_ref(),
             ),
             Scene::SongSelect { effects } => {
                 let views = if effects {
@@ -379,7 +405,10 @@ impl State {
                     &self.song_select.snapshot(),
                     Pose::SHOWN,
                     white,
-                    Thumbs::OFF,
+                    Thumbs {
+                        logo: gpu.logo.as_ref(),
+                        ..Thumbs::OFF
+                    },
                 );
             }
             Scene::Mods => {
@@ -424,7 +453,10 @@ impl State {
                     &self.song_select.snapshot(),
                     Pose::SHOWN,
                     white,
-                    Thumbs::OFF,
+                    Thumbs {
+                        logo: gpu.logo.as_ref(),
+                        ..Thumbs::OFF
+                    },
                 );
                 let frame = slam_ui::toast::ToastFrame {
                     visible: true,
@@ -898,6 +930,50 @@ fn sample_details() -> BeatmapDetails {
         }),
         scores: Some(LocalScores { rows }),
     }
+}
+
+/// The main menu a moment after a loud beat (ADR-0186): its buttons out in `style` with the
+/// pointer on the second, when `open`.
+fn sample_menu(
+    style: MenuStyle,
+    open: bool,
+    width: f32,
+    height: f32,
+    theme: &Theme,
+) -> MenuSnapshot {
+    let layout = MenuLayout::new(width, height, theme);
+    let mut menu = MainMenu::new();
+    menu.set_style(style);
+    let mut timing = BeatTiming::default();
+    timing.push_point(BeatPoint {
+        time: 0.0,
+        beat_length: 500.0,
+        meter: 4,
+    });
+    timing.push_kiai(0.0, 10_000.0);
+    // A falling spectrum, as music has.
+    let spectrum: [f32; slam_audio::SPECTRUM_BINS] =
+        std::array::from_fn(|i| 0.45 / (1.0 + i as f32 / 8.0));
+    const MS: u64 = 1_000_000;
+    if open {
+        menu.input(MenuInput::Up, &layout, 0);
+        menu.input(MenuInput::Down, &layout, 0);
+    }
+    let end = 1960;
+    for ms in 0..end {
+        let audio = LogoAudio {
+            track_ms: Some(ms as f64),
+            timing: Some(&timing),
+            spectrum: Some(&spectrum),
+        };
+        menu.tick(ms * MS, &audio, theme.effects);
+        if open && ms == 1500 {
+            let snapshot = menu.snapshot(&layout, ms * MS);
+            let [x, y] = snapshot.buttons[1].rect.centre();
+            menu.input(MenuInput::PointerMove { x, y }, &layout, ms * MS);
+        }
+    }
+    menu.snapshot(&layout, end * MS)
 }
 
 #[cfg(test)]

@@ -11,29 +11,60 @@ use slam_render::textures::TextureId;
 use slam_render::{Limits, Origin};
 use slam_testkit::assert_no_alloc;
 use slam_text::{FontRegistry, GlyphAtlasConfig, glyph_atlas};
-use slam_ui::menu::{MainMenu, MenuInput, MenuLabels, MenuLayout, MenuSnapshot, MenuView};
+use slam_ui::menu::{
+    LogoArt, LogoAudio, MainMenu, MenuInput, MenuLabels, MenuLayout, MenuStyle, MenuView,
+};
 use slam_ui::screen::Pose;
+use slam_ui::song_select::beat::{BeatPoint, BeatTiming};
 use slam_ui::theme::Theme;
 
 slam_testkit::install_counting_allocator!();
 
-#[test]
-fn menu_input_does_not_allocate() {
-    let layout = MenuLayout::new(1280.0, 720.0, &Theme::default());
-    let mut menu = MainMenu::new();
-    assert_no_alloc(|| {
-        for input in [
-            MenuInput::Down,
-            MenuInput::Up,
-            MenuInput::PointerMove { x: 640.0, y: 400.0 },
-            MenuInput::PointerPress { x: 1.0, y: 1.0 },
-            MenuInput::Activate,
-            MenuInput::Back,
-        ] {
-            std::hint::black_box(menu.input(input, &layout));
-        }
-        std::hint::black_box(menu.snapshot());
+fn timing() -> BeatTiming {
+    let mut timing = BeatTiming::default();
+    timing.push_point(BeatPoint {
+        time: 0.0,
+        beat_length: 400.0,
+        meter: 4,
     });
+    timing.push_kiai(2000.0, 4000.0);
+    timing
+}
+
+#[test]
+fn menu_input_and_ticks_do_not_allocate() {
+    let layout = MenuLayout::new(1280.0, 720.0, &Theme::default());
+    let timing = timing();
+    let spectrum = [0.5f32; 256];
+    for style in [MenuStyle::Lazer, MenuStyle::Stable] {
+        let mut menu = MainMenu::new();
+        menu.set_style(style);
+        assert_no_alloc(|| {
+            for (i, input) in [
+                MenuInput::Activate,
+                MenuInput::Down,
+                MenuInput::Up,
+                MenuInput::PointerMove { x: 640.0, y: 400.0 },
+                MenuInput::PointerPress { x: 1.0, y: 1.0 },
+                MenuInput::Activate,
+                MenuInput::Back,
+            ]
+            .into_iter()
+            .enumerate()
+            {
+                std::hint::black_box(menu.input(input, &layout, i as u64 * 1_000_000));
+            }
+            for ms in 0..5000u64 {
+                let audio = LogoAudio {
+                    track_ms: Some(ms as f64),
+                    timing: Some(&timing),
+                    spectrum: Some(&spectrum),
+                };
+                menu.tick(ms * 1_000_000, &audio, true);
+                std::hint::black_box(menu.snapshot(&layout, ms * 1_000_000));
+            }
+        });
+    }
 }
 
 #[test]
@@ -66,7 +97,30 @@ fn views_push_without_allocating_once_warm() {
         ShapeBatch::with_capacity(64),
         SpriteBatch::with_capacity(64),
     );
-    let snapshot = MenuSnapshot { selected: 2 };
+    let art = LogoArt {
+        disc: white,
+        frame: white,
+        play: white,
+        facet: white,
+        accent: white,
+        small: white,
+        triangle: white,
+    };
+    // Open, on a loud kiai beat: every bar, triangle and flash is drawn.
+    let layout = MenuLayout::new(1280.0, 720.0, &Theme::default());
+    let mut state = MainMenu::new();
+    let timing = timing();
+    let spectrum = [0.9f32; 256];
+    state.input(MenuInput::Down, &layout, 0);
+    for ms in 0..2400u64 {
+        let audio = LogoAudio {
+            track_ms: Some(ms as f64),
+            timing: Some(&timing),
+            spectrum: Some(&spectrum),
+        };
+        state.tick(ms * 1_000_000, &audio, true);
+    }
+    let snapshot = state.snapshot(&layout, 2400 * 1_000_000);
     let pose = Pose {
         opacity: 0.5,
         offset: 0.05,
@@ -84,6 +138,7 @@ fn views_push_without_allocating_once_warm() {
             &snapshot,
             pose,
             white,
+            Some(&art),
         );
     };
     // Warm: the first frames at each size lay out and request glyphs (not allocation-free).
@@ -95,7 +150,6 @@ fn views_push_without_allocating_once_warm() {
             frame(1280.0, 720.0, &mut glyphs);
         }
     });
-    // The backing and its shadow; three buttons of a shadow, a fill, a wash and triangles;
-    // the selected one's glow, brightening and outline (ADR-0136).
-    assert_eq!(shapes.len(), 2 + 3 * 4 + 3);
+    // The side flash, the bar, three buttons, the visualiser and the logo's layers.
+    assert!(shapes.len() > 1000, "{}", shapes.len());
 }

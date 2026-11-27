@@ -200,7 +200,7 @@ fn clicking_a_pin_opens_its_popup_and_a_click_elsewhere_closes_it() {
     click(&mut s, &mut snap, 2, [20.0, 600.0]);
     assert!(snap.toolbar.popup.is_none());
     assert!(!s.popup_editing && s.editing.is_none());
-    assert_eq!(*s.stack().top(), AppScreen::Menu(MainMenu::new()));
+    assert!(matches!(s.stack().top(), AppScreen::Menu(menu) if !menu.is_open()));
 }
 
 #[test]
@@ -323,8 +323,15 @@ fn the_toolbar_takes_clicks_on_it_and_the_menu_below_still_works() {
     let bar = s.toolbar_layout().bar;
     click(&mut s, &mut snap, 0, [bar.width / 2.0, bar.height / 2.0]);
     assert!(matches!(s.stack().top(), AppScreen::Menu(_)));
-    let [x, y] = s.layout.buttons[0].centre();
-    click(&mut s, &mut snap, 1, [x, y]);
+    // The logo opens the buttons, then Play goes on (ADR-0186).
+    let (logo, _) = s.layout.logo_alone();
+    click(&mut s, &mut snap, 1, logo);
+    let later = 2_000_000_000;
+    let play = match s.stack().top() {
+        AppScreen::Menu(menu) => menu.snapshot(&s.layout, later).buttons[0].rect.centre(),
+        other => panic!("{other:?}"),
+    };
+    click(&mut s, &mut snap, later, play);
     assert_eq!(*s.stack().top(), AppScreen::SongSelect);
 }
 

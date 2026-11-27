@@ -233,6 +233,16 @@ fn from_table(mut table: Table) -> Loaded {
             )),
         }
     }
+    let mut menu_style: Option<String> = None;
+    cx.opt(&mut general, "general", "menu_style", &mut menu_style);
+    if let Some(name) = menu_style {
+        match crate::settings::MenuStyle::from_name(&name) {
+            Some(style) => settings.general.menu_style = style,
+            None => cx.warn(format!(
+                "general.menu_style: unknown value \"{name}\", using the default"
+            )),
+        }
+    }
     let mut language: Option<String> = None;
     cx.opt(&mut general, "general", "language", &mut language);
     if let Some(tag) = language {

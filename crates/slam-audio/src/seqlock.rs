@@ -45,6 +45,18 @@ impl<const N: usize> SeqLock<N> {
 
     /// Latest consistent words, or `None` before the first write. Allocation-free and
     /// lock-free; spins only while a write is in progress (a few stores).
+    /// One attempt at [`read`](Self::read): `None` also while a write is in progress
+    /// or when one overlapped the copy, so the reader never waits for the writer.
+    pub(crate) fn try_read(&self) -> Option<[u64; N]> {
+        let before = self.seq.load(Ordering::Acquire);
+        if before == 0 || before & 1 == 1 {
+            return None;
+        }
+        let words = std::array::from_fn(|i| self.words[i].load(Ordering::Relaxed));
+        fence(Ordering::Acquire);
+        (self.seq.load(Ordering::Relaxed) == before).then_some(words)
+    }
+
     pub(crate) fn read(&self) -> Option<[u64; N]> {
         loop {
             let before = self.seq.load(Ordering::Acquire);

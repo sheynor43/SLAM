@@ -71,7 +71,7 @@ fn intro_shows_over_the_menu_from_the_first_tick_to_its_end() {
     s.tick(1_000, &[], &mut snap);
     let intro = snap.intro.expect("intro shows");
     assert_eq!(intro.elapsed_ns, 0);
-    assert!(intro.hides_menu_title());
+    assert!(intro.hides_menu_logo());
     assert!(matches!(
         snap.layers[0].as_ref().unwrap().view,
         ScreenView::Menu(_)
@@ -105,7 +105,7 @@ fn intro_waits_for_the_first_shown_frame() {
     s.tick(0, &[], &mut snap);
     // Black meanwhile, the menu's title left to the intro, the music held.
     assert_eq!(snap.intro.unwrap().elapsed_ns, 0);
-    assert!(snap.intro.unwrap().hides_menu_title());
+    assert!(snap.intro.unwrap().hides_menu_logo());
     assert_eq!(s.take_intro_events(), IntroEvents::default());
     assert!(s.intro_holds_music(10 * slam_ui::intro::LENGTH_NS));
     gate.store(true, Ordering::Release);
@@ -138,7 +138,7 @@ fn a_press_skips_the_intro_without_reaching_the_menu() {
     s.tick(200, &[key(KEY_ENTER)], &mut snap);
     let intro = snap.intro.unwrap();
     assert!(intro.skipped);
-    assert!(!intro.hides_menu_title());
+    assert!(!intro.hides_menu_logo());
     assert!(matches!(s.stack().top(), AppScreen::Menu(_)));
     assert_eq!(
         s.take_intro_events(),
@@ -208,21 +208,31 @@ fn down_enter_exits_and_other_keys_and_releases_do_nothing() {
 fn mouse_clicks_buttons_and_x1_goes_back() {
     let mut s = state();
     let mut snap = ShellSnapshot::default();
-    let [x, y] = s.layout.buttons[0].centre();
-    let events = [
-        mouse(InputKind::MouseMove { x, y }),
-        mouse(InputKind::MouseButton {
-            button: MouseButton::Left,
-            down: true,
-        }),
-    ];
-    s.tick(0, &events, &mut snap);
+    let click = |[x, y]: [f32; 2]| {
+        [
+            mouse(InputKind::MouseMove { x, y }),
+            mouse(InputKind::MouseButton {
+                button: MouseButton::Left,
+                down: true,
+            }),
+        ]
+    };
+    // The logo opens the buttons (ADR-0186); then Play goes to the song select.
+    let (logo, _) = s.layout.logo_alone();
+    s.tick(0, &click(logo), &mut snap);
+    let later = 2_000_000_000;
+    let AppScreen::Menu(menu) = s.stack().top() else {
+        panic!("still on the menu");
+    };
+    assert!(menu.is_open());
+    let play = menu.snapshot(&s.layout, later).buttons[0].rect.centre();
+    s.tick(later, &click(play), &mut snap);
     assert_eq!(*s.stack().top(), AppScreen::SongSelect);
     let x1 = mouse(InputKind::MouseButton {
         button: MouseButton::X1,
         down: true,
     });
-    s.tick(TRANSITION_NS, &[x1], &mut snap);
+    s.tick(later + TRANSITION_NS, &[x1], &mut snap);
     assert!(matches!(s.stack().top(), AppScreen::Menu(_)));
 }
 
@@ -231,7 +241,7 @@ fn pointer_points_are_scaled_to_pixels() {
     // A 2x display: the layout is in pixels, events in points.
     let mut s = ShellState::new(Theme::default(), 2560.0, 1440.0, 2.0);
     let mut snap = ShellSnapshot::default();
-    let [x, y] = s.layout.buttons[0].centre();
+    let ([x, y], _) = s.layout.logo_alone();
     let events = [
         mouse(InputKind::MouseMove {
             x: x / 2.0,
@@ -243,7 +253,7 @@ fn pointer_points_are_scaled_to_pixels() {
         }),
     ];
     s.tick(0, &events, &mut snap);
-    assert_eq!(*s.stack().top(), AppScreen::SongSelect);
+    assert!(matches!(s.stack().top(), AppScreen::Menu(menu) if menu.is_open()));
 }
 
 fn songs(sets: &[(&str, &[&str])]) -> Vec<slam_library::scan::BeatmapSetEntry> {
@@ -351,7 +361,7 @@ fn menu_ignores_song_select_keys() {
     let mut snap = ShellSnapshot::default();
     let keys = [key(KEY_LEFT), key(KEY_PAGE_DOWN), key(KEY_END)];
     assert_eq!(s.tick(0, &keys, &mut snap), Navigated::Stay);
-    assert!(matches!(s.stack().top(), AppScreen::Menu(menu) if *menu == MainMenu::new()));
+    assert!(matches!(s.stack().top(), AppScreen::Menu(menu) if !menu.is_open()));
 }
 
 #[test]
@@ -2386,10 +2396,10 @@ fn the_interface_starts_in_the_settings_language() {
 #[test]
 fn another_theme_lays_the_screens_out_again_at_the_same_size() {
     let mut s = state();
-    let before = s.layout.buttons[0];
+    let before = s.layout.logo_alone().1;
     s.set_theme(Theme::new(slam_ui::theme::ColourScheme::Green, 1.25));
-    let after = s.layout.buttons[0];
-    assert!((after.width - before.width * 1.25).abs() < 1e-3);
+    let after = s.layout.logo_alone().1;
+    assert!((after - before * 1.25).abs() < 1e-3);
     assert_eq!(s.theme().scheme, slam_ui::theme::ColourScheme::Green);
     // The window size is kept.
     assert_eq!(s.size, [1280.0, 720.0]);

@@ -17,6 +17,7 @@ pub mod import;
 pub mod loader;
 pub mod local_time;
 pub mod logging;
+pub mod logo_art;
 pub mod menu_cursor;
 pub mod menu_sounds;
 pub mod mod_presets;

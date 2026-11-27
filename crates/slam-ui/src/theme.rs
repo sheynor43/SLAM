@@ -590,6 +590,14 @@ pub struct Theme {
     pub background_blur: f32,
     /// Dim over the main menu's background (ADR-0119), 0 to 1.
     pub menu_background_dim: f32,
+    /// The main menu's lazer-style buttons (ADR-0186, lazer's `ButtonSystem` colours), in
+    /// `MenuItem::ALL` order (play, settings, exit), and the bar behind them.
+    pub menu_lazer_tints: [Color; 3],
+    pub menu_bar_fill: Color,
+    /// The two colours of the triangles the menu's logo throws out on the beat (ADR-0186).
+    pub menu_particle_colours: [Color; 2],
+    /// The side flashes on the beat (lazer's `MenuSideFlashes`): colour at the edge.
+    pub menu_side_flash: Color,
     /// Backing of the main menu's title and buttons, so they read over the background.
     pub menu_panel_fill: Color,
     /// Margin of that backing around them.
@@ -1152,6 +1160,14 @@ impl Theme {
             parallax_half_life: 0.04,
             background_blur: 12.0,
             menu_background_dim: 0.5,
+            menu_lazer_tints: [
+                Color::rgb(0.40, 0.267, 0.80),
+                Color::rgb(0.333, 0.333, 0.333),
+                Color::rgb(0.933, 0.20, 0.60),
+            ],
+            menu_bar_fill: alpha(Color::BLACK, 0.5),
+            menu_particle_colours: [Color::rgb(1.0, 0.62, 0.94), Color::rgb(0.72, 0.96, 0.88)],
+            menu_side_flash: alpha(p.accent, 0.6),
             menu_panel_fill: alpha(p.panel, 0.62),
             menu_panel_pad: 28.0,
             cursor_size: 30.0,

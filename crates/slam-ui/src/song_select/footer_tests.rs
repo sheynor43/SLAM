@@ -206,8 +206,8 @@ fn only_back_works_while_a_difficulty_loads() {
 fn a_press_on_the_bar_does_not_reach_the_list() {
     let mut s = screen();
     let l = layout();
-    // Between the buttons, on the bar, under where list rows run.
-    let x = l.footer.bar.width - 5.0;
+    // Between the buttons, on the bar, under where list rows run (left of the corner logo).
+    let x = l.logo_centre[0] - l.logo_size;
     let y = l.footer.bar.y + 3.0;
     assert_eq!(s.input(I::PointerPress { x, y }, &l), None);
     assert_eq!(s.input(I::PointerRelease, &l), None);

@@ -47,6 +47,7 @@ use crate::hal::{AudioCallback, AudioError, CallbackInfo};
 use crate::mixer::PlayError;
 use crate::sample::{MAX_CHANNELS, SAMPLE_RATES, SampleError, new_resampler, remix_into};
 use crate::seqlock::SeqLock;
+use crate::spectrum::{Analyser, Spectrum};
 
 /// Length of every fade (pause and seek tails, fade-in, volume changes), milliseconds.
 pub const MUSIC_FADE_MS: u32 = 5;
@@ -511,6 +512,8 @@ fn parts(config: &MusicConfig) -> Result<(MusicSource, MusicPlayer, Decoder), Au
     let (event_tx, event_rx) = rtrb::RingBuffer::new(EVENT_CAPACITY);
     let stats = Arc::new(MusicStats::default());
     let position = Arc::new(MusicPosition::default());
+    // Twice the pool: every block in flight keeps its slot until it has been heard.
+    let spectrum = Arc::new(Spectrum::with_slots(2 * pool));
     let quit = Arc::new(AtomicBool::new(false));
     let splices = Arc::new(Splices::default());
     let fade_frames =
@@ -544,6 +547,8 @@ fn parts(config: &MusicConfig) -> Result<(MusicSource, MusicPlayer, Decoder), Au
         finished: false,
         pending_end: false,
         block: None,
+        analyser: Analyser::new(),
+        spectrum: Arc::clone(&spectrum),
     };
 
     let source = MusicSource {
@@ -601,6 +606,7 @@ fn parts(config: &MusicConfig) -> Result<(MusicSource, MusicPlayer, Decoder), Au
         sample_rate: config.sample_rate,
         position,
         stats,
+        spectrum,
     };
     Ok((source, player, decoder))
 }
@@ -1270,6 +1276,7 @@ pub struct MusicPlayer {
     sample_rate: u32,
     position: Arc<MusicPosition>,
     stats: Arc<MusicStats>,
+    spectrum: Arc<Spectrum>,
 }
 
 impl MusicPlayer {
@@ -1484,6 +1491,11 @@ impl MusicPlayer {
         &self.position
     }
 
+    /// The spectrum of the audio decoded ahead, by track frame (ADR-0186).
+    pub fn spectrum(&self) -> &Arc<Spectrum> {
+        &self.spectrum
+    }
+
     /// Music counters.
     pub fn stats(&self) -> &Arc<MusicStats> {
         &self.stats
@@ -1578,6 +1590,9 @@ struct Decoder {
     pending_end: bool,
     /// Block rendered but not queued yet.
     block: Option<Block>,
+    /// Measures each queued block for [`Spectrum`] (ADR-0186).
+    analyser: Analyser,
+    spectrum: Arc<Spectrum>,
 }
 
 impl Decoder {
@@ -1801,6 +1816,17 @@ impl Decoder {
             return false;
         };
         let (start, frames, rate, end) = (block.start, block.frames, block.rate, block.end);
+        // Published before the callback can take the block, so its spectrum is there first.
+        let bins = self
+            .analyser
+            .measure(&block.data, usize::from(self.channels), frames);
+        self.spectrum.publish(
+            block.seq,
+            block.generation,
+            start,
+            frames as f64 * rate,
+            bins,
+        );
         if let Err(rtrb::PushError::Full(block)) = self.filled.push(block) {
             // Unreachable: the ring holds the whole pool. Keep it for the next round.
             self.block = Some(block);
@@ -3241,6 +3267,27 @@ mod tests {
                 "rate {rate}: heard at {at}"
             );
         }
+    }
+
+    #[test]
+    fn the_decoder_publishes_each_blocks_spectrum_by_track_frame() {
+        let mut rig = Rig::new(1_024, 8);
+        rig.player.set_rate(1.5).unwrap();
+        let generation = rig.player.load(wav(RATE, &sine(96_000, 48.0))).unwrap();
+        rig.pump();
+        let spectrum = Arc::clone(rig.player.spectrum());
+        let mut bins = [0.0; crate::SPECTRUM_BINS];
+        // At rate 1.5 a 1024-frame block covers 1536 track frames.
+        for frame in [10.0, 1_400.0, 1_600.0, 5_000.0] {
+            assert!(spectrum.read(generation, frame, &mut bins), "{frame}");
+            assert!(
+                bins.iter().any(|&b| b > 0.1),
+                "the sine is heard at {frame}"
+            );
+        }
+        // Not decoded yet, or another track.
+        assert!(!spectrum.read(generation, 90_000.0, &mut bins));
+        assert!(!spectrum.read(generation.wrapping_add(1), 10.0, &mut bins));
     }
 
     #[test]

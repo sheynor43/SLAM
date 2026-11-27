@@ -35,6 +35,10 @@ pub use filter::{
 pub use footer::{FooterButton, FooterButtons, FooterLayout, FooterState, MAX_PRESETS};
 pub use footer_anim::{FooterAnim, FooterPresence};
 
+/// The corner logo's size in reference pixels: lazer's song select shows its logo at 0.4
+/// (ADR-0186).
+const CORNER_LOGO_SIZE: f32 = 400.0 * 0.4;
+
 pub use mod_select::{
     CustomisationLayout, CustomisationSnapshot, CustomisationState, MAX_CHOICES, MAX_SETTING_ROWS,
     ModColumns, ModSelect, ModSelectAction, ModSelectLayout, ModSelectSnapshot, MultiplierTone,
@@ -63,6 +67,8 @@ pub struct Thumbs<'a> {
     pub rows: &'a [Option<RowThumb>],
     /// The frame's time, for the fade-in.
     pub now_ns: u64,
+    /// The logo's images, for the corner logo (ADR-0186).
+    pub logo: Option<&'a crate::menu::LogoArt>,
 }
 
 impl Thumbs<'_> {
@@ -72,6 +78,7 @@ impl Thumbs<'_> {
         full: false,
         rows: &[],
         now_ns: 0,
+        logo: None,
     };
 }
 
@@ -311,6 +318,9 @@ pub struct SongSelectLayout {
     pub hint: Rect,
     /// The footer bar (ADR-0175); the content stands above it.
     pub footer: FooterLayout,
+    /// The beating logo in the bottom right corner (ADR-0186): its centre and size.
+    pub logo_centre: [f32; 2],
+    pub logo_size: f32,
     /// The "choose folder" button: the list's second row, below the empty-list text.
     pub choose_folder: Rect,
     /// The mod select panel.
@@ -430,6 +440,10 @@ impl SongSelectLayout {
             width: panel,
             height: theme.song_set_height * scale,
         };
+        // lazer's song select logo: 0.4 of the menu's, low in the corner, its right and
+        // bottom edges off the screen as in lazer and stable.
+        let logo_size = CORNER_LOGO_SIZE * scale;
+        let logo_centre = [width - 0.36 * logo_size, height - 0.16 * logo_size];
         SongSelectLayout {
             header,
             info,
@@ -437,6 +451,8 @@ impl SongSelectLayout {
             list,
             hint,
             footer,
+            logo_centre,
+            logo_size,
             choose_folder,
             mods: ModSelectLayout::new(width, height, theme),
             info_parts: info_panel::InfoLayout::new(&info, theme, scale),
@@ -647,6 +663,8 @@ pub struct SongSelectSnapshot {
     /// How much the selection's glow flares with the music's beat, 0 to 1 (ADR-0167);
     /// `None` without a beat to follow, when it pulses with the clock.
     pub beat: Option<f32>,
+    /// The corner logo (ADR-0186).
+    pub logo: crate::menu::LogoSnapshot,
     /// The "no audio output" message takes the hints' place, as
     /// [`SongSelect::set_no_audio`] set it.
     pub no_audio: bool,
@@ -923,6 +941,9 @@ pub struct SongSelect {
     pitches: (f32, f32, f32),
     details: Option<BeatmapDetails>,
     beat: Option<f32>,
+    /// The corner logo and the time of its last tick (ADR-0186).
+    logo: crate::menu::LogoMotion,
+    logo_now_ns: u64,
     /// A play was refused for want of an audio output (#317).
     no_audio: bool,
     /// What the rows' marquees take from the pointer (ADR-0148).
@@ -982,6 +1003,8 @@ impl SongSelect {
             pitches: (75.0, 48.0, 3.0),
             details: None,
             beat: None,
+            logo: crate::menu::LogoMotion::new(),
+            logo_now_ns: 0,
             no_audio: false,
             text: TextScroll::default(),
             text_press: None,
@@ -1087,6 +1110,18 @@ impl SongSelect {
     /// the end of a text).
     pub fn scroll_text(&mut self, notches: f32) {
         self.text.wheel(notches);
+    }
+
+    /// Advances the corner logo to `now_ns` on the preview's `audio` (ADR-0186).
+    pub fn tick_logo(&mut self, now_ns: u64, audio: &crate::menu::LogoAudio<'_>, effects: bool) {
+        self.logo_now_ns = now_ns;
+        self.logo.tick(now_ns, audio, effects);
+    }
+
+    /// Whether the corner logo is under `x`, `y`.
+    fn over_logo(layout: &SongSelectLayout, x: f32, y: f32) -> bool {
+        let (dx, dy) = (x - layout.logo_centre[0], y - layout.logo_centre[1]);
+        dx * dx + dy * dy <= layout.logo_size * layout.logo_size / 4.0
     }
 
     /// Sets the beat the selection's glow follows for the next snapshots (ADR-0167).
@@ -1423,6 +1458,7 @@ impl SongSelect {
             mods: self.mods.snapshot(),
             details: self.details,
             beat: self.beat,
+            logo: self.logo.snapshot(self.logo_now_ns),
             no_audio: self.no_audio,
             text: self.text,
             scrollbar_held: self.bar.is_dragging(),
@@ -1532,6 +1568,20 @@ impl SongSelect {
     ) -> Option<SongSelectAction> {
         use SongSelectInput as I;
         self.mods.set_anchor(&layout.mods);
+        // The corner logo plays the selection, as lazer's (ADR-0186).
+        if !self.mods.is_open() {
+            match input {
+                I::PointerMove { x, y } => {
+                    let over = Self::over_logo(layout, x, y);
+                    self.logo.set_hovered(over, self.logo_now_ns);
+                }
+                I::PointerPress { x, y } if Self::over_logo(layout, x, y) => {
+                    self.logo.click(self.logo_now_ns);
+                    return self.play();
+                }
+                _ => {}
+            }
+        }
         if let Some(done) = self.footer_input(input, layout) {
             return done;
         }
