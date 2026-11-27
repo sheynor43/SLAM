@@ -22,6 +22,7 @@ pub mod beat;
 pub mod drag;
 pub mod filter;
 pub mod footer;
+pub mod footer_anim;
 pub mod geometry;
 pub mod info_panel;
 pub mod mod_select;
@@ -32,6 +33,7 @@ pub use filter::{
     Field, QUERY_CAPACITY, SearchFields, SearchQuery, SearchSource, SongFilter, search_text,
 };
 pub use footer::{FooterButton, FooterButtons, FooterLayout, FooterState, MAX_PRESETS};
+pub use footer_anim::{FooterAnim, FooterPresence};
 
 pub use mod_select::{
     CustomisationLayout, CustomisationSnapshot, CustomisationState, MAX_CHOICES, MAX_SETTING_ROWS,
@@ -656,6 +658,8 @@ pub struct SongSelectSnapshot {
     /// The footer button under the pointer, and the one held down.
     pub footer_hover: Option<FooterButton>,
     pub footer_pressed: Option<FooterButton>,
+    /// The preset the selected mods are, as [`SongSelect::set_current_preset`] gave it.
+    pub current_preset: Option<usize>,
 }
 
 /// What a difficulty row shows beside its name (ADR-0151).
@@ -926,8 +930,8 @@ pub struct SongSelect {
     bar: ScrollbarDrag,
     /// The footer's pinned mod presets: their labels (ADR-0175).
     presets: Arc<[Arc<str>]>,
-    /// The selected mods are one of the presets already.
-    current_pinned: bool,
+    /// The selected mods are this preset already.
+    current_preset: Option<usize>,
     footer_hover: Option<FooterButton>,
     footer_pressed: Option<FooterButton>,
 }
@@ -979,7 +983,7 @@ impl SongSelect {
             text_press: None,
             bar: ScrollbarDrag::new(),
             presets: Arc::from([]),
-            current_pinned: false,
+            current_preset: None,
             footer_hover: None,
             footer_pressed: None,
         }
@@ -992,9 +996,10 @@ impl SongSelect {
         self.presets = presets;
     }
 
-    /// Tells the footer whether the selected mods are pinned already (no "+" then).
-    pub fn set_current_pinned(&mut self, pinned: bool) {
-        self.current_pinned = pinned;
+    /// Tells the footer which preset the selected mods are, if any (that one stays
+    /// highlighted, and there is no "+" then).
+    pub fn set_current_preset(&mut self, preset: Option<usize>) {
+        self.current_preset = preset;
     }
 
     /// Which footer buttons show: the "+" with mods selected that are not a preset yet and
@@ -1004,7 +1009,7 @@ impl SongSelect {
         let presets = self.presets.len().min(MAX_PRESETS);
         FooterState {
             presets,
-            pin: selected && !self.current_pinned && presets < MAX_PRESETS,
+            pin: selected && self.current_preset.is_none() && presets < MAX_PRESETS,
             reset: selected,
         }
     }
@@ -1421,6 +1426,7 @@ impl SongSelect {
             footer: self.footer_state(),
             footer_hover: self.footer_hover,
             footer_pressed: self.footer_pressed,
+            current_preset: self.current_preset,
         }
     }
 

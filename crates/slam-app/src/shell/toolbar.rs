@@ -47,6 +47,24 @@ impl ShellState {
         screen && revealed
     }
 
+    /// How far in the toolbar is while a screen transition runs: the opacity of the layers
+    /// that show it (not a play or the results), so it fades and slides with them. `None`
+    /// at rest, without a transition, and over the intro.
+    pub(super) fn toolbar_transition(&self, now_ns: u64) -> Option<f32> {
+        if !self.stack.in_transition(now_ns) || self.intro.is_some() {
+            return None;
+        }
+        let shown: f32 = self
+            .stack
+            .layers(now_ns)
+            .iter()
+            .flatten()
+            .filter(|(screen, _)| !matches!(screen, AppScreen::Play(_) | AppScreen::Results(_)))
+            .map(|(_, pose)| pose.opacity)
+            .sum();
+        Some(shown.clamp(0.0, 1.0))
+    }
+
     /// What the music player asked for since the last call.
     pub fn take_music_commands(&mut self) -> MusicCommands {
         std::mem::take(&mut self.music_commands)
@@ -372,7 +390,14 @@ impl ShellState {
             }
             self.toolbar.close_player();
         }
-        let slide = self.toolbar_slide.update(wanted, now_ns, &self.theme);
+        // While screens change, the bar follows their transition (ADR-0126): it goes with
+        // the leaving screen into a play and comes with the arriving one; elsewhere it
+        // runs its own slide.
+        let followed = self.toolbar_transition(now_ns);
+        let slide = match followed {
+            Some(value) => self.toolbar_slide.follow(value, wanted),
+            None => self.toolbar_slide.update(wanted, now_ns, &self.theme),
+        };
         self.refresh_now_text();
         if self.settings_open() {
             // The panel covers the bar: nothing under the pointer.
@@ -385,6 +410,7 @@ impl ShellState {
         }
         let mut frame: ToolbarFrame = self.toolbar.frame(wanted || slide > 0.0, self.clock);
         frame.slide = slide;
+        frame.follows = followed.is_some();
         frame.now_playing = self.now_playing;
         snapshot.toolbar = frame;
         snapshot.now_playing = self.now_text.clone();

@@ -215,6 +215,8 @@ pub struct SongSelectView {
     preset_count: usize,
     /// When the footer started sliding in, and when the view was last drawn.
     footer_since: u64,
+    /// The footer buttons' hover, press, flash and slide state (ADR-0175).
+    footer_anim: super::FooterAnim,
     last_push: Option<u64>,
     /// [`SongSelectLabels::pp_suffix`].
     pp_suffix: String,
@@ -533,6 +535,7 @@ impl SongSelectView {
                 .collect(),
             preset_count: 0,
             footer_since: 0,
+            footer_anim: super::FooterAnim::default(),
             last_push: None,
             pp_suffix: labels.pp_suffix.clone(),
             search: Line::new(""),
@@ -924,7 +927,7 @@ impl SongSelectView {
             self.type_setter.lay_out(&mut self.scanning, size);
         }
 
-        self.refresh_selected(&snapshot.mods);
+        self.refresh_selected(&snapshot.mods, thumbs.now_ns);
         self.refresh_presets(&snapshot.presets, &snapshot.footer);
         self.refresh_multipliers(&snapshot.mods);
         self.refresh_search(&snapshot.query, thumbs.now_ns);
@@ -960,6 +963,14 @@ impl SongSelectView {
             now,
             (self.theme.footer_slide_ms.max(0.0) * 1.0e6) as u64,
         ));
+        let target = self.layout.footer.buttons(snapshot.footer);
+        self.footer_anim.update(
+            now,
+            &target,
+            snapshot.footer_hover,
+            snapshot.footer_pressed,
+            &self.theme,
+        );
         let shift = pose.offset * width;
         let opacity = pose.opacity;
         let theme = &self.theme;
@@ -1549,45 +1560,60 @@ impl SongSelectView {
                 theme.footer_fill,
                 Look::Plain,
             );
-            let buttons = layout.footer.buttons(snapshot.footer);
-            let ink = |button: FooterButton| {
-                let busy = snapshot.footer_pressed == Some(button);
-                let on = busy || (button == FooterButton::Mods && snapshot.mods.open);
-                let hot = snapshot.footer_hover == Some(button);
-                let fill = if hot || busy {
-                    theme.button_hover_fill
-                } else {
-                    theme.button_fill
+            let anim = &self.footer_anim;
+            let buttons = layout.footer.animated(anim.presence());
+            let presence = anim.presence();
+            let flash = anim.mods_flash(now, theme);
+            let mix = |a: Color, b: Color, t: f32| Color {
+                r: a.r + (b.r - a.r) * t,
+                g: a.g + (b.g - a.g) * t,
+                b: a.b + (b.b - a.b) * t,
+                a: a.a + (b.a - a.a) * t,
+            };
+            // `open` is how far the button's place is open (its fade); `selected` keeps a
+            // preset lit while the current mods are it.
+            let draw_button =
+                |rect_of: Rect, button: FooterButton, seed: f32, open: f32, lit: bool| {
+                    let hot = anim.hover(button);
+                    let press = anim.press(button);
+                    let mut fill = mix(theme.button_fill, theme.button_hover_fill, hot.max(press));
+                    if button == FooterButton::Mods {
+                        fill = mix(fill, theme.accent, flash * theme.footer_flash_mix);
+                    }
+                    // Pressed in, the button pops a little larger, as lazer's does.
+                    let grow = press * theme.footer_pop;
+                    let area = Rect {
+                        x: rect_of.x - rect_of.width * grow / 2.0,
+                        y: rect_of.y + up - rect_of.height * grow / 2.0,
+                        width: rect_of.width * (1.0 + grow),
+                        height: rect_of.height * (1.0 + grow),
+                    };
+                    let on =
+                        lit || press > 0.5 || (button == FooterButton::Mods && snapshot.mods.open);
+                    rect(
+                        &area,
+                        fill,
+                        Look::Button {
+                            highlighted: on,
+                            seed,
+                            fade: opacity * open,
+                        },
+                    );
                 };
-                (fill, on)
-            };
-            let draw_button = |rect_of: Rect, button: FooterButton, seed: f32| {
-                let (fill, on) = ink(button);
-                rect(
-                    &Rect {
-                        y: rect_of.y + up,
-                        ..rect_of
-                    },
-                    fill,
-                    Look::Button {
-                        highlighted: on,
-                        seed,
-                        fade: opacity,
-                    },
-                );
-            };
             let centred_label = |line: &Line, area: &Rect| {
                 (
                     area.x + (area.width - line.layout.width()) / 2.0,
                     area.y + area.height / 2.0 + up,
                 )
             };
-            draw_button(buttons.back, FooterButton::Back, 0.1);
+            draw_button(buttons.back, FooterButton::Back, 0.1, 1.0, false);
             let (x, y) = centred_label(&self.footer_back, &buttons.back);
             left(&self.footer_back, x, y, theme.text);
-            draw_button(buttons.mods, FooterButton::Mods, 0.2);
+            draw_button(buttons.mods, FooterButton::Mods, 0.2, 1.0, false);
             let selected = snapshot.mods.active != [0; MAX_COLUMNS];
             let inset = buttons.mods.height * theme.button_skew().tan() / 2.0 + pad;
+            // The new selection's text fades in as the button flashes.
+            let text_in = 1.0 - flash;
             if selected {
                 left(
                     &self.mods_title,
@@ -1599,7 +1625,7 @@ impl SongSelectView {
                     &self.mods_selected,
                     buttons.mods.x + inset,
                     buttons.mods.y + up + buttons.mods.height * 0.71,
-                    tone_colour(theme, snapshot.mods.total_multiplier),
+                    faded(tone_colour(theme, snapshot.mods.total_multiplier), text_in),
                 );
             } else {
                 left(
@@ -1609,24 +1635,28 @@ impl SongSelectView {
                     theme.text,
                 );
             }
-            for i in 0..buttons.preset_count.min(self.preset_count) {
+            for i in 0..buttons.preset_count.min(self.presets.len()) {
+                let open = presence.presets[i];
+                let lit = snapshot.current_preset == Some(i);
                 draw_button(
                     buttons.presets[i],
                     FooterButton::Preset(i),
                     0.3 + i as f32 * 0.07,
+                    open,
+                    lit,
                 );
                 let (x, y) = centred_label(&self.presets[i], &buttons.presets[i]);
-                left(&self.presets[i], x, y, theme.text);
+                left(&self.presets[i], x, y, faded(theme.text, open));
             }
             if let Some(area) = buttons.pin {
-                draw_button(area, FooterButton::Pin, 0.7);
+                draw_button(area, FooterButton::Pin, 0.7, presence.pin, false);
                 let (x, y) = centred_label(&self.footer_pin, &area);
-                left(&self.footer_pin, x, y, theme.text);
+                left(&self.footer_pin, x, y, faded(theme.text, presence.pin));
             }
             if let Some(area) = buttons.reset {
-                draw_button(area, FooterButton::Reset, 0.8);
+                draw_button(area, FooterButton::Reset, 0.8, presence.reset, false);
                 let (x, y) = centred_label(&self.footer_reset, &area);
-                left(&self.footer_reset, x, y, theme.text);
+                left(&self.footer_reset, x, y, faded(theme.text, presence.reset));
             }
         }
         let panel = panel_back > 0.0 || panel_columns;
@@ -2026,10 +2056,14 @@ impl SongSelectView {
 
     /// Writes "HD DT1.05x  1.12x" for the active tiles, their details and the multiplier of
     /// the selection (the footer's Mods button) unless it already shows them.
-    fn refresh_selected(&mut self, mods: &ModSelectSnapshot) {
+    fn refresh_selected(&mut self, mods: &ModSelectSnapshot, now_ns: u64) {
         let key = (mods.active, mods.details, mods.total_multiplier.to_bits());
         if self.mods_selected_for == Some(key) {
             return;
+        }
+        // The Mods button flashes when the selection changes, not when it first shows.
+        if self.mods_selected_for.is_some() {
+            self.footer_anim.flash_mods(now_ns, &self.theme);
         }
         self.mods_selected_for = Some(key);
         let line = &mut self.mods_selected;

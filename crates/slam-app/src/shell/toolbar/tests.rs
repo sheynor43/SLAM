@@ -483,3 +483,70 @@ fn the_song_select_makes_room_for_the_bar() {
     let bar = s.toolbar_layout().height();
     assert!(s.song_layout.header.y >= bar);
 }
+
+#[test]
+fn the_toolbar_leaves_with_the_screen_into_a_play() {
+    let mut s = state(&[]);
+    let mut snap = ShellSnapshot::default();
+    s.tick(0, &[], &mut snap);
+    s.tick(1, &[key(KEY_ENTER)], &mut snap);
+    s.tick(LATER, &[], &mut snap);
+    assert_eq!(snap.toolbar.slide, 1.0);
+    assert!(!snap.toolbar.follows);
+    let start = 2 * LATER;
+    s.stack.navigate(Nav::Push(AppScreen::Play(1)), start);
+    // Half-way the leaving screen is half gone, and so is the bar: it follows the pose.
+    s.tick(start + TRANSITION_NS / 2, &[], &mut snap);
+    assert!(snap.toolbar.follows);
+    assert!(snap.toolbar.visible);
+    let mid = snap.toolbar.slide;
+    assert!(mid > 0.0 && mid < 1.0, "{mid}");
+    let early = {
+        s.tick(start + TRANSITION_NS / 8, &[], &mut snap);
+        snap.toolbar.slide
+    };
+    assert!(
+        early > mid,
+        "{early} then {mid}: it goes out with the screen"
+    );
+    // At the end it is hidden and the own timer takes over.
+    s.tick(start + TRANSITION_NS, &[], &mut snap);
+    s.tick(start + 2 * TRANSITION_NS, &[], &mut snap);
+    assert!(!snap.toolbar.follows);
+    assert!(!snap.toolbar.visible);
+}
+
+#[test]
+fn the_toolbar_stays_between_the_menus_during_their_transition() {
+    let mut s = state(&[]);
+    let mut snap = ShellSnapshot::default();
+    s.tick(0, &[], &mut snap);
+    s.tick(LATER, &[], &mut snap);
+    s.stack
+        .navigate(Nav::Push(AppScreen::SongSelect), 2 * LATER);
+    s.tick(2 * LATER + TRANSITION_NS / 3, &[], &mut snap);
+    assert!(snap.toolbar.follows);
+    assert!(
+        (snap.toolbar.slide - 1.0).abs() < 1e-3,
+        "{}",
+        snap.toolbar.slide
+    );
+}
+
+#[test]
+fn the_toolbar_comes_in_with_the_screen_leaving_a_play() {
+    let mut s = state(&[]);
+    let mut snap = ShellSnapshot::default();
+    s.tick(0, &[], &mut snap);
+    s.stack.navigate(Nav::Push(AppScreen::Play(1)), 0);
+    s.tick(LATER, &[], &mut snap);
+    s.tick(2 * LATER, &[], &mut snap);
+    assert!(!snap.toolbar.visible);
+    let start = 3 * LATER;
+    s.stack.navigate(Nav::Pop, start);
+    s.tick(start + TRANSITION_NS / 4, &[], &mut snap);
+    let early = snap.toolbar.slide;
+    s.tick(start + 3 * TRANSITION_NS / 4, &[], &mut snap);
+    assert!(snap.toolbar.follows);
+    assert!(snap.toolbar.slide > early, "it arrives with the screen");
+}

@@ -236,6 +236,9 @@ pub struct ToolbarFrame {
     /// How far the bar is in, 0 (above the window) ..= 1 (in place): it slides in with the
     /// main menu after the intro and out and in around the results (ADR-0178).
     pub slide: f32,
+    /// `slide` follows a running screen transition (ADR-0126): drawn as it is, not eased
+    /// again, and the bar fades with it.
+    pub follows: bool,
     /// The music player's popup, when open.
     pub player: Option<PlayerFrame>,
     /// What plays.
@@ -252,6 +255,7 @@ impl Default for ToolbarFrame {
             popup: None,
             clock: NO_CLOCK,
             slide: 1.0,
+            follows: false,
             player: None,
             now_playing: NowPlayingFrame::default(),
         }
@@ -282,6 +286,16 @@ impl Default for Slide {
 }
 
 impl Slide {
+    /// Takes `value` from a running screen transition, which drives the bar; `shown` is
+    /// where the bar is headed, so that it carries on from there once the transition ends.
+    pub fn follow(&mut self, value: f32, shown: bool) -> f32 {
+        self.from = value;
+        self.to = if shown { 1.0 } else { 0.0 };
+        self.since_ns = 0;
+        self.now = value;
+        value
+    }
+
     /// Moves towards `shown` at `now_ns`; a change of direction turns from where it is.
     /// Returns how far in the bar is.
     pub fn update(&mut self, shown: bool, now_ns: u64, theme: &Theme) -> f32 {
@@ -534,6 +548,7 @@ impl Toolbar {
             popup: self.popup,
             clock,
             slide: 1.0,
+            follows: false,
             player: self.player_frame(),
             now_playing: NowPlayingFrame::default(),
         }
@@ -666,12 +681,18 @@ impl ToolbarView {
         let tip = self.push_bar(
             shapes, text, glyphs, rows, frame, words, cover, width, height, now_ns, white,
         );
-        let away = 1.0 - ease_out_quint(frame.slide.clamp(0.0, 1.0));
-        if away > 0.0 {
+        let slide = frame.slide.clamp(0.0, 1.0);
+        let (away, fade) = if frame.follows {
+            (1.0 - slide, slide)
+        } else {
+            (1.0 - ease_out_quint(slide), 1.0)
+        };
+        if away > 0.0 || fade < 1.0 {
             let dy = -away * ToolbarLayout::new(width, height, &self.theme, 0).height();
             let map = Affine::about([0.0, 0.0], 1.0, 0.0, [0.0, dy]);
-            shapes.transform_from(first.0, &map, [1.0; 4]);
-            text.transform_from(first.1, &map, [1.0; 4]);
+            let tint = [1.0, 1.0, 1.0, fade];
+            shapes.transform_from(first.0, &map, tint);
+            text.transform_from(first.1, &map, tint);
         }
         tip
     }

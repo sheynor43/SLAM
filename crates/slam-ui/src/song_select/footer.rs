@@ -3,6 +3,7 @@
 //! where its buttons are for a given number of presets, shared by hit testing (update) and
 //! drawing.
 
+use super::footer_anim::FooterPresence;
 use crate::menu::Rect;
 use crate::theme::Theme;
 
@@ -122,6 +123,51 @@ impl FooterLayout {
         }
         let pin = state.pin.then(|| place(self.pin_width));
         let reset = state.reset.then(|| place(self.button_width));
+        FooterButtons {
+            back,
+            mods,
+            presets,
+            preset_count,
+            pin,
+            reset,
+            skew: self.skew,
+            bar: self.bar,
+        }
+    }
+}
+
+impl FooterLayout {
+    /// The buttons with the optional ones partly open, as [`FooterAnim`] has them: a button
+    /// with presence `p` takes `p` of its place, so the ones after it slide as it opens or
+    /// closes. For drawing only; hit testing uses [`FooterLayout::buttons`].
+    pub fn animated(&self, presence: &FooterPresence) -> FooterButtons {
+        let lean = self.height * self.skew.tan();
+        let step = self.gap + lean;
+        let mut x = self.margin;
+        let mut place = |width: f32, open: f32| {
+            let rect = Rect {
+                x,
+                y: self.top,
+                width,
+                height: self.height,
+            };
+            x += (width + step) * open;
+            rect
+        };
+        let back = place(self.button_width, 1.0);
+        let mods = place(self.mods_width, 1.0);
+        let mut presets = [Rect::default(); MAX_PRESETS];
+        let mut preset_count = 0;
+        for (i, slot) in presets.iter_mut().enumerate() {
+            let open = presence.presets[i].clamp(0.0, 1.0);
+            *slot = place(self.preset_width, open);
+            if open > 0.0 {
+                preset_count = i + 1;
+            }
+        }
+        let pin = (presence.pin > 0.0).then(|| place(self.pin_width, presence.pin.min(1.0)));
+        let reset =
+            (presence.reset > 0.0).then(|| place(self.button_width, presence.reset.min(1.0)));
         FooterButtons {
             back,
             mods,

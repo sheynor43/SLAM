@@ -435,6 +435,17 @@ pub struct Theme {
     pub footer_pin_width: f32,
     pub footer_gap: f32,
     pub footer_slide_ms: f32,
+    /// The footer buttons' feedback (lazer's `OsuAnimatedButton`): the hover fade, the press
+    /// pop in and out, a button's place sliding in and out, the Mods button's flash when the
+    /// selection changes (milliseconds), the pop's growth (share of the button) and the
+    /// flash's strength (share of the accent mixed in).
+    pub footer_hover_ms: f32,
+    pub footer_press_ms: f32,
+    pub footer_release_ms: f32,
+    pub footer_slot_ms: f32,
+    pub footer_flash_ms: f32,
+    pub footer_pop: f32,
+    pub footer_flash_mix: f32,
     /// The menus' toolbar (ADR-0168): its height, the share of a button an icon takes, the gap
     /// between its buttons, its fill, the size of its clock text, and how long a popup
     /// takes to fade in and how far it slides.
@@ -1018,6 +1029,13 @@ impl Theme {
             footer_pin_width: 44.0,
             footer_gap: 10.0,
             footer_slide_ms: 400.0,
+            footer_hover_ms: 150.0,
+            footer_press_ms: 60.0,
+            footer_release_ms: 260.0,
+            footer_slot_ms: 220.0,
+            footer_flash_ms: 450.0,
+            footer_pop: 0.04,
+            footer_flash_mix: 0.55,
             toolbar_height: 40.0,
             toolbar_icon_share: 0.5,
             toolbar_gap: 2.0,
