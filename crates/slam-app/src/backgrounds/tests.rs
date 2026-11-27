@@ -639,3 +639,45 @@ fn one_change_after_a_long_rest_still_waits_the_debounce() {
     rig.tick(later + 150 * MS, Some((0, 2)));
     assert_eq!(rig.sent().0.len(), 1);
 }
+
+#[test]
+fn a_target_mid_fade_fades_from_what_is_on_screen_never_an_older_image() {
+    let mut requests = requests();
+    let h = handles(&mut requests, 4);
+    let shown = Arc::new(AtomicU32::new(0));
+    let mut fade = BackgroundFade::new(Arc::clone(&shown), None);
+    let target = |generation: u32, i: usize| BackgroundTarget {
+        generation,
+        handle: Some(h[i]),
+    };
+    fade.advance(target(1, 0), 0, |_| ready());
+    fade.advance(target(1, 0), 600 * MS, |_| ready());
+    assert_eq!(shown.load(Ordering::Relaxed), 1);
+    // Image 1 fades in over image 0; at 100 ms it is mostly on screen.
+    fade.advance(target(2, 1), 700 * MS, |_| ready());
+    fade.advance(target(2, 1), 800 * MS, |_| ready());
+    let before = fade.layers(800 * MS);
+    // A third target arrives while the second fades and is not uploaded yet: image 0
+    // must not come back whole.
+    fade.advance(target(3, 2), 800 * MS, |_| TextureState::Pending);
+    let held: Vec<_> = fade.layers(850 * MS).into_iter().flatten().collect();
+    assert_eq!(held.len(), 1, "one dominant image stays while pending");
+    let (under, over) = (before[0].unwrap(), before[1].unwrap());
+    let dominant = if over.1 >= under.1 { over } else { under };
+    assert_eq!(held[0].0, dominant.0);
+    assert!((held[0].1 - dominant.1).abs() < 1e-6, "no jump in opacity");
+    // Fading in from there: image 0 never reappears.
+    for t in [900, 950, 1000, 1200, 1400] {
+        fade.advance(target(3, 2), t * MS, |_| ready());
+        assert!(
+            fade.visible(t * MS)
+                .into_iter()
+                .flatten()
+                .all(|handle| handle != h[0] || dominant.0 == h[0]),
+            "older image visible at {t}"
+        );
+    }
+    fade.advance(target(3, 2), 1500 * MS, |_| ready());
+    assert_eq!(shown.load(Ordering::Relaxed), 3);
+    assert_eq!(fade.layers(1500 * MS), [Some((h[2], 1.0)), None]);
+}

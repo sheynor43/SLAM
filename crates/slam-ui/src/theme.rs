@@ -173,6 +173,9 @@ pub struct Theme {
     pub song_scrollbar_width: f32,
     /// The thumb's width at rest, as a part of `song_scrollbar_width`.
     pub song_scrollbar_rest_width: f32,
+    /// Time constant of the song list's thumb easing to the content's changing height (sets
+    /// opening and closing under held keys), ms.
+    pub song_scrollbar_ease_ms: f32,
     /// Grey levels of the thumb at rest and pointed at (lazer's gray8 and grayF).
     pub song_scrollbar_rest: f32,
     pub song_scrollbar_hover: f32,
@@ -866,6 +869,7 @@ impl Theme {
             scrollbar_fade_ms: 200.0,
             song_scrollbar_width: 10.0,
             song_scrollbar_rest_width: 0.5,
+            song_scrollbar_ease_ms: 90.0,
             song_scrollbar_rest: 0.533,
             song_scrollbar_hover: 0.941,
             song_scrollbar_pad_top: 5.0,
