@@ -1662,7 +1662,7 @@ fn the_tablet_icon_comes_before_the_feedback_one() {
 
 #[test]
 fn ten_sections_have_ten_tabs_and_icons() {
-    assert_eq!((MAX_SECTIONS, MAX_ROWS, icons::ICONS), (10, 304, 10));
+    assert_eq!((MAX_SECTIONS, MAX_ROWS, icons::ICONS), (10, 320, 10));
     let rows: Vec<RowSpec> = (0..10).map(|i| toggle(i, false)).collect();
     let s = SettingsScreen::new(&rows, 10);
     assert_eq!(s.sections(), 10);

@@ -2157,3 +2157,39 @@ fn song_select_info_panel_settings_round_trip_and_are_validated() {
             .any(|w| w.starts_with("song_select.info_width"))
     );
 }
+
+#[test]
+fn the_update_settings_default_read_and_write_by_name() {
+    let defaults = Settings::default().updates;
+    assert!(defaults.check);
+    assert_eq!(defaults.channel, crate::update::Channel::Prerelease);
+    let loaded = file::from_toml_str("[updates]\ncheck = false\nchannel = \"stable\"\n");
+    assert_eq!(loaded.status, LoadStatus::Ok, "{:?}", loaded.warnings);
+    assert!(!loaded.settings.updates.check);
+    assert_eq!(
+        loaded.settings.updates.channel,
+        crate::update::Channel::Stable
+    );
+    let text = file::to_toml_string(&loaded.settings).unwrap();
+    assert!(text.contains("channel = \"stable\""), "{text}");
+    assert_eq!(
+        file::from_toml_str(&text).settings.updates,
+        loaded.settings.updates
+    );
+}
+
+#[test]
+fn a_bad_update_channel_falls_back_with_a_warning() {
+    let loaded = file::from_toml_str("[updates]\nchannel = \"nightly\"\n");
+    assert_eq!(loaded.status, LoadStatus::Recovered);
+    assert_eq!(
+        loaded.settings.updates.channel,
+        crate::update::Channel::Prerelease
+    );
+    assert!(
+        loaded
+            .warnings
+            .iter()
+            .any(|w| w.starts_with("updates.channel"))
+    );
+}

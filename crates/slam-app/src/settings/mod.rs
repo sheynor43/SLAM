@@ -18,7 +18,7 @@ pub use model::{
     HitsoundDelay, Hotkeys, HudSettings, InputSettings, KeyOverlayAnimation, KeySlot,
     MenuBackground, MenuSounds, Mods, Paths, PauseMenuStyle, RendererChoice, ResultsStyle,
     STABLE_HITSOUND_DELAY_MS, Settings, SkinSettings, SkipButtonStyle, ThumbnailStyle, Thumbnails,
-    Timing, corner_from_name, corner_name,
+    Timing, Updates, corner_from_name, corner_name,
 };
 
 /// File name of the settings file inside the config directory.

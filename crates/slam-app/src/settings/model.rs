@@ -1599,6 +1599,25 @@ pub struct Settings {
     pub song_select: SongSelect,
     pub input: InputSettings,
     pub hotkeys: Hotkeys,
+    pub updates: Updates,
+}
+
+/// Self-update (ADR-0185).
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize)]
+pub struct Updates {
+    /// Whether SLAM asks GitHub for a newer version at start.
+    pub check: bool,
+    /// Which releases are offered.
+    pub channel: crate::update::Channel,
+}
+
+impl Default for Updates {
+    fn default() -> Self {
+        Updates {
+            check: true,
+            channel: crate::update::Channel::default(),
+        }
+    }
 }
 
 impl Settings {

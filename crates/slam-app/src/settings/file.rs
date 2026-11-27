@@ -1124,6 +1124,26 @@ fn from_table(mut table: Table) -> Loaded {
         }
     }
 
+    let mut updates = cx.section(&mut table, "updates");
+    cx.field(
+        &mut updates,
+        "updates",
+        "check",
+        &mut settings.updates.check,
+        |_| Ok(()),
+    );
+    let mut channel: Option<String> = None;
+    cx.opt(&mut updates, "updates", "channel", &mut channel);
+    if let Some(name) = channel {
+        match crate::update::Channel::from_name(&name) {
+            Some(channel) => settings.updates.channel = channel,
+            None => cx.warn(format!(
+                "updates.channel: unknown value \"{name}\", using the default"
+            )),
+        }
+    }
+    cx.unknown(&updates, "updates");
+
     cx.unknown(&table, "");
 
     let status = if cx.warnings.is_empty() {

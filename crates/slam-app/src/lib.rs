@@ -34,3 +34,4 @@ pub mod shell;
 pub mod songs;
 pub mod stars;
 pub mod thumbnails;
+pub mod update;

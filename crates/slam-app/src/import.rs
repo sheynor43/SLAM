@@ -237,6 +237,12 @@ pub fn toast_keys() -> &'static [(&'static str, Option<&'static str>)] {
         ("settings-row-pin", Some("settings-row-pin-hint")),
         ("settings-row-unpin", None),
         ("settings-row-pin-full", None),
+        // The self-updater's (ADR-0185), `shell::updates::TOAST_*`.
+        (
+            "update-toast-available",
+            Some("update-toast-available-hint"),
+        ),
+        ("update-toast-ready", Some("update-toast-ready-hint")),
     ]
 }
 
@@ -549,8 +555,12 @@ mod tests {
 
     #[test]
     fn every_variant_has_toast_keys() {
-        assert_eq!(toast_keys().len(), 9);
-        assert_eq!(usize::from(TOAST_PIN_FULL), toast_keys().len() - 1);
+        assert_eq!(toast_keys().len(), 11);
+        assert_eq!(usize::from(TOAST_PIN_FULL), 8);
+        assert_eq!(
+            usize::from(crate::shell::TOAST_UPDATE_READY),
+            toast_keys().len() - 1
+        );
         assert_eq!(variant(&Err(ImportError::Unsupported)), 5);
         assert_eq!(variant(&Err(ImportError::Empty)), 4);
     }

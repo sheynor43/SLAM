@@ -27,7 +27,7 @@ pub mod view;
 pub use view::{KeyLabels, RowLabels, SettingsLabels, SettingsView};
 
 /// Most rows; more are ignored.
-pub const MAX_ROWS: usize = 304;
+pub const MAX_ROWS: usize = 320;
 /// Most sections; rows of later ones go into the last.
 pub const MAX_SECTIONS: usize = 10;
 

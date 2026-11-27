@@ -110,6 +110,7 @@ mod output;
 pub(crate) mod results;
 mod rows;
 mod toolbar;
+mod updates;
 
 pub use draw_rate::DrawRateSwitch;
 
@@ -128,6 +129,7 @@ pub fn pinnable_setting_names() -> impl Iterator<Item = String> {
         .map(|row| row.name().to_owned())
 }
 pub use rows::{Row, Rows, SECTIONS, round_for_save};
+pub use updates::TOAST_READY as TOAST_UPDATE_READY;
 
 pub const USAGE: &str = "usage: slam-app [--songs DIR]\n\
                          slam-app [bench|click|click-analyze|play|i18n] ...\n\
@@ -447,6 +449,10 @@ pub struct ShellState {
     music_commands: toolbar::MusicCommands,
     /// Files dropped on the window and the thread that imports them (ADR-0169).
     imports: Option<crate::import::Imports>,
+    /// The self-updater's state (ADR-0185).
+    updates: updates::UpdatesSection,
+    /// An install finished: the window closes and the new build starts.
+    quit_request: bool,
     /// The mods the next play takes: they outlast a play and the results, and are not saved.
     selected_mods: ModSet,
     /// The panel's mods with default settings, by column and tile: a toggle clones one
@@ -595,6 +601,8 @@ impl ShellState {
             now_key: None,
             music_commands: toolbar::MusicCommands::default(),
             imports: None,
+            updates: updates::UpdatesSection::new(None),
+            quit_request: false,
             // An empty set is always compatible; the capacity keeps a toggle from allocating.
             selected_mods: ModSet::new(Vec::with_capacity(SELECTED_MODS_CAPACITY))
                 .unwrap_or_default(),
@@ -799,6 +807,18 @@ impl ShellState {
         self.song_select.set_status(self.library_status);
         self.songs = Some(songs);
         self
+    }
+
+    /// A shell that keeps itself up to date with this thread's help (ADR-0185).
+    pub fn with_updater(mut self, updater: crate::update::Updater) -> ShellState {
+        self.updates = updates::UpdatesSection::new(Some(updater));
+        self
+    }
+
+    /// Whether an install finished and the window should close to start the new build; reads
+    /// once.
+    pub fn take_quit_request(&mut self) -> bool {
+        std::mem::take(&mut self.quit_request)
     }
 
     /// A shell that imports the files dropped on the window (ADR-0169).
@@ -1289,6 +1309,7 @@ impl ShellState {
             motion: PanelMotion::opening(now_ns, &self.theme),
             pressed_outside: false,
         });
+        self.refresh_updates();
         self.device_list_request = true;
     }
 
@@ -1452,6 +1473,13 @@ impl ShellState {
                     && let Some(path) = &self.toast_path
                 {
                     crate::reveal::reveal(path.clone());
+                }
+                let variant = self.toast.frame().variant;
+                if matches!(variant, updates::TOAST_AVAILABLE | updates::TOAST_READY)
+                    && self.updates.answer_toast(variant)
+                {
+                    // Only the release page can be offered here.
+                    self.feedback_request = Some(crate::feedback::Kind::Releases);
                 }
                 true
             }
@@ -2060,6 +2088,47 @@ impl ShellState {
         }
     }
 
+    /// Sends the start-up check, takes the updater's news, shows it on the open settings
+    /// panel and in a toast (ADR-0185). Does not allocate when nothing changed.
+    fn receive_updates(&mut self, now_ns: u64) {
+        let settings = self.settings.updates;
+        self.updates.start(settings.check, settings.channel);
+        let polled = self.updates.poll();
+        if let Some(variant) = polled.toast {
+            self.toast.show_variant(variant, now_ns);
+        }
+        if polled.installed {
+            crate::update::request_restart();
+            self.quit_request = true;
+        }
+        if polled.changed {
+            self.refresh_updates();
+        }
+    }
+
+    /// Shows the updater's state on the settings panel's rows.
+    fn refresh_updates(&mut self) {
+        let (Some(panel), Some(localizer)) = (&mut self.panel, &self.localizer) else {
+            return;
+        };
+        if let Some(row) = Row::ALL.iter().position(|r| *r == Row::UpdatesStatus) {
+            self.otd
+                .set_extra_name(row, &self.updates.status_text(localizer));
+        }
+        self.otd.refresh(&mut panel.screen);
+        self.updates.refresh(&mut panel.screen);
+    }
+
+    /// A press on an updater row (ADR-0185).
+    fn press_updates(&mut self, row: Row) {
+        match row {
+            Row::UpdatesStatus => self.updates.check(self.live_settings().updates.channel),
+            Row::UpdatesInstall => self.updates.download(),
+            Row::UpdatesRestart => self.updates.install(),
+            _ => {}
+        }
+    }
+
     /// Takes the OpenTabletDriver worker's news and shows it on the open settings panel
     /// (ADR-0166).
     fn receive_otd(&mut self, now_ns: u64) {
@@ -2246,6 +2315,13 @@ impl ShellState {
                     self.feedback_request = Some(crate::feedback::Kind::OpenTabletDriver);
                 }
                 self.otd.refresh(screen);
+            }
+            Some(SettingsAction::Pressed { row })
+                if Row::ALL.get(row).is_some_and(|row| row.is_updater_button()) =>
+            {
+                self.ui_sounds.push(crate::menu_sounds::MenuSound::Click);
+                self.press_updates(Row::ALL[row]);
+                self.refresh_updates();
             }
             Some(SettingsAction::Pressed { row })
                 if Row::ALL.get(row) == Some(&Row::SongsFolder) =>
@@ -2508,6 +2584,7 @@ impl ShellState {
         self.receive_imports(now_ns);
         self.receive_displays();
         self.receive_otd(now_ns);
+        self.receive_updates(now_ns);
         let navigated = self.handle(events, now_ns);
         self.tick_volume(now_ns, snapshot);
         self.tick_toolbar(now_ns, snapshot);
@@ -4318,7 +4395,7 @@ impl Update for Shell {
             }
             _ => self.state.tick(now, events, snapshot),
         };
-        if navigated == Navigated::Exit {
+        if navigated == Navigated::Exit || self.state.take_quit_request() {
             self.exited.store(true, Ordering::Relaxed);
             return;
         }
@@ -5876,6 +5953,13 @@ fn run_with<B: render::Backend>(
         }
         Err(e) => tracing::warn!("import: cannot start the thread: {e}"),
     }
+    // Looks for a newer version and downloads one when the player agrees (ADR-0185).
+    if let Some(dirs) = Dirs::detect() {
+        match crate::update::Updater::spawn(crate::update::Config::detect(dirs.data)) {
+            Ok(updater) => state = state.with_updater(updater),
+            Err(e) => tracing::warn!("update: cannot start the thread: {e}"),
+        }
+    }
     // Joined when `run` returns, after the engine. Without the thread the settings screen
     // hides the display and resolution rows.
     let (display_views, _displays) = {
@@ -6215,6 +6299,8 @@ fn run_with<B: render::Backend>(
         thread.finish();
     }
     drop(window);
+    // An install asked for the new build to start.
+    crate::update::relaunch_if_requested(crate::update::Target::detect().as_ref());
     ran.map_err(|e| e.to_string())
 }
 

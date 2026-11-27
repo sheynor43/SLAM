@@ -24,6 +24,7 @@ use crate::settings::{
     MenuBackground, MenuSounds, PauseMenuStyle, RendererChoice, ResultsStyle, Settings,
     SkipButtonStyle, ThumbnailStyle, Thumbnails, Timing, skins,
 };
+use crate::update::Channel;
 use slam_ui::cursor::CursorStyle;
 use slam_ui::screen::TransitionStyle;
 use slam_ui::song_select::DifficultyInfo;
@@ -374,6 +375,18 @@ pub enum Row {
     FeedbackFeature,
     /// Whether the Discord status shows what the player does; applies live (ADR-0170).
     DiscordPresence,
+    /// Whether SLAM looks for a newer version at start (ADR-0185).
+    UpdatesCheck,
+    /// Which releases are offered (ADR-0185).
+    UpdatesChannel,
+    /// Shows where the update stands; pressed, asks GitHub again (ADR-0185).
+    UpdatesStatus,
+    /// Downloads the version found; shown while one is available (ADR-0185).
+    UpdatesInstall,
+    /// Restarts into the downloaded version; shown once it is ready (ADR-0185).
+    UpdatesRestart,
+    /// Opens the release page where the update cannot be installed here (ADR-0185).
+    UpdatesPage,
 }
 
 // The screen ignores rows past its capacity.
@@ -381,7 +394,7 @@ const _: () =
     assert!(Row::ALL.len() + super::otd::OtdRow::ALL.len() <= slam_ui::settings_screen::MAX_ROWS);
 
 impl Row {
-    pub const ALL: [Row; 113] = [
+    pub const ALL: [Row; 119] = [
         Row::MasterVolume,
         Row::MusicVolume,
         Row::MenuMusic,
@@ -495,6 +508,12 @@ impl Row {
         Row::FeedbackBug,
         Row::FeedbackFeature,
         Row::DiscordPresence,
+        Row::UpdatesCheck,
+        Row::UpdatesChannel,
+        Row::UpdatesStatus,
+        Row::UpdatesInstall,
+        Row::UpdatesRestart,
+        Row::UpdatesPage,
     ];
 
     /// The page a Feedback row opens.
@@ -504,8 +523,18 @@ impl Row {
             Row::FeedbackHome => Some(Kind::Github),
             Row::FeedbackBug => Some(Kind::Bug),
             Row::FeedbackFeature => Some(Kind::Feature),
+            Row::UpdatesPage => Some(Kind::Releases),
             _ => None,
         }
+    }
+
+    /// Whether the row is a button of the self-updater that talks to its thread
+    /// (ADR-0185); the page row opens a link like the feedback rows.
+    pub fn is_updater_button(self) -> bool {
+        matches!(
+            self,
+            Row::UpdatesStatus | Row::UpdatesInstall | Row::UpdatesRestart
+        )
     }
 
     /// The key a key row edits.
@@ -575,6 +604,12 @@ impl Row {
                     | Row::WindowedSize
                     | Row::Language
                     | Row::Sensitivity
+                    | Row::UpdatesCheck
+                    | Row::UpdatesChannel
+                    | Row::UpdatesStatus
+                    | Row::UpdatesInstall
+                    | Row::UpdatesRestart
+                    | Row::UpdatesPage
             )
     }
 
@@ -692,9 +727,16 @@ impl Row {
             | Row::HoldToConfirm
             | Row::RestartAnimation => section::GAMEPLAY,
             Row::SongsFolder => section::LIBRARY,
-            Row::FeedbackHome | Row::FeedbackBug | Row::FeedbackFeature | Row::DiscordPresence => {
-                section::FEEDBACK
-            }
+            Row::FeedbackHome
+            | Row::FeedbackBug
+            | Row::FeedbackFeature
+            | Row::DiscordPresence
+            | Row::UpdatesCheck
+            | Row::UpdatesChannel
+            | Row::UpdatesStatus
+            | Row::UpdatesInstall
+            | Row::UpdatesRestart
+            | Row::UpdatesPage => section::FEEDBACK,
         }
     }
 
@@ -812,6 +854,12 @@ impl Row {
             Row::FeedbackBug => "settings-feedback-bug",
             Row::FeedbackFeature => "settings-feedback-feature",
             Row::DiscordPresence => "settings-feedback-discord",
+            Row::UpdatesCheck => "settings-updates-check",
+            Row::UpdatesChannel => "settings-updates-channel",
+            Row::UpdatesStatus => "settings-updates-status",
+            Row::UpdatesInstall => "settings-updates-install",
+            Row::UpdatesRestart => "settings-updates-restart",
+            Row::UpdatesPage => "settings-updates-page",
         }
     }
 
@@ -922,6 +970,13 @@ fn skip_button_key(style: SkipButtonStyle) -> &'static str {
         SkipButtonStyle::Skin => "settings-option-skip-button-skin",
         SkipButtonStyle::Lazer => "settings-option-skip-button-lazer",
         SkipButtonStyle::Slam => "settings-option-skip-button-slam",
+    }
+}
+
+fn channel_key(channel: Channel) -> &'static str {
+    match channel {
+        Channel::Prerelease => "settings-option-channel-prerelease",
+        Channel::Stable => "settings-option-channel-stable",
     }
 }
 
@@ -1256,7 +1311,18 @@ impl Rows {
             | Row::SongsFolder
             | Row::FeedbackHome
             | Row::FeedbackBug
-            | Row::FeedbackFeature => RowKind::Button,
+            | Row::FeedbackFeature
+            | Row::UpdatesStatus
+            | Row::UpdatesInstall
+            | Row::UpdatesRestart
+            | Row::UpdatesPage => RowKind::Button,
+            Row::UpdatesCheck => RowKind::Toggle {
+                value: s.updates.check,
+            },
+            Row::UpdatesChannel => choice(
+                Channel::ALL.len(),
+                Channel::ALL.iter().position(|c| *c == s.updates.channel),
+            ),
             Row::NotFullscreenNote => RowKind::Note,
             Row::DiscordPresence => RowKind::Toggle {
                 value: s.general.discord_presence,
@@ -1782,6 +1848,12 @@ impl Rows {
             },
             (Row::Intro, RowValue::Toggle(v)) => settings.general.intro = v,
             (Row::DiscordPresence, RowValue::Toggle(v)) => settings.general.discord_presence = v,
+            (Row::UpdatesCheck, RowValue::Toggle(v)) => settings.updates.check = v,
+            (Row::UpdatesChannel, RowValue::Choice(i)) => {
+                if let Some(channel) = Channel::ALL.get(i) {
+                    settings.updates.channel = *channel;
+                }
+            }
             (Row::Effects, RowValue::Toggle(v)) => settings.general.effects = v,
             (Row::ParallaxEnabled, RowValue::Toggle(v)) => settings.general.parallax_enabled = v,
             (Row::Parallax, RowValue::Slider(v)) => {
@@ -2094,6 +2166,10 @@ impl Rows {
                         .iter()
                         .map(|style| text(results_style_key(*style)))
                         .collect(),
+                    Row::UpdatesChannel => Channel::ALL
+                        .iter()
+                        .map(|channel| text(channel_key(*channel)))
+                        .collect(),
                     Row::PauseMenuStyle => PauseMenuStyle::ALL
                         .iter()
                         .map(|style| text(pause_menu_style_key(*style)))
@@ -2220,6 +2296,10 @@ impl Rows {
                     Row::FeedbackHome => text("settings-feedback-home-button"),
                     Row::FeedbackBug => text("settings-feedback-bug-button"),
                     Row::FeedbackFeature => text("settings-feedback-feature-button"),
+                    Row::UpdatesStatus => text("settings-updates-status-button"),
+                    Row::UpdatesInstall => text("settings-updates-install-button"),
+                    Row::UpdatesRestart => text("settings-updates-restart-button"),
+                    Row::UpdatesPage => text("settings-updates-page-button"),
                     _ => String::new(),
                 };
                 // Lazer shows the stereo separation at zero as "Disabled".
@@ -2247,7 +2327,8 @@ impl Rows {
                     ),
                     zero_text,
                     hint,
-                    dynamic_label: false,
+                    // The status line takes the state's text (ADR-0185).
+                    dynamic_label: *row == Row::UpdatesStatus,
                 }
             })
             .chain(super::otd::labels(localizer))
@@ -3698,5 +3779,54 @@ mod tests {
             cfg!(any(target_os = "linux", target_os = "macos"))
         );
         assert!(toggle.hint.lines().count() <= 2);
+    }
+
+    #[test]
+    fn the_update_rows_edit_the_settings_and_sit_in_the_feedback_section() {
+        let (rows, mut s) = rows();
+        for row in [
+            Row::UpdatesCheck,
+            Row::UpdatesChannel,
+            Row::UpdatesStatus,
+            Row::UpdatesInstall,
+            Row::UpdatesRestart,
+            Row::UpdatesPage,
+        ] {
+            assert_eq!(row.section(), SECTIONS - 1, "{row:?}");
+            assert!(!row.pinnable());
+        }
+        let specs = rows.specs(&s);
+        assert!(matches!(
+            specs[index(Row::UpdatesCheck)].kind,
+            RowKind::Toggle { value: true }
+        ));
+        assert!(matches!(
+            specs[index(Row::UpdatesChannel)].kind,
+            RowKind::Dropdown {
+                options: 2,
+                selected: 0
+            }
+        ));
+        rows.apply(&mut s, index(Row::UpdatesCheck), RowValue::Toggle(false));
+        rows.apply(&mut s, index(Row::UpdatesChannel), RowValue::Choice(1));
+        assert!(!s.updates.check);
+        assert_eq!(s.updates.channel, Channel::Stable);
+        assert!(matches!(
+            rows.specs(&s)[index(Row::UpdatesChannel)].kind,
+            RowKind::Dropdown { selected: 1, .. }
+        ));
+    }
+
+    #[test]
+    fn the_update_buttons_are_told_apart() {
+        assert!(Row::UpdatesStatus.is_updater_button());
+        assert!(Row::UpdatesInstall.is_updater_button());
+        assert!(Row::UpdatesRestart.is_updater_button());
+        // The page row opens a link like a feedback row.
+        assert!(!Row::UpdatesPage.is_updater_button());
+        assert_eq!(
+            Row::UpdatesPage.feedback(),
+            Some(crate::feedback::Kind::Releases)
+        );
     }
 }

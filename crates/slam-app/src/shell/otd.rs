@@ -467,6 +467,9 @@ pub struct OtdSection {
     ranges: [[(f64, f64, f64); MAX_PARAMS]; MAX_FILTERS],
     /// Per screen row: the daemon's names (empty: the static label).
     names: Arc<[Box<str>]>,
+    /// A name of a row outside this section that shares the dynamic labels: the update
+    /// status line (ADR-0185). Kept across renewals of the names.
+    extra: Option<(usize, Box<str>)>,
     /// Saved presets and the selected one (ADR-0176).
     presets: Vec<Preset>,
     preset: usize,
@@ -490,6 +493,7 @@ impl Default for OtdSection {
             tablet: 0,
             ranges: [[(0.0, 1.0, 0.01); MAX_PARAMS]; MAX_FILTERS],
             names: Arc::from([]),
+            extra: None,
             presets: Vec::new(),
             preset: 0,
             presets_path: None,
@@ -679,7 +683,26 @@ impl OtdSection {
                 }
             }
         }
+        if let Some((row, text)) = &self.extra
+            && let Some(slot) = names.get_mut(*row)
+        {
+            *slot = text.clone();
+        }
         names.into()
+    }
+
+    /// Gives the screen row `row` outside this section the name `text`; the panel's labels
+    /// take it on the next [`Self::refresh`]. Allocates: call on a change only.
+    pub fn set_extra_name(&mut self, row: usize, text: &str) {
+        if self
+            .extra
+            .as_ref()
+            .is_some_and(|(r, t)| *r == row && **t == *text)
+        {
+            return;
+        }
+        self.extra = Some((row, text.into()));
+        self.renew();
     }
 
     /// Shows the state on `screen`'s rows.

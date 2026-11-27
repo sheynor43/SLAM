@@ -372,6 +372,27 @@ settings-feedback-bug-button = Сообщить об ошибке
 settings-feedback-feature = Есть идея?
 settings-feedback-feature-button = Предложить функцию
 settings-feedback-discord = Статус в Discord
+settings-updates-check = Проверять обновления при запуске
+settings-updates-channel = Канал обновлений
+settings-option-channel-prerelease = Пре-релизы и релизы
+settings-option-channel-stable = Только релизы
+settings-updates-status = Обновления
+settings-updates-status-button = Проверить обновления
+settings-updates-status-checking = Проверяю обновления...
+settings-updates-status-up-to-date = У вас последняя версия SLAM
+settings-updates-status-available = Доступна версия { $version }
+settings-updates-status-downloading = Загрузка обновления: { $percent }%
+settings-updates-status-ready = Версия { $version } готова: перезапустите, чтобы установить
+settings-updates-status-unavailable = В этой сборке обновления недоступны
+settings-updates-status-failed-network = Не удалось связаться с сервером обновлений
+settings-updates-status-failed-signature = Загрузка не подписана проектом и удалена
+settings-updates-status-failed-install = Не удалось установить обновление
+settings-updates-install = Скачать новую версию
+settings-updates-install-button = Обновить
+settings-updates-restart = Установить скачанную версию
+settings-updates-restart-button = Перезапустить
+settings-updates-page = Установить новую версию вручную
+settings-updates-page-button = Открыть страницу выпуска
 
 discord-menu = В главном меню
 discord-song-select = Выбирает карту
@@ -535,3 +556,9 @@ settings-otd-filters = Установленные фильтры (парамет
 settings-otd-no-filters = В профиле нет фильтров; их добавляют в OpenTabletDriver.
 settings-otd-filter = Фильтр
 settings-otd-filter-setting = Параметр фильтра
+
+# Уведомления самообновления (ADR-0185); щелчок отвечает «Обновить», пропустить его - «Позже».
+update-toast-available = Доступна новая версия SLAM
+update-toast-available-hint = Нажмите, чтобы обновить, или пропустите: «Позже»
+update-toast-ready = Обновление готово
+update-toast-ready-hint = Нажмите, чтобы перезапустить и установить

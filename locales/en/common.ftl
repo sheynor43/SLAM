@@ -368,6 +368,27 @@ settings-feedback-bug-button = Report a bug
 settings-feedback-feature = Have an idea?
 settings-feedback-feature-button = Suggest a feature
 settings-feedback-discord = Discord status
+settings-updates-check = Check for updates at start
+settings-updates-channel = Update channel
+settings-option-channel-prerelease = Pre-releases and releases
+settings-option-channel-stable = Releases only
+settings-updates-status = Updates
+settings-updates-status-button = Check for updates
+settings-updates-status-checking = Checking for updates...
+settings-updates-status-up-to-date = SLAM is up to date
+settings-updates-status-available = Version { $version } is available
+settings-updates-status-downloading = Downloading the update: { $percent }%
+settings-updates-status-ready = Version { $version } is ready: restart to install it
+settings-updates-status-unavailable = Updates are not available in this build
+settings-updates-status-failed-network = Could not reach the update server
+settings-updates-status-failed-signature = The download is not signed by the project and was deleted
+settings-updates-status-failed-install = The update could not be installed
+settings-updates-install = Download the new version
+settings-updates-install-button = Update now
+settings-updates-restart = Install the downloaded version
+settings-updates-restart-button = Restart
+settings-updates-page = Install the new version yourself
+settings-updates-page-button = Open the release page
 
 discord-menu = In the main menu
 discord-song-select = Choosing a beatmap
@@ -531,3 +552,9 @@ settings-otd-filters = Installed filters (settings show under a filter that is o
 settings-otd-no-filters = The profile has no filters; add them in OpenTabletDriver.
 settings-otd-filter = Filter
 settings-otd-filter-setting = Filter setting
+
+# The toasts of the self-updater (ADR-0185); a click answers "Update", letting it go away is "Later".
+update-toast-available = A new version of SLAM is available
+update-toast-available-hint = Click to update, or ignore it for later
+update-toast-ready = The update is ready
+update-toast-ready-hint = Click to restart and install it
