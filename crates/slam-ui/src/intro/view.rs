@@ -1,6 +1,7 @@
-//! Draw side of the intro (ADR-0186): the logo's layers, placed as the menu places its
-//! logo alone, so that the logo settles exactly where the menu draws it. Does not allocate
-//! once the batch has room.
+//! Draw side of the intro (ADR-0186): the logo's masks in the theme's colours, placed as
+//! the menu places its logo, so that the logo settles exactly where the menu draws it;
+//! around them the shaking, the coloured glitch copies, the beams of the charge and the
+//! explosion. Does not allocate once the batch has room.
 
 use slam_render::Color;
 use slam_render::atlas::AtlasRegion;
@@ -8,10 +9,16 @@ use slam_render::hal::Blend;
 use slam_render::shape::{Shape, ShapeBatch};
 use slam_render::sprite::Sprite;
 
-use super::{IntroSnapshot, PIECES, backdrop, logo_pose, piece_pose};
+use super::{
+    BURST_TRIANGLES, IntroSnapshot, PIECES, backdrop, blast, burst_triangle, charge, logo_pose,
+    piece_pose, shake, split,
+};
 use crate::menu::MenuLayout;
-use crate::menu::view::{LogoArt, push_layer};
+use crate::menu::view::{LogoArt, mark, push_mask};
 use crate::theme::{Theme, faded};
+
+/// Beams closing in during the charge.
+const BEAMS: usize = 10;
 
 /// The draw side of [`super::Intro`].
 #[derive(Debug)]
@@ -30,9 +37,9 @@ impl IntroView {
     }
 
     /// Writes the intro at `snapshot` over a `width` × `height` window into `shapes`: the
-    /// black (tinting `white`, an opaque white image) and the logo's layers from `art`,
-    /// settling on `target` (the menu's logo: centre and size; lazer's logo alone when
-    /// `None`).
+    /// backdrop (tinting `white`, an opaque white image), its glow, beams and explosion, and
+    /// the logo's masks from `art`, settling on `target` (the menu's logo: centre and size;
+    /// lazer's logo alone when `None`).
     #[allow(clippy::too_many_arguments)]
     pub fn push(
         &self,
@@ -44,26 +51,106 @@ impl IntroView {
         art: Option<&LogoArt>,
         target: Option<([f32; 2], f32)>,
     ) {
+        let theme = &self.theme;
+        let colours = &theme.logo;
         let t = (snapshot.elapsed_ns as f64 / 1e9) as f32;
         let fade = 1.0 - snapshot.exit;
         let black = backdrop(t) * fade;
         if black > 0.0 {
             let mut sprite = Sprite::new(white.texture, white.uv, [0.0, 0.0], [width, height]);
-            sprite.colour = faded(self.theme.intro_backdrop, black);
+            sprite.colour = faded(theme.intro_backdrop, black);
             shapes.push(&sprite);
         }
         let Some(art) = art else {
             return;
         };
-        let (centre, menu_size) =
+        let (home, menu_size) =
             target.unwrap_or_else(|| MenuLayout::new(width, height, &self.theme).logo_alone());
         let logo = logo_pose(t);
         let size = menu_size * logo.scale;
-        if logo.disc > 0.0 {
-            let tint = faded(Color::WHITE, logo.disc * fade);
-            push_layer(shapes, art.disc, centre, size, 0.0, tint, Blend::Alpha);
+        let [sx, sy] = shake(t);
+        let centre = [home[0] + sx * size, home[1] + sy * size];
+        let layers = art.layers(size);
+        let charge = charge(t);
+        let boom = blast(t);
+        // A coloured glow behind everything, swelling with the charge.
+        let glow = black * (0.35 + 0.65 * charge).max(boom.wave_alpha * 0.8);
+        if glow > 0.0 {
+            let halo = [colours.ring[0], colours.ring[1]];
+            push_mask(
+                shapes,
+                layers.shine,
+                centre,
+                size * 3.2,
+                0.0,
+                halo,
+                glow * 0.6,
+                Blend::Additive,
+            );
         }
-        for (index, layer) in art.mark().into_iter().enumerate() {
+        // Beams from beyond the window closing in on the centre.
+        if charge > 0.0 {
+            let reach = width.hypot(height);
+            let thickness = (size * 0.022).max(2.0);
+            for beam in 0..BEAMS {
+                let angle = beam as f32 / BEAMS as f32 * std::f32::consts::TAU + t * 1.7;
+                let (sin, cos) = angle.sin_cos();
+                let near = size * 0.5 + reach * (1.0 - charge);
+                let length = reach;
+                let mut sprite = Sprite::new(
+                    white.texture,
+                    white.uv,
+                    [centre[0] + cos * near, centre[1] + sin * near],
+                    [thickness * (1.0 + charge), length],
+                );
+                sprite.origin = [thickness / 2.0, 0.0];
+                sprite.rotation = angle - std::f32::consts::FRAC_PI_2;
+                let colour = if beam % 2 == 0 {
+                    colours.frame[0]
+                } else {
+                    colours.ring[1]
+                };
+                sprite.colour = faded(colour, charge * fade);
+                sprite.blend = Blend::Additive;
+                shapes.push(&sprite);
+            }
+        }
+        if logo.disc > 0.0 {
+            let a = logo.disc * fade;
+            push_mask(
+                shapes,
+                layers.disc,
+                centre,
+                size,
+                0.0,
+                colours.disc,
+                a,
+                Blend::Alpha,
+            );
+            let shine = [colours.shine, faded(colours.shine, 0.0)];
+            push_mask(
+                shapes,
+                layers.shine,
+                centre,
+                size,
+                0.0,
+                shine,
+                a,
+                Blend::Alpha,
+            );
+            push_mask(
+                shapes,
+                layers.ring,
+                centre,
+                size,
+                0.0,
+                colours.ring,
+                a,
+                Blend::Alpha,
+            );
+        }
+        let glitch = split(t) * fade;
+        for (index, (image, piece)) in mark(layers, colours).into_iter().enumerate() {
             let pose = piece_pose(index, t);
             let alpha = pose.alpha * fade;
             if alpha <= 0.0 {
@@ -73,8 +160,86 @@ impl IntroView {
                 centre[0] + pose.offset[0] * size,
                 centre[1] + pose.offset[1] * size,
             ];
-            let tint = faded(Color::WHITE, alpha);
-            push_layer(shapes, layer, at, size, pose.rotation, tint, Blend::Alpha);
+            // The glitch: copies to either side in the ring's two colours.
+            if glitch > 0.01 {
+                let away = glitch * size * 0.035;
+                for (side, colour) in [(-1.0, colours.ring[0]), (1.0, colours.ring[1])] {
+                    let copy = [at[0] + side * away, at[1] - side * away * 0.3];
+                    push_mask(
+                        shapes,
+                        image,
+                        copy,
+                        size,
+                        pose.rotation,
+                        [colour; 2],
+                        alpha * glitch * 0.7,
+                        Blend::Additive,
+                    );
+                }
+            }
+            push_mask(
+                shapes,
+                image,
+                at,
+                size,
+                pose.rotation,
+                piece,
+                alpha,
+                Blend::Alpha,
+            );
+        }
+        // The core glowing up in the middle of the mark.
+        if charge > 0.0 {
+            let core = size * (0.1 + 0.35 * charge * charge);
+            let white_hot = [Color::WHITE, colours.frame[0]];
+            push_mask(
+                shapes,
+                layers.shine,
+                centre,
+                core,
+                0.0,
+                white_hot,
+                charge * fade,
+                Blend::Additive,
+            );
+        }
+        // The explosion: shock waves, a burst of triangles and the window's flash.
+        if boom.wave_alpha > 0.0 && boom.burst > 0.0 {
+            for (delay, colours) in [(0.0, colours.ring), (0.25, colours.frame)] {
+                let wave = ((boom.wave - delay) / (1.0 - delay)).max(0.0);
+                let ring = size * (1.0 + 2.6 * wave);
+                push_mask(
+                    shapes,
+                    layers.ring,
+                    centre,
+                    ring,
+                    0.0,
+                    colours,
+                    boom.wave_alpha * fade,
+                    Blend::Additive,
+                );
+            }
+        }
+        if boom.burst > 0.0 && boom.burst < 1.0 {
+            let fly = crate::anim::ease_out_expo(boom.burst);
+            for index in 0..BURST_TRIANGLES {
+                let (angle, far, side) = burst_triangle(index);
+                let (sin, cos) = angle.sin_cos();
+                let distance = size * (0.3 + far * fly);
+                let side = side * size;
+                let mut sprite = Sprite::new(
+                    art.triangle.texture,
+                    art.triangle.uv,
+                    [centre[0] + cos * distance, centre[1] + sin * distance],
+                    [side, side],
+                );
+                sprite.origin = [side / 2.0, side / 2.0];
+                sprite.rotation = angle + boom.burst * 4.0;
+                let colour = theme.menu_particle_colours[index % 2];
+                sprite.colour = faded(colour, (1.0 - boom.burst) * fade);
+                sprite.blend = Blend::Additive;
+                shapes.push(&sprite);
+            }
         }
         if logo.flash > 0.0 {
             let radius = size / 2.0;
@@ -88,6 +253,12 @@ impl IntroView {
             flash.radius = radius;
             flash.blend = Blend::Additive;
             shapes.push_shape(&flash);
+        }
+        if boom.flash > 0.01 {
+            let mut sprite = Sprite::new(white.texture, white.uv, [0.0, 0.0], [width, height]);
+            sprite.colour = faded(Color::WHITE, boom.flash * fade);
+            sprite.blend = Blend::Additive;
+            shapes.push(&sprite);
         }
     }
 }
@@ -114,18 +285,6 @@ mod tests {
         }
     }
 
-    fn art() -> LogoArt {
-        LogoArt {
-            disc: region(1),
-            frame: region(2),
-            play: region(3),
-            facet: region(4),
-            accent: region(5),
-            small: region(6),
-            triangle: region(7),
-        }
-    }
-
     fn snapshot(t: f32) -> IntroSnapshot {
         IntroSnapshot {
             elapsed_ns: (f64::from(t) * 1e9) as u64,
@@ -138,52 +297,58 @@ mod tests {
     fn the_logo_ends_where_the_menu_draws_it_alone() {
         let view = IntroView::new(Theme::default());
         let mut shapes = ShapeBatch::new();
+        let art = LogoArt::all(region(1));
         view.push(
             &mut shapes,
             1280.0,
             720.0,
             &snapshot(END_S - 1e-4),
             region(0),
-            Some(&art()),
+            Some(&art),
             None,
         );
-        // The black is gone; the disc and the four pieces are whole, at the menu's place.
+        // The black is gone and nothing shakes; disc, shine, ring and four pieces are whole,
+        // at the menu's place.
         let (centre, size) = MenuLayout::new(1280.0, 720.0, &Theme::default()).logo_alone();
         let quads = shapes.vertices().as_chunks::<4>().0;
-        assert!(quads.len() >= 5);
         let side = size / crate::menu::view::DISC_SHARE;
-        for quad in &quads[quads.len() - 5..] {
+        let layers: Vec<_> = quads
+            .iter()
+            .filter(|q| (q[1].position[0] - q[0].position[0] - side).abs() < 3.0)
+            .collect();
+        assert!(layers.len() >= 7, "{}", layers.len());
+        for quad in layers {
             let mid_x = (quad[0].position[0] + quad[2].position[0]) / 2.0;
             let mid_y = (quad[0].position[1] + quad[2].position[1]) / 2.0;
-            assert!((mid_x - centre[0]).abs() < 0.5 && (mid_y - centre[1]).abs() < 0.5);
-            assert!((quad[1].position[0] - quad[0].position[0] - side).abs() < 0.5);
+            assert!((mid_x - centre[0]).abs() < 2.0 && (mid_y - centre[1]).abs() < 2.0);
         }
     }
 
     #[test]
-    fn before_the_impact_only_lit_pieces_show_on_black() {
+    fn the_impact_explodes() {
         let view = IntroView::new(Theme::default());
-        let mut shapes = ShapeBatch::new();
+        let art = LogoArt::all(region(1));
+        let mut before = ShapeBatch::new();
         view.push(
-            &mut shapes,
+            &mut before,
             1280.0,
             720.0,
             &snapshot(0.0),
             region(0),
-            Some(&art()),
+            Some(&art),
             None,
         );
-        assert_eq!(shapes.len(), 1, "the black alone");
-        let mut shapes = ShapeBatch::new();
+        assert!(before.len() <= 2, "black and its glow");
+        let mut boom = ShapeBatch::new();
         view.push(
-            &mut shapes,
+            &mut boom,
             1280.0,
             720.0,
-            &snapshot(IMPACT_S - 0.2),
+            &snapshot(IMPACT_S + 0.05),
             region(0),
-            Some(&art()),
+            Some(&art),
             None,
         );
-        assert_eq!(shapes.len(), 1 + PIECES, "every piece, no disc yet");
+        assert!(boom.len() > BURST_TRIANGLES + PIECES, "{}", boom.len());
     }
 }

@@ -14,14 +14,14 @@ use slam_text::{
 
 use slam_render::Color;
 use slam_render::hal::Blend;
-use slam_render::shape::Shape;
-use slam_render::sprite::Sprite;
+use slam_render::shape::{Gradient, Shape};
+use slam_render::sprite::{Affine, Sprite};
 use slam_text::Icon;
 
 use super::logo::{BAR_ALPHA, BAR_LENGTH, BARS, DEAD_ZONE, LogoSnapshot, ROUNDS};
 use super::{MenuItem, MenuSnapshot, MenuStyle};
 use crate::screen::Pose;
-use crate::theme::{Theme, faded};
+use crate::theme::{LogoColours, Theme, faded};
 
 /// The menu's localised texts, already formatted.
 #[derive(Clone, Debug)]
@@ -120,49 +120,145 @@ pub(crate) struct Frame {
     pub(crate) height: f32,
 }
 
-/// The logo's images in the atlas (ADR-0186): its layers, back to front, the whole logo
-/// small (for small sizes) and the triangle it throws out. The layers' canvas is a bit
-/// larger than the disc: [`DISC_SHARE`] of it.
+/// One set of the logo's masks (ADR-0186): white images whose alpha is the layer's
+/// shape, coloured by the theme's [`LogoColours`] when drawn.
 #[derive(Clone, Copy, Debug, PartialEq)]
-pub struct LogoArt {
+pub struct LogoLayers {
     pub disc: AtlasRegion,
+    pub shine: AtlasRegion,
+    pub ring: AtlasRegion,
     pub frame: AtlasRegion,
     pub play: AtlasRegion,
     pub facet: AtlasRegion,
     pub accent: AtlasRegion,
-    pub small: AtlasRegion,
+}
+
+impl LogoLayers {
+    /// Every layer at `region` (tests and tools).
+    pub const fn all(region: AtlasRegion) -> LogoLayers {
+        LogoLayers {
+            disc: region,
+            shine: region,
+            ring: region,
+            frame: region,
+            play: region,
+            facet: region,
+            accent: region,
+        }
+    }
+}
+
+/// The logo's images in the atlas: its masks large and small (drawn below
+/// [`SMALL_BELOW`] pixels, as there are no mipmaps) and the triangle it throws out.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct LogoArt {
+    pub big: LogoLayers,
+    pub small: LogoLayers,
     pub triangle: AtlasRegion,
 }
 
 impl LogoArt {
-    /// The mark's layers over the disc, back to front.
-    pub fn mark(&self) -> [AtlasRegion; 4] {
-        [self.frame, self.play, self.facet, self.accent]
+    /// Every image at `region` (tests and tools).
+    pub const fn all(region: AtlasRegion) -> LogoArt {
+        LogoArt {
+            big: LogoLayers::all(region),
+            small: LogoLayers::all(region),
+            triangle: region,
+        }
     }
+
+    /// The masks for a logo `size` pixels across.
+    pub fn layers(&self, size: f32) -> &LogoLayers {
+        if size < SMALL_BELOW {
+            &self.small
+        } else {
+            &self.big
+        }
+    }
+}
+
+/// The mark's pieces, back to front, with their colours.
+pub fn mark(layers: &LogoLayers, colours: &LogoColours) -> [(AtlasRegion, [Color; 2]); 4] {
+    [
+        (layers.frame, colours.frame),
+        (layers.play, colours.play),
+        (layers.facet, colours.facet),
+        (layers.accent, colours.accent),
+    ]
 }
 
 /// The disc's diameter as a part of the logo images' side (`assets/logo`: 940 of 1000).
 pub const DISC_SHARE: f32 = 0.94;
-/// Below this many pixels the logo is drawn from its small image.
+/// Below this many pixels the logo is drawn from its small masks.
 const SMALL_BELOW: f32 = 300.0;
 
-/// Draws `image` centred on `centre`, its disc `size` across, turned `rotation` radians.
-pub fn push_layer(
+/// Draws the mask `image` centred on `centre`, its disc `size` across, turned `rotation`
+/// radians, running from `colours[0]` at the top to `colours[1]` at the bottom, faded by
+/// `alpha`.
+#[allow(clippy::too_many_arguments)]
+pub fn push_mask(
     shapes: &mut ShapeBatch,
     image: AtlasRegion,
     centre: [f32; 2],
     size: f32,
     rotation: f32,
-    colour: Color,
+    colours: [Color; 2],
+    alpha: f32,
     blend: Blend,
 ) {
     let side = size / DISC_SHARE;
-    let mut sprite = Sprite::new(image.texture, image.uv, centre, [side, side]);
-    sprite.origin = [side / 2.0, side / 2.0];
-    sprite.rotation = rotation;
-    sprite.colour = colour;
-    sprite.blend = blend;
-    shapes.push(&sprite);
+    let first = shapes.len();
+    let mut shape = Shape::new(
+        image.texture,
+        image.uv,
+        [centre[0] - side / 2.0, centre[1] - side / 2.0],
+        [side, side],
+        faded(colours[0], alpha),
+    );
+    shape.gradient = Some(Gradient::Vertical(faded(colours[1], alpha)));
+    shape.blend = blend;
+    shapes.push_shape(&shape);
+    if rotation != 0.0 {
+        let turn = Affine::about(centre, 1.0, rotation, [0.0, 0.0]);
+        shapes.transform_from(first, &turn, [1.0; 4]);
+    }
+}
+
+/// Draws the whole logo from `layers` in `colours`: disc, shine, ring and mark.
+pub fn push_whole(
+    shapes: &mut ShapeBatch,
+    layers: &LogoLayers,
+    colours: &LogoColours,
+    centre: [f32; 2],
+    size: f32,
+    alpha: f32,
+) {
+    let a = Blend::Alpha;
+    push_mask(
+        shapes,
+        layers.disc,
+        centre,
+        size,
+        0.0,
+        colours.disc,
+        alpha,
+        a,
+    );
+    let shine = [colours.shine, faded(colours.shine, 0.0)];
+    push_mask(shapes, layers.shine, centre, size, 0.0, shine, alpha, a);
+    push_mask(
+        shapes,
+        layers.ring,
+        centre,
+        size,
+        0.0,
+        colours.ring,
+        alpha,
+        a,
+    );
+    for (image, piece) in mark(layers, colours) {
+        push_mask(shapes, image, centre, size, 0.0, piece, alpha, a);
+    }
 }
 
 /// Draws the beating logo `size` across at `centre`, faded by `opacity`: the side flashes
@@ -207,7 +303,7 @@ pub fn push_logo(
                 [flash_width, height],
                 from,
             );
-            shape.gradient = Some(slam_render::shape::Gradient::Horizontal(to));
+            shape.gradient = Some(Gradient::Horizontal(to));
             shape.blend = Blend::Additive;
             shapes.push_shape(&shape);
         }
@@ -260,29 +356,18 @@ pub fn push_logo(
         sprite.colour = faded(colour, particle.alpha * opacity);
         shapes.push(&sprite);
     }
-    let tint = faded(Color::WHITE, opacity);
-    if drawn < SMALL_BELOW {
-        push_layer(shapes, art.small, centre, drawn, 0.0, tint, Blend::Alpha);
-    } else {
-        push_layer(shapes, art.disc, centre, drawn, 0.0, tint, Blend::Alpha);
-        for layer in art.mark() {
-            push_layer(shapes, layer, centre, drawn, 0.0, tint, Blend::Alpha);
-        }
-    }
+    let layers = art.layers(drawn);
+    push_whole(shapes, layers, &theme.logo, centre, drawn, opacity);
     if logo.ripple_alpha > 0.0 {
-        let ripple = faded(Color::WHITE, logo.ripple_alpha * opacity);
-        let image = if drawn < SMALL_BELOW {
-            art.small
-        } else {
-            art.disc
-        };
-        push_layer(
+        let ripple = [Color::WHITE; 2];
+        push_mask(
             shapes,
-            image,
+            layers.disc,
             centre,
             drawn * logo.ripple_scale,
             0.0,
             ripple,
+            logo.ripple_alpha * opacity,
             Blend::Additive,
         );
     }
@@ -310,6 +395,8 @@ pub struct MenuView {
     frame: Frame,
     scale: f32,
     buttons: [Line; MenuItem::ALL.len()],
+    /// The same labels small and regular, for lazer's bar.
+    small: [Line; MenuItem::ALL.len()],
     /// The startup intro draws the logo meanwhile (ADR-0186).
     logo_hidden: bool,
 }
@@ -330,6 +417,7 @@ impl MenuView {
             frame: Frame { width, height },
             scale: theme.scale(height),
             buttons: labels.buttons.each_ref().map(|text| Line::new(text)),
+            small: labels.buttons.each_ref().map(|text| Line::new(text)),
             logo_hidden: false,
             theme,
         };
@@ -358,6 +446,12 @@ impl MenuView {
                     .heading_face(self.theme.button_text_size * self.scale),
             );
         }
+        let small = self
+            .theme
+            .regular_face(self.theme.menu_lazer_label_size * self.scale);
+        for line in &mut self.small {
+            self.type_setter.lay_out_face(line, small);
+        }
     }
 
     /// Leaves the logo out of [`MenuView::push`] while the startup intro draws it.
@@ -376,6 +470,7 @@ impl MenuView {
             + self
                 .buttons
                 .iter()
+                .chain(&self.small)
                 .flat_map(|line| line.layout.glyphs())
                 .filter(|g| matches!(glyphs.glyph(GlyphKey::of(g)), Glyph::Pending))
                 .count()
@@ -424,58 +519,71 @@ impl MenuView {
             }
             let mut rect = button.rect;
             rect.x += shift;
-            let (tint, fill) = match snapshot.style {
-                MenuStyle::Lazer => (theme.menu_lazer_tints[i], theme.menu_lazer_tints[i]),
-                // Stable's column: purple, the hovered button pink.
+            match snapshot.style {
+                MenuStyle::Lazer => {
+                    // lazer's MainMenuButton: a flat wedge in its colour over a soft shadow,
+                    // lit white by the pointer.
+                    let skew = theme.button_skew();
+                    let plate = |colour: Color, glow: f32| {
+                        let mut shape = Shape::new(
+                            white.texture,
+                            white.uv,
+                            [rect.x, rect.y],
+                            [rect.width, rect.height],
+                            colour,
+                        );
+                        shape.skew = skew;
+                        shape.glow = glow;
+                        shape
+                    };
+                    shapes.push_shape(&plate(faded(Color::BLACK, 0.2 * opacity), 8.0 * scale));
+                    shapes.push_shape(&plate(faded(theme.menu_lazer_tints[i], opacity), 0.0));
+                    if button.lit > 0.0 {
+                        shapes.push_shape(&plate(
+                            faded(Color::WHITE, 0.1 * button.lit * opacity),
+                            0.0,
+                        ));
+                    }
+                }
                 MenuStyle::Stable => {
+                    // Stable's column: purple, the hovered button pink.
                     let tint = if button.hovered {
                         theme.menu_lazer_tints[2]
                     } else {
                         theme.menu_lazer_tints[0]
                     };
-                    (tint, tint)
+                    crate::widgets::tinted_button(
+                        shapes,
+                        white,
+                        &rect,
+                        theme,
+                        scale,
+                        tint,
+                        button.hovered,
+                        i as f32 * 0.37,
+                        opacity * button.alpha.clamp(0.0, 1.0),
+                        tint,
+                    );
                 }
-            };
-            crate::widgets::tinted_button(
-                shapes,
-                white,
-                &rect,
-                theme,
-                scale,
-                fill,
-                button.hovered,
-                i as f32 * 0.37,
-                // lazer's buttons come out by their width, stable's fade in as they slide.
-                match snapshot.style {
-                    MenuStyle::Lazer => opacity,
-                    MenuStyle::Stable => opacity * button.alpha.clamp(0.0, 1.0),
-                },
-                tint,
-            );
+            }
             let colour = faded(theme.text, opacity * button.alpha);
             if colour.a <= 0.0 {
                 continue;
             }
             match snapshot.style {
                 MenuStyle::Lazer => {
-                    // Icon above, label below, as lazer's MainMenuButton.
-                    let side = 32.0 * scale;
+                    // Icon a little above the middle, the label small below, as lazer's.
+                    let side = theme.menu_lazer_icon_size * scale;
                     let [cx, cy] = rect.centre();
                     slam_text::push_icon(
                         text,
                         glyphs,
                         ICONS[i],
-                        [cx - side / 2.0, cy - side * 0.85],
+                        [cx - side / 2.0, cy - side * 0.75],
                         side,
                         colour,
                     );
-                    push_centred(
-                        text,
-                        &self.buttons[i],
-                        [cx, cy + side * 0.6],
-                        colour,
-                        glyphs,
-                    );
+                    push_centred(text, &self.small[i], [cx, cy + side * 0.8], colour, glyphs);
                 }
                 MenuStyle::Stable => {
                     // The label right of the logo, the icon at the far end.

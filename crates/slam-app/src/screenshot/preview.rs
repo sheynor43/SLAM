@@ -396,20 +396,23 @@ impl State {
                 } else {
                     &mut self.plain_views
                 };
-                views.song_select.push(
-                    &mut self.shapes,
-                    &mut self.text,
-                    &mut self.glyphs,
-                    width,
-                    height,
-                    &self.song_select.snapshot(),
-                    Pose::SHOWN,
-                    white,
-                    Thumbs {
-                        logo: gpu.logo.as_ref(),
-                        ..Thumbs::OFF
-                    },
-                );
+                split = views
+                    .song_select
+                    .push(
+                        &mut self.shapes,
+                        &mut self.text,
+                        &mut self.glyphs,
+                        width,
+                        height,
+                        &self.song_select.snapshot(),
+                        Pose::SHOWN,
+                        white,
+                        Thumbs {
+                            logo: gpu.logo.as_ref(),
+                            ..Thumbs::OFF
+                        },
+                    )
+                    .logo;
             }
             Scene::Mods => {
                 let mut screen = self.song_select.clone();

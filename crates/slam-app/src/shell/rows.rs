@@ -258,6 +258,8 @@ pub enum Row {
     Renderer,
     /// Whether the startup intro plays; read at start (ADR-0114).
     Intro,
+    /// How the main menu's buttons come out (ADR-0186).
+    MenuStyle,
     /// The interface colour scheme (ADR-0117).
     ColourScheme,
     /// The window edge the volume overlay stands at (ADR-0145).
@@ -313,8 +315,6 @@ pub enum Row {
     MenuSounds,
     /// What the main menu shows behind its content (ADR-0119).
     MenuBackground,
-    /// How the main menu's buttons come out (ADR-0186).
-    MenuStyle,
     PauseMenuStyle,
     /// How the skip button looks (ADR-0160).
     SkipButton,
@@ -437,6 +437,7 @@ impl Row {
         Row::VideoDriver,
         Row::Renderer,
         Row::Intro,
+        Row::MenuStyle,
         Row::ColourScheme,
         Row::VolumeOverlay,
         Row::VolumeMeter,
@@ -469,7 +470,6 @@ impl Row {
         Row::HitLighting,
         Row::MenuSounds,
         Row::MenuBackground,
-        Row::MenuStyle,
         Row::PauseMenuStyle,
         Row::SkipButton,
         Row::ResultsStyle,
@@ -659,6 +659,7 @@ impl Row {
             | Row::VideoDriver
             | Row::Renderer
             | Row::Intro
+            | Row::MenuStyle
             | Row::ColourScheme
             | Row::VolumeOverlay
             | Row::VolumeMeter
@@ -695,8 +696,7 @@ impl Row {
             | Row::MenuBackground
             | Row::PauseMenuStyle
             | Row::SkipButton
-            | Row::ResultsStyle
-            | Row::MenuStyle => section::SKIN,
+            | Row::ResultsStyle => section::SKIN,
             Row::UpdateHz
             | Row::DrawHz
             | Row::MenuDrawHz
@@ -2987,11 +2987,11 @@ mod tests {
         assert_eq!(
             specs[index(Row::ColourScheme)].kind,
             RowKind::Dropdown {
-                options: 5,
-                selected: 0
+                options: 6,
+                selected: 1
             }
         );
-        rows.apply(&mut s, index(Row::ColourScheme), RowValue::Choice(4));
+        rows.apply(&mut s, index(Row::ColourScheme), RowValue::Choice(5));
         assert_eq!(s.general.colour_scheme, ColourScheme::Mono);
         rows.apply(&mut s, index(Row::ColourScheme), RowValue::Choice(9));
         assert_eq!(s.general.colour_scheme, ColourScheme::Mono);
@@ -3460,7 +3460,6 @@ mod tests {
             Row::PauseMenuStyle,
             Row::SkipButton,
             Row::ResultsStyle,
-            Row::MenuStyle,
         ] {
             assert_eq!(row.section(), section::SKIN, "{row:?}");
         }

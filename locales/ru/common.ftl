@@ -269,6 +269,7 @@ settings-general-colour-scheme-blue = Синяя
 settings-general-colour-scheme-green = Зелёная
 settings-general-colour-scheme-orange = Оранжевая
 settings-general-colour-scheme-mono = Монохромная
+settings-general-colour-scheme-slam = SLAM
 settings-general-volume-overlay-left = Слева
 settings-general-volume-overlay-right = Справа
 settings-general-volume-overlay-top = Сверху

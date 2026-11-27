@@ -265,6 +265,7 @@ settings-general-colour-scheme-blue = Blue
 settings-general-colour-scheme-green = Green
 settings-general-colour-scheme-orange = Orange
 settings-general-colour-scheme-mono = Mono
+settings-general-colour-scheme-slam = SLAM
 settings-general-volume-overlay-left = Left
 settings-general-volume-overlay-right = Right
 settings-general-volume-overlay-top = Top

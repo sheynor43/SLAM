@@ -356,6 +356,17 @@ fn published_lists_reach_the_song_select_and_keys_move_through_them() {
 }
 
 #[test]
+fn p_opens_the_menu_then_plays_as_in_lazer() {
+    let mut s = state();
+    let mut snap = ShellSnapshot::default();
+    const KEY_P: u16 = 19;
+    s.tick(0, &[key(KEY_P)], &mut snap);
+    assert!(matches!(s.stack().top(), AppScreen::Menu(menu) if menu.is_open()));
+    s.tick(1_000_000, &[key(KEY_P)], &mut snap);
+    assert_eq!(*s.stack().top(), AppScreen::SongSelect);
+}
+
+#[test]
 fn menu_ignores_song_select_keys() {
     let mut s = state();
     let mut snap = ShellSnapshot::default();

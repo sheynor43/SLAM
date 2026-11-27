@@ -97,15 +97,7 @@ fn views_push_without_allocating_once_warm() {
         ShapeBatch::with_capacity(64),
         SpriteBatch::with_capacity(64),
     );
-    let art = LogoArt {
-        disc: white,
-        frame: white,
-        play: white,
-        facet: white,
-        accent: white,
-        small: white,
-        triangle: white,
-    };
+    let art = LogoArt::all(white);
     // Open, on a loud kiai beat: every bar, triangle and flash is drawn.
     let layout = MenuLayout::new(1280.0, 720.0, &Theme::default());
     let mut state = MainMenu::new();

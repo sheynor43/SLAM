@@ -44,20 +44,12 @@ fn view_pushes_without_allocating_once_warm() {
             v1: 1.0,
         },
     };
-    let art = LogoArt {
-        disc: white,
-        frame: white,
-        play: white,
-        facet: white,
-        accent: white,
-        small: white,
-        triangle: white,
-    };
+    let art = LogoArt::all(white);
     let mut shapes = ShapeBatch::with_capacity(16);
     let mut intro = Intro::new();
     intro.start(0);
     let mut most = 0;
-    assert_no_alloc(|| {
+    let mut play = || {
         let mut now = 0;
         while now < LENGTH_NS {
             shapes.clear();
@@ -75,7 +67,10 @@ fn view_pushes_without_allocating_once_warm() {
             most = most.max(shapes.len());
             now += FRAME_NS;
         }
-    });
-    // The black, the disc, four pieces and the flash.
-    assert_eq!(most, 7);
+    };
+    // Warm: the first run grows the batch to the explosion's size.
+    play();
+    assert_no_alloc(play);
+    // Black, glow, beams, the logo with its glitch copies, waves, burst and flash.
+    assert!(most > 30, "{most}");
 }

@@ -29,6 +29,9 @@ pub enum MenuInput {
         x: f32,
         y: f32,
     },
+    /// A button's key, as lazer's (P play, O or S settings, Q exit): play opens the
+    /// buttons first, the others act only while the buttons are out.
+    Hotkey(MenuItem),
 }
 
 /// What the menu asks the application to do.
@@ -187,6 +190,8 @@ pub struct MenuButton {
     /// 0 hidden, 1 fully out.
     pub alpha: f32,
     pub hovered: bool,
+    /// How lit by the pointer, 0 to 1 (lazer's hover layer).
+    pub lit: f32,
 }
 
 /// What the draw side needs of the menu.
@@ -532,6 +537,7 @@ impl MainMenu {
         let (mut buttons, bar_alpha) = self.buttons_at(layout, now_ns);
         for (i, button) in buttons.iter_mut().enumerate() {
             button.hovered = self.open && i == self.selected;
+            button.lit = self.hover[i].value(now_ns, ease_out_quint).clamp(0.0, 1.0);
         }
         MenuSnapshot {
             style: self.style,
@@ -584,6 +590,16 @@ impl MainMenu {
                     return Some(MenuAction::Exit);
                 }
                 self.close(now_ns);
+            }
+            MenuInput::Hotkey(item) => {
+                if self.open {
+                    self.selected = MenuItem::ALL.iter().position(|i| *i == item).unwrap_or(0);
+                    return Some(item.action());
+                }
+                if item == MenuItem::Play {
+                    self.logo.click(now_ns);
+                    self.open(now_ns);
+                }
             }
             MenuInput::PointerMove { x, y } => {
                 let (centre, size) = self.logo_at(layout, now_ns);

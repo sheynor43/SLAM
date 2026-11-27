@@ -2059,6 +2059,21 @@ impl ShellState {
                 KEY_END => SongSelectInput::End,
                 KEY_ENTER | KEY_KEYPAD_ENTER => SongSelectInput::Activate,
                 KEY_ESCAPE => SongSelectInput::Back,
+                code if matches!(self.stack.top(), AppScreen::Menu(_))
+                    && !self.settings_open()
+                    && !ctrl
+                    && !self.mods().contains(Mods::ALT) =>
+                {
+                    use slam_ui::menu::MenuItem;
+                    // lazer's ButtonSystem keys.
+                    let item = match code {
+                        19 => MenuItem::Play,
+                        18 | 22 => MenuItem::Settings,
+                        20 => MenuItem::Exit,
+                        _ => return None,
+                    };
+                    return Some(ScreenInput::MenuHotkey(item));
+                }
                 code => {
                     let hotkey = match self.live_settings().song_select.mod_hotkeys {
                         ModHotkeyStyle::Sequential => mod_hotkey(code),
@@ -2465,8 +2480,13 @@ impl ShellState {
             let mut open_panel = false;
             let nav = match self.stack.top_mut() {
                 AppScreen::Menu(menu) => {
+                    let hotkey = match input {
+                        ScreenInput::MenuHotkey(item) => Some(MenuInput::Hotkey(item)),
+                        _ => None,
+                    };
                     match common
                         .and_then(menu_input)
+                        .or(hotkey)
                         .and_then(|input| menu.input(input, &self.layout, now_ns))
                     {
                         Some(MenuAction::Play) => Some(Nav::Push(AppScreen::SongSelect)),
@@ -2844,6 +2864,8 @@ enum ScreenInput {
     ToggleFps,
     /// The settings panel's hotkey (ADR-0095).
     ToggleSettings,
+    /// A main menu button's key (ADR-0186).
+    MenuHotkey(slam_ui::menu::MenuItem),
 }
 
 impl ScreenInput {
@@ -2889,7 +2911,8 @@ fn settings_input(input: ScreenInput) -> Option<SettingsInput> {
         | ScreenInput::ApproachRate(_)
         | ScreenInput::Rescan
         | ScreenInput::ToggleFps
-        | ScreenInput::ToggleSettings => {
+        | ScreenInput::ToggleSettings
+        | ScreenInput::MenuHotkey(_) => {
             return None;
         }
         ScreenInput::Common(input) => match input {
@@ -3012,7 +3035,8 @@ fn results_input(input: ScreenInput) -> Option<ResultsInput> {
         | ScreenInput::ApproachRate(_)
         | ScreenInput::Rescan
         | ScreenInput::ToggleFps
-        | ScreenInput::ToggleSettings => {
+        | ScreenInput::ToggleSettings
+        | ScreenInput::MenuHotkey(_) => {
             return None;
         }
         // The stable look scrolls (ADR-0161).
@@ -4957,7 +4981,7 @@ impl<B: render::Backend> Draw<ShellSnapshot> for View<B> {
         }
         // The screens' layers and the settings panel's.
         // Two per screen (the song select's mod panel is a layer of its own), and the panel.
-        let mut ends = [(0_u32, 0_u32, false); 3 * MAX_LAYERS + 4];
+        let mut ends = [(0_u32, 0_u32, false); 4 * MAX_LAYERS + 4];
         let mut layers = 0;
         for layer in snapshot.layers.iter().flatten() {
             // Where the screen's own quads start: its background is not scaled.
@@ -5044,7 +5068,9 @@ impl<B: render::Backend> Draw<ShellSnapshot> for View<B> {
                     );
                     // The mod panel over the list's texts (ADR-0152).
                     // The floating mod settings over the panel (ADR-0177).
-                    for (shapes_at, text_at) in [split.panel, split.popup].into_iter().flatten() {
+                    // The corner logo over the list's texts (ADR-0186).
+                    let splits = [split.logo, split.panel, split.popup];
+                    for (shapes_at, text_at) in splits.into_iter().flatten() {
                         ends[layers] = (shapes_at, text_at, false);
                         layers += 1;
                     }

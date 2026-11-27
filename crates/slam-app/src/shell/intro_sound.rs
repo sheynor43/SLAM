@@ -1,9 +1,10 @@
-//! The startup intro's sound (ADR-0114), synthesized from the intro's cues in a cinematic
-//! style: a low drone swelling under the letters, an FM blip with a sub thump each time a
-//! letter lights up, a riser of detuned saws and noise up to a breath of silence, then the
-//! impact — a saturated kick, a sub boom, a filtered saw chord ("braam"), a noise crash
-//! and a high shimmer — all in a reverb, glued by soft saturation. Rendered once, off
-//! the hot paths, into one stereo sample at the mixer's rate.
+//! The startup intro's sound (ADR-0114, ADR-0186), synthesized from the intro's cues in a
+//! cinematic style: a low drone swelling under the pieces, a laser zap (a falling FM
+//! chirp) with a sub thump each time a piece lights up, a trembling riser of detuned saws
+//! and noise up to a breath of silence, then the impact — a laser discharge, a saturated
+//! kick, a sub boom, a filtered saw chord ("braam"), a noise crash, a long rumble of the
+//! explosion and a high shimmer — all in a reverb, glued by soft saturation. Rendered
+//! once, off the hot paths, into one stereo sample at the mixer's rate.
 
 use std::f32::consts::TAU;
 
@@ -51,6 +52,9 @@ const BRAAM: [f32; 5] = [55.0, 82.41, 110.0, 130.81, 164.81];
 const BRAAM_DETUNE: [f32; 3] = [0.992, 1.0, 1.008];
 const BRAAM_GAIN: f32 = 0.05;
 const CRASH_GAIN: f32 = 0.22;
+/// The laser discharge and the explosion's rumble on the impact.
+const ZAP_GAIN: f32 = 0.12;
+const RUMBLE_GAIN: f32 = 0.5;
 /// The shimmer high above (A minor, two octaves up), detuned between the ears.
 const SHIMMER: [f32; 4] = [440.0, 659.26, 880.0, 1318.5];
 const SHIMMER_DETUNE: f32 = 1.004;
@@ -184,27 +188,36 @@ fn drone(out: &mut Out<'_>, length_s: f32) {
     });
 }
 
-/// A letter lights up: a bright FM ping with a resonant ring, and on its first switch on a
-/// sub thump; letters spread across the stereo field in their order.
+/// A piece lights up: a laser zap, an FM chirp falling two octaves onto its note with a
+/// click of noise, and on its first switch on a sub thump; pieces spread across the stereo
+/// field in their order.
 fn blip(out: &mut Out<'_>, letters: usize, rank: u32, step: u32) {
     let note = BLIP_NOTES[rank as usize % BLIP_NOTES.len()];
     let first = step == 0;
-    let freq = note * if first { 1.0 } else { 0.5 };
-    let gain = BLIP_GAIN * if first { 1.0 } else { 0.5 };
+    let target = note * if first { 1.0 } else { 0.5 };
+    let gain = BLIP_GAIN * if first { 1.0 } else { 0.6 };
     let balance = if letters > 1 {
         (rank as f32 / (letters - 1) as f32) * 1.2 - 0.6
     } else {
         0.0
     };
+    let rate = out.rate;
+    let mut phase = 0.0_f32;
+    let mut noise = Noise::new(rank << 8 | step);
     out.add(BLIP_S, balance, |t| {
-        let envelope = (t / 0.002).min(1.0) * (-t / 0.035).exp();
-        let index = 4.0 * (-t / 0.015).exp();
-        let modulator = (TAU * freq * 1.5 * t).sin() * index;
-        let ring = (TAU * freq * 2.0 * t).sin() * 0.3 * (-t / 0.06).exp();
-        gain * (envelope * (TAU * freq * t + modulator).sin() + ring)
+        // Four times the note down to it within 60 ms: the zap.
+        let freq = target * (1.0 + 3.0 * (-t / 0.02).exp());
+        phase = (phase + freq / rate).fract();
+        let envelope = (t / 0.001).min(1.0) * (-t / 0.05).exp();
+        let index = 2.5 * (-t / 0.03).exp();
+        let modulator = (TAU * phase * 2.0).sin() * index;
+        let tone = (TAU * phase + modulator).sin();
+        // A square-ish edge for bite.
+        let bite = (3.0 * tone).tanh();
+        let click = noise.next() * (-t / 0.004).exp() * 0.5;
+        gain * (envelope * (0.6 * tone + 0.4 * bite) + click)
     });
     if first {
-        let rate = out.rate;
         let mut phase = 0.0_f32;
         out.add(0.25, 0.0, |t| {
             let f = 55.0 + 90.0 * (-t / 0.03).exp();
@@ -226,7 +239,9 @@ fn riser(out: &mut Out<'_>, length_s: f32, seed_s: f32) {
     out.add_stereo(length_s, |t| {
         let p = (t / length_s).clamp(0.0, 1.0);
         let freq = RISER_FROM * ratio.powf(p);
-        let swell = p * p * p;
+        // It trembles faster and faster as it rises, with the picture.
+        let tremolo = 1.0 - 0.45 * (0.5 + 0.5 * (TAU * (6.0 + 26.0 * p * p) * t).sin());
+        let swell = p * p * p * tremolo;
         let mut ears = [0.0; 2];
         for ear in 0..2 {
             let saw: f32 = RISER_DETUNE
@@ -290,6 +305,31 @@ fn impact(out: &mut Out<'_>) {
             let white = noise.next();
             let bright = white - ear_low.next(white, 2_500.0, rate);
             ears[ear] = CRASH_GAIN * envelope * bright;
+        }
+        ears
+    });
+    // The laser discharge: a bright saw sweeping from 3 kHz down to 120 Hz.
+    let mut zap = [Saw::default(); 2];
+    out.add_stereo(0.45, |t| {
+        let freq = 120.0 + 2_900.0 * (-t / 0.08).exp();
+        let envelope = (t / 0.001).min(1.0) * (-t / 0.12).exp();
+        let mut ears = [0.0; 2];
+        for (ear, detune) in [1.0, 1.01].into_iter().enumerate() {
+            ears[ear] = ZAP_GAIN * envelope * zap[ear].next(freq * detune, rate);
+        }
+        ears
+    });
+    // The explosion's rumble: noise through a closing low-pass, long.
+    let mut rumble_noise = Noise::new(0xB0_0B);
+    let mut rumble = [[LowPass::default(); 2]; 2];
+    out.add_stereo(1.8, |t| {
+        let envelope = (t / 0.01).min(1.0) * (-t / 0.6).exp();
+        let cutoff = 90.0 + 900.0 * (-t / 0.25).exp();
+        let mut ears = [0.0; 2];
+        for (ear, poles) in rumble.iter_mut().enumerate() {
+            let white = rumble_noise.next();
+            let once = poles[0].next(white, cutoff, rate);
+            ears[ear] = RUMBLE_GAIN * envelope * poles[1].next(once, cutoff, rate) * 3.0;
         }
         ears
     });

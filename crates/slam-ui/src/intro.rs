@@ -57,6 +57,22 @@ const FLY_FROM: f32 = 1.6;
 const APART: f32 = 0.28;
 /// How long a piece flies in.
 const FLY_S: f32 = 0.3;
+/// Shakes: a blip's kick and the charge's tremble at its peak, and the impact's jolt, as
+/// parts of the logo's size; how fast kicks die away.
+const BLIP_SHAKE: f32 = 0.025;
+const CHARGE_SHAKE: f32 = 0.014;
+const IMPACT_SHAKE: f32 = 0.09;
+const SHAKE_DECAY_S: f32 = 0.06;
+const IMPACT_SHAKE_DECAY_S: f32 = 0.16;
+/// How fast a blip's coloured split closes.
+const SPLIT_DECAY_S: f32 = 0.08;
+/// The explosion: the window's white flash and its decay, the shock waves' and the burst's
+/// lengths, and how many triangles burst out.
+const BLAST_FLASH: f32 = 0.85;
+const BLAST_FLASH_S: f32 = 0.12;
+const WAVE_S: f32 = 0.55;
+const BURST_S: f32 = 0.6;
+pub const BURST_TRIANGLES: usize = 24;
 /// The white flash on the impact: strength and length.
 const IMPACT_FLASH: f32 = 0.6;
 const IMPACT_FLASH_S: f32 = 0.5;
@@ -222,6 +238,97 @@ pub fn logo_pose(t: f32) -> LogoPose {
             0.0
         },
     }
+}
+
+/// How hard the picture shakes at `t` seconds, and where to: an offset as a part of the
+/// logo's size. Each blip kicks it, the charge before the impact trembles it more and more,
+/// and the impact jolts it hardest; the direction is noise, the same every time.
+pub fn shake(t: f32) -> [f32; 2] {
+    let mut amount = 0.0f32;
+    for index in 0..PIECES {
+        let appear = appear_s(index, PIECES);
+        for (on, _) in FLICKER {
+            let since = t - (appear + on);
+            if since >= 0.0 {
+                amount += BLIP_SHAKE * (-since / SHAKE_DECAY_S).exp();
+            }
+        }
+    }
+    amount += CHARGE_SHAKE * charge(t);
+    let since = t - IMPACT_S;
+    if since >= 0.0 {
+        amount += IMPACT_SHAKE * (-since / IMPACT_SHAKE_DECAY_S).exp();
+    }
+    // A new direction every 1/60 s.
+    let tick = (t * 60.0).floor() as i32 as u32;
+    let angle = unit01(hash(SEED ^ tick)) * std::f32::consts::TAU;
+    [angle.cos() * amount, angle.sin() * amount]
+}
+
+/// How much the pieces split into coloured copies at `t`, 0 ..= 1: a glitch on each blip.
+pub fn split(t: f32) -> f32 {
+    let mut most = 0.0f32;
+    for index in 0..PIECES {
+        let appear = appear_s(index, PIECES);
+        for (on, _) in FLICKER {
+            let since = t - (appear + on);
+            if since >= 0.0 {
+                most = most.max((-since / SPLIT_DECAY_S).exp());
+            }
+        }
+    }
+    most + 0.6 * charge(t) * (1.0 - smoothstep(IMPACT_S, IMPACT_S + 0.1, t))
+}
+
+/// The charge before the impact, 0 ..= 1: the beams close in and the core glows.
+pub fn charge(t: f32) -> f32 {
+    if t >= IMPACT_S {
+        return 0.0;
+    }
+    smoothstep(GATHER_S, IMPACT_S, t)
+}
+
+/// The explosion on the impact.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct Blast {
+    /// White over the whole window.
+    pub flash: f32,
+    /// The shock waves' progress, 0 ..= 1 (the second follows the first), and opacity.
+    pub wave: f32,
+    pub wave_alpha: f32,
+    /// The burst of triangles' progress, 0 ..= 1 (0 before the impact).
+    pub burst: f32,
+}
+
+/// The explosion at `t` seconds.
+pub fn blast(t: f32) -> Blast {
+    let since = t - IMPACT_S;
+    if since < 0.0 {
+        return Blast {
+            flash: 0.0,
+            wave: 0.0,
+            wave_alpha: 0.0,
+            burst: 0.0,
+        };
+    }
+    let wave = (since / WAVE_S).min(1.0);
+    Blast {
+        flash: BLAST_FLASH * (-since / BLAST_FLASH_S).exp(),
+        wave: crate::anim::ease_out_expo(wave),
+        wave_alpha: 1.0 - wave,
+        burst: (since / BURST_S).min(1.0),
+    }
+}
+
+/// Where burst triangle `index` flies (radians, y down), how far (a part of the logo's
+/// size at the end) and how big it is.
+pub fn burst_triangle(index: usize) -> (f32, f32, f32) {
+    let h = |k: u32| unit01(hash(SEED ^ 0xB1A5 ^ (index as u32) << 4 ^ k));
+    (
+        (index as f32 + 0.6 * h(1)) / BURST_TRIANGLES as f32 * std::f32::consts::TAU,
+        1.0 + 1.6 * h(2),
+        0.05 + 0.1 * h(3),
+    )
 }
 
 /// Opacity of the black over the menu at `t` seconds.
@@ -405,6 +512,22 @@ mod tests {
             assert_eq!(whole.alpha, 1.0);
             assert_eq!(piece_pose(i, 0.0).alpha, 0.0);
         }
+    }
+
+    #[test]
+    fn the_picture_shakes_on_blips_and_hardest_on_the_impact() {
+        let length = |v: [f32; 2]| v[0].hypot(v[1]);
+        assert_eq!(length(shake(0.0)), 0.0);
+        let first = appear_s((0..PIECES).find(|&i| rank(i, PIECES) == 0).unwrap(), PIECES);
+        assert!(length(shake(first + 0.01)) > 0.01);
+        assert!(length(shake(IMPACT_S + 0.01)) > length(shake(first + 0.01)));
+        assert!(length(shake(END_S)) < 0.01);
+        assert!(split(first + 0.001) > 0.9);
+        assert!(charge(1.8) > 0.0 && charge(IMPACT_S) == 0.0);
+        assert_eq!(blast(1.0).flash, 0.0);
+        let boom = blast(IMPACT_S + 0.01);
+        assert!(boom.flash > 0.5 && boom.wave_alpha > 0.9);
+        assert!(blast(END_S).burst > 0.99);
     }
 
     #[test]

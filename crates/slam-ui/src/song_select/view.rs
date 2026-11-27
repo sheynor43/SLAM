@@ -55,6 +55,8 @@ const VALUE_CHARS: &str = "0123456789.-x";
 /// shapes and of glyph quads so far (ADR-0152, ADR-0177).
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct Splits {
+    /// Under it the list's texts; over it the corner logo (ADR-0186).
+    pub logo: Option<(u32, u32)>,
     /// Under it the list and the footer; over it the mod select panel.
     pub panel: Option<(u32, u32)>,
     /// Under it the panel; over it the floating settings panel.
@@ -881,7 +883,12 @@ impl SongSelectView {
             Row::Set(_) => theme.song_set_shift,
             Row::Difficulty { .. } => theme.song_difficulty_shift,
         } * layout.scale;
-        let mut avail = (layout.list.width - indent - most_shift - 2.0 * pad - text_shift).max(0.0);
+        // Nor as it moves along the arc (ADR-0172): the texts shift right with it, the dots,
+        // pp and pill keep to the list's right end, so the room is the arc's narrowest, at
+        // the list's ends.
+        let arc = layout.arc_x(layout.list.y);
+        let mut avail =
+            (layout.list.width - indent - most_shift - arc - 2.0 * pad - text_shift).max(0.0);
         slot.holds = None;
         slot.primary.text.clear();
         slot.secondary.text.clear();
@@ -1783,7 +1790,14 @@ impl SongSelectView {
                 left(&self.footer_reset, x, y, faded(theme.text, presence.reset));
             }
         }
-        // The beating logo in the corner, under the mod select panel (ADR-0186).
+        // The beating logo in the corner, over the list's texts and under the mod select
+        // panel (ADR-0186).
+        let logo_split = thumbs.logo.map(|_| {
+            (
+                shape_target.borrow().len() as u32,
+                target.borrow().0.len() as u32,
+            )
+        });
         if let Some(art) = thumbs.logo {
             let layout = &self.layout;
             crate::menu::view::push_logo(
@@ -2146,6 +2160,7 @@ impl SongSelectView {
             }
         }
         Splits {
+            logo: logo_split,
             panel: split,
             popup: popup_split,
         }

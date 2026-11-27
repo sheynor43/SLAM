@@ -48,6 +48,24 @@ fn enter_plays_and_keys_open_the_buttons() {
 }
 
 #[test]
+fn hotkeys_open_then_act() {
+    let mut menu = menu(MenuStyle::Lazer);
+    let key = |item| MenuInput::Hotkey(item);
+    assert_eq!(press(&mut menu, key(MenuItem::Exit), 0), None);
+    assert!(!menu.is_open(), "only play opens the buttons");
+    assert_eq!(press(&mut menu, key(MenuItem::Play), 10), None);
+    assert!(menu.is_open());
+    assert_eq!(
+        press(&mut menu, key(MenuItem::Play), 20),
+        Some(MenuAction::Play)
+    );
+    assert_eq!(
+        press(&mut menu, key(MenuItem::Settings), 30),
+        Some(MenuAction::Settings)
+    );
+}
+
+#[test]
 fn back_closes_then_exits() {
     let mut menu = menu(MenuStyle::Lazer);
     press(&mut menu, MenuInput::Down, 0);
