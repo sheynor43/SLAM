@@ -4957,20 +4957,16 @@ impl<B: render::Backend> Draw<ShellSnapshot> for View<B> {
         // layer of its own, over the popup's texts.
         if snapshot.toolbar.visible {
             // The player's popup lies on the playing beatmap's background, which is the
-            // one the menus show (ADR-0178).
-            let cover = snapshot
-                .toolbar
-                .player
-                .and(self.backgrounds.as_ref())
-                .and_then(|(uploads, fade)| {
-                    fade.visible(info.wait.woke_ns)
-                        .into_iter()
-                        .flatten()
-                        .find_map(|h| match uploads.get(h) {
-                            TextureState::Ready(region) => Some(region),
-                            _ => None,
-                        })
-                });
+            // one the menus show (ADR-0178); looked up while it closes too.
+            let cover = self.backgrounds.as_ref().and_then(|(uploads, fade)| {
+                fade.visible(info.wait.woke_ns)
+                    .into_iter()
+                    .flatten()
+                    .find_map(|h| match uploads.get(h) {
+                        TextureState::Ready(region) => Some(region),
+                        _ => None,
+                    })
+            });
             let tip = self.toolbar.push(
                 &mut self.shapes,
                 &mut self.text,

@@ -167,6 +167,10 @@ fn input_and_drawing_do_not_allocate_once_warm() {
     bar.pointer(x, y, &layout);
     frame(&bar, 61, &mut glyphs, now + 500 * MS);
     bar.close_player();
+    // The popup closes by animation: the frames after it are drawn, then stop being.
+    for step in 0..40 {
+        frame(&bar, 61, &mut glyphs, now + (520 + step * 10) * MS);
+    }
     for target in [layout.settings, layout.home, layout.player] {
         let [x, y] = target.centre();
         bar.pointer(x, y, &layout);

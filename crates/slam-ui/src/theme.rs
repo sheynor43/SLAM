@@ -473,6 +473,27 @@ pub struct Theme {
     pub player_bar_height: f32,
     pub player_button: f32,
     pub player_cover_dim: f32,
+    /// The player popup's motion: opening and closing take `player_open_ms` and
+    /// `player_close_ms`, growing from `player_scale_from` of its size and sliding up from
+    /// `player_slide` below its place; a button brightens in `player_hover_ms` and shrinks
+    /// to `player_press_scale` in `player_press_ms` while pressed; the bar grows to
+    /// `player_bar_hot` times its thickness under the pointer in `player_bar_ms`, its fill
+    /// eases to the position in `player_fill_ms`; the texts and the play/pause icon
+    /// cross-fade in `player_swap_ms`, the cover in `player_cover_ms`; the buttons' shadow is
+    /// `player_button_shadow` of a panel's, 0 to 1.
+    pub player_open_ms: f32,
+    pub player_close_ms: f32,
+    pub player_scale_from: f32,
+    pub player_slide: f32,
+    pub player_hover_ms: f32,
+    pub player_press_ms: f32,
+    pub player_press_scale: f32,
+    pub player_bar_hot: f32,
+    pub player_bar_ms: f32,
+    pub player_fill_ms: f32,
+    pub player_swap_ms: f32,
+    pub player_cover_ms: f32,
+    pub player_button_shadow: f32,
     /// Fill of the curtain's slats while the language switches (ADR-0091).
     pub curtain_fill: Color,
     /// Height of the accent edge leading each slat.
@@ -1056,6 +1077,19 @@ impl Theme {
             player_bar_height: 6.0,
             player_button: 36.0,
             player_cover_dim: 0.62,
+            player_open_ms: 240.0,
+            player_close_ms: 180.0,
+            player_scale_from: 0.92,
+            player_slide: 12.0,
+            player_hover_ms: 150.0,
+            player_press_ms: 80.0,
+            player_press_scale: 0.88,
+            player_bar_hot: 1.8,
+            player_bar_ms: 150.0,
+            player_fill_ms: 220.0,
+            player_swap_ms: 220.0,
+            player_cover_ms: 400.0,
+            player_button_shadow: 0.4,
             curtain_fill: p.raised,
             curtain_edge: 4.0,
             intro_backdrop: Color::rgb(0.0, 0.0, 0.0),

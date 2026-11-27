@@ -807,21 +807,20 @@ impl ToolbarView {
         if let (Some(popup), true) = (frame.popup, popup_pin.is_some()) {
             self.push_popup(shapes, text, glyphs, rows, &layout, &popup, now_ns, white);
         }
-        if let Some(player) = &frame.player {
-            self.player.push(
-                &mut self.type_setter,
-                shapes,
-                text,
-                glyphs,
-                &layout,
-                player,
-                &frame.now_playing,
-                words,
-                cover,
-                now_ns,
-                white,
-            );
-        }
+        // Also drawn without a popup open: it goes on while the popup closes.
+        self.player.push(
+            &mut self.type_setter,
+            shapes,
+            text,
+            glyphs,
+            &layout,
+            frame.player.as_ref(),
+            &frame.now_playing,
+            words,
+            cover,
+            now_ns,
+            white,
+        );
         // The tooltip of the hovered button, over everything; a pin whose popup is open
         // (or the player's) shows its row instead.
         let tip = frame
