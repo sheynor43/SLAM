@@ -1935,16 +1935,10 @@ impl ShellState {
                 KEY_DOWN => return Some(ScreenInput::ModSpeed(-SPEED_STEP)),
                 KEY_F3 => return Some(ScreenInput::ApproachRate(-APPROACH_RATE_STEP)),
                 KEY_F4 => return Some(ScreenInput::ApproachRate(APPROACH_RATE_STEP)),
+                // Ctrl+F5 rescans the library; F5 alone is the frame counter's hotkey.
+                KEY_F5 => return Some(ScreenInput::Rescan),
                 _ => {}
             }
-        }
-        if let InputKind::Key {
-            scancode: KEY_F5,
-            down: true,
-        } = kind
-            && song_select
-        {
-            return Some(ScreenInput::Rescan);
         }
         // Lazer repeats the last pressed global action on OS key repeats. Here only the
         // steps and the walks repeat: a held Enter, Escape or letter acts once (ADR-0092).

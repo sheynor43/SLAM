@@ -3340,3 +3340,18 @@ fn a_skipped_intro_brings_the_toolbar_with_the_menu() {
         1_000_000 + 2
     ));
 }
+
+#[test]
+fn ctrl_f5_rescans_the_library_and_f5_alone_does_not() {
+    let (mut s, _snap, _producer) = in_song_select();
+    let f5 = InputKind::Key {
+        scancode: KEY_F5,
+        down: true,
+    };
+    assert!(!matches!(s.screen_input(f5), Some(ScreenInput::Rescan)));
+    s.track_modifiers(InputKind::Key {
+        scancode: KEY_LEFT_CTRL,
+        down: true,
+    });
+    assert!(matches!(s.screen_input(f5), Some(ScreenInput::Rescan)));
+}

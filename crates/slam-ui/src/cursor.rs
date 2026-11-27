@@ -54,8 +54,8 @@ pub const MAX_RIPPLES: usize = 3;
 
 // The pointer in units of its height, tip at the origin, y down, before the tilt: an
 // arrowhead (`ShapeKind::Arrow`) this wide, rounded by this much.
-const ARROW_WIDTH: f32 = 0.66;
-const ARROW_RADIUS: f32 = 0.12;
+const ARROW_WIDTH: f32 = 0.82;
+const ARROW_RADIUS: f32 = 0.05;
 
 /// The height of the pointer as drawn at `size`: for placing it by its hot spot.
 pub const fn arrow_height_units() -> f32 {
@@ -744,7 +744,9 @@ mod tests {
         // The body leans right of the tip, below it; nothing reaches far above it.
         assert!(xs().fold(f32::MIN, f32::max) > 200.0 + 10.0);
         assert!(ys().fold(f32::MIN, f32::max) > 200.0 + 25.0);
-        assert!(ys().fold(f32::MAX, f32::min) > 200.0 - 12.0);
+        // The quads' corners (not the drawn pixels) of the wider pointer, tilted, rise a
+        // little above the tip.
+        assert!(ys().fold(f32::MAX, f32::min) > 200.0 - 18.0);
     }
 
     #[test]
