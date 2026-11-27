@@ -594,8 +594,6 @@ impl CursorTrail {
     }
 
     /// Writes the visible parts, in the order of their slots, rotated by `rotation` degrees.
-    // Ported from osu!lazer 2026.1005.0-lazer: osu.Game.Rulesets.Osu/UI/Cursor/CursorTrail.cs (TrailDrawNode.Draw)
-    // Ported from osu-resources 2026.1005.0: osu.Game.Resources/Shaders/sh_CursorTrail.vs (main)
     pub fn push(
         &self,
         batch: &mut SpriteBatch,
@@ -611,6 +609,8 @@ impl CursorTrail {
 
     /// As [`push`](Self::push), handing each sprite to `sink` (a menu draws into a shape
     /// batch). Allocation-free when `sink` is.
+    // Ported from osu!lazer 2026.1005.0-lazer: osu.Game.Rulesets.Osu/UI/Cursor/CursorTrail.cs (TrailDrawNode.Draw)
+    // Ported from osu-resources 2026.1005.0: osu.Game.Resources/Shaders/sh_CursorTrail.vs (main)
     pub fn push_to(
         &self,
         layout: &PlayfieldLayout,

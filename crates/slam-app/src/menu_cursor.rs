@@ -395,7 +395,7 @@ impl SkinCursorLink {
                     .as_ref()
                     .is_some_and(|asked| asked.as_deref() == skin.map(|s| &**s));
                 // A new load waits for the previous images to be let go of and for the
-                // answer in flight: the loader has room for the shown pair and one more.
+                // answer in flight: the loader has room for the three shown images and three new ones.
                 let idle = !self.loading && self.retiring.iter().all(Option::is_none);
                 if !same && idle {
                     let generation = self.generation.wrapping_add(1);
@@ -475,6 +475,9 @@ pub struct MenuTrail {
     ui: f32,
     /// Whether this frame fed the trail; a frame that did not clears it.
     fed: bool,
+    /// The part scale of the last frame: this frame's moves leave parts with it, as
+    /// gameplay's trail does (lazer: input before the frame's update).
+    last_part_scale: Option<f32>,
 }
 
 impl Default for MenuTrail {
@@ -491,6 +494,7 @@ impl MenuTrail {
             image: None,
             ui: 0.0,
             fed: false,
+            last_part_scale: None,
         }
     }
 
@@ -499,6 +503,7 @@ impl MenuTrail {
         if self.image.take().is_some() {
             self.trail.reset();
         }
+        self.last_part_scale = None;
     }
 
     /// Takes the pointer at `tip` and writes the parts under the cursor.
@@ -522,6 +527,7 @@ impl MenuTrail {
             self.trail.reset();
             self.image = Some(image);
             self.ui = ui;
+            self.last_part_scale = None;
         }
         self.fed = true;
         let layout = PlayfieldLayout::linear(ui * TRAIL_TEXTURE_FACTOR, window);
@@ -534,9 +540,10 @@ impl MenuTrail {
             std::iter::once(at),
             config.disjoint,
             display_width,
-            part_scale,
+            self.last_part_scale.unwrap_or(part_scale),
             part_scale,
         );
+        self.last_part_scale = Some(part_scale);
         self.trail
             .push_to(&layout, texture, config, degrees, |sprite| {
                 shapes.push(sprite)
