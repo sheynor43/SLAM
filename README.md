@@ -1,8 +1,45 @@
-# SLAM — Stable Lazer Always Mythical
+<p align="center">
+  <img src="docs/images/logo.png" width="160" alt="SLAM logo">
+</p>
 
-**English** | [Русский](README.ru.md)
+<h1 align="center">SLAM</h1>
 
-A standalone open-source client for osu!standard: low latency, compatibility with stable and lazer beatmaps, skins and replays, and extensibility through Luau plugins.
+<p align="center"><b>Stable Lazer Always Mythical</b></p>
+
+<p align="center">A standalone open-source osu!standard client — low latency, stable and lazer beatmaps, skins and replays, Luau plugins.</p>
+
+<p align="center">
+  <a href="https://github.com/sheynor43/SLAM/releases"><img src="https://img.shields.io/github/v/release/sheynor43/SLAM?include_prereleases&label=release&color=b65ae6" alt="release"></a>
+  <a href="LICENSE"><img src="https://img.shields.io/badge/license-GPL--3.0--or--later-7034c8" alt="license"></a>
+  <img src="https://img.shields.io/badge/platform-Linux%20%7C%20Windows-e070e4" alt="platforms">
+</p>
+
+<p align="center"><b>English</b> · <a href="README.ru.md">Русский</a> · <a href="https://github.com/sheynor43/SLAM/releases">Download</a></p>
+
+## Screenshots
+
+<table>
+<tr>
+<td><img src="docs/images/menu.jpg" alt="Main menu: the logo beats to the music"><br><sub>Main menu: the logo beats to the music</sub></td>
+<td><img src="docs/images/menu-open.jpg" alt="Lazer-style buttons out of the logo"><br><sub>Lazer-style buttons out of the logo</sub></td>
+</tr>
+<tr>
+<td><img src="docs/images/song-select.jpg" alt="Song select"><br><sub>Song select</sub></td>
+<td><img src="docs/images/mods.jpg" alt="Mod select"><br><sub>Mod select</sub></td>
+</tr>
+<tr>
+<td><img src="docs/images/settings.jpg" alt="Settings"><br><sub>Settings</sub></td>
+<td><img src="docs/images/gameplay.jpg" alt="Gameplay with the default skin"><br><sub>Gameplay with the default skin</sub></td>
+</tr>
+</table>
+
+## Features
+
+- **Low latency**: separate input, update, draw and audio threads; frame limiter and 1000 Hz+ updates.
+- **Two rule profiles**: lazer judgement now, stable rules in progress.
+- **Your stuff as is**: stable `Songs`, `.osz`/`.olz`, stable and lazer skins, `.osr` replays.
+- **Interface after lazer and stable**: beating logo menu in either style, curved song list, mod select with presets, colour schemes incl. SLAM.
+- **OpenTabletDriver settings** right in the game; Linux and Windows.
 
 > SLAM is an independent project and is not affiliated with ppy Pty Ltd. "osu!" is a trademark of ppy.
 

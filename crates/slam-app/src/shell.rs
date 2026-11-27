@@ -321,6 +321,8 @@ pub struct LayerSnapshot {
 /// The visible screens, bottom first.
 #[derive(Clone, Debug, Default)]
 pub struct ShellSnapshot {
+    /// The tour's last capture: its count and name (`crate::tour`).
+    pub tour: (u32, &'static str),
     pub layers: [Option<LayerSnapshot>; MAX_LAYERS],
     /// The play, while its screen is shown; too large for a layer (ADR-0044).
     pub play: PlaySnapshot,
@@ -1091,6 +1093,20 @@ impl ShellState {
     /// the slider bounds observe it, and the settings rows follow it. As in lazer, a change
     /// of which mods are selected collapses the settings panel, and selecting a mod that
     /// needs configuring expands it.
+    /// Selects the mod `acronym` alone, for the tour's watched play (`crate::tour`).
+    pub fn select_mod_alone(&mut self, acronym: &str) {
+        let found = self
+            .mod_templates
+            .iter()
+            .flatten()
+            .find(|m| slam_osu::GameplayMod::acronym(*m) == acronym)
+            .cloned();
+        if let Some(found) = found {
+            self.selected_mods.apply_selection(&[found]);
+            self.sync_mod_flags();
+        }
+    }
+
     fn sync_mod_flags(&mut self) {
         self.speed_hotkeys.observe(&self.selected_mods);
         self.slider_bounds.observe(&self.selected_mods);
@@ -4238,6 +4254,10 @@ impl PlayHost {
 /// The update thread's side.
 struct Shell {
     state: ShellState,
+    /// The scripted walk through the screens, under `SLAM_TOUR` (`crate::tour`).
+    tour: Option<crate::tour::Tour>,
+    /// Its tick's events and the player's.
+    tour_events: Vec<InputEvent>,
     /// The Discord status (ADR-0170).
     discord: crate::discord::Discord,
     /// Without an audio output, the song select does not play.
@@ -4456,6 +4476,27 @@ impl Update for Shell {
             return;
         }
         let now = info.now_ns;
+        // The tour's keys join the player's (a developer tool: it allocates).
+        let toured;
+        let events: &[InputEvent] = match &mut self.tour {
+            Some(tour) => {
+                let step = tour.tick(now);
+                let mut joined = std::mem::take(&mut self.tour_events);
+                joined.clear();
+                joined.extend_from_slice(events);
+                joined.extend_from_slice(step.events);
+                if let Some(acronym) = step.select_mod {
+                    self.state.select_mod_alone(acronym);
+                }
+                if step.exit {
+                    self.exited.store(true, Ordering::Relaxed);
+                }
+                snapshot.tour = tour.capture();
+                toured = joined;
+                &toured
+            }
+            None => events,
+        };
         // The mouse side buttons do nothing while they are off: not in the menus, not as
         // gameplay bindings (ADR-0167).
         let events = if self.state.live_settings().input.mouse_side_buttons {
@@ -4631,6 +4672,8 @@ fn blur_backgrounds<D: Device>(
 
 /// The draw thread's side. The device and its resources exist between `start` and `stop`.
 struct View<B: render::Backend> {
+    /// Saves the tour's screens (`crate::tour`).
+    camera: Option<crate::tour::Camera>,
     surface: Option<B>,
     resources: Option<Resources<B::Device>>,
     theme: Theme,
@@ -5389,6 +5432,12 @@ impl<B: render::Backend> Draw<ShellSnapshot> for View<B> {
                 0..self.outlines.len() as u32,
                 texture,
             );
+        }
+        if let Some(camera) = &mut self.camera
+            && let Some(name) = camera.due(snapshot.tour)
+            && let Some(pixels) = B::read_frame(&mut r.device, size)
+        {
+            camera.save(name, size.width, size.height, pixels);
         }
         let _ = r.device.present();
         self.shown.store(true, Ordering::Release);
@@ -6222,8 +6271,11 @@ fn run_with<B: render::Backend>(
     let draw_rate = DrawRateControl::new();
     let update_rate = UpdateRateControl::new();
     let counters = Arc::<slam_engine::EngineCounters>::default();
+    let (tour, camera) = crate::tour::Tour::from_env().unzip();
     let shell = Shell {
         state,
+        tour,
+        tour_events: Vec::new(),
         discord: crate::discord::Discord::spawn(),
         host,
         surface: Arc::clone(&surface_size),
@@ -6260,6 +6312,7 @@ fn run_with<B: render::Backend>(
         ),
     };
     let draw = View {
+        camera,
         surface: Some(surface),
         resources: None,
         theme,
