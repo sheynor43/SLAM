@@ -119,6 +119,7 @@ impl Rig {
         let layout = SongSelectLayout::new(1280.0, 768.0, &self.theme);
         let (mut rects, texts) = (0, std::cell::Cell::new(0));
         self.panel.push(
+            &mut self.type_setter,
             &layout,
             &self.theme,
             &snapshot,
@@ -139,6 +140,7 @@ impl Rig {
         let layout = SongSelectLayout::new(1280.0, 768.0, &self.theme);
         let mut found = Vec::new();
         self.panel.push(
+            &mut self.type_setter,
             &layout,
             &self.theme,
             &snapshot,
@@ -412,6 +414,7 @@ fn the_wedges_run_off_the_left_edge_from_top_to_bottom() {
     let tan = rig.theme.button_skew().tan();
     let mut lefts = Vec::new();
     rig.panel.push(
+        &mut rig.type_setter,
         &layout,
         &rig.theme,
         &snapshot,
@@ -449,6 +452,7 @@ fn the_difficulty_lines_keep_a_text_pad_from_the_leaning_edge() {
     let mut wedges = Vec::new();
     let lines = std::cell::RefCell::new(Vec::new());
     rig.panel.push(
+        &mut rig.type_setter,
         &layout,
         &rig.theme,
         &snapshot,
@@ -503,6 +507,7 @@ fn the_bars_move_to_new_values_and_the_first_shows_at_once() {
         let snapshot = screen.snapshot();
         let layout = SongSelectLayout::new(1280.0, 768.0, &rig.theme);
         rig.panel.push(
+            &mut rig.type_setter,
             &layout,
             &rig.theme,
             &snapshot,
@@ -542,6 +547,7 @@ fn drawn_score_centres(
     let snapshot = screen.snapshot();
     let mut centres = Vec::new();
     rig.panel.push(
+        &mut rig.type_setter,
         layout,
         &rig.theme,
         &snapshot,
@@ -609,6 +615,7 @@ fn the_hovered_score_row_takes_the_hover_fill() {
     let mut fills = Vec::new();
     // Long after the rows came in.
     rig.panel.push(
+        &mut rig.type_setter,
         &layout,
         &rig.theme,
         &snapshot,
@@ -641,7 +648,9 @@ fn short_texts_narrow_the_panel_and_a_new_width_moves_there() {
     };
     let right_edge = |panel: &mut InfoPanel, now_ns: u64| {
         let mut edge = 0.0_f32;
+        let mut type_setter = Typesetter::new(Arc::new(FontRegistry::with_builtin()), 700);
         panel.push(
+            &mut type_setter,
             &layout,
             &rig.theme,
             &snapshot,
@@ -679,6 +688,7 @@ fn wedge_edge(rig: &mut Rig) -> f32 {
     let snapshot = screen.snapshot();
     let mut edge = 0.0_f32;
     rig.panel.push(
+        &mut rig.type_setter,
         &layout,
         &rig.theme,
         &snapshot,
@@ -757,6 +767,7 @@ fn texts_that_do_not_fit_ride_instead_of_being_cut() {
     // The draw side hands each marquee the room; here it only reads the overflow.
     let room = std::cell::Cell::new(0.0_f32);
     rig.panel.push(
+        &mut rig.type_setter,
         &layout,
         &rig.theme,
         &snapshot,
@@ -784,6 +795,7 @@ fn row_starts(rig: &mut Rig, screen: &SongSelect, now: u64) -> [u64; MAX_LOCAL_S
     let snapshot = screen.snapshot();
     let layout = SongSelectLayout::new(1280.0, 768.0, &rig.theme);
     rig.panel.push(
+        &mut rig.type_setter,
         &layout,
         &rig.theme,
         &snapshot,
@@ -859,6 +871,7 @@ fn the_panel_does_not_move_sideways_when_scores_come_or_go() {
         let snapshot = screen.snapshot();
         let mut first = None;
         rig.panel.push(
+            &mut rig.type_setter,
             &layout,
             &rig.theme,
             &snapshot,
@@ -909,6 +922,7 @@ fn a_new_star_rating_eases_the_pills_colour() {
         let snapshot = rig.screen.snapshot();
         let mut colour = None;
         rig.panel.push(
+            &mut rig.type_setter,
             &layout,
             &rig.theme,
             &snapshot,
@@ -939,12 +953,85 @@ fn a_new_star_rating_eases_the_pills_colour() {
     assert_eq!(end, crate::star_colour::for_stars(7.0));
 }
 
+#[test]
+fn the_stars_and_values_roll_to_new_numbers_with_their_colour_and_bars() {
+    let mut rig = Rig::new();
+    let ms = 1_000_000;
+    let layout = SongSelectLayout::new(1280.0, 768.0, &rig.theme);
+    let rated = |stars: f32| {
+        let mut difficulty = DifficultyRow::new(SearchSource {
+            difficulty: "Insane",
+            ..SearchSource::default()
+        });
+        difficulty.stars = Some(stars);
+        Arc::new(SongList {
+            sets: vec![SetRow {
+                key: 1,
+                artist: "Artist".into(),
+                title: "Title".into(),
+                creator: "mapper".into(),
+                difficulties: vec![difficulty],
+            }],
+        })
+    };
+    let frame = |rig: &mut Rig, now: u64| {
+        let snapshot = rig.screen.snapshot();
+        rig.panel.refresh(
+            &mut rig.type_setter,
+            &rig.theme,
+            &layout,
+            [10.0; 2],
+            &snapshot,
+        );
+        rig.panel.push(
+            &mut rig.type_setter,
+            &layout,
+            &rig.theme,
+            &snapshot,
+            1.0,
+            now,
+            &mut |_, _, _| {},
+            &mut |_, _, _, _| {},
+            &mut |_, _, _, _, _, _| {},
+        );
+        (
+            rig.panel.stars.text.clone(),
+            rig.panel.values[0].text.clone(),
+        )
+    };
+    let list = rated(2.0);
+    let filter = SongFilter::for_list(&list);
+    rig.screen.set_list(list, filter);
+    rig.screen.set_details(Some(details(None)));
+    // The first selection shows its numbers at once.
+    assert_eq!(frame(&mut rig, 1_000 * ms), ("2.00".into(), "4".into()));
+    // Harder: a higher rating and CS.
+    let list = rated(7.0);
+    let filter = SongFilter::for_list(&list);
+    rig.screen.refresh_list(list, filter);
+    rig.screen.set_details(Some(BeatmapDetails {
+        circle_size: 8.0,
+        ..details(None)
+    }));
+    let (stars, cs) = frame(&mut rig, 1_001 * ms);
+    assert_eq!((stars.as_str(), cs.as_str()), ("2.00", "4"));
+    let (stars, cs) = frame(&mut rig, 1_001 * ms + 250 * ms);
+    let (stars, cs): (f32, f32) = (stars.parse().unwrap(), cs.parse().unwrap());
+    assert!(
+        stars > 2.5 && stars < 7.0 && cs > 4.0 && cs < 8.0,
+        "{stars} {cs}"
+    );
+    let end = frame(&mut rig, 1_001 * ms + 2_000 * ms);
+    assert_eq!(end, ("7.00".into(), "8".into()));
+}
+
 /// The height of the scores' wedge (the second wedge drawn) at `now`.
 fn board_height(rig: &mut Rig, screen: &SongSelect, now: u64) -> f32 {
     let snapshot = screen.snapshot();
     let layout = SongSelectLayout::new(1280.0, 768.0, &rig.theme);
     let mut heights = Vec::new();
     rig.panel.push(
+        &mut rig.type_setter,
         &layout,
         &rig.theme,
         &snapshot,
@@ -1020,6 +1107,7 @@ fn the_texts_start_at_the_content_margin_and_the_wedge_clears_the_toolbar() {
         let starts = std::cell::RefCell::new(Vec::new());
         let tops = std::cell::RefCell::new(Vec::new());
         rig.panel.push(
+            &mut rig.type_setter,
             &layout,
             &rig.theme,
             &snapshot,
@@ -1075,6 +1163,7 @@ fn the_score_rows_lean_along_the_board_and_stay_put_whatever_their_number() {
         let snapshot = screen.snapshot();
         let mut xs = Vec::new();
         rig.panel.push(
+            &mut rig.type_setter,
             &layout,
             &rig.theme,
             &snapshot,

@@ -141,6 +141,10 @@ struct RowSlot {
     secondary: Line,
     /// A difficulty's SS performance, "412pp" (ADR-0151).
     pp: Line,
+    /// Hundredths of the stars and whole pp the texts show (`i32::MIN` for none), so a
+    /// frame lays a text out again only when the number it rolls to changed.
+    rolled_stars: i32,
+    rolled_pp: i32,
     /// Room of the text that rides (the mapper of a set, the name of a difficulty), as
     /// filled.
     avail: f32,
@@ -163,6 +167,8 @@ impl RowSlot {
             primary: line(),
             secondary: line(),
             pp: line(),
+            rolled_stars: i32::MIN,
+            rolled_pp: i32::MIN,
             avail: 0.0,
             marquee: Marquee::default(),
             requested: false,
@@ -268,6 +274,8 @@ pub struct SongSelectView {
     row_motion: RowMotion,
     /// The rows' rating colours, easing to new ratings.
     star_motion: StarMotion,
+    /// The performance each difficulty row shows, rolling as its rating does.
+    pp_motion: StarMotion,
     /// The mod select panel's slide in and out (ADR-0152).
     mods_slide: PanelSlide,
     shift: Shift,
@@ -599,6 +607,7 @@ impl SongSelectView {
             expansion: Expansion::default(),
             row_motion: RowMotion::default(),
             star_motion: StarMotion::default(),
+            pp_motion: StarMotion::default(),
             mods_slide: PanelSlide::default(),
             shift: Shift::default(),
             fade_next: 0,
@@ -792,6 +801,54 @@ impl SongSelectView {
             .count()
     }
 
+    /// Makes a difficulty row's pill and performance show the eased numbers, as lazer's
+    /// `StarRatingDisplay` rolls its number: a text is laid out again only when its shown
+    /// number changed. A row new to the tables shows its numbers at once. Does not
+    /// allocate once the texts have their room.
+    fn roll(
+        slot: &mut RowSlot,
+        type_setter: &mut Typesetter,
+        (star_motion, pp_motion): (&mut StarMotion, &mut StarMotion),
+        theme: &Theme,
+        layout: &SongSelectLayout,
+        pp_suffix: &str,
+        d: &crate::song_select::DifficultyRow,
+    ) {
+        let key = d.key & !SET_KEY_BIT;
+        let info = theme.song_difficulty_info;
+        if info.stars()
+            && let Some(to) = d.stars
+            && slot.rolled_stars != i32::MIN
+        {
+            let shown = star_motion.track(key, to);
+            let q = (shown * 100.0).round() as i32;
+            if q != slot.rolled_stars {
+                slot.rolled_stars = q;
+                slot.secondary.text.clear();
+                super::push_stars(&mut slot.secondary.text, shown);
+                type_setter.lay_out_face(
+                    &mut slot.secondary,
+                    theme.heading_face(theme.song_detail_size * layout.scale),
+                );
+                slot.requested = false;
+            }
+        }
+        if info.pp()
+            && let Some(to) = d.pp
+            && slot.rolled_pp != i32::MIN
+        {
+            let shown = pp_motion.track(key, to);
+            let q = shown.max(0.0).round() as i32;
+            if q != slot.rolled_pp {
+                slot.rolled_pp = q;
+                slot.pp.text.clear();
+                super::push_pp(&mut slot.pp.text, shown, pp_suffix);
+                type_setter.lay_out_face(&mut slot.pp, theme.caption_face(layout.scale));
+                slot.requested = false;
+            }
+        }
+    }
+
     /// Writes `row`'s texts into `slot` unless it already holds them.
     #[allow(clippy::too_many_arguments)]
     fn fill(
@@ -829,6 +886,8 @@ impl SongSelectView {
         slot.primary.text.clear();
         slot.secondary.text.clear();
         slot.pp.text.clear();
+        slot.rolled_stars = i32::MIN;
+        slot.rolled_pp = i32::MIN;
         match row {
             Row::Set(_) => {
                 let _ = write!(slot.primary.text, "{} - {}", set_row.artist, set_row.title);
@@ -848,6 +907,7 @@ impl SongSelectView {
                     && let Some(stars) = d.stars
                 {
                     super::push_stars(&mut slot.secondary.text, stars);
+                    slot.rolled_stars = (stars * 100.0).round() as i32;
                     // The star pill is Bold in lazer (ADR-0174).
                     type_setter.lay_out_face(
                         &mut slot.secondary,
@@ -862,6 +922,7 @@ impl SongSelectView {
                     && let Some(pp) = d.pp
                 {
                     super::push_pp(&mut slot.pp.text, pp, pp_suffix);
+                    slot.rolled_pp = pp.max(0.0).round() as i32;
                     type_setter.lay_out_face(&mut slot.pp, theme.caption_face(layout.scale));
                     avail = (avail - slot.pp.layout.width() - pad).max(0.0);
                 }
@@ -1069,6 +1130,7 @@ impl SongSelectView {
             // way to the mod panel, whose multiplier stands over them (ADR-0152).
             layer.set(1.0 - panel_back);
             self.info.push(
+                &mut self.type_setter,
                 layout,
                 theme,
                 snapshot,
@@ -1201,10 +1263,9 @@ impl SongSelectView {
                 // Rows ease to their places, each on its own, as lazer's panels do: a quick
                 // change of selection moves them, never leaves holes (ADR-0172).
                 let ease = self.row_motion.begin(thumbs.now_ns, theme.song_row_ease_ms);
-                self.star_motion.begin(
-                    thumbs.now_ns,
-                    (theme.star_colour_ease_ms.max(0.0) as f64 * 1e6) as u64,
-                );
+                let roll_ns = (theme.star_colour_ease_ms.max(0.0) as f64 * 1e6) as u64;
+                self.star_motion.begin(thumbs.now_ns, roll_ns);
+                self.pp_motion.begin(thumbs.now_ns, roll_ns);
                 let mut set_top: Option<(usize, f32)> = None;
                 for index in rows_to_draw {
                     let Some(row) = snapshot.row_at(index) else {
@@ -1231,6 +1292,22 @@ impl SongSelectView {
                         now_ns,
                     ) {
                         continue;
+                    }
+                    if let Row::Difficulty { set, difficulty } = row
+                        && let Some(d) = list
+                            .sets
+                            .get(set)
+                            .and_then(|s| s.difficulties.get(difficulty))
+                    {
+                        Self::roll(
+                            slot,
+                            &mut self.type_setter,
+                            (&mut self.star_motion, &mut self.pp_motion),
+                            theme,
+                            layout,
+                            &self.pp_suffix,
+                            d,
+                        );
                     }
                     if !slot.requested {
                         slot.requested = true;
@@ -2920,6 +2997,88 @@ mod tests {
         let e = m.begin(1_150 * MS, 50.0);
         let _ = m.begin(1_200 * MS, 50.0);
         assert_eq!(m.track(1, 300.0, None, e), 300.0);
+    }
+
+    /// A difficulty row rated `stars` and `pp`, and the text of a slot filled for it.
+    fn rated(stars: f32, pp: f32) -> crate::song_select::DifficultyRow {
+        let mut d = crate::song_select::DifficultyRow::new(crate::song_select::SearchSource {
+            difficulty: "Insane",
+            ..Default::default()
+        });
+        d.stars = Some(stars);
+        d.pp = Some(pp);
+        d
+    }
+
+    fn roll_rig() -> (Typesetter, Theme, SongSelectLayout, RowSlot) {
+        let theme = Theme {
+            song_difficulty_info: crate::song_select::DifficultyInfo::StarsAndPp,
+            ..Theme::default()
+        };
+        let layout = SongSelectLayout::new(1280.0, 720.0, &theme);
+        let type_setter = Typesetter::new(
+            std::sync::Arc::new(slam_text::FontRegistry::with_builtin()),
+            700,
+        );
+        (type_setter, theme, layout, RowSlot::new())
+    }
+
+    /// Fills `slot` with `d` as `fill` does for a difficulty row.
+    fn fill_slot(slot: &mut RowSlot, d: &crate::song_select::DifficultyRow) {
+        slot.secondary.text.clear();
+        super::super::push_stars(&mut slot.secondary.text, d.stars.unwrap());
+        slot.rolled_stars = (d.stars.unwrap() * 100.0).round() as i32;
+        slot.pp.text.clear();
+        super::super::push_pp(&mut slot.pp.text, d.pp.unwrap(), "pp");
+        slot.rolled_pp = d.pp.unwrap().round() as i32;
+    }
+
+    #[test]
+    fn a_new_rating_rolls_the_rows_stars_and_pp_and_a_first_row_does_not() {
+        let (mut ts, theme, layout, mut slot) = roll_rig();
+        let (mut stars, mut pp) = (StarMotion::default(), StarMotion::default());
+        let d = 750 * MS;
+        let mut frame = |slot: &mut RowSlot, row: &crate::song_select::DifficultyRow, now: u64| {
+            stars.begin(now, d);
+            pp.begin(now, d);
+            SongSelectView::roll(
+                slot,
+                &mut ts,
+                (&mut stars, &mut pp),
+                &theme,
+                &layout,
+                "pp",
+                row,
+            );
+            (slot.secondary.text.clone(), slot.pp.text.clone())
+        };
+        // First appearance: the numbers are at once what they are.
+        let low = rated(2.0, 100.0);
+        fill_slot(&mut slot, &low);
+        assert_eq!(
+            frame(&mut slot, &low, 1_000 * MS),
+            ("2.00".into(), "100pp".into())
+        );
+        assert_eq!(
+            frame(&mut slot, &low, 1_016 * MS),
+            ("2.00".into(), "100pp".into())
+        );
+        // A mod rates it higher; the republished row's text is the target at once, and the
+        // roll takes it back to where it was.
+        let high = rated(6.0, 500.0);
+        fill_slot(&mut slot, &high);
+        let (s, p) = frame(&mut slot, &high, 1_032 * MS);
+        assert_eq!((s.as_str(), p.as_str()), ("2.00", "100pp"));
+        let (s, p) = frame(&mut slot, &high, 1_032 * MS + 200 * MS);
+        let (s, p): (f32, f32) = (
+            s.parse().unwrap(),
+            p.trim_end_matches("pp").parse().unwrap(),
+        );
+        assert!(s > 2.5 && s < 6.0 && p > 150.0 && p < 500.0, "{s} {p}");
+        // The text is laid out again with it.
+        assert!(slot.secondary.layout.width() > 0.0);
+        let end = frame(&mut slot, &high, 1_032 * MS + 800 * MS);
+        assert_eq!(end, ("6.00".into(), "500pp".into()));
     }
 
     #[test]

@@ -29,6 +29,14 @@ const SEPARATOR: &str = "  \u{b7}  ";
 /// Difficulty values are drawn as bars out of this.
 const BAR_MAXIMUM: f32 = 10.0;
 
+/// A text that shows no number.
+const NOT_SHOWN: i32 = i32::MIN;
+
+/// A number in hundredths, as its text shows it.
+fn hundredths(value: f32) -> i32 {
+    (value * 100.0).round() as i32
+}
+
 /// Where the panel's parts are, inside [`SongSelectLayout::info`].
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct InfoLayout {
@@ -316,6 +324,10 @@ pub(super) struct InfoPanel {
     /// The selection and list generation the name and artist are written for.
     name_for: Option<(u64, Option<(usize, usize)>)>,
     values: [Line; 4],
+    /// Hundredths of the star rating and of CS, AR, OD, HP the texts show, so a frame
+    /// rewrites a text only when its shown number changed.
+    rolled_stars: i32,
+    rolled: [i32; 4],
     stats: Line,
     counts: Line,
     details_for: Option<Option<BeatmapDetails>>,
@@ -387,6 +399,8 @@ impl InfoPanel {
             artist: line(),
             name_for: None,
             values: std::array::from_fn(|_| line()),
+            rolled_stars: NOT_SHOWN,
+            rolled: [NOT_SHOWN; 4],
             stats: line(),
             counts: line(),
             details_for: None,
@@ -473,8 +487,10 @@ impl InfoPanel {
             if let Some((set, difficulty)) = set {
                 if let Some(d) = set.difficulties.get(difficulty) {
                     self.name.text.push_str(&d.version);
+                    self.rolled_stars = NOT_SHOWN;
                     if let Some(stars) = d.stars {
                         super::push_stars(&mut self.stars.text, stars);
+                        self.rolled_stars = hundredths(stars);
                     }
                 }
                 let _ = write!(self.artist.text, "{} - {}", set.artist, set.title);
@@ -542,8 +558,57 @@ impl InfoPanel {
             d.overall_difficulty,
             d.drain_rate,
         ];
-        for (line, value) in self.values.iter_mut().zip(values) {
+        for ((line, value), rolled) in self.values.iter_mut().zip(values).zip(&mut self.rolled) {
             push_difficulty(&mut line.text, value);
+            *rolled = hundredths(value);
+        }
+    }
+
+    /// Makes the texts show the eased numbers: the star rating as its colour eases and
+    /// CS, AR, OD, HP as their bars do, as lazer's `StarRatingDisplay` rolls its number.
+    /// A text is laid out again only when its shown hundredths changed. Does not allocate
+    /// once the texts have their room.
+    fn roll(
+        &mut self,
+        type_setter: &mut Typesetter,
+        theme: &Theme,
+        scale: f32,
+        stars: Option<f32>,
+        values: Option<([f32; 4], [f32; 4], [f32; 4])>,
+    ) {
+        let detail = theme.song_info_detail_size * scale;
+        // A text not showing a number (no rating yet) stays empty.
+        if let Some(shown) = stars
+            && self.rolled_stars != NOT_SHOWN
+        {
+            let q = hundredths(shown);
+            if q != self.rolled_stars {
+                self.rolled_stars = q;
+                self.stars.text.clear();
+                super::push_stars(&mut self.stars.text, shown);
+                type_setter.lay_out_face(&mut self.stars, theme.heading_face(detail));
+            }
+        }
+        // `shown` and `target` are the bars' fractions, `raw` the true values.
+        if let Some((raw, shown, target)) = values {
+            for i in 0..4 {
+                if self.rolled[i] == NOT_SHOWN {
+                    continue;
+                }
+                // At rest the text is the true value, whatever the bar clamps.
+                let value = if shown[i] == target[i] {
+                    raw[i]
+                } else {
+                    shown[i] * BAR_MAXIMUM
+                };
+                let q = hundredths(value);
+                if q != self.rolled[i] {
+                    self.rolled[i] = q;
+                    self.values[i].text.clear();
+                    push_difficulty(&mut self.values[i].text, value);
+                    type_setter.lay_out(&mut self.values[i], detail);
+                }
+            }
         }
     }
 
@@ -556,6 +621,7 @@ impl InfoPanel {
     #[allow(clippy::too_many_arguments)]
     pub(super) fn push(
         &mut self,
+        type_setter: &mut Typesetter,
         layout: &SongSelectLayout,
         theme: &Theme,
         snapshot: &SongSelectSnapshot,
@@ -673,6 +739,23 @@ impl InfoPanel {
         let shown_bars = motion
             .bars
             .map(|towards| towards.at(now_ns, move_ns, ease_out_quint));
+        let raw_values = snapshot.details.map(|d| {
+            [
+                d.circle_size,
+                d.approach_rate,
+                d.overall_difficulty,
+                d.drain_rate,
+            ]
+        });
+        self.roll(
+            type_setter,
+            theme,
+            scale,
+            shown_stars,
+            raw_values
+                .zip(fractions)
+                .map(|(raw, target)| (raw, shown_bars, target)),
+        );
         let ink = |colour: Color| faded(colour, texts);
         // `rect` fades the fill with the layer; the outline is the look's, faded here, so it
         // leaves with the screen.
