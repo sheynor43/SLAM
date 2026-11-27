@@ -96,9 +96,9 @@ fn the_pin_shows_for_unpinned_mods_while_there_is_room() {
     let mut s = screen();
     select_a_mod(&mut s);
     assert!(s.footer_state().pin);
-    s.set_current_pinned(true);
+    s.set_current_preset(Some(0));
     assert!(!s.footer_state().pin, "already a preset");
-    s.set_current_pinned(false);
+    s.set_current_preset(None);
     let full: Vec<&str> = vec!["HD"; MAX_PRESETS];
     s.set_mod_presets(presets(&full));
     assert!(!s.footer_state().pin, "no room for another");

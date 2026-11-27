@@ -32,12 +32,14 @@ impl ShellState {
     pub(super) fn sync_pinned(&mut self) {
         // Compared as mods, in no order, without allocating: this runs at every toggle.
         let mods = self.selected_mods.mods();
-        let pinned = !mods.is_empty()
-            && self
-                .preset_mods
-                .iter()
-                .any(|p| p.len() == mods.len() && mods.iter().all(|m| p.contains(m)));
-        self.song_select.set_current_pinned(pinned);
+        let current = (!mods.is_empty())
+            .then(|| {
+                self.preset_mods
+                    .iter()
+                    .position(|p| p.len() == mods.len() && mods.iter().all(|m| p.contains(m)))
+            })
+            .flatten();
+        self.song_select.set_current_preset(current);
     }
 
     /// Changes the presets (the settings in force and the settings screen's edit of them),

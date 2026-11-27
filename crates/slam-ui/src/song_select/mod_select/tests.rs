@@ -214,10 +214,11 @@ fn closing_clears_the_hover() {
 fn empty_columns_are_hidden_and_the_rest_centred() {
     let l = layout();
     assert!((0..4).all(|c| l.is_shown(c)) && !l.is_shown(4));
-    let first = l.column_rect(0, 4);
-    let last = l.column_rect(3, 2);
-    let left = first.x;
-    let right = 1280.0 - (last.x + last.width);
+    // The headers share a top, hence one lean offset: compare them, not the plates.
+    let (first, last) = (l.column_titles[0], l.column_titles[3]);
+    let shift = l.column_titles[0].x - l.column_rect(0, 4).x;
+    let left = first.x - shift;
+    let right = 1280.0 - (last.x - shift + last.width);
     assert!((left - right).abs() < 0.01, "{left} vs {right}");
     assert_eq!(l.column_titles[4], Rect::default());
     // Nothing under the hidden column's place, even at x 0.
@@ -263,8 +264,8 @@ fn a_column_plate_holds_its_header_and_tiles() {
         assert!(plate.y + plate.height >= last.y + last.height);
         assert!(header.y + header.height <= l.tile_rect(column, 0).y);
     }
-    // The columns stand in the lower part of the window, and lean.
-    assert!(l.column_rect(0, 4).y > 720.0 * 0.1);
+    // The columns hang near the top, and lean.
+    assert!(l.column_rect(0, 4).y < 720.0 * 0.3);
     assert!(l.lean() > 0.0);
     assert!(l.tile_rect(1, 0).x > l.tile_rect(1, 5).x);
 }
@@ -316,7 +317,7 @@ fn the_bigger_tiles_fit_the_window() {
 }
 
 #[test]
-fn the_columns_are_as_tall_as_their_content_and_stand_above_the_hint() {
+fn the_columns_are_as_tall_as_their_content_and_hang_under_the_header() {
     let theme = Theme::default();
     for (width, height) in [(1920.0, 1080.0), (1280.0, 720.0)] {
         let mut l = ModSelectLayout::new(width, height, &theme);
@@ -333,12 +334,12 @@ fn the_columns_are_as_tall_as_their_content_and_stand_above_the_hint() {
             "{height}: {slack}"
         );
         assert_eq!(l.content_bottom(), plate.y + plate.height);
-        // The block stands on the hint: the gap is a margin at most.
-        let gap = l.hint.y - l.content_bottom();
-        assert!(
-            (0.0..=2.0 * theme.song_margin * scale).contains(&gap),
-            "{height}: {gap}"
-        );
+        // The block hangs right under the title, clear of the toolbar and the footer.
+        let title_bottom = l.title.y + l.title.height;
+        assert!(plate.y >= title_bottom, "{height}");
+        assert!(plate.y - title_bottom <= 0.12 * height, "{height}");
+        assert!(plate.y >= (theme.toolbar_height + theme.song_top_gap) * scale);
+        assert!(l.content_bottom() <= l.hint.y, "{height}");
         // A shorter column's plate ends after its own last tile, not the tallest's.
         let short = (0..MAX_COLUMNS).find(|&c| counts[c] == 2).unwrap();
         let end = l.tile_rect(short, 1);
@@ -351,4 +352,19 @@ fn the_columns_are_as_tall_as_their_content_and_stand_above_the_hint() {
         // The settings panel's header is clear of the columns.
         assert!(l.customise.header.y + l.customise.header.height <= plate.y);
     }
+}
+
+#[test]
+fn the_columns_lean_on_one_common_line() {
+    let l = layout();
+    // Headers share a top, so the shared lean puts them at one x per column slot spacing:
+    // each column's left edge at the header is its slot's x plus the same offset.
+    let counts = column_counts(&COLUMNS);
+    let shift = |c: usize| l.column_titles[c].x - l.column_rect(c, counts[c]).x;
+    // A taller plate leans further at the header; the plate and header edges agree.
+    assert!(shift(0) > 0.0);
+    // Tiles at the same height in different columns are one column pitch apart: no stagger.
+    let pitch = l.tile_rect(1, 0).x - l.tile_rect(0, 0).x;
+    let pitch2 = l.tile_rect(2, 0).x - l.tile_rect(1, 0).x;
+    assert!((pitch - pitch2).abs() < 0.01, "{pitch} vs {pitch2}");
 }

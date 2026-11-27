@@ -3277,12 +3277,13 @@ fn the_toolbar_is_hidden_on_the_results_and_slides_back_on_the_song_select() {
     ));
     s.tick(now + 2 + ms, &[key(KEY_ESCAPE)], &mut snap);
     assert_eq!(*s.stack().top(), AppScreen::SongSelect);
-    // Back on the song select it comes in again, easing over the theme's slide time.
+    // Back on the song select it comes in with the arriving screen (ADR-0126).
     let later = now + 2 + ms;
     assert!(snap.toolbar.visible);
-    s.tick(later + ms / 2, &[], &mut snap);
+    s.tick(later + TRANSITION_NS / 2, &[], &mut snap);
     assert!(snap.toolbar.slide > 0.0 && snap.toolbar.slide < 1.0);
-    s.tick(later + ms, &[], &mut snap);
+    assert!(snap.toolbar.follows);
+    s.tick(later + ms.max(TRANSITION_NS), &[], &mut snap);
     assert_eq!(snap.toolbar.slide, 1.0);
 }
 

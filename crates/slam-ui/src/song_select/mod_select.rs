@@ -76,11 +76,9 @@ pub struct ModSelectLayout {
     max_tile_width: f32,
     tile_width: f32,
     gap: f32,
-    /// The highest the columns may reach (below the title) and the lowest (above the hint).
+    /// Where the columns hang: right under the title.
     min_top: f32,
-    floor: f32,
-    /// Top and bottom of the tallest column: the block of columns stands on `floor` and is
-    /// as tall as its tallest column, set by [`ModSelectLayout::place`].
+    /// Top and bottom of the tallest column, set by [`ModSelectLayout::place`].
     top: f32,
     bottom: f32,
     header_height: f32,
@@ -95,7 +93,7 @@ pub struct ModSelectLayout {
 
 impl ModSelectLayout {
     /// The layout with every column shown; [`ModSelectLayout::place`] hides the empty ones.
-    /// The columns stand in the lower part of the window, as lazer's (ADR-0152).
+    /// The columns hang under the header, as lazer's (ADR-0152).
     pub fn new(width: f32, height: f32, theme: &Theme) -> ModSelectLayout {
         let scale = theme.scale(height);
         let margin = theme.song_margin * scale;
@@ -118,8 +116,7 @@ impl ModSelectLayout {
             height: label_height,
         };
         let min_top = (height * theme.mod_panel_top).max(title.y + title.height + margin);
-        let floor = (hint.y - margin / 2.0).max(min_top + header_height);
-        let (top, bottom) = (min_top, floor);
+        let (top, bottom) = (min_top, min_top + header_height);
         let mut layout = ModSelectLayout {
             title,
             column_titles: [Rect::default(); MAX_COLUMNS],
@@ -134,7 +131,6 @@ impl ModSelectLayout {
             tile_width: theme.mod_tile_width * scale,
             gap,
             min_top,
-            floor,
             top,
             bottom,
             header_height,
@@ -151,12 +147,12 @@ impl ModSelectLayout {
     /// Shows the columns with tiles (`counts` per column), centred in the window and narrowed
     /// to fit it. Does not allocate.
     pub fn place(&mut self, counts: [usize; MAX_COLUMNS]) {
-        // The columns are as tall as their content; the block stands on the floor, like
-        // lazer's, so no empty band lies under the tiles.
+        // The columns are as tall as their content and hang right under the header, as in
+        // lazer's overlay; the room under them stays free.
         self.counts = counts;
         let tallest = counts.iter().copied().max().unwrap_or(0);
         let content = self.column_height(tallest);
-        self.top = (self.floor - content).max(self.min_top);
+        self.top = self.min_top;
         self.bottom = self.top + content;
         self.tiles_top = self.top + self.header_height + self.pad;
         let shown = counts.iter().filter(|&&n| n > 0).count();
@@ -185,24 +181,25 @@ impl ModSelectLayout {
             let x = left + slot as f32 * (column_width + self.gap);
             slot += 1;
             self.column_x[column] = x;
-            self.column_titles[column] = self.leaned(
-                column,
-                Rect {
-                    x,
-                    y: self.top,
-                    width: column_width,
-                    height: self.header_height,
-                },
-            );
+            self.column_titles[column] = self.leaned(Rect {
+                x,
+                y: self.top,
+                width: column_width,
+                height: self.header_height,
+            });
         }
     }
 
-    /// `rect` of `column` moved sideways by the lean at its middle height; a column leans
-    /// about the middle of its own plate.
-    fn leaned(&self, column: usize, rect: Rect) -> Rect {
-        let middle = self.top + self.column_height(self.counts[column.min(MAX_COLUMNS - 1)]) / 2.0;
+    /// The height every column leans about: the middle of the tallest plate, so the whole
+    /// set shares one slanted line and the columns do not stagger.
+    fn lean_middle(&self) -> f32 {
+        self.top + (self.bottom - self.top) / 2.0
+    }
+
+    /// `rect` moved sideways by the lean at its middle height, about the common middle.
+    fn leaned(&self, rect: Rect) -> Rect {
         Rect {
-            x: rect.x + (middle - (rect.y + rect.height / 2.0)) * self.lean,
+            x: rect.x + (self.lean_middle() - (rect.y + rect.height / 2.0)) * self.lean,
             ..rect
         }
     }
@@ -232,11 +229,15 @@ impl ModSelectLayout {
     /// The plate of `column` holding `count` tiles, from the top of its header down to its
     /// last tile and a padding.
     pub fn column_rect(&self, column: usize, count: usize) -> Rect {
+        // The plate is drawn leaning about its own middle; shifting it by the difference
+        // to the common middle puts its edges on the shared slanted line.
+        let height = self.column_height(count);
         Rect {
-            x: self.column_x[column.min(MAX_COLUMNS - 1)],
+            x: self.column_x[column.min(MAX_COLUMNS - 1)]
+                + (self.lean_middle() - (self.top + height / 2.0)) * self.lean,
             y: self.top,
             width: self.tile_width + 2.0 * self.pad,
-            height: self.column_height(count),
+            height,
         }
     }
 
@@ -247,15 +248,12 @@ impl ModSelectLayout {
 
     /// The tile `index` of `column`, moved by the lean at its height.
     pub fn tile_rect(&self, column: usize, index: usize) -> Rect {
-        self.leaned(
-            column,
-            Rect {
-                x: self.column_x[column.min(MAX_COLUMNS - 1)] + self.pad,
-                y: self.tiles_top + index as f32 * self.pitch,
-                width: self.tile_width,
-                height: self.tile_height,
-            },
-        )
+        self.leaned(Rect {
+            x: self.column_x[column.min(MAX_COLUMNS - 1)] + self.pad,
+            y: self.tiles_top + index as f32 * self.pitch,
+            width: self.tile_width,
+            height: self.tile_height,
+        })
     }
 
     /// The tile under the point, with `counts` tiles in each column.
