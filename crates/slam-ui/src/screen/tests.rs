@@ -635,5 +635,73 @@ fn style_names_include_the_old_fancy() {
         TransitionStyle::from_name("fancy"),
         Some(TransitionStyle::Band)
     );
-    assert_eq!(TransitionStyle::ALL.len(), 8);
+    assert_eq!(TransitionStyle::ALL.len(), 9);
+}
+
+#[test]
+fn fade_goes_through_black_and_swaps_the_screens_under_it() {
+    let black = |linear| {
+        overlay(&fx_of(TransitionStyle::Fade, false, linear), 800.0, 600.0)
+            .first()
+            .map_or(0.0, |s| s.colour.a)
+    };
+    assert_eq!(black(0.0), 0.0);
+    assert!(black(0.2) > 0.0 && black(0.2) < 1.0);
+    assert_eq!(black(0.45), 1.0);
+    assert_eq!(black(0.55), 1.0);
+    assert!(black(0.8) > 0.0 && black(0.8) < 1.0);
+    assert_eq!(black(1.0), 0.0);
+    let shape = overlay(&fx_of(TransitionStyle::Fade, false, 0.5), 800.0, 600.0)[0];
+    assert_eq!((shape.size, shape.colour.r), ([800.0, 600.0], 0.0));
+    // The screens swap while it is black, without a slide or a scale.
+    let mut stack = ScreenStack::new("menu");
+    stack.set_style(TransitionStyle::Fade);
+    stack.navigate(Nav::Push("select"), 0);
+    let at = |ms: u64| names(&stack, ms * MS);
+    assert_eq!(at(130)[1].1.opacity, 0.0);
+    assert_eq!(at(170)[1].1.opacity, 1.0);
+    for (_, pose) in at(150) {
+        assert_eq!((pose.offset, pose.scale), (0.0, 1.0));
+    }
+    assert_eq!(
+        TransitionStyle::from_name("fade"),
+        Some(TransitionStyle::Fade)
+    );
+}
+
+#[test]
+fn the_length_setting_stretches_transitions_that_start_after_it() {
+    let mut stack = ScreenStack::new("menu");
+    stack.set_style(TransitionStyle::Simple);
+    stack.set_length(2.0);
+    stack.navigate(Nav::Push("select"), 0);
+    // A change now leaves the running one as it started.
+    stack.set_length(0.5);
+    assert!(stack.in_transition(2 * TRANSITION_NS - 1));
+    assert!(!stack.in_transition(2 * TRANSITION_NS));
+    stack.tick(2 * TRANSITION_NS);
+    stack.navigate(Nav::Pop, 10 * TRANSITION_NS);
+    assert!(!stack.in_transition(10 * TRANSITION_NS + TRANSITION_NS / 2));
+    // Out of range or not a number: kept within the range, or the plain length.
+    stack.set_length(9.0);
+    stack.navigate(Nav::Push("select"), 20 * TRANSITION_NS);
+    assert!(!stack.in_transition(22 * TRANSITION_NS));
+    stack.set_length(f32::NAN);
+    stack.navigate(Nav::Pop, 30 * TRANSITION_NS);
+    assert!(stack.in_transition(31 * TRANSITION_NS - 1));
+    assert!(!stack.in_transition(31 * TRANSITION_NS));
+}
+
+#[test]
+fn a_transition_can_begin_part_way() {
+    let mut stack = ScreenStack::new("menu");
+    stack.set_style(TransitionStyle::Fade);
+    stack.navigate(Nav::Push("select"), 1000 * MS);
+    stack.advance_transition(0.6, 1000 * MS);
+    let fx = stack.fx(1000 * MS).unwrap();
+    assert!((fx.linear - 0.6).abs() < 1e-3, "{}", fx.linear);
+    // It ends sooner by as much.
+    let left = (fancy::FADE_NS as f64 * 0.4) as u64;
+    assert!(stack.in_transition(1000 * MS + left - MS));
+    assert!(!stack.in_transition(1000 * MS + left + MS));
 }

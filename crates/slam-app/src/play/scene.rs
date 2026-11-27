@@ -569,6 +569,11 @@ pub struct PlayfieldStats {
 }
 
 impl PlayScene {
+    /// The background starts at its dim, without the fade from white (ADR-0191).
+    pub(crate) fn settle_background(&mut self) {
+        self.background_view.settle();
+    }
+
     /// The background dim the scene was prepared with.
     #[cfg(test)]
     pub(crate) fn dim(&self) -> f64 {

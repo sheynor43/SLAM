@@ -9,10 +9,12 @@ use super::*;
 /// The rate of the test mixers and outputs.
 const SAMPLE_RATE: u32 = slam_audio::DEFAULT_SAMPLE_RATE;
 
-/// A shell whose transitions last `TRANSITION_NS`: the default style is random.
+/// A shell whose transitions last `TRANSITION_NS`: the default style is random. Plays
+/// start at once, without the screen before play (its tests turn it on).
 fn state() -> ShellState {
     let mut settings = crate::settings::Settings::default();
     settings.general.transitions = slam_ui::screen::TransitionStyle::Simple;
+    settings.gameplay.player_loader = false;
     ShellState::new(Theme::default(), 1280.0, 720.0, 1.0).with_settings(settings)
 }
 

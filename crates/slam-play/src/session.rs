@@ -1842,6 +1842,9 @@ impl PlaySession {
         }
         snapshot.cursor_expand = self.expand.times();
         snapshot.skip_available = false;
+        // The background's dim follows it from the first frame: the intro is a break, so a
+        // background that starts at its dim (ADR-0191) must not start at the play's.
+        snapshot.is_break_time = self.is_break_time(self.start_time);
         snapshot.health = self.health.health();
         snapshot.service = ServiceState::default();
         snapshot.hud = HudValues::of(&self.score);
@@ -2762,6 +2765,28 @@ fn glyph_sprite(state: TextureState, scale: f32, loaded: &mut bool) -> Option<Sk
     }
 }
 
+/// A health bar texture in `state`: the sprite once ready. Anything else unsets `ready`
+/// (the skin's bar is not drawn); one still uploading also sets `pending` (ADR-0191).
+fn health_sprite(
+    state: TextureState,
+    scale: f32,
+    ready: &mut bool,
+    pending: &mut bool,
+) -> Option<SkinSprite> {
+    match state {
+        TextureState::Ready(region) => Some(SkinSprite::new(region, scale, f32::MAX)),
+        TextureState::Pending => {
+            *ready = false;
+            *pending = true;
+            None
+        }
+        TextureState::Failed(_) => {
+            *ready = false;
+            None
+        }
+    }
+}
+
 /// The requested textures of the health bar, all from the first skin with `scorebar-bg`.
 #[derive(Debug, Clone, Default)]
 struct HealthRequests {
@@ -2828,16 +2853,13 @@ impl HealthRequests {
         })
     }
 
-    /// The textures once all of them are uploaded; none before.
+    /// The textures once all of them are uploaded; none before, marked pending while any
+    /// is still on its way (the HUD then draws nothing rather than its plain bar).
     fn resolve(&self, uploads: &TextureUploads) -> HealthTextures {
         let mut ready = true;
-        let mut sprite = |r: &Requested| match uploads.get(r.handle) {
-            TextureState::Ready(region) => Some(SkinSprite::new(region, r.scale, f32::MAX)),
-            _ => {
-                ready = false;
-                None
-            }
-        };
+        let mut pending = false;
+        let mut sprite =
+            |r: &Requested| health_sprite(uploads.get(r.handle), r.scale, &mut ready, &mut pending);
         let mut textures = HealthTextures {
             background: self.background.as_ref().and_then(&mut sprite),
             frame_length: self.frame_length,
@@ -2859,7 +2881,10 @@ impl HealthRequests {
         if ready {
             textures
         } else {
-            HealthTextures::default()
+            HealthTextures {
+                pending,
+                ..HealthTextures::default()
+            }
         }
     }
 
@@ -3405,6 +3430,34 @@ mod tests {
         }
     }
     use slam_render::upload::LoadError;
+
+    #[test]
+    fn the_health_bar_waits_only_for_textures_still_uploading() {
+        let region = AtlasRegion {
+            texture: slam_render::textures::TextureId(1),
+            origin: slam_render::Origin { x: 0, y: 0 },
+            size: Extent::new(20, 40),
+            uv: slam_render::atlas::UvRect::FULL,
+        };
+        let states = |list: &[TextureState]| {
+            let (mut ready, mut pending) = (true, false);
+            for state in list {
+                health_sprite(*state, 1.0, &mut ready, &mut pending);
+            }
+            (ready, pending)
+        };
+        let failed = TextureState::Failed(LoadError::Decode);
+        let ready = TextureState::Ready(region);
+        // All ready: the skin's bar.
+        assert_eq!(states(&[ready, ready]), (true, false));
+        // One on its way: nothing yet.
+        assert_eq!(
+            states(&[ready, TextureState::Pending, failed]),
+            (false, true)
+        );
+        // Done, one failed: the plain bar.
+        assert_eq!(states(&[ready, failed]), (false, false));
+    }
 
     #[test]
     fn a_font_is_loaded_once_no_glyph_is_pending() {

@@ -557,3 +557,34 @@ fn the_toolbar_comes_in_with_the_screen_leaving_a_play() {
     assert!(snap.toolbar.follows);
     assert!(snap.toolbar.slide > early, "it arrives with the screen");
 }
+
+#[test]
+fn arrows_step_a_slider_popup() {
+    let mut s = state(&[VOLUME]);
+    let mut snap = ShellSnapshot::default();
+    s.tick(0, &[], &mut snap);
+    click_pin(&mut s, &mut snap, 1, 0);
+    let before = s.live_settings().audio.master_volume;
+    s.tick(2, &[key(KEY_LEFT)], &mut snap);
+    let lower = s.live_settings().audio.master_volume;
+    assert!(lower < before, "{before} -> {lower}");
+    let repeat = InputEvent {
+        time_ns: 0,
+        kind: InputKind::KeyRepeat {
+            scancode: KEY_RIGHT,
+        },
+    };
+    s.tick(3, &[key(KEY_LEFT), key(KEY_RIGHT), repeat], &mut snap);
+    let higher = s.live_settings().audio.master_volume;
+    assert!(higher > lower && higher <= before, "{lower} -> {higher}");
+}
+
+#[test]
+fn arrows_go_to_the_screen_without_a_slider_popup() {
+    let mut s = state(&[VOLUME]);
+    let mut snap = ShellSnapshot::default();
+    s.tick(0, &[], &mut snap);
+    let before = s.live_settings().audio.master_volume;
+    s.tick(1, &[key(KEY_LEFT)], &mut snap);
+    assert_eq!(s.live_settings().audio.master_volume, before);
+}

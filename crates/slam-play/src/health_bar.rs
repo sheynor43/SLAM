@@ -67,6 +67,9 @@ pub struct HealthTextures {
     /// How long each fill frame shows, in milliseconds.
     pub frame_length: f64,
     pub marker: MarkerTextures,
+    /// Some of the skin's textures are still uploading: nothing is drawn yet, so that the
+    /// plain bar does not flash before the skin's (ADR-0191).
+    pub pending: bool,
 }
 
 impl Default for HealthTextures {
@@ -77,6 +80,7 @@ impl Default for HealthTextures {
             fill_frames: 0,
             frame_length: 1000.0,
             marker: MarkerTextures::None,
+            pending: false,
         }
     }
 }
@@ -482,6 +486,7 @@ mod tests {
             fill_frames: 2,
             frame_length: 100.0,
             marker,
+            pending: false,
         }
     }
 

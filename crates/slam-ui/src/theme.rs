@@ -580,6 +580,43 @@ pub struct Theme {
     pub player_swap_ms: f32,
     pub player_cover_ms: f32,
     pub player_button_shadow: f32,
+    /// The accent glow around the player popup (effects on): `player_glow_width` wide, at
+    /// `player_glow_rest` of the selection glow's strength between beats and full on them;
+    /// without a known beat it breathes `player_glow_breath` times a second.
+    pub player_glow_width: f32,
+    pub player_glow_rest: f32,
+    pub player_glow_breath: f32,
+    /// The player popup's outline (ADR-0191): `player_outline_width` wide in the playing
+    /// difficulty's star colour, easing to a new one over `player_outline_ms`.
+    pub player_outline_width: f32,
+    pub player_outline_ms: f32,
+    /// The screen before play (ADR-0190): play starts `loader_push_delay_ms` after it
+    /// comes in at the earliest. Its card fades in over `loader_fade_ms` and grows from
+    /// `loader_card_from` of its size over `loader_grow_ms`; the quick settings slide in
+    /// over `loader_column_ms`; going to play, the card fades over `loader_out_ms` and both
+    /// move away over twice that. Sizes in points: the column `loader_column_width` wide,
+    /// `loader_margin` from the window's edges, groups `loader_group_gap` apart with
+    /// headers `loader_header` tall; the card's title and artist `loader_title_size` and
+    /// `loader_artist_size`, the cover `loader_cover_width` × `loader_cover_height`. The
+    /// quick settings are hidden until the pointer comes within `loader_reveal_zone` of the
+    /// window's right edge (ADR-0191); their rows are `loader_row_scale` of a settings row
+    /// tall.
+    pub loader_push_delay_ms: f32,
+    pub loader_fade_ms: f32,
+    pub loader_grow_ms: f32,
+    pub loader_card_from: f32,
+    pub loader_column_ms: f32,
+    pub loader_out_ms: f32,
+    pub loader_column_width: f32,
+    pub loader_margin: f32,
+    pub loader_group_gap: f32,
+    pub loader_header: f32,
+    pub loader_title_size: f32,
+    pub loader_artist_size: f32,
+    pub loader_cover_width: f32,
+    pub loader_cover_height: f32,
+    pub loader_reveal_zone: f32,
+    pub loader_row_scale: f32,
     /// Fill of the curtain's slats while the language switches (ADR-0091).
     pub curtain_fill: Color,
     /// Height of the accent edge leading each slat.
@@ -834,6 +871,11 @@ pub mod transition {
     pub const SHARDS_NS: u64 = 600_000_000;
     /// Length of `shutter`.
     pub const SHUTTER_NS: u64 = 450_000_000;
+    /// Length of `fade` (ADR-0191): to black in under half of it, a short hold while the
+    /// screens swap, back in the rest.
+    pub const FADE_NS: u64 = 300_000_000;
+    /// Where `fade` is whole black: from `FADE_BLACK.0` to `FADE_BLACK.1` of its length.
+    pub const FADE_BLACK: (f32, f32) = (0.45, 0.55);
     /// Slide of the screens in `slices`, as a fraction of the window width.
     pub const SLICES_SLIDE: f32 = 0.06;
     /// Scales of the incoming and outgoing screens in `iris`.
@@ -1190,6 +1232,27 @@ impl Theme {
             player_swap_ms: 220.0,
             player_cover_ms: 400.0,
             player_button_shadow: 0.4,
+            player_glow_width: 16.0,
+            player_glow_rest: 0.35,
+            player_glow_breath: 0.25,
+            player_outline_width: 2.0,
+            player_outline_ms: 600.0,
+            loader_push_delay_ms: 1800.0,
+            loader_fade_ms: 500.0,
+            loader_grow_ms: 650.0,
+            loader_card_from: 0.7,
+            loader_column_ms: 200.0,
+            loader_out_ms: 300.0,
+            loader_column_width: 340.0,
+            loader_margin: 16.0,
+            loader_group_gap: 10.0,
+            loader_header: 26.0,
+            loader_title_size: 24.0,
+            loader_artist_size: 17.0,
+            loader_cover_width: 300.0,
+            loader_cover_height: 64.0,
+            loader_reveal_zone: 48.0,
+            loader_row_scale: 0.8,
             curtain_fill: p.raised,
             curtain_edge: 4.0,
             intro_backdrop: Color::rgb(0.0, 0.0, 0.0),
