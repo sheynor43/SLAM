@@ -73,12 +73,12 @@ pub fn score_row_at(
         .count()
         .min(parts.row_count);
     shown.checked_sub(1)?;
-    // The rows lean along one line through the board's top (see `push`).
+    // The rows' right ends follow the board's edge, leaning from its top (see `push`).
     let anchor = parts.scores_title.y - layout.info_inset;
     parts.rows[..shown].iter().position(|r| {
-        let lean = (anchor - (r.y + r.height / 2.0)) * layout.info_tan;
+        let reach = (anchor - (r.y + r.height / 2.0)) * layout.info_tan;
         Rect {
-            x: r.x + lean,
+            width: (r.width + reach).max(0.0),
             ..*r
         }
         .contains(x, y)
@@ -965,8 +965,7 @@ impl InfoPanel {
             );
             return;
         }
-        // The rows are leaning boxes again.
-        lean_on.set(1.0);
+        // The rows stand at the margin; only their right ends lean (below).
         // Rows come in one after another when a difficulty's scores arrive (ADR-0168); a
         // refreshed list of the same difficulty animates only the rows it gained.
         let rows_now = shown;
@@ -999,10 +998,13 @@ impl InfoPanel {
                 break;
             }
             let t = ease_out_quint(progress(self.motion.row_since[i], now_ns, enter_ns));
-            // The rows lean with the board's edge (from its top, see above).
-            lean_on.set(1.0);
+            // The rows start at the content margin; only their right ends follow the
+            // board's leaning edge (from its top, see above), so a long list never runs off
+            // the window's left edge.
+            let reach = (board.y - centre(area)) * tan;
             let area = Rect {
                 x: area.x - offset * (1.0 - t),
+                width: (area.width + reach).max(0.0),
                 ..*area
             };
             let fade = |colour: Color| faded(colour, t);

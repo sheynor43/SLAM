@@ -1148,10 +1148,10 @@ fn the_texts_start_at_the_content_margin_and_the_wedge_clears_the_toolbar() {
 }
 
 #[test]
-fn the_score_rows_lean_along_the_board_and_stay_put_whatever_their_number() {
+fn the_score_rows_keep_their_left_edge_and_their_right_ends_follow_the_board() {
     let mut rig = Rig::new();
     let layout = SongSelectLayout::new(1280.0, 768.0, &rig.theme);
-    let rows_x = |rig: &mut Rig, count: usize| {
+    let rows_of = |rig: &mut Rig, count: usize| {
         let mut scores = LocalScores::default();
         for i in 0..count {
             scores.rows[i] = Some(row(1_000_000 - i as u64));
@@ -1161,7 +1161,7 @@ fn the_score_rows_lean_along_the_board_and_stay_put_whatever_their_number() {
         let mut screen = rig.screen.clone();
         screen.set_details(Some(details));
         let snapshot = screen.snapshot();
-        let mut xs = Vec::new();
+        let mut found = Vec::new();
         rig.panel.push(
             &mut rig.type_setter,
             &layout,
@@ -1170,26 +1170,34 @@ fn the_score_rows_lean_along_the_board_and_stay_put_whatever_their_number() {
             1.0,
             // Long after the rows came in.
             10_000_000_000,
-            &mut |r, _, look| {
+            &mut |r: &Rect, _, look| {
                 if matches!(look, Look::Round) {
-                    xs.push(r.x);
+                    found.push((r.x, r.x + r.width));
                 }
             },
             &mut |_, _, _, _| {},
             &mut |_, _, _, _, _, _| {},
         );
-        xs.truncate(count);
-        xs
+        found.truncate(count);
+        found
     };
-    let four = rows_x(&mut rig, 4);
-    assert_eq!(four.len(), 4, "{four:?}");
-    // One lean: equal steps between the rows.
-    let step = four[1] - four[0];
+    let many = rows_of(&mut rig, MAX_LOCAL_SCORES);
+    assert!(many.len() >= 4, "{many:?}");
+    // One left edge, never past the window's.
     assert!(
-        four.windows(2).all(|w| ((w[1] - w[0]) - step).abs() < 0.5),
-        "{four:?}"
+        many.iter()
+            .all(|r| (r.0 - many[0].0).abs() < 0.5 && r.0 > 0.0),
+        "{many:?}"
     );
-    // The first row is where it is with one score as with four.
-    let one = rows_x(&mut rig, 1);
-    assert!((one[0] - four[0]).abs() < 0.5, "{one:?} {four:?}");
+    // The right ends step left with the board's lean, evenly.
+    let step = many[1].1 - many[0].1;
+    assert!(step < 0.0, "{many:?}");
+    assert!(
+        many.windows(2)
+            .all(|w| ((w[1].1 - w[0].1) - step).abs() < 0.5),
+        "{many:?}"
+    );
+    // The first row is where it is with one score as with many.
+    let one = rows_of(&mut rig, 1);
+    assert!((one[0].1 - many[0].1).abs() < 0.5, "{one:?} {many:?}");
 }
