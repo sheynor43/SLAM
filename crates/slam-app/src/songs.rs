@@ -36,6 +36,10 @@ const PUBLISH_EVERY: Duration = Duration::from_millis(100);
 /// How often new star ratings republish the list while they keep arriving: every
 /// publication rebuilds the whole list, so the ratings come in bunches.
 const STARS_PUBLISH_EVERY: Duration = Duration::from_secs(1);
+/// How often ratings with the selected mods republish it: they answer the player's own
+/// change of mods, in view first, so they show at once rather than in a bunch a second
+/// later (ADR-0167).
+const MOD_STARS_PUBLISH_EVERY: Duration = Duration::from_millis(50);
 /// How long the library thread sleeps between polls.
 const POLL: Duration = Duration::from_millis(10);
 /// After this, a folder picker that has not answered no longer blocks a new one: its
@@ -564,6 +568,8 @@ struct Library {
     mods_key: [u64; 4],
     /// Ratings arrived that the published list does not show yet.
     stars_pending: bool,
+    /// Ratings with the selected mods came since the last publication.
+    mod_stars_pending: bool,
     /// The folder changed: the star run for the old one is to be dropped.
     cancel_stars: bool,
     /// The sets of a rescan so far: the list in `sets` stays shown until the scan is done,
@@ -592,6 +598,7 @@ impl Library {
             mod_map: StarMap::new(),
             mods_key: RatingMods::NONE.key(),
             stars_pending: false,
+            mod_stars_pending: false,
             cancel_stars: false,
             rescan: None,
         };
@@ -746,6 +753,8 @@ impl Library {
             }
             self.mods_key = key;
             self.stars_pending = true;
+            // The player changed the mods: what the list shows changes now.
+            self.mod_stars_pending = true;
         }
     }
 
@@ -771,6 +780,7 @@ impl Library {
                     }
                     if key == library.mods_key {
                         library.mod_map.insert(path, value);
+                        library.mod_stars_pending = true;
                     }
                 }
             }
@@ -922,9 +932,14 @@ fn run(
             library.receive_stars(stars, &ends.playing);
         }
         // Ratings republish the list, but not every time a few arrive, and not in a play.
+        let every = if library.mod_stars_pending {
+            MOD_STARS_PUBLISH_EVERY
+        } else {
+            STARS_PUBLISH_EVERY
+        };
         let stars_due = library.stars_pending
             && !ends.playing.paused()
-            && last_publish.is_none_or(|at| at.elapsed() >= STARS_PUBLISH_EVERY);
+            && last_publish.is_none_or(|at| at.elapsed() >= every);
         let scanning = matches!(library.status, SongSelectStatus::Scanning { .. });
         let due = !scanning || last_publish.is_none_or(|at| at.elapsed() >= PUBLISH_EVERY);
         if (library.dirty || stars_due) && due && ends.published.slots() > 0 {
@@ -946,6 +961,7 @@ fn run(
             // Only ratings are new: the view of the list stays (ADR-0135).
             published.refresh = !library.dirty;
             library.stars_pending = false;
+            library.mod_stars_pending = false;
             retired_lists.push(Arc::clone(&published.list));
             retired_files.push(Arc::clone(&published.files));
             if !Arc::ptr_eq(&published.scanning_text, &no_text) {
@@ -1557,6 +1573,8 @@ mod tests {
             ..RatingMods::NONE
         };
         library.follow_mods(&dt);
+        // A change of mods publishes at the quick pace (ADR-0167).
+        assert!(library.mod_stars_pending);
         library.mod_map.insert(
             PathBuf::from("s").join("b.osu"),
             Rating {

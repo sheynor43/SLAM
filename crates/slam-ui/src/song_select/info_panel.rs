@@ -65,16 +65,8 @@ pub fn score_row_at(
         .count()
         .min(parts.row_count);
     shown.checked_sub(1)?;
-    // The wedges lean along one line through the board's lowest bottom (see `push`).
-    let anchor = full_board_bottom(parts) + layout.info_inset;
-    parts.rows[..shown].iter().position(|r| {
-        let lean = (anchor - (r.y + r.height / 2.0)) * layout.info_tan;
-        let moved = Rect {
-            x: r.x + lean,
-            ..*r
-        };
-        moved.contains(x, y)
-    })
+    // The rows keep to the board's left edge, as its texts do (see `push`).
+    parts.rows[..shown].iter().position(|r| r.contains(x, y))
 }
 
 /// The bottom of the scores' wedge with as many rows as fit: the line the panel leans from.
@@ -922,8 +914,11 @@ impl InfoPanel {
                 break;
             }
             let t = ease_out_quint(progress(self.motion.row_since[i], now_ns, enter_ns));
+            // The rows start at the board's left edge, as the texts above them, not further
+            // right the higher they sit: the wedge's lean is taken back (each row's plate is
+            // still skewed on its own).
             let area = Rect {
-                x: area.x - offset * (1.0 - t),
+                x: area.x - offset * (1.0 - t) - lean_of(centre(area)),
                 ..*area
             };
             let fade = |colour: Color| faded(colour, t);

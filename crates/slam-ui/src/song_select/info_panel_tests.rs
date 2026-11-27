@@ -711,11 +711,11 @@ fn the_panel_does_not_follow_its_texts_unless_asked() {
 }
 
 #[test]
-fn the_default_width_is_lazers_at_its_ui_scale_and_the_multipliers_scale_it() {
+fn the_default_width_leaves_little_room_and_the_multipliers_scale_it() {
     let theme = Theme::default();
-    // Lazer at 0.85: 700 * 0.85 on a 1080p window.
+    // Narrower than lazer's 700 * 0.85: our wedge holds less (the user found it too wide).
     let at = |theme: &Theme| SongSelectLayout::new(1920.0, 1080.0, theme).info.width;
-    assert!((at(&theme) - 595.0).abs() < 8.0, "{}", at(&theme));
+    assert!((at(&theme) - 480.0).abs() < 8.0, "{}", at(&theme));
     let narrow = Theme {
         song_info_width_mult: 0.5,
         ..Theme::default()
@@ -1057,4 +1057,38 @@ fn the_texts_start_at_the_content_margin_and_the_wedge_clears_the_toolbar() {
         assert!(at_margin >= 8, "{w}x{h}: {starts:?} vs {wanted}");
         assert!(starts.iter().all(|&x| x >= wanted - 0.01));
     }
+}
+
+#[test]
+fn the_score_rows_start_at_one_left_edge() {
+    let mut rig = Rig::new();
+    let layout = SongSelectLayout::new(1280.0, 768.0, &rig.theme);
+    let mut scores = LocalScores::default();
+    for i in 0..4 {
+        scores.rows[i] = Some(row(1_000_000 - i as u64));
+    }
+    let details = details(Some(scores));
+    rig.show(details);
+    let mut screen = rig.screen.clone();
+    screen.set_details(Some(details));
+    let snapshot = screen.snapshot();
+    let mut xs = Vec::new();
+    rig.panel.push(
+        &layout,
+        &rig.theme,
+        &snapshot,
+        1.0,
+        // Long after the rows came in.
+        10_000_000_000,
+        &mut |r, _, look| {
+            if matches!(look, Look::Round) {
+                xs.push(r.x);
+            }
+        },
+        &mut |_, _, _, _| {},
+        &mut |_, _, _, _, _, _| {},
+    );
+    let rows: Vec<f32> = xs.iter().copied().take(4).collect();
+    assert_eq!(rows.len(), 4, "{xs:?}");
+    assert!(rows.iter().all(|x| (x - rows[0]).abs() < 0.5), "{rows:?}");
 }
