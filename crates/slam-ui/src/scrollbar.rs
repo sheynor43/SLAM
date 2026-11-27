@@ -173,6 +173,10 @@ pub struct ScrollbarLook {
     alpha: Towards,
     width: Towards,
     ready: bool,
+    /// The content's extent as drawn, eased: sets opening and closing change the real one
+    /// in steps, which would make the thumb jump and wobble under held keys.
+    content: f32,
+    content_ns: u64,
     /// Which edge of its track the thumb hugs (see [`ScrollbarLook::on_left`]).
     left: bool,
 }
@@ -189,6 +193,8 @@ impl ScrollbarLook {
             alpha: Towards::default(),
             width: Towards::default(),
             ready: false,
+            content: 0.0,
+            content_ns: 0,
             left: false,
         }
     }
@@ -314,6 +320,7 @@ impl ScrollbarLook {
         now_ns: u64,
     ) {
         if !bar.is_scrollable() {
+            self.content = 0.0;
             return;
         }
         let hovered = bar.track.contains(pointer[0], pointer[1]);
@@ -331,7 +338,26 @@ impl ScrollbarLook {
                 (2.0, full),
             ],
         );
-        let thumb = bar.thumb(offset);
+        // Ease the content's extent (hence the thumb's length and its travel).
+        let tau = f64::from(theme.song_scrollbar_ease_ms.max(0.0)) * 1.0e6;
+        let elapsed = now_ns.saturating_sub(self.content_ns) as f64;
+        self.content = if self.content <= 0.0 || tau <= 0.0 || now_ns < self.content_ns {
+            bar.content
+        } else {
+            let keep = (-elapsed / tau).exp() as f32;
+            let next = bar.content + (self.content - bar.content) * keep;
+            if (next - bar.content).abs() < 0.01 {
+                bar.content
+            } else {
+                next
+            }
+        };
+        self.content_ns = now_ns;
+        let eased = Scrollbar {
+            content: self.content.max(bar.view),
+            ..*bar
+        };
+        let thumb = eased.thumb(offset);
         let rect = Rect {
             x: thumb.x + (thumb.width - width) / 2.0,
             width,
@@ -640,5 +666,72 @@ mod left_tests {
             left >= 100.0 && left < 100.0 + theme.scrollbar_margin + 1.0,
             "{left}"
         );
+    }
+}
+
+#[cfg(test)]
+mod carousel_ease_tests {
+    use super::*;
+
+    fn white() -> AtlasRegion {
+        AtlasRegion {
+            texture: slam_render::textures::TextureId(0),
+            origin: slam_render::Origin::new(0, 0),
+            size: slam_render::Extent::new(1, 1),
+            uv: slam_render::atlas::UvRect::FULL,
+        }
+    }
+
+    /// Top and height of the thumb drawn for `content` at `offset`.
+    fn drawn(look: &mut ScrollbarLook, content: f32, offset: f32, now_ns: u64) -> (f32, f32) {
+        let theme = Theme::default();
+        let track = Rect {
+            x: 100.0,
+            y: 0.0,
+            width: theme.song_scrollbar_width,
+            height: 400.0,
+        };
+        let bar = Scrollbar::new(track, content, 200.0, 10.0);
+        let mut shapes = ShapeBatch::with_capacity(4);
+        look.push_carousel(
+            &mut shapes,
+            white(),
+            &bar,
+            offset,
+            [0.0, 0.0],
+            false,
+            1.0,
+            &theme,
+            1.0,
+            now_ns,
+        );
+        let v = shapes.vertices();
+        let top = v.iter().map(|p| p.position[1]).fold(f32::MAX, f32::min);
+        let bottom = v.iter().map(|p| p.position[1]).fold(f32::MIN, f32::max);
+        (top, bottom - top)
+    }
+
+    #[test]
+    fn the_thumb_moves_monotonically_and_its_size_eases_as_sets_open() {
+        let mut look = ScrollbarLook::new();
+        let frame = 16_000_000u64;
+        let mut now = 0;
+        let (mut last_top, first_height) = drawn(&mut look, 1000.0, 0.0, now);
+        let mut last_height = first_height;
+        let mut biggest_step = 0.0f32;
+        for step in 1..60 {
+            now += frame;
+            // Each repeat moves the list on; every few steps a set opens or closes and
+            // the content's height jumps.
+            let offset = step as f32 * 8.0;
+            let content = if step % 7 < 3 { 1000.0 } else { 1130.0 };
+            let (top, height) = drawn(&mut look, content, offset, now);
+            assert!(top >= last_top - 1e-3, "thumb went back at step {step}");
+            biggest_step = biggest_step.max((height - last_height).abs());
+            last_top = top;
+            last_height = height;
+        }
+        // A raw jump of 1000 to 1130 is a 40 px change of the 400 px thumb's length at once.
+        assert!(biggest_step < 4.0, "size jumped by {biggest_step}");
     }
 }

@@ -487,6 +487,9 @@ pub struct BackgroundFade {
     default: Option<TextureHandle>,
     /// The background shown whole, under a fade.
     shown: Option<TextureHandle>,
+    /// Opacity of `shown` before a fade runs: below 1 when a new target arrived mid-fade
+    /// and the fade restarts from what was on screen.
+    shown_alpha: f32,
     target: BackgroundTarget,
     /// What the target shows: its image, or the default without one.
     incoming: Option<TextureHandle>,
@@ -507,6 +510,7 @@ impl BackgroundFade {
             // Whole from the start, without a fade: it is ready long before the song
             // select first shows, while the main menu does not draw it.
             shown: default,
+            shown_alpha: 1.0,
             target: BackgroundTarget::default(),
             incoming: None,
             fade_from_ns: None,
@@ -527,7 +531,26 @@ impl BackgroundFade {
         state: impl Fn(TextureHandle) -> TextureState,
     ) {
         if target.generation != self.target.generation {
-            // A new target restarts the fade from the background shown whole.
+            // A new target restarts the fade from what is on screen: mid-fade, that is
+            // not the background last shown whole but a blend, so keep its dominant layer
+            // at its current opacity instead of jumping back to an older image.
+            if self.fade_from_ns.is_some() {
+                let [under, over] = self.layers(now_ns);
+                let (handle, alpha) = match (under, over) {
+                    (Some(u), Some(o)) => {
+                        if o.1 >= u.1 {
+                            (Some(o.0), o.1)
+                        } else {
+                            (Some(u.0), u.1)
+                        }
+                    }
+                    (Some(l), None) | (None, Some(l)) => (Some(l.0), l.1),
+                    (None, None) => (None, 1.0),
+                };
+                self.shown = handle;
+                self.shown_alpha = alpha;
+            }
+            self.incoming = None;
             self.target = target;
             self.fade_from_ns = None;
         }
@@ -541,7 +564,7 @@ impl BackgroundFade {
             Some(TextureState::Failed(_)) | None => self.default,
         };
         self.incoming = image;
-        if self.fade_from_ns.is_none() && image == self.shown {
+        if self.fade_from_ns.is_none() && image == self.shown && self.shown_alpha >= 1.0 {
             // Already shown whole (the default between two beatmaps without one): a fade
             // over itself would let the theme through.
             self.shown_generation
@@ -556,6 +579,7 @@ impl BackgroundFade {
         };
         if now_ns.saturating_sub(from) >= length {
             self.shown = image;
+            self.shown_alpha = 1.0;
             self.fade_from_ns = None;
             self.shown_generation
                 .store(self.target.generation, Ordering::Release);
@@ -572,10 +596,10 @@ impl BackgroundFade {
 
     fn layers(&self, now_ns: u64) -> [Option<Layer>; 2] {
         let Some(from) = self.fade_from_ns else {
-            return [self.shown.map(|h| (h, 1.0)), None];
+            return [self.shown.map(|h| (h, self.shown_alpha)), None];
         };
         let elapsed = now_ns.saturating_sub(from) as f64;
-        let out = (1.0 - elapsed / FADE_OUT_NS as f64).max(0.0) as f32;
+        let out = self.shown_alpha * (1.0 - elapsed / FADE_OUT_NS as f64).max(0.0) as f32;
         let fade_in = out_quint((elapsed / FADE_IN_NS as f64).min(1.0)) as f32;
         [
             self.incoming.map(|h| (h, fade_in)),
