@@ -1644,14 +1644,11 @@ fn tabs_are_square_icon_buttons_in_a_narrow_column() {
 #[test]
 fn every_section_has_its_own_icon() {
     for section in 0..icons::ICONS {
-        assert!(!icons::icon(section).is_empty(), "section {section}");
+        assert!(icons::icon(section).id() < 22, "section {section}");
     }
     for a in 0..icons::ICONS {
         for b in a + 1..icons::ICONS {
-            assert_ne!(
-                format!("{:?}", icons::icon(a)),
-                format!("{:?}", icons::icon(b))
-            );
+            assert_ne!(icons::icon(a), icons::icon(b));
         }
     }
 }
@@ -1659,14 +1656,8 @@ fn every_section_has_its_own_icon() {
 #[test]
 fn the_tablet_icon_comes_before_the_feedback_one() {
     // The sections' order: ..., library (7), tablet (8), feedback (9).
-    assert_eq!(
-        format!("{:?}", icons::icon(8)),
-        format!("{:?}", icons::TABLET)
-    );
-    assert_eq!(
-        format!("{:?}", icons::icon(9)),
-        format!("{:?}", icons::FEEDBACK)
-    );
+    assert_eq!(icons::icon(8), icons::Icon::Tablet);
+    assert_eq!(icons::icon(9), icons::Icon::Feedback);
 }
 
 #[test]

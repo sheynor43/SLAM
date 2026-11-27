@@ -539,7 +539,7 @@ impl PlayerView {
             );
         }
         self.push_bar(shapes, &rects, &now, &theme, scale, white);
-        self.push_buttons(shapes, &rects, &now, &theme, scale, white);
+        self.push_buttons(shapes, text, glyphs, &rects, &now, &theme, scale, white);
         // Fade, slide and grow from the button the popup belongs to.
         let t = ease_out_quint(self.anim.open);
         if t < 1.0 {
@@ -598,9 +598,12 @@ impl PlayerView {
 
     /// The three buttons: rounded leaning plates that brighten under the pointer and pop
     /// when pressed, with a faint shadow; the play and pause icons cross-fade.
+    #[allow(clippy::too_many_arguments)]
     fn push_buttons(
         &self,
         shapes: &mut ShapeBatch,
+        text: &mut SpriteBatch,
+        glyphs: &mut GlyphCache,
         rects: &PlayerRects,
         now: &NowPlayingFrame,
         theme: &Theme,
@@ -660,14 +663,14 @@ impl PlayerView {
                 let pause = faded(theme.text, live * (1.0 - swap));
                 let play = faded(theme.text, live * swap);
                 if swap < 1.0 {
-                    icons::push_icon(shapes, white, &rect, share, pause, icons::PAUSE);
+                    icons::push_icon(text, glyphs, &rect, share, pause, icons::PAUSE);
                 }
                 if swap > 0.0 {
-                    icons::push_icon(shapes, white, &rect, share, play, icons::PLAY);
+                    icons::push_icon(text, glyphs, &rect, share, play, icons::PLAY);
                 }
             } else {
                 let parts = if i == 0 { icons::PREV } else { icons::NEXT };
-                icons::push_icon(shapes, white, &rect, share, faded(theme.text, live), parts);
+                icons::push_icon(text, glyphs, &rect, share, faded(theme.text, live), parts);
             }
         }
     }

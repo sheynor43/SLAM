@@ -1168,8 +1168,8 @@ impl SettingsView {
             }
             let alpha = theme.settings_tab_idle_alpha + (1.0 - theme.settings_tab_idle_alpha) * lit;
             icons::push_icon(
-                shapes,
-                white,
+                text,
+                glyphs,
                 &rect,
                 theme.settings_tab_icon_share,
                 faded(theme.text, opacity * alpha),

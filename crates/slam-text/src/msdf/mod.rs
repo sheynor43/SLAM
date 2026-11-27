@@ -9,6 +9,7 @@ use skrifa::{FontRef, GlyphId, MetadataProvider, Tag};
 use slam_render::Extent;
 use slam_render::image::Image;
 
+use crate::icons::{GRID, Icon};
 use crate::{FontId, FontRegistry, PositionedGlyph};
 
 use self::generate::{Projection, Range};
@@ -62,7 +63,30 @@ pub struct GlyphKey {
     pub hires: bool,
 }
 
+/// The `font` of icon keys: no registered face has this id.
+const ICON_FONT: FontId = FontId(u32::MAX);
+
 impl GlyphKey {
+    /// Key of an icon of the built-in set (ADR-0182); `hires` makes it at [`EM_PX_HIRES`].
+    pub fn icon(icon: Icon, hires: bool) -> Self {
+        Self {
+            font: ICON_FONT,
+            weight: 0,
+            width: 0,
+            glyph_id: icon.id(),
+            hires,
+        }
+    }
+
+    /// The icon this key makes, if it is an icon key.
+    pub fn as_icon(&self) -> Option<Icon> {
+        if self.font == ICON_FONT {
+            Icon::from_id(self.glyph_id)
+        } else {
+            None
+        }
+    }
+
     /// Key of a laid-out glyph.
     pub fn of(glyph: &PositionedGlyph) -> Self {
         Self {
@@ -120,6 +144,9 @@ pub fn generate_glyph(
     registry: &FontRegistry,
     key: GlyphKey,
 ) -> Result<Option<GlyphBitmap>, GlyphError> {
+    if key.font == ICON_FONT {
+        return generate_icon(key);
+    }
     let (data, index) = registry
         .face_data(key.font)
         .ok_or(GlyphError::UnknownFont)?;
@@ -148,15 +175,31 @@ pub fn generate_glyph(
         )
         .map_err(|_| GlyphError::Outline)?;
     let shape = pen.finish();
-
-    let Some([xmin, ymin, xmax, ymax]) = shape.bounds() else {
-        return Ok(None);
-    };
     let upem = face
         .metrics(Size::unscaled(), &location)
         .units_per_em
         .max(1);
-    let s = f64::from(key.em_px()) / f64::from(upem);
+    bitmap_of(shape, f64::from(upem), key)
+}
+
+/// Generates the MSDF bitmap of an icon key; the icon's grid is one em, its baseline the
+/// bottom edge.
+pub(crate) fn generate_icon(key: GlyphKey) -> Result<Option<GlyphBitmap>, GlyphError> {
+    let icon = key.as_icon().ok_or(GlyphError::Outline)?;
+    let mut pen = OutlineShapePen::default();
+    icon.draw(&mut pen);
+    bitmap_of(pen.finish(), f64::from(GRID), key)
+}
+
+fn bitmap_of(
+    shape: self::shape::Shape,
+    upem: f64,
+    key: GlyphKey,
+) -> Result<Option<GlyphBitmap>, GlyphError> {
+    let Some([xmin, ymin, xmax, ymax]) = shape.bounds() else {
+        return Ok(None);
+    };
+    let s = f64::from(key.em_px()) / upem;
     let pad = f64::from(PADDING);
     let x0 = (xmin * s).floor() - pad;
     let y0 = (ymin * s).floor() - pad;

@@ -3,7 +3,7 @@
 use slam_render::sprite::{Sprite, SpriteBatch};
 use slam_render::{Blend, Color};
 
-use crate::{EM_PX, Glyph, GlyphCache, GlyphKey, Layout};
+use crate::{EM_PX, Glyph, GlyphCache, GlyphKey, Icon, Layout};
 
 /// What [`push_layout`] recorded.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -65,6 +65,53 @@ pub fn push_layout_styled(
             Glyph::Pending => stats.pending += 1,
             Glyph::Empty => {}
         }
+    }
+    stats
+}
+
+/// Largest icon side, in target pixels, drawn from the [`EM_PX`] bitmap; bigger icons use
+/// the [`EM_PX_HIRES`] one.
+const ICON_HIRES_ABOVE: f32 = 1.75 * EM_PX;
+
+/// Records `icon` in a square of `side` target pixels with its top-left corner at
+/// `position`, tinted `colour`. Same atlas pages and batch as text; a glyph that is not
+/// ready yet is counted in [`TextStats::pending`]. Does not allocate once the batch has
+/// room.
+pub fn push_icon(
+    batch: &mut SpriteBatch,
+    glyphs: &mut GlyphCache,
+    icon: Icon,
+    position: [f32; 2],
+    side: f32,
+    colour: Color,
+) -> TextStats {
+    let mut stats = TextStats::default();
+    if side <= 0.0 {
+        return stats;
+    }
+    let key = GlyphKey::icon(icon, side > ICON_HIRES_ABOVE);
+    match glyphs.glyph(key) {
+        Glyph::Ready { region, offset } => {
+            // The bitmap's em is the icon's box; its pen is the box's bottom-left corner.
+            let scale = side / key.em_px();
+            let mut sprite = Sprite::new(
+                region.texture,
+                region.uv,
+                [
+                    position[0] + offset[0] * scale,
+                    position[1] + side + offset[1] * scale,
+                ],
+                [
+                    region.size.width as f32 * scale,
+                    region.size.height as f32 * scale,
+                ],
+            );
+            sprite.colour = colour;
+            batch.push(&sprite);
+            stats.drawn += 1;
+        }
+        Glyph::Pending => stats.pending += 1,
+        Glyph::Empty => {}
     }
     stats
 }
@@ -288,6 +335,44 @@ mod tests {
         });
         assert_eq!(stats.drawn, 5);
         assert_eq!(allocs.total(), 0, "{allocs}");
+    }
+
+    #[test]
+    fn icons_sit_in_their_box_and_do_not_allocate() {
+        let mut rig = Rig::new(64, 16);
+        for icon in Icon::ALL {
+            for side in [20.0, 100.0] {
+                rig.settle(GlyphKey::icon(icon, side > ICON_HIRES_ABOVE));
+            }
+        }
+        let mut batch = SpriteBatch::with_capacity(64);
+        let (stats, allocs) = count_allocs(|| {
+            let mut stats = TextStats::default();
+            for icon in Icon::ALL {
+                let s = push_icon(&mut batch, &mut rig.cache, icon, [10.0, 20.0], 24.0, TINT);
+                stats.drawn += s.drawn;
+                stats.pending += s.pending;
+            }
+            push_icon(
+                &mut batch,
+                &mut rig.cache,
+                Icon::Gear,
+                [0.0; 2],
+                100.0,
+                TINT,
+            );
+            stats
+        });
+        assert_eq!((stats.drawn, stats.pending), (22, 0));
+        assert_eq!(allocs.total(), 0, "{allocs}");
+        assert_eq!(batch.len(), 23);
+        // Every quad stays within the box, give or take the field's padding.
+        for quad in batch.vertices()[..22 * 4].as_chunks::<4>().0 {
+            for v in quad {
+                assert!(v.position[0] >= 10.0 - 2.0 && v.position[0] <= 34.0 + 2.0);
+                assert!(v.position[1] >= 20.0 - 2.0 && v.position[1] <= 44.0 + 2.0);
+            }
+        }
     }
 
     fn clipped(rig: &mut Rig, layout: &Layout, clip: &Clip) -> SpriteBatch {
