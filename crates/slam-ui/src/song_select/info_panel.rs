@@ -69,14 +69,6 @@ pub fn score_row_at(
     parts.rows[..shown].iter().position(|r| r.contains(x, y))
 }
 
-/// The bottom of the scores' wedge with as many rows as fit: the line the panel leans from.
-fn full_board_bottom(parts: &InfoLayout) -> f32 {
-    match parts.row_count.checked_sub(1) {
-        Some(last) => parts.rows[last].y + parts.rows[last].height,
-        None => parts.empty.y + parts.empty.height,
-    }
-}
-
 /// One difficulty bar: its name, the track and the number.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct BarLayout {
@@ -724,10 +716,10 @@ impl InfoPanel {
                 ..theme.accent
             },
         };
-        // Everything leans with the wedges along one line through the lowest bottom edge
-        // the scores' wedge can have, which stays at the margin: nothing reaches past the
-        // window's left edge, and the lean stays put whether scores come or go (ADR-0167).
-        let anchor = full_board_bottom(&parts) + inset;
+        // Each wedge leans from its own bottom edge: its right edge is at the panel's width
+        // there, so the top wedge does not reach further right the taller the scores'
+        // board below it can be (ADR-0167), and the right-aligned values keep their pad from
+        // the edge. Its left edge runs off the window.
         if !self.motion.sized {
             self.motion.width = Towards::rest(wanted, now_ns);
             self.motion.sized = true;
@@ -737,7 +729,8 @@ impl InfoPanel {
         // is off the window, only its right edge leans). `lean_on` is 1 while leaning
         // shapes are drawn.
         let lean_on = std::cell::Cell::new(1.0f32);
-        let lean_of = |y: f32| (anchor - y) * tan * lean_on.get();
+        let anchor = std::cell::Cell::new(0.0f32);
+        let lean_of = |y: f32| (anchor.get() - y) * tan * lean_on.get();
         let mut rect = |r: &Rect, colour: Color, look: Look| {
             let moved = Rect {
                 x: r.x + lean_of(r.y + r.height / 2.0),
@@ -775,8 +768,10 @@ impl InfoPanel {
                 ..*r
             }
         };
+        anchor.set(wedge.y + wedge.height);
         rect(&bleed(&wedge), theme.song_panel_fill, wedge_look);
         if snapshot.details.is_some() {
+            anchor.set(board.y + board.height);
             rect(&bleed(&board), theme.song_panel_fill, board_look);
         }
         lean_on.set(0.0);

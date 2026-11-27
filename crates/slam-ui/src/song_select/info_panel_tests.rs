@@ -711,11 +711,11 @@ fn the_panel_does_not_follow_its_texts_unless_asked() {
 }
 
 #[test]
-fn the_default_width_leaves_little_room_and_the_multipliers_scale_it() {
+fn the_default_width_is_lazers_at_its_ui_scale_and_the_multipliers_scale_it() {
     let theme = Theme::default();
-    // Narrower than lazer's 700 * 0.85: our wedge holds less (the user found it too wide).
+    // Lazer at 0.85: 700 * 0.85 on a 1080p window.
     let at = |theme: &Theme| SongSelectLayout::new(1920.0, 1080.0, theme).info.width;
-    assert!((at(&theme) - 480.0).abs() < 8.0, "{}", at(&theme));
+    assert!((at(&theme) - 595.0).abs() < 8.0, "{}", at(&theme));
     let narrow = Theme {
         song_info_width_mult: 0.5,
         ..Theme::default()

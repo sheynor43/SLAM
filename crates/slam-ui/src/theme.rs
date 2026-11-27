@@ -1098,7 +1098,7 @@ impl Theme {
             star_icon_size: 10.0,
             star_icon_gap: 3.0,
             // Lazer's 700 at its UI scale 0.85 on a 1080p window, in reference units.
-            song_info_width: 340.0,
+            song_info_width: 420.0,
             song_info_widescreen_bonus: 100.0 / 700.0,
             song_info_width_mult: 1.0,
             song_info_height_mult: 1.0,
