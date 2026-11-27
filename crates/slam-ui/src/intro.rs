@@ -331,10 +331,11 @@ pub fn burst_triangle(index: usize) -> (f32, f32, f32) {
     )
 }
 
-/// How much of the theme's colour the logo has at `t`, 0 ..= 1: the intro is black and
-/// white, and the colour floods in after the impact, so the logo lands as the menu's.
+/// How much of the theme's colour the logo has at `t`, 0 ..= 1: the intro is white on
+/// black, and the colour comes in only as the black fades out, so the logo lands as the
+/// menu's.
 pub fn colour(t: f32) -> f32 {
-    smoothstep(IMPACT_S + 0.05, END_S, t)
+    smoothstep(BACKDROP_FADE_S, END_S, t)
 }
 
 /// Opacity of the black over the menu at `t` seconds.

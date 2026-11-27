@@ -20,32 +20,22 @@ use crate::theme::{Theme, faded};
 /// Beams closing in during the charge.
 const BEAMS: usize = 10;
 
-/// `colour`'s grey of the same lightness, a little brighter: the black-and-white intro.
-fn grey(colour: Color) -> Color {
-    let v = ((0.2126 * colour.r + 0.7152 * colour.g + 0.0722 * colour.b) * 1.3).min(1.0);
-    Color {
-        r: v,
-        g: v,
-        b: v,
-        a: colour.a,
-    }
+/// `from` moved `k` of the way to `to`.
+fn mix(from: [Color; 2], to: [Color; 2], k: f32) -> [Color; 2] {
+    let m = |a: Color, b: Color| Color {
+        r: a.r + (b.r - a.r) * k,
+        g: a.g + (b.g - a.g) * k,
+        b: a.b + (b.b - a.b) * k,
+        a: a.a + (b.a - a.a) * k,
+    };
+    [m(from[0], to[0]), m(from[1], to[1])]
 }
 
-/// `pair` in grey, `k` of the way to its colour.
-fn tone(pair: [Color; 2], k: f32) -> [Color; 2] {
-    pair.map(|c| {
-        let g = grey(c);
-        Color {
-            r: g.r + (c.r - g.r) * k,
-            g: g.g + (c.g - g.g) * k,
-            b: g.b + (c.b - g.b) * k,
-            a: c.a,
-        }
-    })
-}
+const WHITE: [Color; 2] = [Color::WHITE; 2];
+const BLACK: [Color; 2] = [Color::BLACK; 2];
 
-/// White and grey: the intro's glows, beams, copies, waves and burst.
-const GREYS: [Color; 2] = [Color::WHITE, Color::rgb(0.55, 0.55, 0.55)];
+/// The intro's beams, copies, waves and burst: white.
+const GREYS: [Color; 2] = [Color::WHITE; 2];
 
 /// The draw side of [`super::Intro`].
 #[derive(Debug)]
@@ -82,21 +72,22 @@ impl IntroView {
         let real = &theme.logo;
         let t = (snapshot.elapsed_ns as f64 / 1e9) as f32;
         let fade = 1.0 - snapshot.exit;
-        // Black and white until the colour floods in after the impact.
+        // White on black: the mark and the ring white, the play cut out black on a black
+        // disc; the theme's colour comes in only as the black gives way to the menu.
         let k = colour(t);
         let colours = &crate::theme::LogoColours {
-            disc: tone(real.disc, k),
-            shine: tone([real.shine; 2], k)[0],
-            ring: tone(real.ring, k),
-            frame: tone(real.frame, k),
-            play: tone(real.play, k),
-            facet: tone(real.facet, k),
-            accent: tone(real.accent, k),
+            disc: mix(BLACK, real.disc, k),
+            shine: mix([faded(Color::WHITE, 0.0); 2], [real.shine; 2], k)[0],
+            ring: mix(WHITE, real.ring, k),
+            frame: mix(WHITE, real.frame, k),
+            play: mix(BLACK, real.play, k),
+            facet: mix(WHITE, real.facet, k),
+            accent: mix(WHITE, real.accent, k),
         };
         let black = backdrop(t) * fade;
         if black > 0.0 {
             let mut sprite = Sprite::new(white.texture, white.uv, [0.0, 0.0], [width, height]);
-            sprite.colour = faded(theme.intro_backdrop, black);
+            sprite.colour = faded(Color::BLACK, black);
             shapes.push(&sprite);
         }
         let Some(art) = art else {
@@ -111,21 +102,6 @@ impl IntroView {
         let layers = art.layers(size);
         let charge = charge(t);
         let boom = blast(t);
-        // A coloured glow behind everything, swelling with the charge.
-        let glow = black * (0.35 + 0.65 * charge).max(boom.wave_alpha * 0.8);
-        if glow > 0.0 {
-            let halo = GREYS;
-            push_mask(
-                shapes,
-                layers.shine,
-                centre,
-                size * 3.2,
-                0.0,
-                halo,
-                glow * 0.6,
-                Blend::Additive,
-            );
-        }
         // Beams from beyond the window closing in on the centre.
         if charge > 0.0 {
             let reach = width.hypot(height);
