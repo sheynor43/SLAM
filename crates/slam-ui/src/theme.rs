@@ -211,6 +211,9 @@ pub struct Theme {
     /// Gap between the toolbar and the search line, reference px (ADR-0177).
     pub song_top_gap: f32,
     pub song_margin: f32,
+    /// Where the info panel's texts start from the window's left edge (lazer's
+    /// `WEDGE_CONTENT_MARGIN`: corner offset 20 plus screen margin 12), reference pixels.
+    pub song_wedge_content_margin: f32,
     /// Height of a set row's plate in the song list, without the gap (ADR-0149: lazer's 72).
     pub song_set_height: f32,
     /// Height of a difficulty row's plate (ADR-0149: lazer's 45).
@@ -868,6 +871,7 @@ impl Theme {
             },
             song_top_gap: 5.0,
             song_margin: 24.0,
+            song_wedge_content_margin: 32.0,
             song_set_height: 72.0,
             song_difficulty_height: 45.0,
             song_difficulty_info: crate::song_select::DifficultyInfo::Stars,

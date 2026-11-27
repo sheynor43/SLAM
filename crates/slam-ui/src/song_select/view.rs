@@ -146,6 +146,9 @@ struct RowSlot {
     avail: f32,
     /// The ride of that text (ADR-0148).
     marquee: Marquee,
+    /// Whether the texts' glyphs were asked of the cache since they were laid out, so a
+    /// row about to scroll in has them ready.
+    requested: bool,
 }
 
 impl RowSlot {
@@ -162,6 +165,7 @@ impl RowSlot {
             pp: line(),
             avail: 0.0,
             marquee: Marquee::default(),
+            requested: false,
         }
     }
 }
@@ -260,6 +264,8 @@ pub struct SongSelectView {
     expansion: Expansion,
     /// Where each row shown is drawn, easing to its place (ADR-0172).
     row_motion: RowMotion,
+    /// The rows' rating colours, easing to new ratings.
+    star_motion: StarMotion,
     /// The mod select panel's slide in and out (ADR-0152).
     mods_slide: PanelSlide,
     shift: Shift,
@@ -589,6 +595,7 @@ impl SongSelectView {
             fades: [None; FADES],
             expansion: Expansion::default(),
             row_motion: RowMotion::default(),
+            star_motion: StarMotion::default(),
             mods_slide: PanelSlide::default(),
             shift: Shift::default(),
             fade_next: 0,
@@ -720,9 +727,15 @@ impl SongSelectView {
                 fit_face(&mut self.type_setter, desc, note, room, self.ellipsis[3]);
             }
         }
-        let count = self.layout.viewport_rows().ceil() as usize + 2;
+        let count = self.layout.viewport_rows().ceil() as usize + 2 + 2 * PREFILL_ROWS;
         self.slots.clear();
         self.slots.resize_with(count, RowSlot::new);
+    }
+
+    /// How many rows have their texts laid out: the rows in view and a few past its ends
+    /// (ADR-0172).
+    pub fn laid_out_rows(&self) -> usize {
+        self.slots.iter().filter(|s| s.holds.is_some()).count()
     }
 
     /// Asks `glyphs` for every glyph of the static texts and of the rows laid out so far.
@@ -875,6 +888,7 @@ impl SongSelectView {
         }
         slot.avail = avail;
         slot.marquee.restart(now_ns);
+        slot.requested = false;
         slot.holds = Some((generation, row));
         true
     }
@@ -1047,7 +1061,9 @@ impl SongSelectView {
                 layout,
                 theme,
                 snapshot,
-                opacity,
+                // The wedges' outlines are the looks', not the closure's: they fade with the
+                // panel too, like the fills and texts.
+                opacity * (1.0 - panel_back),
                 now_ns,
                 &mut rect,
                 &mut left,
@@ -1056,7 +1072,14 @@ impl SongSelectView {
             layer.set(1.0);
             // The search line.
             let search = leaned(&layout.search);
-            rect(&search, theme.song_search_fill, Look::Round);
+            // The box runs on to the window's right edge, past its rounded corners, as the
+            // plates do; the text and caret keep to the list's width.
+            let search_box = Rect {
+                width: (layout.window_right - search.x + 2.0 * theme.button_radius * scale)
+                    .max(search.width),
+                ..search
+            };
+            rect(&search_box, theme.song_search_fill, Look::Round);
             if snapshot.query.is_empty() {
                 // The status line takes the placeholder's place (ADR-0177).
                 let (line, colour) = match status_line {
@@ -1158,11 +1181,19 @@ impl SongSelectView {
                     .track(list, snapshot.selected, thumbs.now_ns, theme);
                 let visible = layout.visible_rows(geometry, snapshot.shown_scroll);
                 let reach = expansion.reach();
+                // A few rows past the view are laid out and their glyphs asked for, so
+                // their texts are ready when they scroll in (and while eased rows are
+                // drawn inside the view whose places are outside it).
+                let reach = reach + PREFILL_ROWS;
                 let rows_to_draw = visible.start.saturating_sub(reach)
                     ..(visible.end + reach).min(snapshot.row_count);
                 // Rows ease to their places, each on its own, as lazer's panels do: a quick
                 // change of selection moves them, never leaves holes (ADR-0172).
                 let ease = self.row_motion.begin(thumbs.now_ns, theme.song_row_ease_ms);
+                self.star_motion.begin(
+                    thumbs.now_ns,
+                    (theme.star_colour_ease_ms.max(0.0) as f64 * 1e6) as u64,
+                );
                 let mut set_top: Option<(usize, f32)> = None;
                 for index in rows_to_draw {
                     let Some(row) = snapshot.row_at(index) else {
@@ -1189,6 +1220,15 @@ impl SongSelectView {
                         now_ns,
                     ) {
                         continue;
+                    }
+                    if !slot.requested {
+                        slot.requested = true;
+                        let cache = &mut *target.borrow_mut().1;
+                        for line in [&slot.primary, &slot.secondary, &slot.pp] {
+                            for g in line.layout.glyphs() {
+                                let _ = cache.glyph(GlyphKey::of(g));
+                            }
+                        }
                     }
                     let (primary_line, secondary_line, pp_line) =
                         (&slot.primary, &slot.secondary, &slot.pp);
@@ -1263,8 +1303,17 @@ impl SongSelectView {
                         height: clipped_bottom - clipped_top,
                         ..area
                     };
-                    let (set_index, stars) = match row {
-                        Row::Set(set) => (set, None),
+                    let (set_index, raw_stars) = match row {
+                        Row::Set(set) => (
+                            set,
+                            // A set takes the colour of its hardest difficulty (ADR-0136).
+                            list.sets.get(set).and_then(|s| {
+                                s.difficulties
+                                    .iter()
+                                    .filter_map(|d| d.stars)
+                                    .reduce(f32::max)
+                            }),
+                        ),
                         Row::Difficulty { set, difficulty } => (
                             set,
                             list.sets
@@ -1272,6 +1321,12 @@ impl SongSelectView {
                                 .and_then(|s| s.difficulties.get(difficulty))
                                 .and_then(|d| d.stars),
                         ),
+                    };
+                    // The rating's colour eases to a new rating, as the info panel's does.
+                    let eased = raw_stars.map(|to| self.star_motion.track(key, to));
+                    let stars = match row {
+                        Row::Set(_) => None,
+                        Row::Difficulty { .. } => eased,
                     };
                     let seed = index as f32 * 0.29;
                     let look = match row {
@@ -1292,19 +1347,11 @@ impl SongSelectView {
                             tint: crate::star_colour::glow_for(stars, theme.accent),
                         },
                         // A set in the colour of its hardest difficulty (ADR-0136).
-                        Row::Set(set) => Look::TintedButton {
+                        Row::Set(_) => Look::TintedButton {
                             highlighted: selected,
                             seed,
                             fade: opacity * alpha,
-                            tint: crate::star_colour::glow_for(
-                                list.sets.get(set).and_then(|s| {
-                                    s.difficulties
-                                        .iter()
-                                        .filter_map(|d| d.stars)
-                                        .reduce(f32::max)
-                                }),
-                                theme.accent,
-                            ),
+                            tint: crate::star_colour::glow_for(eased, theme.accent),
                         },
                     };
                     // The plate runs on past the window's right edge, as lazer's; the
@@ -2227,6 +2274,9 @@ impl PanelSlide {
     }
 }
 
+/// Rows past the view's ends that are laid out ahead (ADR-0172).
+const PREFILL_ROWS: usize = 3;
+
 /// Marks a set row's key in [`RowMotion`], apart from its difficulties'.
 const SET_KEY_BIT: u64 = 1 << 63;
 /// Rows [`RowMotion`] follows at once.
@@ -2295,6 +2345,81 @@ impl RowMotion {
             self.seen[i] = self.frame;
         }
         top
+    }
+}
+
+/// The rating each row's colour shows, by key: it eases to a new rating over a set time (the
+/// info panel's 750 ms OutQuint) instead of jumping when mods or new values change it. A row
+/// seen for the first time shows its rating at once. Allocation-free.
+#[derive(Clone, Debug)]
+struct StarMotion {
+    keys: [u64; MOTION_ROWS],
+    from: [f32; MOTION_ROWS],
+    to: [f32; MOTION_ROWS],
+    since_ns: [u64; MOTION_ROWS],
+    seen: [u32; MOTION_ROWS],
+    frame: u32,
+    now_ns: u64,
+    duration_ns: u64,
+}
+
+impl Default for StarMotion {
+    fn default() -> Self {
+        StarMotion {
+            keys: [0; MOTION_ROWS],
+            from: [0.0; MOTION_ROWS],
+            to: [0.0; MOTION_ROWS],
+            since_ns: [0; MOTION_ROWS],
+            seen: [0; MOTION_ROWS],
+            frame: 0,
+            now_ns: 0,
+            duration_ns: 0,
+        }
+    }
+}
+
+impl StarMotion {
+    /// Starts a frame at `now_ns`; ratings ease over `duration_ns`.
+    fn begin(&mut self, now_ns: u64, duration_ns: u64) {
+        self.frame = self.frame.wrapping_add(1).max(2);
+        self.now_ns = now_ns;
+        self.duration_ns = duration_ns;
+    }
+
+    fn value(&self, i: usize) -> f32 {
+        let t = if self.duration_ns == 0 {
+            1.0
+        } else {
+            (self.now_ns.saturating_sub(self.since_ns[i]) as f64 / self.duration_ns as f64)
+                .clamp(0.0, 1.0) as f32
+        };
+        self.from[i] + (self.to[i] - self.from[i]) * ease_out_quint(t)
+    }
+
+    /// The rating row `key` shows this frame, going to `to`.
+    fn track(&mut self, key: u64, to: f32) -> f32 {
+        let last = self.frame.wrapping_sub(1);
+        if let Some(i) = (0..MOTION_ROWS)
+            .find(|&i| self.keys[i] == key && (self.seen[i] == last || self.seen[i] == self.frame))
+        {
+            if (self.to[i] - to).abs() > f32::EPSILON {
+                self.from[i] = self.value(i);
+                self.to[i] = to;
+                self.since_ns[i] = self.now_ns;
+            }
+            self.seen[i] = self.frame;
+            return self.value(i);
+        }
+        if let Some(i) =
+            (0..MOTION_ROWS).find(|&i| self.seen[i] != last && self.seen[i] != self.frame)
+        {
+            self.keys[i] = key;
+            self.from[i] = to;
+            self.to[i] = to;
+            self.since_ns[i] = self.now_ns;
+            self.seen[i] = self.frame;
+        }
+        to
     }
 }
 
@@ -2761,6 +2886,36 @@ mod tests {
         let e = m.begin(1_150 * MS, 50.0);
         let _ = m.begin(1_200 * MS, 50.0);
         assert_eq!(m.track(1, 300.0, None, e), 300.0);
+    }
+
+    #[test]
+    fn a_new_rating_eases_the_rows_colour_and_a_new_row_shows_it_at_once() {
+        let mut m = StarMotion::default();
+        let d = 750 * MS;
+        m.begin(1_000 * MS, d);
+        // A row first seen shows its rating at once.
+        assert_eq!(m.track(7, 3.0), 3.0);
+        m.begin(1_016 * MS, d);
+        assert_eq!(m.track(7, 3.0), 3.0);
+        // A mod changes the rating: the shown value starts from the old one...
+        m.begin(1_032 * MS, d);
+        let first = m.track(7, 6.0);
+        assert!((first - 3.0).abs() < 1e-3, "{first}");
+        // ...is on its way part-way (OutQuint is past half at a third of the time)...
+        m.begin(1_032 * MS + 250 * MS, d);
+        let mid = m.track(7, 6.0);
+        assert!(mid > 4.5 && mid < 6.0, "{mid}");
+        // ...and rests on the new rating.
+        m.begin(1_032 * MS + 800 * MS, d);
+        assert_eq!(m.track(7, 6.0), 6.0);
+        // A change mid-way starts from where the value is.
+        m.begin(2_000 * MS, d);
+        m.track(7, 2.0);
+        m.begin(2_000 * MS + 100 * MS, d);
+        let cut = m.track(7, 2.0);
+        m.begin(2_000 * MS + 100 * MS + MS, d);
+        let turned = m.track(7, 9.0);
+        assert!((turned - cut).abs() < 0.2, "{turned} vs {cut}");
     }
 
     #[test]

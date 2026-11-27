@@ -387,8 +387,6 @@ impl SongSelectLayout {
         // as much.
         // As wide as lazer's wedge at most (ADR-0136). The wedges lean by the buttons' skew
         // from their bottom edge, so their top reaches right by their height's lean.
-        let info_height = (content_bottom - header.y).max(0.0);
-        let wedge_lean = (info_height + margin) * theme.button_skew().tan();
         // Lazer's left column: half the window at most, 700 and a widescreen bonus at its
         // scale (ADR-0168); the user's multiplier comes on top.
         let aspect = width / height.max(1.0);
@@ -397,10 +395,16 @@ impl SongSelectLayout {
             * (1.0 + (aspect - 2.0).max(0.0) * theme.song_info_widescreen_bonus))
             .min(width * 0.5)
             * theme.song_info_width_mult;
+        // The wedge's backing reaches `margin / 2` above and left of its content: keep it
+        // below the toolbar (ADR-0168) and start the texts where lazer's do.
+        let info_x = theme.song_wedge_content_margin * scale;
+        let info_y = (theme.toolbar_height * scale + margin / 2.0).max(header.y);
+        let info_height = (content_bottom - info_y).max(0.0);
+        let wedge_lean = (info_height + margin) * theme.button_skew().tan();
         let info = Rect {
-            x: margin,
-            y: header.y,
-            width: (x - margin - 3.0 * margin / 2.0 - lean_reach - wedge_lean)
+            x: info_x,
+            y: info_y,
+            width: (x - info_x - 3.0 * margin / 2.0 - lean_reach - wedge_lean)
                 .min(wanted)
                 .max(0.0),
             height: info_height,
