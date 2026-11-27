@@ -36,6 +36,12 @@ const MOD_COLUMNS: ModColumns = [
 ];
 
 fn list_of(count: u64) -> Arc<SongList> {
+    list_rated(count, 1.0)
+}
+
+/// `list_of` with every rating and performance times `factor`: the same rows, as a mod
+/// that changes the difficulty would republish them.
+fn list_rated(count: u64, factor: f32) -> Arc<SongList> {
     Arc::new(SongList {
         sets: (0..count)
             .map(|k| SetRow {
@@ -53,7 +59,9 @@ fn list_of(count: u64) -> Arc<SongList> {
                             ..SearchSource::default()
                         });
                         // Two rated, one not yet: pills, dots and the accent fallback.
-                        row.stars = (d < 2).then_some(1.5 + d as f32 * 2.7);
+                        // Rows are known by their keys, as the rolling numbers are.
+                        row.key = 1 + k * 3 + d;
+                        row.stars = (d < 2).then_some((1.5 + d as f32 * 2.7) * factor);
                         row.pp = row.stars.map(|s| s * s * 31.0);
                         row
                     })
@@ -257,6 +265,32 @@ fn view_pushes_without_allocating_once_warm() {
         "{}",
         rig.shapes.len()
     );
+}
+
+#[test]
+fn rolling_ratings_and_pp_do_not_allocate() {
+    let mut rig = Rig::new();
+    let mut screen = SongSelect::new();
+    put(&mut screen, list_of(40));
+    screen.set_status(SongSelectStatus::Ready);
+    let before = screen.snapshot();
+    let ms = 1_000_000;
+    put(&mut screen, list_rated(40, 2.37));
+    let after = screen.snapshot();
+    // The widest numbers are shown once, so the buffers have their room.
+    rig.now_ns = 1_000 * ms;
+    rig.frame(&after);
+    rig.frame(&after);
+    rig.now_ns = 5_000 * ms;
+    rig.frame(&after);
+    rig.frame(&before);
+    // The rows come again with other ratings: their numbers roll for 750 ms.
+    assert_no_alloc(|| {
+        for step in 0..60u64 {
+            rig.now_ns = (5_100 + step * 16) * ms;
+            rig.frame(&before);
+        }
+    });
 }
 
 /// Shapes a song select frame may take: under half the shell's `MAX_SHAPES` (1024), so a
