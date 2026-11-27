@@ -14,8 +14,13 @@ use std::thread::Thread;
 use std::time::Duration;
 
 use slam_input::{PointerWatch, WindowScale};
+use slam_osu::Vec2;
 use slam_play::circles::SkinSprite;
-use slam_play::cursor::{CursorSkinConfig, CursorSources, ExpandTimes, rotation};
+use slam_play::cursor::{
+    CursorScale, CursorSkinConfig, CursorSources, CursorTrail, ExpandTimes, MAX_TRAIL_PARTS,
+    TRAIL_TEXTURE_FACTOR, rotation,
+};
+use slam_play::playfield::PlayfieldLayout;
 use slam_play::session::PlayState;
 use slam_render::Blend;
 use slam_render::atlas::AtlasRegion;
@@ -33,12 +38,13 @@ use slam_ui::theme::Theme;
 
 use crate::settings::Settings;
 
-/// Textures of the cursor's loader: `cursor` and `cursormiddle`, and the same two of the
-/// skin before, until the draw thread lets go.
-pub const MAX_CURSOR_TEXTURES: u32 = 4;
+/// Textures of the cursor's loader: `cursor`, `cursormiddle` and `cursortrail`, and the same
+/// three of the skin before, until the draw thread lets go.
+pub const MAX_CURSOR_TEXTURES: u32 = 6;
 
-/// Shapes and sprites one frame of the menu cursor writes at most.
-pub const MAX_MENU_CURSOR_SHAPES: usize = MAX_CURSOR_SHAPES;
+/// Shapes and sprites one frame of the menu cursor writes at most: SLAM's pointer or the
+/// skin's cursor with its trail.
+pub const MAX_MENU_CURSOR_SHAPES: usize = MAX_CURSOR_SHAPES + MAX_TRAIL_PARTS;
 
 /// The skin's cursor is drawn as stable draws it: texture pixels at the 768-high
 /// reference of the interface.
@@ -81,6 +87,8 @@ pub struct MenuCursorSkin {
     /// `None` after the answer: no skin of the chain has a `cursor`, SLAM's is drawn.
     pub cursor: Option<SkinImage>,
     pub middle: Option<SkinImage>,
+    /// The skin's `cursortrail`; `None`: it has none, the skin's cursor leaves no trail.
+    pub trail: Option<SkinImage>,
     pub config: CursorSkinConfig,
 }
 
@@ -92,6 +100,9 @@ pub struct MenuCursorFrame {
     /// Whether gameplay draws its own cursor now, so that this one stays away.
     pub gameplay_cursor: bool,
     pub skin: MenuCursorSkin,
+    /// `general.menu_cursor_size`: the multiplier of SLAM's pointer and the skin's cursor
+    /// (ADR-0184).
+    pub size: f32,
     /// The update tick that made this frame; the draw thread acknowledges it through
     /// [`CursorShown`] so that textures the frame left out can be released.
     pub seq: u32,
@@ -103,6 +114,7 @@ impl Default for MenuCursorFrame {
             style: CursorStyle::Slam,
             gameplay_cursor: false,
             skin: MenuCursorSkin::default(),
+            size: 1.0,
             seq: 0,
         }
     }
@@ -113,24 +125,33 @@ impl Default for MenuCursorFrame {
 pub struct CursorFiles {
     pub cursor: Option<(PathBuf, f32)>,
     pub middle: Option<(PathBuf, f32)>,
+    /// The `cursortrail` of the first skin with one, whatever skin has the `cursor`.
+    pub trail: Option<(PathBuf, f32)>,
     pub config: CursorSkinConfig,
 }
 
 /// The `cursor` of the first skin of `skins` with one, and its `cursormiddle`; none of them
 /// when no skin has a `cursor` (SLAM's cursor is drawn then).
 pub fn cursor_files(skins: &SkinChain) -> CursorFiles {
-    let Some(source) = CursorSources::new(skins).cursor else {
+    let sources = CursorSources::new(skins);
+    let Some(source) = sources.cursor else {
         return CursorFiles {
             cursor: None,
             middle: None,
+            trail: None,
             config: CursorSkinConfig::new(skins),
         };
     };
     let skin = skins.skin(source);
     let file = |name: &str| skin.texture(name).map(|t| (t.path, t.scale));
+    let trail = sources
+        .trail
+        .and_then(|source| skins.skin(source).texture("cursortrail"))
+        .map(|t| (t.path, t.scale));
     CursorFiles {
         cursor: file("cursor"),
         middle: file("cursormiddle"),
+        trail,
         config: CursorSkinConfig::new(skins),
     }
 }
@@ -192,6 +213,7 @@ fn load_skin(requests: &mut TextureRequests, user: Option<&Path>) -> MenuCursorS
         loaded: true,
         cursor: read_image(requests, files.cursor),
         middle: read_image(requests, files.middle),
+        trail: read_image(requests, files.trail),
         config: files.config,
     }
 }
@@ -215,7 +237,10 @@ fn run(
         if let Some((generation, skin)) = load {
             let skin = load_skin(&mut requests, skin.as_deref());
             if let Err(rtrb::PushError::Full(reply)) = replies.push(Reply { generation, skin }) {
-                for image in [reply.skin.cursor, reply.skin.middle].into_iter().flatten() {
+                for image in [reply.skin.cursor, reply.skin.middle, reply.skin.trail]
+                    .into_iter()
+                    .flatten()
+                {
                     let _ = requests.release(image.handle);
                 }
             }
@@ -411,7 +436,7 @@ impl SkinCursorLink {
     }
 
     fn retire_images(&mut self, skin: MenuCursorSkin, after: Option<u32>) {
-        for image in [skin.cursor, skin.middle].into_iter().flatten() {
+        for image in [skin.cursor, skin.middle, skin.trail].into_iter().flatten() {
             if let Some(slot) = self.retiring.iter_mut().find(|s| s.is_none()) {
                 *slot = Some(Retiring {
                     handle: image.handle,
@@ -437,6 +462,86 @@ pub struct MenuCursorView {
     shown: Option<CursorShown>,
     motion: MenuCursorMotion,
     expand: ExpandTimes,
+    trail: MenuTrail,
+}
+
+/// The skin's cursor trail in the menus: lazer's [`CursorTrail`] fed with the pointer, in a
+/// layout where an osu!pixel is `ui * 1.6` window pixels so that the parts have the size of
+/// the texture's display units, as the menu cursor has (ADR-0184).
+pub struct MenuTrail {
+    trail: CursorTrail,
+    /// The image and the interface scale the parts were laid with: another one starts anew.
+    image: Option<SkinImage>,
+    ui: f32,
+    /// Whether this frame fed the trail; a frame that did not clears it.
+    fed: bool,
+}
+
+impl Default for MenuTrail {
+    fn default() -> Self {
+        MenuTrail::new()
+    }
+}
+
+impl MenuTrail {
+    /// An empty trail. Allocates its parts once.
+    pub fn new() -> Self {
+        MenuTrail {
+            trail: CursorTrail::new(),
+            image: None,
+            ui: 0.0,
+            fed: false,
+        }
+    }
+
+    /// Forgets the parts: the cursor hid, or the skin or scale changed.
+    pub fn idle(&mut self) {
+        if self.image.take().is_some() {
+            self.trail.reset();
+        }
+    }
+
+    /// Takes the pointer at `tip` and writes the parts under the cursor.
+    /// Allocation-free once `shapes` has room for [`MAX_TRAIL_PARTS`].
+    #[allow(clippy::too_many_arguments)]
+    pub fn feed(
+        &mut self,
+        shapes: &mut ShapeBatch,
+        texture: &SkinSprite,
+        image: SkinImage,
+        config: &CursorSkinConfig,
+        tip: [f32; 2],
+        ui: f32,
+        size: f32,
+        part_scale: f32,
+        degrees: f32,
+        now_ns: u64,
+        window: [f32; 2],
+    ) {
+        if self.image != Some(image) || (self.ui - ui).abs() > 1e-3 {
+            self.trail.reset();
+            self.image = Some(image);
+            self.ui = ui;
+        }
+        self.fed = true;
+        let layout = PlayfieldLayout::linear(ui * TRAIL_TEXTURE_FACTOR, window);
+        self.trail
+            .set_cursor_scale(CursorScale { size, scale: size });
+        let at = Vec2::new(tip[0] / layout.scale(), tip[1] / layout.scale());
+        let display_width = texture.size.x / TRAIL_TEXTURE_FACTOR;
+        self.trail.update(
+            now_ns,
+            std::iter::once(at),
+            config.disjoint,
+            display_width,
+            part_scale,
+            part_scale,
+        );
+        self.trail
+            .push_to(&layout, texture, config, degrees, |sprite| {
+                shapes.push(sprite)
+            });
+    }
 }
 
 impl MenuCursorView {
@@ -449,6 +554,7 @@ impl MenuCursorView {
             shown: None,
             motion: MenuCursorMotion::default(),
             expand: ExpandTimes::default(),
+            trail: MenuTrail::new(),
         }
     }
 
@@ -493,6 +599,22 @@ impl MenuCursorView {
         now_ns: u64,
         frame: &MenuCursorFrame,
     ) {
+        self.trail.fed = false;
+        self.push_cursor(shapes, theme, white, size, now_ns, frame);
+        if !self.trail.fed {
+            self.trail.idle();
+        }
+    }
+
+    fn push_cursor(
+        &mut self,
+        shapes: &mut ShapeBatch,
+        theme: &Theme,
+        white: AtlasRegion,
+        size: [f32; 2],
+        now_ns: u64,
+        frame: &MenuCursorFrame,
+    ) {
         if let Some(shown) = &self.shown {
             shown.set(frame.seq);
         }
@@ -521,7 +643,14 @@ impl MenuCursorView {
         };
         let slam = |shapes: &mut ShapeBatch| {
             let motion = self.motion.sample(theme, now_ns);
-            push_slam_cursor(shapes, theme, white, tip, theme.cursor_size * ui, &motion);
+            push_slam_cursor(
+                shapes,
+                theme,
+                white,
+                tip,
+                theme.cursor_size * ui * frame.size,
+                &motion,
+            );
         };
         if frame.style == CursorStyle::Slam {
             slam(shapes);
@@ -552,15 +681,34 @@ impl MenuCursorView {
             Ok(None) => {}
             Ok(Some(cursor)) => {
                 let middle = skin.middle.and_then(|m| sprite(m).ok().flatten());
+                let expand = self.expand.scale(now_ms, skin.config.expand);
+                let degrees = rotation(now_ms, skin.config.rotate);
+                if let Some(image) = skin.trail
+                    && let Some(texture) = sprite(image).ok().flatten()
+                {
+                    self.trail.feed(
+                        shapes,
+                        &texture,
+                        image,
+                        &skin.config,
+                        tip,
+                        ui,
+                        frame.size,
+                        expand,
+                        degrees,
+                        now_ns,
+                        size,
+                    );
+                }
                 push_skin_cursor(
                     shapes,
                     &cursor,
                     middle.as_ref(),
                     &skin.config,
                     tip,
-                    ui,
-                    self.expand.scale(now_ms, skin.config.expand),
-                    rotation(now_ms, skin.config.rotate),
+                    ui * frame.size,
+                    expand,
+                    degrees,
                 );
             }
         }

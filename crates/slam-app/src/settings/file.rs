@@ -321,6 +321,14 @@ fn from_table(mut table: Table) -> Loaded {
         &mut settings.general.cursor_trail,
         |_| Ok(()),
     );
+    cx.float(
+        &mut general,
+        "general",
+        "menu_cursor_size",
+        &mut settings.general.menu_cursor_size,
+        0.5..=2.0,
+    );
+    settings.general.menu_cursor_size = (settings.general.menu_cursor_size * 20.0).round() / 20.0;
     cx.field(
         &mut general,
         "general",

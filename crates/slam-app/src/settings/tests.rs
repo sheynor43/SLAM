@@ -1892,6 +1892,29 @@ fn the_look_settings_default_on_and_round_trip() {
 }
 
 #[test]
+fn the_menu_cursor_size_defaults_to_80_percent_round_trips_and_is_held_to_its_range() {
+    assert_eq!(Settings::default().general.menu_cursor_size, 0.8);
+    // Gameplay keeps its own size.
+    assert_eq!(Settings::default().gameplay.cursor_size, 1.0);
+    let old = file::from_toml_str("[general]\neffects = false\n");
+    assert_eq!(old.settings.general.menu_cursor_size, 0.8);
+    let mut settings = Settings::default();
+    settings.general.menu_cursor_size = 1.35;
+    let text = file::to_toml_string(&settings).unwrap();
+    assert_eq!(file::from_toml_str(&text).settings, settings);
+    let loaded = file::from_toml_str("[general]\nmenu_cursor_size = 9.0\n");
+    assert_eq!(loaded.settings.general.menu_cursor_size, 0.8);
+    assert!(
+        loaded
+            .warnings
+            .iter()
+            .any(|w| w.starts_with("general.menu_cursor_size"))
+    );
+    let snapped = file::from_toml_str("[general]\nmenu_cursor_size = 1.07\n");
+    assert_eq!(snapped.settings.general.menu_cursor_size, 1.05);
+}
+
+#[test]
 fn the_look_strengths_are_held_to_zero_to_two_and_bad_types_default() {
     let loaded = file::from_toml_str(
         "[general]\nparallax = 3.5\nblur_strength = -1.0\nshadow_strength = 9.0\nblur = \"yes\"\n",

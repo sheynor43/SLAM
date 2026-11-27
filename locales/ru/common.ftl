@@ -253,6 +253,7 @@ settings-general-shadow-strength = Сила теней
 settings-general-cursor-rotate = Курсор поворачивается за движением
 settings-general-cursor-spin = Курсор вращается на месте
 settings-general-cursor-trail = След курсора в меню
+settings-menu-cursor-size = Размер курсора в меню
 settings-general-cursor-ripple = Волна курсора при клике
 settings-general-transitions = Переходы между экранами
 settings-option-transitions-none = Без переходов

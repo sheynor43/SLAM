@@ -2591,6 +2591,13 @@ impl ShellState {
             .menu_cursor;
         let cursor_skin = (cursor_style == CursorStyle::Skin).then(|| self.menu_skin().cloned());
         snapshot.menu_cursor.style = cursor_style;
+        snapshot.menu_cursor.size = self
+            .editing
+            .as_ref()
+            .unwrap_or(&self.settings)
+            .general
+            .menu_cursor_size
+            .clamp(0.5, 2.0) as f32;
         snapshot.menu_cursor.skin = match &mut self.skin_cursor {
             Some(link) => {
                 let skin = link.tick(cursor_skin.as_ref().map(Option::as_ref));

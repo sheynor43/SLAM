@@ -55,6 +55,16 @@ impl PlayfieldLayout {
         }
     }
 
+    /// A layout of `scale` window units per osu!pixel with osu!pixel (0, 0) at the window's
+    /// origin, for drawing a trail outside gameplay (the menu cursor's, ADR-0184).
+    pub fn linear(scale: f32, window: [f32; 2]) -> PlayfieldLayout {
+        PlayfieldLayout {
+            origin: Vec2::ZERO,
+            scale,
+            window,
+        }
+    }
+
     /// Window units per osu!pixel.
     pub fn scale(&self) -> f32 {
         self.scale
@@ -102,6 +112,21 @@ mod tests {
         assert!(close(layout.scale(), 1.6));
         assert!(close(layout.origin().x, (1024.0 - 819.2) / 2.0));
         assert!(close(layout.origin().y, (768.0 - 614.4) / 2.0 + 8.0 * 1.6));
+    }
+
+    #[test]
+    fn a_linear_layout_scales_from_the_window_origin() {
+        let layout = PlayfieldLayout::linear(2.4, [100.0, 50.0]);
+        assert_eq!(layout.scale(), 2.4);
+        assert_eq!(layout.window_size(), [100.0, 50.0]);
+        assert_eq!(
+            layout.to_window(Vec2::new(10.0, 5.0)),
+            Vec2::new(24.0, 12.0)
+        );
+        assert_eq!(
+            layout.to_playfield(Vec2::new(24.0, 12.0)),
+            Vec2::new(10.0, 5.0)
+        );
     }
 
     #[test]

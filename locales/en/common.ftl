@@ -249,6 +249,7 @@ settings-general-shadow-strength = Shadow strength
 settings-general-cursor-rotate = Cursor turns towards a drag
 settings-general-cursor-spin = Cursor spins at rest
 settings-general-cursor-trail = Cursor trail in menus
+settings-menu-cursor-size = Menu cursor size
 settings-general-cursor-ripple = Cursor ripple on click
 settings-general-transitions = Screen transitions
 settings-option-transitions-none = None

@@ -123,6 +123,9 @@ pub struct General {
     pub cursor_spin: bool,
     /// The menu cursor leaves a trail (ADR-0136). Applies live.
     pub cursor_trail: bool,
+    /// Size of the menu cursor (SLAM's pointer and the skin's cursor in the menus), a
+    /// multiplier, 0.5..=2.0 (ADR-0184). Applies live; gameplay has its own size.
+    pub menu_cursor_size: f64,
     /// The menu cursor sends a ring out at each press (ADR-0136). Applies live.
     pub cursor_ripple: bool,
     /// How screens change (ADR-0126). Applies live.
@@ -182,6 +185,7 @@ impl Default for General {
             cursor_rotate: true,
             cursor_spin: false,
             cursor_trail: true,
+            menu_cursor_size: 0.8,
             cursor_ripple: true,
             transitions: TransitionStyle::default(),
             colour_scheme: ColourScheme::default(),

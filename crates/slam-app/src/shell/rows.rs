@@ -179,6 +179,9 @@ pub const SECTIONS: usize = SECTION_KEYS.len();
 /// The range of the cursor size slider (lazer's `GameplayCursorSize`, ADR-0086).
 const CURSOR_SIZE_RANGE: (f64, f64) = (0.1, 2.0);
 
+/// The range of the menu cursor size slider (ADR-0184).
+const MENU_CURSOR_SIZE_RANGE: (f64, f64) = (0.5, 2.0);
+
 /// The interface scale sliders show percents: this is their step (ADR-0118).
 const UI_SCALE_STEP_PERCENT: f64 = 5.0;
 
@@ -294,6 +297,7 @@ pub enum Row {
     MenuCursorSpin,
     /// The menu cursor leaves a trail; applies live (ADR-0136).
     MenuCursorTrail,
+    MenuCursorSize,
     /// The menu cursor sends a ring out at each press; applies live (ADR-0136).
     MenuCursorRipple,
     /// The gameplay cursor (ADR-0124).
@@ -377,7 +381,7 @@ const _: () =
     assert!(Row::ALL.len() + super::otd::OtdRow::ALL.len() <= slam_ui::settings_screen::MAX_ROWS);
 
 impl Row {
-    pub const ALL: [Row; 112] = [
+    pub const ALL: [Row; 113] = [
         Row::MasterVolume,
         Row::MusicVolume,
         Row::MenuMusic,
@@ -440,6 +444,7 @@ impl Row {
         Row::MenuCursorRotate,
         Row::MenuCursorSpin,
         Row::MenuCursorTrail,
+        Row::MenuCursorSize,
         Row::MenuCursorRipple,
         Row::CursorStyle,
         Row::CursorSize,
@@ -640,6 +645,7 @@ impl Row {
             | Row::MenuCursorRotate
             | Row::MenuCursorSpin
             | Row::MenuCursorTrail
+            | Row::MenuCursorSize
             | Row::MenuCursorRipple
             | Row::CursorStyle
             | Row::CursorSize
@@ -739,6 +745,7 @@ impl Row {
             Row::MenuCursorRotate => "settings-general-cursor-rotate",
             Row::MenuCursorSpin => "settings-general-cursor-spin",
             Row::MenuCursorTrail => "settings-general-cursor-trail",
+            Row::MenuCursorSize => "settings-menu-cursor-size",
             Row::MenuCursorRipple => "settings-general-cursor-ripple",
             Row::Transitions => "settings-general-transitions",
             Row::MenuScale => "settings-general-menu-scale",
@@ -1298,6 +1305,12 @@ impl Rows {
                 value: s.song_select.info_auto_width,
             },
             Row::PositionalHitsoundsLevel => percent(f64::from(s.audio.positional_hitsounds_level)),
+            Row::MenuCursorSize => RowKind::Slider {
+                min: MENU_CURSOR_SIZE_RANGE.0,
+                max: MENU_CURSOR_SIZE_RANGE.1,
+                step: 0.05,
+                value: round_to(s.general.menu_cursor_size, 2),
+            },
             Row::CursorSize => RowKind::Slider {
                 min: CURSOR_SIZE_RANGE.0,
                 max: CURSOR_SIZE_RANGE.1,
@@ -1678,6 +1691,10 @@ impl Rows {
             }
             (Row::PositionalHitsoundsLevel, RowValue::Slider(v)) => {
                 settings.audio.positional_hitsounds_level = percent(v).clamp(0.0, 1.0) as f32;
+            }
+            (Row::MenuCursorSize, RowValue::Slider(v)) => {
+                settings.general.menu_cursor_size =
+                    round_to(v, 2).clamp(MENU_CURSOR_SIZE_RANGE.0, MENU_CURSOR_SIZE_RANGE.1);
             }
             (Row::CursorSize, RowValue::Slider(v)) => {
                 settings.gameplay.cursor_size =
@@ -2191,7 +2208,9 @@ impl Rows {
                     | Row::PauseMenuScale
                     | Row::PositionalHitsoundsLevel => text("settings-unit-percent"),
                     Row::Skew => text("settings-unit-degrees"),
-                    Row::Sensitivity | Row::CursorSize => text("settings-unit-times"),
+                    Row::Sensitivity | Row::CursorSize | Row::MenuCursorSize => {
+                        text("settings-unit-times")
+                    }
                     _ => String::new(),
                 };
                 let button = match row {
@@ -2222,7 +2241,10 @@ impl Rows {
                     button,
                     shows_value: *row == Row::SongsFolder,
                     // Lazer shows the cursor size as `{v:0.##}x`.
-                    trim_zeros: matches!(row, Row::Sensitivity | Row::CursorSize),
+                    trim_zeros: matches!(
+                        row,
+                        Row::Sensitivity | Row::CursorSize | Row::MenuCursorSize
+                    ),
                     zero_text,
                     hint,
                     dynamic_label: false,
@@ -3463,6 +3485,30 @@ mod tests {
         assert_eq!(s.general.shadow_strength, 1.7);
         rows.apply(&mut s, index(Row::BlurStrength), RowValue::Slider(900.0));
         assert_eq!(s.general.blur_strength, 2.0);
+    }
+
+    #[test]
+    fn the_menu_cursor_size_row_sits_in_the_menu_cursor_section_and_edits_its_setting() {
+        assert_eq!(Row::MenuCursorSize.section(), Row::MenuCursor.section());
+        assert_eq!(index(Row::MenuCursorSize), index(Row::MenuCursorTrail) + 1);
+        let (rows, mut s) = rows();
+        assert_eq!(
+            rows.specs(&s)[index(Row::MenuCursorSize)].kind,
+            RowKind::Slider {
+                min: 0.5,
+                max: 2.0,
+                step: 0.05,
+                value: 0.8
+            }
+        );
+        rows.apply(&mut s, index(Row::MenuCursorSize), RowValue::Slider(1.25));
+        assert_eq!(s.general.menu_cursor_size, 1.25);
+        rows.apply(&mut s, index(Row::MenuCursorSize), RowValue::Slider(9.0));
+        assert_eq!(s.general.menu_cursor_size, 2.0);
+        rows.apply(&mut s, index(Row::MenuCursorSize), RowValue::Slider(0.0));
+        assert_eq!(s.general.menu_cursor_size, 0.5);
+        // The gameplay cursor size is untouched.
+        assert_eq!(s.gameplay.cursor_size, 1.0);
     }
 
     #[test]
