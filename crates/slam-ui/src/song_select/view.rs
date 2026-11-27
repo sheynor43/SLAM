@@ -1603,7 +1603,12 @@ impl SongSelectView {
                                 let line = secondary_line;
                                 let width = super::info_panel::star_pill_width(line, theme, scale);
                                 end -= width + pad;
-                                if inside(secondary_line, centre) {
+                                // The pill is taller than its text: it shows only whole, so
+                                // it does not spill over the search line (ADR-0186).
+                                let half = (line.layout.height()
+                                    + theme.star_pill_pad * scale * 0.8)
+                                    / 2.0;
+                                if centre - half >= top_edge && centre + half <= bottom_edge {
                                     super::info_panel::push_star_pill(
                                         &mut rect,
                                         &mut left,

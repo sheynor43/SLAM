@@ -112,7 +112,7 @@ impl Rect {
 
 // Ported from osu!lazer 2026.1005.0-lazer: osu.Game/Screens/Menu/ButtonSystem.cs, ButtonArea.cs,
 // MainMenuButton.cs (sizes in reference pixels of a 768-high window).
-const BUTTON_WIDTH: f32 = 140.0;
+pub(crate) const BUTTON_WIDTH: f32 = 140.0;
 const BAR_HEIGHT: f32 = 100.0;
 const HOVER_WIDTH: f32 = 1.5;
 const HOVER_MS: f64 = 500.0;

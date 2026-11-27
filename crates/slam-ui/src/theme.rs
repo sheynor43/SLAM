@@ -99,6 +99,21 @@ impl ColourScheme {
         }
     }
 
+    /// The main menu's buttons (play, settings, exit), after lazer's purple, grey and pink
+    /// (ADR-0187): in SLAM's scheme the logo's violet and pink, in the others play takes the
+    /// accent and exit a darker shade of it.
+    fn menu_tints(self, p: &Palette) -> [Color; 3] {
+        let settings = lighter(p.raised, 0.22);
+        if self == ColourScheme::Slam {
+            return [
+                Color::rgb(0.486, 0.267, 0.878),
+                settings,
+                Color::rgb(0.878, 0.439, 0.894),
+            ];
+        }
+        [p.accent, settings, darker(p.accent, 0.4)]
+    }
+
     /// The logo's colours in this scheme: its own in SLAM's, the accent's shades in the
     /// others.
     fn logo(self, accent: Color) -> LogoColours {
@@ -1234,11 +1249,7 @@ impl Theme {
             background_blur: 12.0,
             menu_background_dim: 0.5,
             logo: scheme.logo(p.accent),
-            menu_lazer_tints: [
-                Color::rgb(0.40, 0.267, 0.80),
-                Color::rgb(0.333, 0.333, 0.333),
-                Color::rgb(0.933, 0.20, 0.60),
-            ],
+            menu_lazer_tints: scheme.menu_tints(&p),
             menu_bar_fill: alpha(Color::rgb(0.13, 0.13, 0.15), 0.85),
             menu_lazer_icon_size: 30.0,
             menu_lazer_label_size: 15.0,

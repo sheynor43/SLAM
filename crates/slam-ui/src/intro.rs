@@ -331,6 +331,12 @@ pub fn burst_triangle(index: usize) -> (f32, f32, f32) {
     )
 }
 
+/// How much of the theme's colour the logo has at `t`, 0 ..= 1: the intro is black and
+/// white, and the colour floods in after the impact, so the logo lands as the menu's.
+pub fn colour(t: f32) -> f32 {
+    smoothstep(IMPACT_S + 0.05, END_S, t)
+}
+
 /// Opacity of the black over the menu at `t` seconds.
 pub fn backdrop(t: f32) -> f32 {
     1.0 - smoothstep(BACKDROP_FADE_S, END_S, t)
@@ -528,6 +534,8 @@ mod tests {
         let boom = blast(IMPACT_S + 0.01);
         assert!(boom.flash > 0.5 && boom.wave_alpha > 0.9);
         assert!(blast(END_S).burst > 0.99);
+        assert_eq!(colour(IMPACT_S), 0.0);
+        assert_eq!(colour(END_S), 1.0);
     }
 
     #[test]

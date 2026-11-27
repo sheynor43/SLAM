@@ -524,12 +524,24 @@ impl MenuView {
                     // lazer's MainMenuButton: a flat wedge in its colour over a soft shadow,
                     // lit white by the pointer.
                     let skew = theme.button_skew();
+                    // Settings and play run on under the logo to its centre, so no gap shows
+                    // behind it; as much as the button is out.
+                    let out = (rect.width / (super::BUTTON_WIDTH * scale)).min(1.0);
+                    let middle = snapshot.logo_centre[0] + shift;
+                    let mut fill = rect;
+                    if i == 1 && middle > rect.x + rect.width {
+                        fill.width += (middle - rect.x - rect.width) * out;
+                    } else if i == 0 && middle < rect.x {
+                        let reach = (rect.x - middle) * out;
+                        fill.x -= reach;
+                        fill.width += reach;
+                    }
                     let plate = |colour: Color, glow: f32| {
                         let mut shape = Shape::new(
                             white.texture,
                             white.uv,
-                            [rect.x, rect.y],
-                            [rect.width, rect.height],
+                            [fill.x, fill.y],
+                            [fill.width, fill.height],
                             colour,
                         );
                         shape.skew = skew;

@@ -10,8 +10,8 @@ use slam_render::shape::{Shape, ShapeBatch};
 use slam_render::sprite::Sprite;
 
 use super::{
-    BURST_TRIANGLES, IntroSnapshot, PIECES, backdrop, blast, burst_triangle, charge, logo_pose,
-    piece_pose, shake, split,
+    BURST_TRIANGLES, IntroSnapshot, PIECES, backdrop, blast, burst_triangle, charge, colour,
+    logo_pose, piece_pose, shake, split,
 };
 use crate::menu::MenuLayout;
 use crate::menu::view::{LogoArt, mark, push_mask};
@@ -19,6 +19,33 @@ use crate::theme::{Theme, faded};
 
 /// Beams closing in during the charge.
 const BEAMS: usize = 10;
+
+/// `colour`'s grey of the same lightness, a little brighter: the black-and-white intro.
+fn grey(colour: Color) -> Color {
+    let v = ((0.2126 * colour.r + 0.7152 * colour.g + 0.0722 * colour.b) * 1.3).min(1.0);
+    Color {
+        r: v,
+        g: v,
+        b: v,
+        a: colour.a,
+    }
+}
+
+/// `pair` in grey, `k` of the way to its colour.
+fn tone(pair: [Color; 2], k: f32) -> [Color; 2] {
+    pair.map(|c| {
+        let g = grey(c);
+        Color {
+            r: g.r + (c.r - g.r) * k,
+            g: g.g + (c.g - g.g) * k,
+            b: g.b + (c.b - g.b) * k,
+            a: c.a,
+        }
+    })
+}
+
+/// White and grey: the intro's glows, beams, copies, waves and burst.
+const GREYS: [Color; 2] = [Color::WHITE, Color::rgb(0.55, 0.55, 0.55)];
 
 /// The draw side of [`super::Intro`].
 #[derive(Debug)]
@@ -52,9 +79,20 @@ impl IntroView {
         target: Option<([f32; 2], f32)>,
     ) {
         let theme = &self.theme;
-        let colours = &theme.logo;
+        let real = &theme.logo;
         let t = (snapshot.elapsed_ns as f64 / 1e9) as f32;
         let fade = 1.0 - snapshot.exit;
+        // Black and white until the colour floods in after the impact.
+        let k = colour(t);
+        let colours = &crate::theme::LogoColours {
+            disc: tone(real.disc, k),
+            shine: tone([real.shine; 2], k)[0],
+            ring: tone(real.ring, k),
+            frame: tone(real.frame, k),
+            play: tone(real.play, k),
+            facet: tone(real.facet, k),
+            accent: tone(real.accent, k),
+        };
         let black = backdrop(t) * fade;
         if black > 0.0 {
             let mut sprite = Sprite::new(white.texture, white.uv, [0.0, 0.0], [width, height]);
@@ -76,7 +114,7 @@ impl IntroView {
         // A coloured glow behind everything, swelling with the charge.
         let glow = black * (0.35 + 0.65 * charge).max(boom.wave_alpha * 0.8);
         if glow > 0.0 {
-            let halo = [colours.ring[0], colours.ring[1]];
+            let halo = GREYS;
             push_mask(
                 shapes,
                 layers.shine,
@@ -105,11 +143,7 @@ impl IntroView {
                 );
                 sprite.origin = [thickness / 2.0, 0.0];
                 sprite.rotation = angle - std::f32::consts::FRAC_PI_2;
-                let colour = if beam % 2 == 0 {
-                    colours.frame[0]
-                } else {
-                    colours.ring[1]
-                };
+                let colour = GREYS[beam % 2];
                 sprite.colour = faded(colour, charge * fade);
                 sprite.blend = Blend::Additive;
                 shapes.push(&sprite);
@@ -163,7 +197,7 @@ impl IntroView {
             // The glitch: copies to either side in the ring's two colours.
             if glitch > 0.01 {
                 let away = glitch * size * 0.035;
-                for (side, colour) in [(-1.0, colours.ring[0]), (1.0, colours.ring[1])] {
+                for (side, colour) in [(-1.0, GREYS[0]), (1.0, GREYS[1])] {
                     let copy = [at[0] + side * away, at[1] - side * away * 0.3];
                     push_mask(
                         shapes,
@@ -191,7 +225,7 @@ impl IntroView {
         // The core glowing up in the middle of the mark.
         if charge > 0.0 {
             let core = size * (0.1 + 0.35 * charge * charge);
-            let white_hot = [Color::WHITE, colours.frame[0]];
+            let white_hot = GREYS;
             push_mask(
                 shapes,
                 layers.shine,
@@ -205,7 +239,7 @@ impl IntroView {
         }
         // The explosion: shock waves, a burst of triangles and the window's flash.
         if boom.wave_alpha > 0.0 && boom.burst > 0.0 {
-            for (delay, colours) in [(0.0, colours.ring), (0.25, colours.frame)] {
+            for (delay, colours) in [(0.0, GREYS), (0.25, [GREYS[1]; 2])] {
                 let wave = ((boom.wave - delay) / (1.0 - delay)).max(0.0);
                 let ring = size * (1.0 + 2.6 * wave);
                 push_mask(
@@ -235,7 +269,7 @@ impl IntroView {
                 );
                 sprite.origin = [side / 2.0, side / 2.0];
                 sprite.rotation = angle + boom.burst * 4.0;
-                let colour = theme.menu_particle_colours[index % 2];
+                let colour = GREYS[index % 2];
                 sprite.colour = faded(colour, (1.0 - boom.burst) * fade);
                 sprite.blend = Blend::Additive;
                 shapes.push(&sprite);

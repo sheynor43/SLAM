@@ -26,11 +26,11 @@ const BLIP_NOTES: [f32; 5] = [880.0, 1046.5, 1318.5, 1568.0, 1760.0];
 const BLIP_S: f32 = 0.16;
 const BLIP_GAIN: f32 = 0.16;
 /// The thump under a letter's first blip.
-const THUMP_GAIN: f32 = 0.35;
+const THUMP_GAIN: f32 = 0.6;
 
 /// The drone: A1 and its fifth, swelling from the start up to the impact.
 const DRONE: [f32; 2] = [55.0, 82.41];
-const DRONE_GAIN: f32 = 0.1;
+const DRONE_GAIN: f32 = 0.11;
 
 /// The riser glides from `RISER_FROM` to `RISER_TO` Hz; it stops this long before the
 /// impact, a breath of silence that makes the impact land.
@@ -43,17 +43,17 @@ const BREATH_S: f32 = 0.04;
 
 /// The kick falls from `KICK_FROM` to `KICK_TO` Hz.
 const KICK_FROM: f32 = 160.0;
-const KICK_TO: f32 = 38.0;
+const KICK_TO: f32 = 30.0;
 const KICK_GAIN: f32 = 0.9;
-const SUB: f32 = 41.2;
-const SUB_GAIN: f32 = 0.45;
+const SUB: f32 = 36.7;
+const SUB_GAIN: f32 = 0.75;
 /// The braam's chord (A minor, low), each note a stack of detuned saws.
 const BRAAM: [f32; 5] = [55.0, 82.41, 110.0, 130.81, 164.81];
 const BRAAM_DETUNE: [f32; 3] = [0.992, 1.0, 1.008];
 const BRAAM_GAIN: f32 = 0.05;
 const CRASH_GAIN: f32 = 0.22;
 /// The laser discharge and the explosion's rumble on the impact.
-const ZAP_GAIN: f32 = 0.12;
+const ZAP_GAIN: f32 = 0.2;
 const RUMBLE_GAIN: f32 = 0.5;
 /// The shimmer high above (A minor, two octaves up), detuned between the ears.
 const SHIMMER: [f32; 4] = [440.0, 659.26, 880.0, 1318.5];
@@ -205,13 +205,13 @@ fn blip(out: &mut Out<'_>, letters: usize, rank: u32, step: u32) {
     let mut phase = 0.0_f32;
     let mut noise = Noise::new(rank << 8 | step);
     out.add(BLIP_S, balance, |t| {
-        // Four times the note down to it within 60 ms: the zap.
-        let freq = target * (1.0 + 3.0 * (-t / 0.02).exp());
+        // Eight times the note down to it within 80 ms: the zap.
+        let freq = target * (1.0 + 7.0 * (-t / 0.025).exp());
         phase = (phase + freq / rate).fract();
         let envelope = (t / 0.001).min(1.0) * (-t / 0.05).exp();
         let index = 2.5 * (-t / 0.03).exp();
         let modulator = (TAU * phase * 2.0).sin() * index;
-        let tone = (TAU * phase + modulator).sin();
+        let tone = (TAU * phase + modulator).sin() + 0.5 * (TAU * phase * 0.5).sin();
         // A square-ish edge for bite.
         let bite = (3.0 * tone).tanh();
         let click = noise.next() * (-t / 0.004).exp() * 0.5;
@@ -220,9 +220,11 @@ fn blip(out: &mut Out<'_>, letters: usize, rank: u32, step: u32) {
     if first {
         let mut phase = 0.0_f32;
         out.add(0.25, 0.0, |t| {
-            let f = 55.0 + 90.0 * (-t / 0.03).exp();
+            // A bass hit falling to 40 Hz, driven.
+            let f = 40.0 + 120.0 * (-t / 0.03).exp();
             phase = (phase + f / rate).fract();
-            THUMP_GAIN * (t / 0.002).min(1.0) * (-t / 0.08).exp() * (TAU * phase).sin()
+            let body = (2.0 * (TAU * phase).sin()).tanh();
+            THUMP_GAIN * (t / 0.002).min(1.0) * (-t / 0.12).exp() * body
         });
     }
 }
@@ -253,7 +255,9 @@ fn riser(out: &mut Out<'_>, length_s: f32, seed_s: f32) {
             // The noise, high-passed less and less: brighter as it rises.
             let white = noise.next();
             let hiss = white - low[ear].next(white, 4_000.0 * (1.0 - p) + 200.0, rate);
-            ears[ear] = swell * (RISER_GAIN * tone + RISER_NOISE_GAIN * hiss);
+            // A sub under it, wobbling with the tremolo.
+            let wobble = 0.16 * tremolo * p * p * (TAU * 55.0 * t).sin();
+            ears[ear] = swell * (RISER_GAIN * tone + RISER_NOISE_GAIN * hiss) + wobble;
         }
         ears
     });
@@ -310,9 +314,9 @@ fn impact(out: &mut Out<'_>) {
     });
     // The laser discharge: a bright saw sweeping from 3 kHz down to 120 Hz.
     let mut zap = [Saw::default(); 2];
-    out.add_stereo(0.45, |t| {
-        let freq = 120.0 + 2_900.0 * (-t / 0.08).exp();
-        let envelope = (t / 0.001).min(1.0) * (-t / 0.12).exp();
+    out.add_stereo(0.7, |t| {
+        let freq = 60.0 + 4_000.0 * (-t / 0.1).exp();
+        let envelope = (t / 0.001).min(1.0) * (-t / 0.2).exp();
         let mut ears = [0.0; 2];
         for (ear, detune) in [1.0, 1.01].into_iter().enumerate() {
             ears[ear] = ZAP_GAIN * envelope * zap[ear].next(freq * detune, rate);
