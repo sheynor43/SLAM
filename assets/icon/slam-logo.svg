@@ -1,0 +1,49 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1000 1000" width="1000" height="1000">
+  <defs>
+    <linearGradient id="disc" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#3a2160"/>
+      <stop offset="1" stop-color="#160828"/>
+    </linearGradient>
+    <radialGradient id="discGlow" cx="0.5" cy="0.42" r="0.55">
+      <stop offset="0" stop-color="#6a3aa0" stop-opacity="0.45"/>
+      <stop offset="1" stop-color="#6a3aa0" stop-opacity="0"/>
+    </radialGradient>
+    <linearGradient id="ring" x1="0.1" y1="0.1" x2="0.9" y2="0.9">
+      <stop offset="0" stop-color="#f59ae6"/>
+      <stop offset="0.5" stop-color="#d064e0"/>
+      <stop offset="1" stop-color="#7c44e0"/>
+    </linearGradient>
+    <linearGradient id="frame" x1="0.25" y1="0.15" x2="0.8" y2="0.75">
+      <stop offset="0" stop-color="#ffa3ec"/>
+      <stop offset="0.55" stop-color="#e070e4"/>
+      <stop offset="1" stop-color="#a24fe0"/>
+    </linearGradient>
+    <linearGradient id="facet" x1="0.2" y1="0" x2="0.8" y2="1">
+      <stop offset="0" stop-color="#b65ae6"/>
+      <stop offset="1" stop-color="#7034c8"/>
+    </linearGradient>
+    <linearGradient id="play" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#5a2c8c"/>
+      <stop offset="1" stop-color="#2c1250"/>
+    </linearGradient>
+    <linearGradient id="accent" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#ff9ff0"/>
+      <stop offset="1" stop-color="#c05ae4"/>
+    </linearGradient>
+    <clipPath id="inside"><circle cx="500" cy="500" r="452"/></clipPath>
+  </defs>
+  <circle cx="500" cy="500" r="470" fill="url(#disc)"/>
+  <circle cx="500" cy="500" r="470" fill="url(#discGlow)"/>
+  <g clip-path="url(#inside)"><g transform="translate(-32 -30)">
+    <!-- Δ frame: outer triangle minus the inset triangle -->
+    <path fill="url(#frame)" fill-rule="evenodd"
+      d="M456 200 L225 725 L844 600 Z M483 350 L369 609 L675 548 Z"/>
+    <!-- dark play triangle inside the hole -->
+    <path fill="url(#play)" d="M483 392 L483 676 L692 560 Z"/>
+    <!-- lower facet, cut off from the frame by a disc-coloured gap -->
+    <path fill="url(#facet)" d="M483 690 L483 868 L796 628 Z"/>
+    <!-- accent -->
+    <path fill="url(#accent)" d="M756 268 L704 362 L812 362 Z"/>
+  </g></g>
+  <circle cx="500" cy="500" r="462" fill="none" stroke="url(#ring)" stroke-width="22"/>
+</svg>
