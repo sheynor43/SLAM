@@ -55,6 +55,8 @@ const VALUE_CHARS: &str = "0123456789.-x";
 /// shapes and of glyph quads so far (ADR-0152, ADR-0177).
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct Splits {
+    /// Under it the list's texts; over it the corner logo (ADR-0186).
+    pub logo: Option<(u32, u32)>,
     /// Under it the list and the footer; over it the mod select panel.
     pub panel: Option<(u32, u32)>,
     /// Under it the panel; over it the floating settings panel.
@@ -881,7 +883,12 @@ impl SongSelectView {
             Row::Set(_) => theme.song_set_shift,
             Row::Difficulty { .. } => theme.song_difficulty_shift,
         } * layout.scale;
-        let mut avail = (layout.list.width - indent - most_shift - 2.0 * pad - text_shift).max(0.0);
+        // Nor as it moves along the arc (ADR-0172): the texts shift right with it, the dots,
+        // pp and pill keep to the list's right end, so the room is the arc's narrowest, at
+        // the list's ends.
+        let arc = layout.arc_x(layout.list.y);
+        let mut avail =
+            (layout.list.width - indent - most_shift - arc - 2.0 * pad - text_shift).max(0.0);
         slot.holds = None;
         slot.primary.text.clear();
         slot.secondary.text.clear();
@@ -1596,7 +1603,12 @@ impl SongSelectView {
                                 let line = secondary_line;
                                 let width = super::info_panel::star_pill_width(line, theme, scale);
                                 end -= width + pad;
-                                if inside(secondary_line, centre) {
+                                // The pill is taller than its text: it shows only whole, so
+                                // it does not spill over the search line (ADR-0186).
+                                let half = (line.layout.height()
+                                    + theme.star_pill_pad * scale * 0.8)
+                                    / 2.0;
+                                if centre - half >= top_edge && centre + half <= bottom_edge {
                                     super::info_panel::push_star_pill(
                                         &mut rect,
                                         &mut left,
@@ -1782,6 +1794,31 @@ impl SongSelectView {
                 let (x, y) = centred_label(&self.footer_reset, &area);
                 left(&self.footer_reset, x, y, faded(theme.text, presence.reset));
             }
+        }
+        // The beating logo in the corner, over the list's texts and under the mod select
+        // panel (ADR-0186).
+        let logo_split = thumbs.logo.map(|_| {
+            (
+                shape_target.borrow().len() as u32,
+                target.borrow().0.len() as u32,
+            )
+        });
+        if let Some(art) = thumbs.logo {
+            let layout = &self.layout;
+            crate::menu::view::push_logo(
+                &mut shape_target.borrow_mut(),
+                art,
+                white,
+                theme,
+                &snapshot.logo,
+                [
+                    layout.logo_centre[0] + pose.offset * width,
+                    layout.logo_centre[1],
+                ],
+                layout.logo_size,
+                pose.opacity,
+                None,
+            );
         }
         let panel = panel_back > 0.0 || panel_columns;
         let mut popup_split = None;
@@ -2128,6 +2165,7 @@ impl SongSelectView {
             }
         }
         Splits {
+            logo: logo_split,
             panel: split,
             popup: popup_split,
         }

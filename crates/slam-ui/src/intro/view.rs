@@ -1,283 +1,364 @@
-//! Draw side of the intro. The title is laid out as the menu lays out its own, so the
-//! letters land exactly where the menu draws them; laid out again only when the window
-//! size changes. Once warm, `push` does not allocate.
+//! Draw side of the intro (ADR-0186): the logo's masks in the theme's colours, placed as
+//! the menu places its logo, so that the logo settles exactly where the menu draws it;
+//! around them the shaking, the coloured glitch copies, the beams of the charge and the
+//! explosion. Does not allocate once the batch has room.
 
-use std::sync::Arc;
-
+use slam_render::Color;
 use slam_render::atlas::AtlasRegion;
-use slam_render::shape::ShapeBatch;
-use slam_render::sprite::{Sprite, SpriteBatch};
-use slam_text::{EM_PX_HIRES, FontRegistry, Glyph, GlyphCache, GlyphKey};
+use slam_render::hal::Blend;
+use slam_render::shape::{Shape, ShapeBatch};
+use slam_render::sprite::Sprite;
 
-use super::{BIG_SCALE, IntroSnapshot, LetterPose, backdrop, letter_pose};
-
-/// Most of the window's width the big letters' row may take.
-const MAX_ROW_WIDTH: f32 = 0.85;
+use super::{
+    BURST_TRIANGLES, IntroSnapshot, PIECES, backdrop, blast, burst_triangle, charge, colour,
+    logo_pose, piece_pose, shake, split,
+};
 use crate::menu::MenuLayout;
-use crate::menu::view::{Frame, Line, Typesetter};
+use crate::menu::view::{LogoArt, mark, push_mask};
 use crate::theme::{Theme, faded};
 
-/// The draw side of [`super::Intro`].
-pub struct IntroView {
-    theme: Theme,
-    type_setter: Typesetter,
-    frame: Frame,
-    layout: MenuLayout,
-    title: Line,
+/// Beams closing in during the charge.
+const BEAMS: usize = 10;
+
+/// `from` moved `k` of the way to `to`.
+fn mix(from: [Color; 2], to: [Color; 2], k: f32) -> [Color; 2] {
+    let m = |a: Color, b: Color| Color {
+        r: a.r + (b.r - a.r) * k,
+        g: a.g + (b.g - a.g) * k,
+        b: a.b + (b.b - a.b) * k,
+        a: a.a + (b.a - a.a) * k,
+    };
+    [m(from[0], to[0]), m(from[1], to[1])]
 }
 
-impl std::fmt::Debug for IntroView {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_struct("IntroView")
-            .field("title", &self.title.text)
-            .finish_non_exhaustive()
-    }
+const WHITE: [Color; 2] = [Color::WHITE; 2];
+const BLACK: [Color; 2] = [Color::BLACK; 2];
+
+/// The intro's beams, copies, waves and burst: white.
+const GREYS: [Color; 2] = [Color::WHITE; 2];
+
+/// The draw side of [`super::Intro`].
+#[derive(Debug)]
+pub struct IntroView {
+    theme: Theme,
 }
 
 impl IntroView {
-    /// A view of `title` (the menu's) with the fonts of `registry`. Lays the title out
-    /// once, so that later layouts do not allocate: call it off the hot paths.
-    pub fn new(registry: Arc<FontRegistry>, theme: Theme, title: &str) -> IntroView {
-        let (width, height) = (1280.0, theme.reference_height);
-        let mut view = IntroView {
-            type_setter: Typesetter::new(registry, theme.heading_weight),
-            frame: Frame { width, height },
-            layout: MenuLayout::new(width, height, &theme),
-            title: Line::new(title),
-            theme,
-        };
-        view.lay_out();
-        view
+    pub fn new(theme: Theme) -> IntroView {
+        IntroView { theme }
     }
 
-    /// Asks `glyphs` for the letters at the resolution the intro draws them at; how many
-    /// are not ready yet.
-    pub fn request_glyphs(&self, glyphs: &mut GlyphCache) -> usize {
-        self.title
-            .layout
-            .glyphs()
-            .iter()
-            .filter(|g| matches!(glyphs.glyph(GlyphKey::hires_of(g)), Glyph::Pending))
-            .count()
-    }
-
-    /// How many letters the intro animates: the title's glyphs, as [`super::cues`] takes.
+    /// How many pieces the intro animates, as [`super::cues`] takes.
     pub fn letters(&self) -> usize {
-        self.title.layout.glyphs().len()
+        PIECES
     }
 
-    fn lay_out(&mut self) {
-        let Frame { width, height } = self.frame;
-        self.layout = MenuLayout::new(width, height, &self.theme);
-        self.type_setter
-            .lay_out(&mut self.title, self.theme.title_size * self.layout.scale);
-    }
-
-    /// Writes the intro at `snapshot` over a `width` × `height` window: the black into
-    /// `shapes` (tinting `white`, an opaque white image), the filled letters into `text`
-    /// (drawn with the MSDF shader) and the outlined ones into `outlines` (drawn with the
-    /// MSDF outline shader, after `text`). Allocation-free once warm and once the batches
-    /// have room.
+    /// Writes the intro at `snapshot` over a `width` × `height` window into `shapes`: the
+    /// backdrop (tinting `white`, an opaque white image), its glow, beams and explosion, and
+    /// the logo's masks from `art`, settling on `target` (the menu's logo: centre and size;
+    /// lazer's logo alone when `None`).
     #[allow(clippy::too_many_arguments)]
     pub fn push(
-        &mut self,
+        &self,
         shapes: &mut ShapeBatch,
-        text: &mut SpriteBatch,
-        outlines: &mut SpriteBatch,
-        glyphs: &mut GlyphCache,
         width: f32,
         height: f32,
         snapshot: &IntroSnapshot,
         white: AtlasRegion,
+        art: Option<&LogoArt>,
+        target: Option<([f32; 2], f32)>,
     ) {
-        let frame = Frame { width, height };
-        if frame != self.frame {
-            self.frame = frame;
-            self.lay_out();
-        }
+        let theme = &self.theme;
+        let real = &theme.logo;
         let t = (snapshot.elapsed_ns as f64 / 1e9) as f32;
         let fade = 1.0 - snapshot.exit;
+        // White on black: the mark and the ring white, the play cut out black on a black
+        // disc; the theme's colour comes in only as the black gives way to the menu.
+        let k = colour(t);
+        let colours = &crate::theme::LogoColours {
+            disc: mix(BLACK, real.disc, k),
+            shine: mix([faded(Color::WHITE, 0.0); 2], [real.shine; 2], k)[0],
+            ring: mix(WHITE, real.ring, k),
+            frame: mix(WHITE, real.frame, k),
+            play: mix(BLACK, real.play, k),
+            facet: mix(WHITE, real.facet, k),
+            accent: mix(WHITE, real.accent, k),
+        };
         let black = backdrop(t) * fade;
         if black > 0.0 {
             let mut sprite = Sprite::new(white.texture, white.uv, [0.0, 0.0], [width, height]);
-            sprite.colour = faded(self.theme.intro_backdrop, black);
+            sprite.colour = faded(Color::BLACK, black);
             shapes.push(&sprite);
         }
-        let layout = &self.title.layout;
-        // As `push_centred` places the menu's title.
-        let title_centre = self.layout.title.centre();
-        let origin = [
-            title_centre[0] - layout.width() / 2.0,
-            title_centre[1] - layout.height() / 2.0,
-        ];
-        let screen_centre = [width / 2.0, height / 2.0];
-        // The letters grow to several times the menu's title, so they are made at
-        // `EM_PX_HIRES` atlas pixels per em, not the 32 the menu's text is: scaled up from
-        // those they show the field's wobble as jagged edges (ADR-0178).
-        let scale = layout.font_size() / EM_PX_HIRES;
-        let count = layout.glyphs().len();
-        // The big row within most of the window's width.
-        let widest = layout.width() * BIG_SCALE;
-        let fit = if widest > 0.0 {
-            (MAX_ROW_WIDTH * width / widest).min(1.0)
-        } else {
-            1.0
+        let Some(art) = art else {
+            return;
         };
-        for (index, g) in layout.glyphs().iter().enumerate() {
-            let Glyph::Ready { region, offset } = glyphs.glyph(GlyphKey::hires_of(g)) else {
-                continue;
-            };
-            // The glyph's sprite in the menu's title, as `push_layout` writes it.
-            let top_left = [
-                origin[0] + g.x + offset[0] * scale,
-                origin[1] + g.y + offset[1] * scale,
-            ];
-            let size = [
-                region.size.width as f32 * scale,
-                region.size.height as f32 * scale,
-            ];
-            let pose = letter_pose(index, count, t);
-            let (position, size) = place(
-                Placement {
-                    top_left,
-                    size,
-                    title_centre,
-                    screen_centre,
-                    fit,
-                },
-                &pose,
-            );
-            let mut sprite = Sprite::new(region.texture, region.uv, position, size);
-            let outline = pose.outline * fade;
-            if outline > 0.0 {
-                sprite.colour = faded(self.theme.text, outline);
-                outlines.push(&sprite);
-            }
-            let fill = pose.fill * fade;
-            if fill > 0.0 {
-                sprite.colour = faded(self.theme.text, fill);
-                text.push(&sprite);
+        let (home, menu_size) =
+            target.unwrap_or_else(|| MenuLayout::new(width, height, &self.theme).logo_alone());
+        let logo = logo_pose(t);
+        let size = menu_size * logo.scale;
+        let [sx, sy] = shake(t);
+        let centre = [home[0] + sx * size, home[1] + sy * size];
+        let layers = art.layers(size);
+        let charge = charge(t);
+        let boom = blast(t);
+        // Beams from beyond the window closing in on the centre.
+        if charge > 0.0 {
+            let reach = width.hypot(height);
+            let thickness = (size * 0.022).max(2.0);
+            for beam in 0..BEAMS {
+                let angle = beam as f32 / BEAMS as f32 * std::f32::consts::TAU + t * 1.7;
+                let (sin, cos) = angle.sin_cos();
+                let near = size * 0.5 + reach * (1.0 - charge);
+                let length = reach;
+                let mut sprite = Sprite::new(
+                    white.texture,
+                    white.uv,
+                    [centre[0] + cos * near, centre[1] + sin * near],
+                    [thickness * (1.0 + charge), length],
+                );
+                sprite.origin = [thickness / 2.0, 0.0];
+                sprite.rotation = angle - std::f32::consts::FRAC_PI_2;
+                let colour = GREYS[beam % 2];
+                sprite.colour = faded(colour, charge * fade);
+                sprite.blend = Blend::Additive;
+                shapes.push(&sprite);
             }
         }
+        if logo.disc > 0.0 {
+            let a = logo.disc * fade;
+            push_mask(
+                shapes,
+                layers.disc,
+                centre,
+                size,
+                0.0,
+                colours.disc,
+                a,
+                Blend::Alpha,
+            );
+            let shine = [colours.shine, faded(colours.shine, 0.0)];
+            push_mask(
+                shapes,
+                layers.shine,
+                centre,
+                size,
+                0.0,
+                shine,
+                a,
+                Blend::Alpha,
+            );
+            push_mask(
+                shapes,
+                layers.ring,
+                centre,
+                size,
+                0.0,
+                colours.ring,
+                a,
+                Blend::Alpha,
+            );
+        }
+        let glitch = split(t) * fade;
+        for (index, (image, piece)) in mark(layers, colours).into_iter().enumerate() {
+            let pose = piece_pose(index, t);
+            let alpha = pose.alpha * fade;
+            if alpha <= 0.0 {
+                continue;
+            }
+            let at = [
+                centre[0] + pose.offset[0] * size,
+                centre[1] + pose.offset[1] * size,
+            ];
+            // The glitch: copies to either side in the ring's two colours.
+            if glitch > 0.01 {
+                let away = glitch * size * 0.035;
+                for (side, colour) in [(-1.0, GREYS[0]), (1.0, GREYS[1])] {
+                    let copy = [at[0] + side * away, at[1] - side * away * 0.3];
+                    push_mask(
+                        shapes,
+                        image,
+                        copy,
+                        size,
+                        pose.rotation,
+                        [colour; 2],
+                        alpha * glitch * 0.7,
+                        Blend::Additive,
+                    );
+                }
+            }
+            push_mask(
+                shapes,
+                image,
+                at,
+                size,
+                pose.rotation,
+                piece,
+                alpha,
+                Blend::Alpha,
+            );
+        }
+        // The core glowing up in the middle of the mark.
+        if charge > 0.0 {
+            let core = size * (0.1 + 0.35 * charge * charge);
+            let white_hot = GREYS;
+            push_mask(
+                shapes,
+                layers.shine,
+                centre,
+                core,
+                0.0,
+                white_hot,
+                charge * fade,
+                Blend::Additive,
+            );
+        }
+        // The explosion: shock waves, a burst of triangles and the window's flash.
+        if boom.wave_alpha > 0.0 && boom.burst > 0.0 {
+            for (delay, colours) in [(0.0, GREYS), (0.25, [GREYS[1]; 2])] {
+                let wave = ((boom.wave - delay) / (1.0 - delay)).max(0.0);
+                let ring = size * (1.0 + 2.6 * wave);
+                push_mask(
+                    shapes,
+                    layers.ring,
+                    centre,
+                    ring,
+                    0.0,
+                    colours,
+                    boom.wave_alpha * fade,
+                    Blend::Additive,
+                );
+            }
+        }
+        if boom.burst > 0.0 && boom.burst < 1.0 {
+            let fly = crate::anim::ease_out_expo(boom.burst);
+            for index in 0..BURST_TRIANGLES {
+                let (angle, far, side) = burst_triangle(index);
+                let (sin, cos) = angle.sin_cos();
+                let distance = size * (0.3 + far * fly);
+                let side = side * size;
+                let mut sprite = Sprite::new(
+                    art.triangle.texture,
+                    art.triangle.uv,
+                    [centre[0] + cos * distance, centre[1] + sin * distance],
+                    [side, side],
+                );
+                sprite.origin = [side / 2.0, side / 2.0];
+                sprite.rotation = angle + boom.burst * 4.0;
+                let colour = GREYS[index % 2];
+                sprite.colour = faded(colour, (1.0 - boom.burst) * fade);
+                sprite.blend = Blend::Additive;
+                shapes.push(&sprite);
+            }
+        }
+        if logo.flash > 0.0 {
+            let radius = size / 2.0;
+            let mut flash = Shape::new(
+                white.texture,
+                white.uv,
+                [centre[0] - radius, centre[1] - radius],
+                [size, size],
+                faded(Color::WHITE, logo.flash * fade),
+            );
+            flash.radius = radius;
+            flash.blend = Blend::Additive;
+            shapes.push_shape(&flash);
+        }
+        if boom.flash > 0.01 {
+            let mut sprite = Sprite::new(white.texture, white.uv, [0.0, 0.0], [width, height]);
+            sprite.colour = faded(Color::WHITE, boom.flash * fade);
+            sprite.blend = Blend::Additive;
+            shapes.push(&sprite);
+        }
     }
-}
-
-/// Where a glyph's sprite is in the menu's title, and around what it flies.
-#[derive(Clone, Copy, Debug)]
-struct Placement {
-    top_left: [f32; 2],
-    size: [f32; 2],
-    title_centre: [f32; 2],
-    screen_centre: [f32; 2],
-    /// Scales the big letters down to fit the window, 0 ..= 1.
-    fit: f32,
-}
-
-/// The glyph's sprite (top left, size) at `pose`. Flying in scales the letter about its
-/// centre and moves it, both down to nothing at `land == 1`, where the sprite is exactly
-/// the menu's: the terms vanish, they are not interpolated to it.
-fn place(at: Placement, pose: &LetterPose) -> ([f32; 2], [f32; 2]) {
-    let away = 1.0 - pose.land;
-    let scale = pose.scale * at.fit;
-    let grow = (scale - 1.0) * away;
-    let position = |axis: usize| {
-        let top_left = at.top_left[axis];
-        let centre = top_left + at.size[axis] / 2.0;
-        let big = at.screen_centre[axis] + (centre - at.title_centre[axis]) * scale;
-        top_left + ((top_left - centre) * grow + (big - centre) * away)
-    };
-    (
-        [position(0), position(1)],
-        [at.size[0] * (1.0 + grow), at.size[1] * (1.0 + grow)],
-    )
-}
-
-/// The largest size, in pixels per em, the intro draws a letter at in a `height` pixels
-/// high window: the big row before the flight.
-#[cfg(test)]
-fn largest_em_px(theme: &Theme, height: f32) -> f32 {
-    theme.title_size * theme.scale(height) * BIG_SCALE
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::intro::{END_S, IMPACT_S};
+    use slam_render::atlas::UvRect;
+    use slam_render::hal::{Extent, Origin};
+    use slam_render::textures::TextureId;
 
-    #[test]
-    fn the_letters_are_never_enlarged_much_up_to_4k() {
-        let theme = Theme::default();
-        for height in [720.0, 1080.0, 1440.0, 2160.0] {
-            let drawn = largest_em_px(&theme, height);
-            // At most about 6 times at 4K (a distance field keeps clean edges that far; the
-            // size is bounded by the outline's width, see `EM_PX_HIRES`), where 32 pixels per
-            // em showed 10-fold enlargement as a pixelated edge.
-            assert!(
-                drawn / EM_PX_HIRES <= 6.0,
-                "{height}: drawn {drawn} from {EM_PX_HIRES}"
-            );
-            assert!(
-                drawn / slam_text::EM_PX > 3.0,
-                "{height}: low res was enough"
-            );
+    fn region(id: u32) -> AtlasRegion {
+        AtlasRegion {
+            texture: TextureId(id),
+            origin: Origin { x: 0, y: 0 },
+            size: Extent::new(8, 8),
+            uv: UvRect {
+                u0: 0.0,
+                v0: 0.0,
+                u1: 1.0,
+                v1: 1.0,
+            },
+        }
+    }
+
+    fn snapshot(t: f32) -> IntroSnapshot {
+        IntroSnapshot {
+            elapsed_ns: (f64::from(t) * 1e9) as u64,
+            exit: 0.0,
+            skipped: false,
         }
     }
 
     #[test]
-    fn the_intro_asks_for_the_hires_glyphs_not_the_menus() {
-        use slam_text::{FontRegistry, GlyphKey};
-        use std::sync::Arc;
-        let registry = Arc::new(FontRegistry::with_builtin());
-        let view = IntroView::new(registry, Theme::default(), "SLAM");
-        assert_eq!(view.letters(), 4);
-        for g in view.title.layout.glyphs() {
-            assert!(GlyphKey::hires_of(g).hires);
-            assert_ne!(GlyphKey::hires_of(g), GlyphKey::of(g));
-        }
-    }
-
-    const AT: Placement = Placement {
-        top_left: [612.25, 301.5],
-        size: [41.75, 57.125],
-        title_centre: [640.0, 330.0],
-        screen_centre: [640.0, 360.0],
-        fit: 1.0,
-    };
-
-    #[test]
-    fn landed_letter_is_exactly_the_menus_glyph() {
-        for index in 0..4 {
-            let pose = letter_pose(index, 4, END_S);
-            assert_eq!(place(AT, &pose), (AT.top_left, AT.size));
-        }
-    }
-
-    #[test]
-    fn letters_fly_in_from_big_around_the_screen_centre() {
-        // At the impact: big, in a row about the screen centre.
-        let pose = letter_pose(0, 4, IMPACT_S);
-        let (position, size) = place(AT, &pose);
-        assert!((size[0] - AT.size[0] * pose.scale).abs() < 1e-3);
-        let centre = [position[0] + size[0] / 2.0, position[1] + size[1] / 2.0];
-        let own = [
-            AT.top_left[0] + AT.size[0] / 2.0,
-            AT.top_left[1] + AT.size[1] / 2.0,
-        ];
-        for axis in 0..2 {
-            let expected =
-                AT.screen_centre[axis] + (own[axis] - AT.title_centre[axis]) * pose.scale;
-            assert!((centre[axis] - expected).abs() < 1e-3, "{axis}");
-        }
-        // Fitted to a narrow window: smaller, landing exactly all the same.
-        let narrow = Placement { fit: 0.5, ..AT };
-        let small = place(narrow, &pose).1;
-        assert!((small[0] - AT.size[0] * pose.scale * 0.5).abs() < 1e-3);
-        assert_eq!(
-            place(narrow, &letter_pose(0, 4, END_S)),
-            (AT.top_left, AT.size)
+    fn the_logo_ends_where_the_menu_draws_it_alone() {
+        let view = IntroView::new(Theme::default());
+        let mut shapes = ShapeBatch::new();
+        let art = LogoArt::all(region(1));
+        view.push(
+            &mut shapes,
+            1280.0,
+            720.0,
+            &snapshot(END_S - 1e-4),
+            region(0),
+            Some(&art),
+            None,
         );
-        // Half way in, between the two sizes.
-        let half = place(AT, &letter_pose(0, 4, (IMPACT_S + END_S) / 2.0)).1;
-        assert!(half[0] > AT.size[0] && half[0] < AT.size[0] * BIG_SCALE);
+        // The black is gone and nothing shakes; disc, shine, ring and four pieces are whole,
+        // at the menu's place.
+        let (centre, size) = MenuLayout::new(1280.0, 720.0, &Theme::default()).logo_alone();
+        let quads = shapes.vertices().as_chunks::<4>().0;
+        let side = size / crate::menu::view::DISC_SHARE;
+        let layers: Vec<_> = quads
+            .iter()
+            .filter(|q| (q[1].position[0] - q[0].position[0] - side).abs() < 3.0)
+            .collect();
+        assert!(layers.len() >= 7, "{}", layers.len());
+        for quad in layers {
+            let mid_x = (quad[0].position[0] + quad[2].position[0]) / 2.0;
+            let mid_y = (quad[0].position[1] + quad[2].position[1]) / 2.0;
+            assert!((mid_x - centre[0]).abs() < 2.0 && (mid_y - centre[1]).abs() < 2.0);
+        }
+    }
+
+    #[test]
+    fn the_impact_explodes() {
+        let view = IntroView::new(Theme::default());
+        let art = LogoArt::all(region(1));
+        let mut before = ShapeBatch::new();
+        view.push(
+            &mut before,
+            1280.0,
+            720.0,
+            &snapshot(0.0),
+            region(0),
+            Some(&art),
+            None,
+        );
+        assert!(before.len() <= 2, "black and its glow");
+        let mut boom = ShapeBatch::new();
+        view.push(
+            &mut boom,
+            1280.0,
+            720.0,
+            &snapshot(IMPACT_S + 0.05),
+            region(0),
+            Some(&art),
+            None,
+        );
+        assert!(boom.len() > BURST_TRIANGLES + PIECES, "{}", boom.len());
     }
 }

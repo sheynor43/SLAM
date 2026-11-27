@@ -21,7 +21,7 @@ use crate::displays::{DisplayLists, DisplayViews};
 use crate::settings::model::ModHotkeyStyle;
 use crate::settings::{
     BreakDisplay, DrawRate, FpsScreens, HitsoundDelay, InputSettings, KeyOverlayAnimation, KeySlot,
-    MenuBackground, MenuSounds, PauseMenuStyle, RendererChoice, ResultsStyle, Settings,
+    MenuBackground, MenuSounds, MenuStyle, PauseMenuStyle, RendererChoice, ResultsStyle, Settings,
     SkipButtonStyle, ThumbnailStyle, Thumbnails, Timing, skins,
 };
 use crate::update::Channel;
@@ -258,6 +258,8 @@ pub enum Row {
     Renderer,
     /// Whether the startup intro plays; read at start (ADR-0114).
     Intro,
+    /// How the main menu's buttons come out (ADR-0186).
+    MenuStyle,
     /// The interface colour scheme (ADR-0117).
     ColourScheme,
     /// The window edge the volume overlay stands at (ADR-0145).
@@ -394,7 +396,7 @@ const _: () =
     assert!(Row::ALL.len() + super::otd::OtdRow::ALL.len() <= slam_ui::settings_screen::MAX_ROWS);
 
 impl Row {
-    pub const ALL: [Row; 119] = [
+    pub const ALL: [Row; 120] = [
         Row::MasterVolume,
         Row::MusicVolume,
         Row::MenuMusic,
@@ -435,6 +437,7 @@ impl Row {
         Row::VideoDriver,
         Row::Renderer,
         Row::Intro,
+        Row::MenuStyle,
         Row::ColourScheme,
         Row::VolumeOverlay,
         Row::VolumeMeter,
@@ -656,6 +659,7 @@ impl Row {
             | Row::VideoDriver
             | Row::Renderer
             | Row::Intro
+            | Row::MenuStyle
             | Row::ColourScheme
             | Row::VolumeOverlay
             | Row::VolumeMeter
@@ -845,6 +849,7 @@ impl Row {
             Row::PauseMenuStyle => "settings-gameplay-pause-menu-style",
             Row::SkipButton => "settings-gameplay-skip-button",
             Row::ResultsStyle => "settings-general-results-style",
+            Row::MenuStyle => "settings-general-menu-style",
             Row::PauseMenuScale => "settings-gameplay-pause-menu-scale",
             Row::HoldToConfirm => "settings-gameplay-hold-to-confirm",
             Row::RestartAnimation => "settings-gameplay-restart-animation",
@@ -977,6 +982,13 @@ fn channel_key(channel: Channel) -> &'static str {
     match channel {
         Channel::Prerelease => "settings-option-channel-prerelease",
         Channel::Stable => "settings-option-channel-stable",
+    }
+}
+
+fn menu_style_key(style: MenuStyle) -> &'static str {
+    match style {
+        MenuStyle::Lazer => "settings-option-menu-style-lazer",
+        MenuStyle::Stable => "settings-option-menu-style-stable",
     }
 }
 
@@ -1522,6 +1534,12 @@ impl Rows {
                     .iter()
                     .position(|p| *p == s.gameplay.skip_button),
             ),
+            Row::MenuStyle => choice(
+                MenuStyle::ALL.len(),
+                MenuStyle::ALL
+                    .iter()
+                    .position(|p| *p == s.general.menu_style),
+            ),
             Row::ResultsStyle => choice(
                 ResultsStyle::ALL.len(),
                 ResultsStyle::ALL
@@ -1818,6 +1836,11 @@ impl Rows {
             (Row::SkipButton, RowValue::Choice(i)) => {
                 if let Some(style) = SkipButtonStyle::ALL.get(i) {
                     settings.gameplay.skip_button = *style;
+                }
+            }
+            (Row::MenuStyle, RowValue::Choice(i)) => {
+                if let Some(style) = MenuStyle::ALL.get(i) {
+                    settings.general.menu_style = *style;
                 }
             }
             (Row::ResultsStyle, RowValue::Choice(i)) => {
@@ -2165,6 +2188,10 @@ impl Rows {
                     Row::ResultsStyle => ResultsStyle::ALL
                         .iter()
                         .map(|style| text(results_style_key(*style)))
+                        .collect(),
+                    Row::MenuStyle => MenuStyle::ALL
+                        .iter()
+                        .map(|style| text(menu_style_key(*style)))
                         .collect(),
                     Row::UpdatesChannel => Channel::ALL
                         .iter()
@@ -2960,11 +2987,11 @@ mod tests {
         assert_eq!(
             specs[index(Row::ColourScheme)].kind,
             RowKind::Dropdown {
-                options: 5,
-                selected: 0
+                options: 6,
+                selected: 1
             }
         );
-        rows.apply(&mut s, index(Row::ColourScheme), RowValue::Choice(4));
+        rows.apply(&mut s, index(Row::ColourScheme), RowValue::Choice(5));
         assert_eq!(s.general.colour_scheme, ColourScheme::Mono);
         rows.apply(&mut s, index(Row::ColourScheme), RowValue::Choice(9));
         assert_eq!(s.general.colour_scheme, ColourScheme::Mono);
@@ -3016,6 +3043,9 @@ mod tests {
         assert_eq!(s.general.results_style, ResultsStyle::Skin);
         rows.apply(&mut s, index(Row::ResultsStyle), RowValue::Choice(1));
         assert_eq!(s.general.results_style, ResultsStyle::Slam);
+        assert_eq!(s.general.menu_style, MenuStyle::Lazer);
+        rows.apply(&mut s, index(Row::MenuStyle), RowValue::Choice(1));
+        assert_eq!(s.general.menu_style, MenuStyle::Stable);
         rows.apply(&mut s, index(Row::PauseMenuScale), RowValue::Slider(150.0));
         assert_eq!(s.gameplay.pause_menu_scale, 1.5);
         assert_eq!(s.general.transitions, TransitionStyle::Random);

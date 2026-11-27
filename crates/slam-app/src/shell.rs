@@ -277,7 +277,10 @@ const SELECTED_MODS_CAPACITY: usize = 16;
 
 /// The application's screens, as the update thread holds them. The song select's state
 /// lives in [`ShellState`]: its list and selection outlast a visit.
+// The menu's logo keeps its visualiser's bars inline (ADR-0186): a box would allocate
+// whenever the stack is cloned.
 #[derive(Clone, Debug, PartialEq)]
+#[allow(clippy::large_enum_variant)]
 pub enum AppScreen {
     Menu(MainMenu),
     SongSelect,
@@ -497,6 +500,9 @@ pub struct ShellState {
     menu_track: Option<(usize, usize)>,
     /// Where the menu music is, in ms of its track.
     menu_track_ms: Option<f64>,
+    /// The menu music's spectrum now, when known (ADR-0186).
+    menu_spectrum: [f32; slam_audio::SPECTRUM_BINS],
+    menu_spectrum_known: bool,
     /// The selected difficulty's beat, once read (ADR-0167).
     beat_timing: Option<slam_ui::song_select::beat::BeatTiming>,
     /// The chosen skin's folder, for its menu background, and the songs folder and skin
@@ -629,6 +635,8 @@ impl ShellState {
             size: [width, height],
             menu_track: None,
             menu_track_ms: None,
+            menu_spectrum: [0.0; slam_audio::SPECTRUM_BINS],
+            menu_spectrum_known: false,
             beat_timing: None,
             menu_skin: None,
             skin_cursor: None,
@@ -738,10 +746,17 @@ impl ShellState {
     /// allocates.
     fn beatmap_details(&mut self, now_ns: u64) -> Option<BeatmapDetails> {
         let selected = self.song_select.selected();
+        // On the main menu the beat is the menu music's (ADR-0186).
+        let on_menu = matches!(self.stack.top(), AppScreen::Menu(_));
+        let followed = if on_menu {
+            self.menu_track.or(selected)
+        } else {
+            selected
+        };
         let read = self
             .details
             .as_mut()
-            .map(|details| details.tick(now_ns, &self.files, selected))
+            .map(|details| details.tick(now_ns, &self.files, followed))
             .unwrap_or_default();
         let (statistics, scores) = (read.statistics, read.scores);
         self.beat_timing = read.timing;
@@ -1754,6 +1769,14 @@ impl ShellState {
         self.menu_track_ms = ms;
     }
 
+    /// The menu music's spectrum now, or `None` when not known (ADR-0186).
+    pub fn set_menu_spectrum(&mut self, spectrum: Option<&[f32; slam_audio::SPECTRUM_BINS]>) {
+        self.menu_spectrum_known = spectrum.is_some();
+        if let Some(spectrum) = spectrum {
+            self.menu_spectrum = *spectrum;
+        }
+    }
+
     /// The skin folder whose menu background the menu shows; made again only when the
     /// songs folder or the skin changes (allocates then).
     pub(crate) fn menu_skin(&mut self) -> Option<&Arc<Path>> {
@@ -1829,6 +1852,16 @@ impl ShellState {
             if clicked {
                 self.ui_sounds.push(MenuSound::Click);
             }
+        }
+        // The menu's buttons coming out of the logo and going back (ADR-0186).
+        if let AppScreen::Menu(menu) = self.stack.top_mut()
+            && let Some(cue) = menu.take_cue()
+            && !playing
+        {
+            self.ui_sounds.push(match cue {
+                slam_ui::menu::MenuCue::Open => MenuSound::Enter,
+                slam_ui::menu::MenuCue::Close => MenuSound::Back,
+            });
         }
         self.ui_seen = (depth, item, selected, open, focus);
         // The mod select overlay's pops (lazer's `ModSelectOverlay`).
@@ -2026,6 +2059,21 @@ impl ShellState {
                 KEY_END => SongSelectInput::End,
                 KEY_ENTER | KEY_KEYPAD_ENTER => SongSelectInput::Activate,
                 KEY_ESCAPE => SongSelectInput::Back,
+                code if matches!(self.stack.top(), AppScreen::Menu(_))
+                    && !self.settings_open()
+                    && !ctrl
+                    && !self.mods().contains(Mods::ALT) =>
+                {
+                    use slam_ui::menu::MenuItem;
+                    // lazer's ButtonSystem keys.
+                    let item = match code {
+                        19 => MenuItem::Play,
+                        18 | 22 => MenuItem::Settings,
+                        20 => MenuItem::Exit,
+                        _ => return None,
+                    };
+                    return Some(ScreenInput::MenuHotkey(item));
+                }
                 code => {
                     let hotkey = match self.live_settings().song_select.mod_hotkeys {
                         ModHotkeyStyle::Sequential => mod_hotkey(code),
@@ -2432,9 +2480,14 @@ impl ShellState {
             let mut open_panel = false;
             let nav = match self.stack.top_mut() {
                 AppScreen::Menu(menu) => {
+                    let hotkey = match input {
+                        ScreenInput::MenuHotkey(item) => Some(MenuInput::Hotkey(item)),
+                        _ => None,
+                    };
                     match common
                         .and_then(menu_input)
-                        .and_then(|input| menu.input(input, &self.layout))
+                        .or(hotkey)
+                        .and_then(|input| menu.input(input, &self.layout, now_ns))
                     {
                         Some(MenuAction::Play) => Some(Nav::Push(AppScreen::SongSelect)),
                         Some(MenuAction::Settings) => {
@@ -2626,6 +2679,28 @@ impl ShellState {
             .zip(self.menu_track_ms)
             .map(|(timing, ms)| timing.pulse_at(ms));
         self.song_select.set_beat(beat);
+        // The logos beat with the menu music (ADR-0186): the main menu's to whatever plays,
+        // the song select's corner one to its selection's preview.
+        let effects = self.theme.effects;
+        let spectrum = self.menu_spectrum_known.then_some(&self.menu_spectrum[..]);
+        let timing = self.beat_timing;
+        let menu_style = self.live_settings().general.menu_style.ui();
+        if let AppScreen::Menu(menu) = self.stack.top_mut() {
+            menu.set_style(menu_style);
+            let audio = slam_ui::menu::LogoAudio {
+                track_ms: self.menu_track_ms,
+                timing: timing.as_ref().filter(|_| self.menu_track.is_some()),
+                spectrum,
+            };
+            menu.tick(now_ns, &audio, effects);
+        }
+        let own = self.menu_track.is_some() && self.menu_track == self.song_select.selected();
+        let audio = slam_ui::menu::LogoAudio {
+            track_ms: self.menu_track_ms,
+            timing: timing.as_ref().filter(|_| own),
+            spectrum,
+        };
+        self.song_select.tick_logo(now_ns, &audio, effects);
         // The main menu shows the menu music's beatmap or the skin's background
         // (ADR-0119); the other screens the song select's selection.
         let live_general = &self.editing.as_ref().unwrap_or(&self.settings).general;
@@ -2731,7 +2806,7 @@ impl ShellState {
             *slot = layer.and_then(|(screen, mut pose)| {
                 pose.offset += aside;
                 let view = match screen {
-                    AppScreen::Menu(menu) => ScreenView::Menu(menu.snapshot()),
+                    AppScreen::Menu(menu) => ScreenView::Menu(menu.snapshot(&self.layout, now_ns)),
                     AppScreen::SongSelect => ScreenView::SongSelect(self.song_select.snapshot()),
                     AppScreen::Results(results) => ScreenView::Results(results.snapshot()),
                     AppScreen::Play(id) if std::ptr::eq(screen, top) => ScreenView::Play(*id),
@@ -2789,6 +2864,8 @@ enum ScreenInput {
     ToggleFps,
     /// The settings panel's hotkey (ADR-0095).
     ToggleSettings,
+    /// A main menu button's key (ADR-0186).
+    MenuHotkey(slam_ui::menu::MenuItem),
 }
 
 impl ScreenInput {
@@ -2834,7 +2911,8 @@ fn settings_input(input: ScreenInput) -> Option<SettingsInput> {
         | ScreenInput::ApproachRate(_)
         | ScreenInput::Rescan
         | ScreenInput::ToggleFps
-        | ScreenInput::ToggleSettings => {
+        | ScreenInput::ToggleSettings
+        | ScreenInput::MenuHotkey(_) => {
             return None;
         }
         ScreenInput::Common(input) => match input {
@@ -2957,7 +3035,8 @@ fn results_input(input: ScreenInput) -> Option<ResultsInput> {
         | ScreenInput::ApproachRate(_)
         | ScreenInput::Rescan
         | ScreenInput::ToggleFps
-        | ScreenInput::ToggleSettings => {
+        | ScreenInput::ToggleSettings
+        | ScreenInput::MenuHotkey(_) => {
             return None;
         }
         // The stable look scrolls (ADR-0161).
@@ -3413,6 +3492,9 @@ impl PlayHost {
         state.set_menu_track(self.music_at);
         let track_ms = self.menu_track_ms(now_ns);
         state.set_menu_track_ms(track_ms);
+        let mut spectrum = [0.0; slam_audio::SPECTRUM_BINS];
+        let heard = self.menu_spectrum(now_ns, &mut spectrum);
+        state.set_menu_spectrum(heard.then_some(&spectrum));
         self.tell_player(state, track_ms);
         let noted = state.take_ui_sounds();
         let mode = state.live_settings().audio.menu_sounds;
@@ -4034,6 +4116,25 @@ impl PlayHost {
         Some(frame / f64::from(output.sample_rate) * 1000.0)
     }
 
+    /// The menu music's spectrum at `now_ns` into `out` (ADR-0186); false while nothing
+    /// plays or the decoder has not measured that far. Lock-free reads only.
+    fn menu_spectrum(&self, now_ns: u64, out: &mut [f32; slam_audio::SPECTRUM_BINS]) -> bool {
+        if self.no_output {
+            return false;
+        }
+        let deck = &self.audio.previews[self.menu_music.active()];
+        let (Some(output), Some(music)) = (self.audio.output.read(), deck.position().read()) else {
+            return false;
+        };
+        // Paused (or waiting for data) the music is silent, as lazer's amplitudes are
+        // empty for a channel that does not play.
+        if music.ended || music.generation != deck.generation() || !music.anchor.moves() {
+            return false;
+        }
+        let frame = music.track_frame_at(output.output_frame_at(now_ns));
+        deck.spectrum().read(deck.generation(), frame, out)
+    }
+
     /// Frees a prepared play nobody waits for.
     fn free_pending(&mut self) {
         if let Pending::Track { prepared, .. } = std::mem::replace(&mut self.pending, Pending::Idle)
@@ -4434,6 +4535,8 @@ struct Resources<D: Device> {
     /// Draws outlined MSDF glyphs (ADR-0114).
     outline_renderer: SpriteRenderer<D>,
     white: AtlasRegion,
+    /// The logo's images (ADR-0186); `None` if they failed to load.
+    logo: Option<slam_ui::menu::LogoArt>,
     /// The menus' backgrounds blurred, up to two while one fades into another (ADR-0123).
     blurs: [BlurSlot<D>; 2],
     /// The last blur that failed, not tried again.
@@ -4638,6 +4741,7 @@ impl<B: render::Backend> Draw<ShellSnapshot> for View<B> {
                 &[255; 8 * 8 * 4],
             )
             .expect("white square");
+        let logo = crate::logo_art::upload(&mut device, &mut textures).map(|(_, art)| art);
         // Glyphs are made before the first frame: a glyph takes several frames to appear.
         let deadline = Instant::now() + GLYPH_WARM_TIMEOUT;
         while self.request_glyphs() > 0 && Instant::now() < deadline {
@@ -4658,6 +4762,7 @@ impl<B: render::Backend> Draw<ShellSnapshot> for View<B> {
             text_renderer,
             outline_renderer,
             white,
+            logo,
             blurs,
             blur_failed: None,
         });
@@ -4860,7 +4965,7 @@ impl<B: render::Backend> Draw<ShellSnapshot> for View<B> {
             .rem_euclid(1024.0);
         self.shapes.set_drift(cycles as f32);
         self.menu
-            .set_title_hidden(snapshot.intro.is_some_and(|i| i.hides_menu_title()));
+            .set_logo_hidden(snapshot.intro.is_some_and(|i| i.hides_menu_logo()));
         // Where each layer's sprites end: layers are drawn one after another, shapes then
         // text, so a screen coming in covers the text of the one leaving.
         // The song list's thumbnails that are uploaded (ADR-0127).
@@ -4876,7 +4981,7 @@ impl<B: render::Backend> Draw<ShellSnapshot> for View<B> {
         }
         // The screens' layers and the settings panel's.
         // Two per screen (the song select's mod panel is a layer of its own), and the panel.
-        let mut ends = [(0_u32, 0_u32, false); 3 * MAX_LAYERS + 4];
+        let mut ends = [(0_u32, 0_u32, false); 4 * MAX_LAYERS + 4];
         let mut layers = 0;
         for layer in snapshot.layers.iter().flatten() {
             // Where the screen's own quads start: its background is not scaled.
@@ -4912,6 +5017,7 @@ impl<B: render::Backend> Draw<ShellSnapshot> for View<B> {
                         menu,
                         layer.pose,
                         r.white,
+                        r.logo.as_ref(),
                     );
                     // The buttons shift less than the background; hit-testing stays on
                     // the layout without it.
@@ -4957,11 +5063,14 @@ impl<B: render::Backend> Draw<ShellSnapshot> for View<B> {
                             full: snapshot.thumbnails.full,
                             rows: &thumb_rows,
                             now_ns: info.wait.woke_ns,
+                            logo: r.logo.as_ref(),
                         },
                     );
                     // The mod panel over the list's texts (ADR-0152).
                     // The floating mod settings over the panel (ADR-0177).
-                    for (shapes_at, text_at) in [split.panel, split.popup].into_iter().flatten() {
+                    // The corner logo over the list's texts (ADR-0186).
+                    let splits = [split.logo, split.panel, split.popup];
+                    for (shapes_at, text_at) in splits.into_iter().flatten() {
                         ends[layers] = (shapes_at, text_at, false);
                         layers += 1;
                     }
@@ -5115,16 +5224,24 @@ impl<B: render::Backend> Draw<ShellSnapshot> for View<B> {
         }
         // Over every screen and the panel, under the curtain and the FPS counter; its
         // outlines are drawn last, over them, while the letters are outlined.
-        if let (Some(view), Some(intro)) = (&mut self.intro, &snapshot.intro) {
+        if let (Some(view), Some(intro)) = (&self.intro, &snapshot.intro) {
+            // Settling on the menu's logo, whichever its style (ADR-0186).
+            let target = snapshot
+                .layers
+                .iter()
+                .flatten()
+                .find_map(|layer| match &layer.view {
+                    ScreenView::Menu(menu) => Some((menu.logo_centre, menu.logo_size)),
+                    _ => None,
+                });
             view.push(
                 &mut self.shapes,
-                &mut self.text,
-                &mut self.outlines,
-                &mut self.glyphs,
                 width,
                 height,
                 intro,
                 r.white,
+                r.logo.as_ref(),
+                target,
             );
         }
         // Over every screen, under the FPS counter.
@@ -5303,7 +5420,7 @@ impl<B: render::Backend> Draw<ShellSnapshot> for View<B> {
 
 impl<B: render::Backend> View<B> {
     fn request_glyphs(&mut self) -> usize {
-        let screens = glyphs_pending(
+        glyphs_pending(
             &mut self.glyphs,
             &self.menu,
             &self.song_select,
@@ -5313,13 +5430,7 @@ impl<B: render::Backend> View<B> {
             &self.volume,
             &self.toast,
             &self.toolbar,
-        );
-        // The intro's letters are made large (ADR-0178): ready before it starts.
-        let intro = self
-            .intro
-            .as_ref()
-            .map_or(0, |intro| intro.request_glyphs(&mut self.glyphs));
-        screens + intro
+        )
     }
 }
 
@@ -5756,9 +5867,7 @@ fn run_with<B: render::Backend>(
     if intro_title.is_some() {
         state = state.with_intro(Arc::clone(&shown));
     }
-    let intro_view = intro_title
-        .as_deref()
-        .map(|title| IntroView::new(Arc::clone(&registry), theme, title));
+    let intro_view = intro_title.as_deref().map(|_| IntroView::new(theme));
     // Laid out again in another language by the `slam-language` thread (ADR-0091).
     let language::InterfaceViews {
         menu,

@@ -2055,6 +2055,33 @@ fn the_results_style_setting_defaults_reads_and_writes_by_name() {
 }
 
 #[test]
+fn the_menu_style_setting_defaults_reads_and_writes_by_name() {
+    assert_eq!(
+        Settings::default().general.menu_style,
+        crate::settings::MenuStyle::Lazer
+    );
+    let loaded = file::from_toml_str("[general]\nmenu_style = \"stable\"\n");
+    assert_eq!(
+        loaded.settings.general.menu_style,
+        crate::settings::MenuStyle::Stable
+    );
+    let mut settings = Settings::default();
+    settings.general.menu_style = crate::settings::MenuStyle::Stable;
+    let text = file::to_toml_string(&settings).unwrap();
+    assert!(text.contains("menu_style = \"stable\""), "{text}");
+    let bad = file::from_toml_str("[general]\nmenu_style = \"cube\"\n");
+    assert_eq!(
+        bad.settings.general.menu_style,
+        crate::settings::MenuStyle::Lazer
+    );
+    assert!(
+        bad.warnings
+            .iter()
+            .any(|w| w.starts_with("general.menu_style"))
+    );
+}
+
+#[test]
 fn a_bad_results_style_falls_back_with_a_warning() {
     let loaded = file::from_toml_str("[general]\nresults_style = \"fancy\"\n");
     assert_eq!(loaded.status, LoadStatus::Recovered);

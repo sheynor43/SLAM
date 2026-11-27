@@ -363,11 +363,11 @@ mod tests {
             );
             stats
         });
-        assert_eq!((stats.drawn, stats.pending), (22, 0));
+        assert_eq!((stats.drawn, stats.pending), (Icon::ALL.len() as u32, 0));
         assert_eq!(allocs.total(), 0, "{allocs}");
-        assert_eq!(batch.len(), 23);
+        assert_eq!(batch.len(), Icon::ALL.len() + 1);
         // Every quad stays within the box, give or take the field's padding.
-        for quad in batch.vertices()[..22 * 4].as_chunks::<4>().0 {
+        for quad in batch.vertices()[..Icon::ALL.len() * 4].as_chunks::<4>().0 {
             for v in quad {
                 assert!(v.position[0] >= 10.0 - 2.0 && v.position[0] <= 34.0 + 2.0);
                 assert!(v.position[1] >= 20.0 - 2.0 && v.position[1] <= 44.0 + 2.0);

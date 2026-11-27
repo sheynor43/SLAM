@@ -158,6 +158,8 @@ pub struct General {
     pub menu_cursor: CursorStyle,
     /// Which look the results screen takes (ADR-0163). Applies live.
     pub results_style: ResultsStyle,
+    /// How the main menu's buttons come out of the logo (ADR-0186). Applies live.
+    pub menu_style: MenuStyle,
     /// Whether the Discord status shows what the player does (ADR-0170). Applies live.
     pub discord_presence: bool,
     /// The names of the settings rows pinned to the menus' toolbar, in the order they show
@@ -197,6 +199,7 @@ impl Default for General {
             menu_background: MenuBackground::default(),
             menu_cursor: CursorStyle::Slam,
             results_style: ResultsStyle::default(),
+            menu_style: MenuStyle::default(),
             discord_presence: true,
             pinned_settings: Vec::new(),
         }
@@ -1122,6 +1125,42 @@ impl ResultsStyle {
     /// The value called `name`.
     pub fn from_name(name: &str) -> Option<ResultsStyle> {
         ResultsStyle::ALL.into_iter().find(|s| s.name() == name)
+    }
+}
+
+/// How the main menu's buttons come out of the logo (ADR-0186).
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum MenuStyle {
+    /// A bar across the screen, as lazer's.
+    #[default]
+    Lazer,
+    /// A column sliding out of the logo, as stable's.
+    Stable,
+}
+
+impl MenuStyle {
+    pub const ALL: [MenuStyle; 2] = [MenuStyle::Lazer, MenuStyle::Stable];
+
+    /// The name in the settings file.
+    pub fn name(self) -> &'static str {
+        match self {
+            MenuStyle::Lazer => "lazer",
+            MenuStyle::Stable => "stable",
+        }
+    }
+
+    /// The value called `name`.
+    pub fn from_name(name: &str) -> Option<MenuStyle> {
+        MenuStyle::ALL.into_iter().find(|s| s.name() == name)
+    }
+
+    /// The menu's own style.
+    pub fn ui(self) -> slam_ui::menu::MenuStyle {
+        match self {
+            MenuStyle::Lazer => slam_ui::menu::MenuStyle::Lazer,
+            MenuStyle::Stable => slam_ui::menu::MenuStyle::Stable,
+        }
     }
 }
 

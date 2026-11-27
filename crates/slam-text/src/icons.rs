@@ -346,11 +346,13 @@ pub enum Icon {
     Mods,
     /// Die.
     Random,
+    /// Power symbol: a ring open at the top and a bar through the gap.
+    Power,
 }
 
 impl Icon {
     /// Every icon, by glyph id.
-    pub const ALL: [Icon; 22] = [
+    pub const ALL: [Icon; 23] = [
         Icon::Audio,
         Icon::Offset,
         Icon::Keys,
@@ -373,6 +375,7 @@ impl Icon {
         Icon::Reset,
         Icon::Mods,
         Icon::Random,
+        Icon::Power,
     ];
 
     /// The glyph id of this icon.
@@ -410,6 +413,7 @@ impl Icon {
             Icon::Reset => reset(&mut c),
             Icon::Mods => sparkles(&mut c),
             Icon::Random => die(&mut c),
+            Icon::Power => power(&mut c),
         }
         c
     }
@@ -692,6 +696,11 @@ fn star(c: &mut Canvas, centre: Pt, r: f32, k: f32) {
 fn sparkles(c: &mut Canvas) {
     star(c, [10.2, 13.4], 9.2, 0.3);
     star(c, [19.0, 5.2], 3.8, 0.3);
+}
+
+fn power(c: &mut Canvas) {
+    c.arc_band([12.0, 13.0], 7.4, 2.4, 312.0, 588.0);
+    c.fill(capsule([12.0, 3.2], [12.0, 11.6], 1.3));
 }
 
 fn die(c: &mut Canvas) {

@@ -1178,3 +1178,21 @@ fn difficulty_info_names_round_trip_and_pp_is_written_whole() {
     super::push_pp(&mut text, -3.0, "pp");
     assert_eq!(text, "0pp");
 }
+
+#[test]
+fn the_corner_logo_plays_the_selection() {
+    let mut s = screen(&[(1, 2), (2, 3)]);
+    press(&mut s, I::Right);
+    let l = layout();
+    let [x, y] = l.logo_centre;
+    assert!(x > 1280.0 * 0.8 && y > 720.0 * 0.8, "bottom right");
+    s.input(I::PointerMove { x, y }, &l);
+    assert!(s.snapshot().logo.hovered);
+    assert_eq!(
+        s.input(I::PointerPress { x, y }, &l),
+        Some(SongSelectAction::Play {
+            set: 1,
+            difficulty: 0
+        })
+    );
+}

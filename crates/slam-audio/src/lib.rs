@@ -13,6 +13,7 @@ mod pipewire;
 mod position;
 mod sample;
 mod seqlock;
+mod spectrum;
 mod tone;
 mod wasapi;
 
@@ -36,4 +37,5 @@ pub use music::{
 };
 pub use position::{AudioPosition, PositionSnapshot};
 pub use sample::{MAX_CHANNELS, MAX_SAMPLE_VALUES, Sample, SampleError};
+pub use spectrum::{FFT_SIZE, SPECTRUM_BINS, Spectrum};
 pub use tone::SineTone;

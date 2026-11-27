@@ -1,8 +1,9 @@
-//! The startup intro (ADR-0114): the title's letters, outlined on black, blink in a
-//! shuffled order, standing still in a row, then fly into the main
-//! menu's title while the black fades out. A pure function of time: [`letter_pose`] and
-//! [`backdrop`] for the picture, [`cues`] for the sound, so that both agree. [`Intro`]
-//! is the update thread's state; [`IntroView`] draws a snapshot.
+//! The startup intro (ADR-0186, timing and sound of ADR-0114): the four pieces of the
+//! logo's mark fly in on black one by one in a shuffled order, blinking, gather into the
+//! mark, and on the impact the disc lights up under them; the logo then settles into the
+//! main menu's logo while the black fades out. A pure function of time: [`piece_pose`],
+//! [`logo_pose`] and [`backdrop`] for the picture, [`cues`] for the sound, so that both
+//! agree. [`Intro`] is the update thread's state; [`IntroView`] draws a snapshot.
 //!
 //! The lengths are constants of this module rather than theme tokens, as the curtain's:
 //! the intro is a branded animation, not a transition (ADR-0114).
@@ -13,12 +14,12 @@ pub use view::IntroView;
 
 /// Length of the whole intro.
 pub const LENGTH_NS: u64 = 2_600_000_000;
-/// The impact: the letters stand in a row and start flying into the title.
+/// The impact: the mark is whole and the disc lights up.
 pub const IMPACT_NS: u64 = 2_000_000_000;
 /// Fade-out after a skip.
 pub const SKIP_NS: u64 = 200_000_000;
 
-/// Every letter is lit from here on, and the riser starts, in seconds.
+/// Every piece is lit from here on and they gather, and the riser starts, in seconds.
 pub const GATHER_S: f32 = 1.4;
 /// [`IMPACT_NS`] in seconds.
 pub const IMPACT_S: f32 = 2.0;
@@ -44,8 +45,37 @@ const GLITCH_AFTER_S: f32 = 0.42;
 const GLITCH_JITTER_S: f32 = 0.1;
 const GLITCH_S: f32 = 0.05;
 
-/// Size of the letters before they fly in, relative to the menu's title.
-pub const BIG_SCALE: f32 = 2.4;
+/// Pieces of the mark (frame, play, facet, accent), as many as the cues' letters.
+pub const PIECES: usize = 4;
+/// Size of the logo until the impact, relative to the menu's (lazer's intro: 1.2).
+pub const BIG_SCALE: f32 = 1.25;
+/// Where each piece flies in from (degrees, y down) and how much it is turned while apart.
+const PIECE_FROM: [f32; PIECES] = [200.0, 340.0, 100.0, 300.0];
+const PIECE_TURN: [f32; PIECES] = [-0.35, 0.3, 0.45, -0.6];
+/// How far the pieces fly from, and where they wait apart, as parts of the logo's size.
+const FLY_FROM: f32 = 1.6;
+const APART: f32 = 0.28;
+/// How long a piece flies in.
+const FLY_S: f32 = 0.3;
+/// Shakes: a blip's kick and the charge's tremble at its peak, and the impact's jolt, as
+/// parts of the logo's size; how fast kicks die away.
+const BLIP_SHAKE: f32 = 0.025;
+const CHARGE_SHAKE: f32 = 0.014;
+const IMPACT_SHAKE: f32 = 0.09;
+const SHAKE_DECAY_S: f32 = 0.06;
+const IMPACT_SHAKE_DECAY_S: f32 = 0.16;
+/// How fast a blip's coloured split closes.
+const SPLIT_DECAY_S: f32 = 0.08;
+/// The explosion: the window's white flash and its decay, the shock waves' and the burst's
+/// lengths, and how many triangles burst out.
+const BLAST_FLASH: f32 = 0.85;
+const BLAST_FLASH_S: f32 = 0.12;
+const WAVE_S: f32 = 0.55;
+const BURST_S: f32 = 0.6;
+pub const BURST_TRIANGLES: usize = 24;
+/// The white flash on the impact: strength and length.
+const IMPACT_FLASH: f32 = 0.6;
+const IMPACT_FLASH_S: f32 = 0.5;
 /// Seed of the fixed choreography.
 const SEED: u32 = 0x5_1A_4D;
 
@@ -144,43 +174,168 @@ pub struct IntroSnapshot {
     pub elapsed_ns: u64,
     /// How far the fade-out after a skip is, 0 ..= 1.
     pub exit: f32,
-    /// Skipped: the menu shows its own title under the fading intro.
+    /// Skipped: the menu shows its own logo under the fading intro.
     pub skipped: bool,
 }
 
 impl IntroSnapshot {
-    /// Whether the menu leaves its title to the intro.
-    pub fn hides_menu_title(&self) -> bool {
+    /// Whether the menu leaves its logo to the intro.
+    pub fn hides_menu_logo(&self) -> bool {
         !self.skipped
     }
 }
 
-/// Where one letter is and how it shows.
+/// Where one piece of the mark is and how it shows.
 #[derive(Clone, Copy, Debug, PartialEq)]
-pub struct LetterPose {
-    /// Size relative to the menu's title before flying in.
-    pub scale: f32,
-    /// How far the letter has flown into the menu's title, 0 ..= 1; at 1 it is exactly
-    /// there.
-    pub land: f32,
-    /// Opacity of the outline, 0 ..= 1.
-    pub outline: f32,
-    /// Opacity of the filled letter, 0 ..= 1.
-    pub fill: f32,
+pub struct PiecePose {
+    /// Away from its place in the mark, as a part of the logo's size.
+    pub offset: [f32; 2],
+    /// Turn in radians.
+    pub rotation: f32,
+    /// Opacity, 0 ..= 1: the piece blinks before the gathering.
+    pub alpha: f32,
 }
 
-/// The pose of letter `index` of `count` at `t` seconds since the start. The letters
-/// stand still, big, until the impact; then they fly into the title.
-pub fn letter_pose(index: usize, count: usize, t: f32) -> LetterPose {
-    let land = ease_in_out_cubic((t - IMPACT_S) / (END_S - IMPACT_S));
-    let fill = smoothstep(0.35, 1.0, land);
-    let lit = if is_lit(index, count, t) { 1.0 } else { 0.0 };
-    LetterPose {
-        scale: BIG_SCALE,
-        land,
-        outline: lit * (1.0 - fill),
-        fill,
+/// The pose of piece `index` at `t` seconds since the start: dark until it appears, then
+/// flying in from its side to wait apart, blinking; from the gathering on it slides into
+/// its place by the impact.
+pub fn piece_pose(index: usize, t: f32) -> PiecePose {
+    let index = index.min(PIECES - 1);
+    let appear = appear_s(index, PIECES);
+    let fly = crate::anim::ease_out_expo(((t - appear) / FLY_S).clamp(0.0, 1.0));
+    let gather = ease_in_out_cubic((t - GATHER_S) / (IMPACT_S - GATHER_S));
+    let distance = (FLY_FROM + (APART - FLY_FROM) * fly) * (1.0 - gather);
+    let (sin, cos) = PIECE_FROM[index].to_radians().sin_cos();
+    PiecePose {
+        offset: [cos * distance, sin * distance],
+        rotation: PIECE_TURN[index] * (1.0 - fly * 0.5) * (1.0 - gather),
+        alpha: if is_lit(index, PIECES, t) { 1.0 } else { 0.0 },
     }
+}
+
+/// The whole logo at one moment.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct LogoPose {
+    /// Size relative to the menu's logo.
+    pub scale: f32,
+    /// Opacity of the disc under the mark.
+    pub disc: f32,
+    /// White over the logo.
+    pub flash: f32,
+}
+
+/// The logo at `t` seconds: big until the impact, when the disc lights up with a flash,
+/// then settling to the menu's size by the end.
+pub fn logo_pose(t: f32) -> LogoPose {
+    let settle = ease_in_out_cubic((t - IMPACT_S) / (END_S - IMPACT_S));
+    let since = t - IMPACT_S;
+    LogoPose {
+        scale: BIG_SCALE + (1.0 - BIG_SCALE) * settle,
+        disc: smoothstep(IMPACT_S - 0.05, IMPACT_S + 0.08, t),
+        flash: if since >= 0.0 {
+            IMPACT_FLASH * (1.0 - since / IMPACT_FLASH_S).max(0.0)
+        } else {
+            0.0
+        },
+    }
+}
+
+/// How hard the picture shakes at `t` seconds, and where to: an offset as a part of the
+/// logo's size. Each blip kicks it, the charge before the impact trembles it more and more,
+/// and the impact jolts it hardest; the direction is noise, the same every time.
+pub fn shake(t: f32) -> [f32; 2] {
+    let mut amount = 0.0f32;
+    for index in 0..PIECES {
+        let appear = appear_s(index, PIECES);
+        for (on, _) in FLICKER {
+            let since = t - (appear + on);
+            if since >= 0.0 {
+                amount += BLIP_SHAKE * (-since / SHAKE_DECAY_S).exp();
+            }
+        }
+    }
+    amount += CHARGE_SHAKE * charge(t);
+    let since = t - IMPACT_S;
+    if since >= 0.0 {
+        amount += IMPACT_SHAKE * (-since / IMPACT_SHAKE_DECAY_S).exp();
+    }
+    // A new direction every 1/60 s.
+    let tick = (t * 60.0).floor() as i32 as u32;
+    let angle = unit01(hash(SEED ^ tick)) * std::f32::consts::TAU;
+    [angle.cos() * amount, angle.sin() * amount]
+}
+
+/// How much the pieces split into coloured copies at `t`, 0 ..= 1: a glitch on each blip.
+pub fn split(t: f32) -> f32 {
+    let mut most = 0.0f32;
+    for index in 0..PIECES {
+        let appear = appear_s(index, PIECES);
+        for (on, _) in FLICKER {
+            let since = t - (appear + on);
+            if since >= 0.0 {
+                most = most.max((-since / SPLIT_DECAY_S).exp());
+            }
+        }
+    }
+    most + 0.6 * charge(t) * (1.0 - smoothstep(IMPACT_S, IMPACT_S + 0.1, t))
+}
+
+/// The charge before the impact, 0 ..= 1: the beams close in and the core glows.
+pub fn charge(t: f32) -> f32 {
+    if t >= IMPACT_S {
+        return 0.0;
+    }
+    smoothstep(GATHER_S, IMPACT_S, t)
+}
+
+/// The explosion on the impact.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct Blast {
+    /// White over the whole window.
+    pub flash: f32,
+    /// The shock waves' progress, 0 ..= 1 (the second follows the first), and opacity.
+    pub wave: f32,
+    pub wave_alpha: f32,
+    /// The burst of triangles' progress, 0 ..= 1 (0 before the impact).
+    pub burst: f32,
+}
+
+/// The explosion at `t` seconds.
+pub fn blast(t: f32) -> Blast {
+    let since = t - IMPACT_S;
+    if since < 0.0 {
+        return Blast {
+            flash: 0.0,
+            wave: 0.0,
+            wave_alpha: 0.0,
+            burst: 0.0,
+        };
+    }
+    let wave = (since / WAVE_S).min(1.0);
+    Blast {
+        flash: BLAST_FLASH * (-since / BLAST_FLASH_S).exp(),
+        wave: crate::anim::ease_out_expo(wave),
+        wave_alpha: 1.0 - wave,
+        burst: (since / BURST_S).min(1.0),
+    }
+}
+
+/// Where burst triangle `index` flies (radians, y down), how far (a part of the logo's
+/// size at the end) and how big it is.
+pub fn burst_triangle(index: usize) -> (f32, f32, f32) {
+    let h = |k: u32| unit01(hash(SEED ^ 0xB1A5 ^ (index as u32) << 4 ^ k));
+    (
+        (index as f32 + 0.6 * h(1)) / BURST_TRIANGLES as f32 * std::f32::consts::TAU,
+        1.0 + 1.6 * h(2),
+        0.05 + 0.1 * h(3),
+    )
+}
+
+/// How much of the theme's colour the logo has at `t`, 0 ..= 1: the intro is white on
+/// black, and the colour comes in only as the black fades out, so the logo lands as the
+/// menu's.
+pub fn colour(t: f32) -> f32 {
+    smoothstep(BACKDROP_FADE_S, END_S, t)
 }
 
 /// Opacity of the black over the menu at `t` seconds.
@@ -351,32 +506,48 @@ mod tests {
     }
 
     #[test]
-    fn letters_stand_still_until_the_impact() {
-        for i in 0..4 {
-            let first = letter_pose(i, 4, 0.0);
-            for k in 1..=2000 {
-                let now = letter_pose(i, 4, k as f32 / 1000.0);
-                assert_eq!(
-                    (now.scale, now.land),
-                    (first.scale, first.land),
-                    "{i} at {k} ms"
-                );
-            }
+    fn pieces_fly_in_wait_apart_and_gather_by_the_impact() {
+        for i in 0..PIECES {
+            let appear = appear_s(i, PIECES);
+            let far = piece_pose(i, appear);
+            let apart = piece_pose(i, appear + FLY_S);
+            let length = |p: PiecePose| p.offset[0].hypot(p.offset[1]);
+            assert!((length(far) - FLY_FROM).abs() < 1e-3, "{i}");
+            assert!((length(apart) - APART).abs() < 0.01, "{i}");
+            let whole = piece_pose(i, IMPACT_S);
+            assert!(length(whole) < 1e-6 && whole.rotation.abs() < 1e-6);
+            assert_eq!(whole.alpha, 1.0);
+            assert_eq!(piece_pose(i, 0.0).alpha, 0.0);
         }
     }
 
     #[test]
-    fn letters_land_filled_exactly_on_the_title() {
-        for i in 0..4 {
-            let early = letter_pose(i, 4, 1.0);
-            assert_eq!(early.land, 0.0);
-            assert_eq!(early.fill, 0.0);
-            assert_eq!(early.scale, BIG_SCALE);
-            let end = letter_pose(i, 4, END_S);
-            assert_eq!(end.land, 1.0);
-            assert_eq!(end.fill, 1.0);
-            assert_eq!(end.outline, 0.0);
-        }
+    fn the_picture_shakes_on_blips_and_hardest_on_the_impact() {
+        let length = |v: [f32; 2]| v[0].hypot(v[1]);
+        assert_eq!(length(shake(0.0)), 0.0);
+        let first = appear_s((0..PIECES).find(|&i| rank(i, PIECES) == 0).unwrap(), PIECES);
+        assert!(length(shake(first + 0.01)) > 0.01);
+        assert!(length(shake(IMPACT_S + 0.01)) > length(shake(first + 0.01)));
+        assert!(length(shake(END_S)) < 0.01);
+        assert!(split(first + 0.001) > 0.9);
+        assert!(charge(1.8) > 0.0 && charge(IMPACT_S) == 0.0);
+        assert_eq!(blast(1.0).flash, 0.0);
+        let boom = blast(IMPACT_S + 0.01);
+        assert!(boom.flash > 0.5 && boom.wave_alpha > 0.9);
+        assert!(blast(END_S).burst > 0.99);
+        assert_eq!(colour(IMPACT_S), 0.0);
+        assert_eq!(colour(END_S), 1.0);
+    }
+
+    #[test]
+    fn the_logo_lights_up_on_the_impact_and_settles_to_the_menu() {
+        assert_eq!(logo_pose(1.0).disc, 0.0);
+        assert_eq!(logo_pose(1.0).scale, BIG_SCALE);
+        let impact = logo_pose(IMPACT_S + 0.1);
+        assert_eq!(impact.disc, 1.0);
+        assert!(impact.flash > 0.0);
+        let end = logo_pose(END_S);
+        assert_eq!((end.scale, end.flash), (1.0, 0.0));
     }
 
     #[test]
@@ -437,7 +608,7 @@ mod tests {
         let snap = intro.snapshot(1_500 * MS).unwrap();
         assert_eq!(snap.elapsed_ns, 500 * MS);
         assert_eq!(snap.exit, 0.0);
-        assert!(snap.hides_menu_title());
+        assert!(snap.hides_menu_logo());
         assert!(!intro.music_due(1_000 * MS + IMPACT_NS - 1));
         assert!(intro.music_due(1_000 * MS + IMPACT_NS));
         assert!(!intro.is_done(1_000 * MS + LENGTH_NS - 1));
@@ -446,7 +617,7 @@ mod tests {
     }
 
     #[test]
-    fn skip_fades_out_and_hands_the_title_back() {
+    fn skip_fades_out_and_hands_the_logo_back() {
         let mut intro = Intro::new();
         intro.skip(0);
         assert!(!intro.is_skipped());
@@ -455,7 +626,7 @@ mod tests {
         assert!(intro.music_due(300 * MS));
         let snap = intro.snapshot(400 * MS).unwrap();
         assert!((snap.exit - 0.5).abs() < 1e-6);
-        assert!(!snap.hides_menu_title());
+        assert!(!snap.hides_menu_logo());
         // A second skip does not restart the fade.
         intro.skip(450 * MS);
         assert!(intro.is_done(500 * MS));

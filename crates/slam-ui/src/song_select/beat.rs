@@ -25,6 +25,18 @@ pub struct BeatPoint {
     pub meter: u32,
 }
 
+/// One beat of the music (ADR-0186), for things that move on it.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct Beat {
+    /// Beats since the red line in force.
+    pub index: i64,
+    /// Track ms the beat falls on.
+    pub start: f64,
+    pub length: f64,
+    pub meter: u32,
+    pub kiai: bool,
+}
+
 /// The red lines and kiai sections of the selected difficulty, fixed-size so that it
 /// travels by copy.
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -71,6 +83,33 @@ impl BeatTiming {
 
     pub fn is_empty(&self) -> bool {
         self.point_count == 0
+    }
+
+    /// The beat in force at `time` ms of the track, counted `early` ms ahead (lazer's
+    /// `EarlyActivationMilliseconds`): its number from its red line, start, length, the
+    /// bar's meter and whether kiai is on at it. `None` without timing or before the first
+    /// red line (lazer skips negative beats).
+    pub fn beat_at(&self, time: f64, early: f64) -> Option<Beat> {
+        if self.point_count == 0 || !time.is_finite() {
+            return None;
+        }
+        let time = time + early;
+        let point = self.points[..self.point_count]
+            .iter()
+            .rev()
+            .find(|p| p.time <= time)?;
+        let index = ((time - point.time) / point.beat_length).floor();
+        let start = point.time + index * point.beat_length;
+        let kiai = self.kiai[..self.kiai_count]
+            .iter()
+            .any(|&(from, to)| (from..to).contains(&time));
+        Some(Beat {
+            index: index as i64,
+            start,
+            length: point.beat_length,
+            meter: point.meter.max(1),
+            kiai,
+        })
     }
 
     /// How much the glow flares at `time` ms of the track, 0 to 1: up within 40 ms of
@@ -154,6 +193,17 @@ mod tests {
         assert_eq!(t.pulse_at(1000.0), 1.0);
         assert!(t.pulse_at(1200.0) < 0.9, "the second beat does not flare");
         assert!(t.pulse_at(1400.0) > 0.5);
+    }
+
+    #[test]
+    fn beats_count_from_their_red_line_and_come_early() {
+        let mut t = timing(500.0);
+        t.push_kiai(2000.0, 3000.0);
+        assert_eq!(t.beat_at(900.0, 0.0), None, "before the first red line");
+        let beat = t.beat_at(1940.0, 60.0).expect("beat");
+        assert_eq!((beat.index, beat.start, beat.kiai), (2, 2000.0, true));
+        assert_eq!(t.beat_at(1939.0, 60.0).expect("beat").index, 1);
+        assert_eq!(BeatTiming::default().beat_at(1000.0, 0.0), None);
     }
 
     #[test]

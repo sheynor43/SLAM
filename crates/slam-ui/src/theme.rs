@@ -13,10 +13,13 @@ pub enum ColourScheme {
     Green,
     Orange,
     Mono,
+    /// The logo's purples and pinks (ADR-0186).
+    Slam,
 }
 
 impl ColourScheme {
-    pub const ALL: [ColourScheme; 5] = [
+    pub const ALL: [ColourScheme; 6] = [
+        ColourScheme::Slam,
         ColourScheme::Pink,
         ColourScheme::Blue,
         ColourScheme::Green,
@@ -32,6 +35,7 @@ impl ColourScheme {
             ColourScheme::Green => "green",
             ColourScheme::Orange => "orange",
             ColourScheme::Mono => "mono",
+            ColourScheme::Slam => "slam",
         }
     }
 
@@ -47,6 +51,7 @@ impl ColourScheme {
             ColourScheme::Green => "settings-general-colour-scheme-green",
             ColourScheme::Orange => "settings-general-colour-scheme-orange",
             ColourScheme::Mono => "settings-general-colour-scheme-mono",
+            ColourScheme::Slam => "settings-general-colour-scheme-slam",
         }
     }
 
@@ -84,7 +89,85 @@ impl ColourScheme {
                 panel: rgb(0.07, 0.07, 0.07),
                 raised: rgb(0.13, 0.13, 0.13),
             },
+            // From the logo (`assets/icon/slam-logo.svg`): its pink mark on deep purple.
+            ColourScheme::Slam => Palette {
+                background: rgb(0.06, 0.04, 0.10),
+                accent: rgb(0.878, 0.439, 0.894),
+                panel: rgb(0.08, 0.05, 0.13),
+                raised: rgb(0.14, 0.09, 0.21),
+            },
         }
+    }
+
+    /// The main menu's buttons (play, settings, exit), after lazer's purple, grey and pink
+    /// (ADR-0187): in SLAM's scheme the logo's violet and pink, in the others play takes the
+    /// accent and exit a darker shade of it.
+    fn menu_tints(self, p: &Palette) -> [Color; 3] {
+        let settings = lighter(p.raised, 0.22);
+        if self == ColourScheme::Slam {
+            return [
+                Color::rgb(0.486, 0.267, 0.878),
+                settings,
+                Color::rgb(0.878, 0.439, 0.894),
+            ];
+        }
+        [p.accent, settings, darker(p.accent, 0.4)]
+    }
+
+    /// The logo's colours in this scheme: its own in SLAM's, the accent's shades in the
+    /// others.
+    fn logo(self, accent: Color) -> LogoColours {
+        let hex = |v: u32| {
+            Color::rgb(
+                (v >> 16 & 255) as f32 / 255.0,
+                (v >> 8 & 255) as f32 / 255.0,
+                (v & 255) as f32 / 255.0,
+            )
+        };
+        if self == ColourScheme::Slam {
+            return LogoColours {
+                disc: [hex(0x3a2160), hex(0x160828)],
+                shine: alpha(hex(0x6a3aa0), 0.45),
+                ring: [hex(0xf59ae6), hex(0x7c44e0)],
+                frame: [hex(0xffa3ec), hex(0xa24fe0)],
+                play: [hex(0x5a2c8c), hex(0x2c1250)],
+                facet: [hex(0xb65ae6), hex(0x7034c8)],
+                accent: [hex(0xff9ff0), hex(0xc05ae4)],
+            };
+        }
+        let light = lighter(accent, 0.45);
+        LogoColours {
+            disc: [darker(accent, 0.72), darker(accent, 0.88)],
+            shine: alpha(darker(accent, 0.4), 0.45),
+            ring: [light, darker(accent, 0.3)],
+            frame: [light, darker(accent, 0.15)],
+            play: [darker(accent, 0.55), darker(accent, 0.75)],
+            facet: [accent, darker(accent, 0.3)],
+            accent: [light, accent],
+        }
+    }
+}
+
+/// The colours of the logo's layers (ADR-0186): each runs from the first at the top to
+/// the second at the bottom; the shine is a soft light on the disc.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct LogoColours {
+    pub disc: [Color; 2],
+    pub shine: Color,
+    pub ring: [Color; 2],
+    pub frame: [Color; 2],
+    pub play: [Color; 2],
+    pub facet: [Color; 2],
+    pub accent: [Color; 2],
+}
+
+/// `colour` moved `by` towards black.
+const fn darker(colour: Color, by: f32) -> Color {
+    Color {
+        r: colour.r * (1.0 - by),
+        g: colour.g * (1.0 - by),
+        b: colour.b * (1.0 - by),
+        a: colour.a,
     }
 }
 
@@ -590,6 +673,19 @@ pub struct Theme {
     pub background_blur: f32,
     /// Dim over the main menu's background (ADR-0119), 0 to 1.
     pub menu_background_dim: f32,
+    /// The main menu's lazer-style buttons (ADR-0186, lazer's `ButtonSystem` colours), in
+    /// `MenuItem::ALL` order (play, settings, exit), and the bar behind them.
+    pub menu_lazer_tints: [Color; 3],
+    /// The logo's colours, from the scheme (ADR-0186).
+    pub logo: LogoColours,
+    pub menu_bar_fill: Color,
+    /// lazer's button content: the icon's side and the label's size, in reference pixels.
+    pub menu_lazer_icon_size: f32,
+    pub menu_lazer_label_size: f32,
+    /// The two colours of the triangles the menu's logo throws out on the beat (ADR-0186).
+    pub menu_particle_colours: [Color; 2],
+    /// The side flashes on the beat (lazer's `MenuSideFlashes`): colour at the edge.
+    pub menu_side_flash: Color,
     /// Backing of the main menu's title and buttons, so they read over the background.
     pub menu_panel_fill: Color,
     /// Margin of that backing around them.
@@ -1152,6 +1248,13 @@ impl Theme {
             parallax_half_life: 0.04,
             background_blur: 12.0,
             menu_background_dim: 0.5,
+            logo: scheme.logo(p.accent),
+            menu_lazer_tints: scheme.menu_tints(&p),
+            menu_bar_fill: alpha(Color::rgb(0.13, 0.13, 0.15), 0.85),
+            menu_lazer_icon_size: 30.0,
+            menu_lazer_label_size: 15.0,
+            menu_particle_colours: [Color::rgb(1.0, 0.62, 0.94), Color::rgb(0.72, 0.96, 0.88)],
+            menu_side_flash: alpha(p.accent, 0.6),
             menu_panel_fill: alpha(p.panel, 0.62),
             menu_panel_pad: 28.0,
             cursor_size: 30.0,
