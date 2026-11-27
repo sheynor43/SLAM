@@ -65,8 +65,16 @@ pub fn score_row_at(
         .count()
         .min(parts.row_count);
     shown.checked_sub(1)?;
-    // The rows keep to the board's left edge, as its texts do (see `push`).
-    parts.rows[..shown].iter().position(|r| r.contains(x, y))
+    // The rows lean along one line through the board's top (see `push`).
+    let anchor = parts.scores_title.y - layout.info_inset;
+    parts.rows[..shown].iter().position(|r| {
+        let lean = (anchor - (r.y + r.height / 2.0)) * layout.info_tan;
+        Rect {
+            x: r.x + lean,
+            ..*r
+        }
+        .contains(x, y)
+    })
 }
 
 /// One difficulty bar: its name, the track and the number.
@@ -716,10 +724,7 @@ impl InfoPanel {
                 ..theme.accent
             },
         };
-        // Each wedge leans from its own bottom edge: its right edge is at the panel's width
-        // there, so the top wedge does not reach further right the taller the scores'
-        // board below it can be (ADR-0167), and the right-aligned values keep their pad from
-        // the edge. Its left edge runs off the window.
+        // The wedges' left edges run off the window; their right edges lean (ADR-0167).
         if !self.motion.sized {
             self.motion.width = Towards::rest(wanted, now_ns);
             self.motion.sized = true;
@@ -768,10 +773,12 @@ impl InfoPanel {
                 ..*r
             }
         };
-        anchor.set(wedge.y + wedge.height);
+        // Both wedges and the score rows lean along one line through the board's top, where
+        // the two wedges meet: their right edges run on from one another, and it does not
+        // move with the number of scores.
+        anchor.set(board.y);
         rect(&bleed(&wedge), theme.song_panel_fill, wedge_look);
         if snapshot.details.is_some() {
-            anchor.set(board.y + board.height);
             rect(&bleed(&board), theme.song_panel_fill, board_look);
         }
         lean_on.set(0.0);
@@ -909,11 +916,10 @@ impl InfoPanel {
                 break;
             }
             let t = ease_out_quint(progress(self.motion.row_since[i], now_ns, enter_ns));
-            // The rows start at the board's left edge, as the texts above them, not further
-            // right the higher they sit: the wedge's lean is taken back (each row's plate is
-            // still skewed on its own).
+            // The rows lean with the board's edge (from its top, see above).
+            lean_on.set(1.0);
             let area = Rect {
-                x: area.x - offset * (1.0 - t) - lean_of(centre(area)),
+                x: area.x - offset * (1.0 - t),
                 ..*area
             };
             let fade = |colour: Color| faded(colour, t);

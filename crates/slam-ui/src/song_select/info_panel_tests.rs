@@ -1060,35 +1060,47 @@ fn the_texts_start_at_the_content_margin_and_the_wedge_clears_the_toolbar() {
 }
 
 #[test]
-fn the_score_rows_start_at_one_left_edge() {
+fn the_score_rows_lean_along_the_board_and_stay_put_whatever_their_number() {
     let mut rig = Rig::new();
     let layout = SongSelectLayout::new(1280.0, 768.0, &rig.theme);
-    let mut scores = LocalScores::default();
-    for i in 0..4 {
-        scores.rows[i] = Some(row(1_000_000 - i as u64));
-    }
-    let details = details(Some(scores));
-    rig.show(details);
-    let mut screen = rig.screen.clone();
-    screen.set_details(Some(details));
-    let snapshot = screen.snapshot();
-    let mut xs = Vec::new();
-    rig.panel.push(
-        &layout,
-        &rig.theme,
-        &snapshot,
-        1.0,
-        // Long after the rows came in.
-        10_000_000_000,
-        &mut |r, _, look| {
-            if matches!(look, Look::Round) {
-                xs.push(r.x);
-            }
-        },
-        &mut |_, _, _, _| {},
-        &mut |_, _, _, _, _, _| {},
+    let rows_x = |rig: &mut Rig, count: usize| {
+        let mut scores = LocalScores::default();
+        for i in 0..count {
+            scores.rows[i] = Some(row(1_000_000 - i as u64));
+        }
+        let details = details(Some(scores));
+        rig.show(details);
+        let mut screen = rig.screen.clone();
+        screen.set_details(Some(details));
+        let snapshot = screen.snapshot();
+        let mut xs = Vec::new();
+        rig.panel.push(
+            &layout,
+            &rig.theme,
+            &snapshot,
+            1.0,
+            // Long after the rows came in.
+            10_000_000_000,
+            &mut |r, _, look| {
+                if matches!(look, Look::Round) {
+                    xs.push(r.x);
+                }
+            },
+            &mut |_, _, _, _| {},
+            &mut |_, _, _, _, _, _| {},
+        );
+        xs.truncate(count);
+        xs
+    };
+    let four = rows_x(&mut rig, 4);
+    assert_eq!(four.len(), 4, "{four:?}");
+    // One lean: equal steps between the rows.
+    let step = four[1] - four[0];
+    assert!(
+        four.windows(2).all(|w| ((w[1] - w[0]) - step).abs() < 0.5),
+        "{four:?}"
     );
-    let rows: Vec<f32> = xs.iter().copied().take(4).collect();
-    assert_eq!(rows.len(), 4, "{xs:?}");
-    assert!(rows.iter().all(|x| (x - rows[0]).abs() < 0.5), "{rows:?}");
+    // The first row is where it is with one score as with four.
+    let one = rows_x(&mut rig, 1);
+    assert!((one[0] - four[0]).abs() < 0.5, "{one:?} {four:?}");
 }
