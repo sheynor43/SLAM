@@ -1079,3 +1079,24 @@ fn the_footer_works_and_draws_without_allocating() {
     });
     assert!(rig.shapes.len() > 8);
 }
+
+/// Rows just past the view's ends have their texts laid out already, so they do not pop in
+/// as they scroll into view (ADR-0172).
+#[test]
+fn rows_just_outside_the_view_are_laid_out() {
+    let mut rig = Rig::new();
+    let mut screen = SongSelect::new();
+    put(&mut screen, list_of(200));
+    screen.set_status(SongSelectStatus::Ready);
+    let layout = SongSelectLayout::new(1280.0, 720.0, &Theme::default());
+    screen.input(SongSelectInput::Scroll { lines: 20.0 }, &layout);
+    let snapshot = screen.snapshot();
+    rig.frame(&snapshot);
+    let visible = layout.visible_rows(&snapshot.geometry, snapshot.shown_scroll);
+    assert!(
+        rig.view.laid_out_rows() >= visible.len() + 3,
+        "{} laid out, {} in view",
+        rig.view.laid_out_rows(),
+        visible.len()
+    );
+}

@@ -1004,3 +1004,57 @@ fn the_rank_column_is_lazers_forty_wide() {
     let sizes = ScoreSizes::new(&theme, 1.0);
     assert_eq!(sizes.rank, 40.0);
 }
+
+/// The texts start where lazer's wedge content does, whatever their height (the wedge's
+/// edge leans, the texts stand straight), and the wedge keeps below the toolbar.
+#[test]
+fn the_texts_start_at_the_content_margin_and_the_wedge_clears_the_toolbar() {
+    for (w, h) in [(1920.0, 1080.0), (1280.0, 720.0)] {
+        let mut rig = Rig::new();
+        rig.show(details(Some(LocalScores::default())));
+        let mut screen = rig.screen.clone();
+        screen.set_details(Some(details(Some(LocalScores::default()))));
+        let snapshot = screen.snapshot();
+        let layout = SongSelectLayout::new(w, h, &rig.theme);
+        let wanted = rig.theme.song_wedge_content_margin * layout.scale;
+        let starts = std::cell::RefCell::new(Vec::new());
+        let tops = std::cell::RefCell::new(Vec::new());
+        rig.panel.push(
+            &layout,
+            &rig.theme,
+            &snapshot,
+            1.0,
+            0,
+            &mut |r, _, look| {
+                if matches!(look, Look::Wedge { .. }) {
+                    tops.borrow_mut().push(r.y);
+                }
+            },
+            &mut |line, x, _, _| {
+                if !line.text.is_empty() {
+                    starts.borrow_mut().push(x);
+                }
+            },
+            &mut |line, _, _, x, _, _| {
+                if !line.text.is_empty() {
+                    starts.borrow_mut().push(x);
+                }
+            },
+        );
+        let toolbar = rig.theme.toolbar_height * layout.scale;
+        for top in tops.into_inner() {
+            assert!(
+                top >= toolbar - 0.01,
+                "{w}x{h}: wedge top {top} < {toolbar}"
+            );
+        }
+        let starts = starts.into_inner();
+        assert!(!starts.is_empty());
+        let at_margin = starts
+            .iter()
+            .filter(|&&x| (x - wanted).abs() < 0.01)
+            .count();
+        assert!(at_margin >= 8, "{w}x{h}: {starts:?} vs {wanted}");
+        assert!(starts.iter().all(|&x| x >= wanted - 0.01));
+    }
+}

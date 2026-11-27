@@ -606,7 +606,7 @@ impl InfoPanel {
             },
             ..layout.info
         };
-        let mut parts = InfoLayout::new(&info, theme, scale);
+        let parts = InfoLayout::new(&info, theme, scale);
         let tan = theme.button_skew().tan();
         let inset = theme.song_margin * scale / 2.0;
         // The rating's colour eases to a new rating (lazer: 750 ms OutQuint); its number
@@ -740,7 +740,12 @@ impl InfoPanel {
             self.motion.width = Towards::rest(wanted, now_ns);
             self.motion.sized = true;
         }
-        let lean_of = |y: f32| (anchor - y) * tan;
+        // The wedges and the score rows lean along one line; the difficulty's texts and
+        // bars stand straight from the content margin, as lazer's (the wedge's left edge
+        // is off the window, only its right edge leans). `lean_on` is 1 while leaning
+        // shapes are drawn.
+        let lean_on = std::cell::Cell::new(1.0f32);
+        let lean_of = |y: f32| (anchor - y) * tan * lean_on.get();
         let mut rect = |r: &Rect, colour: Color, look: Look| {
             let moved = Rect {
                 x: r.x + lean_of(r.y + r.height / 2.0),
@@ -767,25 +772,6 @@ impl InfoPanel {
             );
         };
         let (rect, left, ride) = (&mut rect, &mut left, &mut ride);
-        // Leaning with the edge pushes the difficulty's lines right, up to the edge, and
-        // leaves room at the left: they move back by a text pad, as far as they lean, so
-        // that their right end clears the edge and the left never reaches the window's.
-        let shift = (theme.song_text_pad * scale)
-            .min(lean_of(parts.counts.y + parts.counts.height))
-            .max(0.0);
-        for r in [
-            &mut parts.name,
-            &mut parts.artist,
-            &mut parts.stats,
-            &mut parts.counts,
-        ] {
-            r.x -= shift;
-        }
-        for bar in &mut parts.bars {
-            bar.label.x -= shift;
-            bar.track.x -= shift;
-            bar.value.x -= shift;
-        }
         // The wedges run off the window's left edge, as lazer's: only their right edge leans,
         // and no gap opens at the top left (ADR-0136). Once leaned, the top left corner lies
         // a corner radius past the edge.
@@ -801,6 +787,7 @@ impl InfoPanel {
         if snapshot.details.is_some() {
             rect(&bleed(&board), theme.song_panel_fill, board_look);
         }
+        lean_on.set(0.0);
         let centre = |r: &Rect| r.y + r.height / 2.0;
         let [name_ride, artist_ride, stats_ride, counts_ride] = &mut self.marquees;
         // The name rides in the room the star pill leaves.
@@ -901,6 +888,8 @@ impl InfoPanel {
             );
             return;
         }
+        // The rows are leaning boxes again.
+        lean_on.set(1.0);
         // Rows come in one after another when a difficulty's scores arrive (ADR-0168); a
         // refreshed list of the same difficulty animates only the rows it gained.
         let rows_now = shown;
