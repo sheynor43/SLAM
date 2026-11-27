@@ -1871,7 +1871,7 @@ checksum = "0c790de23124f9ab44544d7ac05d60440adc586479ce501c1d6d7da3cd8c9cf5"
 
 [[package]]
 name = "slam-app"
-version = "0.1.4-alpha"
+version = "0.1.5-alpha"
 dependencies = [
  "cargo_metadata",
  "ed25519-dalek",
@@ -1909,7 +1909,7 @@ dependencies = [
 
 [[package]]
 name = "slam-audio"
-version = "0.1.4-alpha"
+version = "0.1.5-alpha"
 dependencies = [
  "criterion",
  "libc",
@@ -1926,7 +1926,7 @@ dependencies = [
 
 [[package]]
 name = "slam-engine"
-version = "0.1.4-alpha"
+version = "0.1.5-alpha"
 dependencies = [
  "glow",
  "libc",
@@ -1943,7 +1943,7 @@ dependencies = [
 
 [[package]]
 name = "slam-formats"
-version = "0.1.4-alpha"
+version = "0.1.5-alpha"
 dependencies = [
  "crc32fast",
  "encoding_rs",
@@ -1955,7 +1955,7 @@ dependencies = [
 
 [[package]]
 name = "slam-input"
-version = "0.1.4-alpha"
+version = "0.1.5-alpha"
 dependencies = [
  "rtrb",
  "sdl3-sys",
@@ -1967,14 +1967,14 @@ dependencies = [
 
 [[package]]
 name = "slam-ipc"
-version = "0.1.4-alpha"
+version = "0.1.5-alpha"
 dependencies = [
  "slam-osu",
 ]
 
 [[package]]
 name = "slam-library"
-version = "0.1.4-alpha"
+version = "0.1.5-alpha"
 dependencies = [
  "slam-formats",
  "slam-osu",
@@ -1983,7 +1983,7 @@ dependencies = [
 
 [[package]]
 name = "slam-osu"
-version = "0.1.4-alpha"
+version = "0.1.5-alpha"
 dependencies = [
  "proptest",
  "pxfm",
@@ -1998,7 +1998,7 @@ dependencies = [
 
 [[package]]
 name = "slam-otd"
-version = "0.1.4-alpha"
+version = "0.1.5-alpha"
 dependencies = [
  "serde_json",
  "thiserror",
@@ -2007,7 +2007,7 @@ dependencies = [
 
 [[package]]
 name = "slam-play"
-version = "0.1.4-alpha"
+version = "0.1.5-alpha"
 dependencies = [
  "slam-audio",
  "slam-input",
@@ -2023,14 +2023,14 @@ dependencies = [
 
 [[package]]
 name = "slam-plugins"
-version = "0.1.4-alpha"
+version = "0.1.5-alpha"
 dependencies = [
  "slam-osu",
 ]
 
 [[package]]
 name = "slam-render"
-version = "0.1.4-alpha"
+version = "0.1.5-alpha"
 dependencies = [
  "criterion",
  "glow",
@@ -2046,7 +2046,7 @@ dependencies = [
 
 [[package]]
 name = "slam-shader-build"
-version = "0.1.4-alpha"
+version = "0.1.5-alpha"
 dependencies = [
  "naga",
  "thiserror",
@@ -2054,7 +2054,7 @@ dependencies = [
 
 [[package]]
 name = "slam-skin"
-version = "0.1.4-alpha"
+version = "0.1.5-alpha"
 dependencies = [
  "slam-formats",
  "thiserror",
@@ -2063,11 +2063,11 @@ dependencies = [
 
 [[package]]
 name = "slam-testkit"
-version = "0.1.4-alpha"
+version = "0.1.5-alpha"
 
 [[package]]
 name = "slam-text"
-version = "0.1.4-alpha"
+version = "0.1.5-alpha"
 dependencies = [
  "criterion",
  "harfrust",
@@ -2082,7 +2082,7 @@ dependencies = [
 
 [[package]]
 name = "slam-ui"
-version = "0.1.4-alpha"
+version = "0.1.5-alpha"
 dependencies = [
  "fluent-bundle",
  "fluent-syntax",
