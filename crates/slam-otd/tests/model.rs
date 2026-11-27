@@ -206,6 +206,52 @@ fn output_mode_switch_resets_mode_settings() {
 }
 
 #[test]
+fn preset_keeps_behaviour_but_not_the_tablet_or_bindings() {
+    let s = settings();
+    let preset = s.profile_preset(0).unwrap();
+    let keys: Vec<&str> = preset
+        .as_object()
+        .unwrap()
+        .keys()
+        .map(String::as_str)
+        .collect();
+    assert!(keys.contains(&"Filters") && keys.contains(&"AbsoluteModeSettings"));
+    assert!(!keys.contains(&"Tablet") && !keys.contains(&"Bindings"));
+}
+
+#[test]
+fn preset_restores_values_edited_since() {
+    let mut s = settings();
+    let preset = s.profile_preset(0).unwrap();
+    let before = s.clone();
+    s.set_filter_enabled(0, 4, false).unwrap();
+    s.set_filter_value(0, 4, 0, SettingValue::Float(77.0))
+        .unwrap();
+    s.set_relative(0, RelativeField::XSensitivity, 3.0).unwrap();
+    assert_eq!(s.apply_profile_preset(0, &preset).unwrap(), 0);
+    assert_eq!(s, before);
+}
+
+#[test]
+fn preset_filters_missing_in_the_profile_are_skipped() {
+    let mut s = settings();
+    let preset = s.profile_preset(0).unwrap();
+    // Profile 1 has no filters: the area and mode come over, the five filters do not.
+    assert_eq!(s.apply_profile_preset(1, &preset).unwrap(), 5);
+    let p = s.profile(1).unwrap();
+    assert!(p.filters.is_empty());
+    assert_eq!(p.output_mode, ABSOLUTE_MODE);
+    assert_eq!(p.absolute.unwrap().tablet.width, 60.0);
+    assert_eq!(s.profile(1).unwrap().tablet, "Huion WH1409 V2");
+}
+
+#[test]
+fn a_preset_that_is_no_object_is_refused() {
+    let mut s = settings();
+    assert!(s.apply_profile_preset(0, &Value::Null).is_err());
+}
+
+#[test]
 fn malformed_settings_are_rejected() {
     assert!(Settings::from_value(serde_json::json!({"Revision": "0.6.8.1"})).is_err());
     assert!(Settings::from_value(serde_json::json!({"Profiles": [{"NoTablet": 1}]})).is_err());

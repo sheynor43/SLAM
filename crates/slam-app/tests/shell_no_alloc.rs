@@ -712,7 +712,7 @@ fn thumbnails_are_asked_for_and_handed_over_without_allocating_on_the_update_thr
     let (requests, _uploads) = texture_loader(&config).unwrap();
     let (picker, loader, _fade) = link(requests);
     let (thumbnails, bridge, _worker, _shown) =
-        slam_app::thumbnails::link(None, 1.6, ImageLimits::default()).unwrap();
+        slam_app::thumbnails::link(None, 1.6, 7.0, ImageLimits::default()).unwrap();
     let mut loader = loader.with_thumbnails(bridge);
     let (mut producer, songs) = songs_link();
     let mut state = ShellState::new(Theme::default(), 1280.0, 720.0, 1.0)
@@ -802,4 +802,70 @@ fn the_menu_cursor_link_does_not_allocate_while_the_style_and_skin_change() {
     }
     drop(link);
     thread.join().unwrap();
+}
+
+#[test]
+fn the_toolbar_and_its_popup_do_not_allocate_while_dragged() {
+    use slam_app::settings::Settings;
+    use slam_input::MouseButton;
+    use slam_ui::toolbar::ToolbarLayout;
+
+    let mut settings = Settings::default();
+    settings.general.pinned_settings =
+        vec!["audio-master-volume".into(), "audio-menu-music".into()];
+    let mut state = ShellState::new(Theme::default(), 1280.0, 720.0, 1.0).with_settings(settings);
+    let mut snapshot = ShellSnapshot::default();
+    let theme = Theme::default();
+    let layout = ToolbarLayout::new(1280.0, 720.0, &theme, 2);
+    let event = |kind| InputEvent { time_ns: 0, kind };
+    let click = |down| {
+        event(InputKind::MouseButton {
+            button: MouseButton::Left,
+            down,
+        })
+    };
+    state.tick(0, &[], &mut snapshot);
+    // Opening the popup allocates (it edits a copy of the settings).
+    let [x, y] = layout.pins()[0].centre();
+    state.tick(
+        1,
+        &[
+            event(InputKind::MouseMove { x, y }),
+            click(true),
+            click(false),
+        ],
+        &mut snapshot,
+    );
+    assert!(snapshot.toolbar.popup.is_some());
+    let widget = layout.row(0, 0.0).widget(0);
+    let y = widget.y + widget.height / 2.0;
+    let drag: Vec<InputEvent> = (0..40)
+        .map(|i| {
+            event(InputKind::MouseMove {
+                x: widget.x + widget.width * i as f32 / 40.0,
+                y,
+            })
+        })
+        .collect();
+    state.tick(
+        2,
+        &[
+            event(InputKind::MouseMove {
+                x: widget.x + 2.0,
+                y,
+            }),
+            click(true),
+        ],
+        &mut snapshot,
+    );
+    assert_no_alloc(|| {
+        for now in 3..60 {
+            state.tick(now, &drag, &mut snapshot);
+        }
+        state.tick(60, &[click(false)], &mut snapshot);
+        for now in 61..120 {
+            state.tick(now, &drag, &mut snapshot);
+        }
+    });
+    assert!(snapshot.toolbar.popup.is_some());
 }

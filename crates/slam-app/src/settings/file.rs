@@ -18,9 +18,10 @@ use toml::{Table, Value};
 
 use super::keys;
 use super::model::{
-    BindingEntry, BreakDisplay, Combo, DrawRate, FpsScreens, HitsoundDelay, InputSettings,
+    BindingEntry, BreakDisplay, Combo, DrawRate, FpsScreens, General, HitsoundDelay, InputSettings,
     KeyOverlayAnimation, KeySlot, MenuBackground, MenuSounds, PauseMenuStyle, RendererChoice,
-    Settings, Thumbnails, Timing, Window, corner_from_name, parse_size, window_mode_from_name,
+    Settings, ThumbnailStyle, Thumbnails, Timing, Window, corner_from_name, parse_size,
+    window_mode_from_name,
 };
 
 /// The schema version this build writes.
@@ -320,6 +321,14 @@ fn from_table(mut table: Table) -> Loaded {
         &mut settings.general.cursor_trail,
         |_| Ok(()),
     );
+    cx.float(
+        &mut general,
+        "general",
+        "menu_cursor_size",
+        &mut settings.general.menu_cursor_size,
+        0.5..=2.0,
+    );
+    settings.general.menu_cursor_size = (settings.general.menu_cursor_size * 20.0).round() / 20.0;
     cx.field(
         &mut general,
         "general",
@@ -327,6 +336,33 @@ fn from_table(mut table: Table) -> Loaded {
         &mut settings.general.cursor_ripple,
         |_| Ok(()),
     );
+    cx.field(
+        &mut general,
+        "general",
+        "discord_presence",
+        &mut settings.general.discord_presence,
+        |_| Ok(()),
+    );
+    let mut pinned: Option<Vec<String>> = None;
+    cx.opt(&mut general, "general", "pinned_settings", &mut pinned);
+    for name in pinned.into_iter().flatten() {
+        if settings.general.pinned_settings.len() >= General::MAX_PINNED {
+            cx.warn(format!(
+                "general.pinned_settings: more than {} pins, dropping \"{name}\"",
+                General::MAX_PINNED
+            ));
+        } else if !crate::shell::is_setting_name(&name) {
+            cx.warn(format!(
+                "general.pinned_settings: unknown setting \"{name}\", dropping it"
+            ));
+        } else if settings.general.pinned_settings.contains(&name) {
+            cx.warn(format!(
+                "general.pinned_settings: \"{name}\" twice, dropping the second"
+            ));
+        } else {
+            settings.general.pinned_settings.push(name);
+        }
+    }
     let mut scheme: Option<String> = None;
     cx.opt(&mut general, "general", "colour_scheme", &mut scheme);
     if let Some(name) = scheme {
@@ -856,6 +892,36 @@ fn from_table(mut table: Table) -> Loaded {
         cx.float(&mut song_select, "song_select", key, &mut height, range);
         *slot = height.round() as f32;
     }
+    for (key, slot) in [
+        ("info_width", &mut settings.song_select.info_width),
+        ("info_height", &mut settings.song_select.info_height),
+    ] {
+        let mut multiplier = f64::from(*slot);
+        cx.float(
+            &mut song_select,
+            "song_select",
+            key,
+            &mut multiplier,
+            0.5..=1.5,
+        );
+        *slot = ((multiplier * 20.0).round() / 20.0) as f32;
+    }
+    let mut curve = f64::from(settings.song_select.curve);
+    cx.float(
+        &mut song_select,
+        "song_select",
+        "curve",
+        &mut curve,
+        0.0..=2.0,
+    );
+    settings.song_select.curve = ((curve * 10.0).round() / 10.0) as f32;
+    cx.field(
+        &mut song_select,
+        "song_select",
+        "info_auto_width",
+        &mut settings.song_select.info_auto_width,
+        |_| Ok(()),
+    );
     let mut difficulty_info: Option<String> = None;
     cx.opt(
         &mut song_select,
@@ -901,6 +967,32 @@ fn from_table(mut table: Table) -> Loaded {
             )),
         }
     }
+    let mut thumbnail_style: Option<String> = None;
+    cx.opt(
+        &mut song_select,
+        "song_select",
+        "thumbnail_style",
+        &mut thumbnail_style,
+    );
+    if let Some(name) = thumbnail_style {
+        match ThumbnailStyle::from_name(&name) {
+            Some(style) => settings.song_select.thumbnail_style = style,
+            None => cx.warn(format!(
+                "song_select.thumbnail_style: unknown value \"{name}\", using the default"
+            )),
+        }
+    }
+    let mut presets: Option<Vec<String>> = None;
+    cx.opt(&mut song_select, "song_select", "mod_presets", &mut presets);
+    if let Some(presets) = presets {
+        let count = presets.len();
+        settings.song_select.mod_presets = crate::mod_presets::sanitise(presets);
+        if settings.song_select.mod_presets.len() != count {
+            cx.warn(
+                "song_select.mod_presets: dropped unknown, repeated or surplus presets".to_owned(),
+            );
+        }
+    }
     cx.unknown(&song_select, "song_select");
 
     read_window(&mut cx, &mut table, &mut settings.window);
@@ -911,6 +1003,13 @@ fn from_table(mut table: Table) -> Loaded {
         "input",
         "high_precision_mouse",
         &mut settings.input.high_precision_mouse,
+        |_| Ok(()),
+    );
+    cx.field(
+        &mut input,
+        "input",
+        "mouse_side_buttons",
+        &mut settings.input.mouse_side_buttons,
         |_| Ok(()),
     );
     cx.float(
@@ -1024,6 +1123,26 @@ fn from_table(mut table: Table) -> Loaded {
             settings.clear_key(slot);
         }
     }
+
+    let mut updates = cx.section(&mut table, "updates");
+    cx.field(
+        &mut updates,
+        "updates",
+        "check",
+        &mut settings.updates.check,
+        |_| Ok(()),
+    );
+    let mut channel: Option<String> = None;
+    cx.opt(&mut updates, "updates", "channel", &mut channel);
+    if let Some(name) = channel {
+        match crate::update::Channel::from_name(&name) {
+            Some(channel) => settings.updates.channel = channel,
+            None => cx.warn(format!(
+                "updates.channel: unknown value \"{name}\", using the default"
+            )),
+        }
+    }
+    cx.unknown(&updates, "updates");
 
     cx.unknown(&table, "");
 

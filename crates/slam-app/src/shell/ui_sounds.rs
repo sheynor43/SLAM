@@ -208,7 +208,11 @@ impl UiSoundPlayer {
                 continue;
             };
             self.last_ns[i] = Some(now_ns);
+            // A cheap random draw from the clock for the pitch spread.
+            let jitter =
+                (now_ns.wrapping_mul(0x9E37_79B9_7F4A_7C15) >> 40) as f32 / (1u64 << 24) as f32;
             let params = VoiceParams {
+                rate: MenuSound::ALL[i].voice_rate(jitter),
                 group: VoiceGroup::Effects,
                 ..VoiceParams::default()
             };

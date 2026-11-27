@@ -92,7 +92,7 @@ fn arrow(p: vec2<f32>, hs: vec2<f32>) -> f32 {
     var v = array<vec2<f32>, 4>(
         vec2<f32>(0.0, -hs.y),
         vec2<f32>(hs.x, hs.y),
-        vec2<f32>(0.0, hs.y * 0.42),
+        vec2<f32>(0.0, hs.y * 0.55),
         vec2<f32>(-hs.x, hs.y),
     );
     var d = dot(p - v[0], p - v[0]);
@@ -197,7 +197,7 @@ fn fs_main(
     // 0 a rectangle, 1 a rectangle drawing only its pattern in its colour (a layer over
     // another shape), 2 a star, 3 the pointer.
     let kind = (bits >> 22u) & 3u;
-    // Cycles of the sheen's sweep or the glow's pulse.
+    // Cycles of the glow's pulse (fills no longer sweep a sheen, ADR-0167).
     let phase = params.w;
     let d = shape_distance(kind, local, half_size, radius);
     let aa = max(fwidth(d), 1e-4);
@@ -232,15 +232,6 @@ fn fs_main(
             mix(out.rgb, vec3<f32>(1.0, 1.0, 1.0), light),
             out.a + (1.0 - out.a) * light * 0.5,
         );
-    }
-    if (amount > 0.0) {
-        // A band leaning like the skew, from left of the shape to right of it once a cycle,
-        // out of sight for the rest.
-        let span = 2.0 * half_size.x + 1.2 * half_size.y;
-        let across = (local.x + 0.6 * local.y) / span + 0.5;
-        let centre = fract(phase) * 1.8 - 0.4;
-        let band = exp(-pow((across - centre) / 0.07, 2.0));
-        out = vec4<f32>(mix(out.rgb, vec3<f32>(1.0, 1.0, 1.0), band * amount), out.a);
     }
     return vec4<f32>(out.rgb, out.a * coverage);
 }

@@ -126,8 +126,70 @@ pub struct Theme {
     pub disabled_text: Color,
     /// Window height the sizes below are given at.
     pub reference_height: f32,
-    /// Font weight of every text.
+    /// Font weight of body text.
     pub font_weight: u16,
+    /// Font weight of titles and section headers (ADR-0167).
+    pub heading_weight: u16,
+    /// Weight of lazer's SemiBold texts: artists, notes, captions (ADR-0174).
+    pub semibold_weight: u16,
+    /// Milliseconds a newly typed character of a search takes to fade and slide in.
+    pub type_in_ms: f32,
+    /// Pixels (at the reference height) a newly typed character slides up from.
+    pub type_slide: f32,
+    /// Milliseconds the search text takes to settle after an erase.
+    pub erase_pop_ms: f32,
+    /// Pixels (at the reference height) the search text jumps up on an erase.
+    pub erase_pop: f32,
+    /// Colour of the text caret of a text field (ADR-0173).
+    pub caret: Color,
+    /// Width of the caret, reference px.
+    pub caret_width: f32,
+    /// Height of the caret as a share of the text's line height.
+    pub caret_height: f32,
+    /// Milliseconds the caret stays on, and then off, while the field idles.
+    pub caret_blink_ms: f32,
+    /// Milliseconds the caret stays solid after a key.
+    pub caret_solid_ms: f32,
+    /// Milliseconds one fade of the blinking caret takes (ADR-0177).
+    pub caret_fade_ms: f32,
+    /// Milliseconds an empty field keeps its caret after its last change (ADR-0177).
+    pub caret_active_ms: f32,
+    /// Width of a scrollbar's thumb at rest, reference px (ADR-0173).
+    pub scrollbar_width: f32,
+    /// Width of the thumb while pointed at or dragged.
+    pub scrollbar_active_width: f32,
+    /// Gap between the thumb and the edge of its track.
+    pub scrollbar_margin: f32,
+    /// The shortest the thumb gets, reference px.
+    pub scrollbar_min_thumb: f32,
+    /// Opacity of the thumb at rest, pointed at, dragged.
+    pub scrollbar_alpha: f32,
+    pub scrollbar_hover_alpha: f32,
+    pub scrollbar_drag_alpha: f32,
+    /// Milliseconds the thumb takes to change between those.
+    pub scrollbar_fade_ms: f32,
+    /// The song list's scrollbar after lazer's `Carousel.ScrollBar` (ADR-0174): the width
+    /// of its track and of its thumb pointed at, reference px.
+    pub song_scrollbar_width: f32,
+    /// The thumb's width at rest, as a part of `song_scrollbar_width`.
+    pub song_scrollbar_rest_width: f32,
+    /// Time constant of the song list's thumb easing to the content's changing height (sets
+    /// opening and closing under held keys), ms.
+    pub song_scrollbar_ease_ms: f32,
+    /// Grey levels of the thumb at rest and pointed at (lazer's gray8 and grayF).
+    pub song_scrollbar_rest: f32,
+    pub song_scrollbar_hover: f32,
+    /// Gap above the track and below it (the logo's place in lazer), reference px.
+    pub song_scrollbar_pad_top: f32,
+    pub song_scrollbar_pad_bottom: f32,
+    /// Width of the accent bar at the left edge of the selected settings tab (ADR-0173).
+    pub settings_tab_bar_width: f32,
+    /// The icon's side as a share of its tab's.
+    pub settings_tab_icon_share: f32,
+    /// Opacity of a settings tab's icon at rest; hovered and selected ones are fully lit.
+    pub settings_tab_idle_alpha: f32,
+    /// Milliseconds a tab takes to light up or dim (ease-out).
+    pub settings_tab_fade_ms: f32,
     pub title_size: f32,
     pub button_text_size: f32,
     /// Text of a screen that is only a message.
@@ -149,7 +211,12 @@ pub struct Theme {
     /// Text of the song select key hints.
     pub song_hint_text: Color,
     /// Margin around the song select panel.
+    /// Gap between the toolbar and the search line, reference px (ADR-0177).
+    pub song_top_gap: f32,
     pub song_margin: f32,
+    /// Where the info panel's texts start from the window's left edge (lazer's
+    /// `WEDGE_CONTENT_MARGIN`: corner offset 20 plus screen margin 12), reference pixels.
+    pub song_wedge_content_margin: f32,
     /// Height of a set row's plate in the song list, without the gap (ADR-0149: lazer's 72).
     pub song_set_height: f32,
     /// Height of a difficulty row's plate (ADR-0149: lazer's 45).
@@ -164,6 +231,12 @@ pub struct Theme {
     /// What a difficulty row shows beside its name; the setting
     /// `song_select.difficulty_info` (ADR-0151).
     pub song_difficulty_info: crate::song_select::DifficultyInfo,
+    /// How long the info panel's star colour eases to a new rating, ms (lazer's 750).
+    pub star_colour_ease_ms: f32,
+    /// Strength of the song list's arc (ADR-0172): 1 is lazer's, 0 a straight column.
+    pub song_curve: f32,
+    /// Half-time of the rows' vertical easing to their places, ms (lazer's 50).
+    pub song_row_ease_ms: f32,
     /// How far right a set row that is not selected starts (ADR-0149: lazer's 100).
     pub song_set_shift: f32,
     /// How far right a difficulty row that is not selected starts (ADR-0149: lazer's 50).
@@ -178,10 +251,19 @@ pub struct Theme {
     pub song_text_pad: f32,
     /// Width over height of a song row's thumbnail (ADR-0127).
     pub song_thumbnail_aspect: f32,
+    /// Width over height of a full-plate thumbnail's crop: about a set plate (ADR-0174).
+    pub song_thumbnail_wide_aspect: f32,
     /// Gap between a row's edge and its thumbnail.
     pub song_thumbnail_inset: f32,
     /// How long a thumbnail fades in, in milliseconds.
     pub song_thumbnail_fade_ms: f32,
+    /// How long a full-plate thumbnail fades in, in milliseconds (ADR-0174; lazer: 400,
+    /// out-quint).
+    pub song_plate_fade_ms: f32,
+    /// How bright a full-plate thumbnail is at the plate's left end and at its right end:
+    /// lazer's darkening of black 0.5 on the left and 0.2 on the right, as a multiplier.
+    pub song_plate_dim_left: f32,
+    pub song_plate_dim_right: f32,
     /// Milliseconds a set's difficulties take to slide open (ADR-0136).
     pub song_expand_ms: f32,
     /// Size of the artist and title, and of version texts.
@@ -202,12 +284,34 @@ pub struct Theme {
     pub song_bar_track_fill: Color,
     /// Pitch of the info panel's score rows.
     pub song_score_row_height: f32,
+    /// The score rows' text sizes: the total score, the captions (date and labels) and
+    /// the values after the labels (ADR-0168).
+    pub song_score_size: f32,
+    pub song_score_caption_size: f32,
+    pub song_score_value_size: f32,
+    /// Score rows come in one after another (ADR-0168, lazer's `BeatmapLeaderboardWedge`):
+    /// the delay before the first, the stagger between two, one row's fade and its slide
+    /// from this far left.
+    pub song_score_enter_delay_ms: f32,
+    pub song_score_enter_stagger_ms: f32,
+    pub song_score_enter_ms: f32,
+    /// Width of a local score row's rank column, and how long the board takes to ease to
+    /// another height (ADR-0177).
+    pub song_score_rank_width: f32,
+    pub song_board_ms: f32,
+    pub song_score_enter_offset: f32,
     /// Width of a mod tile of the mod select panel, and the gap between its columns.
     pub mod_tile_width: f32,
     /// Height and pitch of a mod tile.
     pub mod_tile_height: f32,
     pub mod_tile_pitch: f32,
     pub mod_column_gap: f32,
+    /// How much larger a mod tile's texts are than the caption and note faces.
+    pub mod_tile_text_scale: f32,
+    /// The colour of a score multiplier above and below 1 (lazer's `#ff6666` and `#b2ff66`);
+    /// 1 itself is in the text colour (ADR-0167).
+    pub mod_multiplier_up: Color,
+    pub mod_multiplier_down: Color,
     /// Fill over the screen under the mod select panel: the song list stays seen under it,
     /// as in lazer (ADR-0152).
     pub mod_backdrop_fill: Color,
@@ -231,11 +335,11 @@ pub struct Theme {
     /// colour take to move, and its texts to fade in.
     pub song_info_transition_ms: f32,
     pub song_info_text_fade_ms: f32,
-    /// Where the columns start, as a part of the window height: the lower part of the
-    /// window, as lazer's (ADR-0152).
+    /// The highest the columns may reach, as a part of the window height. They are as tall
+    /// as their content and stand in the lower part of the window, as lazer's (ADR-0152).
     pub mod_panel_top: f32,
     /// The columns' slide from below when the panel opens and closes: lazer's 400 ms in,
-    /// 500 ms out, 30 ms more for each next column, 700 px (ADR-0152).
+    /// 200 ms out, 30 ms more for each next column, 700 px (ADR-0152).
     pub mod_panel_in_ms: f32,
     pub mod_panel_out_ms: f32,
     pub mod_column_stagger_ms: f32,
@@ -316,12 +420,83 @@ pub struct Theme {
     pub settings_marker_size: f32,
     /// Width of the settings panel that slides in from the left (ADR-0095).
     pub settings_panel_width: f32,
+    /// How far the screens under the open settings panel move to the right, as a part of
+    /// the panel's width (ADR-0179): lazer's `SIDE_OVERLAY_OFFSET_RATIO`.
+    pub settings_screen_shift: f32,
     /// Fill of the settings panel.
     pub settings_panel_fill: Color,
     /// Fill over the screen under the open settings panel, at full opacity once it is in.
     pub settings_dim_fill: Color,
     /// How long the settings panel slides in or out, in milliseconds.
     pub settings_panel_ms: f32,
+    /// The song select's footer bar (ADR-0175): its height, fill, the buttons' height share
+    /// (of the bar), their widths (back and reset, mods, a preset, the pin), the gap between
+    /// them, and how long the bar takes to slide in.
+    pub footer_height: f32,
+    pub footer_fill: Color,
+    pub footer_button_share: f32,
+    pub footer_button_width: f32,
+    pub footer_mods_width: f32,
+    pub footer_preset_width: f32,
+    pub footer_pin_width: f32,
+    pub footer_gap: f32,
+    pub footer_slide_ms: f32,
+    /// The footer buttons' feedback (lazer's `OsuAnimatedButton`): the hover fade, the press
+    /// pop in and out, a button's place sliding in and out, the Mods button's flash when the
+    /// selection changes (milliseconds), the pop's growth (share of the button) and the
+    /// flash's strength (share of the accent mixed in).
+    pub footer_hover_ms: f32,
+    pub footer_press_ms: f32,
+    pub footer_release_ms: f32,
+    pub footer_slot_ms: f32,
+    pub footer_flash_ms: f32,
+    pub footer_pop: f32,
+    pub footer_flash_mix: f32,
+    /// The menus' toolbar (ADR-0168): its height, the share of a button an icon takes, the gap
+    /// between its buttons, its fill, the size of its clock text, and how long a popup
+    /// takes to fade in and how far it slides.
+    pub toolbar_height: f32,
+    pub toolbar_icon_share: f32,
+    pub toolbar_gap: f32,
+    pub toolbar_fill: Color,
+    pub toolbar_clock_size: f32,
+    pub toolbar_popup_ms: f32,
+    pub toolbar_popup_slide: f32,
+    /// How long the toolbar takes to slide in (with the main menu after the intro, or back
+    /// after the results) or out, in milliseconds (ADR-0178).
+    pub toolbar_slide_ms: f32,
+    /// The toolbar's music player popup (ADR-0178): its width and height, the padding
+    /// inside, the sizes of the title and the artist, the progress bar's height, a
+    /// button's side, and how dark the beatmap's background under the texts is, 0 to 1.
+    pub player_width: f32,
+    pub player_height: f32,
+    pub player_pad: f32,
+    pub player_title_size: f32,
+    pub player_artist_size: f32,
+    pub player_bar_height: f32,
+    pub player_button: f32,
+    pub player_cover_dim: f32,
+    /// The player popup's motion: opening and closing take `player_open_ms` and
+    /// `player_close_ms`, growing from `player_scale_from` of its size and sliding up from
+    /// `player_slide` below its place; a button brightens in `player_hover_ms` and shrinks
+    /// to `player_press_scale` in `player_press_ms` while pressed; the bar grows to
+    /// `player_bar_hot` times its thickness under the pointer in `player_bar_ms`, its fill
+    /// eases to the position in `player_fill_ms`; the texts and the play/pause icon
+    /// cross-fade in `player_swap_ms`, the cover in `player_cover_ms`; the buttons' shadow is
+    /// `player_button_shadow` of a panel's, 0 to 1.
+    pub player_open_ms: f32,
+    pub player_close_ms: f32,
+    pub player_scale_from: f32,
+    pub player_slide: f32,
+    pub player_hover_ms: f32,
+    pub player_press_ms: f32,
+    pub player_press_scale: f32,
+    pub player_bar_hot: f32,
+    pub player_bar_ms: f32,
+    pub player_fill_ms: f32,
+    pub player_swap_ms: f32,
+    pub player_cover_ms: f32,
+    pub player_button_shadow: f32,
     /// Fill of the curtain's slats while the language switches (ADR-0091).
     pub curtain_fill: Color,
     /// Height of the accent edge leading each slat.
@@ -388,6 +563,14 @@ pub struct Theme {
     /// widest they get, their corner radius and how much of the fill's opacity is left at
     /// their right edge.
     pub song_info_width: f32,
+    /// Extra width per unit of aspect ratio past 2:1, as a part of `song_info_width`
+    /// (ADR-0168: lazer's `max(0, aspect - 2) * 100` on 700).
+    pub song_info_widescreen_bonus: f32,
+    /// The user's multipliers of the info panel's width and height (0.5 ..= 1.5), and
+    /// whether the panel's width follows its texts instead (ADR-0168).
+    pub song_info_width_mult: f32,
+    pub song_info_height_mult: f32,
+    pub song_info_auto_width: bool,
     pub wedge_radius: f32,
     pub wedge_fade: f32,
     /// Size of one difficulty dot on a set row and the gap between two.
@@ -523,7 +706,7 @@ impl Default for CursorFx {
     fn default() -> Self {
         CursorFx {
             rotate: true,
-            spin: true,
+            spin: false,
             trail: true,
             ripple: true,
         }
@@ -599,10 +782,38 @@ impl Theme {
         }
     }
 
-    /// The note face at layout scale `scale`.
+    /// The heading face at `size` pixels: titles and section headers (ADR-0167).
+    pub(crate) fn heading_face(&self, size: f32) -> crate::menu::view::Face {
+        crate::menu::view::Face {
+            size,
+            weight: self.heading_weight,
+            width: slam_text::NORMAL_WIDTH,
+        }
+    }
+
+    /// The regular face at `size` pixels: lazer's Regular texts (ADR-0174).
+    pub(crate) fn regular_face(&self, size: f32) -> crate::menu::view::Face {
+        crate::menu::view::Face {
+            size,
+            weight: self.font_weight,
+            width: slam_text::NORMAL_WIDTH,
+        }
+    }
+
+    /// The semibold face at `size` pixels: lazer's SemiBold texts (ADR-0174).
+    pub(crate) fn semibold_face(&self, size: f32) -> crate::menu::view::Face {
+        crate::menu::view::Face {
+            size,
+            weight: self.semibold_weight,
+            width: slam_text::NORMAL_WIDTH,
+        }
+    }
+
+    /// The note face at layout scale `scale`: SemiBold, as lazer's notes and captions.
     pub(crate) fn note_face(&self, scale: f32) -> crate::menu::view::Face {
         crate::menu::view::Face {
             size: self.note_size * scale,
+            weight: self.semibold_weight,
             ..self.caption_face(scale)
         }
     }
@@ -631,7 +842,42 @@ impl Theme {
                 a: 0.35,
             },
             reference_height: 768.0,
-            font_weight: 700,
+            font_weight: 500,
+            heading_weight: 700,
+            semibold_weight: 600,
+            type_in_ms: 120.0,
+            type_slide: 5.0,
+            erase_pop_ms: 140.0,
+            erase_pop: 3.0,
+            caret: Color {
+                a: 0.6,
+                ..Color::WHITE
+            },
+            caret_width: 1.25,
+            caret_height: 0.8,
+            caret_fade_ms: 150.0,
+            caret_active_ms: 3000.0,
+            caret_blink_ms: 530.0,
+            caret_solid_ms: 500.0,
+            scrollbar_width: 4.0,
+            scrollbar_active_width: 7.0,
+            scrollbar_margin: 2.0,
+            scrollbar_min_thumb: 24.0,
+            scrollbar_alpha: 0.22,
+            scrollbar_hover_alpha: 0.42,
+            scrollbar_drag_alpha: 0.65,
+            scrollbar_fade_ms: 200.0,
+            song_scrollbar_width: 10.0,
+            song_scrollbar_rest_width: 0.5,
+            song_scrollbar_ease_ms: 90.0,
+            song_scrollbar_rest: 0.533,
+            song_scrollbar_hover: 0.941,
+            song_scrollbar_pad_top: 5.0,
+            song_scrollbar_pad_bottom: 70.0,
+            settings_tab_bar_width: 3.0,
+            settings_tab_icon_share: 0.5,
+            settings_tab_idle_alpha: 0.5,
+            settings_tab_fade_ms: 200.0,
             title_size: 96.0,
             button_text_size: 28.0,
             message_size: 28.0,
@@ -659,7 +905,9 @@ impl Theme {
                 b: 1.0,
                 a: 0.7,
             },
+            song_top_gap: 5.0,
             song_margin: 24.0,
+            song_wedge_content_margin: 32.0,
             song_set_height: 72.0,
             song_difficulty_height: 45.0,
             song_difficulty_info: crate::song_select::DifficultyInfo::Stars,
@@ -667,6 +915,9 @@ impl Theme {
             difficulty_star_spacing: 2.0,
             difficulty_star_gap: 3.0,
             difficulty_star_dim: 0.2,
+            star_colour_ease_ms: 750.0,
+            song_curve: 1.0,
+            song_row_ease_ms: 50.0,
             song_set_shift: 100.0,
             song_difficulty_shift: 50.0,
             song_shift_ms: 400.0,
@@ -674,8 +925,12 @@ impl Theme {
             song_indent: 24.0,
             song_text_pad: 16.0,
             song_thumbnail_aspect: 1.6,
+            song_thumbnail_wide_aspect: 7.0,
             song_thumbnail_inset: 3.0,
             song_thumbnail_fade_ms: 200.0,
+            song_plate_fade_ms: 400.0,
+            song_plate_dim_left: 0.5,
+            song_plate_dim_right: 0.8,
             song_expand_ms: 250.0,
             song_title_size: 20.0,
             song_detail_size: 13.0,
@@ -692,11 +947,33 @@ impl Theme {
                 b: 1.0,
                 a: 0.16,
             },
-            song_score_row_height: 30.0,
-            mod_tile_width: 210.0,
-            mod_tile_height: 40.0,
-            mod_tile_pitch: 45.0,
+            song_score_row_height: 40.0,
+            song_score_size: 20.0,
+            song_score_caption_size: 9.5,
+            song_score_value_size: 11.5,
+            song_score_enter_delay_ms: 200.0,
+            song_score_enter_stagger_ms: 30.0,
+            song_score_enter_ms: 300.0,
+            song_score_rank_width: 40.0,
+            song_board_ms: 300.0,
+            song_score_enter_offset: 20.0,
+            mod_tile_width: 290.0,
+            mod_tile_height: 56.0,
+            mod_tile_pitch: 62.0,
             mod_column_gap: 10.0,
+            mod_tile_text_scale: 1.25,
+            mod_multiplier_up: Color {
+                r: 1.0,
+                g: 0.4,
+                b: 0.4,
+                a: 1.0,
+            },
+            mod_multiplier_down: Color {
+                r: 0.698,
+                g: 1.0,
+                b: 0.4,
+                a: 1.0,
+            },
             mod_backdrop_fill: Color {
                 r: 0.0,
                 g: 0.0,
@@ -704,9 +981,9 @@ impl Theme {
                 a: 0.55,
             },
             mod_column_fill: alpha(p.panel, 0.94),
-            mod_column_header_height: 30.0,
+            mod_column_header_height: 42.0,
             mod_column_pad: 7.0,
-            mod_panel_top: 0.22,
+            mod_panel_top: 0.12,
             song_info_transition_ms: 400.0,
             song_info_text_fade_ms: 250.0,
             toast_width: 300.0,
@@ -717,7 +994,7 @@ impl Theme {
             toast_show_ms: 5000.0,
             mod_tile_active_darken: 1.2,
             mod_panel_in_ms: 400.0,
-            mod_panel_out_ms: 500.0,
+            mod_panel_out_ms: 200.0,
             mod_column_stagger_ms: 30.0,
             mod_panel_distance: 700.0,
             results_margin: 24.0,
@@ -733,7 +1010,7 @@ impl Theme {
             widget_text_size: 20.0,
             caption_size: 16.0,
             note_size: 14.0,
-            caption_weight: 600,
+            caption_weight: 500,
             caption_width: 100,
             widget_pad: 12.0,
             marquee_speed: 50.0,
@@ -757,7 +1034,8 @@ impl Theme {
             settings_row_pitch: 52.0,
             settings_label_ratio: 0.45,
             settings_marker_size: 14.0,
-            settings_panel_width: 780.0,
+            settings_panel_width: 560.0,
+            settings_screen_shift: 0.05,
             settings_panel_fill: alpha(p.panel, 0.9),
             settings_dim_fill: Color {
                 r: 0.0,
@@ -766,6 +1044,56 @@ impl Theme {
                 a: 0.5,
             },
             settings_panel_ms: 250.0,
+            footer_height: 50.0,
+            footer_fill: Color {
+                r: 0.04,
+                g: 0.04,
+                b: 0.06,
+                a: 0.9,
+            },
+            footer_button_share: 0.76,
+            footer_button_width: 120.0,
+            footer_mods_width: 250.0,
+            footer_preset_width: 96.0,
+            footer_pin_width: 44.0,
+            footer_gap: 10.0,
+            footer_slide_ms: 400.0,
+            footer_hover_ms: 150.0,
+            footer_press_ms: 60.0,
+            footer_release_ms: 260.0,
+            footer_slot_ms: 220.0,
+            footer_flash_ms: 450.0,
+            footer_pop: 0.04,
+            footer_flash_mix: 0.55,
+            toolbar_height: 40.0,
+            toolbar_icon_share: 0.5,
+            toolbar_gap: 2.0,
+            toolbar_fill: alpha(p.panel, 0.88),
+            toolbar_clock_size: 18.0,
+            toolbar_popup_ms: 200.0,
+            toolbar_popup_slide: 10.0,
+            toolbar_slide_ms: 500.0,
+            player_width: 400.0,
+            player_height: 140.0,
+            player_pad: 14.0,
+            player_title_size: 20.0,
+            player_artist_size: 14.0,
+            player_bar_height: 6.0,
+            player_button: 36.0,
+            player_cover_dim: 0.62,
+            player_open_ms: 240.0,
+            player_close_ms: 180.0,
+            player_scale_from: 0.92,
+            player_slide: 12.0,
+            player_hover_ms: 150.0,
+            player_press_ms: 80.0,
+            player_press_scale: 0.88,
+            player_bar_hot: 1.8,
+            player_bar_ms: 150.0,
+            player_fill_ms: 220.0,
+            player_swap_ms: 220.0,
+            player_cover_ms: 400.0,
+            player_button_shadow: 0.4,
             curtain_fill: p.raised,
             curtain_edge: 4.0,
             intro_backdrop: Color::rgb(0.0, 0.0, 0.0),
@@ -807,7 +1135,12 @@ impl Theme {
             star_pill_pad: 7.0,
             star_icon_size: 10.0,
             star_icon_gap: 3.0,
-            song_info_width: 380.0,
+            // Lazer's 700 at its UI scale 0.85 on a 1080p window, in reference units.
+            song_info_width: 420.0,
+            song_info_widescreen_bonus: 100.0 / 700.0,
+            song_info_width_mult: 1.0,
+            song_info_height_mult: 1.0,
+            song_info_auto_width: false,
             wedge_radius: 10.0,
             wedge_fade: 0.67,
             difficulty_dot_size: 7.0,
@@ -822,14 +1155,15 @@ impl Theme {
             menu_panel_fill: alpha(p.panel, 0.62),
             menu_panel_pad: 28.0,
             cursor_size: 30.0,
-            cursor_fill: Color::rgb(0.96, 0.97, 1.0),
+            // Dark with a light rim (ADR-0167).
+            cursor_fill: Color::rgb(0.11, 0.12, 0.16),
             cursor_outline_colour: Color {
-                r: 0.04,
-                g: 0.05,
-                b: 0.09,
-                a: 0.9,
+                r: 0.94,
+                g: 0.95,
+                b: 1.0,
+                a: 0.92,
             },
-            cursor_outline: 0.055,
+            cursor_outline: 0.075,
             cursor_tilt_degrees: 24.3,
             cursor_press_scale: 0.9,
             cursor_press_in_ms: 800.0,
@@ -1002,7 +1336,9 @@ mod tests {
         let theme = Theme::new(ColourScheme::default(), 1.0);
         assert!(theme.caption_size < theme.widget_text_size);
         assert!(theme.note_size < theme.caption_size);
-        assert!(theme.caption_weight < theme.font_weight);
+        assert!(theme.caption_weight <= theme.font_weight);
+        assert!(theme.font_weight < theme.semibold_weight);
+        assert!(theme.semibold_weight < theme.heading_weight);
         let face = theme.caption_face(2.0);
         assert_eq!(face.size, theme.caption_size * 2.0);
         assert_eq!(theme.note_face(2.0).size, theme.note_size * 2.0);

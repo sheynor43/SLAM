@@ -135,3 +135,12 @@ fn text_snaps_to_whole_pixels_and_shapes_do_not() {
     assert!((snapped.tx - map.tx).abs() <= 0.5 && (snapped.ty - map.ty).abs() <= 0.5);
     assert_eq!((snapped.a, snapped.d), (map.a, map.d));
 }
+
+#[test]
+fn the_background_shifts_aside_and_still_covers_the_left_edge() {
+    assert!(aside_map(0.0, SIZE).is_identity());
+    let map = aside_map(40.0, SIZE);
+    assert!(map.apply([0.0, 0.0])[0] <= 1e-3, "gap at the left edge");
+    assert!(map.apply([SIZE[0], 0.0])[0] > SIZE[0]);
+    assert!(map.apply([0.0, 0.0])[1] <= 1e-3 && map.apply([0.0, SIZE[1]])[1] >= SIZE[1] - 1e-3);
+}

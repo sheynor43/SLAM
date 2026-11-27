@@ -7,12 +7,14 @@ use std::fmt::Write as _;
 
 use slam_render::Color;
 
+use super::mod_select::push_multiplier;
 use super::view::{DetailLabels, TEXT_CAPACITY, fit};
 use super::{
     BeatmapDetails, DetailStats, LocalScores, MAX_LOCAL_SCORES, ScoreRow, SongSelectLayout,
     SongSelectSnapshot,
 };
 use crate::anim::{Towards, ease_out_quint, progress};
+use crate::marquee::Marquee;
 use crate::menu::Rect;
 use crate::menu::view::{Line, Typesetter};
 use crate::theme::{Theme, faded};
@@ -26,6 +28,14 @@ const SEPARATOR: &str = "  \u{b7}  ";
 
 /// Difficulty values are drawn as bars out of this.
 const BAR_MAXIMUM: f32 = 10.0;
+
+/// A text that shows no number.
+const NOT_SHOWN: i32 = i32::MIN;
+
+/// A number in hundredths, as its text shows it.
+fn hundredths(value: f32) -> i32 {
+    (value * 100.0).round() as i32
+}
 
 /// Where the panel's parts are, inside [`SongSelectLayout::info`].
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -62,16 +72,16 @@ pub fn score_row_at(
         .take_while(|r| r.is_some())
         .count()
         .min(parts.row_count);
-    let last = parts.rows.get(shown.checked_sub(1)?)?;
-    // The wedges lean along one line through the board's bottom edge (see `push`).
-    let anchor = last.y + last.height + layout.info_inset;
+    shown.checked_sub(1)?;
+    // The rows' right ends follow the board's edge, leaning from its top (see `push`).
+    let anchor = parts.scores_title.y - layout.info_inset;
     parts.rows[..shown].iter().position(|r| {
-        let lean = (anchor - (r.y + r.height / 2.0)) * layout.info_tan;
-        let moved = Rect {
-            x: r.x + lean,
+        let reach = (anchor - (r.y + r.height / 2.0)) * layout.info_tan;
+        Rect {
+            width: (r.width + reach).max(0.0),
             ..*r
-        };
-        moved.contains(x, y)
+        }
+        .contains(x, y)
     })
 }
 
@@ -86,9 +96,12 @@ pub struct BarLayout {
 impl InfoLayout {
     pub fn new(info: &Rect, theme: &Theme, scale: f32) -> InfoLayout {
         let detail = theme.song_info_detail_size * scale;
-        let gap = theme.song_text_pad * scale / 2.0;
+        // The user's height multiplier stretches every row and gap (ADR-0168).
+        let k = theme.song_info_height_mult.clamp(0.25, 3.0);
+        let gap = theme.song_text_pad * scale / 2.0 * k;
         let y = std::cell::Cell::new(info.y);
         let next = |height: f32| {
+            let height = height * k;
             let rect = Rect {
                 x: info.x,
                 y: y.get(),
@@ -132,7 +145,7 @@ impl InfoLayout {
         // their content, so a margin more keeps them `gap` apart.
         y.set(y.get() + theme.song_margin * scale + gap);
         let scores_title = next(detail * 2.0);
-        let pitch = theme.song_score_row_height * scale;
+        let pitch = theme.song_score_row_height * scale * k;
         let row_gap = theme.song_row_gap * scale;
         let top = y.get();
         let rows = std::array::from_fn(|i| Rect {
@@ -160,11 +173,39 @@ impl InfoLayout {
     }
 }
 
+/// Sizes of a score row's parts at one scale.
+struct ScoreSizes {
+    score: f32,
+    caption: f32,
+    value: f32,
+    /// Width of the rank badge's column, and the gap between neighbouring texts.
+    rank: f32,
+    gap: f32,
+}
+
+impl ScoreSizes {
+    fn new(theme: &Theme, scale: f32) -> ScoreSizes {
+        ScoreSizes {
+            score: theme.song_score_size * scale,
+            caption: theme.song_score_caption_size * scale,
+            value: theme.song_score_value_size * scale,
+            rank: theme.song_score_rank_width * scale,
+            gap: theme.song_text_pad * scale / 2.0,
+        }
+    }
+}
+
 /// The texts of one score row.
 struct ScoreLines {
     rank: Line,
+    /// The total score, big, at the row's right.
     score: Line,
+    /// The date, a dim caption above the values.
+    date: Line,
+    /// The accuracy and max combo values; their labels are the panel's.
     accuracy: Line,
+    combo: Line,
+    /// Mods and the multiplier, one compact line.
     extra: Line,
 }
 
@@ -178,15 +219,28 @@ impl ScoreLines {
         ScoreLines {
             rank: line(),
             score: line(),
+            date: line(),
             accuracy: line(),
+            combo: line(),
             extra: line(),
         }
     }
 
-    fn lines(&self) -> [&Line; 4] {
-        [&self.rank, &self.score, &self.accuracy, &self.extra]
+    fn lines(&self) -> [&Line; 6] {
+        [
+            &self.rank,
+            &self.score,
+            &self.date,
+            &self.accuracy,
+            &self.combo,
+            &self.extra,
+        ]
     }
 }
+
+/// With `song_select.info_auto_width` the panel narrows to its texts down to this part of
+/// the room it has (the bars need it).
+const MIN_WIDTH_PART: f32 = 0.6;
 
 /// Width of a star-rating pill around `line`, and the gap before it (ADR-0131).
 pub(super) fn pill_width(line: &Line, theme: &Theme, scale: f32) -> f32 {
@@ -259,6 +313,9 @@ pub(super) struct InfoPanel {
     bar_labels: [Line; 4],
     scores_title: Line,
     no_scores: Line,
+    /// The labels before a score row's accuracy and max combo.
+    accuracy_label: Line,
+    combo_label: Line,
     charset: Line,
     name: Line,
     /// The difficulty's star rating, drawn in a pill of its colour after the name.
@@ -267,11 +324,18 @@ pub(super) struct InfoPanel {
     /// The selection and list generation the name and artist are written for.
     name_for: Option<(u64, Option<(usize, usize)>)>,
     values: [Line; 4],
+    /// Hundredths of the star rating and of CS, AR, OD, HP the texts show, so a frame
+    /// rewrites a text only when its shown number changed.
+    rolled_stars: i32,
+    rolled: [i32; 4],
     stats: Line,
     counts: Line,
     details_for: Option<Option<BeatmapDetails>>,
     scores: Vec<ScoreLines>,
     scores_for: Option<Option<LocalScores>>,
+    /// Rides of the name, the artist, the length and BPM and the counts when they do not
+    /// fit (ADR-0168).
+    marquees: [Marquee; 4],
     /// The bars and colour moving to the selection's, and its texts fading in (ADR-0156).
     motion: InfoMotion,
 }
@@ -287,8 +351,27 @@ struct InfoMotion {
     bars: [Towards; 4],
     /// The panel's colour, by channel.
     colour: [Towards; 4],
+    /// The star rating the pill and the outline are coloured by, easing to a new rating as
+    /// lazer's `StarRatingDisplay` does (ADR-0167).
+    stars: Towards,
+    /// Whether `stars` had a rating to start from.
+    stars_started: bool,
     /// Whether the bars and colour had a value to start from.
     started: bool,
+    /// The panel's width, following its texts (ADR-0167).
+    width: Towards,
+    /// Whether the width had a value to start from.
+    sized: bool,
+    /// The local scores board's height, easing between the heights its rows give it
+    /// (ADR-0177), and whether it had one to start from.
+    board: Towards,
+    board_sized: bool,
+    /// The difficulty the score rows came in for, and how many rows they had then: a
+    /// refreshed list of the same difficulty animates only the rows it gained.
+    scores_key: Option<u64>,
+    scores_rows: Option<usize>,
+    /// When each row's entrance starts; in the future while it waits its turn.
+    row_since: [u64; MAX_LOCAL_SCORES],
 }
 
 impl InfoPanel {
@@ -308,17 +391,22 @@ impl InfoPanel {
             ],
             scores_title: Line::new(&labels.scores),
             no_scores: Line::new(&labels.no_scores),
+            accuracy_label: Line::new(&labels.accuracy),
+            combo_label: Line::new(&labels.combo),
             charset: Line::new(CHARSET),
             name: line(),
             stars: line(),
             artist: line(),
             name_for: None,
             values: std::array::from_fn(|_| line()),
+            rolled_stars: NOT_SHOWN,
+            rolled: [NOT_SHOWN; 4],
             stats: line(),
             counts: line(),
             details_for: None,
             scores: (0..MAX_LOCAL_SCORES).map(|_| ScoreLines::new()).collect(),
             scores_for: None,
+            marquees: [Marquee::default(); 4],
             motion: InfoMotion::default(),
         }
     }
@@ -326,12 +414,22 @@ impl InfoPanel {
     /// Lays the static texts out for `scale` and forgets what the others showed.
     pub(super) fn lay_out(&mut self, type_setter: &mut Typesetter, theme: &Theme, scale: f32) {
         let detail = theme.song_info_detail_size * scale;
-        for line in self.bar_labels.iter_mut().chain([
+        for line in self.bar_labels.iter_mut() {
+            // The wedge's statistic captions are SemiBold (ADR-0174).
+            type_setter.lay_out_face(line, theme.semibold_face(detail));
+        }
+        for line in [
             &mut self.scores_title,
             &mut self.no_scores,
             &mut self.charset,
-        ]) {
+        ] {
             type_setter.lay_out(line, detail);
+        }
+        for line in [&mut self.accuracy_label, &mut self.combo_label] {
+            type_setter.lay_out_face(
+                line,
+                theme.semibold_face(theme.song_score_caption_size * scale),
+            );
         }
         self.name_for = None;
         self.details_for = None;
@@ -346,6 +444,8 @@ impl InfoPanel {
             .chain([
                 &self.scores_title,
                 &self.no_scores,
+                &self.accuracy_label,
+                &self.combo_label,
                 &self.charset,
                 &self.name,
                 &self.stars,
@@ -357,7 +457,8 @@ impl InfoPanel {
     }
 
     /// Writes the texts that differ from the ones shown. `ellipsis` is the width of the
-    /// ellipsis at the title and detail sizes.
+    /// ellipsis at the title and detail sizes; the score rows' mods line is cut with it,
+    /// the other texts ride when they do not fit (ADR-0168).
     pub(super) fn refresh(
         &mut self,
         type_setter: &mut Typesetter,
@@ -372,14 +473,8 @@ impl InfoPanel {
             theme.song_info_artist_size * scale,
             theme.song_info_detail_size * scale,
         );
-        // The ellipsis widths are measured at the rows' sizes.
-        let ellipsis = [
-            ellipsis[0] * theme.song_info_title_size / theme.song_title_size,
-            ellipsis[1] * theme.song_info_detail_size / theme.song_detail_size,
-        ];
-        let artist_ellipsis =
-            ellipsis[1] * theme.song_info_artist_size / theme.song_info_detail_size;
-        let parts = InfoLayout::new(&layout.info, theme, scale);
+        // The ellipsis width is measured at the rows' size.
+        let ellipsis = ellipsis[1] * theme.song_score_value_size / theme.song_detail_size;
         let key = (snapshot.generation, snapshot.selected);
         if self.name_for != Some(key) {
             self.name_for = Some(key);
@@ -392,34 +487,25 @@ impl InfoPanel {
             if let Some((set, difficulty)) = set {
                 if let Some(d) = set.difficulties.get(difficulty) {
                     self.name.text.push_str(&d.version);
+                    self.rolled_stars = NOT_SHOWN;
                     if let Some(stars) = d.stars {
                         super::push_stars(&mut self.stars.text, stars);
+                        self.rolled_stars = hundredths(stars);
                     }
                 }
                 let _ = write!(self.artist.text, "{} - {}", set.artist, set.title);
             }
-            type_setter.lay_out(&mut self.stars, detail);
-            let pill = pill_width(&self.stars, theme, scale);
-            fit(
-                type_setter,
-                &mut self.name,
-                title,
-                (parts.name.width - pill).max(0.0),
-                ellipsis[0],
-            );
-            fit(
-                type_setter,
-                &mut self.artist,
-                artist_size,
-                parts.artist.width,
-                artist_ellipsis,
-            );
+            // Lazer's wedge: the pill Bold, the title Regular, the artist SemiBold
+            // (ADR-0174).
+            type_setter.lay_out_face(&mut self.stars, theme.heading_face(detail));
+            type_setter.lay_out_face(&mut self.name, theme.regular_face(title));
+            type_setter.lay_out_face(&mut self.artist, theme.semibold_face(artist_size));
         }
         if self.details_for != Some(snapshot.details) {
             self.details_for = Some(snapshot.details);
             self.write_details(snapshot.details.as_ref());
             for line in [&mut self.stats, &mut self.counts] {
-                fit(type_setter, line, detail, parts.stats.width, ellipsis[1]);
+                type_setter.lay_out(line, detail);
             }
             for line in &mut self.values {
                 type_setter.lay_out(line, detail);
@@ -429,21 +515,28 @@ impl InfoPanel {
         if self.scores_for != Some(scores) {
             self.scores_for = Some(scores);
             let rows = scores.map(|s| s.rows).unwrap_or_default();
-            let gap = theme.song_text_pad * scale;
-            let avail = (parts.rows[0].width - artist_size * 2.2 - gap).max(0.0);
+            let parts = InfoLayout::new(&layout.info, theme, scale);
+            let sizes = ScoreSizes::new(theme, scale);
+            let gap = sizes.gap;
             for (lines, row) in self.scores.iter_mut().zip(rows) {
                 write_score(lines, row.as_ref());
                 type_setter.lay_out(&mut lines.rank, artist_size);
-                type_setter.lay_out(&mut lines.accuracy, detail);
-                let accuracy = lines.accuracy.layout.width();
+                type_setter.lay_out(&mut lines.score, sizes.score);
+                type_setter.lay_out(&mut lines.date, sizes.caption);
+                type_setter.lay_out(&mut lines.accuracy, sizes.value);
+                type_setter.lay_out(&mut lines.combo, sizes.value);
+                let column =
+                    (parts.rows[0].width - sizes.rank - lines.score.layout.width() - 2.0 * gap)
+                        .max(0.0);
+                // The mods follow the date on the top line.
+                let used = lines.date.layout.width() + 2.0 * gap;
                 fit(
                     type_setter,
-                    &mut lines.score,
-                    detail,
-                    (avail - accuracy - gap).max(0.0),
-                    ellipsis[1],
+                    &mut lines.extra,
+                    sizes.value,
+                    (column - used).max(0.0),
+                    ellipsis,
                 );
-                fit(type_setter, &mut lines.extra, detail, avail, ellipsis[1]);
             }
         }
     }
@@ -465,18 +558,70 @@ impl InfoPanel {
             d.overall_difficulty,
             d.drain_rate,
         ];
-        for (line, value) in self.values.iter_mut().zip(values) {
+        for ((line, value), rolled) in self.values.iter_mut().zip(values).zip(&mut self.rolled) {
             push_difficulty(&mut line.text, value);
+            *rolled = hundredths(value);
+        }
+    }
+
+    /// Makes the texts show the eased numbers: the star rating as its colour eases and
+    /// CS, AR, OD, HP as their bars do, as lazer's `StarRatingDisplay` rolls its number.
+    /// A text is laid out again only when its shown hundredths changed. Does not allocate
+    /// once the texts have their room.
+    fn roll(
+        &mut self,
+        type_setter: &mut Typesetter,
+        theme: &Theme,
+        scale: f32,
+        stars: Option<f32>,
+        values: Option<([f32; 4], [f32; 4], [f32; 4])>,
+    ) {
+        let detail = theme.song_info_detail_size * scale;
+        // A text not showing a number (no rating yet) stays empty.
+        if let Some(shown) = stars
+            && self.rolled_stars != NOT_SHOWN
+        {
+            let q = hundredths(shown);
+            if q != self.rolled_stars {
+                self.rolled_stars = q;
+                self.stars.text.clear();
+                super::push_stars(&mut self.stars.text, shown);
+                type_setter.lay_out_face(&mut self.stars, theme.heading_face(detail));
+            }
+        }
+        // `shown` and `target` are the bars' fractions, `raw` the true values.
+        if let Some((raw, shown, target)) = values {
+            for i in 0..4 {
+                if self.rolled[i] == NOT_SHOWN {
+                    continue;
+                }
+                // At rest the text is the true value, whatever the bar clamps.
+                let value = if shown[i] == target[i] {
+                    raw[i]
+                } else {
+                    shown[i] * BAR_MAXIMUM
+                };
+                let q = hundredths(value);
+                if q != self.rolled[i] {
+                    self.rolled[i] = q;
+                    self.values[i].text.clear();
+                    push_difficulty(&mut self.values[i].text, value);
+                    type_setter.lay_out(&mut self.values[i], detail);
+                }
+            }
         }
     }
 
     /// Draws the panel at the layer's `opacity`. `rect` fills (fading the colour by the
-    /// opacity), `left` draws a line left-aligned at `(x, centre_y)`.
+    /// opacity), `left` draws a line left-aligned at `(x, centre_y)`, `ride` draws one in
+    /// a box of `avail` pixels from `x`, riding as its marquee says when it is wider
+    /// (arguments: line, marquee, avail, x, centre_y, colour).
     /// Two wedges after lazer's (ADR-0136): the difficulty's, outlined in its star colour,
     /// and the local scores' below it; each leans by the buttons' skew, and so does all on it.
     #[allow(clippy::too_many_arguments)]
     pub(super) fn push(
         &mut self,
+        type_setter: &mut Typesetter,
         layout: &SongSelectLayout,
         theme: &Theme,
         snapshot: &SongSelectSnapshot,
@@ -484,6 +629,7 @@ impl InfoPanel {
         now_ns: u64,
         rect: &mut impl FnMut(&Rect, Color, Look),
         left: &mut impl FnMut(&Line, f32, f32, Color),
+        ride: &mut impl FnMut(&Line, &mut Marquee, f32, f32, f32, Color),
     ) {
         let scale = layout.scale;
         let ms = |ms: f32| (ms.max(0.0) as f64 * 1e6) as u64;
@@ -491,11 +637,51 @@ impl InfoPanel {
             ms(theme.song_info_transition_ms),
             ms(theme.song_info_text_fade_ms),
         );
-        let mut parts = InfoLayout::new(&layout.info, theme, scale);
+        // Optionally (ADR-0168): as wide as the texts need, between the bars' minimum and
+        // the room there is; the width moves there (ADR-0167).
+        let room = layout.info.width;
+        let wanted = if theme.song_info_auto_width {
+            let content = [
+                self.name.layout.width() + pill_width(&self.stars, theme, scale),
+                self.artist.layout.width(),
+                self.stats.layout.width(),
+                self.counts.layout.width(),
+            ]
+            .into_iter()
+            .fold(0.0_f32, f32::max);
+            (content + theme.song_text_pad * scale).clamp(room * MIN_WIDTH_PART, room.max(0.0))
+        } else {
+            room
+        };
+        let info = Rect {
+            width: if self.motion.sized && theme.song_info_auto_width {
+                self.motion
+                    .width
+                    .aim(wanted, now_ns, move_ns, ease_out_quint);
+                self.motion.width.at(now_ns, move_ns, ease_out_quint)
+            } else {
+                wanted
+            },
+            ..layout.info
+        };
+        let parts = InfoLayout::new(&info, theme, scale);
         let tan = theme.button_skew().tan();
         let inset = theme.song_margin * scale / 2.0;
+        // The rating's colour eases to a new rating (lazer: 750 ms OutQuint); its number
+        // shows at once.
         let stars = snapshot.selected_stars();
-        let outline = match (snapshot.selected, stars) {
+        let star_ns = ms(theme.star_colour_ease_ms);
+        let shown_stars = stars.map(|to| {
+            let m = &mut self.motion;
+            if m.stars_started {
+                m.stars.aim(to, now_ns, star_ns, ease_out_quint);
+            } else {
+                m.stars = Towards::rest(to, now_ns);
+                m.stars_started = true;
+            }
+            m.stars.at(now_ns, star_ns, ease_out_quint)
+        });
+        let outline = match (snapshot.selected, shown_stars) {
             (None, _) => Color {
                 a: 0.0,
                 ..theme.accent
@@ -512,6 +698,12 @@ impl InfoPanel {
             // The first difficulty shows at once.
             motion.texts_since = if motion.shown.is_some() { now_ns } else { 0 };
             motion.shown = key;
+            // The texts start their rides over, the score rows come in again.
+            for marquee in &mut self.marquees {
+                marquee.restart(now_ns);
+            }
+            motion.scores_key = key;
+            motion.scores_rows = None;
         }
         let texts = ease_out_quint(progress(motion.texts_since, now_ns, fade_ns));
         let channels = [outline.r, outline.g, outline.b, outline.a];
@@ -547,16 +739,33 @@ impl InfoPanel {
         let shown_bars = motion
             .bars
             .map(|towards| towards.at(now_ns, move_ns, ease_out_quint));
+        let raw_values = snapshot.details.map(|d| {
+            [
+                d.circle_size,
+                d.approach_rate,
+                d.overall_difficulty,
+                d.drain_rate,
+            ]
+        });
+        self.roll(
+            type_setter,
+            theme,
+            scale,
+            shown_stars,
+            raw_values
+                .zip(fractions)
+                .map(|(raw, target)| (raw, shown_bars, target)),
+        );
         let ink = |colour: Color| faded(colour, texts);
         // `rect` fades the fill with the layer; the outline is the look's, faded here, so it
         // leaves with the screen.
         let wedge_outline = faded(outline, opacity);
         // The difficulty's wedge, down to the counts.
         let wedge = Rect {
-            x: layout.info.x - inset,
-            y: layout.info.y - inset,
-            width: layout.info.width + 2.0 * inset,
-            height: parts.counts.y + parts.counts.height - layout.info.y + 2.0 * inset,
+            x: info.x - inset,
+            y: info.y - inset,
+            width: info.width + 2.0 * inset,
+            height: parts.counts.y + parts.counts.height - info.y + 2.0 * inset,
         };
         let wedge_look = Look::Wedge {
             lean: tan,
@@ -574,11 +783,22 @@ impl InfoPanel {
             let last = &parts.rows[shown - 1];
             last.y + last.height
         };
+        // The board grows and shrinks to its rows' height before they fade in (ADR-0177).
+        let board_height = bottom - parts.scores_title.y;
+        let board_ns = ms(theme.song_board_ms);
+        if self.motion.board_sized {
+            self.motion
+                .board
+                .aim(board_height, now_ns, board_ns, ease_out_quint);
+        } else {
+            self.motion.board = Towards::rest(board_height, now_ns);
+            self.motion.board_sized = true;
+        }
         let board = Rect {
             x: wedge.x,
             y: parts.scores_title.y - inset,
             width: wedge.width,
-            height: bottom - parts.scores_title.y + 2.0 * inset,
+            height: self.motion.board.at(now_ns, board_ns, ease_out_quint) + 2.0 * inset,
         };
         let board_look = Look::Wedge {
             lean: tan,
@@ -587,14 +807,18 @@ impl InfoPanel {
                 ..theme.accent
             },
         };
-        // Everything leans with the wedges along one line through their lowest bottom
-        // edge, which stays at the margin: nothing reaches past the window's left edge.
-        let anchor = if snapshot.details.is_some() {
-            board.y + board.height
-        } else {
-            wedge.y + wedge.height
-        };
-        let lean_of = |y: f32| (anchor - y) * tan;
+        // The wedges' left edges run off the window; their right edges lean (ADR-0167).
+        if !self.motion.sized {
+            self.motion.width = Towards::rest(wanted, now_ns);
+            self.motion.sized = true;
+        }
+        // The wedges and the score rows lean along one line; the difficulty's texts and
+        // bars stand straight from the content margin, as lazer's (the wedge's left edge
+        // is off the window, only its right edge leans). `lean_on` is 1 while leaning
+        // shapes are drawn.
+        let lean_on = std::cell::Cell::new(1.0f32);
+        let anchor = std::cell::Cell::new(0.0f32);
+        let lean_of = |y: f32| (anchor.get() - y) * tan * lean_on.get();
         let mut rect = |r: &Rect, colour: Color, look: Look| {
             let moved = Rect {
                 x: r.x + lean_of(r.y + r.height / 2.0),
@@ -605,26 +829,22 @@ impl InfoPanel {
         let mut left = |line: &Line, x: f32, centre_y: f32, colour: Color| {
             left(line, x + lean_of(centre_y), centre_y, colour);
         };
-        let (rect, left) = (&mut rect, &mut left);
-        // Leaning with the edge pushes the difficulty's lines right, up to the edge, and
-        // leaves room at the left: they move back by a text pad, as far as they lean, so
-        // that their right end clears the edge and the left never reaches the window's.
-        let shift = (theme.song_text_pad * scale)
-            .min(lean_of(parts.counts.y + parts.counts.height))
-            .max(0.0);
-        for r in [
-            &mut parts.name,
-            &mut parts.artist,
-            &mut parts.stats,
-            &mut parts.counts,
-        ] {
-            r.x -= shift;
-        }
-        for bar in &mut parts.bars {
-            bar.label.x -= shift;
-            bar.track.x -= shift;
-            bar.value.x -= shift;
-        }
+        let mut ride = |line: &Line,
+                        marquee: &mut Marquee,
+                        avail: f32,
+                        x: f32,
+                        centre_y: f32,
+                        colour: Color| {
+            ride(
+                line,
+                marquee,
+                avail,
+                x + lean_of(centre_y),
+                centre_y,
+                colour,
+            );
+        };
+        let (rect, left, ride) = (&mut rect, &mut left, &mut ride);
         // The wedges run off the window's left edge, as lazer's: only their right edge leans,
         // and no gap opens at the top left (ADR-0136). Once leaned, the top left corner lies
         // a corner radius past the edge.
@@ -636,18 +856,28 @@ impl InfoPanel {
                 ..*r
             }
         };
+        // Both wedges and the score rows lean along one line through the board's top, where
+        // the two wedges meet: their right edges run on from one another, and it does not
+        // move with the number of scores.
+        anchor.set(board.y);
         rect(&bleed(&wedge), theme.song_panel_fill, wedge_look);
         if snapshot.details.is_some() {
             rect(&bleed(&board), theme.song_panel_fill, board_look);
         }
+        lean_on.set(0.0);
         let centre = |r: &Rect| r.y + r.height / 2.0;
-        left(
+        let [name_ride, artist_ride, stats_ride, counts_ride] = &mut self.marquees;
+        // The name rides in the room the star pill leaves.
+        let name_room = (parts.name.width - pill_width(&self.stars, theme, scale)).max(0.0);
+        ride(
             &self.name,
+            name_ride,
+            name_room,
             parts.name.x,
             centre(&parts.name),
             ink(theme.text),
         );
-        if let Some(stars) = stars {
+        if let Some(stars) = shown_stars {
             push_star_pill(
                 rect,
                 left,
@@ -655,12 +885,16 @@ impl InfoPanel {
                 stars,
                 theme,
                 scale,
-                parts.name.x + self.name.layout.width() + theme.star_pill_pad * scale,
+                parts.name.x
+                    + self.name.layout.width().min(name_room)
+                    + theme.star_pill_pad * scale,
                 centre(&parts.name),
             );
         }
-        left(
+        ride(
             &self.artist,
+            artist_ride,
+            parts.artist.width,
             parts.artist.x,
             centre(&parts.artist),
             ink(theme.song_hint_text),
@@ -699,14 +933,18 @@ impl InfoPanel {
                 ink(theme.text),
             );
         }
-        left(
+        ride(
             &self.stats,
+            stats_ride,
+            parts.stats.width,
             parts.stats.x,
             centre(&parts.stats),
             ink(theme.text),
         );
-        left(
+        ride(
             &self.counts,
+            counts_ride,
+            parts.counts.width,
             parts.counts.x,
             centre(&parts.counts),
             ink(theme.text),
@@ -727,8 +965,27 @@ impl InfoPanel {
             );
             return;
         }
-        let pad = theme.song_text_pad * scale;
-        let rank_width = theme.song_info_artist_size * scale * 2.2;
+        // The rows stand at the margin; only their right ends lean (below).
+        // Rows come in one after another when a difficulty's scores arrive (ADR-0168); a
+        // refreshed list of the same difficulty animates only the rows it gained.
+        let rows_now = shown;
+        let stagger = ms(theme.song_score_enter_stagger_ms);
+        let from = match self.motion.scores_rows {
+            None => Some(0),
+            Some(before) if rows_now > before => Some(before),
+            _ => None,
+        };
+        if let Some(first) = from {
+            let base = now_ns + ms(theme.song_score_enter_delay_ms);
+            for i in first..MAX_LOCAL_SCORES {
+                self.motion.row_since[i] = base + stagger * (i - first) as u64;
+            }
+        }
+        self.motion.scores_rows = Some(rows_now);
+        let enter_ns = ms(theme.song_score_enter_ms);
+        let offset = theme.song_score_enter_offset * scale;
+        let sizes = ScoreSizes::new(theme, scale);
+        let (pad, gap) = (theme.song_text_pad * scale, sizes.gap);
         for (i, ((area, row), lines)) in parts
             .rows
             .iter()
@@ -740,23 +997,65 @@ impl InfoPanel {
             if row.is_none() {
                 break;
             }
+            let t = ease_out_quint(progress(self.motion.row_since[i], now_ns, enter_ns));
+            // The rows start at the content margin; only their right ends follow the
+            // board's leaning edge (from its top, see above), so a long list never runs off
+            // the window's left edge.
+            let reach = (board.y - centre(area)) * tan;
+            let area = Rect {
+                x: area.x - offset * (1.0 - t),
+                width: (area.width + reach).max(0.0),
+                ..*area
+            };
+            let fade = |colour: Color| faded(colour, t);
             let fill = if snapshot.score_hovered == Some(i) {
                 theme.button_hover_fill
             } else {
                 theme.song_search_fill
             };
-            rect(area, fill, Look::Round);
+            rect(&area, fade(fill), Look::Round);
             let (top, bottom) = (area.y + area.height * 0.3, area.y + area.height * 0.72);
-            left(&lines.rank, area.x + pad / 2.0, centre(area), theme.text);
-            let x = area.x + rank_width;
-            left(&lines.score, x, top, theme.text);
+            // The rank centred in its column, as lazer's rank label.
             left(
-                &lines.accuracy,
-                area.x + area.width - pad / 2.0 - lines.accuracy.layout.width(),
-                top,
-                theme.text,
+                &lines.rank,
+                area.x + pad / 2.0 + (sizes.rank - lines.rank.layout.width()) / 2.0,
+                centre(&area),
+                fade(theme.text),
             );
-            left(&lines.extra, x, bottom, theme.song_hint_text);
+            left(
+                &lines.score,
+                area.x + area.width - pad / 2.0 - lines.score.layout.width(),
+                centre(&area),
+                fade(theme.text),
+            );
+            let x = area.x + pad / 2.0 + sizes.rank;
+            left(&lines.date, x, top, fade(theme.song_hint_text));
+            left(
+                &lines.extra,
+                x + lines.date.layout.width() + gap * 2.0,
+                top,
+                fade(theme.song_hint_text),
+            );
+            // Labelled values, as many as fit before the total score.
+            let end = area.x + area.width - pad / 2.0 - lines.score.layout.width() - gap;
+            let mut x = x;
+            for (label, value) in [
+                (&self.accuracy_label, &lines.accuracy),
+                (&self.combo_label, &lines.combo),
+            ] {
+                let width = label.layout.width() + gap + value.layout.width();
+                if x + width > end {
+                    break;
+                }
+                left(label, x, bottom, fade(theme.song_hint_text));
+                left(
+                    value,
+                    x + label.layout.width() + gap,
+                    bottom,
+                    fade(theme.text),
+                );
+                x += width + gap * 2.0;
+            }
         }
     }
 }
@@ -766,7 +1065,9 @@ fn write_score(lines: &mut ScoreLines, row: Option<&ScoreRow>) {
     for line in [
         &mut lines.rank,
         &mut lines.score,
+        &mut lines.date,
         &mut lines.accuracy,
+        &mut lines.combo,
         &mut lines.extra,
     ] {
         line.text.clear();
@@ -777,19 +1078,19 @@ fn write_score(lines: &mut ScoreLines, row: Option<&ScoreRow>) {
     }
     push_grouped(&mut lines.score.text, row.total_score);
     push_accuracy(&mut lines.accuracy.text, row.accuracy);
-    let _ = write!(lines.extra.text, "{}x", row.max_combo);
+    let _ = write!(lines.combo.text, "{}x", row.max_combo);
+    push_date(&mut lines.date.text, row.date_ms);
     let mut mods = row.mods.iter().peekable();
     if mods.peek().is_some() {
-        lines.extra.text.push_str(SEPARATOR);
         for (i, acronym) in mods.enumerate() {
             if i > 0 {
                 lines.extra.text.push(' ');
             }
             lines.extra.text.push_str(acronym);
         }
+        lines.extra.text.push_str(SEPARATOR);
+        push_multiplier(&mut lines.extra.text, row.multiplier);
     }
-    lines.extra.text.push_str(SEPARATOR);
-    push_date(&mut lines.extra.text, row.date_ms);
 }
 
 /// `1,234,567`.

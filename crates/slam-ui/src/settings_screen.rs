@@ -10,6 +10,7 @@ use std::sync::Arc;
 
 use crate::marquee::TextScroll;
 use crate::menu::Rect;
+use crate::scrollbar::{Scrollbar, ScrollbarDrag};
 use crate::song_select::filter::with_term_pairs;
 use crate::song_select::{SearchQuery, ease_scroll};
 use crate::theme::Theme;
@@ -26,7 +27,7 @@ pub mod view;
 pub use view::{KeyLabels, RowLabels, SettingsLabels, SettingsView};
 
 /// Most rows; more are ignored.
-pub const MAX_ROWS: usize = 304;
+pub const MAX_ROWS: usize = 320;
 /// Most sections; rows of later ones go into the last.
 pub const MAX_SECTIONS: usize = 10;
 
@@ -216,6 +217,8 @@ pub enum SettingsInput {
     Type(char),
     /// Backspace: erases the last character of the search.
     Erase,
+    /// Ctrl+Backspace: erases the last word of the search.
+    EraseWord,
     PointerRelease,
     /// An input the application captured while a key row listens. `Empty` is ignored.
     Captured(KeyValue),
@@ -346,6 +349,31 @@ impl SettingsLayout {
         self.width
     }
 
+    /// The width of the rows: the content area's.
+    pub fn content_width(&self) -> f32 {
+        self.content.width
+    }
+
+    /// A layout of one row, `row` big and at its place, for a widget outside the screen
+    /// (the toolbar's popup, ADR-0168): slot 0 is `row`, at no scroll. `window_height` keeps
+    /// an open dropdown list within the window.
+    pub fn single(row: Rect, window_height: f32, theme: &Theme) -> SettingsLayout {
+        let scale = theme.scale(window_height);
+        SettingsLayout {
+            title: Rect::default(),
+            tabs: [Rect::default(); MAX_SECTIONS],
+            content: row,
+            width: row.x + row.width,
+            window_height,
+            row_height: row.height,
+            pitch: row.height,
+            label_width: row.width * theme.settings_label_ratio,
+            theme: *theme,
+            scale,
+            scroll: 0.0,
+        }
+    }
+
     /// The layout with its rows scrolled by `rows` (the snapshot's
     /// [`SettingsSnapshot::scroll`]).
     pub fn scrolled(&self, rows: f32) -> SettingsLayout {
@@ -411,6 +439,19 @@ impl SettingsLayout {
             tab.x += dx;
         }
         layout
+    }
+
+    /// The strip at the list's left edge, in the gap to the tab column, where the scrollbar
+    /// answers (ADR-0173, ADR-0179).
+    pub fn scrollbar_track(&self) -> Rect {
+        let width =
+            (self.theme.scrollbar_active_width + 2.0 * self.theme.scrollbar_margin) * self.scale;
+        Rect {
+            x: self.content.x - width,
+            y: self.content.y,
+            width,
+            height: self.content.height,
+        }
     }
 
     /// The whole row at position `slot` in its section.
@@ -546,6 +587,11 @@ pub struct SettingsSnapshot {
     pub dynamic_generation: u64,
     /// The tablet-area preview's data.
     pub preview: AreaPreview,
+    /// The list's length and how much of it is in view, in lines: what the scrollbar draws.
+    pub scroll_lines: f32,
+    pub scroll_view: f32,
+    /// The scrollbar's thumb is held.
+    pub scrollbar_held: bool,
 }
 
 /// The screen's state on the update thread.
@@ -590,6 +636,90 @@ pub struct SettingsScreen {
     dynamic_labels: Arc<[Box<str>]>,
     dynamic_generation: u64,
     preview: AreaPreview,
+    /// The scrollbar's drag (ADR-0173).
+    bar: ScrollbarDrag,
+}
+
+/// The widget state a row of `kind` starts with.
+pub fn widget_of(kind: RowKind) -> RowWidget {
+    match kind {
+        RowKind::Key { value } => RowWidget::Key(KeyRow {
+            bind: KeyBind::new(),
+            value,
+        }),
+        RowKind::Button => RowWidget::Button,
+        RowKind::Note => RowWidget::Note,
+        RowKind::Preview => RowWidget::Preview,
+        RowKind::Toggle { value } => RowWidget::Toggle(Toggle::new(value)),
+        RowKind::Slider {
+            min,
+            max,
+            step,
+            value,
+        } => RowWidget::Slider(Slider::new(min, max, step, value)),
+        RowKind::Dropdown { options, selected } => {
+            RowWidget::Dropdown(Dropdown::new(options, selected))
+        }
+    }
+}
+
+/// Gives `input` to the toggle, slider or dropdown `widget` of the row at `slot` of
+/// `layout`, in the form it understands; the new value, if it changed. Other widgets give
+/// nothing. The screen and the toolbar's popup (ADR-0168) share it. Does not allocate.
+pub fn route_value(
+    widget: &mut RowWidget,
+    input: SettingsInput,
+    layout: &SettingsLayout,
+    slot: usize,
+) -> Option<RowValue> {
+    Some(match widget {
+        RowWidget::Toggle(toggle) => {
+            let input = match input {
+                SettingsInput::Activate => ToggleInput::Activate,
+                SettingsInput::PointerPress { x, y } => ToggleInput::PointerPress { x, y },
+                _ => return None,
+            };
+            let ToggleAction::Changed(v) = toggle.input(input, &layout.toggle(slot))?;
+            RowValue::Toggle(v)
+        }
+        RowWidget::Slider(slider) => {
+            let input = match input {
+                SettingsInput::Left => SliderInput::Decrease,
+                SettingsInput::Right => SliderInput::Increase,
+                SettingsInput::Activate => SliderInput::Activate,
+                SettingsInput::Type(c) => SliderInput::Type(c),
+                SettingsInput::Erase => SliderInput::Erase,
+                SettingsInput::EraseWord => SliderInput::EraseWord,
+                SettingsInput::Back => SliderInput::Back,
+                SettingsInput::PointerPress { x, y } => SliderInput::PointerPress { x, y },
+                SettingsInput::PointerMove { x, y } => SliderInput::PointerMove { x, y },
+                SettingsInput::PointerRelease => SliderInput::PointerRelease,
+                _ => return None,
+            };
+            let SliderAction::Changed(v) = slider.input(input, &layout.slider(slot))?;
+            RowValue::Slider(v)
+        }
+        RowWidget::Dropdown(dropdown) => {
+            let open = dropdown.is_open();
+            let input = match input {
+                SettingsInput::Up => DropdownInput::Up,
+                SettingsInput::Down => DropdownInput::Down,
+                // Closed, the arrows step the selection; open they do nothing.
+                SettingsInput::Left if !open => DropdownInput::Up,
+                SettingsInput::Right if !open => DropdownInput::Down,
+                SettingsInput::Activate => DropdownInput::Activate,
+                SettingsInput::Back => DropdownInput::Back,
+                SettingsInput::PointerMove { x, y } => DropdownInput::PointerMove { x, y },
+                SettingsInput::PointerPress { x, y } => DropdownInput::PointerPress { x, y },
+                SettingsInput::Scroll { lines } => DropdownInput::Scroll { lines },
+                _ => return None,
+            };
+            let layout = layout.dropdown(slot, dropdown.count());
+            let DropdownAction::Selected(i) = dropdown.input(input, &layout)?;
+            RowValue::Choice(i)
+        }
+        _ => return None,
+    })
 }
 
 impl SettingsScreen {
@@ -605,25 +735,7 @@ impl SettingsScreen {
             let section = spec.section.min(sections - 1);
             meta[i] = (section as u8, counts[section]);
             counts[section] = counts[section].saturating_add(1);
-            widgets[i] = match spec.kind {
-                RowKind::Key { value } => RowWidget::Key(KeyRow {
-                    bind: KeyBind::new(),
-                    value,
-                }),
-                RowKind::Button => RowWidget::Button,
-                RowKind::Note => RowWidget::Note,
-                RowKind::Preview => RowWidget::Preview,
-                RowKind::Toggle { value } => RowWidget::Toggle(Toggle::new(value)),
-                RowKind::Slider {
-                    min,
-                    max,
-                    step,
-                    value,
-                } => RowWidget::Slider(Slider::new(min, max, step, value)),
-                RowKind::Dropdown { options, selected } => {
-                    RowWidget::Dropdown(Dropdown::new(options, selected))
-                }
-            };
+            widgets[i] = widget_of(spec.kind);
         }
         let mut screen = SettingsScreen {
             widgets,
@@ -652,6 +764,7 @@ impl SettingsScreen {
             dynamic_labels: Arc::from([]),
             dynamic_generation: 0,
             preview: AreaPreview::default(),
+            bar: ScrollbarDrag::new(),
         };
         screen.recompute_slots();
         screen.focus = screen.first_shown().unwrap_or(0);
@@ -733,6 +846,9 @@ impl SettingsScreen {
             dynamic_labels: Arc::clone(&self.dynamic_labels),
             dynamic_generation: self.dynamic_generation,
             preview: self.preview,
+            scroll_lines: self.lines as f32,
+            scroll_view: self.visible_lines,
+            scrollbar_held: self.bar.is_dragging(),
         }
     }
 
@@ -869,6 +985,12 @@ impl SettingsScreen {
 
     fn erase(&mut self) {
         if self.search.pop() {
+            self.refilter();
+        }
+    }
+
+    fn erase_word(&mut self) {
+        if self.search.pop_word() {
             self.refilter();
         }
     }
@@ -1077,7 +1199,16 @@ impl SettingsScreen {
     /// from the row's construction step, so choose a step no finer than that.
     pub fn set_slider_range(&mut self, row: usize, min: f64, max: f64, step: f64) {
         if let Some(RowWidget::Slider(slider)) = self.widgets[..self.len].get_mut(row) {
-            *slider = Slider::new(min, max, step, slider.value());
+            *slider = Slider::new(min, max, step, slider.value()).with_free(slider.is_free());
+        }
+    }
+
+    /// Makes slider `row` keep typed and set values exact, outside its range too (ADR-0176).
+    pub fn set_slider_free(&mut self, row: usize) {
+        if let Some(RowWidget::Slider(slider)) = self.widgets[..self.len].get_mut(row)
+            && !slider.is_free()
+        {
+            *slider = slider.with_free(true);
         }
     }
 
@@ -1279,45 +1410,8 @@ impl SettingsScreen {
                 )
                 .then_some(SettingsAction::Pressed { row });
             }
-            RowWidget::Toggle(toggle) => {
-                let input = match input {
-                    SettingsInput::Activate => ToggleInput::Activate,
-                    SettingsInput::PointerPress { x, y } => ToggleInput::PointerPress { x, y },
-                    _ => return None,
-                };
-                let ToggleAction::Changed(v) = toggle.input(input, &layout.toggle(slot))?;
-                RowValue::Toggle(v)
-            }
-            RowWidget::Slider(slider) => {
-                let input = match input {
-                    SettingsInput::Left => SliderInput::Decrease,
-                    SettingsInput::Right => SliderInput::Increase,
-                    SettingsInput::PointerPress { x, y } => SliderInput::PointerPress { x, y },
-                    SettingsInput::PointerMove { x, y } => SliderInput::PointerMove { x, y },
-                    SettingsInput::PointerRelease => SliderInput::PointerRelease,
-                    _ => return None,
-                };
-                let SliderAction::Changed(v) = slider.input(input, &layout.slider(slot))?;
-                RowValue::Slider(v)
-            }
-            RowWidget::Dropdown(dropdown) => {
-                let open = dropdown.is_open();
-                let input = match input {
-                    SettingsInput::Up => DropdownInput::Up,
-                    SettingsInput::Down => DropdownInput::Down,
-                    // Closed, the arrows step the selection; open they do nothing.
-                    SettingsInput::Left if !open => DropdownInput::Up,
-                    SettingsInput::Right if !open => DropdownInput::Down,
-                    SettingsInput::Activate => DropdownInput::Activate,
-                    SettingsInput::Back => DropdownInput::Back,
-                    SettingsInput::PointerMove { x, y } => DropdownInput::PointerMove { x, y },
-                    SettingsInput::PointerPress { x, y } => DropdownInput::PointerPress { x, y },
-                    SettingsInput::Scroll { lines } => DropdownInput::Scroll { lines },
-                    _ => return None,
-                };
-                let layout = layout.dropdown(slot, dropdown.count());
-                let DropdownAction::Selected(i) = dropdown.input(input, &layout)?;
-                RowValue::Choice(i)
+            widget @ (RowWidget::Toggle(_) | RowWidget::Slider(_) | RowWidget::Dropdown(_)) => {
+                route_value(widget, input, layout, slot)?
             }
         };
         Some(SettingsAction::Changed { row, value })
@@ -1332,22 +1426,76 @@ impl SettingsScreen {
     ) -> Option<SettingsAction> {
         self.visible_lines = layout.visible_rows();
         let layout = layout.scrolled(self.shown);
+        if self.scrollbar_input(input, &layout) {
+            self.scroll = self.scroll.clamp(0.0, self.max_scroll());
+            return None;
+        }
         self.track_text(input, &layout);
+        let was_editing = self.editing_row().is_some();
         let action = self.input_scrolled(input, &layout);
-        if matches!(
-            input,
-            SettingsInput::Up
-                | SettingsInput::Down
-                | SettingsInput::Type(_)
-                | SettingsInput::Erase
-                | SettingsInput::Back
-                | SettingsInput::NextSection
-                | SettingsInput::PrevSection
-        ) {
+        if !was_editing
+            && matches!(
+                input,
+                SettingsInput::Up
+                    | SettingsInput::Down
+                    | SettingsInput::Type(_)
+                    | SettingsInput::Erase
+                    | SettingsInput::EraseWord
+                    | SettingsInput::Back
+                    | SettingsInput::NextSection
+                    | SettingsInput::PrevSection
+            )
+        {
             self.scroll_to_focus();
         }
         self.scroll = self.scroll.clamp(0.0, self.max_scroll());
         action
+    }
+
+    /// The scrollbar over the list's left edge, as the screen is laid out now.
+    pub fn scrollbar(&self, layout: &SettingsLayout) -> Scrollbar {
+        Scrollbar::new(
+            layout.scrollbar_track(),
+            self.lines as f32,
+            self.visible_lines,
+            layout.theme.scrollbar_min_thumb * layout.scale,
+        )
+    }
+
+    /// The scrollbar's part of the pointer input (ADR-0173): a press on its track takes hold
+    /// of the thumb (jumping first outside it), moves drag it, the release lets go. The
+    /// list follows at once. Returns whether the bar took the input.
+    fn scrollbar_input(&mut self, input: SettingsInput, layout: &SettingsLayout) -> bool {
+        let bar = self.scrollbar(layout);
+        let offset = match input {
+            SettingsInput::PointerPress { x, y } => {
+                if self.conflict.is_some()
+                    || self.listening_row().is_some()
+                    || self.open_dropdown().is_some()
+                {
+                    return false;
+                }
+                self.text.pointer([x, y]);
+                self.bar.press(&bar, self.shown, x, y)
+            }
+            SettingsInput::PointerMove { x, y } if self.bar.is_dragging() => {
+                self.text.pointer([x, y]);
+                self.bar.drag(&bar, y)
+            }
+            SettingsInput::PointerRelease if self.bar.is_dragging() => {
+                self.bar.release();
+                return true;
+            }
+            _ => None,
+        };
+        let Some(offset) = offset else {
+            return false;
+        };
+        let offset = offset.clamp(0.0, self.max_scroll());
+        self.scroll = offset;
+        self.shown = offset;
+        self.pinned = None;
+        true
     }
 
     /// Keeps the marquees' view of the pointer: where it is, and a press on a row's name
@@ -1408,6 +1556,9 @@ impl SettingsScreen {
         if let Some(row) = self.listening_row() {
             return self.listen(row, input);
         }
+        if let Some(row) = self.editing_row() {
+            return self.edit_value(row, input, layout);
+        }
         match input {
             SettingsInput::Up | SettingsInput::Down => {
                 if self.open_dropdown().is_some() {
@@ -1432,6 +1583,10 @@ impl SettingsScreen {
             }
             SettingsInput::Erase => {
                 self.erase();
+                None
+            }
+            SettingsInput::EraseWord => {
+                self.erase_word();
                 None
             }
             SettingsInput::NextSection => {
@@ -1490,6 +1645,49 @@ impl SettingsScreen {
                 }
                 action
             }
+        }
+    }
+
+    /// The slider row whose value is being typed (ADR-0173).
+    pub fn editing_row(&self) -> Option<usize> {
+        (0..self.len)
+            .find(|row| matches!(&self.widgets[*row], RowWidget::Slider(s) if s.is_editing()))
+    }
+
+    /// Input while the value of slider row `row` is typed: keys type, Enter commits, Escape
+    /// drops the text (it does not close the screen), a press outside the value commits (a
+    /// commit that changed the value takes the press; otherwise the press goes on), the
+    /// wheel scrolls. The rest waits.
+    fn edit_value(
+        &mut self,
+        row: usize,
+        input: SettingsInput,
+        layout: &SettingsLayout,
+    ) -> Option<SettingsAction> {
+        match input {
+            SettingsInput::Type(_)
+            | SettingsInput::Erase
+            | SettingsInput::EraseWord
+            | SettingsInput::Activate
+            | SettingsInput::Back => self.route_widget(row, input, layout),
+            SettingsInput::PointerPress { x, y } => {
+                let on_value = self.row_at(layout, x, y) == Some(row)
+                    && layout.slider(self.slot(row)).value.contains(x, y);
+                if on_value {
+                    return None;
+                }
+                let committed = self.route_widget(row, SettingsInput::Activate, layout);
+                if committed.is_some() {
+                    return committed;
+                }
+                self.input_scrolled(input, layout)
+            }
+            SettingsInput::Scroll { lines } => {
+                self.scroll += lines;
+                self.pinned = None;
+                None
+            }
+            _ => None,
         }
     }
 
@@ -1556,6 +1754,13 @@ impl SettingsScreen {
         }
     }
 
+    /// The row under the point of `layout`, as the screen is scrolled now (unscrolled
+    /// `layout`, as [`SettingsScreen::input`] takes it).
+    pub fn row_under(&self, layout: &SettingsLayout, x: f32, y: f32) -> Option<usize> {
+        self.row_at(&layout.scrolled(self.shown), x, y)
+            .filter(|row| !self.hidden[*row])
+    }
+
     fn row_at(&self, layout: &SettingsLayout, x: f32, y: f32) -> Option<usize> {
         if !layout.in_content(x, y) {
             return None;
@@ -1567,3 +1772,5 @@ impl SettingsScreen {
 
 #[cfg(test)]
 mod tests;
+#[cfg(test)]
+mod tests_layout;

@@ -21,6 +21,8 @@ fn labels() -> DetailLabels {
         drain_rate: "HP".into(),
         scores: "Local scores".into(),
         no_scores: "No local scores".into(),
+        accuracy: "ACCURACY".into(),
+        combo: "MAX COMBO".into(),
     }
 }
 
@@ -54,6 +56,7 @@ fn row(score: u64) -> ScoreRow {
         max_combo: 1234,
         rank: *b"SH",
         mods: ScoreMods::from_acronyms(["HD", "DT"]),
+        multiplier: 1.1801,
         date_ms: 1_794_681_000_000,
         ..Default::default()
     }
@@ -114,17 +117,19 @@ impl Rig {
         screen.set_details(Some(details));
         let snapshot = screen.snapshot();
         let layout = SongSelectLayout::new(1280.0, 768.0, &self.theme);
-        let (mut rects, mut texts) = (0, 0);
+        let (mut rects, texts) = (0, std::cell::Cell::new(0));
         self.panel.push(
+            &mut self.type_setter,
             &layout,
             &self.theme,
             &snapshot,
             1.0,
             0,
             &mut |_, _, _| rects += 1,
-            &mut |line, _, _, _| texts += usize::from(!line.text.is_empty()),
+            &mut |line, _, _, _| texts.set(texts.get() + usize::from(!line.text.is_empty())),
+            &mut |line, _, _, _, _, _| texts.set(texts.get() + usize::from(!line.text.is_empty())),
         );
-        (rects, texts)
+        (rects, texts.get())
     }
 
     /// The outlines of the wedges drawn at `opacity`.
@@ -135,6 +140,7 @@ impl Rig {
         let layout = SongSelectLayout::new(1280.0, 768.0, &self.theme);
         let mut found = Vec::new();
         self.panel.push(
+            &mut self.type_setter,
             &layout,
             &self.theme,
             &snapshot,
@@ -146,6 +152,7 @@ impl Rig {
                 }
             },
             &mut |_, _, _, _| {},
+            &mut |_, _, _, _, _, _| {},
         );
         found
     }
@@ -182,14 +189,11 @@ fn no_scores_leave_the_rows_empty_and_scores_fill_them() {
     assert_eq!(first.rank.text, "SH");
     assert_eq!(first.score.text, "1,234,567");
     assert_eq!(first.accuracy.text, "98.45%");
-    assert_eq!(
-        first.extra.text,
-        "1234x  \u{b7}  HD DT  \u{b7}  2026-11-14 18:30"
-    );
-    assert_eq!(
-        rig.panel.scores[1].extra.text,
-        "1234x  \u{b7}  2026-11-14 18:30"
-    );
+    assert_eq!(first.combo.text, "1234x");
+    assert_eq!(first.date.text, "2026-11-14 18:30");
+    assert_eq!(first.extra.text, "HD DT  \u{b7}  1.19x");
+    assert_eq!(rig.panel.scores[1].extra.text, "");
+    assert_eq!(rig.panel.scores[1].date.text, "2026-11-14 18:30");
     assert!(rig.panel.scores[2].score.text.is_empty());
 }
 
@@ -243,17 +247,18 @@ fn the_panel_fits_and_keeps_clear_of_the_list_at_common_sizes() {
                 info.x + info.width + inset <= layout.header.x - inset,
                 "{tag}"
             );
-            // The info content stays above the hint row, which shows the mods.
-            assert!(info.y + info.height <= layout.hint.y, "{tag}");
-            assert!(
-                layout.search.y >= layout.header.y + layout.header.height,
-                "{tag}"
-            );
+            // The info content stays above the footer bar (ADR-0175).
+            assert!(info.y + info.height <= layout.footer.bar.y, "{tag}");
+            // The status line shares the search line's place (ADR-0177).
+            assert_eq!(layout.search, layout.header, "{tag}");
             assert!(
                 layout.list.y > layout.search.y + layout.search.height,
                 "{tag}"
             );
-            assert!(layout.list.y + layout.list.height <= layout.hint.y, "{tag}");
+            assert!(
+                layout.list.y + layout.list.height <= layout.footer.bar.y,
+                "{tag}"
+            );
             let parts = InfoLayout::new(&info, &theme, layout.scale);
             let bottom = info.y + info.height;
             // The two wedges keep apart (ADR-0136).
@@ -409,6 +414,7 @@ fn the_wedges_run_off_the_left_edge_from_top_to_bottom() {
     let tan = rig.theme.button_skew().tan();
     let mut lefts = Vec::new();
     rig.panel.push(
+        &mut rig.type_setter,
         &layout,
         &rig.theme,
         &snapshot,
@@ -425,6 +431,7 @@ fn the_wedges_run_off_the_left_edge_from_top_to_bottom() {
             }
         },
         &mut |_, _, _, _| {},
+        &mut |_, _, _, _, _, _| {},
     );
     assert_eq!(lefts.len(), 2);
     for (top, bottom) in lefts {
@@ -443,8 +450,9 @@ fn the_difficulty_lines_keep_a_text_pad_from_the_leaning_edge() {
     let pad = rig.theme.song_text_pad * layout.scale;
     let inset = rig.theme.song_margin * layout.scale / 2.0;
     let mut wedges = Vec::new();
-    let mut lines = Vec::new();
+    let lines = std::cell::RefCell::new(Vec::new());
     rig.panel.push(
+        &mut rig.type_setter,
         &layout,
         &rig.theme,
         &snapshot,
@@ -457,7 +465,17 @@ fn the_difficulty_lines_keep_a_text_pad_from_the_leaning_edge() {
         },
         &mut |line, x, centre_y, _| {
             if !line.text.is_empty() {
-                lines.push((x, x + line.layout.width(), centre_y));
+                lines
+                    .borrow_mut()
+                    .push((x, x + line.layout.width(), centre_y));
+            }
+        },
+        &mut |line, marquee, avail, x, centre_y, _| {
+            if !line.text.is_empty() {
+                // The visible part: the room when the text rides.
+                let width = line.layout.width().min(avail);
+                assert!(marquee.overflow() >= 0.0);
+                lines.borrow_mut().push((x, x + width, centre_y));
             }
         },
     );
@@ -465,6 +483,7 @@ fn the_difficulty_lines_keep_a_text_pad_from_the_leaning_edge() {
     let (wedge, lean) = wedges[0];
     let edge = |y: f32| wedge.x + wedge.width + (wedge.y + wedge.height / 2.0 - y) * lean;
     let inside: Vec<_> = lines
+        .into_inner()
         .into_iter()
         .filter(|&(_, _, y)| y > wedge.y && y < wedge.y + wedge.height)
         .collect();
@@ -488,6 +507,7 @@ fn the_bars_move_to_new_values_and_the_first_shows_at_once() {
         let snapshot = screen.snapshot();
         let layout = SongSelectLayout::new(1280.0, 768.0, &rig.theme);
         rig.panel.push(
+            &mut rig.type_setter,
             &layout,
             &rig.theme,
             &snapshot,
@@ -495,6 +515,7 @@ fn the_bars_move_to_new_values_and_the_first_shows_at_once() {
             now,
             &mut |_, _, _| {},
             &mut |_, _, _, _| {},
+            &mut |_, _, _, _, _, _| {},
         );
     };
     let duration = rig.theme.song_info_transition_ms as u64 * ms;
@@ -526,6 +547,7 @@ fn drawn_score_centres(
     let snapshot = screen.snapshot();
     let mut centres = Vec::new();
     rig.panel.push(
+        &mut rig.type_setter,
         layout,
         &rig.theme,
         &snapshot,
@@ -537,6 +559,7 @@ fn drawn_score_centres(
             }
         },
         &mut |_, _, _, _| {},
+        &mut |_, _, _, _, _, _| {},
     );
     centres
 }
@@ -590,21 +613,591 @@ fn the_hovered_score_row_takes_the_hover_fill() {
     screen.input(I::PointerMove { x, y }, &layout);
     let snapshot = screen.snapshot();
     let mut fills = Vec::new();
+    // Long after the rows came in.
     rig.panel.push(
+        &mut rig.type_setter,
         &layout,
         &rig.theme,
         &snapshot,
         1.0,
-        0,
+        5_000_000_000,
         &mut |_, colour, look| {
             if matches!(look, Look::Round) {
                 fills.push(colour);
             }
         },
         &mut |_, _, _, _| {},
+        &mut |_, _, _, _, _, _| {},
     );
     assert_eq!(
         fills,
         [rig.theme.song_search_fill, rig.theme.button_hover_fill]
     );
+}
+
+#[test]
+fn short_texts_narrow_the_panel_and_a_new_width_moves_there() {
+    let mut rig = Rig::new();
+    rig.theme.song_info_auto_width = true;
+    rig.show(details(None));
+    let layout = SongSelectLayout::new(1280.0, 768.0, &rig.theme);
+    let snapshot = {
+        let mut screen = rig.screen.clone();
+        screen.set_details(Some(details(None)));
+        screen.snapshot()
+    };
+    let right_edge = |panel: &mut InfoPanel, now_ns: u64| {
+        let mut edge = 0.0_f32;
+        let mut type_setter = Typesetter::new(Arc::new(FontRegistry::with_builtin()), 700);
+        panel.push(
+            &mut type_setter,
+            &layout,
+            &rig.theme,
+            &snapshot,
+            1.0,
+            now_ns,
+            &mut |r, _, look| {
+                if matches!(look, Look::Wedge { .. }) {
+                    edge = edge.max(r.x + r.width);
+                }
+            },
+            &mut |_, _, _, _| {},
+            &mut |_, _, _, _, _, _| {},
+        );
+        edge
+    };
+    let first = right_edge(&mut rig.panel, 0);
+    let full = layout.info.x + layout.info.width + rig.theme.song_margin;
+    assert!(first < full, "short texts: {first} < {full}");
+    // A longer name widens the panel over the transition, not at once.
+    rig.panel.name.text.push_str(" with a much longer name");
+    rig.type_setter
+        .lay_out(&mut rig.panel.name, rig.theme.song_info_title_size);
+    let start = right_edge(&mut rig.panel, 1);
+    let later = right_edge(&mut rig.panel, 200_000_000);
+    let end = right_edge(&mut rig.panel, 2_000_000_000);
+    assert!(start - first < 1.0, "no jump: {first} -> {start}");
+    assert!(start < later && later < end, "{start} < {later} < {end}");
+}
+
+/// The right edge of the widest wedge the panel draws.
+fn wedge_edge(rig: &mut Rig) -> f32 {
+    let layout = SongSelectLayout::new(1280.0, 768.0, &rig.theme);
+    let mut screen = rig.screen.clone();
+    screen.set_details(Some(details(None)));
+    let snapshot = screen.snapshot();
+    let mut edge = 0.0_f32;
+    rig.panel.push(
+        &mut rig.type_setter,
+        &layout,
+        &rig.theme,
+        &snapshot,
+        1.0,
+        0,
+        &mut |r, _, look| {
+            if matches!(look, Look::Wedge { .. }) {
+                edge = edge.max(r.x + r.width);
+            }
+        },
+        &mut |_, _, _, _| {},
+        &mut |_, _, _, _, _, _| {},
+    );
+    edge
+}
+
+#[test]
+fn the_panel_does_not_follow_its_texts_unless_asked() {
+    let mut rig = Rig::new();
+    assert!(!rig.theme.song_info_auto_width);
+    rig.show(details(None));
+    let fixed = wedge_edge(&mut rig);
+    let mut auto = Rig::new();
+    auto.theme.song_info_auto_width = true;
+    auto.show(details(None));
+    assert!(
+        wedge_edge(&mut auto) < fixed - 1.0,
+        "short texts narrow it only when asked"
+    );
+}
+
+#[test]
+fn the_default_width_is_lazers_at_its_ui_scale_and_the_multipliers_scale_it() {
+    let theme = Theme::default();
+    // Lazer at 0.85: 700 * 0.85 on a 1080p window.
+    let at = |theme: &Theme| SongSelectLayout::new(1920.0, 1080.0, theme).info.width;
+    assert!((at(&theme) - 595.0).abs() < 8.0, "{}", at(&theme));
+    let narrow = Theme {
+        song_info_width_mult: 0.5,
+        ..Theme::default()
+    };
+    assert!((at(&narrow) - at(&theme) / 2.0).abs() < 1.0);
+    // Wider windows get lazer's bonus, up to half the window.
+    let wide = SongSelectLayout::new(2560.0, 1080.0, &theme).info.width;
+    assert!(wide > at(&theme) * 1.05, "{wide}");
+}
+
+#[test]
+fn the_height_multiplier_stretches_the_rows() {
+    let theme = Theme::default();
+    let tall = Theme {
+        song_info_height_mult: 1.5,
+        ..Theme::default()
+    };
+    let layout = SongSelectLayout::new(1280.0, 768.0, &theme);
+    let taller = SongSelectLayout::new(1280.0, 768.0, &tall);
+    assert!(taller.info_parts.bars[3].track.y > layout.info_parts.bars[3].track.y);
+    assert!(taller.info_parts.rows[0].height > layout.info_parts.rows[0].height);
+}
+
+#[test]
+fn texts_that_do_not_fit_ride_instead_of_being_cut() {
+    let mut rig = Rig::new();
+    rig.show(details(None));
+    rig.panel.name.text = "A very long difficulty name that cannot fit the panel at all".into();
+    rig.type_setter.lay_out_face(
+        &mut rig.panel.name,
+        rig.theme.regular_face(rig.theme.song_info_title_size),
+    );
+    assert!(!rig.panel.name.text.contains('\u{2026}'));
+    let mut screen = rig.screen.clone();
+    screen.set_details(Some(details(None)));
+    let snapshot = screen.snapshot();
+    let layout = SongSelectLayout::new(1280.0, 768.0, &rig.theme);
+    let params = crate::marquee::MarqueeParams::new(&rig.theme, layout.scale);
+    // The draw side hands each marquee the room; here it only reads the overflow.
+    let room = std::cell::Cell::new(0.0_f32);
+    rig.panel.push(
+        &mut rig.type_setter,
+        &layout,
+        &rig.theme,
+        &snapshot,
+        1.0,
+        0,
+        &mut |_, _, _| {},
+        &mut |_, _, _, _| {},
+        &mut |line, marquee, avail, _, _, _| {
+            if line.text.starts_with("A very long") {
+                room.set(avail);
+                marquee.set_overflow(line.layout.width() - avail, 0);
+            }
+        },
+    );
+    let mut marquee = crate::marquee::Marquee::default();
+    marquee.set_overflow(rig.panel.name.layout.width() - room.get(), 0);
+    assert!(marquee.overflow() > 0.0, "the name overflows its room");
+    // Held for the pause, then moving.
+    assert_eq!(marquee.offset(params.pause_ns / 2, &params), 0.0);
+    assert!(marquee.offset(params.pause_ns + 500_000_000, &params) > 0.0);
+}
+
+/// Per row, when its entrance started, after the frame at `now`.
+fn row_starts(rig: &mut Rig, screen: &SongSelect, now: u64) -> [u64; MAX_LOCAL_SCORES] {
+    let snapshot = screen.snapshot();
+    let layout = SongSelectLayout::new(1280.0, 768.0, &rig.theme);
+    rig.panel.push(
+        &mut rig.type_setter,
+        &layout,
+        &rig.theme,
+        &snapshot,
+        1.0,
+        now,
+        &mut |_, _, _| {},
+        &mut |_, _, _, _| {},
+        &mut |_, _, _, _, _, _| {},
+    );
+    rig.panel.motion.row_since
+}
+
+#[test]
+fn score_rows_come_in_staggered_and_only_new_rows_animate_again() {
+    let mut rig = Rig::new();
+    let ms = 1_000_000u64;
+    let mut scores = LocalScores::default();
+    for (i, slot) in scores.rows.iter_mut().enumerate().take(3) {
+        *slot = Some(row(100 - i as u64));
+    }
+    let mut screen = rig.screen.clone();
+    screen.set_details(Some(details(Some(scores))));
+    let t = &rig.theme;
+    let (delay, stagger) = (
+        t.song_score_enter_delay_ms as u64 * ms,
+        t.song_score_enter_stagger_ms as u64 * ms,
+    );
+    let now = 10 * ms;
+    let first = row_starts(&mut rig, &screen, now);
+    for (i, start) in first.iter().enumerate().take(3) {
+        assert_eq!(*start, now + delay + stagger * i as u64, "row {i}");
+    }
+    // The same difficulty with a refreshed list of the same length: nothing starts over.
+    let mut refreshed = scores;
+    refreshed.rows[0] = Some(row(5000));
+    screen.set_details(Some(details(Some(refreshed))));
+    assert_eq!(row_starts(&mut rig, &screen, 900 * ms), first);
+    // A new row comes in alone, after the delay.
+    refreshed.rows[3] = Some(row(1));
+    screen.set_details(Some(details(Some(refreshed))));
+    let more = row_starts(&mut rig, &screen, 2000 * ms);
+    assert_eq!(more[..3], first[..3]);
+    assert_eq!(more[3], 2000 * ms + delay);
+    // Another difficulty starts all over.
+    let mut other = screen.clone();
+    let list = Arc::new(SongList {
+        sets: vec![SetRow {
+            key: 2,
+            artist: "Artist".into(),
+            title: "Title".into(),
+            creator: "mapper".into(),
+            difficulties: vec![DifficultyRow {
+                key: 77,
+                ..DifficultyRow::new(SearchSource::default())
+            }],
+        }],
+    });
+    let filter = SongFilter::for_list(&list);
+    other.set_list(list, filter);
+    other.set_details(Some(details(Some(scores))));
+    let again = row_starts(&mut rig, &other, 3000 * ms);
+    assert_eq!(again[0], 3000 * ms + delay);
+}
+
+#[test]
+fn the_panel_does_not_move_sideways_when_scores_come_or_go() {
+    let mut rig = Rig::new();
+    let layout = SongSelectLayout::new(1280.0, 768.0, &rig.theme);
+    let wedge_x = |rig: &mut Rig, details: BeatmapDetails| {
+        rig.show(details);
+        let mut screen = rig.screen.clone();
+        screen.set_details(Some(details));
+        let snapshot = screen.snapshot();
+        let mut first = None;
+        rig.panel.push(
+            &mut rig.type_setter,
+            &layout,
+            &rig.theme,
+            &snapshot,
+            1.0,
+            0,
+            &mut |r, _, look| {
+                if first.is_none() && matches!(look, Look::Wedge { .. }) {
+                    first = Some(r.x + r.width);
+                }
+            },
+            &mut |_, _, _, _| {},
+            &mut |_, _, _, _, _, _| {},
+        );
+        first.unwrap()
+    };
+    let none = wedge_x(&mut rig, details(None));
+    let empty = wedge_x(&mut rig, details(Some(LocalScores::default())));
+    let mut some = LocalScores::default();
+    some.rows[0] = Some(row(1_000_000));
+    let one = wedge_x(&mut rig, details(Some(some)));
+    assert!(
+        (none - empty).abs() < 1e-3 && (empty - one).abs() < 1e-3,
+        "{none} {empty} {one}"
+    );
+}
+
+#[test]
+fn a_new_star_rating_eases_the_pills_colour() {
+    let mut rig = Rig::new();
+    let layout = SongSelectLayout::new(1280.0, 768.0, &rig.theme);
+    let with_stars = |stars: f32| {
+        let mut difficulty = DifficultyRow::new(SearchSource {
+            difficulty: "Insane",
+            ..SearchSource::default()
+        });
+        difficulty.stars = Some(stars);
+        Arc::new(SongList {
+            sets: vec![SetRow {
+                key: 1,
+                artist: "Artist".into(),
+                title: "Title".into(),
+                creator: "mapper".into(),
+                difficulties: vec![difficulty],
+            }],
+        })
+    };
+    let pill = |rig: &mut Rig, now_ns: u64| {
+        let snapshot = rig.screen.snapshot();
+        let mut colour = None;
+        rig.panel.push(
+            &mut rig.type_setter,
+            &layout,
+            &rig.theme,
+            &snapshot,
+            1.0,
+            now_ns,
+            &mut |_, c, look| {
+                if colour.is_none() && matches!(look, Look::Pill) {
+                    colour = Some(c);
+                }
+            },
+            &mut |_, _, _, _| {},
+            &mut |_, _, _, _, _, _| {},
+        );
+        colour.expect("a star pill")
+    };
+    let list = with_stars(2.0);
+    let filter = SongFilter::for_list(&list);
+    rig.screen.set_list(list, filter);
+    let low = pill(&mut rig, 1_000_000_000);
+    let list = with_stars(7.0);
+    let filter = SongFilter::for_list(&list);
+    rig.screen.refresh_list(list, filter);
+    let start = pill(&mut rig, 1_001_000_000);
+    let end = pill(&mut rig, 3_000_000_000);
+    let far = |a: Color, b: Color| (a.r - b.r).abs() + (a.g - b.g).abs() + (a.b - b.b).abs();
+    assert!(far(start, low) < 0.05, "no jump at once");
+    assert!(far(end, low) > 0.2, "it gets there");
+    assert_eq!(end, crate::star_colour::for_stars(7.0));
+}
+
+#[test]
+fn the_stars_and_values_roll_to_new_numbers_with_their_colour_and_bars() {
+    let mut rig = Rig::new();
+    let ms = 1_000_000;
+    let layout = SongSelectLayout::new(1280.0, 768.0, &rig.theme);
+    let rated = |stars: f32| {
+        let mut difficulty = DifficultyRow::new(SearchSource {
+            difficulty: "Insane",
+            ..SearchSource::default()
+        });
+        difficulty.stars = Some(stars);
+        Arc::new(SongList {
+            sets: vec![SetRow {
+                key: 1,
+                artist: "Artist".into(),
+                title: "Title".into(),
+                creator: "mapper".into(),
+                difficulties: vec![difficulty],
+            }],
+        })
+    };
+    let frame = |rig: &mut Rig, now: u64| {
+        let snapshot = rig.screen.snapshot();
+        rig.panel.refresh(
+            &mut rig.type_setter,
+            &rig.theme,
+            &layout,
+            [10.0; 2],
+            &snapshot,
+        );
+        rig.panel.push(
+            &mut rig.type_setter,
+            &layout,
+            &rig.theme,
+            &snapshot,
+            1.0,
+            now,
+            &mut |_, _, _| {},
+            &mut |_, _, _, _| {},
+            &mut |_, _, _, _, _, _| {},
+        );
+        (
+            rig.panel.stars.text.clone(),
+            rig.panel.values[0].text.clone(),
+        )
+    };
+    let list = rated(2.0);
+    let filter = SongFilter::for_list(&list);
+    rig.screen.set_list(list, filter);
+    rig.screen.set_details(Some(details(None)));
+    // The first selection shows its numbers at once.
+    assert_eq!(frame(&mut rig, 1_000 * ms), ("2.00".into(), "4".into()));
+    // Harder: a higher rating and CS.
+    let list = rated(7.0);
+    let filter = SongFilter::for_list(&list);
+    rig.screen.refresh_list(list, filter);
+    rig.screen.set_details(Some(BeatmapDetails {
+        circle_size: 8.0,
+        ..details(None)
+    }));
+    let (stars, cs) = frame(&mut rig, 1_001 * ms);
+    assert_eq!((stars.as_str(), cs.as_str()), ("2.00", "4"));
+    let (stars, cs) = frame(&mut rig, 1_001 * ms + 250 * ms);
+    let (stars, cs): (f32, f32) = (stars.parse().unwrap(), cs.parse().unwrap());
+    assert!(
+        stars > 2.5 && stars < 7.0 && cs > 4.0 && cs < 8.0,
+        "{stars} {cs}"
+    );
+    let end = frame(&mut rig, 1_001 * ms + 2_000 * ms);
+    assert_eq!(end, ("7.00".into(), "8".into()));
+}
+
+/// The height of the scores' wedge (the second wedge drawn) at `now`.
+fn board_height(rig: &mut Rig, screen: &SongSelect, now: u64) -> f32 {
+    let snapshot = screen.snapshot();
+    let layout = SongSelectLayout::new(1280.0, 768.0, &rig.theme);
+    let mut heights = Vec::new();
+    rig.panel.push(
+        &mut rig.type_setter,
+        &layout,
+        &rig.theme,
+        &snapshot,
+        1.0,
+        now,
+        &mut |r, _, look| {
+            if matches!(look, Look::Wedge { .. }) {
+                heights.push(r.height);
+            }
+        },
+        &mut |_, _, _, _| {},
+        &mut |_, _, _, _, _, _| {},
+    );
+    assert_eq!(heights.len(), 2, "the info wedge and the board");
+    heights[1]
+}
+
+#[test]
+fn the_board_eases_its_height_instead_of_jumping() {
+    let mut rig = Rig::new();
+    let ms = 1_000_000u64;
+    let mut screen = rig.screen.clone();
+    // No scores: the board holds the empty line.
+    screen.set_details(Some(details(Some(LocalScores::default()))));
+    let empty = board_height(&mut rig, &screen, 10 * ms);
+    assert_eq!(board_height(&mut rig, &screen, 5000 * ms), empty);
+    // Scores arrive: the board grows to the rows' height, over the theme's time.
+    let mut scores = LocalScores::default();
+    for (i, slot) in scores.rows.iter_mut().enumerate().take(3) {
+        *slot = Some(row(100 - i as u64));
+    }
+    screen.set_details(Some(details(Some(scores))));
+    let start = 6000 * ms;
+    let at_start = board_height(&mut rig, &screen, start);
+    assert!((at_start - empty).abs() < 0.5, "starts where it was");
+    let span = rig.theme.song_board_ms as u64 * ms;
+    let middle = board_height(&mut rig, &screen, start + span / 4);
+    let done = board_height(&mut rig, &screen, start + span);
+    assert!(done > empty + 10.0, "the rows make it taller");
+    assert!(middle > empty && middle < done, "{empty} {middle} {done}");
+    assert_eq!(board_height(&mut rig, &screen, start + 3 * span), done);
+    // Fewer rows shrink it the same way.
+    let mut one = scores;
+    one.rows[1] = None;
+    one.rows[2] = None;
+    screen.set_details(Some(details(Some(one))));
+    let shrinking = board_height(&mut rig, &screen, start + 4 * span);
+    let settled = board_height(&mut rig, &screen, start + 4 * span + span / 4);
+    assert!((shrinking - done).abs() < 0.5);
+    assert!(settled < done && settled > shrinking - 1000.0);
+}
+
+#[test]
+fn the_rank_column_is_lazers_forty_wide() {
+    let theme = Theme::default();
+    assert_eq!(theme.song_score_rank_width, 40.0);
+    let sizes = ScoreSizes::new(&theme, 1.0);
+    assert_eq!(sizes.rank, 40.0);
+}
+
+/// The texts start where lazer's wedge content does, whatever their height (the wedge's
+/// edge leans, the texts stand straight), and the wedge keeps below the toolbar.
+#[test]
+fn the_texts_start_at_the_content_margin_and_the_wedge_clears_the_toolbar() {
+    for (w, h) in [(1920.0, 1080.0), (1280.0, 720.0)] {
+        let mut rig = Rig::new();
+        rig.show(details(Some(LocalScores::default())));
+        let mut screen = rig.screen.clone();
+        screen.set_details(Some(details(Some(LocalScores::default()))));
+        let snapshot = screen.snapshot();
+        let layout = SongSelectLayout::new(w, h, &rig.theme);
+        let wanted = rig.theme.song_wedge_content_margin * layout.scale;
+        let starts = std::cell::RefCell::new(Vec::new());
+        let tops = std::cell::RefCell::new(Vec::new());
+        rig.panel.push(
+            &mut rig.type_setter,
+            &layout,
+            &rig.theme,
+            &snapshot,
+            1.0,
+            0,
+            &mut |r, _, look| {
+                if matches!(look, Look::Wedge { .. }) {
+                    tops.borrow_mut().push(r.y);
+                }
+            },
+            &mut |line, x, _, _| {
+                if !line.text.is_empty() {
+                    starts.borrow_mut().push(x);
+                }
+            },
+            &mut |line, _, _, x, _, _| {
+                if !line.text.is_empty() {
+                    starts.borrow_mut().push(x);
+                }
+            },
+        );
+        let toolbar = rig.theme.toolbar_height * layout.scale;
+        for top in tops.into_inner() {
+            assert!(
+                top >= toolbar - 0.01,
+                "{w}x{h}: wedge top {top} < {toolbar}"
+            );
+        }
+        let starts = starts.into_inner();
+        assert!(!starts.is_empty());
+        let at_margin = starts
+            .iter()
+            .filter(|&&x| (x - wanted).abs() < 0.01)
+            .count();
+        assert!(at_margin >= 8, "{w}x{h}: {starts:?} vs {wanted}");
+        assert!(starts.iter().all(|&x| x >= wanted - 0.01));
+    }
+}
+
+#[test]
+fn the_score_rows_keep_their_left_edge_and_their_right_ends_follow_the_board() {
+    let mut rig = Rig::new();
+    let layout = SongSelectLayout::new(1280.0, 768.0, &rig.theme);
+    let rows_of = |rig: &mut Rig, count: usize| {
+        let mut scores = LocalScores::default();
+        for i in 0..count {
+            scores.rows[i] = Some(row(1_000_000 - i as u64));
+        }
+        let details = details(Some(scores));
+        rig.show(details);
+        let mut screen = rig.screen.clone();
+        screen.set_details(Some(details));
+        let snapshot = screen.snapshot();
+        let mut found = Vec::new();
+        rig.panel.push(
+            &mut rig.type_setter,
+            &layout,
+            &rig.theme,
+            &snapshot,
+            1.0,
+            // Long after the rows came in.
+            10_000_000_000,
+            &mut |r: &Rect, _, look| {
+                if matches!(look, Look::Round) {
+                    found.push((r.x, r.x + r.width));
+                }
+            },
+            &mut |_, _, _, _| {},
+            &mut |_, _, _, _, _, _| {},
+        );
+        found.truncate(count);
+        found
+    };
+    let many = rows_of(&mut rig, MAX_LOCAL_SCORES);
+    assert!(many.len() >= 4, "{many:?}");
+    // One left edge, never past the window's.
+    assert!(
+        many.iter()
+            .all(|r| (r.0 - many[0].0).abs() < 0.5 && r.0 > 0.0),
+        "{many:?}"
+    );
+    // The right ends step left with the board's lean, evenly.
+    let step = many[1].1 - many[0].1;
+    assert!(step < 0.0, "{many:?}");
+    assert!(
+        many.windows(2)
+            .all(|w| ((w[1].1 - w[0].1) - step).abs() < 0.5),
+        "{many:?}"
+    );
+    // The first row is where it is with one score as with many.
+    let one = rows_of(&mut rig, 1);
+    assert!((one[0].1 - many[0].1).abs() < 0.5, "{one:?} {many:?}");
 }

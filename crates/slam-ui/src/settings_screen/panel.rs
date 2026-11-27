@@ -101,6 +101,21 @@ pub fn panel_pose(openness: f32) -> Pose {
     }
 }
 
+/// The shift of the screens under the panel, a panel `openness` in, as a fraction of the
+/// window width (the unit of [`Pose::offset`], positive to the right): the panel's width
+/// times the theme's ratio, grown with the slide (ADR-0179). None without the effects.
+///
+/// Ported from osu!lazer 2026.1005.0-lazer: osu.Game/OsuGame.cs (`adjustGlobalScreenOffset`:
+/// `SettingsPanel.WIDTH * SIDE_OVERLAY_OFFSET_RATIO` while the settings are visible). The
+/// lazer eases the offset with its own damping; here it follows the panel's slide, so both
+/// move in step.
+pub fn screen_shift(openness: f32, panel_width: f32, window_width: f32, theme: &Theme) -> f32 {
+    if !theme.effects || window_width <= 0.0 {
+        return 0.0;
+    }
+    openness.clamp(0.0, 1.0) * panel_width * theme.settings_screen_shift / window_width
+}
+
 /// Draws the dim over a `width` × `height` window and the panel's fill, a panel `openness`
 /// in. The screen goes on top ([`super::SettingsView::push`] with [`panel_pose`]).
 pub fn push_backdrop(
@@ -188,10 +203,39 @@ mod tests {
     }
 
     #[test]
+    fn the_screens_under_the_panel_shift_with_its_slide() {
+        let theme = Theme::default();
+        let (w, h) = (1920.0, 1080.0);
+        let panel = panel_width(w, h, &theme);
+        let full = panel * theme.settings_screen_shift / w;
+        assert_eq!(screen_shift(0.0, panel, w, &theme), 0.0);
+        assert!((screen_shift(1.0, panel, w, &theme) - full).abs() < 1e-6);
+        assert!((screen_shift(0.5, panel, w, &theme) - full / 2.0).abs() < 1e-6);
+        assert!(full > 0.0);
+        // Over time: in step with the panel's own motion, back to zero when it has left.
+        let mut motion = PanelMotion::opening(0, &theme);
+        let ms = 1_000_000;
+        let at = |m: &PanelMotion, t: u64| screen_shift(m.openness(t * ms), panel, w, &theme);
+        assert_eq!(at(&motion, 0), 0.0);
+        let mid = at(&motion, 100);
+        assert!(mid > 0.0 && mid < full);
+        let end = (theme.settings_panel_ms as u64) + 50;
+        assert!((at(&motion, end) - full).abs() < 1e-6);
+        motion.close(end * ms);
+        assert_eq!(at(&motion, end + 1000), 0.0);
+        // Without the effects there is none.
+        let plain = Theme {
+            effects: false,
+            ..theme
+        };
+        assert_eq!(screen_shift(1.0, panel, w, &plain), 0.0);
+    }
+
+    #[test]
     fn the_panel_is_the_themes_width_within_the_window() {
         let theme = Theme::default();
-        assert_eq!(panel_width(2000.0, 768.0, &theme), 780.0);
+        assert_eq!(panel_width(2000.0, 768.0, &theme), 560.0);
         assert_eq!(panel_width(500.0, 768.0, &theme), 500.0);
-        assert_eq!(panel_width(4000.0, 1536.0, &theme), 1560.0);
+        assert_eq!(panel_width(4000.0, 1536.0, &theme), 1120.0);
     }
 }

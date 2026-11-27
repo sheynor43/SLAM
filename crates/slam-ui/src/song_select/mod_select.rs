@@ -11,9 +11,8 @@ use crate::theme::Theme;
 mod settings;
 
 pub use settings::{
-    COLLAPSE_DISTANCE, COLLAPSE_GRACE_NS, Customisation, CustomisationLayout,
-    CustomisationSnapshot, CustomisationState, MAX_CHOICES, MAX_SETTING_ROWS, SettingRow,
-    SettingRowKind, SettingValue,
+    Customisation, CustomisationLayout, CustomisationSnapshot, CustomisationState, MAX_CHOICES,
+    MAX_SETTING_ROWS, SettingRow, SettingRowKind, SettingValue,
 };
 
 /// Columns of the panel, lazer's: difficulty reduction, difficulty increase, automation,
@@ -36,6 +35,14 @@ pub enum ModSelectAction {
         index: usize,
     },
     DeselectAll,
+    /// The tile `index` of `column` was right-clicked at `x`, `y`: the application shows
+    /// that mod's settings there ([`ModSelect::open_customisation_at`]).
+    Settings {
+        column: usize,
+        index: usize,
+        x: f32,
+        y: f32,
+    },
     /// The settings panel changed the row `row` it was given.
     SetSetting {
         row: usize,
@@ -56,18 +63,22 @@ pub struct ModSelectLayout {
     /// The columns' headers, in their colours; a column not shown has an empty one.
     pub column_titles: [Rect; MAX_COLUMNS],
     pub hint: Rect,
-    /// The settings panel.
+    /// The settings panel, as it stands before the player places it.
     pub customise: CustomisationLayout,
     /// Left edge of each column at the columns' middle height, before the lean.
     column_x: [f32; MAX_COLUMNS],
     /// Which columns are shown: those with tiles.
     shown: [bool; MAX_COLUMNS],
+    /// The tiles in each column, from the last [`ModSelectLayout::place`].
+    counts: [usize; MAX_COLUMNS],
     width: f32,
     margin: f32,
     max_tile_width: f32,
     tile_width: f32,
     gap: f32,
-    /// Top and bottom of the columns: they reach from below the title to above the hint.
+    /// Where the columns hang: right under the title.
+    min_top: f32,
+    /// Top and bottom of the tallest column, set by [`ModSelectLayout::place`].
     top: f32,
     bottom: f32,
     header_height: f32,
@@ -82,28 +93,30 @@ pub struct ModSelectLayout {
 
 impl ModSelectLayout {
     /// The layout with every column shown; [`ModSelectLayout::place`] hides the empty ones.
-    /// The columns stand in the lower part of the window, as lazer's (ADR-0152).
+    /// The columns hang under the header, as lazer's (ADR-0152).
     pub fn new(width: f32, height: f32, theme: &Theme) -> ModSelectLayout {
         let scale = theme.scale(height);
         let margin = theme.song_margin * scale;
         let gap = theme.mod_column_gap * scale;
+        // Under the toolbar (ADR-0168), above the footer (ADR-0175, ADR-0177).
         let title = Rect {
             x: margin,
-            y: margin,
+            y: (theme.toolbar_height + theme.song_top_gap) * scale,
             width: width - 2.0 * margin,
             height: theme.song_header_height * scale,
         };
         let label_height = theme.song_detail_size * scale * 1.5;
         let header_height = theme.mod_column_header_height * scale;
         let pad = theme.mod_column_pad * scale;
+        let footer_top = height - theme.footer_height * scale;
         let hint = Rect {
             x: margin,
-            y: height - margin - label_height,
+            y: footer_top - margin / 2.0 - label_height,
             width: width - 2.0 * margin,
             height: label_height,
         };
-        let top = (height * theme.mod_panel_top).max(title.y + title.height + margin);
-        let bottom = (hint.y - margin / 2.0).max(top + header_height);
+        let min_top = (height * theme.mod_panel_top).max(title.y + title.height + margin);
+        let (top, bottom) = (min_top, min_top + header_height);
         let mut layout = ModSelectLayout {
             title,
             column_titles: [Rect::default(); MAX_COLUMNS],
@@ -111,16 +124,18 @@ impl ModSelectLayout {
             customise: CustomisationLayout::new(width, height, theme),
             column_x: [0.0; MAX_COLUMNS],
             shown: [false; MAX_COLUMNS],
+            counts: [0; MAX_COLUMNS],
             width,
             margin,
             max_tile_width: theme.mod_tile_width * scale,
             tile_width: theme.mod_tile_width * scale,
             gap,
+            min_top,
             top,
             bottom,
             header_height,
             pad,
-            tiles_top: top + header_height + pad,
+            tiles_top: min_top + header_height + pad,
             tile_height: theme.mod_tile_height * scale,
             pitch: theme.mod_tile_pitch * scale,
             lean: theme.button_skew().tan(),
@@ -132,6 +147,14 @@ impl ModSelectLayout {
     /// Shows the columns with tiles (`counts` per column), centred in the window and narrowed
     /// to fit it. Does not allocate.
     pub fn place(&mut self, counts: [usize; MAX_COLUMNS]) {
+        // The columns are as tall as their content and hang right under the header, as in
+        // lazer's overlay; the room under them stays free.
+        self.counts = counts;
+        let tallest = counts.iter().copied().max().unwrap_or(0);
+        let content = self.column_height(tallest);
+        self.top = self.min_top;
+        self.bottom = self.top + content;
+        self.tiles_top = self.top + self.header_height + self.pad;
         let shown = counts.iter().filter(|&&n| n > 0).count();
         let gaps = self.gap * shown.saturating_sub(1) as f32;
         // The lean pushes the top right and the bottom left: room for both.
@@ -167,11 +190,16 @@ impl ModSelectLayout {
         }
     }
 
-    /// `rect` moved sideways by the lean at its middle height.
+    /// The height every column leans about: the middle of the tallest plate, so the whole
+    /// set shares one slanted line and the columns do not stagger.
+    fn lean_middle(&self) -> f32 {
+        self.top + (self.bottom - self.top) / 2.0
+    }
+
+    /// `rect` moved sideways by the lean at its middle height, about the common middle.
     fn leaned(&self, rect: Rect) -> Rect {
-        let middle = (self.top + self.bottom) / 2.0;
         Rect {
-            x: rect.x + (middle - (rect.y + rect.height / 2.0)) * self.lean,
+            x: rect.x + (self.lean_middle() - (rect.y + rect.height / 2.0)) * self.lean,
             ..rect
         }
     }
@@ -186,15 +214,36 @@ impl ModSelectLayout {
         self.shown.get(column).copied().unwrap_or(false)
     }
 
-    /// The plate of `column`, from the top of its header down to the columns' bottom, as
-    /// lazer's full height columns; `count` is not needed but kept for the call sites.
-    pub fn column_rect(&self, column: usize, _count: usize) -> Rect {
+    /// Height of a column plate holding `count` tiles: its header, the tiles and the padding.
+    fn column_height(&self, count: usize) -> f32 {
+        if count == 0 {
+            return self.header_height;
+        }
+        self.header_height
+            + self.pad
+            + (count - 1) as f32 * self.pitch
+            + self.tile_height
+            + self.pad
+    }
+
+    /// The plate of `column` holding `count` tiles, from the top of its header down to its
+    /// last tile and a padding.
+    pub fn column_rect(&self, column: usize, count: usize) -> Rect {
+        // The plate is drawn leaning about its own middle; shifting it by the difference
+        // to the common middle puts its edges on the shared slanted line.
+        let height = self.column_height(count);
         Rect {
-            x: self.column_x[column.min(MAX_COLUMNS - 1)],
+            x: self.column_x[column.min(MAX_COLUMNS - 1)]
+                + (self.lean_middle() - (self.top + height / 2.0)) * self.lean,
             y: self.top,
             width: self.tile_width + 2.0 * self.pad,
-            height: self.bottom - self.top,
+            height,
         }
+    }
+
+    /// The bottom of the tallest column plate.
+    pub fn content_bottom(&self) -> f32 {
+        self.bottom
     }
 
     /// The tile `index` of `column`, moved by the lean at its height.
@@ -242,15 +291,71 @@ pub enum TileDetail {
 /// The details of every tile, by column.
 pub type TileDetails = [[TileDetail; MAX_COLUMN_MODS]; MAX_COLUMNS];
 
+/// The score multiplier of every tile, by column.
+pub type TileMultipliers = [[f64; MAX_COLUMN_MODS]; MAX_COLUMNS];
+
+// Ported from osu!lazer 2026.1005.0-lazer: osu.Game/Utils/ModUtils.cs (FormatScoreMultiplier)
+/// Writes a score multiplier as lazer shows it: rounded to hundredths away from 1 (up above
+/// 1, down below), then "1.12x". Appends to `text`; does not allocate beyond it.
+pub fn push_multiplier(text: &mut String, multiplier: f64) {
+    use std::fmt::Write;
+    let hundredths = (multiplier * 100.0 * 1.0e4).round_ties_even() / 1.0e4;
+    let hundredths = if multiplier > 1.0 {
+        hundredths.ceil()
+    } else {
+        hundredths.floor()
+    };
+    let _ = write!(text, "{:.2}x", hundredths / 100.0);
+}
+
+/// Which colour a multiplier is shown in.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum MultiplierTone {
+    /// Above 1: harder, scores more.
+    Up,
+    Down,
+    Neutral,
+}
+
+// Ported from osu!lazer 2026.1005.0-lazer: osu.Game/Overlays/Mods/ModSelectOverlay.cs (updateMultiplier), osu.Game/Overlays/Mods/ModsEffectDisplay.cs
+impl MultiplierTone {
+    pub fn of(multiplier: f64) -> MultiplierTone {
+        if multiplier > 1.0 {
+            MultiplierTone::Up
+        } else if multiplier < 1.0 {
+            MultiplierTone::Down
+        } else {
+            MultiplierTone::Neutral
+        }
+    }
+}
+
 /// What the draw side needs; `Copy`, so a snapshot allocates nothing.
-#[derive(Clone, Copy, Debug, Default, PartialEq)]
+#[derive(Clone, Copy, Debug, PartialEq)]
 pub struct ModSelectSnapshot {
     pub open: bool,
     /// Bit `i` of column `c`: the tile `i` of that column is active.
     pub active: [u16; MAX_COLUMNS],
     pub details: TileDetails,
+    /// The score multiplier of each tile's mod, and of the whole selection.
+    pub multipliers: TileMultipliers,
+    pub total_multiplier: f64,
     pub hover: Option<(usize, usize)>,
     pub customise: CustomisationSnapshot,
+}
+
+impl Default for ModSelectSnapshot {
+    fn default() -> ModSelectSnapshot {
+        ModSelectSnapshot {
+            open: false,
+            active: [0; MAX_COLUMNS],
+            details: TileDetails::default(),
+            multipliers: [[1.0; MAX_COLUMN_MODS]; MAX_COLUMNS],
+            total_multiplier: 1.0,
+            hover: None,
+            customise: CustomisationSnapshot::default(),
+        }
+    }
 }
 
 /// The panel's state on the update thread.
@@ -260,8 +365,15 @@ pub struct ModSelect {
     open: bool,
     active: [u16; MAX_COLUMNS],
     details: TileDetails,
+    multipliers: TileMultipliers,
+    total_multiplier: f64,
     hover: Option<(usize, usize)>,
     customise: Customisation,
+    /// Where the pointer was last, where a settings panel opened by the keyboard or by a
+    /// mod's selection goes.
+    pointer: Option<(f32, f32)>,
+    /// Where the settings panel goes without a pointer: its place in the layout last seen.
+    anchor: (f32, f32),
 }
 
 impl Default for ModSelect {
@@ -278,9 +390,18 @@ impl ModSelect {
             open: false,
             active: [0; MAX_COLUMNS],
             details: TileDetails::default(),
+            multipliers: [[1.0; MAX_COLUMN_MODS]; MAX_COLUMNS],
+            total_multiplier: 1.0,
             hover: None,
             customise: Customisation::default(),
+            pointer: None,
+            anchor: (0.0, 0.0),
         }
+    }
+
+    /// Tells the panel where the settings panel goes when nothing else says.
+    pub fn set_anchor(&mut self, layout: &ModSelectLayout) {
+        self.anchor = layout.customise.origin();
     }
 
     pub fn columns(&self) -> &ModColumns {
@@ -311,18 +432,23 @@ impl ModSelect {
         self.customise.collapse();
     }
 
-    /// Expands the settings panel for a mod that needs configuring.
+    /// Opens the settings panel with its header's corner at `(x, y)`; its place before is
+    /// forgotten (ADR-0177). Does nothing without a setting, or while the mod select is
+    /// closed.
+    pub fn open_customisation_at(&mut self, x: f32, y: f32) {
+        if self.open {
+            self.customise.open_at((x, y));
+        }
+    }
+
+    /// Opens the settings panel for a mod that needs configuring, at the pointer.
     pub fn expand_customisation_by_mod(&mut self) {
-        self.customise.expand_by_mod();
+        let (x, y) = self.pointer.unwrap_or(self.anchor);
+        self.open_customisation_at(x, y);
     }
 
     pub fn customisation(&self) -> &Customisation {
         &self.customise
-    }
-
-    /// Advances the settings panel's collapse delay to `now_ns`. Does not allocate.
-    pub fn tick(&mut self, now_ns: u64, layout: &ModSelectLayout) {
-        self.customise.tick(now_ns, &layout.customise);
     }
 
     /// Whether the tile `index` of `column` is active.
@@ -355,6 +481,18 @@ impl ModSelect {
         }
     }
 
+    /// Sets the score multiplier of a tile's mod; out-of-range tiles are ignored.
+    pub fn set_multiplier(&mut self, column: usize, index: usize, multiplier: f64) {
+        if index < self.columns.get(column).map_or(0, |c| c.len()) {
+            self.multipliers[column][index] = multiplier;
+        }
+    }
+
+    /// Sets the score multiplier of the whole selection.
+    pub fn set_total_multiplier(&mut self, multiplier: f64) {
+        self.total_multiplier = multiplier;
+    }
+
     /// Every acronym of the panel, column by column, with its flag.
     pub fn iter(&self) -> impl Iterator<Item = (usize, usize, &'static str, bool)> + '_ {
         self.columns.iter().enumerate().flat_map(move |(c, mods)| {
@@ -369,6 +507,8 @@ impl ModSelect {
             open: self.open,
             active: self.active,
             details: self.details,
+            multipliers: self.multipliers,
+            total_multiplier: self.total_multiplier,
             hover: self.hover,
             customise: self.customise.snapshot(),
         }
@@ -394,6 +534,9 @@ impl ModSelect {
                 self.close();
                 return None;
             }
+            if let I::PointerMove { x, y } | I::PointerPress { x, y } = input {
+                self.pointer = Some((x, y));
+            }
             return self.customise.input_expanded(input, &layout.customise);
         }
         match input {
@@ -408,26 +551,32 @@ impl ModSelect {
                 && index < self.columns[column].len())
             .then_some(ModSelectAction::Toggle { column, index }),
             I::ToggleCustomisation => {
-                self.customise.expand_by_key();
+                // From the keyboard: where the pointer is, or the top right without one.
+                let origin = self.pointer.unwrap_or_else(|| layout.customise.origin());
+                self.customise.open_at(origin);
                 None
             }
             I::PointerMove { x, y } => {
-                self.customise.hover_header(x, y, &layout.customise);
-                self.hover = if self.customise.is_expanded() {
-                    None
-                } else {
-                    layout.tile_at(x, y, self.counts())
-                };
+                self.pointer = Some((x, y));
+                self.hover = layout.tile_at(x, y, self.counts());
                 None
             }
             I::PointerPress { x, y } => {
-                if self.customise.press_header(x, y, &layout.customise) {
-                    self.hover = None;
-                    return None;
-                }
+                self.pointer = Some((x, y));
                 self.hover = layout.tile_at(x, y, self.counts());
                 self.hover
                     .map(|(column, index)| ModSelectAction::Toggle { column, index })
+            }
+            I::SecondaryPress { x, y } => {
+                self.pointer = Some((x, y));
+                layout.tile_at(x, y, self.counts()).map(|(column, index)| {
+                    ModSelectAction::Settings {
+                        column,
+                        index,
+                        x,
+                        y,
+                    }
+                })
             }
             _ => None,
         }

@@ -301,6 +301,7 @@ impl Slot {
             weight: 0,
             width: 0,
             glyph_id: 0,
+            hires: false,
         },
         entry: Entry::Vacant,
     };
@@ -525,6 +526,7 @@ mod tests {
             weight: 400,
             width: 100,
             glyph_id: 1,
+            hires: false,
         };
         assert_eq!(rig.settle(missing), Glyph::Empty);
     }

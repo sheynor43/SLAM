@@ -2,11 +2,12 @@
 //!
 //! The loader thread appends a record after a passed attempt's replay is saved; the library
 //! thread reads the best ones with the selected difficulty's statistics. Nothing here runs
-//! on the update or draw thread.
+//! on the update or draw thread but reading [`SCORES_WRITTEN`].
 
 use std::collections::BTreeMap;
 use std::io::Write as _;
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicU32, Ordering};
 use std::time::UNIX_EPOCH;
 
 use crate::replays::ReplayJob;
@@ -192,6 +193,7 @@ pub fn rows_of(records: &[Record]) -> LocalScores {
             max_combo: r.max_combo,
             rank,
             mods: ScoreMods::from_acronyms(r.mods.iter().map(String::as_str)),
+            multiplier: crate::multipliers::acronyms_multiplier(r.mods.iter().map(String::as_str)),
             date_ms: r.date,
             hits: StatKind::ALL.map(|k| count_in(&r.statistics, hit_result(k))),
             maximums: StatKind::ALL.map(|k| count_in(&r.maximum_statistics, hit_result(k))),
@@ -225,8 +227,14 @@ pub fn save_passed(job: &ReplayJob, replay: Option<String>, dir: &Path) {
     let record = Record::of(&job.attempt, date, replay);
     if let Err(e) = append(dir, &job.beatmap.hash, record) {
         tracing::warn!("score not saved: {e}");
+        return;
     }
+    SCORES_WRITTEN.fetch_add(1, Ordering::Release);
 }
+
+/// Scores saved since start: the song select reads the selected difficulty's scores again
+/// when it changes (ADR-0167), without waiting for another selection.
+pub static SCORES_WRITTEN: AtomicU32 = AtomicU32::new(0);
 
 #[cfg(test)]
 mod tests;

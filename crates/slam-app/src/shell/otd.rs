@@ -11,7 +11,9 @@
 //! copy, the row names, the JSON tree): that happens only on the player's own actions in
 //! the open panel, like a navigation.
 
+use std::path::PathBuf;
 use std::sync::Arc;
+use std::sync::mpsc::Receiver;
 
 use slam_otd::model::{ABSOLUTE_MODE, LINUX_ARTIST_MODE, RELATIVE_MODE};
 use slam_otd::{
@@ -24,6 +26,9 @@ use slam_ui::settings_screen::{
 };
 
 use super::rows::Row;
+use presets::Preset;
+
+pub mod presets;
 
 /// The index of the section: before the feedback section, the last.
 pub const SECTION: usize = 8;
@@ -57,6 +62,14 @@ pub enum OtdRow {
     Refresh,
     Apply,
     Revert,
+    /// Says the draft differs from what the daemon has; shown while it does.
+    Unsaved,
+    /// The selected preset's name (or that there is none).
+    PresetName,
+    PresetNext,
+    PresetSave,
+    PresetApply,
+    PresetDelete,
     /// The tablet whose profile is edited; its name replaces the label.
     Tablet,
     NextTablet,
@@ -93,7 +106,7 @@ pub enum OtdRow {
 }
 
 /// The rows before the filters, without the preview's pads.
-const HEAD: [OtdRow; 32] = {
+const HEAD: [OtdRow; 38] = {
     use OtdRow::*;
     [
         NotRunning,
@@ -104,6 +117,12 @@ const HEAD: [OtdRow; 32] = {
         Refresh,
         Apply,
         Revert,
+        Unsaved,
+        PresetName,
+        PresetNext,
+        PresetSave,
+        PresetApply,
+        PresetDelete,
         Tablet,
         NextTablet,
         OutputMode,
@@ -133,7 +152,7 @@ const HEAD: [OtdRow; 32] = {
 };
 const HEAD_LEN: usize = HEAD.len();
 /// Where the preview's pads go in [`HEAD`].
-const PADS_AT: usize = 13;
+const PADS_AT: usize = 19;
 
 /// Rows: the head, the preview's pads, and per filter its toggle and a number and a flag
 /// row per setting.
@@ -201,6 +220,8 @@ impl OtdRow {
                 | Self::Unsupported
                 | Self::NoTablet
                 | Self::Failed
+                | Self::Unsaved
+                | Self::PresetName
                 | Self::Tablet
                 | Self::TabletAreaHeader
                 | Self::DisplayAreaHeader
@@ -220,9 +241,15 @@ impl OtdRow {
         };
         match self {
             _ if self.is_note() => RowKind::Note,
-            Self::Download | Self::NextTablet | Self::Refresh | Self::Apply | Self::Revert => {
-                RowKind::Button
-            }
+            Self::Download
+            | Self::NextTablet
+            | Self::Refresh
+            | Self::Apply
+            | Self::Revert
+            | Self::PresetNext
+            | Self::PresetSave
+            | Self::PresetApply
+            | Self::PresetDelete => RowKind::Button,
             // The built-in modes and "other" (a plugin's).
             Self::OutputMode => RowKind::Dropdown {
                 options: mode_options().len() + 1,
@@ -254,6 +281,12 @@ impl OtdRow {
             Self::Refresh => "settings-otd-refresh",
             Self::Apply => "settings-otd-apply",
             Self::Revert => "settings-otd-revert",
+            Self::Unsaved => "settings-otd-unsaved",
+            Self::PresetName => "settings-otd-preset-none",
+            Self::PresetNext => "settings-otd-preset-next",
+            Self::PresetSave => "settings-otd-preset-save",
+            Self::PresetApply => "settings-otd-preset-apply",
+            Self::PresetDelete => "settings-otd-preset-delete",
             Self::OutputMode => "settings-otd-output-mode",
             Self::TabletAreaHeader => "settings-otd-tablet-area",
             Self::Preview | Self::PreviewPad(_) => "settings-otd-preview",
@@ -288,6 +321,10 @@ impl OtdRow {
             Self::Refresh => "settings-otd-refresh-button",
             Self::Apply => "settings-otd-apply-button",
             Self::Revert => "settings-otd-revert-button",
+            Self::PresetNext => "settings-otd-preset-next-button",
+            Self::PresetSave => "settings-otd-preset-save-button",
+            Self::PresetApply => "settings-otd-preset-apply-button",
+            Self::PresetDelete => "settings-otd-preset-delete-button",
             _ => return None,
         })
     }
@@ -309,7 +346,11 @@ impl OtdRow {
     fn dynamic(self) -> bool {
         matches!(
             self,
-            Self::Tablet | Self::Filter(_) | Self::ParamNumber(..) | Self::ParamFlag(..)
+            Self::Tablet
+                | Self::PresetName
+                | Self::Filter(_)
+                | Self::ParamNumber(..)
+                | Self::ParamFlag(..)
         )
     }
 
@@ -426,6 +467,16 @@ pub struct OtdSection {
     ranges: [[(f64, f64, f64); MAX_PARAMS]; MAX_FILTERS],
     /// Per screen row: the daemon's names (empty: the static label).
     names: Arc<[Box<str>]>,
+    /// A name of a row outside this section that shares the dynamic labels: the update
+    /// status line (ADR-0185). Kept across renewals of the names.
+    extra: Option<(usize, Box<str>)>,
+    /// Saved presets and the selected one (ADR-0176).
+    presets: Vec<Preset>,
+    preset: usize,
+    presets_path: Option<PathBuf>,
+    /// The presets file is being read on a thread.
+    presets_rx: Option<Receiver<Vec<Preset>>>,
+    presets_read: bool,
 }
 
 impl Default for OtdSection {
@@ -442,11 +493,25 @@ impl Default for OtdSection {
             tablet: 0,
             ranges: [[(0.0, 1.0, 0.01); MAX_PARAMS]; MAX_FILTERS],
             names: Arc::from([]),
+            extra: None,
+            presets: Vec::new(),
+            preset: 0,
+            presets_path: None,
+            presets_rx: None,
+            presets_read: false,
         }
     }
 }
 
 impl OtdSection {
+    /// A section keeping its presets in `path` (none: they last only for the session).
+    pub fn new(presets_path: Option<PathBuf>) -> Self {
+        Self {
+            presets_path,
+            ..Self::default()
+        }
+    }
+
     /// The settings panel opened: the daemon is asked again once the section shows.
     pub fn panel_opened(&mut self) {
         self.asked = false;
@@ -469,6 +534,12 @@ impl OtdSection {
     fn ask(&mut self) {
         if !self.enabled {
             return;
+        }
+        if !self.presets_read
+            && let Some(path) = &self.presets_path
+        {
+            self.presets_read = true;
+            self.presets_rx = Some(presets::read_in_background(path.clone()));
         }
         if self.service.is_none() {
             match OtdService::spawn() {
@@ -504,6 +575,16 @@ impl OtdSection {
     /// whether the rows need a refresh. Does not allocate without news.
     pub fn poll(&mut self, now_ns: u64) -> bool {
         let mut changed = false;
+        if let Some(rx) = &self.presets_rx
+            && let Ok(mut read) = rx.try_recv()
+        {
+            // Presets saved before the file arrived stay, after the ones read.
+            read.append(&mut self.presets);
+            self.presets = read;
+            self.presets_rx = None;
+            self.renew();
+            changed = true;
+        }
         while let Some(event) = self.service.as_mut().and_then(OtdService::try_event) {
             changed = true;
             self.busy_since = None;
@@ -583,6 +664,15 @@ impl OtdSection {
         {
             set(OtdRow::Tablet, &t.name);
         }
+        if let Some(preset) = self.presets.get(self.preset) {
+            let text = format!(
+                "{} ({}/{})",
+                preset.name,
+                self.preset + 1,
+                self.presets.len()
+            );
+            set(OtdRow::PresetName, &text);
+        }
         if let Some(p) = profile {
             for (f, filter) in p.filters.iter().take(MAX_FILTERS).enumerate() {
                 set(OtdRow::Filter(f as u8), short_type_name(&filter.path));
@@ -593,7 +683,26 @@ impl OtdSection {
                 }
             }
         }
+        if let Some((row, text)) = &self.extra
+            && let Some(slot) = names.get_mut(*row)
+        {
+            *slot = text.clone();
+        }
         names.into()
+    }
+
+    /// Gives the screen row `row` outside this section the name `text`; the panel's labels
+    /// take it on the next [`Self::refresh`]. Allocates: call on a change only.
+    pub fn set_extra_name(&mut self, row: usize, text: &str) {
+        if self
+            .extra
+            .as_ref()
+            .is_some_and(|(r, t)| *r == row && **t == *text)
+        {
+            return;
+        }
+        self.extra = Some((row, text.into()));
+        self.renew();
     }
 
     /// Shows the state on `screen`'s rows.
@@ -620,6 +729,9 @@ impl OtdSection {
                 OtdRow::NoTablet => ready && profile.is_none(),
                 OtdRow::Refresh => true,
                 OtdRow::NextTablet => editing && tablets > 1,
+                OtdRow::Unsaved => editing && self.dirty,
+                OtdRow::PresetNext => editing && self.presets.len() > 1,
+                OtdRow::PresetApply | OtdRow::PresetDelete => editing && !self.presets.is_empty(),
                 _ => editing,
             };
             screen.set_hidden(row.index(), !shown);
@@ -760,6 +872,7 @@ impl OtdSection {
                     !matches!(value, Some(SettingValue::Float(_) | SettingValue::Int(_))),
                 );
                 screen.set_hidden(flag, !matches!(value, Some(SettingValue::Bool(_))));
+                screen.set_slider_free(number);
                 let range = self.ranges[f][s];
                 match value {
                     Some(SettingValue::Float(v)) => fit64(screen, number, range, *v),
@@ -833,6 +946,10 @@ impl OtdSection {
                     Some(SettingValue::Int(_)) => SettingValue::Int(v.round() as i64),
                     _ => SettingValue::Float(round_fine(v)),
                 };
+                // A typed value beyond the guessed range stretches it for good.
+                let range = &mut self.ranges[f][s];
+                range.0 = range.0.min(v);
+                range.1 = range.1.max(v);
                 draft.set_filter_value(index, f, s, new)
             }
             OtdRow::ParamFlag(f, s) => draft.set_filter_value(
@@ -864,6 +981,22 @@ impl OtdSection {
                 self.dirty = false;
                 self.renew();
             }
+            OtdRow::PresetNext => {
+                if !self.presets.is_empty() {
+                    self.preset = (self.preset + 1) % self.presets.len();
+                }
+                self.renew();
+            }
+            OtdRow::PresetSave => self.save_preset(),
+            OtdRow::PresetApply => self.apply_preset(),
+            OtdRow::PresetDelete => {
+                if self.preset < self.presets.len() {
+                    self.presets.remove(self.preset);
+                    self.preset = self.preset.min(self.presets.len().saturating_sub(1));
+                    self.write_presets();
+                    self.renew();
+                }
+            }
             OtdRow::NextTablet => {
                 let count = self.snapshot.as_ref().map_or(0, |s| s.tablets.len());
                 if count > 0 {
@@ -874,6 +1007,59 @@ impl OtdSection {
             _ => {}
         }
         Pressed::Nothing
+    }
+}
+
+impl OtdSection {
+    /// Saves the draft's profile as a new preset, named "Preset N", and selects it.
+    fn save_preset(&mut self) {
+        let Some((index, _)) = self.profile() else {
+            return;
+        };
+        let Some(snapshot) = self.draft.as_ref().and_then(|d| d.profile_preset(index)) else {
+            return;
+        };
+        let name = presets::auto_name(&self.presets);
+        self.presets.push(Preset {
+            name,
+            profile: snapshot,
+        });
+        self.preset = self.presets.len() - 1;
+        self.write_presets();
+        self.renew();
+    }
+
+    /// Loads the selected preset into the draft; "Save" then sends it to the daemon, and
+    /// "Revert" takes it back. Filters the profile lacks are skipped.
+    fn apply_preset(&mut self) {
+        let Some((index, _)) = self.profile() else {
+            return;
+        };
+        let (Some(preset), Some(draft)) = (self.presets.get(self.preset), self.draft.as_mut())
+        else {
+            return;
+        };
+        match draft.apply_profile_preset(index, &preset.profile) {
+            Ok(skipped) => {
+                if skipped > 0 {
+                    tracing::info!(
+                        "OTD preset {}: {skipped} filters not in the profile",
+                        preset.name
+                    );
+                }
+                self.dirty = true;
+                self.renew();
+            }
+            Err(e) => tracing::warn!("OTD preset {}: {e}", preset.name),
+        }
+    }
+
+    fn write_presets(&self) {
+        if self.enabled
+            && let Some(path) = &self.presets_path
+        {
+            presets::write_in_background(path.clone(), self.presets.clone());
+        }
     }
 }
 
@@ -925,19 +1111,28 @@ fn edit_area(row: OtdRow, tablet: Area, display: Area, value: f32, lock: bool) -
     }
 }
 
+/// The smallest top of a filter setting's range outside [0; 1]: room for latency-like
+/// milliseconds (ADR-0176).
+const WIDE_TOP: f64 = 1000.0;
+
 /// A slider range for a filter setting the daemon gives no range for: from its value,
-/// the next power of ten above twice its size.
+/// the next power of ten above ten times its size, at least [`WIDE_TOP`]. Typed values are
+/// exact and may go beyond it (the range follows).
 fn param_range(value: &SettingValue) -> (f64, f64, f64) {
     match value {
         SettingValue::Int(v) => {
             let v = *v as f64;
-            let top = decade(v.abs() * 2.0).max(10.0);
+            let top = decade(v.abs() * 10.0).max(WIDE_TOP);
             (if v < 0.0 { -top } else { 0.0 }, top, 1.0)
         }
         SettingValue::Float(v) if (0.0..=1.0).contains(v) => (0.0, 1.0, 0.01),
         SettingValue::Float(v) => {
-            let top = decade(v.abs() * 2.0);
-            (if *v < 0.0 { -top } else { 0.0 }, top, top / 1000.0)
+            let top = decade(v.abs() * 10.0).max(WIDE_TOP);
+            (
+                if *v < 0.0 { -top } else { 0.0 },
+                top,
+                (top / 10_000.0).max(FINE_STEP),
+            )
         }
         _ => (0.0, 1.0, 0.01),
     }

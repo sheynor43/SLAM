@@ -189,6 +189,7 @@ use slam_ui::settings_screen::RowKind;
 
 pub(super) fn shell_with(link: crate::settings::saver::SaveLink) -> Shell {
     Shell {
+        discord: crate::discord::Discord::disabled(),
         state: state(),
         host: None,
         surface: Arc::new(AtomicU64::new(0)),
@@ -202,6 +203,7 @@ pub(super) fn shell_with(link: crate::settings::saver::SaveLink) -> Shell {
         update_rate: AppliedUpdateRate::new(UpdateRateControl::new(), 1000.0),
         saver: Some(link),
         text_input: slam_input::TextInput::default(),
+        side_filtered: Vec::new(),
         mouse: slam_input::MouseSettings::default(),
         window: slam_input::WindowSettings::default(),
         window_sent: Settings::default().window.state(),
@@ -459,6 +461,7 @@ fn on_keys(s: &mut ShellState, snap: &mut ShellSnapshot) {
         &[
             key(KEY_TAB),
             key(KEY_TAB),
+            key(KEY_DOWN),
             key(KEY_DOWN),
             key(KEY_DOWN),
             key(KEY_DOWN),
@@ -915,10 +918,18 @@ fn the_sensitivity_slider_is_locked_with_a_hint_until_high_precision_is_on() {
     assert!(settings_screen(&s).is_hinted(slider));
     assert!(!settings_screen(&s).is_hinted(toggle));
     // The slider does not move while it is locked.
-    s.tick(LATER, &[key(KEY_DOWN), key(KEY_RIGHT)], &mut snap);
+    s.tick(
+        LATER,
+        &[key(KEY_DOWN), key(KEY_DOWN), key(KEY_RIGHT)],
+        &mut snap,
+    );
     assert_eq!(edited(&s).input.sensitivity, 1.0);
     // Turning high precision on unlocks it; the platform warning shows where it applies.
-    s.tick(LATER, &[key(KEY_UP), key(KEY_ENTER)], &mut snap);
+    s.tick(
+        LATER,
+        &[key(KEY_UP), key(KEY_UP), key(KEY_ENTER)],
+        &mut snap,
+    );
     assert!(edited(&s).input.high_precision_mouse);
     assert!(!settings_screen(&s).is_disabled(slider));
     assert!(!settings_screen(&s).is_hinted(slider));
@@ -926,7 +937,11 @@ fn the_sensitivity_slider_is_locked_with_a_hint_until_high_precision_is_on() {
         settings_screen(&s).is_hinted(toggle),
         cfg!(any(target_os = "linux", target_os = "macos"))
     );
-    s.tick(LATER, &[key(KEY_DOWN), key(KEY_RIGHT)], &mut snap);
+    s.tick(
+        LATER,
+        &[key(KEY_DOWN), key(KEY_DOWN), key(KEY_RIGHT)],
+        &mut snap,
+    );
     assert_eq!(edited(&s).input.sensitivity, 1.01);
 }
 
@@ -957,7 +972,7 @@ fn mouse_edits_reach_the_input_thread_at_once() {
     }
     shell.state.tick(
         LATER,
-        &[key(KEY_DOWN), key(KEY_RIGHT), key(KEY_RIGHT)],
+        &[key(KEY_DOWN), key(KEY_DOWN), key(KEY_RIGHT), key(KEY_RIGHT)],
         &mut snap,
     );
     // The screen is still open, nothing is committed.
@@ -1528,4 +1543,26 @@ fn the_sideways_wheel_over_the_panel_moves_its_texts_and_not_the_song_select() {
     s.tick(LATER, &[shift(false), wheel(0.0, -1.0)], &mut snap);
     assert_eq!(settings_screen(&s).snapshot().text.wheel, 2.0);
     assert!(settings_screen(&s).scroll() > 0.0);
+}
+
+#[test]
+fn the_screen_slides_right_with_the_panel_and_back_when_it_closes() {
+    let offset = |snap: &ShellSnapshot| snap.layers.iter().flatten().next().unwrap().pose.offset;
+    let mut s = state();
+    let mut snap = ShellSnapshot::default();
+    s.tick(0, &[], &mut snap);
+    assert_eq!(offset(&snap), 0.0);
+    s.tick(TRANSITION_NS, &[key(KEY_DOWN), key(KEY_ENTER)], &mut snap);
+    let settled = TRANSITION_NS + PANEL_NS * 2;
+    s.tick(settled, &[], &mut snap);
+    let full = offset(&snap);
+    assert!(full > 0.0, "{full}");
+    // Part of the way through the slide out it is part of the shift.
+    s.tick(settled + LATER, &[key(KEY_ESCAPE)], &mut snap);
+    s.tick(settled + LATER + PANEL_NS / 4, &[], &mut snap);
+    let mid = offset(&snap);
+    assert!(mid > 0.0 && mid < full, "{mid} {full}");
+    // Closed: back at rest.
+    s.tick(settled + LATER + PANEL_NS * 3, &[], &mut snap);
+    assert_eq!(offset(&snap), 0.0);
 }

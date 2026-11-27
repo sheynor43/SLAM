@@ -48,7 +48,10 @@ struct Rig {
 
 impl Rig {
     fn new() -> Self {
-        let (picker, reader) = link();
+        let (mut picker, reader) = link();
+        // Its own counter: other tests save scores meanwhile.
+        picker.scores_written = Box::leak(Box::new(AtomicU32::new(0)));
+        picker.scores_seen = 0;
         let DetailsReader {
             requests, replies, ..
         } = reader;
@@ -80,6 +83,7 @@ impl Rig {
             generation,
             statistics: Some(statistics(circles)),
             scores: None,
+            timing: None,
         };
         self.replies.push(reply).unwrap();
     }
@@ -96,6 +100,22 @@ fn asks_once_the_selection_settles_and_shows_the_answer() {
     rig.reply(1, 7);
     assert_eq!(rig.tick(160 * MS, Some((0, 0))), Some(7));
     assert_eq!(rig.asked(), [], "asked once");
+}
+
+#[test]
+fn a_saved_score_asks_again_and_keeps_the_old_answer_meanwhile() {
+    let mut rig = Rig::new();
+    rig.tick(0, Some((0, 0)));
+    rig.tick(150 * MS, Some((0, 0)));
+    rig.reply(1, 7);
+    assert_eq!(rig.tick(160 * MS, Some((0, 0))), Some(7));
+    assert_eq!(rig.asked(), [(1, 0, 0)]);
+    rig.picker.scores_written.fetch_add(1, Ordering::Release);
+    assert_eq!(rig.tick(170 * MS, Some((0, 0))), Some(7), "old answer kept");
+    assert_eq!(rig.asked(), [(2, 0, 0)]);
+    rig.reply(2, 8);
+    assert_eq!(rig.tick(180 * MS, Some((0, 0))), Some(8));
+    assert_eq!(rig.asked(), [], "asked once per save");
 }
 
 #[test]
@@ -180,6 +200,7 @@ fn the_reader_answers_the_newest_request_from_the_file() {
             generation: 3,
             statistics: None,
             scores: None,
+            timing: None,
         }
     );
     assert_eq!(Arc::strong_count(&files), 1);
@@ -204,6 +225,7 @@ fn the_pickers_answer_carries_the_scores_of_its_own_selection() {
         generation: 1,
         statistics: Some(statistics(7)),
         scores: Some(scores),
+        timing: None,
     };
     rig.replies.push(reply).unwrap();
     let answer = rig.picker.tick(160 * MS, &rig.files, Some((0, 0)));

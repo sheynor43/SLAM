@@ -504,3 +504,36 @@ fn snapshot_rows_cover_the_list_area() {
     assert!(shown.end <= snap.first_row + snap.rows().len());
     assert_eq!(snap.rows()[0], Row::Set(6), "set 0 is expanded");
 }
+
+#[test]
+fn pop_word_erases_trailing_spaces_and_the_word() {
+    let mut q = SearchQuery::default();
+    for c in "hello big  world  ".chars() {
+        q.push(c);
+    }
+    assert!(q.pop_word());
+    assert_eq!(q.as_str(), "hello big  ");
+    assert!(q.pop_word());
+    assert_eq!(q.as_str(), "hello ");
+    assert!(q.pop_word());
+    assert_eq!(q.as_str(), "");
+    assert!(!q.pop_word());
+    // Multi-byte letters go whole.
+    for c in "\u{43f}\u{440}\u{438} \u{43c}\u{438}\u{440}".chars() {
+        q.push(c);
+    }
+    assert!(q.pop_word());
+    assert_eq!(q.as_str(), "\u{43f}\u{440}\u{438} ");
+}
+
+#[test]
+fn erase_word_filters_again_and_never_deselects_mods() {
+    let mut s = searchable(songs());
+    type_text(&mut s, "beta alpha");
+    assert_eq!(press(&mut s, I::EraseWord), None);
+    assert_eq!(s.query().as_str(), "beta ");
+    assert_eq!(press(&mut s, I::EraseWord), None);
+    assert!(s.query().is_empty());
+    assert_eq!(s.filter().set_count(), 4);
+    assert_eq!(press(&mut s, I::EraseWord), None);
+}

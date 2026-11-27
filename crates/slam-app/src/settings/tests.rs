@@ -1057,9 +1057,12 @@ fn mouse_settings_round_trip_next_to_the_bindings() {
     let mut s = Settings::default();
     s.input.high_precision_mouse = !s.input.high_precision_mouse;
     s.input.sensitivity = 1.5;
+    assert!(s.input.mouse_side_buttons, "on by default");
+    s.input.mouse_side_buttons = false;
     let text = file::to_toml_string(&s).unwrap();
     assert!(text.contains("sensitivity = 1.5"), "{text}");
     assert!(text.contains("high_precision_mouse"), "{text}");
+    assert!(text.contains("mouse_side_buttons = false"), "{text}");
     let loaded = file::from_toml_str(&text);
     assert_eq!(loaded.status, LoadStatus::Ok, "{:?}", loaded.warnings);
     assert_eq!(loaded.settings, s);
@@ -1762,6 +1765,38 @@ fn the_thumbnails_setting_defaults_to_128_and_round_trips() {
 }
 
 #[test]
+fn the_thumbnail_style_defaults_to_left_and_round_trips() {
+    use super::ThumbnailStyle;
+    assert_eq!(
+        Settings::default().song_select.thumbnail_style,
+        ThumbnailStyle::Left
+    );
+    for (name, value) in [
+        ("left", ThumbnailStyle::Left),
+        ("full", ThumbnailStyle::Full),
+    ] {
+        let loaded = file::from_toml_str(&format!("[song_select]\nthumbnail_style = \"{name}\"\n"));
+        assert_eq!(loaded.status, LoadStatus::Ok, "{:?}", loaded.warnings);
+        assert_eq!(loaded.settings.song_select.thumbnail_style, value);
+        let mut settings = Settings::default();
+        settings.song_select.thumbnail_style = value;
+        let text = file::to_toml_string(&settings).unwrap();
+        assert!(
+            text.contains(&format!("thumbnail_style = \"{name}\"")),
+            "{text}"
+        );
+        assert_eq!(file::from_toml_str(&text).settings, settings);
+    }
+    let bad = file::from_toml_str("[song_select]\nthumbnail_style = \"huge\"\n");
+    assert_eq!(bad.status, LoadStatus::Recovered);
+    assert!(
+        bad.warnings
+            .iter()
+            .any(|w| w.starts_with("song_select.thumbnail_style"))
+    );
+}
+
+#[test]
 fn a_bad_thumbnails_value_falls_back_with_a_warning() {
     for text in ["\"huge\"", "128", "true"] {
         let loaded = file::from_toml_str(&format!("[song_select]\nthumbnails = {text}\n"));
@@ -1832,7 +1867,9 @@ fn the_skew_defaults_snaps_to_degrees_and_falls_back() {
 fn the_look_settings_default_on_and_round_trip() {
     let g = Settings::default().general;
     assert!(g.parallax_enabled && g.blur && g.shadows);
-    assert!(g.cursor_rotate && g.cursor_spin && g.cursor_trail && g.cursor_ripple);
+    assert!(g.cursor_rotate && g.cursor_trail && g.cursor_ripple);
+    // The idle spin is gone (ADR-0167).
+    assert!(!g.cursor_spin);
     assert_eq!((g.blur_strength, g.shadow_strength), (1.0, 1.0));
     // An old file without the keys loads the defaults.
     let old = file::from_toml_str("[general]\neffects = false\n");
@@ -1852,6 +1889,29 @@ fn the_look_settings_default_on_and_round_trip() {
     settings.general.cursor_ripple = false;
     let text = file::to_toml_string(&settings).unwrap();
     assert_eq!(file::from_toml_str(&text).settings, settings);
+}
+
+#[test]
+fn the_menu_cursor_size_defaults_to_80_percent_round_trips_and_is_held_to_its_range() {
+    assert_eq!(Settings::default().general.menu_cursor_size, 0.8);
+    // Gameplay keeps its own size.
+    assert_eq!(Settings::default().gameplay.cursor_size, 1.0);
+    let old = file::from_toml_str("[general]\neffects = false\n");
+    assert_eq!(old.settings.general.menu_cursor_size, 0.8);
+    let mut settings = Settings::default();
+    settings.general.menu_cursor_size = 1.35;
+    let text = file::to_toml_string(&settings).unwrap();
+    assert_eq!(file::from_toml_str(&text).settings, settings);
+    let loaded = file::from_toml_str("[general]\nmenu_cursor_size = 9.0\n");
+    assert_eq!(loaded.settings.general.menu_cursor_size, 0.8);
+    assert!(
+        loaded
+            .warnings
+            .iter()
+            .any(|w| w.starts_with("general.menu_cursor_size"))
+    );
+    let snapped = file::from_toml_str("[general]\nmenu_cursor_size = 1.07\n");
+    assert_eq!(snapped.settings.general.menu_cursor_size, 1.05);
 }
 
 #[test]
@@ -1933,6 +1993,36 @@ fn the_mod_hotkeys_setting_round_trips_and_falls_back() {
 }
 
 #[test]
+fn mod_presets_round_trip_and_unknown_ones_are_dropped() {
+    assert!(Settings::default().song_select.mod_presets.is_empty());
+    let text = "[song_select]\nmod_presets = [\"HD DT(speed_change=1.3)\", \"ZZ\", \"EZ\", \"EZ\", \"\"]\n";
+    let loaded = file::from_toml_str(text);
+    assert_eq!(loaded.status, LoadStatus::Recovered);
+    assert_eq!(
+        loaded.settings.song_select.mod_presets,
+        ["HD DT(speed_change=1.3)", "EZ"]
+    );
+    let written = file::to_toml_string(&loaded.settings).unwrap();
+    assert!(written.contains("mod_presets"), "{written}");
+    let again = file::from_toml_str(&written);
+    assert_eq!(again.status, LoadStatus::Ok, "{:?}", again.warnings);
+    assert_eq!(again.settings, loaded.settings);
+    // No more than the footer holds.
+    let many: Vec<String> = ["HD", "HR", "EZ", "HT", "SD", "PF", "DT", "NC"]
+        .into_iter()
+        .map(|m| format!("\"{m}\""))
+        .collect();
+    let loaded = file::from_toml_str(&format!(
+        "[song_select]\nmod_presets = [{}]\n",
+        many.join(", ")
+    ));
+    assert_eq!(
+        loaded.settings.song_select.mod_presets.len(),
+        crate::mod_presets::MAX
+    );
+}
+
+#[test]
 fn hold_to_confirm_defaults_to_lazers_200_ms_and_stays_in_range() {
     assert_eq!(Settings::default().gameplay.hold_to_confirm_ms, 200.0);
     let missing = file::from_toml_str("[gameplay]\ndim = 0.2\n");
@@ -1979,5 +2069,127 @@ fn a_bad_results_style_falls_back_with_a_warning() {
             .any(|w| w.starts_with("general.results_style")),
         "{:?}",
         loaded.warnings
+    );
+}
+
+#[test]
+fn the_discord_presence_setting_defaults_on_and_round_trips() {
+    assert!(Settings::default().general.discord_presence);
+    let loaded = file::from_toml_str("[general]\ndiscord_presence = false\n");
+    assert!(!loaded.settings.general.discord_presence);
+    let mut settings = Settings::default();
+    settings.general.discord_presence = false;
+    let text = file::to_toml_string(&settings).unwrap();
+    assert!(text.contains("discord_presence = false"), "{text}");
+}
+
+#[test]
+fn pinned_settings_default_to_none_and_round_trip_in_order() {
+    assert!(Settings::default().general.pinned_settings.is_empty());
+    let mut settings = Settings::default();
+    settings.general.pinned_settings =
+        vec!["audio-menu-music".into(), "audio-master-volume".into()];
+    let text = file::to_toml_string(&settings).unwrap();
+    let loaded = file::from_toml_str(&text);
+    assert_eq!(
+        loaded.settings.general.pinned_settings,
+        settings.general.pinned_settings
+    );
+    assert_eq!(loaded.status, file::LoadStatus::Ok, "{:?}", loaded.warnings);
+}
+
+#[test]
+fn unknown_unpinnable_and_repeated_pins_are_dropped_on_read() {
+    let loaded = file::from_toml_str(
+        "[general]\npinned_settings = [\"audio-menu-music\", \"no-such-row\", \"audio-menu-music\", \"language\", \"audio-master-volume\"]\n",
+    );
+    assert_eq!(
+        loaded.settings.general.pinned_settings,
+        ["audio-menu-music", "audio-master-volume"]
+    );
+    assert_eq!(loaded.warnings.len(), 3, "{:?}", loaded.warnings);
+    assert!(
+        loaded
+            .warnings
+            .iter()
+            .all(|w| w.contains("pinned_settings"))
+    );
+}
+
+#[test]
+fn at_most_eight_pins_are_read() {
+    let names: Vec<String> = crate::shell::pinnable_setting_names().take(10).collect();
+    assert_eq!(names.len(), 10);
+    let list = names
+        .iter()
+        .map(|n| format!("\"{n}\""))
+        .collect::<Vec<_>>()
+        .join(", ");
+    let loaded = file::from_toml_str(&format!("[general]\npinned_settings = [{list}]\n"));
+    assert_eq!(loaded.settings.general.pinned_settings, names[..8]);
+    assert_eq!(loaded.warnings.len(), 2);
+}
+
+#[test]
+fn a_pin_list_of_the_wrong_type_falls_back_to_none() {
+    let loaded = file::from_toml_str("[general]\npinned_settings = 3\n");
+    assert!(loaded.settings.general.pinned_settings.is_empty());
+    assert_eq!(loaded.status, file::LoadStatus::Recovered);
+}
+
+#[test]
+fn song_select_info_panel_settings_round_trip_and_are_validated() {
+    let defaults = Settings::default();
+    assert_eq!(defaults.song_select.info_width, 1.0);
+    assert_eq!(defaults.song_select.info_height, 1.0);
+    assert!(!defaults.song_select.info_auto_width);
+    let loaded = file::from_toml_str(
+        "[song_select]\ninfo_width = 1.25\ninfo_height = 0.75\ninfo_auto_width = true\n",
+    );
+    assert_eq!(loaded.settings.song_select.info_width, 1.25);
+    assert_eq!(loaded.settings.song_select.info_height, 0.75);
+    assert!(loaded.settings.song_select.info_auto_width);
+    let bad = file::from_toml_str("[song_select]\ninfo_width = 3.0\n");
+    assert_eq!(bad.settings.song_select.info_width, 1.0);
+    assert!(
+        bad.warnings
+            .iter()
+            .any(|w| w.starts_with("song_select.info_width"))
+    );
+}
+
+#[test]
+fn the_update_settings_default_read_and_write_by_name() {
+    let defaults = Settings::default().updates;
+    assert!(defaults.check);
+    assert_eq!(defaults.channel, crate::update::Channel::Prerelease);
+    let loaded = file::from_toml_str("[updates]\ncheck = false\nchannel = \"stable\"\n");
+    assert_eq!(loaded.status, LoadStatus::Ok, "{:?}", loaded.warnings);
+    assert!(!loaded.settings.updates.check);
+    assert_eq!(
+        loaded.settings.updates.channel,
+        crate::update::Channel::Stable
+    );
+    let text = file::to_toml_string(&loaded.settings).unwrap();
+    assert!(text.contains("channel = \"stable\""), "{text}");
+    assert_eq!(
+        file::from_toml_str(&text).settings.updates,
+        loaded.settings.updates
+    );
+}
+
+#[test]
+fn a_bad_update_channel_falls_back_with_a_warning() {
+    let loaded = file::from_toml_str("[updates]\nchannel = \"nightly\"\n");
+    assert_eq!(loaded.status, LoadStatus::Recovered);
+    assert_eq!(
+        loaded.settings.updates.channel,
+        crate::update::Channel::Prerelease
+    );
+    assert!(
+        loaded
+            .warnings
+            .iter()
+            .any(|w| w.starts_with("updates.channel"))
     );
 }

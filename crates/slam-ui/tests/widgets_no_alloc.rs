@@ -134,7 +134,7 @@ fn widget_views_push_without_allocating_once_warm() {
         shapes.clear();
         text.clear();
         toggle_view.push(&mut shapes, &toggle, &tl, 0.5, white());
-        slider_view.push(&mut shapes, &mut text, glyphs, slider, &sl, 0.5, white());
+        slider_view.push(&mut shapes, &mut text, glyphs, slider, &sl, 0.5, white(), 0);
         let now = clock.get();
         clock.set(now + 137_000_000);
         dropdown_view.push(
@@ -196,6 +196,7 @@ fn a_slider_shows_its_zero_text_without_allocating_once_warm() {
             &layout,
             0.5,
             white(),
+            0,
         );
     };
 
@@ -209,5 +210,57 @@ fn a_slider_shows_its_zero_text_without_allocating_once_warm() {
             slider.set(value);
             frame(&slider, &mut glyphs);
         }
+    });
+}
+
+#[test]
+fn typing_a_slider_value_does_not_allocate_once_warm() {
+    let theme = Theme::default();
+    let registry = Arc::new(FontRegistry::with_builtin());
+    let mut glyphs = glyph_atlas(Arc::clone(&registry), &GlyphAtlasConfig::new(LIMITS)).unwrap();
+    let mut view = SliderView::new(Arc::clone(&registry), theme, 1, " ms");
+    let layout = SliderLayout::new(BOUNDS, &theme, 1.0);
+    let mut slider = Slider::new(0.0, 100.0, 0.1, 20.0);
+    view.request_glyphs(&mut glyphs);
+    let (mut shapes, mut text) = (
+        ShapeBatch::with_capacity(256),
+        SpriteBatch::with_capacity(1024),
+    );
+    let mut now = 0_u64;
+    let mut frame = |slider: &Slider, glyphs: &mut _| {
+        shapes.clear();
+        text.clear();
+        now += 137_000_000;
+        view.push(
+            &mut shapes,
+            &mut text,
+            glyphs,
+            slider,
+            &layout,
+            0.5,
+            white(),
+            now,
+        );
+    };
+
+    // Warm: type the longest text once.
+    slider.input(SliderInput::Activate, &layout);
+    for c in "-0123456789.0123456789".chars() {
+        slider.input(SliderInput::Type(c), &layout);
+        frame(&slider, &mut glyphs);
+    }
+    slider.input(SliderInput::Back, &layout);
+    frame(&slider, &mut glyphs);
+
+    assert_no_alloc(|| {
+        slider.input(SliderInput::Activate, &layout);
+        for c in "42.5".chars() {
+            slider.input(SliderInput::Type(c), &layout);
+            frame(&slider, &mut glyphs);
+        }
+        slider.input(SliderInput::Erase, &layout);
+        frame(&slider, &mut glyphs);
+        slider.input(SliderInput::Activate, &layout);
+        frame(&slider, &mut glyphs);
     });
 }

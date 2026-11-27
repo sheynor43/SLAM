@@ -36,6 +36,10 @@ const PUBLISH_EVERY: Duration = Duration::from_millis(100);
 /// How often new star ratings republish the list while they keep arriving: every
 /// publication rebuilds the whole list, so the ratings come in bunches.
 const STARS_PUBLISH_EVERY: Duration = Duration::from_secs(1);
+/// How often ratings with the selected mods republish it: they answer the player's own
+/// change of mods, in view first, so they show at once rather than in a bunch a second
+/// later (ADR-0167).
+const MOD_STARS_PUBLISH_EVERY: Duration = Duration::from_millis(50);
 /// How long the library thread sleeps between polls.
 const POLL: Duration = Duration::from_millis(10);
 /// After this, a folder picker that has not answered no longer blocks a new one: its
@@ -129,6 +133,9 @@ pub struct StarsConfig {
 pub enum Command {
     /// Show the OS folder picker; a chosen folder is saved and listed (ADR-0064).
     PickFolder,
+    /// List the songs folder again, keeping the list shown until the new one is complete,
+    /// and list the skins again too (ADR-0169).
+    Rescan,
     /// Free the old values of a change, off the update thread.
     Retire(Box<FolderChange>),
 }
@@ -251,6 +258,12 @@ impl SongsLink {
     /// queued. Neither blocks nor allocates.
     pub fn pick_folder(&mut self) -> bool {
         self.commands.push(Command::PickFolder).is_ok()
+    }
+
+    /// Asks the library thread to list the songs and skins folders again (ADR-0169). Returns
+    /// whether the command was queued. Neither blocks nor allocates.
+    pub fn rescan(&mut self) -> bool {
+        self.commands.push(Command::Rescan).is_ok()
     }
 
     /// Hands search buffers back to the library thread to free. With the command ring full
@@ -555,8 +568,13 @@ struct Library {
     mods_key: [u64; 4],
     /// Ratings arrived that the published list does not show yet.
     stars_pending: bool,
+    /// Ratings with the selected mods came since the last publication.
+    mod_stars_pending: bool,
     /// The folder changed: the star run for the old one is to be dropped.
     cancel_stars: bool,
+    /// The sets of a rescan so far: the list in `sets` stays shown until the scan is done,
+    /// so the selection survives (ADR-0169).
+    rescan: Option<Vec<BeatmapSetEntry>>,
 }
 
 impl Library {
@@ -580,7 +598,9 @@ impl Library {
             mod_map: StarMap::new(),
             mods_key: RatingMods::NONE.key(),
             stars_pending: false,
+            mod_stars_pending: false,
             cancel_stars: false,
+            rescan: None,
         };
         if let Some(root) = root {
             library.scan(root);
@@ -590,6 +610,7 @@ impl Library {
 
     /// Starts listing `root` from scratch; a scan of the previous folder is cancelled.
     fn scan(&mut self, root: PathBuf) {
+        self.rescan = None;
         self.scanner = match Scanner::spawn(root.clone()) {
             Ok(scanner) => Some(scanner),
             Err(e) => {
@@ -610,6 +631,41 @@ impl Library {
         self.retired_folders.push(old);
         self.root = Some(root);
         self.dirty = true;
+    }
+
+    /// Lists the folder again without clearing the shown list: the new sets collect on the
+    /// side and replace it when the scan is done, and the skins are listed again with them.
+    /// While the first scan is still running it simply starts over.
+    fn rescan(&mut self) {
+        let Some(root) = self.root.clone() else {
+            return;
+        };
+        if matches!(self.status, SongSelectStatus::Scanning { .. }) || self.sets.is_empty() {
+            self.scan(root);
+            return;
+        }
+        match Scanner::spawn(root) {
+            Ok(scanner) => {
+                self.scanner = Some(scanner);
+                self.rescan = Some(Vec::new());
+            }
+            Err(e) => tracing::warn!("songs rescan: {e}"),
+        }
+    }
+
+    /// Lists the skins next to the folder again, for the update thread's settings and the
+    /// draw thread's dropdown.
+    fn refresh_skins(&mut self) {
+        let Some(root) = self.root.clone() else {
+            return;
+        };
+        let skins = (self.folders.skins)(&root);
+        self.folders.relabel.names.clone_from(&skins.names);
+        self.change = Some(Box::new(FolderChange {
+            songs: Some(root),
+            skins: skins.names,
+        }));
+        self.skin_view = skins.view;
     }
 
     /// Opens the folder picker, unless one is open.
@@ -684,14 +740,21 @@ impl Library {
         stars.start(sets);
     }
 
-    /// Follows the selected mods: ratings with other mods are dropped, and the list goes
-    /// back to the nomod ones until the new ones arrive (ADR-0151).
+    /// Follows the selected mods (ADR-0151). From one set of mods to another the ratings
+    /// with the old ones stay until the new ones replace them, so stepping the speed does
+    /// not flash the nomod ratings (ADR-0167); picking mods first or dropping them all
+    /// starts from the nomod ones.
     fn follow_mods(&mut self, mods: &RatingMods) {
         let key = mods.key();
         if key != self.mods_key {
+            let none = RatingMods::NONE.key();
+            if self.mods_key == none || key == none {
+                self.mod_map.clear();
+            }
             self.mods_key = key;
-            self.mod_map.clear();
             self.stars_pending = true;
+            // The player changed the mods: what the list shows changes now.
+            self.mod_stars_pending = true;
         }
     }
 
@@ -717,6 +780,7 @@ impl Library {
                     }
                     if key == library.mods_key {
                         library.mod_map.insert(path, value);
+                        library.mod_stars_pending = true;
                     }
                 }
             }
@@ -742,18 +806,23 @@ impl Library {
     /// Takes what the scanner found since the last poll.
     fn receive_scan(&mut self) -> bool {
         let mut finished = false;
+        let mut skins_due = false;
         let Some(scanner) = &self.scanner else {
             return false;
         };
-        while matches!(self.status, SongSelectStatus::Scanning { .. })
+        while (self.rescan.is_some() || matches!(self.status, SongSelectStatus::Scanning { .. }))
             && let Some(event) = scanner.try_recv()
         {
             match event {
                 ScanEvent::Batch(batch) => {
-                    self.sets.extend(batch);
-                    self.status = SongSelectStatus::Scanning {
-                        sets: self.sets.len(),
-                    };
+                    if let Some(found) = &mut self.rescan {
+                        found.extend(batch);
+                    } else {
+                        self.sets.extend(batch);
+                        self.status = SongSelectStatus::Scanning {
+                            sets: self.sets.len(),
+                        };
+                    }
                 }
                 ScanEvent::Done(summary) => {
                     tracing::info!(
@@ -763,15 +832,25 @@ impl Library {
                         summary.skipped_files,
                         summary.elapsed
                     );
+                    if let Some(found) = self.rescan.take() {
+                        self.sets = found;
+                        skins_due = true;
+                    }
                     self.status = SongSelectStatus::Ready;
                     finished = true;
                 }
                 ScanEvent::Failed(e) => {
                     tracing::warn!("songs scan: {e}");
-                    self.status = SongSelectStatus::Failed;
+                    // A failed rescan keeps the list that was shown.
+                    if self.rescan.take().is_none() {
+                        self.status = SongSelectStatus::Failed;
+                    }
                 }
             }
             self.dirty = true;
+        }
+        if skins_due {
+            self.refresh_skins();
         }
         finished
     }
@@ -812,6 +891,7 @@ fn run(
         while let Ok(command) = ends.commands.pop() {
             match command {
                 Command::PickFolder => library.pick_folder(),
+                Command::Rescan => library.rescan(),
                 Command::Retire(old) => drop(old),
             }
         }
@@ -852,9 +932,14 @@ fn run(
             library.receive_stars(stars, &ends.playing);
         }
         // Ratings republish the list, but not every time a few arrive, and not in a play.
+        let every = if library.mod_stars_pending {
+            MOD_STARS_PUBLISH_EVERY
+        } else {
+            STARS_PUBLISH_EVERY
+        };
         let stars_due = library.stars_pending
             && !ends.playing.paused()
-            && last_publish.is_none_or(|at| at.elapsed() >= STARS_PUBLISH_EVERY);
+            && last_publish.is_none_or(|at| at.elapsed() >= every);
         let scanning = matches!(library.status, SongSelectStatus::Scanning { .. });
         let due = !scanning || last_publish.is_none_or(|at| at.elapsed() >= PUBLISH_EVERY);
         if (library.dirty || stars_due) && due && ends.published.slots() > 0 {
@@ -876,6 +961,7 @@ fn run(
             // Only ratings are new: the view of the list stays (ADR-0135).
             published.refresh = !library.dirty;
             library.stars_pending = false;
+            library.mod_stars_pending = false;
             retired_lists.push(Arc::clone(&published.list));
             retired_files.push(Arc::clone(&published.files));
             if !Arc::ptr_eq(&published.scanning_text, &no_text) {
@@ -1324,6 +1410,43 @@ mod tests {
     }
 
     #[test]
+    fn a_rescan_lists_new_sets_and_skins_without_an_empty_list_between() {
+        let root = TempDir(
+            std::env::temp_dir().join(format!("slam-app-songs-rescan-{}", std::process::id())),
+        );
+        write_set(&root.0, "1 first", "First");
+        let mut folders = no_folders();
+        folders.skins = Box::new(|_| SkinList {
+            names: vec!["rescanned".to_owned()],
+            view: None,
+        });
+        let (mut link, _views, _thread) = spawn(
+            Some(root.0.clone()),
+            folders,
+            Box::new(|n| format!("{n} sets")),
+            None,
+            None,
+            None,
+        )
+        .unwrap();
+        let first = wait_for(&mut link, |p| p.status == SongSelectStatus::Ready);
+        assert_eq!(first.list.sets.len(), 1);
+
+        write_set(&root.0, "2 second", "Second");
+        assert!(link.rescan());
+        // Nothing published in between shows a scan in progress or fewer sets.
+        let mut done = wait_for(&mut link, |p| {
+            assert_ne!(p.status, SongSelectStatus::Scanning { sets: 0 });
+            p.list.sets.len() == 2
+        });
+        assert_eq!(done.status, SongSelectStatus::Ready);
+        let change = done.change.take().expect("the skins are listed again");
+        assert_eq!(change.skins, ["rescanned"]);
+        assert_eq!(change.songs.as_deref(), Some(root.0.as_path()));
+        link.retire(change);
+    }
+
+    #[test]
     fn a_folder_is_scanned_sorted_and_published() {
         let root =
             TempDir(std::env::temp_dir().join(format!("slam-app-songs-{}", std::process::id())));
@@ -1450,6 +1573,8 @@ mod tests {
             ..RatingMods::NONE
         };
         library.follow_mods(&dt);
+        // A change of mods publishes at the quick pace (ADR-0167).
+        assert!(library.mod_stars_pending);
         library.mod_map.insert(
             PathBuf::from("s").join("b.osu"),
             Rating {
@@ -1467,6 +1592,18 @@ mod tests {
         let rows = &published.list.sets[0].difficulties;
         assert_eq!(rows[0].stars, Some(1.0));
         assert_eq!((rows[2].stars, rows[2].pp), (Some(9.0), Some(900.0)));
+        // Another speed: the old ratings stay until the new ones come.
+        let faster = RatingMods { rate: 1.6, ..dt };
+        library.follow_mods(&faster);
+        assert_eq!(
+            library
+                .shown_mods()
+                .and_then(|m| m.get(&PathBuf::from("s").join("b.osu"))),
+            Some(&Rating {
+                stars: 9.0,
+                pp: 900.0
+            })
+        );
         // Back to no mods: the modded ratings are gone.
         library.follow_mods(&RatingMods::NONE);
         assert!(library.mod_map.is_empty() && library.shown_mods().is_none());

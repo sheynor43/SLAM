@@ -54,7 +54,7 @@ pub struct PlayOptions {
     /// Hit lighting on hits.
     pub hit_lighting: bool,
     /// The key overlay and its animation; `None` is off (ADR-0113).
-    pub key_overlay: Option<slam_play::key_overlay::KeyAnimation>,
+    pub key_overlay: Option<slam_play::key_overlay::KeyStyle>,
     /// Animates the HUD counters and the health bar.
     pub hud_animations: bool,
     /// The cursor leaves a trail.
@@ -548,7 +548,7 @@ mod tests {
                 snaking_in: on,
                 snaking_out: !on,
                 hit_lighting: on,
-                key_overlay: on.then_some(slam_play::key_overlay::KeyAnimation::Lazer),
+                key_overlay: on.then_some(slam_play::key_overlay::KeyAnimation::Lazer.into()),
                 cursor_trail: on,
                 ..options()
             };

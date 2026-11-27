@@ -1,0 +1,15 @@
+[package]
+name = "sign-release"
+version = "0.1.0"
+edition = "2024"
+license = "GPL-3.0-or-later"
+publish = false
+description = "Signs release files for SLAM's self-update (ADR-0185)"
+
+# Not a member of the SLAM workspace: the release workflow builds it alone.
+[workspace]
+
+[dependencies]
+base64 = "0.22.1"
+ed25519-dalek = { version = "3.0.0", default-features = false }
+sha2 = "0.11.0"

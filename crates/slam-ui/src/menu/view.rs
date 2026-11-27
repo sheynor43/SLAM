@@ -47,16 +47,6 @@ pub(crate) struct Face {
     pub(crate) width: u16,
 }
 
-impl Face {
-    /// The same face at `factor` times the size.
-    pub(crate) fn scaled(self, factor: f32) -> Face {
-        Face {
-            size: self.size * factor,
-            ..self
-        }
-    }
-}
-
 /// Fonts and the layout context shared by the views.
 pub(crate) struct Typesetter {
     registry: Arc<FontRegistry>,
@@ -178,8 +168,11 @@ impl MenuView {
         self.type_setter
             .lay_out(&mut self.title, self.theme.title_size * scale);
         for button in &mut self.buttons {
-            self.type_setter
-                .lay_out(button, self.theme.button_text_size * scale);
+            // Button labels are Bold (ADR-0174).
+            self.type_setter.lay_out_face(
+                button,
+                self.theme.heading_face(self.theme.button_text_size * scale),
+            );
         }
     }
 

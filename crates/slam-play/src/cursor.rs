@@ -188,6 +188,11 @@ pub fn rotation(time: f64, rotate: bool) -> f32 {
 /// Lazer shrinks the cursor's and the trail's textures by this (`NonPlayfieldSprite`).
 pub(crate) const STABLE_MAGIC_SCALE_FACTOR: f32 = 1.6;
 
+/// Display units of a skin texture per osu!pixel at scale 1 (lazer's
+/// `STABLE_MAGIC_SCALE_FACTOR`): a layout of this many window units per osu!pixel draws
+/// trail parts at the size of the texture's display units, as a menu draws its cursor.
+pub const TRAIL_TEXTURE_FACTOR: f32 = STABLE_MAGIC_SCALE_FACTOR;
+
 /// The skin configuration of the cursor and its trail.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct CursorSkinConfig {
@@ -589,8 +594,6 @@ impl CursorTrail {
     }
 
     /// Writes the visible parts, in the order of their slots, rotated by `rotation` degrees.
-    // Ported from osu!lazer 2026.1005.0-lazer: osu.Game.Rulesets.Osu/UI/Cursor/CursorTrail.cs (TrailDrawNode.Draw)
-    // Ported from osu-resources 2026.1005.0: osu.Game.Resources/Shaders/sh_CursorTrail.vs (main)
     pub fn push(
         &self,
         batch: &mut SpriteBatch,
@@ -598,6 +601,23 @@ impl CursorTrail {
         texture: &SkinSprite,
         config: &CursorSkinConfig,
         rotation: f32,
+    ) {
+        self.push_to(layout, texture, config, rotation, |sprite| {
+            batch.push(sprite);
+        });
+    }
+
+    /// As [`push`](Self::push), handing each sprite to `sink` (a menu draws into a shape
+    /// batch). Allocation-free when `sink` is.
+    // Ported from osu!lazer 2026.1005.0-lazer: osu.Game.Rulesets.Osu/UI/Cursor/CursorTrail.cs (TrailDrawNode.Draw)
+    // Ported from osu-resources 2026.1005.0: osu.Game.Resources/Shaders/sh_CursorTrail.vs (main)
+    pub fn push_to(
+        &self,
+        layout: &PlayfieldLayout,
+        texture: &SkinSprite,
+        config: &CursorSkinConfig,
+        rotation: f32,
+        mut sink: impl FnMut(&Sprite),
     ) {
         let angle = if config.trail_rotate {
             rotation.to_radians()
@@ -620,7 +640,7 @@ impl CursorTrail {
             let scale = part.scale * self.cursor_scale.scale * layout.scale();
             let size = [display.x * scale, display.y * scale];
             let at = layout.to_window(part.position);
-            batch.push(&Sprite {
+            sink(&Sprite {
                 position: [at.x, at.y],
                 size,
                 origin: [size[0] * origin, size[1] * origin],

@@ -4,7 +4,9 @@ use std::path::{Path, PathBuf};
 use slam_render::hal::{Extent, Limits};
 use slam_render::upload::{TextureLoaderConfig, texture_loader};
 
-use super::make::{Maker, cache_key, cover_crop, downscale, fnv, fnv_start, output_size};
+use super::make::{
+    Maker, cache_dir_name, cache_key, cover_crop, downscale, fnv, fnv_start, output_size,
+};
 use super::worker::{QUEUE, Queue};
 use super::*;
 use crate::songs::SongFile;
@@ -234,9 +236,9 @@ fn a_thumbnail_is_made_cropped_and_cached_then_read_back_from_the_cache() {
     });
     std::fs::write(set.join("BG.PNG"), png_bytes(&source)).unwrap();
     let cache = t.0.join("cache");
-    let maker = Maker::new(Some(cache.clone()), 1.6, ImageLimits::default());
+    let maker = Maker::new(Some(cache.clone()), 1.6, 4.0, ImageLimits::default());
     // The name is found without regard to case.
-    let made = maker.make(&set, "bg.png", 16).unwrap();
+    let made = maker.make(&set, "bg.png", 16, false).unwrap();
     assert_eq!(made.size, Extent::new(26, 16));
     let files: Vec<_> = std::fs::read_dir(cache.join("thumbnails").join("16"))
         .unwrap()
@@ -249,15 +251,15 @@ fn a_thumbnail_is_made_cropped_and_cached_then_read_back_from_the_cache() {
     );
     // Read from the cache: the same pixels, and the source is not needed any more.
     std::fs::write(set.join("BG.PNG"), png_bytes(&source)).unwrap();
-    let again = maker.make(&set, "bg.png", 16).unwrap();
+    let again = maker.make(&set, "bg.png", 16, false).unwrap();
     assert_eq!(again, made);
     // Another height is another file.
-    assert!(maker.make(&set, "bg.png", 8).is_some());
+    assert!(maker.make(&set, "bg.png", 8, false).is_some());
     assert!(cache.join("thumbnails").join("8").exists());
     // Missing and undecodable backgrounds give nothing.
-    assert!(maker.make(&set, "missing.png", 16).is_none());
+    assert!(maker.make(&set, "missing.png", 16, false).is_none());
     std::fs::write(set.join("junk.jpg"), b"not an image").unwrap();
-    assert!(maker.make(&set, "junk.jpg", 16).is_none());
+    assert!(maker.make(&set, "junk.jpg", 16, false).is_none());
 }
 
 #[test]
@@ -267,12 +269,12 @@ fn a_changed_background_gets_a_new_cache_file() {
     std::fs::create_dir_all(&set).unwrap();
     let a = image(32, 20, |_, _| [255, 0, 0, 255]);
     std::fs::write(set.join("bg.png"), png_bytes(&a)).unwrap();
-    let maker = Maker::new(Some(t.0.join("cache")), 1.6, ImageLimits::default());
-    let first = maker.make(&set, "bg.png", 10).unwrap();
+    let maker = Maker::new(Some(t.0.join("cache")), 1.6, 4.0, ImageLimits::default());
+    let first = maker.make(&set, "bg.png", 10, false).unwrap();
     // Another size: another key, whatever the modification time.
     let b = image(48, 30, |_, _| [0, 0, 255, 255]);
     std::fs::write(set.join("bg.png"), png_bytes(&b)).unwrap();
-    let second = maker.make(&set, "bg.png", 10).unwrap();
+    let second = maker.make(&set, "bg.png", 10, false).unwrap();
     assert_ne!(first, second);
     assert_eq!(second.pixels[..4], [0, 0, 255, 255]);
 }
@@ -282,6 +284,7 @@ fn the_queue_takes_the_newest_first_and_drops_the_oldest_on_overflow() {
     let request = |id| ThumbRequest {
         id,
         height: 64,
+        wide: false,
         files: files(1),
         set: 0,
         difficulty: 0,
@@ -552,4 +555,38 @@ fn a_release_the_full_ring_refused_is_retried_not_lost() {
     assert_eq!(rig.released().len(), RELEASE_RING);
     rig.tick(Some(128), 0..0);
     assert_eq!(rig.released(), vec![late]);
+}
+
+#[test]
+fn full_plate_thumbnails_are_wider_and_cached_apart() {
+    let t = TempDir::new("wide");
+    let set = t.0.join("set");
+    std::fs::create_dir_all(&set).unwrap();
+    let source = image(64, 32, |_, _| [10, 20, 30, 255]);
+    std::fs::write(set.join("bg.png"), png_bytes(&source)).unwrap();
+    let cache = t.0.join("cache");
+    let maker = Maker::new(Some(cache.clone()), 1.6, 4.0, ImageLimits::default());
+    let small = maker.make(&set, "bg.png", 16, false).unwrap();
+    let wide = maker.make(&set, "bg.png", 16, true).unwrap();
+    // The aspect follows the style: 1.6 against 4.
+    assert_eq!(small.size, Extent::new(26, 16));
+    assert_eq!(wide.size.height, 16);
+    assert!(wide.size.width > small.size.width);
+    // Another folder for the same height, so neither style reads the other's files.
+    assert_ne!(cache_dir_name(16, true), cache_dir_name(16, false));
+    let thumbs = cache.join("thumbnails");
+    assert!(thumbs.join(cache_dir_name(16, false)).exists());
+    assert!(thumbs.join(cache_dir_name(16, true)).exists());
+}
+
+#[test]
+fn changing_the_style_forgets_the_loaded_thumbnails() {
+    let mut rig = Rig::new(10);
+    rig.tick(Some(64), 0..3);
+    let first = rig.serve();
+    assert!(!first.is_empty() && first.iter().all(|r| !r.wide));
+    rig.thumbnails.set_wide(true, rig.seq);
+    rig.tick(Some(64), 0..3);
+    let second = rig.serve();
+    assert!(!second.is_empty() && second.iter().all(|r| r.wide));
 }

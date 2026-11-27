@@ -23,6 +23,9 @@ use crate::songs::SongFiles;
 // Ported from osu!lazer 2026.1005.0-lazer: osu.Game/Screens/Select/SongSelect.cs (SELECTION_DEBOUNCE)
 /// How long the selection stays on one background before it is loaded.
 pub const SELECTION_DEBOUNCE_NS: u64 = 150_000_000;
+/// While the selection keeps changing (a held arrow key), the background still follows it
+/// this often, rather than staying on the last settled one (ADR-0167).
+pub const SELECTION_MAX_WAIT_NS: u64 = 400_000_000;
 
 // Ported from osu!lazer 2026.1005.0-lazer: osu.Game/Screens/Backgrounds/BackgroundScreenBeatmap.cs (switchBackground)
 /// How long a new background fades in (`OutQuint`).
@@ -201,6 +204,9 @@ pub struct BackgroundPicker {
     seen_ns: u64,
     /// The selection the newest generation is for.
     asked: Option<Selected>,
+    /// When the selection first moved away from the one asked for: the longest wait runs
+    /// from there, so one change after a long rest still waits the debounce.
+    unsettled_ns: Option<u64>,
 }
 
 impl BackgroundPicker {
@@ -220,6 +226,7 @@ impl BackgroundPicker {
             seen: None,
             seen_ns: 0,
             asked: None,
+            unsettled_ns: None,
         }
     }
 
@@ -276,7 +283,13 @@ impl BackgroundPicker {
         if self.seen.is_none() || now_at != seen_at {
             self.seen = Some(Selected::of(source));
             self.seen_ns = now_ns;
-        } else if now_ns.saturating_sub(self.seen_ns) >= SELECTION_DEBOUNCE_NS {
+            self.unsettled_ns.get_or_insert(now_ns);
+        }
+        let settled = now_ns.saturating_sub(self.seen_ns) >= SELECTION_DEBOUNCE_NS;
+        let overdue = self
+            .unsettled_ns
+            .is_some_and(|since| now_ns.saturating_sub(since) >= SELECTION_MAX_WAIT_NS);
+        if settled || overdue {
             self.ask(now_at.is_some());
         }
         self.target
@@ -288,6 +301,8 @@ impl BackgroundPicker {
         let asked_at = self.asked.as_ref().and_then(Selected::background);
         let seen_at = self.seen.as_ref().and_then(Selected::background);
         if asked_at == seen_at {
+            // Back on the background asked for: nothing waits.
+            self.unsettled_ns = None;
             return;
         }
         // Wait until the draw thread lets go of the older backgrounds.
@@ -325,6 +340,8 @@ impl BackgroundPicker {
             });
         }
         self.asked = self.seen.clone();
+        // Asked for what is selected: a new series of changes starts the wait anew.
+        self.unsettled_ns = None;
     }
 
     fn replace_target(&mut self, target: BackgroundTarget) {
@@ -470,6 +487,9 @@ pub struct BackgroundFade {
     default: Option<TextureHandle>,
     /// The background shown whole, under a fade.
     shown: Option<TextureHandle>,
+    /// Opacity of `shown` before a fade runs: below 1 when a new target arrived mid-fade
+    /// and the fade restarts from what was on screen.
+    shown_alpha: f32,
     target: BackgroundTarget,
     /// What the target shows: its image, or the default without one.
     incoming: Option<TextureHandle>,
@@ -490,6 +510,7 @@ impl BackgroundFade {
             // Whole from the start, without a fade: it is ready long before the song
             // select first shows, while the main menu does not draw it.
             shown: default,
+            shown_alpha: 1.0,
             target: BackgroundTarget::default(),
             incoming: None,
             fade_from_ns: None,
@@ -510,7 +531,26 @@ impl BackgroundFade {
         state: impl Fn(TextureHandle) -> TextureState,
     ) {
         if target.generation != self.target.generation {
-            // A new target restarts the fade from the background shown whole.
+            // A new target restarts the fade from what is on screen: mid-fade, that is
+            // not the background last shown whole but a blend, so keep its dominant layer
+            // at its current opacity instead of jumping back to an older image.
+            if self.fade_from_ns.is_some() {
+                let [under, over] = self.layers(now_ns);
+                let (handle, alpha) = match (under, over) {
+                    (Some(u), Some(o)) => {
+                        if o.1 >= u.1 {
+                            (Some(o.0), o.1)
+                        } else {
+                            (Some(u.0), u.1)
+                        }
+                    }
+                    (Some(l), None) | (None, Some(l)) => (Some(l.0), l.1),
+                    (None, None) => (None, 1.0),
+                };
+                self.shown = handle;
+                self.shown_alpha = alpha;
+            }
+            self.incoming = None;
             self.target = target;
             self.fade_from_ns = None;
         }
@@ -524,7 +564,7 @@ impl BackgroundFade {
             Some(TextureState::Failed(_)) | None => self.default,
         };
         self.incoming = image;
-        if self.fade_from_ns.is_none() && image == self.shown {
+        if self.fade_from_ns.is_none() && image == self.shown && self.shown_alpha >= 1.0 {
             // Already shown whole (the default between two beatmaps without one): a fade
             // over itself would let the theme through.
             self.shown_generation
@@ -539,6 +579,7 @@ impl BackgroundFade {
         };
         if now_ns.saturating_sub(from) >= length {
             self.shown = image;
+            self.shown_alpha = 1.0;
             self.fade_from_ns = None;
             self.shown_generation
                 .store(self.target.generation, Ordering::Release);
@@ -555,10 +596,10 @@ impl BackgroundFade {
 
     fn layers(&self, now_ns: u64) -> [Option<Layer>; 2] {
         let Some(from) = self.fade_from_ns else {
-            return [self.shown.map(|h| (h, 1.0)), None];
+            return [self.shown.map(|h| (h, self.shown_alpha)), None];
         };
         let elapsed = now_ns.saturating_sub(from) as f64;
-        let out = (1.0 - elapsed / FADE_OUT_NS as f64).max(0.0) as f32;
+        let out = self.shown_alpha * (1.0 - elapsed / FADE_OUT_NS as f64).max(0.0) as f32;
         let fade_in = out_quint((elapsed / FADE_IN_NS as f64).min(1.0)) as f32;
         [
             self.incoming.map(|h| (h, fade_in)),

@@ -123,6 +123,9 @@ pub struct General {
     pub cursor_spin: bool,
     /// The menu cursor leaves a trail (ADR-0136). Applies live.
     pub cursor_trail: bool,
+    /// Size of the menu cursor (SLAM's pointer and the skin's cursor in the menus), a
+    /// multiplier, 0.5..=2.0 (ADR-0184). Applies live; gameplay has its own size.
+    pub menu_cursor_size: f64,
     /// The menu cursor sends a ring out at each press (ADR-0136). Applies live.
     pub cursor_ripple: bool,
     /// How screens change (ADR-0126). Applies live.
@@ -155,6 +158,16 @@ pub struct General {
     pub menu_cursor: CursorStyle,
     /// Which look the results screen takes (ADR-0163). Applies live.
     pub results_style: ResultsStyle,
+    /// Whether the Discord status shows what the player does (ADR-0170). Applies live.
+    pub discord_presence: bool,
+    /// The names of the settings rows pinned to the menus' toolbar, in the order they show
+    /// (ADR-0168), at most [`General::MAX_PINNED`]. Unknown names are dropped on read.
+    pub pinned_settings: Vec<String>,
+}
+
+impl General {
+    /// The most settings that can be pinned to the toolbar.
+    pub const MAX_PINNED: usize = slam_ui::toolbar::MAX_PINS;
 }
 
 impl Default for General {
@@ -170,8 +183,9 @@ impl Default for General {
             shadows: true,
             shadow_strength: 1.0,
             cursor_rotate: true,
-            cursor_spin: true,
+            cursor_spin: false,
             cursor_trail: true,
+            menu_cursor_size: 0.8,
             cursor_ripple: true,
             transitions: TransitionStyle::default(),
             colour_scheme: ColourScheme::default(),
@@ -183,6 +197,8 @@ impl Default for General {
             menu_background: MenuBackground::default(),
             menu_cursor: CursorStyle::Slam,
             results_style: ResultsStyle::default(),
+            discord_presence: true,
+            pinned_settings: Vec::new(),
         }
     }
 }
@@ -419,25 +435,36 @@ impl HitsoundDelay {
     }
 }
 
-/// How the key overlay's keys animate (ADR-0113).
+/// How the key overlay looks (ADR-0113, ADR-0167): stable's four keys or lazer's three, each
+/// with stable's or lazer's animation.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "snake_case")]
 pub enum KeyOverlayAnimation {
-    /// As in stable.
+    /// Four keys, animated as in stable.
     #[default]
     Stable,
-    /// As in lazer.
+    /// Lazer's three keys, animated as in stable.
+    StableThree,
+    /// Lazer's three keys, animated as in lazer.
+    LazerThree,
+    /// Four keys, animated as in lazer.
     Lazer,
 }
 
 impl KeyOverlayAnimation {
-    pub const ALL: [KeyOverlayAnimation; 2] =
-        [KeyOverlayAnimation::Stable, KeyOverlayAnimation::Lazer];
+    pub const ALL: [KeyOverlayAnimation; 4] = [
+        KeyOverlayAnimation::Stable,
+        KeyOverlayAnimation::StableThree,
+        KeyOverlayAnimation::LazerThree,
+        KeyOverlayAnimation::Lazer,
+    ];
 
     /// The name in the settings file.
     pub fn name(self) -> &'static str {
         match self {
             KeyOverlayAnimation::Stable => "stable",
+            KeyOverlayAnimation::StableThree => "stable_three",
+            KeyOverlayAnimation::LazerThree => "lazer_three",
             KeyOverlayAnimation::Lazer => "lazer",
         }
     }
@@ -450,11 +477,18 @@ impl KeyOverlayAnimation {
     }
 }
 
-impl From<KeyOverlayAnimation> for slam_play::key_overlay::KeyAnimation {
-    fn from(animation: KeyOverlayAnimation) -> Self {
-        match animation {
-            KeyOverlayAnimation::Stable => slam_play::key_overlay::KeyAnimation::Stable,
-            KeyOverlayAnimation::Lazer => slam_play::key_overlay::KeyAnimation::Lazer,
+impl From<KeyOverlayAnimation> for slam_play::key_overlay::KeyStyle {
+    fn from(style: KeyOverlayAnimation) -> Self {
+        use slam_play::key_overlay::KeyAnimation;
+        let (animation, three_keys) = match style {
+            KeyOverlayAnimation::Stable => (KeyAnimation::Stable, false),
+            KeyOverlayAnimation::StableThree => (KeyAnimation::Stable, true),
+            KeyOverlayAnimation::LazerThree => (KeyAnimation::Lazer, true),
+            KeyOverlayAnimation::Lazer => (KeyAnimation::Lazer, false),
+        };
+        slam_play::key_overlay::KeyStyle {
+            animation,
+            three_keys,
         }
     }
 }
@@ -789,6 +823,13 @@ pub struct SongSelect {
     pub set_height: f32,
     /// Height of a difficulty row, 30..=90 (ADR-0149: lazer's 45).
     pub difficulty_height: f32,
+    /// Multipliers of the info panel's width and height, 0.5..=1.5 (ADR-0168).
+    pub info_width: f32,
+    pub info_height: f32,
+    /// Whether the info panel's width follows its texts (ADR-0168).
+    pub info_auto_width: bool,
+    /// Strength of the song list's arc, 0..=2 (ADR-0172): 1 is lazer's, 0 a straight column.
+    pub curve: f32,
     /// What a difficulty row shows beside its name (ADR-0151).
     #[serde(serialize_with = "serialize_difficulty_info")]
     pub difficulty_info: DifficultyInfo,
@@ -797,6 +838,11 @@ pub struct SongSelect {
     pub mod_hotkeys: ModHotkeyStyle,
     /// Height of the beatmap thumbnails in the song list (ADR-0127).
     pub thumbnails: Thumbnails,
+    /// Where a set's thumbnail goes: left of the text or over the whole plate (ADR-0174).
+    pub thumbnail_style: ThumbnailStyle,
+    /// The footer's pinned mod presets (ADR-0175): each a set of mods with their settings
+    /// as text (`HD DT(speed_change=1.3)`), at most [`crate::mod_presets::MAX`].
+    pub mod_presets: Vec<String>,
 }
 
 impl Default for SongSelect {
@@ -805,10 +851,49 @@ impl Default for SongSelect {
             background_dim: 0.7,
             set_height: 72.0,
             difficulty_height: 45.0,
+            info_width: 1.0,
+            info_height: 1.0,
+            info_auto_width: false,
+            curve: 1.0,
             difficulty_info: DifficultyInfo::Stars,
             mod_hotkeys: ModHotkeyStyle::Sequential,
             thumbnails: Thumbnails::default(),
+            thumbnail_style: ThumbnailStyle::default(),
+            mod_presets: Vec::new(),
         }
+    }
+}
+
+/// Where a set row's thumbnail goes (ADR-0174).
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum ThumbnailStyle {
+    /// A small picture left of the texts (ADR-0127).
+    #[default]
+    Left,
+    /// The set's background over the whole plate, as lazer's.
+    Full,
+}
+
+impl Serialize for ThumbnailStyle {
+    fn serialize<S: Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        serializer.serialize_str(self.name())
+    }
+}
+
+impl ThumbnailStyle {
+    pub const ALL: [ThumbnailStyle; 2] = [ThumbnailStyle::Left, ThumbnailStyle::Full];
+
+    /// The name in the settings file.
+    pub fn name(self) -> &'static str {
+        match self {
+            ThumbnailStyle::Left => "left",
+            ThumbnailStyle::Full => "full",
+        }
+    }
+
+    /// The value called `name`.
+    pub fn from_name(name: &str) -> Option<ThumbnailStyle> {
+        ThumbnailStyle::ALL.into_iter().find(|t| t.name() == name)
     }
 }
 
@@ -1161,6 +1246,9 @@ pub struct InputSettings {
     /// Relative ("high precision") mouse mode (ADR-0069). On by default on Windows only,
     /// as in lazer.
     pub high_precision_mouse: bool,
+    /// Whether the mouse side buttons (X1 and X2) act: Back in the menus and bindings in
+    /// the play (ADR-0167). On by default, as in lazer.
+    pub mouse_side_buttons: bool,
     /// The multiplier of relative mouse motion, [`InputSettings::SENSITIVITY_RANGE`] in
     /// steps of [`InputSettings::SENSITIVITY_STEP`].
     pub sensitivity: f64,
@@ -1171,6 +1259,7 @@ impl Default for InputSettings {
         InputSettings {
             bindings: Bindings::default(),
             high_precision_mouse: cfg!(target_os = "windows"),
+            mouse_side_buttons: true,
             sensitivity: 1.0,
         }
     }
@@ -1294,9 +1383,10 @@ impl Serialize for InputSettings {
             }
         }
 
-        let mut state = serializer.serialize_struct("InputSettings", 3)?;
+        let mut state = serializer.serialize_struct("InputSettings", 4)?;
         // The array of tables goes last: TOML wants the plain values before it.
         state.serialize_field("high_precision_mouse", &self.high_precision_mouse)?;
+        state.serialize_field("mouse_side_buttons", &self.mouse_side_buttons)?;
         state.serialize_field("sensitivity", &self.sensitivity)?;
         state.serialize_field("bindings", &Entries(self.bindings.as_slice()))?;
         state.end()
@@ -1509,6 +1599,25 @@ pub struct Settings {
     pub song_select: SongSelect,
     pub input: InputSettings,
     pub hotkeys: Hotkeys,
+    pub updates: Updates,
+}
+
+/// Self-update (ADR-0185).
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize)]
+pub struct Updates {
+    /// Whether SLAM asks GitHub for a newer version at start.
+    pub check: bool,
+    /// Which releases are offered.
+    pub channel: crate::update::Channel,
+}
+
+impl Default for Updates {
+    fn default() -> Self {
+        Updates {
+            check: true,
+            channel: crate::update::Channel::default(),
+        }
+    }
 }
 
 impl Settings {

@@ -1526,6 +1526,52 @@ fn a_long_label_is_not_cut() {
 }
 
 #[test]
+fn a_long_label_keeps_its_size_and_rides_while_a_short_one_stands() {
+    use crate::marquee::MarqueeParams;
+    use slam_text::FontRegistry;
+    let registry = Arc::new(FontRegistry::with_builtin());
+    let long = "A setting name that is far too long for the label column of the panel at any size";
+    let labels = SettingsLabels {
+        sections: vec!["A".to_owned()],
+        rows: vec![
+            RowLabels {
+                label: long.to_owned(),
+                ..RowLabels::default()
+            },
+            RowLabels {
+                label: "Short".to_owned(),
+                ..RowLabels::default()
+            },
+        ],
+        ..SettingsLabels::default()
+    };
+    let rows = [slider(0, 1.0), slider(0, 1.0)];
+    let mut view = SettingsView::new(registry, theme(), &rows, &labels);
+    let s = SettingsScreen::new(&rows, 1);
+    push_view(&mut view, &s.snapshot());
+    let params = MarqueeParams::new(&theme(), 1.0);
+    let mut long_ride = *view.label_ride(0).unwrap();
+    let mut short_ride = *view.label_ride(1).unwrap();
+    assert!(long_ride.rides());
+    assert!(!short_ride.rides());
+    // It holds first (the pause), then moves; the short one never does.
+    assert_eq!(long_ride.offset(0, &params), 0.0);
+    let later = params.pause_ns + 2_000_000_000;
+    assert!(long_ride.offset(later, &params) > 0.0);
+    assert_eq!(short_ride.offset(later, &params), 0.0);
+    // One size per class: the long text is as wide per character as a short one (no
+    // shrink to fit).
+    let (_, long_width) = view.shown_label(0).unwrap();
+    let (_, short_width) = view.shown_label(1).unwrap();
+    let per_long = long_width / long.chars().count() as f32;
+    let per_short = short_width / 5.0;
+    assert!(
+        (per_long / per_short - 1.0).abs() < 0.35,
+        "{per_long} {per_short}"
+    );
+}
+
+#[test]
 fn a_sideways_drag_over_a_label_drags_its_text_and_acts_on_nothing() {
     let mut s = screen();
     let l = layout();
@@ -1598,14 +1644,11 @@ fn tabs_are_square_icon_buttons_in_a_narrow_column() {
 #[test]
 fn every_section_has_its_own_icon() {
     for section in 0..icons::ICONS {
-        assert!(!icons::icon(section).is_empty(), "section {section}");
+        assert!(icons::icon(section).id() < 22, "section {section}");
     }
     for a in 0..icons::ICONS {
         for b in a + 1..icons::ICONS {
-            assert_ne!(
-                format!("{:?}", icons::icon(a)),
-                format!("{:?}", icons::icon(b))
-            );
+            assert_ne!(icons::icon(a), icons::icon(b));
         }
     }
 }
@@ -1613,19 +1656,13 @@ fn every_section_has_its_own_icon() {
 #[test]
 fn the_tablet_icon_comes_before_the_feedback_one() {
     // The sections' order: ..., library (7), tablet (8), feedback (9).
-    assert_eq!(
-        format!("{:?}", icons::icon(8)),
-        format!("{:?}", icons::TABLET)
-    );
-    assert_eq!(
-        format!("{:?}", icons::icon(9)),
-        format!("{:?}", icons::FEEDBACK)
-    );
+    assert_eq!(icons::icon(8), icons::Icon::Tablet);
+    assert_eq!(icons::icon(9), icons::Icon::Feedback);
 }
 
 #[test]
 fn ten_sections_have_ten_tabs_and_icons() {
-    assert_eq!((MAX_SECTIONS, MAX_ROWS, icons::ICONS), (10, 304, 10));
+    assert_eq!((MAX_SECTIONS, MAX_ROWS, icons::ICONS), (10, 320, 10));
     let rows: Vec<RowSpec> = (0..10).map(|i| toggle(i, false)).collect();
     let s = SettingsScreen::new(&rows, 10);
     assert_eq!(s.sections(), 10);
@@ -1682,6 +1719,23 @@ fn dynamic_view() -> SettingsView {
 }
 
 fn push_view(view: &mut SettingsView, snapshot: &SettingsSnapshot) -> usize {
+    push_view_split(view, snapshot).0
+}
+
+/// Shapes drawn, texts drawn and the start of the tooltip layer.
+fn push_view_split(
+    view: &mut SettingsView,
+    snapshot: &SettingsSnapshot,
+) -> (usize, usize, Option<(u32, u32)>) {
+    push_view_at(view, snapshot, 0)
+}
+
+/// [`push_view_split`] at `now_ns`.
+fn push_view_at(
+    view: &mut SettingsView,
+    snapshot: &SettingsSnapshot,
+    now_ns: u64,
+) -> (usize, usize, Option<(u32, u32)>) {
     use slam_render::atlas::{AtlasRegion, UvRect};
     use slam_render::hal::Origin;
     use slam_render::shape::ShapeBatch;
@@ -1704,7 +1758,7 @@ fn push_view(view: &mut SettingsView, snapshot: &SettingsSnapshot) -> usize {
     };
     let mut shapes = ShapeBatch::with_capacity(4096);
     let mut text = SpriteBatch::with_capacity(4096);
-    view.push(
+    let split = view.push(
         &mut shapes,
         &mut text,
         &mut glyphs,
@@ -1713,9 +1767,26 @@ fn push_view(view: &mut SettingsView, snapshot: &SettingsSnapshot) -> usize {
         snapshot,
         crate::screen::Pose::SHOWN,
         white,
-        0,
+        now_ns,
     );
-    shapes.len()
+    (shapes.len(), text.len(), split)
+}
+
+#[test]
+fn the_tab_tooltip_is_its_own_layer_and_hides_no_row_text() {
+    let mut view = dynamic_view();
+    let mut s = SettingsScreen::new(&[toggle(0, false), toggle(0, false)], 1);
+    let (_, plain_text, none) = push_view_split(&mut view, &s.snapshot());
+    assert_eq!(none, None);
+    let (x, y) = centre(layout().tabs[0]);
+    input(&mut s, SettingsInput::PointerMove { x, y });
+    let (shapes, text, split) = push_view_split(&mut view, &s.snapshot());
+    let (shapes_at, text_at) = split.expect("a tooltip is shown over the hovered tab");
+    // Every text of the rows is drawn before the tooltip layer, which only adds its plate
+    // and its own text.
+    assert_eq!(text_at as usize, plain_text);
+    assert!(text >= plain_text);
+    assert!((shapes_at as usize) < shapes);
 }
 
 #[test]
@@ -1835,4 +1906,271 @@ fn the_preview_reaches_the_snapshot_and_is_drawn_inside_its_rows() {
     let empty = push_view(&mut view, &s.snapshot());
     // Plate, outline, area fill, area outline and the centre dot.
     assert_eq!(drawn - empty, 5);
+}
+
+#[test]
+fn the_search_box_shows_a_blinking_caret() {
+    let mut view = dynamic_view();
+    let mut s = SettingsScreen::new(&[toggle(0, false), toggle(0, false)], 1);
+    let ms = 1_000_000;
+    let blink = (theme().caret_blink_ms * 1.0e6) as u64;
+    let solid = (theme().caret_solid_ms * 1.0e6) as u64;
+    // An empty search that nobody types in shows no caret (ADR-0177).
+    let idle = push_view_at(&mut view, &s.snapshot(), ms).0;
+    assert_eq!(push_view_at(&mut view, &s.snapshot(), 20_000 * ms).0, idle);
+    type_str(&mut s, "a");
+    let typed = s.snapshot();
+    let t = 10 * ms;
+    // A key makes it solid, then it blinks; the search holds text now.
+    let on = push_view_at(&mut view, &typed, t).0;
+    let off = push_view_at(&mut view, &typed, t + solid + blink + 5 * ms).0;
+    let on_again = push_view_at(&mut view, &typed, t + solid + 2 * blink + 5 * ms).0;
+    assert_eq!(on, off + 1);
+    assert_eq!(on, on_again);
+}
+
+fn value_spot(s: &SettingsScreen, row: usize) -> (f32, f32) {
+    let value = layout().slider(s.slot(row)).value;
+    (value.x + 4.0, value.y + 4.0)
+}
+
+#[test]
+fn a_click_on_the_value_types_it_and_enter_commits_clamped_and_snapped() {
+    let mut s = screen();
+    let (x, y) = value_spot(&s, 0);
+    assert_eq!(input(&mut s, SettingsInput::PointerPress { x, y }), None);
+    assert_eq!(s.editing_row(), Some(0));
+    // The keys go to the value, not to the search.
+    type_str(&mut s, "42.4");
+    assert!(s.search().is_empty());
+    assert_eq!(
+        input(&mut s, SettingsInput::Activate),
+        Some(SettingsAction::Changed {
+            row: 0,
+            value: RowValue::Slider(42.0)
+        })
+    );
+    assert_eq!(s.editing_row(), None);
+    // Enter on the focused slider starts it too; the range clamps.
+    input(&mut s, SettingsInput::Activate);
+    assert_eq!(s.editing_row(), Some(0));
+    type_str(&mut s, "999");
+    assert_eq!(
+        input(&mut s, SettingsInput::Activate),
+        Some(SettingsAction::Changed {
+            row: 0,
+            value: RowValue::Slider(100.0)
+        })
+    );
+}
+
+#[test]
+fn escape_while_typing_a_value_drops_it_and_keeps_the_screen_open() {
+    let mut s = screen();
+    input(&mut s, SettingsInput::Activate);
+    type_str(&mut s, "7");
+    input(&mut s, SettingsInput::EraseWord);
+    type_str(&mut s, "8");
+    assert_eq!(input(&mut s, SettingsInput::Back), None);
+    assert_eq!(s.editing_row(), None);
+    assert!(matches!(s.widget(0), Some(RowWidget::Slider(w)) if w.value() == 50.0));
+    // Now Escape closes as before.
+    assert_eq!(
+        input(&mut s, SettingsInput::Back),
+        Some(SettingsAction::Close)
+    );
+}
+
+#[test]
+fn a_press_elsewhere_commits_the_typed_value_and_takes_the_press() {
+    let mut s = screen();
+    input(&mut s, SettingsInput::Activate);
+    type_str(&mut s, "30");
+    // On the toggle's row: the commit changed the value, so it is all this press does.
+    let (x, y) = centre(layout().row(s.slot(1)));
+    assert_eq!(
+        input(&mut s, SettingsInput::PointerPress { x, y }),
+        Some(SettingsAction::Changed {
+            row: 0,
+            value: RowValue::Slider(30.0)
+        })
+    );
+    assert!(matches!(s.widget(1), Some(RowWidget::Toggle(t)) if !t.value()));
+    // With nothing to commit the press goes on: it flips the toggle.
+    input(&mut s, SettingsInput::Activate);
+    assert_eq!(
+        input(&mut s, SettingsInput::PointerPress { x, y }),
+        Some(SettingsAction::Changed {
+            row: 1,
+            value: RowValue::Toggle(true)
+        })
+    );
+    assert_eq!(s.editing_row(), None);
+}
+
+#[test]
+fn a_disabled_slider_is_not_typed_into() {
+    let mut s = screen();
+    s.set_disabled(0, true);
+    let (x, y) = value_spot(&s, 0);
+    input(&mut s, SettingsInput::PointerPress { x, y });
+    input(&mut s, SettingsInput::Activate);
+    assert_eq!(s.editing_row(), None);
+}
+
+#[test]
+fn tabs_are_flat_icons_with_an_accent_bar_that_fades_between_sections() {
+    let registry = Arc::new(slam_text::FontRegistry::with_builtin());
+    let rows = [toggle(0, false), toggle(1, false)];
+    let labels = SettingsLabels {
+        sections: vec!["A".to_owned(), "B".to_owned()],
+        ..SettingsLabels::default()
+    };
+    let mut view = SettingsView::new(registry, theme(), &rows, &labels);
+    let s = SettingsScreen::new(&rows, 2);
+    let mut snap = s.snapshot();
+    let ms = 1_000_000;
+    // The first frame starts at rest: one bar, for the section at the top.
+    let rest = push_view_at(&mut view, &snap, 0).0;
+    snap.section = 1;
+    // Mid-fade the old bar is still there and the new one grows: one more shape.
+    push_view_at(&mut view, &snap, 20 * ms);
+    let fading = push_view_at(&mut view, &snap, 60 * ms).0;
+    assert_eq!(fading, rest + 1);
+    // After the fade (ease-out, within the token's span) only the new bar is left.
+    // (At a time the search caret is on again, as at the start.)
+    let settled = push_view_at(&mut view, &snap, 1100 * ms).0;
+    assert_eq!(settled, rest);
+}
+
+#[test]
+fn a_tab_icon_brightens_on_hover_then_dims_again() {
+    use crate::anim::ease_out_cubic;
+    let t = theme();
+    assert!(t.settings_tab_idle_alpha < 1.0);
+    assert!((150.0..=250.0).contains(&t.settings_tab_fade_ms));
+    // Ease-out: more than linear at the middle of the fade.
+    assert!(ease_out_cubic(0.5) > 0.5);
+}
+
+fn tall_screen() -> SettingsScreen {
+    let rows: Vec<RowSpec> = (0..40).map(|_| toggle(0, false)).collect();
+    SettingsScreen::new(&rows, 1)
+}
+
+#[test]
+fn the_scrollbar_jumps_on_a_track_press_and_follows_a_drag() {
+    let mut s = tall_screen();
+    let l = layout();
+    s.tick(0, &l);
+    let bar = s.scrollbar(&l);
+    assert!(bar.is_scrollable());
+    let x = bar.track.x + bar.track.width / 2.0;
+    // A press low on the track jumps down and toggles nothing.
+    let y = bar.track.y + bar.track.height * 0.9;
+    assert_eq!(input(&mut s, SettingsInput::PointerPress { x, y }), None);
+    assert!(s.snapshot().scrollbar_held);
+    assert!(s.scroll() > 10.0);
+    assert_eq!(s.shown_scroll(), s.scroll());
+    // Dragging up moves the list back; the whole way up reaches the top.
+    let before = s.scroll();
+    input(&mut s, SettingsInput::PointerMove { x, y: y - 40.0 });
+    assert!(s.scroll() < before);
+    input(
+        &mut s,
+        SettingsInput::PointerMove {
+            x: x - 300.0,
+            y: -50.0,
+        },
+    );
+    assert_eq!(s.scroll(), 0.0);
+    input(&mut s, SettingsInput::PointerRelease);
+    assert!(!s.snapshot().scrollbar_held);
+    // After the release the moves do nothing to the scroll.
+    input(&mut s, SettingsInput::PointerMove { x, y });
+    assert_eq!(s.scroll(), 0.0);
+    assert!(matches!(s.widget(0), Some(RowWidget::Toggle(t)) if !t.value()));
+}
+
+#[test]
+fn a_list_that_fits_has_no_scrollbar_to_press() {
+    let mut s = screen();
+    let l = layout();
+    s.tick(0, &l);
+    let bar = s.scrollbar(&l);
+    assert!(!bar.is_scrollable());
+    // The press goes to the row under it (a toggle there flips).
+    let (x, y) = (bar.track.x + 2.0, l.row(s.slot(1)).y + 5.0);
+    input(&mut s, SettingsInput::PointerPress { x, y });
+    assert!(!s.snapshot().scrollbar_held);
+}
+
+#[test]
+fn the_scrollbar_is_drawn_for_a_long_list_only() {
+    let registry = Arc::new(slam_text::FontRegistry::with_builtin());
+    let rows: Vec<RowSpec> = (0..40).map(|_| toggle(0, false)).collect();
+    let labels = SettingsLabels {
+        sections: vec!["A".to_owned()],
+        ..SettingsLabels::default()
+    };
+    let mut view = SettingsView::new(registry, theme(), &rows, &labels);
+    let mut s = SettingsScreen::new(&rows, 1);
+    s.tick(0, &layout());
+    let long = push_view(&mut view, &s.snapshot());
+    let mut snap = s.snapshot();
+    snap.scroll_lines = 3.0;
+    let short = push_view(&mut view, &snap);
+    assert_eq!(long, short + 1);
+}
+
+#[test]
+fn the_preview_shows_as_soon_as_any_of_its_lines_is_in_view() {
+    let mut s = preview_screen();
+    s.set_preview(AreaPreview {
+        surface: [200.0, 100.0],
+        centre: [100.0, 50.0],
+        size: [60.0, 40.0],
+        rotation_deg: 30.0,
+    });
+    let registry = Arc::new(slam_text::FontRegistry::with_builtin());
+    let mut rows = vec![toggle(0, false), preview_row(0)];
+    rows.extend((1..PREVIEW_LINES).map(|_| note(0)));
+    let labels = SettingsLabels {
+        sections: vec!["A".to_owned()],
+        ..SettingsLabels::default()
+    };
+    let mut view = SettingsView::new(registry, theme(), &rows, &labels);
+    let slot = s.slot(1) as f32;
+    let drawn_at = |view: &mut SettingsView, s: &SettingsScreen, scroll: f32| {
+        let mut snap = s.snapshot();
+        snap.scroll = scroll;
+        let with = push_view(view, &snap);
+        snap.preview = AreaPreview::default();
+        with - push_view(view, &snap)
+    };
+    // Whole in view.
+    assert_eq!(drawn_at(&mut view, &s, 0.0), 5);
+    // Only the preview's last line is half in view: its first line is above the content
+    // area, yet the preview is drawn.
+    assert_eq!(
+        drawn_at(&mut view, &s, slot + PREVIEW_LINES as f32 - 1.5),
+        5
+    );
+    // Wholly above the content area: nothing.
+    assert_eq!(drawn_at(&mut view, &s, slot + PREVIEW_LINES as f32), 0);
+}
+
+#[test]
+fn the_scrollbar_sits_between_the_tab_column_and_the_rows() {
+    let l = layout();
+    let track = l.scrollbar_track();
+    let tab = l.tabs[0];
+    assert!(track.x >= tab.x + tab.width);
+    assert_eq!(track.x + track.width, l.content.x);
+    // A press on the row side of the old right edge no longer takes hold of the bar.
+    let mut s = tall_screen();
+    s.tick(0, &l);
+    let (x, y) = (l.content.x + l.content.width - 3.0, l.content.y + 5.0);
+    input(&mut s, SettingsInput::PointerPress { x, y });
+    assert!(!s.snapshot().scrollbar_held);
 }

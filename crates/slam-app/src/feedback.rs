@@ -26,6 +26,9 @@ pub enum Kind {
     Feature,
     /// OpenTabletDriver's download page, offered when its daemon is not found (ADR-0166).
     OpenTabletDriver,
+    /// The project's releases, offered where an update cannot be installed in place
+    /// (ADR-0185).
+    Releases,
 }
 
 /// What the bug report form is filled with. Every field is plain text.
@@ -109,6 +112,7 @@ pub fn url(kind: Kind, env: &Environment) -> String {
     let (template, fields) = match kind {
         Kind::Github => return REPO_URL.to_owned(),
         Kind::OpenTabletDriver => return OTD_URL.to_owned(),
+        Kind::Releases => return format!("{REPO_URL}/releases"),
         Kind::Bug => (
             "bug_report.yml",
             vec![

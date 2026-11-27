@@ -608,3 +608,76 @@ fn a_zoomed_background_grows_about_the_middle_and_shows_as_visible() {
     assert!(((top + bottom) / 2.0 - 300.0).abs() < 1e-3);
     assert!(right - left >= 800.0 * 1.25 - 1e-3 && bottom - top >= 600.0 * 1.25 - 1e-3);
 }
+
+#[test]
+fn a_selection_that_keeps_changing_still_loads_now_and_then() {
+    let mut rig = Rig::new();
+    // A held arrow key: another background every 50 ms, never settling.
+    rig.tick(SECOND, Some((0, 0)));
+    rig.tick(SECOND + 200 * MS, Some((0, 0)));
+    let _ = rig.sent();
+    for step in 1..=20u64 {
+        let at = if step % 2 == 0 { (0, 0) } else { (0, 2) };
+        rig.tick(SECOND + 200 * MS + step * 50 * MS, Some(at));
+    }
+    let (loads, _) = rig.sent();
+    // A second of changes: two or three loads, not none and not one per change.
+    assert!((2..=3).contains(&loads.len()), "{loads:?}");
+}
+
+#[test]
+fn one_change_after_a_long_rest_still_waits_the_debounce() {
+    let mut rig = Rig::new();
+    rig.tick(SECOND, Some((0, 0)));
+    rig.tick(SECOND + 200 * MS, Some((0, 0)));
+    let _ = rig.sent();
+    // Ten seconds later, one change: nothing before 150 ms, the load after.
+    let later = 11 * SECOND;
+    rig.tick(later, Some((0, 2)));
+    rig.tick(later + 100 * MS, Some((0, 2)));
+    assert!(rig.sent().0.is_empty());
+    rig.tick(later + 150 * MS, Some((0, 2)));
+    assert_eq!(rig.sent().0.len(), 1);
+}
+
+#[test]
+fn a_target_mid_fade_fades_from_what_is_on_screen_never_an_older_image() {
+    let mut requests = requests();
+    let h = handles(&mut requests, 4);
+    let shown = Arc::new(AtomicU32::new(0));
+    let mut fade = BackgroundFade::new(Arc::clone(&shown), None);
+    let target = |generation: u32, i: usize| BackgroundTarget {
+        generation,
+        handle: Some(h[i]),
+    };
+    fade.advance(target(1, 0), 0, |_| ready());
+    fade.advance(target(1, 0), 600 * MS, |_| ready());
+    assert_eq!(shown.load(Ordering::Relaxed), 1);
+    // Image 1 fades in over image 0; at 100 ms it is mostly on screen.
+    fade.advance(target(2, 1), 700 * MS, |_| ready());
+    fade.advance(target(2, 1), 800 * MS, |_| ready());
+    let before = fade.layers(800 * MS);
+    // A third target arrives while the second fades and is not uploaded yet: image 0
+    // must not come back whole.
+    fade.advance(target(3, 2), 800 * MS, |_| TextureState::Pending);
+    let held: Vec<_> = fade.layers(850 * MS).into_iter().flatten().collect();
+    assert_eq!(held.len(), 1, "one dominant image stays while pending");
+    let (under, over) = (before[0].unwrap(), before[1].unwrap());
+    let dominant = if over.1 >= under.1 { over } else { under };
+    assert_eq!(held[0].0, dominant.0);
+    assert!((held[0].1 - dominant.1).abs() < 1e-6, "no jump in opacity");
+    // Fading in from there: image 0 never reappears.
+    for t in [900, 950, 1000, 1200, 1400] {
+        fade.advance(target(3, 2), t * MS, |_| ready());
+        assert!(
+            fade.visible(t * MS)
+                .into_iter()
+                .flatten()
+                .all(|handle| handle != h[0] || dominant.0 == h[0]),
+            "older image visible at {t}"
+        );
+    }
+    fade.advance(target(3, 2), 1500 * MS, |_| ready());
+    assert_eq!(shown.load(Ordering::Relaxed), 3);
+    assert_eq!(fade.layers(1500 * MS), [Some((h[2], 1.0)), None]);
+}

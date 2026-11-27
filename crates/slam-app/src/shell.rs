@@ -52,7 +52,7 @@ use slam_ui::results::{
 };
 use slam_ui::screen::{MAX_LAYERS, Nav, Navigated, Pose, ScreenStack, TransitionFx};
 use slam_ui::settings_screen::panel::{
-    PanelMotion, panel_layout, panel_pose, panel_width, push_backdrop,
+    PanelMotion, panel_layout, panel_pose, panel_width, push_backdrop, screen_shift,
 };
 use slam_ui::settings_screen::{
     KeyValue, RowWidget, SettingsAction, SettingsInput, SettingsLayout, SettingsScreen,
@@ -79,6 +79,7 @@ use crate::backgrounds::{
 use crate::details::DetailsPicker;
 use crate::displays::{ListsLink, ShownViews};
 use crate::loader::{LoaderConfig, LoaderLink, PlayOptions, SceneTrash, Trash};
+use crate::multipliers;
 use crate::play::fps::{
     AudioFeed, AudioMeter, AudioReading, FpsDisplay, FpsOverlay, FpsSource, MAX_FPS_GLYPHS,
 };
@@ -100,6 +101,7 @@ use output::{DeviceList, DeviceViews, OutputLink, Request};
 mod keybinds;
 pub(crate) mod language;
 mod menu_music;
+mod mod_presets;
 mod mod_settings;
 mod ui_sounds;
 use menu_music::{MenuMusic, Picked, Want};
@@ -107,9 +109,27 @@ mod otd;
 mod output;
 pub(crate) mod results;
 mod rows;
+mod toolbar;
+mod updates;
 
 pub use draw_rate::DrawRateSwitch;
+
+/// Whether `name` is the name of a settings row that can be pinned to the toolbar
+/// (ADR-0168): the settings file keeps only these.
+pub fn is_setting_name(name: &str) -> bool {
+    rows::Row::from_name(name).is_some_and(rows::Row::pinnable)
+}
+
+/// The names of the rows that can be pinned. For tests.
+#[doc(hidden)]
+pub fn pinnable_setting_names() -> impl Iterator<Item = String> {
+    rows::Row::ALL
+        .into_iter()
+        .filter(|row| row.pinnable())
+        .map(|row| row.name().to_owned())
+}
 pub use rows::{Row, Rows, SECTIONS, round_for_save};
+pub use updates::TOAST_READY as TOAST_UPDATE_READY;
 
 pub const USAGE: &str = "usage: slam-app [--songs DIR]\n\
                          slam-app [bench|click|click-analyze|play|i18n] ...\n\
@@ -158,6 +178,7 @@ const KEY_BACKSPACE: u16 = 42;
 const KEY_F1: u16 = 58;
 const KEY_F3: u16 = 60;
 const KEY_F4: u16 = 61;
+const KEY_F5: u16 = 62;
 const KEY_TAB: u16 = 43;
 const KEY_SPACE: u16 = 44;
 const KEY_HOME: u16 = 74;
@@ -226,6 +247,10 @@ const CLASSIC_MOD_HOTKEYS: [(u16, &[&str]); 9] = [
 ];
 
 /// The song select input of a mod hotkey.
+/// The least height of a full-plate thumbnail in pixels: the plate is wide and sharp
+/// enough only from here (ADR-0174).
+const FULL_THUMB_MIN_HEIGHT: u32 = 128;
+
 fn mod_hotkey(scancode: u16) -> Option<SongSelectInput> {
     MOD_HOTKEY_ROWS
         .iter()
@@ -309,6 +334,9 @@ pub struct ShellSnapshot {
     pub menu_background: bool,
     /// Strength of the menus' parallax, 0 ..= 2: 0 with it off (ADR-0132, ADR-0136).
     pub parallax: f32,
+    /// How far the open settings panel moves the screens and the background aside, as a
+    /// part of the window's width (ADR-0179, ADR-0180).
+    pub aside: f32,
     /// The display lists the settings screen shows (ADR-0072).
     pub display_generation: u64,
     /// How many language switches asked for views so far: a new one closes the curtain
@@ -329,6 +357,10 @@ pub struct ShellSnapshot {
     pub volume: VolumeFrame,
     /// The replay toast (ADR-0154).
     pub toast: slam_ui::toast::ToastFrame,
+    /// The menus' toolbar (ADR-0168).
+    pub toolbar: slam_ui::toolbar::ToolbarFrame,
+    /// The texts of the playing track, for the toolbar's player (ADR-0178).
+    pub now_playing: slam_ui::toolbar::NowPlayingText,
 }
 
 /// The update logic without the window: input to navigation to snapshot.
@@ -400,11 +432,35 @@ pub struct ShellState {
     /// The toast of the last saved replay and its file (ADR-0154).
     toast: slam_ui::toast::Toast,
     toast_path: Option<PathBuf>,
+    /// The menus' toolbar (ADR-0168), whether its popup edits a copy of the settings
+    /// (`editing`) to commit on closing, and the clock it shows: minutes into the local day,
+    /// read again at `clock_at_ns`.
+    toolbar: slam_ui::toolbar::Toolbar,
+    popup_editing: bool,
+    clock: u16,
+    clock_at_ns: u64,
+    /// How far the toolbar is in (ADR-0178), and the music player's state: what plays, the
+    /// texts of its set (by the set's key) and what the player asked for since the shell
+    /// last took it.
+    toolbar_slide: slam_ui::toolbar::Slide,
+    now_playing: slam_ui::toolbar::NowPlayingFrame,
+    now_text: slam_ui::toolbar::NowPlayingText,
+    now_key: Option<u64>,
+    music_commands: toolbar::MusicCommands,
+    /// Files dropped on the window and the thread that imports them (ADR-0169).
+    imports: Option<crate::import::Imports>,
+    /// The self-updater's state (ADR-0185).
+    updates: updates::UpdatesSection,
+    /// An install finished: the window closes and the new build starts.
+    quit_request: bool,
     /// The mods the next play takes: they outlast a play and the results, and are not saved.
     selected_mods: ModSet,
     /// The panel's mods with default settings, by column and tile: a toggle clones one
     /// (`Mod::from_acronym` allocates).
     mod_templates: Vec<Vec<Mod>>,
+    /// The mods of each pinned preset, parsed once so that comparing them with the
+    /// selection allocates nothing (ADR-0175).
+    preset_mods: Vec<Vec<Mod>>,
     /// The mod select's selection being built on a toggle; kept for its capacity.
     mod_buffer: Vec<Mod>,
     /// What the mod speed hotkeys remember of the selection.
@@ -439,12 +495,18 @@ pub struct ShellState {
     size: [f32; 2],
     /// The beatmap whose music plays in the menus (ADR-0119).
     menu_track: Option<(usize, usize)>,
+    /// Where the menu music is, in ms of its track.
+    menu_track_ms: Option<f64>,
+    /// The selected difficulty's beat, once read (ADR-0167).
+    beat_timing: Option<slam_ui::song_select::beat::BeatTiming>,
     /// The chosen skin's folder, for its menu background, and the songs folder and skin
     /// name it was made from (ADR-0119).
     menu_skin: Option<Arc<Path>>,
     menu_skin_of: (Option<PathBuf>, Option<String>),
     /// Interface sounds noted this tick (ADR-0120).
     ui_sounds: ui_sounds::UiSoundQueue,
+    /// Whether the mod select overlay was open at the last tick.
+    ui_mods_open: bool,
     /// What the sounds compare with: stack depth, menu item, song select selection,
     /// settings panel open and its focus, as of the last tick.
     ui_seen: (
@@ -454,6 +516,9 @@ pub struct ShellState {
         bool,
         usize,
     ),
+    /// Characters in the song select's search and the settings' search at the last tick,
+    /// for the typing sounds (ADR-0167).
+    ui_typed: (usize, usize),
     /// Asks for the song select's background; without a menu texture loader `None`.
     backgrounds: Option<BackgroundPicker>,
     /// Asks for the song list's thumbnails; without a menu texture loader `None` (ADR-0127).
@@ -520,15 +585,28 @@ impl ShellState {
             feedback_request: None,
             settings: Settings::default(),
             rows: Rows::new(&Settings::default()),
-            otd: otd::OtdSection::default(),
+            otd: otd::OtdSection::new(Dirs::detect().map(|dirs| otd::presets::file_in(&dirs.data))),
             editing: None,
             save_request: None,
             volume: VolumeMixer::new(),
             toast: slam_ui::toast::Toast::new(&theme),
             toast_path: None,
+            toolbar: slam_ui::toolbar::Toolbar::new(),
+            popup_editing: false,
+            clock: slam_ui::toolbar::NO_CLOCK,
+            clock_at_ns: 0,
+            toolbar_slide: slam_ui::toolbar::Slide::default(),
+            now_playing: slam_ui::toolbar::NowPlayingFrame::default(),
+            now_text: slam_ui::toolbar::NowPlayingText::default(),
+            now_key: None,
+            music_commands: toolbar::MusicCommands::default(),
+            imports: None,
+            updates: updates::UpdatesSection::new(None),
+            quit_request: false,
             // An empty set is always compatible; the capacity keeps a toggle from allocating.
             selected_mods: ModSet::new(Vec::with_capacity(SELECTED_MODS_CAPACITY))
                 .unwrap_or_default(),
+            preset_mods: Vec::new(),
             mod_templates: mod_columns()
                 .iter()
                 .map(|c| c.iter().map(|a| Mod::from_acronym(a)).collect())
@@ -550,12 +628,16 @@ impl ShellState {
             pixels_per_point,
             size: [width, height],
             menu_track: None,
+            menu_track_ms: None,
+            beat_timing: None,
             menu_skin: None,
             skin_cursor: None,
             ranking_link: None,
             menu_skin_of: (None, None),
             ui_sounds: ui_sounds::UiSoundQueue::default(),
+            ui_mods_open: false,
             ui_seen: (1, slam_ui::menu::MenuItem::ALL[0], None, false, 0),
+            ui_typed: (0, 0),
             backgrounds: None,
             thumbnails: None,
             thumb_seq: 0,
@@ -625,13 +707,17 @@ impl ShellState {
             return;
         };
         self.thumb_seq = self.thumb_seq.wrapping_add(1);
-        let height = self
-            .editing
-            .as_ref()
-            .unwrap_or(&self.settings)
-            .song_select
-            .thumbnails
-            .height();
+        let song_select = &self.editing.as_ref().unwrap_or(&self.settings).song_select;
+        let full = song_select.thumbnail_style == crate::settings::ThumbnailStyle::Full;
+        // Full-plate thumbnails are a wide, larger crop (ADR-0174).
+        let height = song_select.thumbnails.height().map(|h| {
+            if full {
+                h.max(FULL_THUMB_MIN_HEIGHT)
+            } else {
+                h
+            }
+        });
+        thumbnails.set_wide(full, self.thumb_seq);
         let first = self.song_select.first_row();
         let mut wanted = [None; WANTED];
         for (i, slot) in wanted.iter_mut().enumerate() {
@@ -644,6 +730,7 @@ impl ShellState {
         let handles = thumbnails.tick(self.thumb_seq, height, &self.files, &wanted);
         out.seq = self.thumb_seq;
         out.enabled = height.is_some();
+        out.full = full;
         out.handles.copy_from_slice(&handles[MARGIN..]);
     }
 
@@ -657,6 +744,7 @@ impl ShellState {
             .map(|details| details.tick(now_ns, &self.files, selected))
             .unwrap_or_default();
         let (statistics, scores) = (read.statistics, read.scores);
+        self.beat_timing = read.timing;
         let (set, difficulty) = selected?;
         let file = self.files.get(set)?.get(difficulty)?;
         let base = Difficulty {
@@ -721,6 +809,24 @@ impl ShellState {
         self
     }
 
+    /// A shell that keeps itself up to date with this thread's help (ADR-0185).
+    pub fn with_updater(mut self, updater: crate::update::Updater) -> ShellState {
+        self.updates = updates::UpdatesSection::new(Some(updater));
+        self
+    }
+
+    /// Whether an install finished and the window should close to start the new build; reads
+    /// once.
+    pub fn take_quit_request(&mut self) -> bool {
+        std::mem::take(&mut self.quit_request)
+    }
+
+    /// A shell that imports the files dropped on the window (ADR-0169).
+    pub fn with_imports(mut self, imports: crate::import::Imports) -> ShellState {
+        self.imports = Some(imports);
+        self
+    }
+
     /// A shell whose settings screen lists the displays the window reports (ADR-0072).
     pub fn with_displays(mut self, displays: ListsLink) -> ShellState {
         self.displays = Some(displays);
@@ -731,6 +837,8 @@ impl ShellState {
     pub fn with_settings(mut self, settings: Settings) -> ShellState {
         self.rows = Rows::new(&settings);
         self.settings = settings;
+        self.refresh_pins();
+        self.sync_presets();
         self
     }
 
@@ -973,19 +1081,29 @@ impl ShellState {
         self.slider_bounds.observe(&self.selected_mods);
         let before = self.song_select.mods().active_flags();
         let columns = *self.song_select.mods().columns();
+        let difficulty = self
+            .song_select
+            .selected()
+            .and_then(|(set, difficulty)| self.files.get(set)?.get(difficulty))
+            .map_or(multipliers::NEUTRAL_DIFFICULTY, multipliers::difficulty_of);
         for (c, acronyms) in columns.iter().enumerate() {
             for (i, acronym) in acronyms.iter().enumerate() {
                 let selected = self.selected_mods.get(acronym);
                 let mods = self.song_select.mods_mut();
                 mods.set_active(c, i, selected.is_some());
                 mods.set_detail(c, i, selected.map_or(TileDetail::None, tile_detail));
+                let shown = selected.unwrap_or_else(|| multipliers::default_mod(acronym));
+                mods.set_multiplier(c, i, multipliers::mod_multiplier(shown, &difficulty));
             }
         }
+        let total = multipliers::set_multiplier(&self.selected_mods, &difficulty);
+        self.song_select.mods_mut().set_total_multiplier(total);
         let after = self.song_select.mods().active_flags();
         if before != after {
             self.song_select.mods_mut().collapse_customisation();
         }
         self.rebuild_setting_rows();
+        self.sync_pinned();
         if before == after {
             return;
         }
@@ -1168,6 +1286,9 @@ impl ShellState {
     /// Opens the settings panel with the settings in force to edit, or turns a closing one
     /// back. Allocates.
     fn open_settings(&mut self, now_ns: u64) {
+        // A toolbar popup's edits are committed first: the panel starts from the settings
+        // in force (ADR-0168).
+        self.close_popup();
         if let Some(panel) = &mut self.panel {
             panel.motion.reopen(now_ns);
             return;
@@ -1188,6 +1309,7 @@ impl ShellState {
             motion: PanelMotion::opening(now_ns, &self.theme),
             pressed_outside: false,
         });
+        self.refresh_updates();
         self.device_list_request = true;
     }
 
@@ -1347,8 +1469,17 @@ impl ShellState {
                 down: true,
             } if self.toast.press(x, y, &layout, now_ns) => {
                 // One copy per click, as opening a link (ADR-0154).
-                if let Some(path) = &self.toast_path {
+                if self.toast.frame().variant == slam_ui::toast::REPLAY_SAVED
+                    && let Some(path) = &self.toast_path
+                {
                     crate::reveal::reveal(path.clone());
+                }
+                let variant = self.toast.frame().variant;
+                if matches!(variant, updates::TOAST_AVAILABLE | updates::TOAST_READY)
+                    && self.updates.answer_toast(variant)
+                {
+                    // Only the release page can be offered here.
+                    self.feedback_request = Some(crate::feedback::Kind::Releases);
                 }
                 true
             }
@@ -1618,6 +1749,11 @@ impl ShellState {
         self.menu_track = at;
     }
 
+    /// Where the menu music is, in ms of its track (ADR-0167).
+    pub fn set_menu_track_ms(&mut self, ms: Option<f64>) {
+        self.menu_track_ms = ms;
+    }
+
     /// The skin folder whose menu background the menu shows; made again only when the
     /// songs folder or the skin changes (allocates then).
     pub(crate) fn menu_skin(&mut self) -> Option<&Arc<Path>> {
@@ -1695,6 +1831,43 @@ impl ShellState {
             }
         }
         self.ui_seen = (depth, item, selected, open, focus);
+        // The mod select overlay's pops (lazer's `ModSelectOverlay`).
+        let mods_open = self.song_select.mods().is_open();
+        if mods_open != self.ui_mods_open && !playing {
+            self.ui_sounds.push(if mods_open {
+                MenuSound::ModsOpen
+            } else {
+                MenuSound::ModsClose
+            });
+            if mods_open {
+                self.ui_sounds.push(MenuSound::ModColumn);
+            }
+        }
+        self.ui_mods_open = mods_open;
+        self.note_typing_sounds();
+    }
+
+    /// Notes a key sound when the length of a search grew or shrank (ADR-0167).
+    fn note_typing_sounds(&mut self) {
+        use crate::menu_sounds::MenuSound;
+        let songs = self.song_select.query().as_str().chars().count();
+        // A closed panel has no search: its count restarts, silently.
+        let settings = self
+            .settings_screen()
+            .map(|screen| screen.search().as_str().chars().count());
+        let shown = settings.unwrap_or(0);
+        let mut note = |now: usize, before: usize| {
+            if now > before {
+                self.ui_sounds.push(MenuSound::Type);
+            } else if now < before {
+                self.ui_sounds.push(MenuSound::Erase);
+            }
+        };
+        note(songs, self.ui_typed.0);
+        if settings.is_some() {
+            note(shown, self.ui_typed.1);
+        }
+        self.ui_typed = (songs, shown);
     }
 
     /// The theme the screens are laid out with.
@@ -1777,6 +1950,7 @@ impl ShellState {
         // the open settings panel has them instead.
         let song_select =
             matches!(self.stack.top(), AppScreen::SongSelect) && !self.settings_open();
+        let ctrl = self.mods().contains(Mods::CTRL);
         if let InputKind::Key {
             scancode,
             down: true,
@@ -1789,6 +1963,8 @@ impl ShellState {
                 KEY_DOWN => return Some(ScreenInput::ModSpeed(-SPEED_STEP)),
                 KEY_F3 => return Some(ScreenInput::ApproachRate(-APPROACH_RATE_STEP)),
                 KEY_F4 => return Some(ScreenInput::ApproachRate(APPROACH_RATE_STEP)),
+                // Ctrl+F5 rescans the library; F5 alone is the frame counter's hotkey.
+                KEY_F5 => return Some(ScreenInput::Rescan),
                 _ => {}
             }
         }
@@ -1806,6 +1982,9 @@ impl ShellState {
             }
             return Some(ScreenInput::Repeat(match scancode {
                 // Holding Backspace keeps erasing the search (ADR-0065).
+                KEY_BACKSPACE if (song_select || self.settings_open()) && ctrl => {
+                    SongSelectInput::EraseWord
+                }
                 KEY_BACKSPACE if song_select || self.settings_open() => SongSelectInput::Erase,
                 KEY_UP => SongSelectInput::Up,
                 KEY_DOWN => SongSelectInput::Down,
@@ -1823,6 +2002,15 @@ impl ShellState {
             } => match scancode {
                 KEY_R if !song_select => return Some(ScreenInput::Retry),
                 KEY_F1 => SongSelectInput::ToggleMods,
+                // With a query typed, Ctrl+Backspace erases a word; without, it deselects
+                // the mods like Backspace.
+                KEY_BACKSPACE
+                    if ctrl
+                        && (self.settings_open()
+                            || (song_select && !self.song_select.query().is_empty())) =>
+                {
+                    SongSelectInput::EraseWord
+                }
                 KEY_BACKSPACE => SongSelectInput::DeselectMods,
                 KEY_TAB if song_select => SongSelectInput::ToggleCustomisation,
                 KEY_DELETE if song_select => SongSelectInput::ResetSetting,
@@ -1850,6 +2038,13 @@ impl ShellState {
                 button: MouseButton::X1,
                 down: true,
             } => SongSelectInput::Back,
+            InputKind::MouseButton {
+                button: MouseButton::Right,
+                down: true,
+            } => SongSelectInput::SecondaryPress {
+                x: self.cursor[0],
+                y: self.cursor[1],
+            },
             InputKind::MouseButton {
                 button: MouseButton::Left,
                 down: false,
@@ -1893,6 +2088,47 @@ impl ShellState {
         }
     }
 
+    /// Sends the start-up check, takes the updater's news, shows it on the open settings
+    /// panel and in a toast (ADR-0185). Does not allocate when nothing changed.
+    fn receive_updates(&mut self, now_ns: u64) {
+        let settings = self.settings.updates;
+        self.updates.start(settings.check, settings.channel);
+        let polled = self.updates.poll();
+        if let Some(variant) = polled.toast {
+            self.toast.show_variant(variant, now_ns);
+        }
+        if polled.installed {
+            crate::update::request_restart();
+            self.quit_request = true;
+        }
+        if polled.changed {
+            self.refresh_updates();
+        }
+    }
+
+    /// Shows the updater's state on the settings panel's rows.
+    fn refresh_updates(&mut self) {
+        let (Some(panel), Some(localizer)) = (&mut self.panel, &self.localizer) else {
+            return;
+        };
+        if let Some(row) = Row::ALL.iter().position(|r| *r == Row::UpdatesStatus) {
+            self.otd
+                .set_extra_name(row, &self.updates.status_text(localizer));
+        }
+        self.otd.refresh(&mut panel.screen);
+        self.updates.refresh(&mut panel.screen);
+    }
+
+    /// A press on an updater row (ADR-0185).
+    fn press_updates(&mut self, row: Row) {
+        match row {
+            Row::UpdatesStatus => self.updates.check(self.live_settings().updates.channel),
+            Row::UpdatesInstall => self.updates.download(),
+            Row::UpdatesRestart => self.updates.install(),
+            _ => {}
+        }
+    }
+
     /// Takes the OpenTabletDriver worker's news and shows it on the open settings panel
     /// (ADR-0166).
     fn receive_otd(&mut self, now_ns: u64) {
@@ -1905,6 +2141,38 @@ impl ShellState {
         }
         if self.otd.poll(now_ns) {
             self.otd.refresh(&mut panel.screen);
+        }
+    }
+
+    /// Hands the files dropped since the last tick to the import thread (none during a play)
+    /// and shows the outcome of the imports that finished; a new beatmap or skin makes the
+    /// library list its folders again (ADR-0169).
+    fn receive_imports(&mut self, now_ns: u64) {
+        let Some(imports) = &self.imports else {
+            return;
+        };
+        // Files dropped during a play wait in the queue for the way out (ADR-0169).
+        let playing = matches!(self.stack.top(), AppScreen::Play(_));
+        while !playing && let Some(path) = imports.drops.poll() {
+            let targets = crate::import::Targets {
+                songs: self.settings.paths.songs.clone(),
+                replays: imports.replays.clone(),
+            };
+            imports
+                .importer
+                .submit(crate::import::Job { path, targets });
+        }
+        let mut rescan = false;
+        while let Some(report) = imports.importer.poll() {
+            rescan |= matches!(
+                report.result,
+                Ok(crate::import::Kind::Beatmap | crate::import::Kind::Skin)
+            );
+            self.toast
+                .show_variant(crate::import::variant(&report.result), now_ns);
+        }
+        if rescan && let Some(songs) = &mut self.songs {
+            songs.rescan();
         }
     }
 
@@ -2049,6 +2317,13 @@ impl ShellState {
                 self.otd.refresh(screen);
             }
             Some(SettingsAction::Pressed { row })
+                if Row::ALL.get(row).is_some_and(|row| row.is_updater_button()) =>
+            {
+                self.ui_sounds.push(crate::menu_sounds::MenuSound::Click);
+                self.press_updates(Row::ALL[row]);
+                self.refresh_updates();
+            }
+            Some(SettingsAction::Pressed { row })
                 if Row::ALL.get(row) == Some(&Row::SongsFolder) =>
             {
                 self.pick_folder();
@@ -2121,6 +2396,11 @@ impl ShellState {
             if self.toast_input(event.kind, now_ns) {
                 continue;
             }
+            // The toolbar over the menus, and the pin toggle of the settings rows
+            // (ADR-0168).
+            if self.toolbar_input(event.kind, now_ns) || self.pin_input(event.kind, now_ns) {
+                continue;
+            }
             if let InputKind::MouseWheel { x, y } = event.kind
                 && self.text_wheel(x, y, now_ns)
             {
@@ -2169,6 +2449,12 @@ impl ShellState {
                     self.change_mod_speed(delta);
                     None
                 }
+                AppScreen::SongSelect if matches!(input, ScreenInput::Rescan) => {
+                    if let Some(songs) = &mut self.songs {
+                        songs.rescan();
+                    }
+                    None
+                }
                 AppScreen::SongSelect if let ScreenInput::ApproachRate(delta) = input => {
                     self.change_approach_rate(delta);
                     None
@@ -2189,6 +2475,27 @@ impl ShellState {
                         }
                         Some(SongSelectAction::DeselectMods) => {
                             self.deselect_mods();
+                            None
+                        }
+                        Some(SongSelectAction::ApplyPreset(index)) => {
+                            self.apply_preset(index);
+                            None
+                        }
+                        Some(SongSelectAction::RemovePreset(index)) => {
+                            self.remove_preset(index);
+                            None
+                        }
+                        Some(SongSelectAction::PinPreset) => {
+                            self.pin_preset();
+                            None
+                        }
+                        Some(SongSelectAction::ModSettings {
+                            column,
+                            index,
+                            x,
+                            y,
+                        }) => {
+                            self.show_mod_settings(column, index, (x, y));
                             None
                         }
                         Some(SongSelectAction::SetModSetting { row, value }) => {
@@ -2274,10 +2581,13 @@ impl ShellState {
             self.intro_events.started = true;
         }
         self.receive_songs();
+        self.receive_imports(now_ns);
         self.receive_displays();
         self.receive_otd(now_ns);
+        self.receive_updates(now_ns);
         let navigated = self.handle(events, now_ns);
         self.tick_volume(now_ns, snapshot);
+        self.tick_toolbar(now_ns, snapshot);
         self.note_ui_sounds(events);
         if self.intro.is_some_and(|intro| intro.is_done(now_ns)) {
             self.intro = None;
@@ -2309,6 +2619,13 @@ impl ShellState {
             .background_dim as f32;
         let details = self.beatmap_details(now_ns);
         self.song_select.set_details(details);
+        // The selection glows with the beat of its own music only (ADR-0167).
+        let beat = self
+            .beat_timing
+            .filter(|_| self.menu_track.is_some() && self.menu_track == self.song_select.selected())
+            .zip(self.menu_track_ms)
+            .map(|(timing, ms)| timing.pulse_at(ms));
+        self.song_select.set_beat(beat);
         // The main menu shows the menu music's beatmap or the skin's background
         // (ADR-0119); the other screens the song select's selection.
         let live_general = &self.editing.as_ref().unwrap_or(&self.settings).general;
@@ -2351,6 +2668,13 @@ impl ShellState {
             .menu_cursor;
         let cursor_skin = (cursor_style == CursorStyle::Skin).then(|| self.menu_skin().cloned());
         snapshot.menu_cursor.style = cursor_style;
+        snapshot.menu_cursor.size = self
+            .editing
+            .as_ref()
+            .unwrap_or(&self.settings)
+            .general
+            .menu_cursor_size
+            .clamp(0.5, 2.0) as f32;
         snapshot.menu_cursor.skin = match &mut self.skin_cursor {
             Some(link) => {
                 let skin = link.tick(cursor_skin.as_ref().map(Option::as_ref));
@@ -2391,9 +2715,21 @@ impl ShellState {
         if self.ranking_art.is_some() && matches!(self.stack.top(), AppScreen::Results(_)) {
             snapshot.background_dim = 1.0 - 0x99 as f32 / 255.0;
         }
+        // The screens move aside under the open settings panel (ADR-0179).
+        let aside = self.panel.as_ref().map_or(0.0, |p| {
+            let [w, h] = self.size;
+            screen_shift(
+                p.motion.openness(now_ns),
+                panel_width(w, h, &self.theme),
+                w,
+                &self.theme,
+            )
+        });
+        snapshot.aside = aside;
         let top: *const AppScreen = self.stack.top();
         for (slot, layer) in snapshot.layers.iter_mut().zip(self.stack.layers(now_ns)) {
-            *slot = layer.and_then(|(screen, pose)| {
+            *slot = layer.and_then(|(screen, mut pose)| {
+                pose.offset += aside;
                 let view = match screen {
                     AppScreen::Menu(menu) => ScreenView::Menu(menu.snapshot()),
                     AppScreen::SongSelect => ScreenView::SongSelect(self.song_select.snapshot()),
@@ -2447,6 +2783,8 @@ enum ScreenInput {
     ModSpeed(f64),
     /// Ctrl+F3/F4 on the song select: the approach rate by this much.
     ApproachRate(f64),
+    /// F5 on the song select: list the songs and skins folders again (ADR-0169).
+    Rescan,
     /// The FPS counter's hotkey, on any screen (ADR-0060).
     ToggleFps,
     /// The settings panel's hotkey (ADR-0095).
@@ -2494,6 +2832,7 @@ fn settings_input(input: ScreenInput) -> Option<SettingsInput> {
         ScreenInput::Retry
         | ScreenInput::ModSpeed(_)
         | ScreenInput::ApproachRate(_)
+        | ScreenInput::Rescan
         | ScreenInput::ToggleFps
         | ScreenInput::ToggleSettings => {
             return None;
@@ -2512,6 +2851,7 @@ fn settings_input(input: ScreenInput) -> Option<SettingsInput> {
             SongSelectInput::Scroll { lines } => SettingsInput::Scroll { lines },
             // Backspace, as the song select's search takes it.
             SongSelectInput::DeselectMods => SettingsInput::Erase,
+            SongSelectInput::EraseWord => SettingsInput::EraseWord,
             _ => return None,
         },
         ScreenInput::Repeat(input) => match input {
@@ -2522,6 +2862,7 @@ fn settings_input(input: ScreenInput) -> Option<SettingsInput> {
             SongSelectInput::PageUp => SettingsInput::PrevSection,
             SongSelectInput::PageDown => SettingsInput::NextSection,
             SongSelectInput::Erase => SettingsInput::Erase,
+            SongSelectInput::EraseWord => SettingsInput::EraseWord,
             _ => return None,
         },
     })
@@ -2614,6 +2955,7 @@ fn results_input(input: ScreenInput) -> Option<ResultsInput> {
         | ScreenInput::Clear
         | ScreenInput::ModSpeed(_)
         | ScreenInput::ApproachRate(_)
+        | ScreenInput::Rescan
         | ScreenInput::ToggleFps
         | ScreenInput::ToggleSettings => {
             return None;
@@ -2830,6 +3172,12 @@ struct PlayHost {
     rng: u64,
     /// The beatmap whose music plays in the menus, by set and difficulty (ADR-0119).
     music_at: Option<(usize, usize)>,
+    /// Where the menu music was last heard, ms: the player keeps showing it for the few
+    /// milliseconds a seek leaves the position unknown (ADR-0178).
+    player_ms: f64,
+    /// The tempo and frequency the preview decks have (ADR-0167); `None` until both
+    /// took them, so a failed send is retried.
+    preview_speed: Option<(f64, f64)>,
     /// Plays the menus' sounds (ADR-0120).
     ui_sounds: ui_sounds::UiSoundPlayer,
     loader: LoaderLink,
@@ -2914,6 +3262,16 @@ fn blocks_win_key(state: PlayState, is_break_time: bool) -> bool {
 }
 
 impl PlayHost {
+    /// The title and mods of the running play, for the Discord status.
+    fn discord_play(&self) -> Option<crate::discord::Play> {
+        let game = self.game.as_ref()?;
+        let mods = game.mods.iter().map(|m| m.as_str()).collect::<Vec<_>>();
+        Some(crate::discord::Play {
+            title: game.title.clone(),
+            mods: mods.join(","),
+        })
+    }
+
     /// Whether the play shows its pause or fail menu, over which the settings panel may
     /// open (ADR-0095).
     fn menu_shown(&self) -> bool {
@@ -3050,8 +3408,12 @@ impl PlayHost {
             state.set_no_audio(false);
         }
         self.intro_sound(state);
-        self.menu_music(now_ns, state);
+        let commands = state.take_music_commands();
+        self.menu_music(now_ns, state, commands);
         state.set_menu_track(self.music_at);
+        let track_ms = self.menu_track_ms(now_ns);
+        state.set_menu_track_ms(track_ms);
+        self.tell_player(state, track_ms);
         let noted = state.take_ui_sounds();
         let mode = state.live_settings().audio.menu_sounds;
         let skin = state.menu_skin().cloned();
@@ -3472,6 +3834,8 @@ impl PlayHost {
             }
         }
         std::mem::swap(&mut self.audio, &mut new);
+        // The new preview decks play at the speed of a new player.
+        self.preview_speed = None;
         // Voice ids count anew in the new mixer.
         self.intro_voice = VoiceId::NONE;
         // The new decks start from nothing: the menu music starts over.
@@ -3512,7 +3876,7 @@ impl PlayHost {
 
     /// Plays the menus' music the screens call for (ADR-0090). Allocates only when another
     /// track starts; frees failed tracks' messages on the loader thread.
-    fn menu_music(&mut self, now_ns: u64, state: &ShellState) {
+    fn menu_music(&mut self, now_ns: u64, state: &ShellState, commands: toolbar::MusicCommands) {
         // Without an output nothing takes the decks' commands: they would only fill up.
         if self.no_output {
             return;
@@ -3562,6 +3926,10 @@ impl PlayHost {
         if matches!(want, Want::Preview { .. }) {
             self.music_at = selected;
         }
+        if want != Want::Silence {
+            self.player_commands(now_ns, state, commands);
+        }
+        self.preview_speed(state);
         let rng = &mut self.rng;
         let music_at = &mut self.music_at;
         self.menu_music
@@ -3572,6 +3940,98 @@ impl PlayHost {
                 }
                 picked
             });
+    }
+
+    /// Carries out what the toolbar's player asked of the menu music (ADR-0178): a seek, a
+    /// pause or play, and on the main menu the previous and next track (the song select
+    /// moves its selection instead, and the music follows).
+    fn player_commands(
+        &mut self,
+        now_ns: u64,
+        state: &ShellState,
+        commands: toolbar::MusicCommands,
+    ) {
+        if commands == toolbar::MusicCommands::default() {
+            return;
+        }
+        let decks = &mut self.audio.previews;
+        if let Some(share) = commands.seek
+            && let Some(length) = self.menu_music.length_ms(decks)
+        {
+            self.menu_music
+                .seek_ms(f64::from(share.clamp(0.0, 1.0)) * length, decks);
+        }
+        if commands.play_pause {
+            self.menu_music.toggle_pause(now_ns, decks);
+        }
+        if commands.previous
+            && let menu_music::Previous::Started(at) =
+                self.menu_music
+                    .previous(now_ns, Some(self.player_ms), decks)
+        {
+            self.music_at = Some(at);
+        }
+        if commands.next {
+            let rng = &mut self.rng;
+            if let Some(at) = self
+                .menu_music
+                .next(now_ns, decks, || random_track(rng, state.files()))
+            {
+                self.music_at = Some(at);
+            }
+        }
+    }
+
+    /// Tells the toolbar's player what the menu music is doing.
+    fn tell_player(&mut self, state: &mut ShellState, track_ms: Option<f64>) {
+        let available = !self.no_output && self.menu_music.has_track();
+        match track_ms {
+            Some(ms) => self.player_ms = ms,
+            None if !available => self.player_ms = 0.0,
+            None => {}
+        }
+        let length = self.menu_music.length_ms(&self.audio.previews);
+        state.set_now_playing(
+            available,
+            self.menu_music.is_paused(),
+            available.then_some(self.player_ms),
+            length,
+        );
+    }
+
+    /// Gives the preview decks the selected rate mods' tempo and frequency in the song
+    /// select, and plain speed elsewhere, as lazer's song select (ADR-0167).
+    fn preview_speed(&mut self, state: &ShellState) {
+        let want = match state.stack().top() {
+            AppScreen::SongSelect => slam_play::fail::mod_track_speed(state.selected_mods()),
+            _ => (1.0, 1.0),
+        };
+        if self.preview_speed == Some(want) {
+            return;
+        }
+        let (tempo, frequency) = want;
+        let applied = self
+            .audio
+            .previews
+            .iter_mut()
+            .all(|deck| slam_play::fail::apply_mod_track(deck, tempo, frequency).is_ok());
+        self.preview_speed = applied.then_some(want);
+    }
+
+    /// Where the menu music is heard at `now_ns`, in ms of its track; `None` while nothing
+    /// plays. Lock-free reads only.
+    fn menu_track_ms(&self, now_ns: u64) -> Option<f64> {
+        if self.no_output {
+            return None;
+        }
+        let deck = &self.audio.previews[self.menu_music.active()];
+        let output = self.audio.output.read()?;
+        let music = deck.position().read()?;
+        if music.ended || music.generation != deck.generation() || output.sample_rate == 0 {
+            return None;
+        }
+        let frame = music.track_frame_at(output.output_frame_at(now_ns));
+        Some(frame / f64::from(output.sample_rate) * 1000.0)
     }
 
     /// Frees a prepared play nobody waits for.
@@ -3677,6 +4137,8 @@ impl PlayHost {
 /// The update thread's side.
 struct Shell {
     state: ShellState,
+    /// The Discord status (ADR-0170).
+    discord: crate::discord::Discord,
     /// Without an audio output, the song select does not play.
     host: Option<PlayHost>,
     /// Surface size in pixels the draw thread last drew at, see [`pack_size`].
@@ -3701,6 +4163,8 @@ struct Shell {
     language: language::AppliedLanguage,
     /// Typed text is on in the menus and off during plays (ADR-0065).
     text_input: TextInput,
+    /// The tick's events without the mouse side buttons, while they are off (ADR-0167).
+    side_filtered: Vec<InputEvent>,
     /// Relative mouse mode and sensitivity, for the input thread (ADR-0069).
     mouse: MouseSettings,
     /// Mode, display and sizes of the window, for the input thread (ADR-0070).
@@ -3781,6 +4245,29 @@ impl Shell {
         }
     }
 
+    /// Tells the Discord status what the player does; sends only on a change.
+    fn follow_discord(&mut self) {
+        use crate::discord::Scene;
+        let Some(localizer) = self.state.localizer.as_deref() else {
+            return;
+        };
+        let menu_shown = self.host.as_ref().is_some_and(PlayHost::menu_shown);
+        let scene = match self.state.stack.top() {
+            AppScreen::Menu(_) => Scene::Menu,
+            AppScreen::SongSelect => Scene::SongSelect,
+            AppScreen::Results(_) => Scene::Results,
+            AppScreen::Play(id) if menu_shown => Scene::Paused(*id),
+            AppScreen::Play(id) => Scene::Playing(*id),
+        };
+        let host = self.host.as_ref();
+        self.discord.follow(
+            self.state.settings().general.discord_presence,
+            scene,
+            || host.and_then(PlayHost::discord_play).unwrap_or_default(),
+            localizer,
+        );
+    }
+
     /// Asks for the draw rate the visible screens call for, hands changed settings to the
     /// threads that use them (ADR-0048) and to the saver. Neither blocks nor touches the
     /// disk; allocates only to ask for another output (ADR-0089).
@@ -3827,6 +4314,34 @@ impl Shell {
     }
 }
 
+/// Events of a tick the side-button filter keeps room for; one tick has far fewer.
+const SIDE_FILTER_CAPACITY: usize = 256;
+
+/// Whether `event` is a press or release of a mouse side button.
+fn is_side_button(event: &InputEvent) -> bool {
+    matches!(
+        event.kind,
+        InputKind::MouseButton {
+            button: MouseButton::X1 | MouseButton::X2,
+            ..
+        }
+    )
+}
+
+/// `events` without the mouse side buttons. Copies into `scratch` only when there is one to
+/// drop, so a tick without them does not touch it.
+fn without_side_buttons<'a>(
+    events: &'a [InputEvent],
+    scratch: &'a mut Vec<InputEvent>,
+) -> &'a [InputEvent] {
+    if !events.iter().any(is_side_button) {
+        return events;
+    }
+    scratch.clear();
+    scratch.extend(events.iter().filter(|e| !is_side_button(e)));
+    scratch
+}
+
 impl Update for Shell {
     type Snapshot = ShellSnapshot;
 
@@ -3840,6 +4355,13 @@ impl Update for Shell {
             return;
         }
         let now = info.now_ns;
+        // The mouse side buttons do nothing while they are off: not in the menus, not as
+        // gameplay bindings (ADR-0167).
+        let events = if self.state.live_settings().input.mouse_side_buttons {
+            events
+        } else {
+            without_side_buttons(events, &mut self.side_filtered)
+        };
         let playing = self.state.playing();
         // The settings panel may open over the pause and fail menus, not over the play
         // itself (ADR-0095); the play's last tick tells which shows.
@@ -3873,7 +4395,7 @@ impl Update for Shell {
             }
             _ => self.state.tick(now, events, snapshot),
         };
-        if navigated == Navigated::Exit {
+        if navigated == Navigated::Exit || self.state.take_quit_request() {
             self.exited.store(true, Ordering::Relaxed);
             return;
         }
@@ -3889,6 +4411,7 @@ impl Update for Shell {
             }
         }
         self.apply_settings(now);
+        self.follow_discord();
         let play = self
             .host
             .as_ref()
@@ -4044,6 +4567,8 @@ struct View<B: render::Backend> {
     volume: VolumeView,
     /// The replay toast over every screen (ADR-0154).
     toast: slam_ui::toast::ToastView,
+    /// The menus' toolbar (ADR-0168).
+    toolbar: slam_ui::toolbar::ToolbarView,
     /// Views laid out in a language switched to (ADR-0091).
     languages: Option<LanguageViews>,
     /// The curtain over a language switch and the views it waits for.
@@ -4218,6 +4743,7 @@ impl<B: render::Backend> Draw<ShellSnapshot> for View<B> {
             self.fps.swap_view(&mut views.fps);
             std::mem::swap(&mut self.volume, &mut views.volume);
             std::mem::swap(&mut self.toast, &mut views.toast);
+            std::mem::swap(&mut self.toolbar, &mut views.toolbar);
             self.theme = views.theme;
             languages.give_back(views);
         }
@@ -4231,6 +4757,7 @@ impl<B: render::Backend> Draw<ShellSnapshot> for View<B> {
                 &self.fps,
                 &self.volume,
                 &self.toast,
+                &self.toolbar,
             )
         });
         self.glyphs.process(&mut r.device, &mut r.textures);
@@ -4311,13 +4838,15 @@ impl<B: render::Backend> Draw<ShellSnapshot> for View<B> {
             self.theme.parallax_half_life,
         );
         let strength = snapshot.parallax;
-        let background_map = crate::parallax::layer_map(
-            pointer,
-            [width, height],
-            self.theme.parallax_background,
-            strength,
-            true,
-        );
+        // The background follows the screens aside under the settings panel (ADR-0180).
+        let background_map = crate::parallax::aside_map(snapshot.aside * width, [width, height])
+            .then_after(&crate::parallax::layer_map(
+                pointer,
+                [width, height],
+                self.theme.parallax_background,
+                strength,
+                true,
+            ));
         let menu_map = crate::parallax::layer_map(
             pointer,
             [width, height],
@@ -4347,7 +4876,7 @@ impl<B: render::Backend> Draw<ShellSnapshot> for View<B> {
         }
         // The screens' layers and the settings panel's.
         // Two per screen (the song select's mod panel is a layer of its own), and the panel.
-        let mut ends = [(0_u32, 0_u32, false); 2 * MAX_LAYERS + 1];
+        let mut ends = [(0_u32, 0_u32, false); 3 * MAX_LAYERS + 4];
         let mut layers = 0;
         for layer in snapshot.layers.iter().flatten() {
             // Where the screen's own quads start: its background is not scaled.
@@ -4425,12 +4954,14 @@ impl<B: render::Backend> Draw<ShellSnapshot> for View<B> {
                         r.white,
                         Thumbs {
                             enabled: snapshot.thumbnails.enabled,
+                            full: snapshot.thumbnails.full,
                             rows: &thumb_rows,
                             now_ns: info.wait.woke_ns,
                         },
                     );
                     // The mod panel over the list's texts (ADR-0152).
-                    if let Some((shapes_at, text_at)) = split {
+                    // The floating mod settings over the panel (ADR-0177).
+                    for (shapes_at, text_at) in [split.panel, split.popup].into_iter().flatten() {
                         ends[layers] = (shapes_at, text_at, false);
                         layers += 1;
                     }
@@ -4500,6 +5031,40 @@ impl<B: render::Backend> Draw<ShellSnapshot> for View<B> {
             ends[layers] = (self.shapes.len() as u32, self.text.len() as u32, play);
             layers += 1;
         }
+        // The toolbar over the menus, under the settings panel (ADR-0168); its tooltip is a
+        // layer of its own, over the popup's texts.
+        if snapshot.toolbar.visible {
+            // The player's popup lies on the playing beatmap's background, which is the
+            // one the menus show (ADR-0178); looked up while it closes too.
+            let cover = self.backgrounds.as_ref().and_then(|(uploads, fade)| {
+                fade.visible(info.wait.woke_ns)
+                    .into_iter()
+                    .flatten()
+                    .find_map(|h| match uploads.get(h) {
+                        TextureState::Ready(region) => Some(region),
+                        _ => None,
+                    })
+            });
+            let tip = self.toolbar.push(
+                &mut self.shapes,
+                &mut self.text,
+                &mut self.glyphs,
+                &mut self.settings,
+                &snapshot.toolbar,
+                &snapshot.now_playing,
+                cover,
+                width,
+                height,
+                info.wait.woke_ns,
+                r.white,
+            );
+            if let Some((shapes_at, text_at)) = tip {
+                ends[layers] = (shapes_at, text_at, false);
+                layers += 1;
+            }
+            ends[layers] = (self.shapes.len() as u32, self.text.len() as u32, false);
+            layers += 1;
+        }
         // The settings panel over the screens and the play, under the curtain (ADR-0095).
         if let Some(panel) = &snapshot.panel {
             let settings = &panel.settings;
@@ -4521,7 +5086,7 @@ impl<B: render::Backend> Draw<ShellSnapshot> for View<B> {
                 height,
                 panel.openness,
             );
-            self.settings.push(
+            let tip = self.settings.push(
                 &mut self.shapes,
                 &mut self.text,
                 &mut self.glyphs,
@@ -4532,6 +5097,11 @@ impl<B: render::Backend> Draw<ShellSnapshot> for View<B> {
                 r.white,
                 info.wait.woke_ns,
             );
+            // The tab's tooltip over the rows' texts.
+            if let Some((shapes_at, text_at)) = tip {
+                ends[layers] = (shapes_at, text_at, false);
+                layers += 1;
+            }
             ends[layers] = (self.shapes.len() as u32, self.text.len() as u32, false);
             layers += 1;
         }
@@ -4733,7 +5303,7 @@ impl<B: render::Backend> Draw<ShellSnapshot> for View<B> {
 
 impl<B: render::Backend> View<B> {
     fn request_glyphs(&mut self) -> usize {
-        glyphs_pending(
+        let screens = glyphs_pending(
             &mut self.glyphs,
             &self.menu,
             &self.song_select,
@@ -4742,7 +5312,14 @@ impl<B: render::Backend> View<B> {
             &self.fps,
             &self.volume,
             &self.toast,
-        )
+            &self.toolbar,
+        );
+        // The intro's letters are made large (ADR-0178): ready before it starts.
+        let intro = self
+            .intro
+            .as_ref()
+            .map_or(0, |intro| intro.request_glyphs(&mut self.glyphs));
+        screens + intro
     }
 }
 
@@ -4757,6 +5334,7 @@ fn glyphs_pending(
     fps: &FpsOverlay,
     volume: &VolumeView,
     toast: &slam_ui::toast::ToastView,
+    toolbar: &slam_ui::toolbar::ToolbarView,
 ) -> usize {
     menu.request_glyphs(glyphs)
         + song_select.request_glyphs(glyphs)
@@ -4765,6 +5343,7 @@ fn glyphs_pending(
         + fps.request_glyphs(glyphs)
         + volume.request_glyphs(glyphs)
         + toast.request_glyphs(glyphs)
+        + toolbar.request_glyphs(glyphs)
 }
 
 /// The backend `name` names if this build has it, else the first available one.
@@ -5122,7 +5701,8 @@ pub fn interface_theme(live: &Settings, committed: &Settings) -> Theme {
         })
         .with_cursor_fx(CursorFx {
             rotate: general.cursor_rotate,
-            spin: general.cursor_spin,
+            // The menu pointer no longer spins while resting (ADR-0167).
+            spin: false,
             trail: general.cursor_trail,
             ripple: general.cursor_ripple,
         });
@@ -5135,6 +5715,10 @@ pub fn interface_theme(live: &Settings, committed: &Settings) -> Theme {
     theme.song_set_height = live.song_select.set_height;
     theme.song_difficulty_height = live.song_select.difficulty_height;
     theme.song_difficulty_info = live.song_select.difficulty_info;
+    theme.song_info_width_mult = live.song_select.info_width.clamp(0.5, 1.5);
+    theme.song_info_height_mult = live.song_select.info_height.clamp(0.5, 1.5);
+    theme.song_info_auto_width = live.song_select.info_auto_width;
+    theme.song_curve = live.song_select.curve.clamp(0.0, 2.0);
     theme
 }
 
@@ -5184,11 +5768,13 @@ fn run_with<B: render::Backend>(
         fps: fps_view,
         volume: mut volume_view,
         toast: mut toast_view,
+        toolbar: mut toolbar_view,
         ..
     } = language::interface_views(&registry, theme, &localizer, state.rows(), &settings);
     // Its first showing would otherwise lay out and grow its lines in a frame (ADR-0145).
     volume_view.lay_out_for(pixels_w as f32, pixels_h as f32);
     toast_view.lay_out_for(pixels_w as f32, pixels_h as f32);
+    toolbar_view.lay_out_for(pixels_w as f32, pixels_h as f32);
     let (language_link, language_views, _language) = match language::spawn(
         Arc::clone(&registry),
         Arc::clone(&localizer),
@@ -5281,6 +5867,7 @@ fn run_with<B: render::Backend>(
                 let loader = match crate::thumbnails::link(
                     cache,
                     theme.song_thumbnail_aspect,
+                    theme.song_thumbnail_wide_aspect,
                     loader_config.image_limits(),
                 ) {
                     Ok((thumbnails, bridge, worker, shown)) => {
@@ -5353,6 +5940,26 @@ fn run_with<B: render::Backend>(
             None
         }
     };
+    // Files dropped on the window are imported on a thread of their own (ADR-0169).
+    match crate::import::Importer::spawn() {
+        Ok(importer) => {
+            let (drops, callback) = crate::import::drop_queue();
+            window.set_drop_callback(callback);
+            state = state.with_imports(crate::import::Imports {
+                drops,
+                importer,
+                replays: Dirs::detect().map(|dirs| dirs.replays()),
+            });
+        }
+        Err(e) => tracing::warn!("import: cannot start the thread: {e}"),
+    }
+    // Looks for a newer version and downloads one when the player agrees (ADR-0185).
+    if let Some(dirs) = Dirs::detect() {
+        match crate::update::Updater::spawn(crate::update::Config::detect(dirs.data)) {
+            Ok(updater) => state = state.with_updater(updater),
+            Err(e) => tracing::warn!("update: cannot start the thread: {e}"),
+        }
+    }
     // Joined when `run` returns, after the engine. Without the thread the settings screen
     // hides the display and resolution rows.
     let (display_views, _displays) = {
@@ -5458,6 +6065,8 @@ fn run_with<B: render::Backend>(
             // Any non-zero seed; the clock makes each run's first track differ.
             rng: now_ns() | 1,
             music_at: None,
+            player_ms: 0.0,
+            preview_speed: None,
             ui_sounds: ui_sounds::UiSoundPlayer::new(audio_rate),
             loader,
             scenes: scene_tx,
@@ -5506,6 +6115,7 @@ fn run_with<B: render::Backend>(
     let counters = Arc::<slam_engine::EngineCounters>::default();
     let shell = Shell {
         state,
+        discord: crate::discord::Discord::spawn(),
         host,
         surface: Arc::clone(&surface_size),
         layout_size: initial_size,
@@ -5513,6 +6123,7 @@ fn run_with<B: render::Backend>(
         pixels_per_point,
         exited: Arc::clone(&exited),
         text_input: window.text_input(),
+        side_filtered: Vec::with_capacity(SIDE_FILTER_CAPACITY),
         mouse: {
             let mouse = window.mouse_settings();
             mouse.set_relative(settings.input.high_precision_mouse);
@@ -5573,6 +6184,7 @@ fn run_with<B: render::Backend>(
         ),
         volume: volume_view,
         toast: toast_view,
+        toolbar: toolbar_view,
         languages: language_views,
         swap: LanguageSwap::default(),
         backgrounds,
@@ -5687,6 +6299,8 @@ fn run_with<B: render::Backend>(
         thread.finish();
     }
     drop(window);
+    // An install asked for the new build to start.
+    crate::update::relaunch_if_requested(crate::update::Target::detect().as_ref());
     ran.map_err(|e| e.to_string())
 }
 

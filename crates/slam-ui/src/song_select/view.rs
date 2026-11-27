@@ -20,11 +20,12 @@ use slam_text::{FontRegistry, Glyph, GlyphCache, GlyphKey, push_layout};
 
 use super::info_panel::InfoPanel;
 use super::mod_select::{
-    CustomisationState, MAX_COLUMNS, MAX_SETTING_ROWS, SettingRowKind, TileDetail, TileDetails,
+    CustomisationState, MAX_COLUMNS, MAX_SETTING_ROWS, MultiplierTone, SettingRowKind, TileDetail,
+    TileDetails, TileMultipliers, push_multiplier,
 };
 use super::{
-    MAX_VISIBLE_ROWS, ModColumns, ModSelectSnapshot, Row, SearchQuery, SongList, SongSelectLayout,
-    SongSelectSnapshot, SongSelectStatus, Thumbs, can_choose_folder,
+    FooterButton, FooterState, MAX_VISIBLE_ROWS, ModColumns, ModSelectSnapshot, Row, SearchQuery,
+    SongList, SongSelectLayout, SongSelectSnapshot, SongSelectStatus, Thumbs, can_choose_folder,
 };
 use crate::marquee::{Marquee, MarqueeParams, ScrollTracker, push_marquee};
 use crate::menu::Rect;
@@ -45,7 +46,23 @@ pub(crate) const FADES: usize = 64;
 /// How much of the accent a thumbnail's placeholder shows.
 const PLACEHOLDER_ALPHA: f32 = 0.25;
 /// What the settings values are made of; asked for up front.
+/// Room for a tile's "1.12x".
+const MULTIPLIER_CAPACITY: usize = 16;
+
 const VALUE_CHARS: &str = "0123456789.-x";
+
+/// Where a frame's quads divide into layers drawn one over the other: each is the count of
+/// shapes and of glyph quads so far (ADR-0152, ADR-0177).
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct Splits {
+    /// Under it the list and the footer; over it the mod select panel.
+    pub panel: Option<(u32, u32)>,
+    /// Under it the panel; over it the floating settings panel.
+    pub popup: Option<(u32, u32)>,
+}
+
+/// How long the screen may go undrawn before its footer slides in again.
+const FOOTER_AWAY_NS: u64 = 250_000_000;
 
 /// The screen's localised texts, already formatted.
 #[derive(Clone)]
@@ -56,9 +73,12 @@ pub struct SongSelectLabels {
     pub empty: String,
     /// The button shown when there is nothing to play.
     pub choose_folder: String,
-    pub hint: String,
-    /// Shown instead of the hints after a play was refused for want of an audio output.
+    /// Shown above the footer after a play was refused for want of an audio output.
     pub no_audio: String,
+    /// The footer's buttons (ADR-0175): back, the pin of the current mods, reset.
+    pub footer_back: String,
+    pub footer_pin: String,
+    pub footer_reset: String,
     /// Follows a difficulty's SS performance: "pp" in "412pp" (ADR-0151).
     pub pp_suffix: String,
     /// Shown in the search line while the query is empty.
@@ -68,6 +88,8 @@ pub struct SongSelectLabels {
     /// The mod select panel's title; also prefixes the selected mods shown under the list.
     pub mods_title: String,
     pub mods_hint: String,
+    /// The label before the selection's score multiplier.
+    pub mods_multiplier: String,
     /// The header of the settings panel.
     pub mods_customise: String,
     /// The texts of the settings panel by Fluent key: section headers (mod names), setting
@@ -98,12 +120,15 @@ pub struct DetailLabels {
     /// The title of the local scores list, and the line shown when there are none.
     pub scores: String,
     pub no_scores: String,
+    /// The labels before a score row's accuracy and max combo.
+    pub accuracy: String,
+    pub combo: String,
 }
 
 impl std::fmt::Debug for SongSelectLabels {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("SongSelectLabels")
-            .field("hint", &self.hint)
+            .field("no_audio", &self.no_audio)
             .finish_non_exhaustive()
     }
 }
@@ -116,11 +141,18 @@ struct RowSlot {
     secondary: Line,
     /// A difficulty's SS performance, "412pp" (ADR-0151).
     pp: Line,
+    /// Hundredths of the stars and whole pp the texts show (`i32::MIN` for none), so a
+    /// frame lays a text out again only when the number it rolls to changed.
+    rolled_stars: i32,
+    rolled_pp: i32,
     /// Room of the text that rides (the mapper of a set, the name of a difficulty), as
     /// filled.
     avail: f32,
     /// The ride of that text (ADR-0148).
     marquee: Marquee,
+    /// Whether the texts' glyphs were asked of the cache since they were laid out, so a
+    /// row about to scroll in has them ready.
+    requested: bool,
 }
 
 impl RowSlot {
@@ -135,8 +167,11 @@ impl RowSlot {
             primary: line(),
             secondary: line(),
             pp: line(),
+            rolled_stars: i32::MIN,
+            rolled_pp: i32::MIN,
             avail: 0.0,
             marquee: Marquee::default(),
+            requested: false,
         }
     }
 }
@@ -180,17 +215,36 @@ pub struct SongSelectView {
     loading: Line,
     empty: Line,
     choose_folder: Line,
-    hint: Line,
     no_audio: Line,
+    /// The footer's labels, and the pinned presets' (ADR-0175).
+    footer_back: Line,
+    footer_pin: Line,
+    footer_reset: Line,
+    presets: Vec<Line>,
+    /// How many of `presets` hold a label.
+    preset_count: usize,
+    /// When the footer started sliding in, and when the view was last drawn.
+    footer_since: u64,
+    /// The footer buttons' hover, press, flash and slide state (ADR-0175).
+    footer_anim: super::FooterAnim,
+    last_push: Option<u64>,
     /// [`SongSelectLabels::pp_suffix`].
     pp_suffix: String,
     /// The query, for the query it was laid out for.
     search: Line,
     search_for: Option<SearchQuery>,
+    /// The typing feedback of the search text (ADR-0167).
+    search_type: crate::typing::TypeFeedback,
     search_placeholder: Line,
     search_no_matches: Line,
     mods_title: Line,
     mods_hint: Line,
+    /// "Score multiplier 1.12x" of the selection, and the multipliers shown on the tiles.
+    mods_multiplier: Line,
+    mods_multiplier_label: String,
+    tile_multipliers: Vec<Vec<Line>>,
+    /// What the multiplier lines were written for.
+    multipliers_for: Option<(TileMultipliers, f64)>,
     mod_column_titles: [Line; MAX_COLUMNS],
     customise_title: Line,
     setting_lines: Vec<(&'static str, Line)>,
@@ -203,7 +257,7 @@ pub struct SongSelectView {
     mod_texts: [Vec<(String, String)>; MAX_COLUMNS],
     /// "Mods: HD DT" under the list, for the flags it was written for.
     mods_selected: Line,
-    mods_selected_for: Option<([u16; MAX_COLUMNS], TileDetails)>,
+    mods_selected_for: Option<([u16; MAX_COLUMNS], TileDetails, u64)>,
     mod_columns: ModColumns,
     slots: Vec<RowSlot>,
     /// Widths of the ellipsis at the title and detail sizes and in the caption and note
@@ -216,11 +270,19 @@ pub struct SongSelectView {
     fade_next: usize,
     /// The set whose difficulties are opening, and the one closing (ADR-0136).
     expansion: Expansion,
+    /// Where each row shown is drawn, easing to its place (ADR-0172).
+    row_motion: RowMotion,
+    /// The rows' rating colours, easing to new ratings.
+    star_motion: StarMotion,
+    /// The performance each difficulty row shows, rolling as its rating does.
+    pp_motion: StarMotion,
     /// The mod select panel's slide in and out (ADR-0152).
     mods_slide: PanelSlide,
     shift: Shift,
     /// The thumbnails were on at the last frame: the row texts are cut for it.
     thumbs_on: bool,
+    /// The list scrollbar's fades (ADR-0174).
+    bar_look: crate::scrollbar::ScrollbarLook,
     /// Applies the snapshot's sideways wheel and drags to the rows' marquees.
     scroll_tracker: ScrollTracker,
 }
@@ -265,6 +327,91 @@ impl ThumbGeometry {
         let top = area.y + self.inset;
         let (top, bottom) = (top.max(top_edge), (top + self.height).min(bottom_edge));
         (bottom > top).then_some((top, bottom))
+    }
+}
+
+/// The part of an image a full-plate thumbnail shows (ADR-0174): the image covers the
+/// shape's bounding box (`width` plus the skew's lean over `full_height`) as `cover` does,
+/// centred, and the shape shows the rows `top` to `bottom` (fractions of `full_height`,
+/// for a plate scrolled part-way out of the list). `uv` is the image's place in its
+/// texture and `image` its size in pixels. The scale stays the same whatever is cut off.
+pub(crate) fn plate_uv(
+    uv: UvRect,
+    image: [f32; 2],
+    width: f32,
+    full_height: f32,
+    tan: f32,
+    (top, bottom): (f32, f32),
+) -> UvRect {
+    let lean = tan.abs();
+    let box_full = (width + lean * full_height).max(f32::EPSILON);
+    let box_cut = width + lean * full_height * (bottom - top).clamp(0.0, 1.0);
+    let target = box_full / full_height.max(f32::EPSILON);
+    let aspect = image[0] / image[1].max(1.0);
+    let (keep_u, keep_v) = if aspect >= target {
+        (target / aspect.max(f32::EPSILON), 1.0)
+    } else {
+        (1.0, aspect / target.max(f32::EPSILON))
+    };
+    let du = (uv.u1 - uv.u0) * keep_u * box_cut / box_full;
+    let dv = (uv.v1 - uv.v0) * keep_v;
+    let (cu, cv) = ((uv.u0 + uv.u1) / 2.0, (uv.v0 + uv.v1) / 2.0);
+    let v_top = cv - dv / 2.0;
+    UvRect {
+        u0: cu - du / 2.0,
+        u1: cu + du / 2.0,
+        v0: v_top + top * dv,
+        v1: v_top + bottom * dv,
+    }
+}
+
+/// The shape of a full-plate thumbnail over the plate `plate` (cut to the list), whose
+/// whole height is `full_height` from `full_top` (ADR-0174): the plate's rounding and
+/// `song_plate_dim_right` at the right, at `alpha`.
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn plate_shape(
+    image: AtlasRegion,
+    plate: &Rect,
+    full_top: f32,
+    full_height: f32,
+    shift: f32,
+    alpha: f32,
+    theme: &Theme,
+    scale: f32,
+) -> Shape {
+    let tan = theme.button_skew().tan();
+    let top = ((plate.y - full_top) / full_height.max(f32::EPSILON)).clamp(0.0, 1.0);
+    let bottom =
+        ((plate.y + plate.height - full_top) / full_height.max(f32::EPSILON)).clamp(top, 1.0);
+    let dim = |level: f32| Color {
+        r: level,
+        g: level,
+        b: level,
+        a: alpha,
+    };
+    Shape {
+        radius: theme.button_radius * scale,
+        skew: theme.button_skew(),
+        upright: true,
+        gradient: Some(slam_render::shape::Gradient::Horizontal(dim(
+            theme.song_plate_dim_right
+        ))),
+        texture: image.texture,
+        uv: plate_uv(
+            image.uv,
+            [image.size.width as f32, image.size.height as f32],
+            plate.width,
+            full_height,
+            tan,
+            (top, bottom),
+        ),
+        ..Shape::new(
+            image.texture,
+            image.uv,
+            [plate.x + shift, plate.y],
+            [plate.width, plate.height],
+            dim(theme.song_plate_dim_left),
+        )
     }
 }
 
@@ -389,15 +536,37 @@ impl SongSelectView {
             loading: Line::new(&labels.loading),
             empty: Line::new(&labels.empty),
             choose_folder: Line::new(&labels.choose_folder),
-            hint: Line::new(&labels.hint),
             no_audio: Line::new(&labels.no_audio),
+            footer_back: Line::new(&labels.footer_back),
+            footer_pin: Line::new(&labels.footer_pin),
+            footer_reset: Line::new(&labels.footer_reset),
+            presets: (0..super::MAX_PRESETS)
+                .map(|_| {
+                    let mut line = Line::new("");
+                    line.text.reserve(TEXT_CAPACITY);
+                    line
+                })
+                .collect(),
+            preset_count: 0,
+            footer_since: 0,
+            footer_anim: super::FooterAnim::default(),
+            last_push: None,
             pp_suffix: labels.pp_suffix.clone(),
             search: Line::new(""),
             search_for: None,
+            search_type: crate::typing::TypeFeedback::new(),
             search_placeholder: Line::new(&labels.search_placeholder),
             search_no_matches: Line::new(&labels.search_no_matches),
             mods_title: Line::new(&labels.mods_title),
             mods_hint: Line::new(&labels.mods_hint),
+            mods_multiplier: Line::new(""),
+            mods_multiplier_label: labels.mods_multiplier.clone(),
+            tile_multipliers: labels
+                .mod_columns
+                .iter()
+                .map(|c| c.iter().map(|_| Line::new("")).collect())
+                .collect(),
+            multipliers_for: None,
             mod_column_titles: std::array::from_fn(|i| Line::new(&labels.mod_column_titles[i])),
             customise_title: Line::new(&labels.mods_customise),
             setting_lines: labels
@@ -436,16 +605,24 @@ impl SongSelectView {
             info: InfoPanel::new(&labels.details),
             fades: [None; FADES],
             expansion: Expansion::default(),
+            row_motion: RowMotion::default(),
+            star_motion: StarMotion::default(),
+            pp_motion: StarMotion::default(),
             mods_slide: PanelSlide::default(),
             shift: Shift::default(),
             fade_next: 0,
             thumbs_on: false,
+            bar_look: crate::scrollbar::ScrollbarLook::new(),
             scroll_tracker: ScrollTracker::default(),
             theme,
         };
         view.scanning.text.reserve(TEXT_CAPACITY);
         view.search.text.reserve(TEXT_CAPACITY);
         view.mods_selected.text.reserve(TEXT_CAPACITY);
+        view.mods_multiplier.text.reserve(TEXT_CAPACITY);
+        for line in view.tile_multipliers.iter_mut().flatten() {
+            line.text.reserve(MULTIPLIER_CAPACITY);
+        }
         view.lay_out();
         view
     }
@@ -473,14 +650,25 @@ impl SongSelectView {
             &mut self.failed,
             &mut self.loading,
             &mut self.empty,
-            &mut self.choose_folder,
         ] {
             self.type_setter.lay_out(line, status);
         }
-        for line in [&mut self.hint, &mut self.no_audio] {
+        // The button's label is Bold (ADR-0174).
+        self.type_setter
+            .lay_out_face(&mut self.choose_folder, self.theme.heading_face(status));
+        for line in [
+            &mut self.no_audio,
+            &mut self.footer_back,
+            &mut self.footer_pin,
+            &mut self.footer_reset,
+        ] {
             self.type_setter
                 .lay_out(line, self.theme.song_detail_size * scale);
         }
+        for line in &mut self.presets {
+            line.text.clear();
+        }
+        self.preset_count = 0;
         self.info.lay_out(&mut self.type_setter, &self.theme, scale);
         for line in [&mut self.search_placeholder, &mut self.search_no_matches] {
             self.type_setter
@@ -505,10 +693,12 @@ impl SongSelectView {
         for slot in &mut self.value_slots {
             slot.shown = None;
         }
+        let text_scale = self.theme.mod_tile_text_scale;
         for line in self.mod_tiles.iter_mut().flatten() {
             self.type_setter
-                .lay_out_face(line, self.theme.caption_face(scale));
+                .lay_out_face(line, enlarged(self.theme.caption_face(scale), text_scale));
         }
+        self.multipliers_for = None;
         self.mods_selected_for = None;
         // The ellipsis widths and the row slots depend on the scale and the window.
         let mut probe = Line::new(&ELLIPSIS.to_string());
@@ -528,21 +718,36 @@ impl SongSelectView {
         self.ellipsis[3] = probe.layout.width();
         // A tile's name and description, cut to the room right of its switch (ADR-0152).
         let tile = self.layout.mods.tile_rect(0, 0);
-        let room =
-            (tile.width - tile.height - mod_text_gap(&self.theme, tile.height, scale)).max(0.0);
+        // The multiplier at the tile's right end takes room from the texts.
+        let multiplier_room = self.theme.note_size * text_scale * scale * MULTIPLIER_ROOM_EMS;
+        let room = (tile.width
+            - tile.height
+            - mod_text_gap(&self.theme, tile.height, scale)
+            - multiplier_room)
+            .max(0.0);
         for (lines, texts) in self.mod_names.iter_mut().zip(&self.mod_texts) {
             for ((name, desc), (name_text, desc_text)) in lines.iter_mut().zip(texts) {
                 name.text.clone_from(name_text);
                 desc.text.clone_from(desc_text);
-                let caption = self.theme.caption_face(scale);
+                // Mod tile names are SemiBold (ADR-0174).
+                let caption = Face {
+                    weight: self.theme.semibold_weight,
+                    ..enlarged(self.theme.caption_face(scale), text_scale)
+                };
                 fit_face(&mut self.type_setter, name, caption, room, self.ellipsis[2]);
-                let note = self.theme.note_face(scale);
+                let note = enlarged(self.theme.note_face(scale), text_scale);
                 fit_face(&mut self.type_setter, desc, note, room, self.ellipsis[3]);
             }
         }
-        let count = self.layout.viewport_rows().ceil() as usize + 2;
+        let count = self.layout.viewport_rows().ceil() as usize + 2 + 2 * PREFILL_ROWS;
         self.slots.clear();
         self.slots.resize_with(count, RowSlot::new);
+    }
+
+    /// How many rows have their texts laid out: the rows in view and a few past its ends
+    /// (ADR-0172).
+    pub fn laid_out_rows(&self) -> usize {
+        self.slots.iter().filter(|s| s.holds.is_some()).count()
     }
 
     /// Asks `glyphs` for every glyph of the static texts and of the rows laid out so far.
@@ -555,8 +760,10 @@ impl SongSelectView {
             &self.loading,
             &self.empty,
             &self.choose_folder,
-            &self.hint,
             &self.no_audio,
+            &self.footer_back,
+            &self.footer_pin,
+            &self.footer_reset,
             &self.search,
             &self.search_placeholder,
             &self.search_no_matches,
@@ -568,6 +775,9 @@ impl SongSelectView {
             .mod_column_titles
             .iter()
             .chain(self.mod_tiles.iter().flatten())
+            .chain(self.tile_multipliers.iter().flatten())
+            .chain([&self.mods_multiplier])
+            .chain(&self.presets)
             .chain(
                 self.mod_names
                     .iter()
@@ -589,6 +799,54 @@ impl SongSelectView {
             .flat_map(|line| line.layout.glyphs())
             .filter(|g| matches!(glyphs.glyph(GlyphKey::of(g)), Glyph::Pending))
             .count()
+    }
+
+    /// Makes a difficulty row's pill and performance show the eased numbers, as lazer's
+    /// `StarRatingDisplay` rolls its number: a text is laid out again only when its shown
+    /// number changed. A row new to the tables shows its numbers at once. Does not
+    /// allocate once the texts have their room.
+    fn roll(
+        slot: &mut RowSlot,
+        type_setter: &mut Typesetter,
+        (star_motion, pp_motion): (&mut StarMotion, &mut StarMotion),
+        theme: &Theme,
+        layout: &SongSelectLayout,
+        pp_suffix: &str,
+        d: &crate::song_select::DifficultyRow,
+    ) {
+        let key = d.key & !SET_KEY_BIT;
+        let info = theme.song_difficulty_info;
+        if info.stars()
+            && let Some(to) = d.stars
+            && slot.rolled_stars != i32::MIN
+        {
+            let shown = star_motion.track(key, to);
+            let q = (shown * 100.0).round() as i32;
+            if q != slot.rolled_stars {
+                slot.rolled_stars = q;
+                slot.secondary.text.clear();
+                super::push_stars(&mut slot.secondary.text, shown);
+                type_setter.lay_out_face(
+                    &mut slot.secondary,
+                    theme.heading_face(theme.song_detail_size * layout.scale),
+                );
+                slot.requested = false;
+            }
+        }
+        if info.pp()
+            && let Some(to) = d.pp
+            && slot.rolled_pp != i32::MIN
+        {
+            let shown = pp_motion.track(key, to);
+            let q = shown.max(0.0).round() as i32;
+            if q != slot.rolled_pp {
+                slot.rolled_pp = q;
+                slot.pp.text.clear();
+                super::push_pp(&mut slot.pp.text, shown, pp_suffix);
+                type_setter.lay_out_face(&mut slot.pp, theme.caption_face(layout.scale));
+                slot.requested = false;
+            }
+        }
     }
 
     /// Writes `row`'s texts into `slot` unless it already holds them.
@@ -628,6 +886,8 @@ impl SongSelectView {
         slot.primary.text.clear();
         slot.secondary.text.clear();
         slot.pp.text.clear();
+        slot.rolled_stars = i32::MIN;
+        slot.rolled_pp = i32::MIN;
         match row {
             Row::Set(_) => {
                 let _ = write!(slot.primary.text, "{} - {}", set_row.artist, set_row.title);
@@ -647,7 +907,12 @@ impl SongSelectView {
                     && let Some(stars) = d.stars
                 {
                     super::push_stars(&mut slot.secondary.text, stars);
-                    type_setter.lay_out(&mut slot.secondary, theme.song_detail_size * layout.scale);
+                    slot.rolled_stars = (stars * 100.0).round() as i32;
+                    // The star pill is Bold in lazer (ADR-0174).
+                    type_setter.lay_out_face(
+                        &mut slot.secondary,
+                        theme.heading_face(theme.song_detail_size * layout.scale),
+                    );
                     avail = (avail
                         - super::info_panel::pill_width(&slot.secondary, theme, layout.scale))
                     .max(0.0);
@@ -657,6 +922,7 @@ impl SongSelectView {
                     && let Some(pp) = d.pp
                 {
                     super::push_pp(&mut slot.pp.text, pp, pp_suffix);
+                    slot.rolled_pp = pp.max(0.0).round() as i32;
                     type_setter.lay_out_face(&mut slot.pp, theme.caption_face(layout.scale));
                     avail = (avail - slot.pp.layout.width() - pad).max(0.0);
                 }
@@ -664,20 +930,29 @@ impl SongSelectView {
         }
         let scale = layout.scale;
         if matches!(row, Row::Set(_)) {
-            fit(
+            // The set's title is Bold (lazer's Heading1, ADR-0174).
+            fit_face(
                 type_setter,
                 &mut slot.primary,
-                theme.song_title_size * scale,
+                theme.heading_face(theme.song_title_size * scale),
                 avail,
                 ellipsis[0],
             );
             // The mapper is a note (lazer: 14 SemiBold); too long, it rides.
             type_setter.lay_out_face(&mut slot.secondary, theme.note_face(scale));
         } else {
-            type_setter.lay_out_face(&mut slot.primary, theme.caption_face(scale));
+            // The difficulty's name is SemiBold (ADR-0174).
+            type_setter.lay_out_face(
+                &mut slot.primary,
+                Face {
+                    weight: theme.semibold_weight,
+                    ..theme.caption_face(scale)
+                },
+            );
         }
         slot.avail = avail;
         slot.marquee.restart(now_ns);
+        slot.requested = false;
         slot.holds = Some((generation, row));
         true
     }
@@ -702,15 +977,17 @@ impl SongSelectView {
         pose: Pose,
         white: AtlasRegion,
         thumbs: Thumbs<'_>,
-    ) -> Option<(u32, u32)> {
+    ) -> Splits {
         let frame = Frame { width, height };
         if frame != self.frame {
             self.frame = frame;
             self.lay_out();
         }
-        if thumbs.enabled != self.thumbs_on {
+        // Only the small thumbnails take room from the texts (ADR-0174).
+        let reserves = thumbs.enabled && !thumbs.full;
+        if reserves != self.thumbs_on {
             // The texts of the set rows are cut to another width.
-            self.thumbs_on = thumbs.enabled;
+            self.thumbs_on = reserves;
             for slot in &mut self.slots {
                 slot.holds = None;
             }
@@ -725,8 +1002,10 @@ impl SongSelectView {
             self.type_setter.lay_out(&mut self.scanning, size);
         }
 
-        self.refresh_selected(&snapshot.mods);
-        self.refresh_search(&snapshot.query);
+        self.refresh_selected(&snapshot.mods, thumbs.now_ns);
+        self.refresh_presets(&snapshot.presets, &snapshot.footer);
+        self.refresh_multipliers(&snapshot.mods);
+        self.refresh_search(&snapshot.query, thumbs.now_ns);
         // The mod select panel's slide (ADR-0152): the backdrop without delay, the last
         // shown column with the most.
         let now = thumbs.now_ns;
@@ -743,6 +1022,29 @@ impl SongSelectView {
             &self.layout,
             [self.ellipsis[0], self.ellipsis[1]],
             snapshot,
+        );
+        // The footer slides in with the screen: from the first frame it shows, or the first
+        // after the screen was away (ADR-0175).
+        let entered = pose.opacity > 0.0
+            && self
+                .last_push
+                .is_none_or(|last| now.saturating_sub(last) > FOOTER_AWAY_NS);
+        if entered {
+            self.footer_since = now;
+        }
+        self.last_push = Some(now);
+        let footer_slide = crate::anim::ease_out_quint(crate::anim::progress(
+            self.footer_since,
+            now,
+            (self.theme.footer_slide_ms.max(0.0) * 1.0e6) as u64,
+        ));
+        let target = self.layout.footer.buttons(snapshot.footer);
+        self.footer_anim.update(
+            now,
+            &target,
+            snapshot.footer_hover,
+            snapshot.footer_pressed,
+            &self.theme,
         );
         let shift = pose.offset * width;
         let opacity = pose.opacity;
@@ -824,35 +1126,81 @@ impl SongSelectView {
                 SongSelectStatus::Loading => Some(&self.loading),
                 SongSelectStatus::Ready => None,
             };
-            if let Some(line) = status_line {
-                left(
-                    line,
-                    lean(
-                        layout.header.x,
-                        layout.header.y + layout.header.height / 2.0,
-                    ),
-                    layout.header.y + layout.header.height / 2.0,
-                    theme.text,
-                );
-            }
-            // The selected difficulty's statistics and local scores, on the left.
+            // The selected difficulty's statistics and local scores, on the left; they give
+            // way to the mod panel, whose multiplier stands over them (ADR-0152).
+            layer.set(1.0 - panel_back);
             self.info.push(
-                layout, theme, snapshot, opacity, now_ns, &mut rect, &mut left,
+                &mut self.type_setter,
+                layout,
+                theme,
+                snapshot,
+                // The wedges' outlines are the looks', not the closure's: they fade with the
+                // panel too, like the fills and texts.
+                opacity * (1.0 - panel_back),
+                now_ns,
+                &mut rect,
+                &mut left,
+                &mut |line, marquee, avail, x, y, colour| ride(line, marquee, avail, x, y, colour),
             );
+            layer.set(1.0);
             // The search line.
             let search = leaned(&layout.search);
-            rect(&search, theme.song_search_fill, Look::Round);
-            let line = if snapshot.query.is_empty() {
-                (&self.search_placeholder, theme.disabled_text)
-            } else {
-                (&self.search, theme.text)
+            // The box runs on to the window's right edge, past its rounded corners, as the
+            // plates do; the text and caret keep to the list's width.
+            let search_box = Rect {
+                width: (layout.window_right - search.x + 2.0 * theme.button_radius * scale)
+                    .max(search.width),
+                ..search
             };
-            left(
-                line.0,
-                search.x + pad,
-                search.y + search.height / 2.0,
-                line.1,
-            );
+            rect(&search_box, theme.song_search_fill, Look::Round);
+            if snapshot.query.is_empty() {
+                // The status line takes the placeholder's place (ADR-0177).
+                let (line, colour) = match status_line {
+                    Some(line) => (line, theme.text),
+                    None => (&self.search_placeholder, theme.disabled_text),
+                };
+                left(line, search.x + pad, search.y + search.height / 2.0, colour);
+            } else {
+                // The newest character slides in; an erase pops the text (ADR-0167).
+                let line = &self.search;
+                let pose = self.search_type.pose(now_ns, theme, scale);
+                let colour = faded(theme.text, opacity * row_alpha.get() * layer.get());
+                let position = [
+                    search.x + pad + shift,
+                    search.y + search.height / 2.0 - line.layout.height() / 2.0,
+                ];
+                let (text, glyphs) = &mut *target.borrow_mut();
+                slam_text::push_layout_styled(
+                    text,
+                    &line.layout,
+                    position,
+                    glyphs,
+                    crate::typing::styler(&line.layout, colour, pose),
+                );
+            }
+            // The caret: at the end of the typed text, at the start of the placeholder.
+            let caret_alpha =
+                self.search_type
+                    .caret_alpha(now_ns, theme, !snapshot.query.is_empty());
+            if caret_alpha > 0.0 {
+                let reach = if snapshot.query.is_empty() {
+                    0.0
+                } else {
+                    self.search.layout.width()
+                };
+                let caret = crate::typing::caret_rect(
+                    search.x + pad + reach,
+                    search.y + search.height / 2.0,
+                    self.search.layout.height(),
+                    theme,
+                    scale,
+                );
+                let colour = Color {
+                    a: theme.caret.a * caret_alpha,
+                    ..theme.caret
+                };
+                rect(&caret, colour, Look::Pill);
+            }
             if list.sets.is_empty() {
                 if snapshot.status == SongSelectStatus::Ready {
                     let y = layout.list.y + theme.song_set_height * scale / 2.0;
@@ -906,15 +1254,26 @@ impl SongSelectView {
                     .track(list, snapshot.selected, thumbs.now_ns, theme);
                 let visible = layout.visible_rows(geometry, snapshot.shown_scroll);
                 let reach = expansion.reach();
+                // A few rows past the view are laid out and their glyphs asked for, so
+                // their texts are ready when they scroll in (and while eased rows are
+                // drawn inside the view whose places are outside it).
+                let reach = reach + PREFILL_ROWS;
                 let rows_to_draw = visible.start.saturating_sub(reach)
                     ..(visible.end + reach).min(snapshot.row_count);
+                // Rows ease to their places, each on its own, as lazer's panels do: a quick
+                // change of selection moves them, never leaves holes (ADR-0172).
+                let ease = self.row_motion.begin(thumbs.now_ns, theme.song_row_ease_ms);
+                let roll_ns = (theme.star_colour_ease_ms.max(0.0) as f64 * 1e6) as u64;
+                self.star_motion.begin(thumbs.now_ns, roll_ns);
+                self.pp_motion.begin(thumbs.now_ns, roll_ns);
+                let mut set_top: Option<(usize, f32)> = None;
                 for index in rows_to_draw {
                     let Some(row) = snapshot.row_at(index) else {
                         continue;
                     };
                     let slot_count = self.slots.len();
                     let slot = &mut self.slots[index % slot_count];
-                    let text_shift = if thumbs.enabled && matches!(row, Row::Set(_)) {
+                    let text_shift = if reserves && matches!(row, Row::Set(_)) {
                         thumb.text_shift
                     } else {
                         0.0
@@ -934,6 +1293,31 @@ impl SongSelectView {
                     ) {
                         continue;
                     }
+                    if let Row::Difficulty { set, difficulty } = row
+                        && let Some(d) = list
+                            .sets
+                            .get(set)
+                            .and_then(|s| s.difficulties.get(difficulty))
+                    {
+                        Self::roll(
+                            slot,
+                            &mut self.type_setter,
+                            (&mut self.star_motion, &mut self.pp_motion),
+                            theme,
+                            layout,
+                            &self.pp_suffix,
+                            d,
+                        );
+                    }
+                    if !slot.requested {
+                        slot.requested = true;
+                        let cache = &mut *target.borrow_mut().1;
+                        for line in [&slot.primary, &slot.secondary, &slot.pp] {
+                            for g in line.layout.glyphs() {
+                                let _ = cache.glyph(GlyphKey::of(g));
+                            }
+                        }
+                    }
                     let (primary_line, secondary_line, pp_line) =
                         (&slot.primary, &slot.secondary, &slot.pp);
                     let (avail, marquee) = (slot.avail, &mut slot.marquee);
@@ -941,20 +1325,39 @@ impl SongSelectView {
                         Row::Set(_) => 0.0,
                         Row::Difficulty { .. } => layout.indent,
                     };
-                    let (shift_rows, alpha) = expansion.offset(row);
+                    // The opening set's difficulties fade in (ADR-0136); where rows are is
+                    // the easing's.
+                    let (_, alpha) = expansion.offset(row);
                     row_alpha.set(alpha);
-                    // The expansion moves rows by whole difficulty rows.
-                    let y = layout.row_y(geometry, index, snapshot.shown_scroll)
-                        + shift_rows * layout.difficulty_pitch * scale;
+                    let target = geometry.top(index);
+                    let (key, start) = match row {
+                        Row::Set(set) => {
+                            (list.sets.get(set).map_or(0, |s| s.key) | SET_KEY_BIT, None)
+                        }
+                        // A difficulty new to the list slides out from under its set.
+                        Row::Difficulty { set, difficulty } => (
+                            list.sets
+                                .get(set)
+                                .and_then(|s| s.difficulties.get(difficulty))
+                                .map_or(0, |d| d.key)
+                                & !SET_KEY_BIT,
+                            set_top.filter(|&(s, _)| s == set).map(|(_, top)| top),
+                        ),
+                    };
+                    let top = self.row_motion.track(key, target, start, ease);
+                    if let Row::Set(set) = row {
+                        set_top = Some((set, top));
+                    }
+                    let y = layout.list.y + (top - snapshot.shown_scroll) * scale;
                     let height = layout.plate_height(geometry, index);
-                    // The list leans along the rows' skew (ADR-0121).
-                    let lean = layout.lean_x(y + height / 2.0);
+                    // The rows sit on an arc (ADR-0172).
+                    let lean = layout.arc_x(y + height / 2.0);
                     // Rows that are not selected start further right (ADR-0149).
                     let moved = slide.of(row) * scale;
                     let area = Rect {
                         x: layout.list.x + indent + moved + lean,
                         y,
-                        width: (layout.list.width - indent - moved).max(0.0),
+                        width: (layout.list.width - indent - moved - lean).max(0.0),
                         height,
                     };
                     // Rows scrolled part-way out are cut at the list's edges, and their texts
@@ -988,8 +1391,17 @@ impl SongSelectView {
                         height: clipped_bottom - clipped_top,
                         ..area
                     };
-                    let (set_index, stars) = match row {
-                        Row::Set(set) => (set, None),
+                    let (set_index, raw_stars) = match row {
+                        Row::Set(set) => (
+                            set,
+                            // A set takes the colour of its hardest difficulty (ADR-0136).
+                            list.sets.get(set).and_then(|s| {
+                                s.difficulties
+                                    .iter()
+                                    .filter_map(|d| d.stars)
+                                    .reduce(f32::max)
+                            }),
+                        ),
                         Row::Difficulty { set, difficulty } => (
                             set,
                             list.sets
@@ -998,8 +1410,23 @@ impl SongSelectView {
                                 .and_then(|d| d.stars),
                         ),
                     };
+                    // The rating's colour eases to a new rating, as the info panel's does.
+                    let eased = raw_stars.map(|to| self.star_motion.track(key, to));
+                    let stars = match row {
+                        Row::Set(_) => None,
+                        Row::Difficulty { .. } => eased,
+                    };
                     let seed = index as f32 * 0.29;
                     let look = match row {
+                        // The selected difficulty glows with the beat (ADR-0167).
+                        Row::Difficulty { .. } if selected && snapshot.beat.is_some() => {
+                            Look::BeatButton {
+                                seed,
+                                fade: opacity * alpha,
+                                tint: crate::star_colour::glow_for(stars, theme.accent),
+                                beat: snapshot.beat.unwrap_or(0.0),
+                            }
+                        }
                         // A difficulty glows and is outlined in its star colour (ADR-0131).
                         Row::Difficulty { .. } => Look::TintedButton {
                             highlighted: selected,
@@ -1008,24 +1435,53 @@ impl SongSelectView {
                             tint: crate::star_colour::glow_for(stars, theme.accent),
                         },
                         // A set in the colour of its hardest difficulty (ADR-0136).
-                        Row::Set(set) => Look::TintedButton {
+                        Row::Set(_) => Look::TintedButton {
                             highlighted: selected,
                             seed,
                             fade: opacity * alpha,
-                            tint: crate::star_colour::glow_for(
-                                list.sets.get(set).and_then(|s| {
-                                    s.difficulties
-                                        .iter()
-                                        .filter_map(|d| d.stars)
-                                        .reduce(f32::max)
-                                }),
-                                theme.accent,
-                            ),
+                            tint: crate::star_colour::glow_for(eased, theme.accent),
                         },
                     };
-                    rect(&clipped, fill, look);
+                    // The plate runs on past the window's right edge, as lazer's; the
+                    // texts keep to the list.
+                    let plate = Rect {
+                        width: (layout.window_right - clipped.x
+                            + 2.0 * theme.button_radius * scale)
+                            .max(clipped.width),
+                        ..clipped
+                    };
+                    rect(&plate, fill, look);
                     let x = area.x + pad + text_shift;
                     if thumbs.enabled
+                        && thumbs.full
+                        && matches!(row, Row::Set(_))
+                        && let Some(image) = index
+                            .checked_sub(snapshot.first_row)
+                            .and_then(|i| thumbs.rows.get(i))
+                            .copied()
+                            .flatten()
+                    {
+                        // The set's background over the whole plate, fading in (ADR-0174).
+                        let alpha = fade_alpha(
+                            &mut self.fades,
+                            &mut self.fade_next,
+                            image.handle,
+                            thumbs.now_ns,
+                            theme.song_plate_fade_ms,
+                        );
+                        thumb_shapes[thumb_count] = Some(plate_shape(
+                            image.region,
+                            &plate,
+                            area.y,
+                            area.height,
+                            shift,
+                            ease_out_quint(alpha) * opacity,
+                            theme,
+                            scale,
+                        ));
+                        thumb_count += 1;
+                    } else if thumbs.enabled
+                        && !thumbs.full
                         && matches!(row, Row::Set(_))
                         && let Some((top, bottom)) = thumb.span(&area, top_edge, bottom_edge)
                     {
@@ -1057,9 +1513,16 @@ impl SongSelectView {
                                 thumbs.now_ns,
                                 theme.song_thumbnail_fade_ms,
                             );
+                            // Upright in the leaning plate (ADR-0167): the image spans the
+                            // plate's bounding box, so it keeps its aspect by losing as much
+                            // of its height.
                             let uv = image.region.uv;
-                            let dv = uv.v1 - uv.v0;
-                            let cut = |at: f32| uv.v0 + (at - full_top) / thumb.height * dv;
+                            let lean = (theme.button_skew().tan() * thumb.height).abs();
+                            let kept = thumb.width / (thumb.width + lean);
+                            let middle = (uv.v0 + uv.v1) / 2.0;
+                            let dv = (uv.v1 - uv.v0) * kept;
+                            let v0 = middle - dv / 2.0;
+                            let cut = |at: f32| v0 + (at - full_top) / thumb.height * dv;
                             thumb_shapes[thumb_count] = Some(Shape {
                                 colour: faded(Color::rgb(1.0, 1.0, 1.0), alpha * opacity),
                                 texture: image.region.texture,
@@ -1068,6 +1531,7 @@ impl SongSelectView {
                                     v1: cut(bottom),
                                     ..uv
                                 },
+                                upright: true,
                                 ..base
                             });
                             thumb_count += 1;
@@ -1184,33 +1648,143 @@ impl SongSelectView {
                     };
                     shape_target.borrow_mut().push_shape(&shape);
                 }
+                // The scrollbar over the plates, which run past the window's edge
+                // (ADR-0174); it follows the rows in the mod panel's fade.
+                let mut bar = super::scrollbar_of(geometry, layout);
+                bar.track.x += shift;
+                self.bar_look.push_carousel(
+                    &mut shape_target.borrow_mut(),
+                    white,
+                    &bar,
+                    snapshot.shown_scroll,
+                    snapshot.text.pointer,
+                    snapshot.scrollbar_held,
+                    opacity * layer.get(),
+                    theme,
+                    scale,
+                    now_ns,
+                );
             }
-            // The hint line gives way to the mod panel's own (ADR-0152).
-            layer.set(1.0 - panel_back);
-            // The refused play's reason stands out from the hints it replaces.
-            let (hint, colour) = if snapshot.no_audio {
-                (&self.no_audio, theme.text)
-            } else {
-                (&self.hint, theme.song_hint_text)
-            };
-            left(
-                hint,
-                lean(layout.hint.x, layout.hint.y + layout.hint.height / 2.0),
-                layout.hint.y + layout.hint.height / 2.0,
-                colour,
+            layer.set(1.0);
+            // The refused play's reason, above the footer, on a backing of its own.
+            if snapshot.no_audio {
+                let hint = layout.hint;
+                rect(&hint, theme.song_search_fill, Look::Round);
+                let line = &self.no_audio;
+                left(line, hint.x + pad, hint.y + hint.height / 2.0, theme.text);
+            }
+            // The footer bar slides up from below with the screen (ADR-0175).
+            let bar = layout.footer.bar;
+            let up = (1.0 - footer_slide) * bar.height;
+            rect(
+                &Rect {
+                    y: bar.y + up,
+                    ..bar
+                },
+                theme.footer_fill,
+                Look::Plain,
             );
-            // The selection, left of the list panel.
-            if snapshot.mods.active != [0; MAX_COLUMNS] {
-                let margin = theme.song_margin * layout.scale;
+            let anim = &self.footer_anim;
+            let buttons = layout.footer.animated(anim.presence());
+            let presence = anim.presence();
+            let flash = anim.mods_flash(now, theme);
+            let mix = |a: Color, b: Color, t: f32| Color {
+                r: a.r + (b.r - a.r) * t,
+                g: a.g + (b.g - a.g) * t,
+                b: a.b + (b.b - a.b) * t,
+                a: a.a + (b.a - a.a) * t,
+            };
+            // `open` is how far the button's place is open (its fade); `selected` keeps a
+            // preset lit while the current mods are it.
+            let draw_button =
+                |rect_of: Rect, button: FooterButton, seed: f32, open: f32, lit: bool| {
+                    let hot = anim.hover(button);
+                    let press = anim.press(button);
+                    let mut fill = mix(theme.button_fill, theme.button_hover_fill, hot.max(press));
+                    if button == FooterButton::Mods {
+                        fill = mix(fill, theme.accent, flash * theme.footer_flash_mix);
+                    }
+                    // Pressed in, the button pops a little larger, as lazer's does.
+                    let grow = press * theme.footer_pop;
+                    let area = Rect {
+                        x: rect_of.x - rect_of.width * grow / 2.0,
+                        y: rect_of.y + up - rect_of.height * grow / 2.0,
+                        width: rect_of.width * (1.0 + grow),
+                        height: rect_of.height * (1.0 + grow),
+                    };
+                    let on =
+                        lit || press > 0.5 || (button == FooterButton::Mods && snapshot.mods.open);
+                    rect(
+                        &area,
+                        fill,
+                        Look::Button {
+                            highlighted: on,
+                            seed,
+                            fade: opacity * open,
+                        },
+                    );
+                };
+            let centred_label = |line: &Line, area: &Rect| {
+                (
+                    area.x + (area.width - line.layout.width()) / 2.0,
+                    area.y + area.height / 2.0 + up,
+                )
+            };
+            draw_button(buttons.back, FooterButton::Back, 0.1, 1.0, false);
+            let (x, y) = centred_label(&self.footer_back, &buttons.back);
+            left(&self.footer_back, x, y, theme.text);
+            draw_button(buttons.mods, FooterButton::Mods, 0.2, 1.0, false);
+            let selected = snapshot.mods.active != [0; MAX_COLUMNS];
+            let inset = buttons.mods.height * theme.button_skew().tan() / 2.0 + pad;
+            // The new selection's text fades in as the button flashes.
+            let text_in = 1.0 - flash;
+            if selected {
+                left(
+                    &self.mods_title,
+                    buttons.mods.x + inset,
+                    buttons.mods.y + up + buttons.mods.height * 0.3,
+                    theme.text,
+                );
                 left(
                     &self.mods_selected,
-                    margin,
-                    layout.hint.y + layout.hint.height / 2.0,
+                    buttons.mods.x + inset,
+                    buttons.mods.y + up + buttons.mods.height * 0.71,
+                    faded(tone_colour(theme, snapshot.mods.total_multiplier), text_in),
+                );
+            } else {
+                left(
+                    &self.mods_title,
+                    buttons.mods.x + inset,
+                    buttons.mods.y + up + buttons.mods.height / 2.0,
                     theme.text,
                 );
             }
+            for i in 0..buttons.preset_count.min(self.presets.len()) {
+                let open = presence.presets[i];
+                let lit = snapshot.current_preset == Some(i);
+                draw_button(
+                    buttons.presets[i],
+                    FooterButton::Preset(i),
+                    0.3 + i as f32 * 0.07,
+                    open,
+                    lit,
+                );
+                let (x, y) = centred_label(&self.presets[i], &buttons.presets[i]);
+                left(&self.presets[i], x, y, faded(theme.text, open));
+            }
+            if let Some(area) = buttons.pin {
+                draw_button(area, FooterButton::Pin, 0.7, presence.pin, false);
+                let (x, y) = centred_label(&self.footer_pin, &area);
+                left(&self.footer_pin, x, y, faded(theme.text, presence.pin));
+            }
+            if let Some(area) = buttons.reset {
+                draw_button(area, FooterButton::Reset, 0.8, presence.reset, false);
+                let (x, y) = centred_label(&self.footer_reset, &area);
+                left(&self.footer_reset, x, y, faded(theme.text, presence.reset));
+            }
         }
         let panel = panel_back > 0.0 || panel_columns;
+        let mut popup_split = None;
         let split = panel.then(|| {
             (
                 shape_target.borrow().len() as u32,
@@ -1220,11 +1794,12 @@ impl SongSelectView {
         if panel {
             // The backdrop, title, hint and settings fade; the columns slide (ADR-0152).
             layer.set(panel_back);
+            // Down to the footer, which stays in reach (ADR-0175).
             let full = Rect {
                 x: 0.0,
                 y: 0.0,
                 width,
-                height,
+                height: layout.footer.bar.y,
             };
             rect(&full, theme.mod_backdrop_fill, Look::Plain);
             let panel = &layout.mods;
@@ -1238,6 +1813,13 @@ impl SongSelectView {
             left(&self.mods_title, x, y, theme.text);
             let (x, y) = centred(&self.mods_hint, &panel.hint);
             left(&self.mods_hint, x, y, theme.disabled_text);
+            // The selection's score multiplier at the left of the title's row.
+            left(
+                &self.mods_multiplier,
+                panel.title.x,
+                panel.title.y + panel.title.height / 2.0,
+                tone_colour(theme, snapshot.mods.total_multiplier),
+            );
             let custom = &snapshot.mods.customise;
             let expanded = custom.state != CustomisationState::Collapsed;
             let dim = if expanded { DIMMED } else { 1.0 };
@@ -1246,7 +1828,9 @@ impl SongSelectView {
                 if !panel.is_shown(column) {
                     continue;
                 }
-                // Each column after the first a little later, from below (ADR-0152).
+                // Each column after the first a little later, from below and above in turn
+                // (ADR-0152, ADR-0167).
+                let direction = slide_direction(slot);
                 let delay = slot as f32 * theme.mod_column_stagger_ms;
                 slot += 1;
                 let shown = self.mods_slide.visibility(now_ns, delay, theme);
@@ -1254,7 +1838,7 @@ impl SongSelectView {
                     continue;
                 }
                 layer.set(shown);
-                let dy = (1.0 - shown) * theme.mod_panel_distance * scale;
+                let dy = direction * (1.0 - shown) * theme.mod_panel_distance * scale;
                 let down = |r: Rect| Rect { y: r.y + dy, ..r };
                 // Each column in the colour of its mod type (ADR-0136): a plate with a
                 // header in that colour, as lazer's `ModColumn`.
@@ -1315,6 +1899,27 @@ impl SongSelectView {
                     } else {
                         left(line, x, y, faded(tint, dim));
                     }
+                    if let Some(line) = self.tile_multipliers.get(column).and_then(|c| c.get(index))
+                    {
+                        let value = snapshot.mods.multipliers[column][index];
+                        let ink = if on {
+                            Color {
+                                a: 1.0,
+                                ..theme.background
+                            }
+                        } else {
+                            tone_colour(theme, value)
+                        };
+                        left(
+                            line,
+                            area.x + area.width
+                                - theme.widget_pad * scale
+                                - line.layout.width()
+                                - mod_text_gap(theme, area.height, scale) * 0.5,
+                            area.y + area.height / 2.0,
+                            faded(ink, dim),
+                        );
+                    }
                     if let Some((name, desc)) = self
                         .mod_names
                         .get(column)
@@ -1348,26 +1953,39 @@ impl SongSelectView {
                 }
             }
             layer.set(panel_back);
-            // The settings panel: its header, and the rows while expanded.
-            let cl = &panel.customise;
-            let enabled = custom.is_enabled();
-            let header_fill = if custom.header_hover || expanded {
-                theme.button_hover_fill
-            } else {
-                theme.button_fill
-            };
-            let active = if enabled { 1.0 } else { DIMMED };
-            rect(&cl.header, faded(header_fill, active), Look::Round);
-            left(
-                &self.customise_title,
-                cl.header.x + cl.pad,
-                cl.header.y + cl.header.height / 2.0,
-                faded(theme.text, active),
-            );
+            // The floating settings panel (ADR-0177) is a layer of its own, so that the
+            // columns' texts do not show through its plate.
+            let cl = &panel.customise.at(custom.origin, custom.len);
             if expanded {
+                popup_split = Some((
+                    shape_target.borrow().len() as u32,
+                    target.borrow().0.len() as u32,
+                ));
+                rect(
+                    &cl.header,
+                    Color {
+                        a: 1.0,
+                        ..if custom.moving {
+                            theme.button_fill
+                        } else {
+                            theme.button_hover_fill
+                        }
+                    },
+                    Look::Round,
+                );
+                left(
+                    &self.customise_title,
+                    cl.header.x + cl.pad,
+                    cl.header.y + cl.header.height / 2.0,
+                    theme.text,
+                );
                 rect(
                     &cl.content(custom.len),
-                    theme.widget_popup_fill,
+                    // Opaque: the columns' plates and tiles must not show through.
+                    Color {
+                        a: 1.0,
+                        ..theme.widget_popup_fill
+                    },
                     Look::Panel,
                 );
                 let text_of = |key: &str| {
@@ -1509,15 +2127,19 @@ impl SongSelectView {
                 }
             }
         }
-        split
+        Splits {
+            panel: split,
+            popup: popup_split,
+        }
     }
 
     /// Lays the query out unless it already shows it.
-    fn refresh_search(&mut self, query: &SearchQuery) {
+    fn refresh_search(&mut self, query: &SearchQuery, now_ns: u64) {
         if self.search_for == Some(*query) {
             return;
         }
         self.search_for = Some(*query);
+        self.search_type.observe(query.as_str(), now_ns);
         let scale = self.layout.scale;
         let pad = self.theme.song_text_pad * scale;
         self.search.text.clear();
@@ -1531,34 +2153,130 @@ impl SongSelectView {
         );
     }
 
-    /// Writes "Mods: HD DT 1.05x" for the active tiles and their details unless it already
-    /// shows them.
-    fn refresh_selected(&mut self, mods: &ModSelectSnapshot) {
-        let key = (mods.active, mods.details);
+    /// Writes the tiles' multipliers and the selection's unless they already show them.
+    fn refresh_multipliers(&mut self, mods: &ModSelectSnapshot) {
+        let key = (mods.multipliers, mods.total_multiplier);
+        if self.multipliers_for == Some(key) {
+            return;
+        }
+        self.multipliers_for = Some(key);
+        let scale = self.layout.scale;
+        let face = enlarged(self.theme.note_face(scale), self.theme.mod_tile_text_scale);
+        for (lines, values) in self.tile_multipliers.iter_mut().zip(&mods.multipliers) {
+            for (line, &value) in lines.iter_mut().zip(values) {
+                line.text.clear();
+                push_multiplier(&mut line.text, value);
+                self.type_setter.lay_out_face(line, face);
+            }
+        }
+        let line = &mut self.mods_multiplier;
+        line.text.clear();
+        line.text.push_str(&self.mods_multiplier_label);
+        line.text.push(' ');
+        push_multiplier(&mut line.text, mods.total_multiplier);
+        self.type_setter
+            .lay_out(line, self.theme.song_status_size * scale);
+    }
+
+    /// Writes "HD DT1.05x  1.12x" for the active tiles, their details and the multiplier of
+    /// the selection (the footer's Mods button) unless it already shows them.
+    fn refresh_selected(&mut self, mods: &ModSelectSnapshot, now_ns: u64) {
+        let key = (mods.active, mods.details, mods.total_multiplier.to_bits());
         if self.mods_selected_for == Some(key) {
             return;
+        }
+        // The Mods button flashes when the selection changes, not when it first shows.
+        if self.mods_selected_for.is_some() {
+            self.footer_anim.flash_mods(now_ns, &self.theme);
         }
         self.mods_selected_for = Some(key);
         let line = &mut self.mods_selected;
         line.text.clear();
-        line.text.push_str(&self.mods_title.text);
-        line.text.push(':');
         for (column, acronyms) in self.mod_columns.iter().enumerate() {
             for (index, acronym) in acronyms.iter().enumerate() {
                 if mods.active[column] >> index & 1 != 0 {
-                    line.text.push(' ');
+                    if !line.text.is_empty() {
+                        line.text.push(' ');
+                    }
                     line.text.push_str(acronym);
                     push_detail(&mut line.text, mods.details[column][index]);
                 }
             }
         }
+        if !line.text.is_empty() {
+            line.text.push_str("  ");
+            push_multiplier(&mut line.text, mods.total_multiplier);
+        }
         let size = self.theme.song_detail_size * self.layout.scale;
-        self.type_setter.lay_out(line, size);
+        let room = self.layout.footer.buttons(Default::default()).mods.width
+            - 2.0 * self.theme.widget_pad * self.layout.scale
+            - self.layout.footer.bar.height * 0.3;
+        fit_tail(
+            &mut self.type_setter,
+            line,
+            size,
+            room.max(0.0),
+            self.ellipsis[1],
+        );
+    }
+
+    /// Lays the pinned presets' labels out for the footer's buttons unless they show them.
+    fn refresh_presets(&mut self, presets: &[Arc<str>], footer: &FooterState) {
+        let count = footer.presets.min(presets.len()).min(self.presets.len());
+        let same = count == self.preset_count
+            && self.presets[..count]
+                .iter()
+                .zip(presets)
+                .all(|(line, label)| line.text == **label);
+        if same {
+            return;
+        }
+        self.preset_count = count;
+        let size = self.theme.song_detail_size * self.layout.scale;
+        let room = self.theme.footer_preset_width * self.layout.scale
+            - 2.0 * self.theme.widget_pad * self.layout.scale;
+        for (line, label) in self.presets.iter_mut().zip(presets).take(count) {
+            line.text.clear();
+            line.text.push_str(label);
+            fit_tail(
+                &mut self.type_setter,
+                line,
+                size,
+                room.max(0.0),
+                self.ellipsis[1],
+            );
+        }
     }
 }
 
 /// The room between a mod tile's switch and its texts: the switch leans with the tile, so its
 /// top corner reaches right by half its height times the skew; then a little padding.
+/// How many ems of the note face a tile's multiplier ("1.00x" and its padding) is given.
+const MULTIPLIER_ROOM_EMS: f32 = 3.6;
+
+/// `face` made `by` times larger.
+fn enlarged(face: crate::menu::view::Face, by: f32) -> crate::menu::view::Face {
+    crate::menu::view::Face {
+        size: face.size * by,
+        ..face
+    }
+}
+
+/// Which way the column in `slot` (among the shown ones) slides in from: below for the first,
+/// above for the second, and so on (ADR-0167).
+fn slide_direction(slot: usize) -> f32 {
+    if slot.is_multiple_of(2) { 1.0 } else { -1.0 }
+}
+
+/// The colour of a multiplier's text.
+fn tone_colour(theme: &Theme, multiplier: f64) -> Color {
+    match MultiplierTone::of(multiplier) {
+        MultiplierTone::Up => theme.mod_multiplier_up,
+        MultiplierTone::Down => theme.mod_multiplier_down,
+        MultiplierTone::Neutral => theme.text,
+    }
+}
+
 fn mod_text_gap(theme: &Theme, tile_height: f32, scale: f32) -> f32 {
     theme.button_skew().tan() * tile_height / 2.0 + theme.widget_pad * scale * 0.5
 }
@@ -1667,6 +2385,155 @@ impl PanelSlide {
     }
 }
 
+/// Rows past the view's ends that are laid out ahead (ADR-0172).
+const PREFILL_ROWS: usize = 3;
+
+/// Marks a set row's key in [`RowMotion`], apart from its difficulties'.
+const SET_KEY_BIT: u64 = 1 << 63;
+/// Rows [`RowMotion`] follows at once.
+const MOTION_ROWS: usize = 4 * MAX_VISIBLE_ROWS;
+
+/// Where the rows shown are drawn, by key, in the list's reference pixels: each eases to its
+/// place (lazer's `DampContinuously` of a panel's `DrawYPosition`, ADR-0172). Rows not drawn
+/// for a frame are forgotten. Allocation-free.
+#[derive(Clone, Debug)]
+struct RowMotion {
+    keys: [u64; MOTION_ROWS],
+    tops: [f32; MOTION_ROWS],
+    /// The frame each row was last drawn in; 0: free.
+    seen: [u32; MOTION_ROWS],
+    frame: u32,
+    last_ns: u64,
+}
+
+impl Default for RowMotion {
+    fn default() -> Self {
+        RowMotion {
+            keys: [0; MOTION_ROWS],
+            tops: [0.0; MOTION_ROWS],
+            seen: [0; MOTION_ROWS],
+            frame: 0,
+            last_ns: 0,
+        }
+    }
+}
+
+impl RowMotion {
+    /// Starts a frame at `now_ns`; the part of the way left each row goes this frame, with
+    /// `half_ms` the time it takes to halve it.
+    // Ported from osu!lazer 2026.1005.0-lazer: osu.Game/Graphics/Carousel/Carousel.cs (Update: DampContinuously)
+    fn begin(&mut self, now_ns: u64, half_ms: f32) -> f32 {
+        let elapsed_ms = now_ns.saturating_sub(self.last_ns) as f64 / 1e6;
+        let first = self.last_ns == 0;
+        self.last_ns = now_ns;
+        self.frame = self.frame.wrapping_add(1).max(2);
+        if first || half_ms <= 0.0 {
+            return 1.0;
+        }
+        (1.0 - 0.5f64.powf(elapsed_ms / f64::from(half_ms))) as f32
+    }
+
+    /// Where row `key` is drawn this frame, going to `target`; a row not drawn last frame
+    /// starts at `start` (or at its place).
+    fn track(&mut self, key: u64, target: f32, start: Option<f32>, ease: f32) -> f32 {
+        let last = self.frame.wrapping_sub(1);
+        if let Some(i) = (0..MOTION_ROWS)
+            .find(|&i| self.keys[i] == key && (self.seen[i] == last || self.seen[i] == self.frame))
+        {
+            if self.seen[i] != self.frame {
+                self.tops[i] += (target - self.tops[i]) * ease;
+                self.seen[i] = self.frame;
+            }
+            return self.tops[i];
+        }
+        let top = start.unwrap_or(target);
+        // A slot no row of this frame or the last holds.
+        if let Some(i) =
+            (0..MOTION_ROWS).find(|&i| self.seen[i] != last && self.seen[i] != self.frame)
+        {
+            self.keys[i] = key;
+            self.tops[i] = top;
+            self.seen[i] = self.frame;
+        }
+        top
+    }
+}
+
+/// The rating each row's colour shows, by key: it eases to a new rating over a set time (the
+/// info panel's 750 ms OutQuint) instead of jumping when mods or new values change it. A row
+/// seen for the first time shows its rating at once. Allocation-free.
+#[derive(Clone, Debug)]
+struct StarMotion {
+    keys: [u64; MOTION_ROWS],
+    from: [f32; MOTION_ROWS],
+    to: [f32; MOTION_ROWS],
+    since_ns: [u64; MOTION_ROWS],
+    seen: [u32; MOTION_ROWS],
+    frame: u32,
+    now_ns: u64,
+    duration_ns: u64,
+}
+
+impl Default for StarMotion {
+    fn default() -> Self {
+        StarMotion {
+            keys: [0; MOTION_ROWS],
+            from: [0.0; MOTION_ROWS],
+            to: [0.0; MOTION_ROWS],
+            since_ns: [0; MOTION_ROWS],
+            seen: [0; MOTION_ROWS],
+            frame: 0,
+            now_ns: 0,
+            duration_ns: 0,
+        }
+    }
+}
+
+impl StarMotion {
+    /// Starts a frame at `now_ns`; ratings ease over `duration_ns`.
+    fn begin(&mut self, now_ns: u64, duration_ns: u64) {
+        self.frame = self.frame.wrapping_add(1).max(2);
+        self.now_ns = now_ns;
+        self.duration_ns = duration_ns;
+    }
+
+    fn value(&self, i: usize) -> f32 {
+        let t = if self.duration_ns == 0 {
+            1.0
+        } else {
+            (self.now_ns.saturating_sub(self.since_ns[i]) as f64 / self.duration_ns as f64)
+                .clamp(0.0, 1.0) as f32
+        };
+        self.from[i] + (self.to[i] - self.from[i]) * ease_out_quint(t)
+    }
+
+    /// The rating row `key` shows this frame, going to `to`.
+    fn track(&mut self, key: u64, to: f32) -> f32 {
+        let last = self.frame.wrapping_sub(1);
+        if let Some(i) = (0..MOTION_ROWS)
+            .find(|&i| self.keys[i] == key && (self.seen[i] == last || self.seen[i] == self.frame))
+        {
+            if (self.to[i] - to).abs() > f32::EPSILON {
+                self.from[i] = self.value(i);
+                self.to[i] = to;
+                self.since_ns[i] = self.now_ns;
+            }
+            self.seen[i] = self.frame;
+            return self.value(i);
+        }
+        if let Some(i) =
+            (0..MOTION_ROWS).find(|&i| self.seen[i] != last && self.seen[i] != self.frame)
+        {
+            self.keys[i] = key;
+            self.from[i] = to;
+            self.to[i] = to;
+            self.since_ns[i] = self.now_ns;
+            self.seen[i] = self.frame;
+        }
+        to
+    }
+}
+
 /// The expanded set and when it changed, so its difficulties slide out from under its row
 /// and the rows below follow, while the set that closed slides shut (ADR-0136).
 #[derive(Clone, Copy, Debug, Default)]
@@ -1675,8 +2542,22 @@ struct Expansion {
     key: Option<u64>,
     /// When it last changed; 0 before any change.
     start_ns: u64,
-    /// Key and difficulty count of the set that closed then.
-    closed: Option<(u64, usize)>,
+    /// Sets still closing, newest first: a quick change closes a half-open set from where
+    /// it is, and the ones closing before go on (ADR-0167).
+    closing: [Option<Closing>; CLOSING],
+}
+
+/// Sets closing at once at most; an older one is shut at once.
+const CLOSING: usize = 4;
+
+/// A set closing: its key, difficulty count, how far open it was when it began to close
+/// (0 to 1) and when that was.
+#[derive(Clone, Copy, Debug)]
+struct Closing {
+    key: u64,
+    count: usize,
+    from: f32,
+    start_ns: u64,
 }
 
 /// One frame of an [`Expansion`]: where the opening and the closing sets are in the list.
@@ -1686,8 +2567,8 @@ struct ExpansionFrame {
     t: f32,
     /// The opening set's index and difficulty count.
     open: Option<(usize, usize)>,
-    /// The closing set's index and difficulty count.
-    closed: Option<(usize, usize)>,
+    /// The closing sets' indices, difficulty counts and how open they still are, 0 to 1.
+    closed: [Option<(usize, usize, f32)>; CLOSING],
 }
 
 impl Expansion {
@@ -1702,44 +2583,59 @@ impl Expansion {
     ) -> ExpansionFrame {
         let open = selected.and_then(|(set, _)| Some((set, list.sets.get(set)?)));
         let key = open.map(|(_, s)| s.key);
+        let duration = (theme.song_expand_ms.max(0.0) * 1e6) as u64;
+        let eased = |start: u64| {
+            if start == 0 {
+                1.0
+            } else {
+                ease_out_quint(progress(start, now_ns, duration))
+            }
+        };
         if key != self.key {
             let closed = self.key.and_then(|old| {
                 let count = list.sets.iter().find(|s| s.key == old)?.difficulties.len();
-                Some((old, count))
+                Some(Closing {
+                    key: old,
+                    count,
+                    from: eased(self.start_ns),
+                    start_ns: now_ns.max(1),
+                })
             });
+            self.closing.rotate_right(1);
+            self.closing[0] = closed;
             // The first selection opens at once.
-            let start_ns = if self.key.is_some() { now_ns.max(1) } else { 0 };
-            *self = Expansion {
-                key,
-                start_ns,
-                closed,
-            };
+            self.start_ns = if self.key.is_some() { now_ns.max(1) } else { 0 };
+            self.key = key;
         }
-        let duration = (theme.song_expand_ms.max(0.0) * 1e6) as u64;
-        let t = if self.start_ns == 0 {
-            1.0
-        } else {
-            ease_out_quint(progress(self.start_ns, now_ns, duration))
-        };
-        if t >= 1.0 {
+        // Shut ones are forgotten.
+        for slot in &mut self.closing {
+            if slot.is_some_and(|c| eased(c.start_ns) >= 1.0) {
+                *slot = None;
+            }
+        }
+        let t = eased(self.start_ns);
+        if t >= 1.0 && self.closing.iter().all(Option::is_none) {
             // Settled: nothing moves, and the list is not searched.
             return ExpansionFrame {
-                t,
+                t: 1.0,
                 open: None,
-                closed: None,
+                closed: [None; CLOSING],
             };
         }
-        let closed = self.closed.and_then(|(old, count)| {
-            let index = list.sets.iter().position(|s| s.key == old)?;
-            Some((index, count))
-        });
         // No further than the snapshot carries rows past the window, so nothing slides in
         // from where there is no row to draw.
         let cap = |count: usize| count.min(super::ROW_PAD);
+        let closed = self.closing.map(|slot| {
+            let c = slot?;
+            let index = list.sets.iter().position(|s| s.key == c.key)?;
+            Some((index, cap(c.count), c.from * (1.0 - eased(c.start_ns))))
+        });
         ExpansionFrame {
             t,
-            open: open.map(|(index, s)| (index, cap(s.difficulties.len()))),
-            closed: closed.map(|(index, count)| (index, cap(count))),
+            open: open
+                .filter(|_| t < 1.0)
+                .map(|(index, s)| (index, cap(s.difficulties.len()))),
+            closed,
         }
     }
 }
@@ -1756,6 +2652,9 @@ struct Shift {
     /// When the set and the difficulty last changed; 0 before any change (no slide).
     set_start_ns: u64,
     difficulty_start_ns: u64,
+    /// How far the old set and difficulty had slid in when they were left, 0 to 1.
+    old_set_from: f32,
+    old_difficulty_from: f32,
 }
 
 /// One frame of a [`Shift`]: the selection by index and the slides' progress.
@@ -1767,6 +2666,8 @@ struct ShiftFrame {
     old_difficulty: Option<(usize, usize)>,
     set_t: f32,
     difficulty_t: f32,
+    old_set_from: f32,
+    old_difficulty_from: f32,
     set_shift: f32,
     difficulty_shift: f32,
 }
@@ -1781,21 +2682,6 @@ impl Shift {
     ) -> ShiftFrame {
         let set_key = selected.and_then(|(set, _)| Some(list.sets.get(set)?.key));
         let difficulty = selected.zip(set_key).map(|((_, d), key)| (key, d));
-        // The first selection is there at once.
-        if set_key != self.set {
-            self.old_set = self.set;
-            self.set_start_ns = if self.set.is_some() { now_ns.max(1) } else { 0 };
-            self.set = set_key;
-        }
-        if difficulty != self.difficulty {
-            self.old_difficulty = self.difficulty;
-            self.difficulty_start_ns = if self.difficulty.is_some() {
-                now_ns.max(1)
-            } else {
-                0
-            };
-            self.difficulty = difficulty;
-        }
         let duration = (theme.song_shift_ms.max(0.0) * 1e6) as u64;
         let t = |start: u64| {
             if start == 0 {
@@ -1804,6 +2690,24 @@ impl Shift {
                 ease_out_quint(progress(start, now_ns, duration))
             }
         };
+        // The first selection is there at once. One left before its slide ended slides
+        // back from where it got to (ADR-0167).
+        if set_key != self.set {
+            self.old_set = self.set;
+            self.old_set_from = t(self.set_start_ns);
+            self.set_start_ns = if self.set.is_some() { now_ns.max(1) } else { 0 };
+            self.set = set_key;
+        }
+        if difficulty != self.difficulty {
+            self.old_difficulty = self.difficulty;
+            self.old_difficulty_from = t(self.difficulty_start_ns);
+            self.difficulty_start_ns = if self.difficulty.is_some() {
+                now_ns.max(1)
+            } else {
+                0
+            };
+            self.difficulty = difficulty;
+        }
         let (set_t, difficulty_t) = (t(self.set_start_ns), t(self.difficulty_start_ns));
         let index = |key: u64| list.sets.iter().position(|s| s.key == key);
         // Only while a slide runs is the list searched for the old keys.
@@ -1819,6 +2723,8 @@ impl Shift {
             old_difficulty,
             set_t,
             difficulty_t,
+            old_set_from: self.old_set_from,
+            old_difficulty_from: self.old_difficulty_from,
             set_shift: theme.song_set_shift,
             difficulty_shift: theme.song_difficulty_shift,
         }
@@ -1834,7 +2740,7 @@ impl ShiftFrame {
                 if self.set == Some(set) {
                     full * (1.0 - self.set_t)
                 } else if self.old_set == Some(set) {
-                    full * self.set_t
+                    full * (1.0 - self.old_set_from * (1.0 - self.set_t))
                 } else {
                     full
                 }
@@ -1844,7 +2750,7 @@ impl ShiftFrame {
                 if self.difficulty == Some((set, difficulty)) {
                     full * (1.0 - self.difficulty_t)
                 } else if self.old_difficulty == Some((set, difficulty)) {
-                    full * self.difficulty_t
+                    full * (1.0 - self.old_difficulty_from * (1.0 - self.difficulty_t))
                 } else {
                     full
                 }
@@ -1856,23 +2762,17 @@ impl ShiftFrame {
 impl ExpansionFrame {
     /// Rows the list may move by: drawn past the window's ends meanwhile.
     fn reach(&self) -> usize {
-        if self.t >= 1.0 {
-            return 0;
-        }
-        self.open.map_or(0, |o| o.1) + self.closed.map_or(0, |c| c.1)
+        self.open.map_or(0, |o| o.1) + self.closed.iter().flatten().map(|c| c.1).sum::<usize>()
     }
 
     /// Rows `row` is moved down by (negative: up), and its opacity.
     fn offset(&self, row: Row) -> (f32, f32) {
-        let left = 1.0 - self.t;
-        if left <= 0.0 {
-            return (0.0, 1.0);
-        }
         let set = match row {
             Row::Set(set) | Row::Difficulty { set, .. } => set,
         };
         let mut rows = 0.0;
         let mut alpha = 1.0;
+        let left = 1.0 - self.t;
         if let Some((open, count)) = self.open {
             match row {
                 // Out from under the set's row, the later ones from further.
@@ -1884,10 +2784,10 @@ impl ExpansionFrame {
                 _ => {}
             }
         }
-        if let Some((closed, count)) = self.closed
-            && set > closed
-        {
-            rows += left * count as f32;
+        for &(closed, count, still_open) in self.closed.iter().flatten() {
+            if set > closed {
+                rows += still_open * count as f32;
+            }
         }
         (rows, alpha)
     }
@@ -1909,6 +2809,154 @@ fn push_detail(text: &mut String, detail: TileDetail) {
 mod tests {
     use super::*;
 
+    fn thumb(width: u32, height: u32) -> AtlasRegion {
+        use slam_render::{Extent, Origin};
+        AtlasRegion {
+            texture: slam_render::textures::TextureId(5),
+            origin: Origin::new(0, 0),
+            size: Extent::new(width, height),
+            uv: UvRect::FULL,
+        }
+    }
+
+    /// The width of `text` laid out in `face`.
+    fn width_in(type_setter: &mut Typesetter, text: &str, face: Face) -> f32 {
+        let mut line = Line::new(text);
+        type_setter.lay_out_face(&mut line, face);
+        line.layout.width()
+    }
+
+    #[test]
+    fn lazers_faces_are_used_per_element() {
+        use crate::song_select::{DifficultyRow, SearchSource, SetRow};
+        let theme = Theme::default();
+        let layout = SongSelectLayout::new(1280.0, 720.0, &theme);
+        let mut type_setter =
+            Typesetter::new(Arc::new(FontRegistry::with_builtin()), theme.font_weight);
+        let list = SongList {
+            sets: vec![SetRow {
+                key: 1,
+                artist: "Artist".to_owned(),
+                title: "Title of the song".to_owned(),
+                creator: "mapper".to_owned(),
+                difficulties: vec![DifficultyRow::new(SearchSource {
+                    difficulty: "Insane difficulty",
+                    ..SearchSource::default()
+                })],
+            }],
+        };
+        let mut fill = |row: Row| {
+            let mut slot = RowSlot::new();
+            let ellipsis = [0.0; 4];
+            assert!(SongSelectView::fill(
+                &mut slot,
+                &mut type_setter,
+                &theme,
+                &layout,
+                ellipsis,
+                "pp",
+                1,
+                &list,
+                row,
+                0.0,
+                0,
+            ));
+            slot
+        };
+        let set = fill(Row::Set(0));
+        let difficulty = fill(Row::Difficulty {
+            set: 0,
+            difficulty: 0,
+        });
+        let scale = layout.scale;
+        // The set's title is bold: as wide as the heading face makes it, wider than regular.
+        let title = set.primary.text.clone();
+        let bold = width_in(
+            &mut type_setter,
+            &title,
+            theme.heading_face(theme.song_title_size * scale),
+        );
+        let regular = width_in(
+            &mut type_setter,
+            &title,
+            theme.regular_face(theme.song_title_size * scale),
+        );
+        assert!((set.primary.layout.width() - bold).abs() < 1e-3);
+        assert!(bold > regular);
+        // The mapper and the difficulty's name are semibold.
+        let semibold = |text: &str, face: Face, type_setter: &mut Typesetter| {
+            width_in(
+                type_setter,
+                text,
+                Face {
+                    weight: theme.semibold_weight,
+                    ..face
+                },
+            )
+        };
+        let note = semibold("mapper", theme.note_face(scale), &mut type_setter);
+        assert!((set.secondary.layout.width() - note).abs() < 1e-3);
+        let name = semibold(
+            "Insane difficulty",
+            theme.caption_face(scale),
+            &mut type_setter,
+        );
+        assert!((difficulty.primary.layout.width() - name).abs() < 1e-3);
+        assert!(
+            name > width_in(
+                &mut type_setter,
+                "Insane difficulty",
+                theme.caption_face(scale)
+            )
+        );
+    }
+
+    #[test]
+    fn a_full_plate_thumbnail_is_the_plate_dimmed_from_left_to_right() {
+        let theme = Theme::default();
+        let plate = Rect {
+            x: 100.0,
+            y: 40.0,
+            width: 500.0,
+            height: 72.0,
+        };
+        let shape = plate_shape(thumb(700, 100), &plate, 40.0, 72.0, 3.0, 0.8, &theme, 1.0);
+        assert_eq!(shape.position, [103.0, 40.0]);
+        assert_eq!(shape.size, [500.0, 72.0]);
+        assert_eq!(shape.skew, theme.button_skew());
+        assert_eq!(shape.radius, theme.button_radius);
+        assert!(shape.upright);
+        assert_eq!(shape.texture, slam_render::textures::TextureId(5));
+        // Darker on the left than on the right, faded as a whole.
+        assert_eq!(shape.colour.r, theme.song_plate_dim_left);
+        assert_eq!(shape.colour.a, 0.8);
+        match shape.gradient {
+            Some(slam_render::shape::Gradient::Horizontal(end)) => {
+                assert_eq!(end.r, theme.song_plate_dim_right);
+                assert_eq!(end.a, 0.8);
+            }
+            other => panic!("{other:?}"),
+        }
+    }
+
+    #[test]
+    fn a_full_plate_image_covers_the_plate_whatever_its_aspect() {
+        let (w, h, tan) = (500.0, 72.0, 0.2);
+        let box_aspect = (w + tan * h) / h;
+        for (iw, ih) in [(1000.0, 100.0), (100.0, 1000.0), (1920.0, 1080.0)] {
+            let uv = plate_uv(UvRect::FULL, [iw, ih], w, h, tan, (0.0, 1.0));
+            let shown = ((uv.u1 - uv.u0) * iw) / ((uv.v1 - uv.v0) * ih);
+            assert!((shown - box_aspect).abs() < 1e-3, "{iw}x{ih}: {shown}");
+            assert!(uv.u0 >= -1e-6 && uv.u1 <= 1.0 + 1e-6, "{uv:?}");
+            assert!(uv.v0 >= -1e-6 && uv.v1 <= 1.0 + 1e-6, "{uv:?}");
+        }
+        // A plate cut at the top shows the lower part of the same window, at the same scale.
+        let whole = plate_uv(UvRect::FULL, [1920.0, 1080.0], w, h, tan, (0.0, 1.0));
+        let cut = plate_uv(UvRect::FULL, [1920.0, 1080.0], w, h, tan, (0.5, 1.0));
+        assert!((cut.v1 - whole.v1).abs() < 1e-6);
+        assert!((cut.v0 - (whole.v0 + whole.v1) / 2.0).abs() < 1e-6);
+    }
+
     fn sets(counts: &[usize]) -> SongList {
         use crate::song_select::{DifficultyRow, SearchSource, SetRow};
         SongList {
@@ -1929,6 +2977,139 @@ mod tests {
     }
 
     const MS: u64 = 1_000_000;
+
+    #[test]
+    fn rows_ease_to_new_places_and_new_ones_start_where_asked() {
+        let mut m = RowMotion::default();
+        let e = m.begin(1_000 * MS, 50.0);
+        assert_eq!(e, 1.0, "the first frame is in place");
+        assert_eq!(m.track(1, 100.0, None, e), 100.0);
+        // The row's place moves 60 down: after one half time it is half way.
+        let e = m.begin(1_050 * MS, 50.0);
+        let y = m.track(1, 160.0, None, e);
+        assert!((y - 130.0).abs() < 1e-3, "{y}");
+        // A new row starts where it is told, then eases.
+        assert_eq!(m.track(2, 200.0, Some(130.0), e), 130.0);
+        let e = m.begin(1_100 * MS, 50.0);
+        let y = m.track(2, 200.0, None, e);
+        assert!((y - 165.0).abs() < 1e-3, "{y}");
+        // A row not drawn for a frame is forgotten: back at its place at once.
+        let e = m.begin(1_150 * MS, 50.0);
+        let _ = m.begin(1_200 * MS, 50.0);
+        assert_eq!(m.track(1, 300.0, None, e), 300.0);
+    }
+
+    /// A difficulty row rated `stars` and `pp`, and the text of a slot filled for it.
+    fn rated(stars: f32, pp: f32) -> crate::song_select::DifficultyRow {
+        let mut d = crate::song_select::DifficultyRow::new(crate::song_select::SearchSource {
+            difficulty: "Insane",
+            ..Default::default()
+        });
+        d.stars = Some(stars);
+        d.pp = Some(pp);
+        d
+    }
+
+    fn roll_rig() -> (Typesetter, Theme, SongSelectLayout, RowSlot) {
+        let theme = Theme {
+            song_difficulty_info: crate::song_select::DifficultyInfo::StarsAndPp,
+            ..Theme::default()
+        };
+        let layout = SongSelectLayout::new(1280.0, 720.0, &theme);
+        let type_setter = Typesetter::new(
+            std::sync::Arc::new(slam_text::FontRegistry::with_builtin()),
+            700,
+        );
+        (type_setter, theme, layout, RowSlot::new())
+    }
+
+    /// Fills `slot` with `d` as `fill` does for a difficulty row.
+    fn fill_slot(slot: &mut RowSlot, d: &crate::song_select::DifficultyRow) {
+        slot.secondary.text.clear();
+        super::super::push_stars(&mut slot.secondary.text, d.stars.unwrap());
+        slot.rolled_stars = (d.stars.unwrap() * 100.0).round() as i32;
+        slot.pp.text.clear();
+        super::super::push_pp(&mut slot.pp.text, d.pp.unwrap(), "pp");
+        slot.rolled_pp = d.pp.unwrap().round() as i32;
+    }
+
+    #[test]
+    fn a_new_rating_rolls_the_rows_stars_and_pp_and_a_first_row_does_not() {
+        let (mut ts, theme, layout, mut slot) = roll_rig();
+        let (mut stars, mut pp) = (StarMotion::default(), StarMotion::default());
+        let d = 750 * MS;
+        let mut frame = |slot: &mut RowSlot, row: &crate::song_select::DifficultyRow, now: u64| {
+            stars.begin(now, d);
+            pp.begin(now, d);
+            SongSelectView::roll(
+                slot,
+                &mut ts,
+                (&mut stars, &mut pp),
+                &theme,
+                &layout,
+                "pp",
+                row,
+            );
+            (slot.secondary.text.clone(), slot.pp.text.clone())
+        };
+        // First appearance: the numbers are at once what they are.
+        let low = rated(2.0, 100.0);
+        fill_slot(&mut slot, &low);
+        assert_eq!(
+            frame(&mut slot, &low, 1_000 * MS),
+            ("2.00".into(), "100pp".into())
+        );
+        assert_eq!(
+            frame(&mut slot, &low, 1_016 * MS),
+            ("2.00".into(), "100pp".into())
+        );
+        // A mod rates it higher; the republished row's text is the target at once, and the
+        // roll takes it back to where it was.
+        let high = rated(6.0, 500.0);
+        fill_slot(&mut slot, &high);
+        let (s, p) = frame(&mut slot, &high, 1_032 * MS);
+        assert_eq!((s.as_str(), p.as_str()), ("2.00", "100pp"));
+        let (s, p) = frame(&mut slot, &high, 1_032 * MS + 200 * MS);
+        let (s, p): (f32, f32) = (
+            s.parse().unwrap(),
+            p.trim_end_matches("pp").parse().unwrap(),
+        );
+        assert!(s > 2.5 && s < 6.0 && p > 150.0 && p < 500.0, "{s} {p}");
+        // The text is laid out again with it.
+        assert!(slot.secondary.layout.width() > 0.0);
+        let end = frame(&mut slot, &high, 1_032 * MS + 800 * MS);
+        assert_eq!(end, ("6.00".into(), "500pp".into()));
+    }
+
+    #[test]
+    fn a_new_rating_eases_the_rows_colour_and_a_new_row_shows_it_at_once() {
+        let mut m = StarMotion::default();
+        let d = 750 * MS;
+        m.begin(1_000 * MS, d);
+        // A row first seen shows its rating at once.
+        assert_eq!(m.track(7, 3.0), 3.0);
+        m.begin(1_016 * MS, d);
+        assert_eq!(m.track(7, 3.0), 3.0);
+        // A mod changes the rating: the shown value starts from the old one...
+        m.begin(1_032 * MS, d);
+        let first = m.track(7, 6.0);
+        assert!((first - 3.0).abs() < 1e-3, "{first}");
+        // ...is on its way part-way (OutQuint is past half at a third of the time)...
+        m.begin(1_032 * MS + 250 * MS, d);
+        let mid = m.track(7, 6.0);
+        assert!(mid > 4.5 && mid < 6.0, "{mid}");
+        // ...and rests on the new rating.
+        m.begin(1_032 * MS + 800 * MS, d);
+        assert_eq!(m.track(7, 6.0), 6.0);
+        // A change mid-way starts from where the value is.
+        m.begin(2_000 * MS, d);
+        m.track(7, 2.0);
+        m.begin(2_000 * MS + 100 * MS, d);
+        let cut = m.track(7, 2.0);
+        m.begin(2_000 * MS + 100 * MS + MS, d);
+        let turned = m.track(7, 9.0);
+        assert!((turned - cut).abs() < 0.2, "{turned} vs {cut}");
+    }
 
     #[test]
     fn the_first_selection_opens_at_once() {
@@ -1980,6 +3161,42 @@ mod tests {
         let done = e.track(&list, Some((2, 1)), 2_000 * MS, &theme);
         assert_eq!(done.reach(), 0);
         assert_eq!(done.offset(Row::Set(1)), (0.0, 1.0));
+    }
+
+    #[test]
+    fn a_quick_change_closes_a_half_open_set_from_where_it_is() {
+        let theme = Theme::default();
+        let list = sets(&[3, 2, 4]);
+        let mut e = Expansion::default();
+        e.track(&list, Some((0, 0)), 0, &theme);
+        // Set 1 opens at 1 s, and is left for set 2 a little later, half open.
+        e.track(&list, Some((1, 0)), 1_000 * MS, &theme);
+        let half = e.track(&list, Some((1, 0)), 1_000 * MS + 20 * MS, &theme);
+        let open_part = half.t;
+        assert!(open_part > 0.0 && open_part < 1.0);
+        // Set 2 stays where it is drawn: its row moves up by set 1's two difficulties in
+        // the list, and the offset makes up for them and for set 0 still closing.
+        let before = half.offset(Row::Set(2)).0;
+        let after = e
+            .track(&list, Some((2, 0)), 1_000 * MS + 20 * MS, &theme)
+            .offset(Row::Set(2))
+            .0;
+        assert!((before - (after - 2.0)).abs() < 1e-4, "{before} -> {after}");
+    }
+
+    #[test]
+    fn a_selection_left_mid_slide_slides_back_from_there() {
+        let theme = Theme::default();
+        let list = sets(&[3, 2, 4]);
+        let mut shift = Shift::default();
+        shift.track(&list, Some((0, 0)), 0, &theme);
+        shift.track(&list, Some((1, 0)), 1_000 * MS, &theme);
+        let mid = shift.track(&list, Some((1, 0)), 1_000 * MS + 20 * MS, &theme);
+        let before = mid.of(Row::Set(1));
+        let after = shift
+            .track(&list, Some((2, 0)), 1_000 * MS + 20 * MS, &theme)
+            .of(Row::Set(1));
+        assert!((before - after).abs() < 1e-4, "{before} -> {after}");
     }
 
     #[test]
@@ -2051,6 +3268,27 @@ mod tests {
         let mut short = Line::new("short");
         fit_tail(&mut type_setter, &mut short, 20.0, avail, ellipsis);
         assert_eq!(short.text, "short");
+    }
+
+    #[test]
+    fn columns_slide_in_from_below_and_above_in_turn() {
+        assert_eq!(slide_direction(0), 1.0);
+        assert_eq!(slide_direction(1), -1.0);
+        assert_eq!(slide_direction(2), 1.0);
+        assert_eq!(slide_direction(3), -1.0);
+        let theme = Theme::default();
+        assert_eq!(theme.mod_column_stagger_ms, 30.0);
+        assert_eq!(theme.mod_panel_in_ms, 400.0);
+        assert_eq!(theme.mod_panel_distance, 700.0);
+        assert!(theme.mod_panel_out_ms <= 250.0);
+    }
+
+    #[test]
+    fn the_multiplier_is_coloured_by_its_side_of_one() {
+        let theme = Theme::default();
+        assert_eq!(tone_colour(&theme, 1.2), theme.mod_multiplier_up);
+        assert_eq!(tone_colour(&theme, 0.8), theme.mod_multiplier_down);
+        assert_eq!(tone_colour(&theme, 1.0), theme.text);
     }
 
     #[test]

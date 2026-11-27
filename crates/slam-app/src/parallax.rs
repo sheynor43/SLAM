@@ -60,6 +60,21 @@ pub fn layer_map(
     Affine::about([size[0] * 0.5, size[1] * 0.5], scale, 0.0, offset)
 }
 
+/// The background's own shift under the open settings panel (ADR-0180): it moves right by
+/// `aside` pixels with the screens (ADR-0179) and grows about the middle just enough that
+/// the left edge stays covered. Identity when `aside` is 0.
+pub fn aside_map(aside: f32, size: [f32; 2]) -> Affine {
+    if aside <= 0.0 || size[0] <= 0.0 {
+        return Affine::IDENTITY;
+    }
+    Affine::about(
+        [size[0] * 0.5, size[1] * 0.5],
+        1.0 + 2.0 * aside / size[0],
+        0.0,
+        [aside, 0.0],
+    )
+}
+
 /// `map` with its shift rounded to whole pixels, for text: a glyph moved by a fraction of a
 /// pixel is resampled and blurs, while shapes may move smoothly. Only the shift changes.
 pub fn snap_to_pixels(map: &Affine) -> Affine {

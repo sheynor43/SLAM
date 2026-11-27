@@ -1,12 +1,12 @@
-//! The mod settings ("customise") panel of the mod select, after lazer's
-//! `ModCustomisationPanel` (ADR-0057). The panel knows nothing of mods: the application
-//! gives it rows (a section header per mod, then its settings) and writes back what the
-//! player changes, resolving a row index to a mod and a setting itself.
+//! The mod settings ("customise") panel of the mod select (ADR-0057, ADR-0177): a floating
+//! panel the player opens with a right click on a mod tile (or Tab) and drags by its header.
+//! The panel knows nothing of mods: the application gives it rows (a section header per mod,
+//! then its settings) and writes back what the player changes, resolving a row index to a
+//! mod and a setting itself.
 //!
-//! States are lazer's: `Collapsed`, `Expanded` (hovering the header, or Tab) and
-//! `ExpandedByMod` (the application expanded it because a mod needs configuring). An
-//! `Expanded` panel collapses when the pointer stays away from it for a while and nothing is
-//! being dragged; Tab and Esc collapse it too. While expanded it takes every key.
+//! The panel opens where the pointer is and always opens there again: its position is not
+//! kept. Esc, a press outside it and another right click close it. While open it takes
+//! every key.
 
 use super::{ModSelectAction, SongSelectInput};
 use crate::menu::Rect;
@@ -21,23 +21,15 @@ pub const MAX_SETTING_ROWS: usize = 32;
 /// Most named values of a choice row.
 pub const MAX_CHOICES: usize = 3;
 
-// Ported from osu!lazer 2026.1005.0-lazer: osu.Game/Overlays/Mods/ModCustomisationPanel.cs
-// (`FocusGrabbingContainer`: `collapse_grace_time`, `collapse_grace_position`).
-/// How long the pointer may stay away from an `Expanded` panel before it collapses.
-pub const COLLAPSE_GRACE_NS: u64 = 180_000_000;
-/// How far (in reference pixels) the pointer may be from the panel.
-pub const COLLAPSE_DISTANCE: f32 = 40.0;
 /// The share of a row's height the label takes; the control gets the rest.
 const LABEL_SHARE: f32 = 0.45;
 
-/// How much of the panel shows.
+/// Whether the panel shows.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub enum CustomisationState {
     #[default]
     Collapsed,
     Expanded,
-    /// Expanded because a selected mod needs configuring: the pointer does not collapse it.
-    ExpandedByMod,
 }
 
 /// What a row holds. Labels are Fluent keys (`SongSelectLabels::setting_texts` has the
@@ -98,38 +90,46 @@ pub enum SettingValue {
     Choice(usize),
 }
 
-/// Where the panel is: the header at the top right of the window, the rows below it. A pure
-/// function of the window size and theme, shared by hit testing and drawing.
+/// Where the panel is: the header (its drag handle), the rows below it. A function of the
+/// window size, theme and the panel's origin ([`CustomisationLayout::at`]), shared by hit
+/// testing and drawing. [`CustomisationLayout::new`] places it at the top right.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct CustomisationLayout {
     pub header: Rect,
     content_top: f32,
     pub row_height: f32,
-    /// Rows that fit below the header.
+    /// Rows that fit in the window below a header at its top.
     max_rows: usize,
     pub pad: f32,
     pub scale: f32,
-    collapse_distance: f32,
+    /// The window's size and the margin the panel keeps from its edges.
+    window: [f32; 2],
+    margin: f32,
     value_width: f32,
     value_gap: f32,
     track_height: f32,
 }
 
+/// The panel's width in tile widths: the tiles' former width, so enlarging the tiles does not
+/// widen the settings panel (ADR-0167).
+const SETTINGS_TILE_BASIS: f32 = 210.0;
+
 impl CustomisationLayout {
     pub fn new(width: f32, height: f32, theme: &Theme) -> CustomisationLayout {
         let scale = theme.scale(height);
         let margin = theme.song_margin * scale;
-        let panel_width = (2.0 * theme.mod_tile_width + theme.mod_column_gap) * scale;
+        let panel_width = (2.0 * SETTINGS_TILE_BASIS + theme.mod_column_gap) * scale;
         let header = Rect {
             x: width - margin - panel_width,
-            y: margin,
+            y: (theme.toolbar_height + theme.song_top_gap) * scale,
             width: panel_width,
             height: theme.widget_height * scale,
         };
         let row_height = theme.widget_height * scale * 1.5;
         let content_top = header.y + header.height;
-        let hint_top = height - margin - theme.song_detail_size * scale * 1.5;
-        let room = (hint_top - margin / 2.0 - content_top).max(0.0);
+        // The panel stays above the footer bar (ADR-0175).
+        let floor = height - theme.footer_height * scale;
+        let room = (floor - 2.0 * margin - header.height).max(0.0);
         CustomisationLayout {
             header,
             content_top,
@@ -137,11 +137,37 @@ impl CustomisationLayout {
             max_rows: ((room / row_height).floor() as usize).max(1),
             pad: theme.widget_pad * scale,
             scale,
-            collapse_distance: COLLAPSE_DISTANCE * scale,
+            window: [width, floor],
+            margin,
             value_width: theme.widget_value_width * scale,
             value_gap: theme.widget_value_gap * scale,
             track_height: theme.widget_track_height * scale,
         }
+    }
+
+    /// The layout with the header's top left corner at `origin`, moved as little as keeps
+    /// the whole panel of `len` rows inside the window (less its margin).
+    pub fn at(&self, origin: (f32, f32), len: usize) -> CustomisationLayout {
+        let panel = self.panel(len);
+        let [width, height] = self.window;
+        let x = origin
+            .0
+            .min(width - self.margin - panel.width)
+            .max(self.margin.min(width - panel.width).max(0.0));
+        let y = origin
+            .1
+            .min(height - self.margin - panel.height)
+            .max(self.margin.min(height - panel.height).max(0.0));
+        let mut placed = *self;
+        placed.header.x = x;
+        placed.header.y = y;
+        placed.content_top = y + self.header.height;
+        placed
+    }
+
+    /// Where the top left corner of the header is.
+    pub fn origin(&self) -> (f32, f32) {
+        (self.header.x, self.header.y)
     }
 
     /// How many of `len` rows show at once.
@@ -165,18 +191,6 @@ impl CustomisationLayout {
         Rect {
             height: self.header.height + content.height,
             ..self.header
-        }
-    }
-
-    /// The panel and the margin the pointer may be in without collapsing it.
-    fn zone(&self, len: usize) -> Rect {
-        let panel = self.panel(len);
-        let d = self.collapse_distance;
-        Rect {
-            x: panel.x - d,
-            y: panel.y - d,
-            width: panel.width + 2.0 * d,
-            height: panel.height + 2.0 * d,
         }
     }
 
@@ -260,7 +274,11 @@ pub struct CustomisationSnapshot {
     /// The row the keyboard acts on.
     pub selected: usize,
     pub hover: Option<usize>,
-    pub header_hover: bool,
+    /// The top left corner of the panel as the player placed it; the layout moves it into
+    /// the window ([`CustomisationLayout::at`]).
+    pub origin: (f32, f32),
+    /// The header is being dragged.
+    pub moving: bool,
     /// The first row shown.
     pub first: usize,
 }
@@ -273,14 +291,15 @@ impl Default for CustomisationSnapshot {
             rows: [SettingRow::EMPTY; MAX_SETTING_ROWS],
             selected: 0,
             hover: None,
-            header_hover: false,
+            origin: (0.0, 0.0),
+            moving: false,
             first: 0,
         }
     }
 }
 
 impl CustomisationSnapshot {
-    /// Whether some row has a setting (the header is active).
+    /// Whether some row has a setting.
     pub fn is_enabled(&self) -> bool {
         self.rows[..self.len].iter().any(|r| !r.is_header())
     }
@@ -294,17 +313,15 @@ pub struct Customisation {
     len: usize,
     selected: usize,
     hover: Option<usize>,
-    header_hover: bool,
+    /// Where the panel was put (the header's top left corner) and, while its header is
+    /// dragged, where the pointer holds it.
+    origin: (f32, f32),
+    moving: Option<(f32, f32)>,
     scroll: f32,
     /// How many rows showed at the last input; keeps the selection in view.
     visible: usize,
     /// The slider being dragged, with its row.
     drag: Option<(usize, Slider)>,
-    pointer: Option<(f32, f32)>,
-    /// The pointer moved since the panel expanded: only then may it collapse the panel.
-    armed: bool,
-    /// Since when the pointer is away from the panel.
-    away_since: Option<u64>,
 }
 
 impl Default for Customisation {
@@ -315,13 +332,11 @@ impl Default for Customisation {
             len: 0,
             selected: 0,
             hover: None,
-            header_hover: false,
+            origin: (0.0, 0.0),
+            moving: None,
             scroll: 0.0,
             visible: MAX_SETTING_ROWS,
             drag: None,
-            pointer: None,
-            armed: false,
-            away_since: None,
         }
     }
 }
@@ -359,7 +374,8 @@ impl Customisation {
             rows: self.rows,
             selected: self.selected,
             hover: self.hover,
-            header_hover: self.header_hover,
+            origin: self.origin,
+            moving: self.moving.is_some(),
             first: self.first(),
         }
     }
@@ -391,80 +407,32 @@ impl Customisation {
             .clamp(0.0, self.len.saturating_sub(self.visible) as f32);
         if !self.is_enabled() {
             self.collapse();
-            self.header_hover = false;
         }
     }
 
     pub fn collapse(&mut self) {
         self.state = CustomisationState::Collapsed;
         self.drag = None;
+        self.moving = None;
         self.hover = None;
-        self.armed = false;
-        self.away_since = None;
     }
 
-    /// Expands as lazer does for a mod that needs configuring; the pointer never collapses
-    /// it. Does nothing without settings.
-    pub fn expand_by_mod(&mut self) {
-        if self.is_enabled() {
-            self.state = CustomisationState::ExpandedByMod;
-            self.away_since = None;
-        }
-    }
-
-    fn expand(&mut self, armed: bool) {
-        if self.is_enabled() && self.state == CustomisationState::Collapsed {
-            self.state = CustomisationState::Expanded;
-            self.armed = armed;
-            self.away_since = None;
-        }
-    }
-
-    /// Whether the pointer at `x`, `y` is on the header (and the header is active).
-    pub fn on_header(&self, x: f32, y: f32, layout: &CustomisationLayout) -> bool {
-        self.is_enabled() && layout.header.contains(x, y)
-    }
-
-    /// The collapse delay of an `Expanded` panel. Does not allocate.
-    pub fn tick(&mut self, now_ns: u64, layout: &CustomisationLayout) {
-        if self.state != CustomisationState::Expanded || !self.armed || self.drag.is_some() {
-            self.away_since = None;
+    /// Opens the panel with its header's top left corner at `origin` (kept inside the window
+    /// when drawn); where it was before is forgotten. Does nothing without settings.
+    pub fn open_at(&mut self, origin: (f32, f32)) {
+        if !self.is_enabled() {
             return;
         }
-        let Some((x, y)) = self.pointer else {
-            return;
-        };
-        if layout.zone(self.len).contains(x, y) {
-            self.away_since = None;
-        } else {
-            let since = *self.away_since.get_or_insert(now_ns);
-            if now_ns.saturating_sub(since) >= COLLAPSE_GRACE_NS {
-                self.collapse();
-            }
-        }
+        self.state = CustomisationState::Expanded;
+        self.origin = origin;
+        self.moving = None;
+        self.drag = None;
+        self.scroll = 0.0;
     }
 
-    /// Tracks the pointer of a collapsed panel: hovering the header expands it.
-    pub fn hover_header(&mut self, x: f32, y: f32, layout: &CustomisationLayout) {
-        self.pointer = Some((x, y));
-        self.header_hover = self.on_header(x, y, layout);
-        if self.header_hover {
-            self.expand(true);
-        }
-    }
-
-    /// Clicking the header of a collapsed panel expands it. Returns whether it was hit.
-    pub fn press_header(&mut self, x: f32, y: f32, layout: &CustomisationLayout) -> bool {
-        let hit = self.on_header(x, y, layout);
-        if hit {
-            self.expand(true);
-        }
-        hit
-    }
-
-    /// Tab on a collapsed panel.
-    pub fn expand_by_key(&mut self) {
-        self.expand(false);
+    /// The layout of the panel where it is now.
+    fn placed(&self, layout: &CustomisationLayout) -> CustomisationLayout {
+        layout.at(self.origin, self.len)
     }
 
     fn row_at(&self, x: f32, y: f32, layout: &CustomisationLayout) -> Option<usize> {
@@ -589,11 +557,12 @@ impl Customisation {
         layout: &CustomisationLayout,
     ) -> Option<ModSelectAction> {
         use SongSelectInput as I;
+        let layout = &self.placed(layout);
         self.visible = layout.visible_rows(self.len);
         let selected = (self.selected < self.len && !self.rows[self.selected].is_header())
             .then_some(self.selected);
         match input {
-            I::Back | I::ToggleCustomisation => {
+            I::Back | I::ToggleCustomisation | I::SecondaryPress { .. } => {
                 self.collapse();
                 None
             }
@@ -615,9 +584,11 @@ impl Customisation {
                 None
             }
             I::PointerMove { x, y } => {
-                self.pointer = Some((x, y));
-                self.armed = true;
-                self.header_hover = self.on_header(x, y, layout);
+                if let Some((dx, dy)) = self.moving {
+                    // The header follows the pointer, kept in the window.
+                    self.origin = layout.at((x - dx, y - dy), self.len).origin();
+                    return None;
+                }
                 if let Some((row, mut slider)) = self.drag {
                     let rect = layout.row_rect(row.saturating_sub(self.first()));
                     let action =
@@ -634,9 +605,12 @@ impl Customisation {
                 None
             }
             I::PointerPress { x, y } => {
-                self.pointer = Some((x, y));
                 if !layout.panel(self.len).contains(x, y) {
                     self.collapse();
+                    return None;
+                }
+                if layout.header.contains(x, y) {
+                    self.moving = Some((x - layout.header.x, y - layout.header.y));
                     return None;
                 }
                 let row = self.row_at(x, y, layout)?;
@@ -683,6 +657,7 @@ impl Customisation {
             }
             I::PointerRelease => {
                 self.drag = None;
+                self.moving = None;
                 None
             }
             _ => None,

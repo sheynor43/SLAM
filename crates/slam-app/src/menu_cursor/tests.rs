@@ -330,6 +330,202 @@ fn nothing_is_drawn_while_the_pointer_is_outside_the_window() {
     assert!(draw(&mut view, &frame, 1).is_empty());
 }
 
+#[test]
+fn the_menu_cursor_size_scales_the_slam_pointer() {
+    let pointer = PointerWatch::default();
+    pointer.record_move(100.0, 100.0);
+    let tip = [200.0, 200.0];
+    let mut view = view(&pointer);
+    let at = |size: f32, view: &mut MenuCursorView, now_ns: u64| {
+        let frame = MenuCursorFrame {
+            size,
+            ..MenuCursorFrame::default()
+        };
+        reach(&draw(view, &frame, now_ns), tip)
+    };
+    let normal = at(1.0, &mut view, 0);
+    let small = at(0.8, &mut view, 1);
+    let big = at(2.0, &mut view, 2);
+    assert!((small / normal - 0.8).abs() < 0.02, "{small} {normal}");
+    assert!((big / normal - 2.0).abs() < 0.05, "{big} {normal}");
+}
+
+#[test]
+fn the_default_menu_frame_has_the_full_size() {
+    assert_eq!(MenuCursorFrame::default().size, 1.0);
+}
+
+// ---- Skin trail ----
+
+const MS: u64 = 1_000_000;
+
+fn trail_image() -> SkinImage {
+    SkinImage {
+        handle: dangling_handle(),
+        scale: 1.0,
+    }
+}
+
+/// One frame of the trail with the pointer at `x` and `size`, at `ms` milliseconds.
+fn feed(
+    trail: &mut MenuTrail,
+    config: &CursorSkinConfig,
+    x: f32,
+    size: f32,
+    ms: u64,
+) -> ShapeBatch {
+    let mut shapes = ShapeBatch::with_capacity(MAX_MENU_CURSOR_SHAPES);
+    trail.feed(
+        &mut shapes,
+        &sprite(32.0),
+        trail_image(),
+        config,
+        [x, 100.0],
+        1.0,
+        size,
+        1.0,
+        0.0,
+        ms * MS,
+        [1024.0, 768.0],
+    );
+    shapes
+}
+
+/// Parts that can be seen: a part stays recorded for one more fade after its alpha is 0.
+fn visible(shapes: &ShapeBatch) -> usize {
+    shapes
+        .vertices()
+        .chunks(4)
+        .filter(|quad| quad[0].colour[3] > 0.0)
+        .count()
+}
+
+fn continuous() -> CursorSkinConfig {
+    CursorSkinConfig {
+        disjoint: false,
+        ..CursorSkinConfig::default()
+    }
+}
+
+#[test]
+fn the_skins_trail_appears_while_the_pointer_moves_and_fades_out() {
+    let mut trail = MenuTrail::new();
+    let config = continuous();
+    let mut last = 0;
+    for i in 0..20_u64 {
+        last = visible(&feed(
+            &mut trail,
+            &config,
+            100.0 + 30.0 * i as f32,
+            1.0,
+            i * 16,
+        ));
+    }
+    assert!(last > 3, "{last}");
+    // Still: nothing new, and the continuous trail is gone after its 500 ms.
+    let x = 100.0 + 30.0 * 19.0;
+    let rest = visible(&feed(&mut trail, &config, x, 1.0, 20 * 16 + 100));
+    assert!(rest > 0);
+    assert_eq!(
+        visible(&feed(&mut trail, &config, x, 1.0, 20 * 16 + 700)),
+        0
+    );
+}
+
+#[test]
+fn a_disjoint_trail_leaves_a_part_per_frame_and_a_continuous_one_fills_the_path() {
+    let moves = |config: &CursorSkinConfig| {
+        let mut trail = MenuTrail::new();
+        // One long jump between two frames.
+        feed(&mut trail, config, 100.0, 1.0, 0);
+        feed(&mut trail, config, 700.0, 1.0, 16).len()
+    };
+    let disjoint = moves(&CursorSkinConfig::default());
+    let filled = moves(&continuous());
+    assert!(disjoint <= 2, "{disjoint}");
+    assert!(filled > 10, "{filled}");
+    // A resting disjoint trail keeps leaving parts that live 150 ms.
+    let mut trail = MenuTrail::new();
+    let config = CursorSkinConfig::default();
+    let mut n = 0;
+    for i in 0..60_u64 {
+        n = visible(&feed(&mut trail, &config, 100.0, 1.0, i * 17));
+    }
+    assert!((5..=11).contains(&n), "{n}");
+}
+
+#[test]
+fn the_trail_follows_the_menu_cursor_size() {
+    let width = |size: f32| {
+        let mut trail = MenuTrail::new();
+        let config = CursorSkinConfig::default();
+        feed(&mut trail, &config, 100.0, size, 0);
+        let shapes = feed(&mut trail, &config, 100.0, size, 20);
+        let v = &shapes.vertices()[0..4];
+        v[1].position[0] - v[0].position[0]
+    };
+    assert!((width(1.0) - 32.0).abs() < 1e-2, "{}", width(1.0));
+    assert!((width(2.0) / width(1.0) - 2.0).abs() < 1e-3);
+}
+
+#[test]
+fn the_trail_starts_anew_when_idle_or_its_skin_changes() {
+    let mut trail = MenuTrail::new();
+    let config = continuous();
+    feed(&mut trail, &config, 100.0, 1.0, 0);
+    assert!(!feed(&mut trail, &config, 400.0, 1.0, 16).is_empty());
+    trail.idle();
+    // The cursor came back elsewhere: no line from where it left.
+    assert_eq!(feed(&mut trail, &config, 700.0, 1.0, 32).len(), 0);
+    feed(&mut trail, &config, 900.0, 1.0, 48);
+    let mut shapes = ShapeBatch::with_capacity(MAX_MENU_CURSOR_SHAPES);
+    let other = SkinImage {
+        scale: 2.0,
+        ..trail_image()
+    };
+    trail.feed(
+        &mut shapes,
+        &sprite(32.0),
+        other,
+        &config,
+        [200.0, 100.0],
+        1.0,
+        1.0,
+        1.0,
+        0.0,
+        64 * MS,
+        [1024.0, 768.0],
+    );
+    assert_eq!(shapes.len(), 0);
+}
+
+#[test]
+fn a_frame_without_a_skin_trail_clears_it() {
+    let pointer = PointerWatch::default();
+    pointer.record_move(5.0, 5.0);
+    let mut view = view(&pointer);
+    // Fed once, as a skin cursor with a `cursortrail` would.
+    let mut shapes = ShapeBatch::with_capacity(MAX_MENU_CURSOR_SHAPES);
+    view.trail.feed(
+        &mut shapes,
+        &sprite(32.0),
+        trail_image(),
+        &continuous(),
+        [10.0, 10.0],
+        1.0,
+        1.0,
+        1.0,
+        0.0,
+        0,
+        [1024.0, 768.0],
+    );
+    assert!(view.trail.image.is_some());
+    // SLAM's pointer, a skin without a `cursortrail`, the OS cursor: no trail.
+    let _ = draw(&mut view, &MenuCursorFrame::default(), 1);
+    assert!(view.trail.image.is_none());
+    assert!(!view.trail.fed);
+}
+
 // ---- Release protocol ----
 
 /// The loader thread's side, played by the test: real handles of a four-texture loader.
@@ -398,6 +594,7 @@ impl Loader {
                         loaded: true,
                         cursor,
                         middle,
+                        trail: None,
                         config: CursorSkinConfig::default(),
                     };
                     self.replies.push(Reply { generation, skin }).ok().unwrap();

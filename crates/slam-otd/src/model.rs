@@ -339,6 +339,55 @@ impl Settings {
         })
     }
 
+    /// The tablet-behaviour part of a profile as a preset (ADR-0176): output mode, absolute
+    /// and relative settings and filters, without the tablet's name, bindings or anything
+    /// else of the profile.
+    pub fn profile_preset(&self, index: usize) -> Option<Value> {
+        let p = self.profiles().get(index)?.as_object()?;
+        let mut out = Map::new();
+        for key in PRESET_KEYS {
+            if let Some(v) = p.get(key) {
+                out.insert(key.to_owned(), v.clone());
+            }
+        }
+        Some(Value::Object(out))
+    }
+
+    /// Puts a preset into a profile. Output mode and the absolute and relative settings
+    /// replace the profile's when the preset has them. Filters merge by path: a filter the
+    /// profile has takes the preset's enable flag and the settings it has by name; filters
+    /// the profile lacks are skipped (their plugin may not be installed) and counted in
+    /// the result, and filters the preset lacks stay as they are.
+    pub fn apply_profile_preset(&mut self, index: usize, preset: &Value) -> Result<usize, Error> {
+        let preset = preset.as_object().ok_or(Error::NoSuchItem)?;
+        let profile = self.profile_mut(index)?;
+        for key in ["OutputMode", "AbsoluteModeSettings", "RelativeModeSettings"] {
+            if let Some(v) = preset.get(key) {
+                profile.insert(key.to_owned(), v.clone());
+            }
+        }
+        let mut skipped = 0;
+        let wanted = preset.get("Filters").and_then(Value::as_array);
+        let mut ours = profile.get_mut("Filters").and_then(Value::as_array_mut);
+        if let Some(wanted) = wanted {
+            for want in wanted {
+                let path = want.get("Path").and_then(Value::as_str);
+                let found = ours.as_deref().and_then(|fs| {
+                    fs.iter()
+                        .position(|f| f.get("Path").and_then(Value::as_str) == path)
+                });
+                let (Some(at), Some(ours)) = (found, ours.as_deref_mut()) else {
+                    skipped += 1;
+                    continue;
+                };
+                merge_filter(&mut ours[at], want);
+            }
+        } else {
+            return Ok(0);
+        }
+        Ok(skipped)
+    }
+
     fn profile_mut(&mut self, index: usize) -> Result<&mut Map<String, Value>, Error> {
         self.root["Profiles"]
             .as_array_mut()
@@ -469,6 +518,41 @@ impl Settings {
         let json = value.to_json().ok_or(Error::WrongValueType)?;
         entry.insert("Value".into(), json);
         Ok(())
+    }
+}
+
+/// The profile keys a preset keeps.
+const PRESET_KEYS: [&str; 4] = [
+    "OutputMode",
+    "AbsoluteModeSettings",
+    "RelativeModeSettings",
+    "Filters",
+];
+
+/// Copies the enable flag and the settings of `want` into `ours` (a filter of the same
+/// path); settings `ours` has no entry for are left out.
+fn merge_filter(ours: &mut Value, want: &Value) {
+    let Some(ours) = ours.as_object_mut() else {
+        return;
+    };
+    if let Some(on) = want.get("Enable") {
+        ours.insert("Enable".into(), on.clone());
+    }
+    let Some(wanted) = want.get("Settings").and_then(Value::as_array) else {
+        return;
+    };
+    let Some(settings) = ours.get_mut("Settings").and_then(Value::as_array_mut) else {
+        return;
+    };
+    for entry in settings {
+        let name = entry.get("Property").and_then(Value::as_str);
+        let value = wanted
+            .iter()
+            .find(|w| w.get("Property").and_then(Value::as_str) == name)
+            .and_then(|w| w.get("Value"));
+        if let (Some(value), Some(entry)) = (value, entry.as_object_mut()) {
+            entry.insert("Value".into(), value.clone());
+        }
     }
 }
 

@@ -442,7 +442,7 @@ mod tests {
                 snaking_in: true,
                 snaking_out: true,
                 hit_lighting: false,
-                key_overlay: Some(slam_play::key_overlay::KeyAnimation::Lazer),
+                key_overlay: Some(slam_play::key_overlay::KeyAnimation::Lazer.into()),
                 hud_animations: false,
                 cursor_trail: false,
                 cursor_ripple: true,

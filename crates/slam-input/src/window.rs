@@ -5,12 +5,12 @@ use std::sync::{Arc, Mutex, PoisonError};
 
 use sdl3_sys::events::{
     SDL_EVENT_DISPLAY_CURRENT_MODE_CHANGED, SDL_EVENT_DISPLAY_FIRST, SDL_EVENT_DISPLAY_LAST,
-    SDL_EVENT_KEY_DOWN, SDL_EVENT_MOUSE_MOTION, SDL_EVENT_QUIT, SDL_EVENT_WINDOW_DISPLAY_CHANGED,
-    SDL_EVENT_WINDOW_ENTER_FULLSCREEN, SDL_EVENT_WINDOW_FOCUS_GAINED, SDL_EVENT_WINDOW_FOCUS_LOST,
-    SDL_EVENT_WINDOW_LEAVE_FULLSCREEN, SDL_EVENT_WINDOW_MOUSE_ENTER, SDL_EVENT_WINDOW_MOUSE_LEAVE,
-    SDL_EVENT_WINDOW_MOVED, SDL_EVENT_WINDOW_PIXEL_SIZE_CHANGED, SDL_EVENT_WINDOW_RESIZED,
-    SDL_Event, SDL_EventType, SDL_HasEvents, SDL_PushEvent, SDL_QuitEvent, SDL_RegisterEvents,
-    SDL_WaitEvent,
+    SDL_EVENT_DROP_FILE, SDL_EVENT_KEY_DOWN, SDL_EVENT_MOUSE_MOTION, SDL_EVENT_QUIT,
+    SDL_EVENT_WINDOW_DISPLAY_CHANGED, SDL_EVENT_WINDOW_ENTER_FULLSCREEN,
+    SDL_EVENT_WINDOW_FOCUS_GAINED, SDL_EVENT_WINDOW_FOCUS_LOST, SDL_EVENT_WINDOW_LEAVE_FULLSCREEN,
+    SDL_EVENT_WINDOW_MOUSE_ENTER, SDL_EVENT_WINDOW_MOUSE_LEAVE, SDL_EVENT_WINDOW_MOVED,
+    SDL_EVENT_WINDOW_PIXEL_SIZE_CHANGED, SDL_EVENT_WINDOW_RESIZED, SDL_Event, SDL_EventType,
+    SDL_HasEvents, SDL_PushEvent, SDL_QuitEvent, SDL_RegisterEvents, SDL_WaitEvent,
 };
 use sdl3_sys::hints::{
     SDL_HINT_INVALID_PARAM_CHECKS, SDL_HINT_MOUSE_AUTO_CAPTURE, SDL_HINT_OVERRIDE,
@@ -34,6 +34,7 @@ use sdl3_sys::video::{
 
 use crate::dialog::{self, FolderDialog};
 use crate::displays::{self, DisplaysCallback};
+use crate::drop::{DropCallback, drop_path};
 use crate::gl::{self, GlContext, PixelSize, PriorityRequest};
 use crate::mode::{
     MAX_SIDE, MIN_WINDOWED_SIZE, WindowMode, WindowScale, WindowSettings, WindowState, cycles_mode,
@@ -142,6 +143,8 @@ pub struct InputWindow {
     displays: Option<DisplaysCallback>,
     /// A display event came since the list was last collected.
     displays_changed: bool,
+    /// Gets each file dropped on the window (ADR-0169).
+    drop: Option<DropCallback>,
 }
 
 /// Shows or hides the OS cursor over the window, from any thread, without locks. The
@@ -415,6 +418,7 @@ impl InputWindow {
             wayland,
             displays: None,
             displays_changed: false,
+            drop: None,
         })
     }
 
@@ -485,6 +489,12 @@ impl InputWindow {
     pub fn set_displays_callback(&mut self, callback: DisplaysCallback) {
         self.displays = Some(callback);
         self.publish_displays();
+    }
+
+    /// Hands every file dropped on the window to `callback` (ADR-0169), on the window's
+    /// thread between events. Replaces an earlier callback.
+    pub fn set_drop_callback(&mut self, callback: DropCallback) {
+        self.drop = Some(callback);
     }
 
     /// Collects the display list for the callback, if any. Allocates: display events only.
@@ -972,6 +982,14 @@ impl InputWindow {
             // SAFETY: `type` is the common prefix of every SDL_Event variant.
             match SDL_EventType(unsafe { event.r#type }) {
                 SDL_EVENT_QUIT => return Ok(()),
+                SDL_EVENT_DROP_FILE => {
+                    // SAFETY: the event type says this is a drop event; its data is a
+                    // NUL-terminated string valid until the next poll, copied here.
+                    let path = unsafe { drop_path(&event) };
+                    if let (Some(path), Some(callback)) = (path, &mut self.drop) {
+                        callback(path);
+                    }
+                }
                 SDL_EVENT_WINDOW_PIXEL_SIZE_CHANGED => {
                     // SAFETY: the event type says this is a window event.
                     let window = unsafe { event.window };

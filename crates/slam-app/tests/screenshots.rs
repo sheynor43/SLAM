@@ -64,7 +64,7 @@ fn skins_draw_as_the_references() {
             // The defaults of the settings, with the background as the play shows it, and
             // the key overlay on to see it.
             settings: PlaySettings {
-                key_overlay: Some(slam_play::key_overlay::KeyAnimation::Stable),
+                key_overlay: Some(slam_play::key_overlay::KeyAnimation::Stable.into()),
                 ..PlaySettings::default()
             },
             times: case.times.to_vec(),

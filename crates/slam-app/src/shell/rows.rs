@@ -22,8 +22,9 @@ use crate::settings::model::ModHotkeyStyle;
 use crate::settings::{
     BreakDisplay, DrawRate, FpsScreens, HitsoundDelay, InputSettings, KeyOverlayAnimation, KeySlot,
     MenuBackground, MenuSounds, PauseMenuStyle, RendererChoice, ResultsStyle, Settings,
-    SkipButtonStyle, Thumbnails, Timing, skins,
+    SkipButtonStyle, ThumbnailStyle, Thumbnails, Timing, skins,
 };
+use crate::update::Channel;
 use slam_ui::cursor::CursorStyle;
 use slam_ui::screen::TransitionStyle;
 use slam_ui::song_select::DifficultyInfo;
@@ -179,6 +180,9 @@ pub const SECTIONS: usize = SECTION_KEYS.len();
 /// The range of the cursor size slider (lazer's `GameplayCursorSize`, ADR-0086).
 const CURSOR_SIZE_RANGE: (f64, f64) = (0.1, 2.0);
 
+/// The range of the menu cursor size slider (ADR-0184).
+const MENU_CURSOR_SIZE_RANGE: (f64, f64) = (0.5, 2.0);
+
 /// The interface scale sliders show percents: this is their step (ADR-0118).
 const UI_SCALE_STEP_PERCENT: f64 = 5.0;
 
@@ -222,6 +226,7 @@ pub enum Row {
     GlobalOffset,
     MouseButtons,
     HighPrecisionMouse,
+    MouseSideButtons,
     Sensitivity,
     LeftKey1,
     LeftKey2,
@@ -293,6 +298,7 @@ pub enum Row {
     MenuCursorSpin,
     /// The menu cursor leaves a trail; applies live (ADR-0136).
     MenuCursorTrail,
+    MenuCursorSize,
     /// The menu cursor sends a ring out at each press; applies live (ADR-0136).
     MenuCursorRipple,
     /// The gameplay cursor (ADR-0124).
@@ -326,12 +332,20 @@ pub enum Row {
     SongSelectSetHeight,
     /// Height of a difficulty row in the song list (ADR-0149).
     SongSelectDifficultyHeight,
+    /// Multipliers of the info panel's width and height, and whether its width follows
+    /// its texts (ADR-0168).
+    SongSelectCurve,
+    SongSelectInfoWidth,
+    SongSelectInfoHeight,
+    SongSelectInfoAutoWidth,
     /// What a difficulty row shows beside its name (ADR-0151).
     SongSelectDifficultyInfo,
     /// How letter keys toggle mods (ADR-0155).
     SongSelectModHotkeys,
     /// Height of the song list's thumbnails (ADR-0127).
     SongSelectThumbnails,
+    /// Where a set's thumbnail goes (ADR-0174).
+    SongSelectThumbnailStyle,
     AlwaysPlayFirstComboBreak,
     /// Shows the skin's warning arrows before a break ends (ADR-0142).
     WarningArrows,
@@ -359,6 +373,20 @@ pub enum Row {
     FeedbackBug,
     /// Opens the feature request form.
     FeedbackFeature,
+    /// Whether the Discord status shows what the player does; applies live (ADR-0170).
+    DiscordPresence,
+    /// Whether SLAM looks for a newer version at start (ADR-0185).
+    UpdatesCheck,
+    /// Which releases are offered (ADR-0185).
+    UpdatesChannel,
+    /// Shows where the update stands; pressed, asks GitHub again (ADR-0185).
+    UpdatesStatus,
+    /// Downloads the version found; shown while one is available (ADR-0185).
+    UpdatesInstall,
+    /// Restarts into the downloaded version; shown once it is ready (ADR-0185).
+    UpdatesRestart,
+    /// Opens the release page where the update cannot be installed here (ADR-0185).
+    UpdatesPage,
 }
 
 // The screen ignores rows past its capacity.
@@ -366,7 +394,7 @@ const _: () =
     assert!(Row::ALL.len() + super::otd::OtdRow::ALL.len() <= slam_ui::settings_screen::MAX_ROWS);
 
 impl Row {
-    pub const ALL: [Row; 105] = [
+    pub const ALL: [Row; 119] = [
         Row::MasterVolume,
         Row::MusicVolume,
         Row::MenuMusic,
@@ -381,6 +409,7 @@ impl Row {
         Row::GlobalOffset,
         Row::MouseButtons,
         Row::HighPrecisionMouse,
+        Row::MouseSideButtons,
         Row::Sensitivity,
         Row::LeftKey1,
         Row::LeftKey2,
@@ -428,6 +457,7 @@ impl Row {
         Row::MenuCursorRotate,
         Row::MenuCursorSpin,
         Row::MenuCursorTrail,
+        Row::MenuCursorSize,
         Row::MenuCursorRipple,
         Row::CursorStyle,
         Row::CursorSize,
@@ -451,9 +481,14 @@ impl Row {
         Row::SongSelectDim,
         Row::SongSelectSetHeight,
         Row::SongSelectDifficultyHeight,
+        Row::SongSelectCurve,
+        Row::SongSelectInfoWidth,
+        Row::SongSelectInfoHeight,
+        Row::SongSelectInfoAutoWidth,
         Row::SongSelectDifficultyInfo,
         Row::SongSelectModHotkeys,
         Row::SongSelectThumbnails,
+        Row::SongSelectThumbnailStyle,
         Row::AlwaysPlayFirstComboBreak,
         Row::WarningArrows,
         Row::Countdown,
@@ -472,6 +507,13 @@ impl Row {
         Row::FeedbackHome,
         Row::FeedbackBug,
         Row::FeedbackFeature,
+        Row::DiscordPresence,
+        Row::UpdatesCheck,
+        Row::UpdatesChannel,
+        Row::UpdatesStatus,
+        Row::UpdatesInstall,
+        Row::UpdatesRestart,
+        Row::UpdatesPage,
     ];
 
     /// The page a Feedback row opens.
@@ -481,8 +523,18 @@ impl Row {
             Row::FeedbackHome => Some(Kind::Github),
             Row::FeedbackBug => Some(Kind::Bug),
             Row::FeedbackFeature => Some(Kind::Feature),
+            Row::UpdatesPage => Some(Kind::Releases),
             _ => None,
         }
+    }
+
+    /// Whether the row is a button of the self-updater that talks to its thread
+    /// (ADR-0185); the page row opens a link like the feedback rows.
+    pub fn is_updater_button(self) -> bool {
+        matches!(
+            self,
+            Row::UpdatesStatus | Row::UpdatesInstall | Row::UpdatesRestart
+        )
     }
 
     /// The key a key row edits.
@@ -510,8 +562,59 @@ impl Row {
         Row::ALL.iter().position(|row| row.key_slot() == Some(slot))
     }
 
+    /// The row's name in the settings file (ADR-0168): its label key without the `settings-`
+    /// prefix, unique among the rows and stable: a renamed key keeps the old name here.
+    pub fn name(self) -> &'static str {
+        match self {
+            // The two share a label.
+            Row::FullscreenSize => return "layout-resolution-fullscreen",
+            Row::WindowedSize => return "layout-resolution-windowed",
+            _ => {}
+        }
+        let key = self.label_key();
+        key.strip_prefix("settings-").unwrap_or(key)
+    }
+
+    /// The row called `name` in the settings file.
+    pub fn from_name(name: &str) -> Option<Row> {
+        Row::ALL.into_iter().find(|row| row.name() == name)
+    }
+
+    /// Whether the row can be pinned to the toolbar (ADR-0168): a toggle, a slider or a
+    /// dropdown that applies as it changes and whose options are fixed. Not the rows with
+    /// lists that come from outside (skin, device, displays), the language (it switches
+    /// behind a curtain), the sensitivity (disabled without high precision), and the rows
+    /// this platform does not show.
+    pub fn pinnable(self) -> bool {
+        let hidden = match self {
+            Row::VideoDriver => !VIDEO_DRIVER_ROW,
+            Row::Renderer => !RENDERER_ROW,
+            Row::DisableWinKey => !WIN_KEY_ROW,
+            Row::MenuCursorSpin => true,
+            _ => false,
+        };
+        !hidden
+            && self.key_slot().is_none()
+            && !matches!(
+                self,
+                Row::Skin
+                    | Row::Device
+                    | Row::Display
+                    | Row::FullscreenSize
+                    | Row::WindowedSize
+                    | Row::Language
+                    | Row::Sensitivity
+                    | Row::UpdatesCheck
+                    | Row::UpdatesChannel
+                    | Row::UpdatesStatus
+                    | Row::UpdatesInstall
+                    | Row::UpdatesRestart
+                    | Row::UpdatesPage
+            )
+    }
+
     /// The section of the screen the row is in: one of the `section::*` indices.
-    fn section(self) -> usize {
+    pub fn section(self) -> usize {
         match self {
             Row::MasterVolume
             | Row::MusicVolume
@@ -527,6 +630,7 @@ impl Row {
             Row::GlobalOffset => section::OFFSET,
             Row::MouseButtons
             | Row::HighPrecisionMouse
+            | Row::MouseSideButtons
             | Row::Sensitivity
             | Row::LeftKey1
             | Row::LeftKey2
@@ -576,6 +680,7 @@ impl Row {
             | Row::MenuCursorRotate
             | Row::MenuCursorSpin
             | Row::MenuCursorTrail
+            | Row::MenuCursorSize
             | Row::MenuCursorRipple
             | Row::CursorStyle
             | Row::CursorSize
@@ -599,9 +704,14 @@ impl Row {
             | Row::SongSelectDim
             | Row::SongSelectSetHeight
             | Row::SongSelectDifficultyHeight
+            | Row::SongSelectCurve
+            | Row::SongSelectInfoWidth
+            | Row::SongSelectInfoHeight
+            | Row::SongSelectInfoAutoWidth
             | Row::SongSelectDifficultyInfo
             | Row::SongSelectModHotkeys
             | Row::SongSelectThumbnails
+            | Row::SongSelectThumbnailStyle
             | Row::AlwaysPlayFirstComboBreak
             | Row::WarningArrows
             | Row::Countdown
@@ -617,7 +727,16 @@ impl Row {
             | Row::HoldToConfirm
             | Row::RestartAnimation => section::GAMEPLAY,
             Row::SongsFolder => section::LIBRARY,
-            Row::FeedbackHome | Row::FeedbackBug | Row::FeedbackFeature => section::FEEDBACK,
+            Row::FeedbackHome
+            | Row::FeedbackBug
+            | Row::FeedbackFeature
+            | Row::DiscordPresence
+            | Row::UpdatesCheck
+            | Row::UpdatesChannel
+            | Row::UpdatesStatus
+            | Row::UpdatesInstall
+            | Row::UpdatesRestart
+            | Row::UpdatesPage => section::FEEDBACK,
         }
     }
 
@@ -637,6 +756,7 @@ impl Row {
             Row::GlobalOffset => "settings-offset-global",
             Row::MouseButtons => "settings-keys-mouse-buttons",
             Row::HighPrecisionMouse => "settings-input-high-precision",
+            Row::MouseSideButtons => "settings-input-mouse-side-buttons",
             Row::Sensitivity => "settings-input-sensitivity",
             Row::LeftKey1 => "settings-keys-left-1",
             Row::LeftKey2 => "settings-keys-left-2",
@@ -667,6 +787,7 @@ impl Row {
             Row::MenuCursorRotate => "settings-general-cursor-rotate",
             Row::MenuCursorSpin => "settings-general-cursor-spin",
             Row::MenuCursorTrail => "settings-general-cursor-trail",
+            Row::MenuCursorSize => "settings-menu-cursor-size",
             Row::MenuCursorRipple => "settings-general-cursor-ripple",
             Row::Transitions => "settings-general-transitions",
             Row::MenuScale => "settings-general-menu-scale",
@@ -694,9 +815,14 @@ impl Row {
             Row::SongSelectDim => "settings-song-select-dim",
             Row::SongSelectSetHeight => "settings-song-select-set-height",
             Row::SongSelectDifficultyHeight => "settings-song-select-difficulty-height",
+            Row::SongSelectCurve => "settings-song-select-curve",
+            Row::SongSelectInfoWidth => "settings-song-select-info-width",
+            Row::SongSelectInfoHeight => "settings-song-select-info-height",
+            Row::SongSelectInfoAutoWidth => "settings-song-select-info-auto-width",
             Row::SongSelectDifficultyInfo => "settings-song-select-difficulty-info",
             Row::SongSelectModHotkeys => "settings-song-select-mod-hotkeys",
             Row::SongSelectThumbnails => "settings-song-select-thumbnails",
+            Row::SongSelectThumbnailStyle => "settings-song-select-thumbnail-style",
             Row::BeatmapSkins => "settings-gameplay-beatmap-skins",
             Row::BeatmapColours => "settings-gameplay-beatmap-colours",
             Row::BeatmapHitsounds => "settings-gameplay-beatmap-hitsounds",
@@ -727,6 +853,13 @@ impl Row {
             Row::FeedbackHome => "settings-feedback-home",
             Row::FeedbackBug => "settings-feedback-bug",
             Row::FeedbackFeature => "settings-feedback-feature",
+            Row::DiscordPresence => "settings-feedback-discord",
+            Row::UpdatesCheck => "settings-updates-check",
+            Row::UpdatesChannel => "settings-updates-channel",
+            Row::UpdatesStatus => "settings-updates-status",
+            Row::UpdatesInstall => "settings-updates-install",
+            Row::UpdatesRestart => "settings-updates-restart",
+            Row::UpdatesPage => "settings-updates-page",
         }
     }
 
@@ -840,6 +973,13 @@ fn skip_button_key(style: SkipButtonStyle) -> &'static str {
     }
 }
 
+fn channel_key(channel: Channel) -> &'static str {
+    match channel {
+        Channel::Prerelease => "settings-option-channel-prerelease",
+        Channel::Stable => "settings-option-channel-stable",
+    }
+}
+
 fn results_style_key(style: ResultsStyle) -> &'static str {
     match style {
         ResultsStyle::Skin => "settings-option-results-style-skin",
@@ -868,6 +1008,8 @@ fn break_display_key(display: BreakDisplay) -> &'static str {
 fn key_animation_key(animation: KeyOverlayAnimation) -> &'static str {
     match animation {
         KeyOverlayAnimation::Stable => "settings-option-key-overlay-animation-stable",
+        KeyOverlayAnimation::StableThree => "settings-option-key-overlay-animation-stable-three",
+        KeyOverlayAnimation::LazerThree => "settings-option-key-overlay-animation-lazer-three",
         KeyOverlayAnimation::Lazer => "settings-option-key-overlay-animation-lazer",
     }
 }
@@ -888,6 +1030,14 @@ fn thumbnails_key(thumbnails: Thumbnails) -> &'static str {
         Thumbnails::H64 => "settings-option-thumbnails-64",
         Thumbnails::H128 => "settings-option-thumbnails-128",
         Thumbnails::H256 => "settings-option-thumbnails-256",
+    }
+}
+
+/// The Fluent key of a thumbnail style option (ADR-0174).
+fn thumbnail_style_key(style: ThumbnailStyle) -> &'static str {
+    match style {
+        ThumbnailStyle::Left => "settings-option-thumbnail-style-left",
+        ThumbnailStyle::Full => "settings-option-thumbnail-style-full",
     }
 }
 
@@ -1126,6 +1276,20 @@ impl Rows {
             .collect()
     }
 
+    /// The widget a pinned `row` shows in the toolbar's popup, in the state `settings` have;
+    /// `None` for a row that cannot be pinned (ADR-0168).
+    pub fn pin_widget(&self, row: Row, settings: &Settings) -> Option<RowWidget> {
+        if !row.pinnable() {
+            return None;
+        }
+        let kind = self.kind(row, settings);
+        matches!(
+            kind,
+            RowKind::Toggle { .. } | RowKind::Slider { .. } | RowKind::Dropdown { .. }
+        )
+        .then(|| slam_ui::settings_screen::widget_of(kind))
+    }
+
     fn kind(&self, row: Row, s: &Settings) -> RowKind {
         let percent = |value: f64| RowKind::Slider {
             min: 0.0,
@@ -1147,8 +1311,22 @@ impl Rows {
             | Row::SongsFolder
             | Row::FeedbackHome
             | Row::FeedbackBug
-            | Row::FeedbackFeature => RowKind::Button,
+            | Row::FeedbackFeature
+            | Row::UpdatesStatus
+            | Row::UpdatesInstall
+            | Row::UpdatesRestart
+            | Row::UpdatesPage => RowKind::Button,
+            Row::UpdatesCheck => RowKind::Toggle {
+                value: s.updates.check,
+            },
+            Row::UpdatesChannel => choice(
+                Channel::ALL.len(),
+                Channel::ALL.iter().position(|c| *c == s.updates.channel),
+            ),
             Row::NotFullscreenNote => RowKind::Note,
+            Row::DiscordPresence => RowKind::Toggle {
+                value: s.general.discord_presence,
+            },
             Row::MasterVolume => percent(s.audio.master_volume),
             Row::MusicVolume => percent(s.audio.music_volume),
             Row::MenuMusic => RowKind::Toggle {
@@ -1171,7 +1349,34 @@ impl Rows {
                 step: 1.0,
                 value: f64::from(s.song_select.difficulty_height).round(),
             },
+            Row::SongSelectCurve => RowKind::Slider {
+                min: 0.0,
+                max: 2.0,
+                step: 0.1,
+                value: round_to(f64::from(s.song_select.curve), 1),
+            },
+            Row::SongSelectInfoWidth => RowKind::Slider {
+                min: 0.5,
+                max: 1.5,
+                step: 0.05,
+                value: round_to(f64::from(s.song_select.info_width), 2),
+            },
+            Row::SongSelectInfoHeight => RowKind::Slider {
+                min: 0.5,
+                max: 1.5,
+                step: 0.05,
+                value: round_to(f64::from(s.song_select.info_height), 2),
+            },
+            Row::SongSelectInfoAutoWidth => RowKind::Toggle {
+                value: s.song_select.info_auto_width,
+            },
             Row::PositionalHitsoundsLevel => percent(f64::from(s.audio.positional_hitsounds_level)),
+            Row::MenuCursorSize => RowKind::Slider {
+                min: MENU_CURSOR_SIZE_RANGE.0,
+                max: MENU_CURSOR_SIZE_RANGE.1,
+                step: 0.05,
+                value: round_to(s.general.menu_cursor_size, 2),
+            },
             Row::CursorSize => RowKind::Slider {
                 min: CURSOR_SIZE_RANGE.0,
                 max: CURSOR_SIZE_RANGE.1,
@@ -1238,6 +1443,12 @@ impl Rows {
                 Thumbnails::ALL
                     .iter()
                     .position(|t| *t == s.song_select.thumbnails),
+            ),
+            Row::SongSelectThumbnailStyle => choice(
+                ThumbnailStyle::ALL.len(),
+                ThumbnailStyle::ALL
+                    .iter()
+                    .position(|t| *t == s.song_select.thumbnail_style),
             ),
             Row::MenuBackground => choice(
                 MenuBackground::ALL.len(),
@@ -1360,6 +1571,9 @@ impl Rows {
             },
             Row::HighPrecisionMouse => RowKind::Toggle {
                 value: s.input.high_precision_mouse,
+            },
+            Row::MouseSideButtons => RowKind::Toggle {
+                value: s.input.mouse_side_buttons,
             },
             Row::MinimiseOnFocusLoss => RowKind::Toggle {
                 value: s.window.minimise_on_focus_loss,
@@ -1529,8 +1743,24 @@ impl Rows {
             (Row::SongSelectDifficultyHeight, RowValue::Slider(v)) => {
                 settings.song_select.difficulty_height = v.round().clamp(30.0, 90.0) as f32;
             }
+            (Row::SongSelectCurve, RowValue::Slider(v)) => {
+                settings.song_select.curve = (v.clamp(0.0, 2.0) * 10.0).round() as f32 / 10.0;
+            }
+            (Row::SongSelectInfoWidth, RowValue::Slider(v)) => {
+                settings.song_select.info_width = (v.clamp(0.5, 1.5) * 20.0).round() as f32 / 20.0;
+            }
+            (Row::SongSelectInfoHeight, RowValue::Slider(v)) => {
+                settings.song_select.info_height = (v.clamp(0.5, 1.5) * 20.0).round() as f32 / 20.0;
+            }
+            (Row::SongSelectInfoAutoWidth, RowValue::Toggle(v)) => {
+                settings.song_select.info_auto_width = v;
+            }
             (Row::PositionalHitsoundsLevel, RowValue::Slider(v)) => {
                 settings.audio.positional_hitsounds_level = percent(v).clamp(0.0, 1.0) as f32;
+            }
+            (Row::MenuCursorSize, RowValue::Slider(v)) => {
+                settings.general.menu_cursor_size =
+                    round_to(v, 2).clamp(MENU_CURSOR_SIZE_RANGE.0, MENU_CURSOR_SIZE_RANGE.1);
             }
             (Row::CursorSize, RowValue::Slider(v)) => {
                 settings.gameplay.cursor_size =
@@ -1548,6 +1778,9 @@ impl Rows {
             (Row::MouseButtons, RowValue::Toggle(v)) => settings.gameplay.mouse_buttons = v,
             (Row::HighPrecisionMouse, RowValue::Toggle(v)) => {
                 settings.input.high_precision_mouse = v;
+            }
+            (Row::MouseSideButtons, RowValue::Toggle(v)) => {
+                settings.input.mouse_side_buttons = v;
             }
             (Row::Sensitivity, RowValue::Slider(v)) => {
                 settings.input.sensitivity = InputSettings::clean_sensitivity(v);
@@ -1614,6 +1847,13 @@ impl Rows {
                 }
             },
             (Row::Intro, RowValue::Toggle(v)) => settings.general.intro = v,
+            (Row::DiscordPresence, RowValue::Toggle(v)) => settings.general.discord_presence = v,
+            (Row::UpdatesCheck, RowValue::Toggle(v)) => settings.updates.check = v,
+            (Row::UpdatesChannel, RowValue::Choice(i)) => {
+                if let Some(channel) = Channel::ALL.get(i) {
+                    settings.updates.channel = *channel;
+                }
+            }
             (Row::Effects, RowValue::Toggle(v)) => settings.general.effects = v,
             (Row::ParallaxEnabled, RowValue::Toggle(v)) => settings.general.parallax_enabled = v,
             (Row::Parallax, RowValue::Slider(v)) => {
@@ -1673,6 +1913,11 @@ impl Rows {
             (Row::SongSelectThumbnails, RowValue::Choice(i)) => {
                 if let Some(thumbnails) = Thumbnails::ALL.get(i) {
                     settings.song_select.thumbnails = *thumbnails;
+                }
+            }
+            (Row::SongSelectThumbnailStyle, RowValue::Choice(i)) => {
+                if let Some(style) = ThumbnailStyle::ALL.get(i) {
+                    settings.song_select.thumbnail_style = *style;
                 }
             }
             (Row::MenuCursor, RowValue::Choice(i)) => {
@@ -1814,6 +2059,8 @@ impl Rows {
                 Row::DisableWinKey => screen.set_hidden(i, !WIN_KEY_ROW),
                 Row::VideoDriver => screen.set_hidden(i, !VIDEO_DRIVER_ROW),
                 Row::Renderer => screen.set_hidden(i, !RENDERER_ROW),
+                // The idle spin is gone (ADR-0167); the key stays readable in old files.
+                Row::MenuCursorSpin => screen.set_hidden(i, true),
                 Row::Display | Row::FullscreenSize | Row::WindowedSize => {
                     let (options, selected) = self.display_choice(*row, settings);
                     if let Some(RowWidget::Dropdown(dropdown)) = screen.widget(i)
@@ -1844,34 +2091,26 @@ impl Rows {
         }
     }
 
-    /// What the search of the settings panel looks in, per row (ADR-0095): the row's name
-    /// and its section's, in the language shown and in English, lowercased. Allocates: the
-    /// panel asks for it as it opens.
+    /// What the search of the settings panel looks in, per row (ADR-0095, ADR-0167): the
+    /// row's name and its section's, in every built-in language (so a Russian word finds a
+    /// row under an English interface and the other way round) and in the language shown,
+    /// lowercased. Allocates: the panel asks for it as it opens.
     pub fn search_texts(localizer: &Localizer) -> Arc<[Box<str>]> {
+        let text = |key: &str, section: &str| {
+            let mut fields = vec![localizer.format(key, None)];
+            fields.extend(localizer.format_every_language(key));
+            fields.push(localizer.format(section, None));
+            fields.extend(localizer.format_every_language(section));
+            let fields: Vec<&str> = fields.iter().map(|f| f.as_ref()).collect();
+            slam_ui::song_select::search_text(&fields).into_boxed_str()
+        };
         Row::ALL
             .iter()
             .map(|row| {
                 let section = SECTION_KEYS[row.section().min(SECTION_KEYS.len() - 1)];
-                let fields = [
-                    localizer.format(row.label_key(), None),
-                    localizer.format(section, None),
-                    localizer.format_english(row.label_key()),
-                    localizer.format_english(section),
-                ];
-                let fields: Vec<&str> = fields.iter().map(|f| f.as_ref()).collect();
-                slam_ui::song_select::search_text(&fields).into_boxed_str()
+                text(row.label_key(), section)
             })
-            .chain(super::otd::search_keys().map(|key| {
-                let section = super::otd::SECTION_KEY;
-                let fields = [
-                    localizer.format(key, None),
-                    localizer.format(section, None),
-                    localizer.format_english(key),
-                    localizer.format_english(section),
-                ];
-                let fields: Vec<&str> = fields.iter().map(|f| f.as_ref()).collect();
-                slam_ui::song_select::search_text(&fields).into_boxed_str()
-            }))
+            .chain(super::otd::search_keys().map(|key| text(key, super::otd::SECTION_KEY)))
             .collect()
     }
 
@@ -1927,6 +2166,10 @@ impl Rows {
                         .iter()
                         .map(|style| text(results_style_key(*style)))
                         .collect(),
+                    Row::UpdatesChannel => Channel::ALL
+                        .iter()
+                        .map(|channel| text(channel_key(*channel)))
+                        .collect(),
                     Row::PauseMenuStyle => PauseMenuStyle::ALL
                         .iter()
                         .map(|style| text(pause_menu_style_key(*style)))
@@ -1975,6 +2218,10 @@ impl Rows {
                     Row::SongSelectThumbnails => Thumbnails::ALL
                         .iter()
                         .map(|t| text(thumbnails_key(*t)))
+                        .collect(),
+                    Row::SongSelectThumbnailStyle => ThumbnailStyle::ALL
+                        .iter()
+                        .map(|t| text(thumbnail_style_key(*t)))
                         .collect(),
                     Row::MenuCursor | Row::CursorStyle => CursorStyle::ALL
                         .iter()
@@ -2037,7 +2284,9 @@ impl Rows {
                     | Row::PauseMenuScale
                     | Row::PositionalHitsoundsLevel => text("settings-unit-percent"),
                     Row::Skew => text("settings-unit-degrees"),
-                    Row::Sensitivity | Row::CursorSize => text("settings-unit-times"),
+                    Row::Sensitivity | Row::CursorSize | Row::MenuCursorSize => {
+                        text("settings-unit-times")
+                    }
                     _ => String::new(),
                 };
                 let button = match row {
@@ -2047,6 +2296,10 @@ impl Rows {
                     Row::FeedbackHome => text("settings-feedback-home-button"),
                     Row::FeedbackBug => text("settings-feedback-bug-button"),
                     Row::FeedbackFeature => text("settings-feedback-feature-button"),
+                    Row::UpdatesStatus => text("settings-updates-status-button"),
+                    Row::UpdatesInstall => text("settings-updates-install-button"),
+                    Row::UpdatesRestart => text("settings-updates-restart-button"),
+                    Row::UpdatesPage => text("settings-updates-page-button"),
                     _ => String::new(),
                 };
                 // Lazer shows the stereo separation at zero as "Disabled".
@@ -2068,10 +2321,14 @@ impl Rows {
                     button,
                     shows_value: *row == Row::SongsFolder,
                     // Lazer shows the cursor size as `{v:0.##}x`.
-                    trim_zeros: matches!(row, Row::Sensitivity | Row::CursorSize),
+                    trim_zeros: matches!(
+                        row,
+                        Row::Sensitivity | Row::CursorSize | Row::MenuCursorSize
+                    ),
                     zero_text,
                     hint,
-                    dynamic_label: false,
+                    // The status line takes the state's text (ADR-0185).
+                    dynamic_label: *row == Row::UpdatesStatus,
                 }
             })
             .chain(super::otd::labels(localizer))
@@ -2151,6 +2408,57 @@ mod tests {
 
     fn index(row: Row) -> usize {
         Row::ALL.iter().position(|r| *r == row).unwrap()
+    }
+
+    #[test]
+    fn row_names_are_unique_and_round_trip() {
+        let mut seen = std::collections::HashSet::new();
+        for row in Row::ALL {
+            let name = row.name();
+            assert!(!name.is_empty() && !name.starts_with("settings-"), "{name}");
+            assert!(seen.insert(name), "{name} names two rows");
+            assert_eq!(Row::from_name(name), Some(row));
+        }
+        assert_eq!(Row::from_name("no-such-row"), None);
+        assert_eq!(Row::from_name(""), None);
+    }
+
+    #[test]
+    fn pinnable_rows_have_a_popup_widget_and_the_others_do_not() {
+        let (rows, settings) = rows();
+        assert!(Row::MenuCursor.pinnable());
+        assert!(Row::MasterVolume.pinnable());
+        for row in [Row::Skin, Row::Device, Row::Language, Row::LeftKey1] {
+            assert!(!row.pinnable(), "{row:?}");
+            assert!(rows.pin_widget(row, &settings).is_none());
+        }
+        // Buttons and notes are not pinnable whatever the table says.
+        for row in [Row::SongsFolder, Row::ResetKeys, Row::NotFullscreenNote] {
+            assert!(rows.pin_widget(row, &settings).is_none(), "{row:?}");
+        }
+        assert!(matches!(
+            rows.pin_widget(Row::MenuCursor, &settings),
+            Some(RowWidget::Dropdown(_))
+        ));
+        assert!(matches!(
+            rows.pin_widget(Row::MasterVolume, &settings),
+            Some(RowWidget::Slider(_))
+        ));
+        assert!(matches!(
+            rows.pin_widget(Row::MenuMusic, &settings),
+            Some(RowWidget::Toggle(_))
+        ));
+    }
+
+    #[test]
+    fn a_popup_value_applies_like_the_panels() {
+        let (rows, mut settings) = rows();
+        let row = index(Row::MenuMusic);
+        rows.apply(&mut settings, row, RowValue::Toggle(false));
+        assert!(!settings.audio.menu_music);
+        let row = index(Row::MenuCursor);
+        rows.apply(&mut settings, row, RowValue::Choice(0));
+        assert_eq!(settings.general.menu_cursor, CursorStyle::ALL[0]);
     }
 
     fn sizes(fullscreen: &[[u16; 2]], windowed: &[[u16; 2]]) -> crate::displays::SizeLists {
@@ -2377,6 +2685,19 @@ mod tests {
     }
 
     #[test]
+    fn the_search_finds_rows_by_their_names_in_both_languages() {
+        let localizer = Localizer::builtin().unwrap();
+        let row = index(Row::Skin);
+        let english_ui = Rows::search_texts(&localizer);
+        assert!(english_ui[row].contains("skin"));
+        assert!(english_ui[row].contains("\u{441}\u{43a}\u{438}\u{43d}"));
+        localizer.set_language("ru").unwrap();
+        let russian_ui = Rows::search_texts(&localizer);
+        assert!(russian_ui[row].contains("skin"));
+        assert!(russian_ui[row].contains("\u{441}\u{43a}\u{438}\u{43d}"));
+    }
+
+    #[test]
     fn screen_mode_options_are_labelled() {
         let (rows, _) = rows();
         let localizer = Localizer::builtin().unwrap();
@@ -2424,6 +2745,7 @@ mod tests {
             (Row::HudAnimations, true),
             (Row::RestartAnimation, true),
             (Row::Intro, true),
+            (Row::DiscordPresence, true),
             (Row::Effects, true),
             (Row::AlwaysPlayFirstComboBreak, true),
             (Row::WarningArrows, true),
@@ -2743,7 +3065,7 @@ mod tests {
         rows.apply(&mut s, index(Row::SnakingOut), RowValue::Toggle(true));
         rows.apply(&mut s, index(Row::HitLighting), RowValue::Toggle(false));
         rows.apply(&mut s, index(Row::KeyOverlay), RowValue::Toggle(true));
-        rows.apply(&mut s, index(Row::KeyOverlayAnimation), RowValue::Choice(1));
+        rows.apply(&mut s, index(Row::KeyOverlayAnimation), RowValue::Choice(3));
         rows.apply(&mut s, index(Row::HudAnimations), RowValue::Toggle(false));
         rows.apply(
             &mut s,
@@ -2940,7 +3262,7 @@ mod tests {
     fn the_thumbnails_row_chooses_the_height_and_is_labelled_in_both_languages() {
         let (rows, mut s) = rows();
         let at = index(Row::SongSelectThumbnails);
-        assert_eq!(at, index(Row::SongSelectDim) + 5);
+        assert_eq!(at, index(Row::SongSelectDim) + 9);
         assert_eq!(s.song_select.thumbnails, Thumbnails::H128);
         assert_eq!(
             rows.specs(&s)[at].kind,
@@ -2966,6 +3288,35 @@ mod tests {
         localizer.set_language("ru").unwrap();
         let labels = rows.labels(&localizer);
         assert_eq!(labels.rows[at].options[0], "Выкл.");
+        assert!(!labels.rows[at].label.is_empty());
+    }
+
+    #[test]
+    fn the_thumbnail_style_row_follows_the_thumbnails_row_in_both_languages() {
+        let (rows, mut s) = rows();
+        let at = index(Row::SongSelectThumbnailStyle);
+        assert_eq!(at, index(Row::SongSelectThumbnails) + 1);
+        assert_eq!(s.song_select.thumbnail_style, ThumbnailStyle::Left);
+        assert_eq!(
+            rows.specs(&s)[at].kind,
+            RowKind::Dropdown {
+                options: 2,
+                selected: 0
+            }
+        );
+        rows.apply(&mut s, at, RowValue::Choice(1));
+        assert_eq!(s.song_select.thumbnail_style, ThumbnailStyle::Full);
+        rows.apply(&mut s, at, RowValue::Choice(7));
+        assert_eq!(s.song_select.thumbnail_style, ThumbnailStyle::Full);
+        let localizer = Localizer::builtin().unwrap();
+        localizer.set_language("en").unwrap();
+        assert_eq!(
+            rows.labels(&localizer).rows[at].options,
+            ["Small, left", "Full plate"]
+        );
+        localizer.set_language("ru").unwrap();
+        let labels = rows.labels(&localizer);
+        assert_eq!(labels.rows[at].options[1], "На всю плашку");
         assert!(!labels.rows[at].label.is_empty());
     }
 
@@ -2999,10 +3350,37 @@ mod tests {
     }
 
     #[test]
+    fn the_info_panel_rows_adjust_its_size_and_width_mode() {
+        let (rows, mut s) = rows();
+        let (w, h, a) = (
+            index(Row::SongSelectInfoWidth),
+            index(Row::SongSelectInfoHeight),
+            index(Row::SongSelectInfoAutoWidth),
+        );
+        assert_eq!(s.song_select.info_width, 1.0);
+        assert!(!s.song_select.info_auto_width);
+        rows.apply(&mut s, w, RowValue::Slider(0.77));
+        rows.apply(&mut s, h, RowValue::Slider(9.0));
+        rows.apply(&mut s, a, RowValue::Toggle(true));
+        assert_eq!(s.song_select.info_width, 0.75);
+        assert_eq!(s.song_select.info_height, 1.5);
+        assert!(s.song_select.info_auto_width);
+        assert_eq!(
+            rows.specs(&s)[w].kind,
+            RowKind::Slider {
+                min: 0.5,
+                max: 1.5,
+                step: 0.05,
+                value: 0.75
+            }
+        );
+    }
+
+    #[test]
     fn the_difficulty_info_row_chooses_the_info_and_is_labelled_in_both_languages() {
         let (rows, mut s) = rows();
         let at = index(Row::SongSelectDifficultyInfo);
-        assert_eq!(at, index(Row::SongSelectDifficultyHeight) + 1);
+        assert_eq!(at, index(Row::SongSelectDifficultyHeight) + 5);
         assert_eq!(s.song_select.difficulty_info, DifficultyInfo::Stars);
         assert_eq!(
             rows.specs(&s)[at].kind,
@@ -3155,7 +3533,6 @@ mod tests {
             Row::Blur,
             Row::Shadows,
             Row::MenuCursorRotate,
-            Row::MenuCursorSpin,
             Row::MenuCursorTrail,
             Row::MenuCursorRipple,
         ] {
@@ -3189,6 +3566,30 @@ mod tests {
         assert_eq!(s.general.shadow_strength, 1.7);
         rows.apply(&mut s, index(Row::BlurStrength), RowValue::Slider(900.0));
         assert_eq!(s.general.blur_strength, 2.0);
+    }
+
+    #[test]
+    fn the_menu_cursor_size_row_sits_in_the_menu_cursor_section_and_edits_its_setting() {
+        assert_eq!(Row::MenuCursorSize.section(), Row::MenuCursor.section());
+        assert_eq!(index(Row::MenuCursorSize), index(Row::MenuCursorTrail) + 1);
+        let (rows, mut s) = rows();
+        assert_eq!(
+            rows.specs(&s)[index(Row::MenuCursorSize)].kind,
+            RowKind::Slider {
+                min: 0.5,
+                max: 2.0,
+                step: 0.05,
+                value: 0.8
+            }
+        );
+        rows.apply(&mut s, index(Row::MenuCursorSize), RowValue::Slider(1.25));
+        assert_eq!(s.general.menu_cursor_size, 1.25);
+        rows.apply(&mut s, index(Row::MenuCursorSize), RowValue::Slider(9.0));
+        assert_eq!(s.general.menu_cursor_size, 2.0);
+        rows.apply(&mut s, index(Row::MenuCursorSize), RowValue::Slider(0.0));
+        assert_eq!(s.general.menu_cursor_size, 0.5);
+        // The gameplay cursor size is untouched.
+        assert_eq!(s.gameplay.cursor_size, 1.0);
     }
 
     #[test]
@@ -3378,5 +3779,54 @@ mod tests {
             cfg!(any(target_os = "linux", target_os = "macos"))
         );
         assert!(toggle.hint.lines().count() <= 2);
+    }
+
+    #[test]
+    fn the_update_rows_edit_the_settings_and_sit_in_the_feedback_section() {
+        let (rows, mut s) = rows();
+        for row in [
+            Row::UpdatesCheck,
+            Row::UpdatesChannel,
+            Row::UpdatesStatus,
+            Row::UpdatesInstall,
+            Row::UpdatesRestart,
+            Row::UpdatesPage,
+        ] {
+            assert_eq!(row.section(), SECTIONS - 1, "{row:?}");
+            assert!(!row.pinnable());
+        }
+        let specs = rows.specs(&s);
+        assert!(matches!(
+            specs[index(Row::UpdatesCheck)].kind,
+            RowKind::Toggle { value: true }
+        ));
+        assert!(matches!(
+            specs[index(Row::UpdatesChannel)].kind,
+            RowKind::Dropdown {
+                options: 2,
+                selected: 0
+            }
+        ));
+        rows.apply(&mut s, index(Row::UpdatesCheck), RowValue::Toggle(false));
+        rows.apply(&mut s, index(Row::UpdatesChannel), RowValue::Choice(1));
+        assert!(!s.updates.check);
+        assert_eq!(s.updates.channel, Channel::Stable);
+        assert!(matches!(
+            rows.specs(&s)[index(Row::UpdatesChannel)].kind,
+            RowKind::Dropdown { selected: 1, .. }
+        ));
+    }
+
+    #[test]
+    fn the_update_buttons_are_told_apart() {
+        assert!(Row::UpdatesStatus.is_updater_button());
+        assert!(Row::UpdatesInstall.is_updater_button());
+        assert!(Row::UpdatesRestart.is_updater_button());
+        // The page row opens a link like a feedback row.
+        assert!(!Row::UpdatesPage.is_updater_button());
+        assert_eq!(
+            Row::UpdatesPage.feedback(),
+            Some(crate::feedback::Kind::Releases)
+        );
     }
 }

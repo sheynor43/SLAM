@@ -394,20 +394,24 @@ impl State {
                 for now_ns in [0, 5_000_000_000] {
                     self.shapes.clear();
                     self.text.clear();
-                    split = self.views.song_select.push(
-                        &mut self.shapes,
-                        &mut self.text,
-                        &mut self.glyphs,
-                        width,
-                        height,
-                        &screen.snapshot(),
-                        Pose::SHOWN,
-                        white,
-                        Thumbs {
-                            now_ns,
-                            ..Thumbs::OFF
-                        },
-                    );
+                    split = self
+                        .views
+                        .song_select
+                        .push(
+                            &mut self.shapes,
+                            &mut self.text,
+                            &mut self.glyphs,
+                            width,
+                            height,
+                            &screen.snapshot(),
+                            Pose::SHOWN,
+                            white,
+                            Thumbs {
+                                now_ns,
+                                ..Thumbs::OFF
+                            },
+                        )
+                        .panel;
                 }
             }
             Scene::Toast => {
@@ -426,6 +430,7 @@ impl State {
                     visible: true,
                     since_ns: 1,
                     hover: true,
+                    variant: slam_ui::toast::REPLAY_SAVED,
                 };
                 self.views.toast.push(
                     &mut self.shapes,

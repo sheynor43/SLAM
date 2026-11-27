@@ -38,6 +38,8 @@ pub struct InterfaceViews {
     pub volume: VolumeView,
     /// The replay toast (ADR-0154).
     pub toast: slam_ui::toast::ToastView,
+    /// The menus' toolbar (ADR-0168).
+    pub toolbar: slam_ui::toolbar::ToolbarView,
     /// The theme they were laid out with: the draw side's from the swap on.
     pub theme: Theme,
     /// The switch ([`AppliedLanguage::switches`]) they were laid out for.
@@ -68,13 +70,16 @@ pub fn interface_views(
         loading: text("song-select-loading"),
         empty: text("song-select-empty"),
         choose_folder: text("song-select-choose-folder"),
-        hint: text("song-select-hint"),
         no_audio: text("song-select-no-audio"),
+        footer_back: text("song-select-footer-back"),
+        footer_pin: text("song-select-footer-pin"),
+        footer_reset: text("song-select-footer-reset"),
         pp_suffix: text("song-select-pp-suffix"),
         search_placeholder: text("song-select-search-placeholder"),
         search_no_matches: text("song-select-search-no-matches"),
         mods_title: text("song-select-mods-title"),
         mods_hint: text("song-select-mods-hint"),
+        mods_multiplier: text("song-select-mods-multiplier"),
         mods_customise: text("song-select-mods-customise"),
         setting_texts: mod_settings::TEXT_KEYS
             .iter()
@@ -99,6 +104,8 @@ pub fn interface_views(
             drain_rate: text("song-select-details-drain-rate"),
             scores: text("song-select-scores"),
             no_scores: text("song-select-no-scores"),
+            accuracy: text("song-select-score-accuracy"),
+            combo: text("song-select-score-combo"),
         },
         mod_texts: mod_columns().map(|column| {
             column
@@ -146,10 +153,25 @@ pub fn interface_views(
             Arc::clone(registry),
             theme,
             &slam_ui::toast::ToastLabels {
-                title: localizer.format("toast-replay-saved", None).into_owned(),
-                hint: localizer
-                    .format("toast-replay-saved-hint", None)
-                    .into_owned(),
+                entries: crate::import::toast_keys()
+                    .iter()
+                    .map(|(title, hint)| slam_ui::toast::ToastEntry {
+                        title: localizer.format(title, None).into_owned(),
+                        hint: hint
+                            .map(|hint| localizer.format(hint, None).into_owned())
+                            .unwrap_or_default(),
+                    })
+                    .collect(),
+            },
+        ),
+        toolbar: slam_ui::toolbar::ToolbarView::new(
+            Arc::clone(registry),
+            theme,
+            &slam_ui::toolbar::ToolbarLabels {
+                settings: text("toolbar-settings"),
+                home: text("toolbar-home"),
+                player: text("toolbar-player"),
+                nothing_playing: text("player-nothing-playing"),
             },
         ),
         theme,
@@ -177,6 +199,7 @@ impl InterfaceViews {
         self.settings.lay_out_for_panel(width, height);
         self.volume.lay_out_for(width, height);
         self.toast.lay_out_for(width, height);
+        self.toolbar.lay_out_for(width, height);
     }
 }
 

@@ -738,6 +738,8 @@ fn host(name: &str, with_track: bool) -> HostFixture {
         selection: (None, 0),
         rng: 1,
         music_at: None,
+        player_ms: 0.0,
+        preview_speed: None,
         ui_sounds: ui_sounds::UiSoundPlayer::new(SAMPLE_RATE),
         loader,
         scenes: scene_tx,
@@ -1861,6 +1863,12 @@ fn ctrl_up_and_down_change_the_mod_speed() {
     s.tick(at(2), &[key(KEY_DOWN), key(KEY_DOWN)], &mut snap);
     assert_eq!(acronyms(&s), ["HT"]);
     assert_eq!(detail(&snap, 0, 2), TileDetail::Speed(95));
+    // The tile and the selection show the multiplier of Half Time at 0.95x.
+    let mods = song_view(&snap).mods;
+    assert!((mods.multipliers[0][2] - 0.83).abs() < 1e-9);
+    assert_eq!(mods.total_multiplier, mods.multipliers[0][2]);
+    // A tile off shows its mod's default multiplier.
+    assert!(mods.multipliers[1][3] > 1.0);
     // Released, Down moves through the list again.
     s.tick(at(3), &[key_up(KEY_LEFT_CTRL), key(KEY_DOWN)], &mut snap);
     assert_eq!(s.song_select().selected(), Some((0, 1)));
@@ -1917,9 +1925,9 @@ fn held_keys_repeat_the_walks_and_the_mod_steps_only() {
 }
 
 #[test]
-fn a_held_backspace_erases_with_control_too() {
+fn a_held_backspace_erases_a_word_per_repeat_with_control() {
     let (mut s, mut snap, _producer) = in_song_select();
-    s.tick(at(1), &[text("abc")], &mut snap);
+    s.tick(at(1), &[text("ab cd")], &mut snap);
     s.tick(
         at(2),
         &[
@@ -1929,7 +1937,7 @@ fn a_held_backspace_erases_with_control_too() {
         ],
         &mut snap,
     );
-    assert_eq!(s.song_select().query().as_str(), "a");
+    assert_eq!(s.song_select().query().as_str(), "");
 }
 
 #[test]
@@ -2143,7 +2151,7 @@ fn difficulty_adjust_expands_the_panel_and_shows_the_beatmap_values() {
     );
     assert_eq!(acronyms(&s), ["DA"]);
     let c = customise(&snap);
-    assert_eq!(c.state, CustomisationState::ExpandedByMod);
+    assert_eq!(c.state, CustomisationState::Expanded);
     // Header, CS, HP, OD, AR and Extended Limits.
     assert_eq!(c.len, 6);
     // The test difficulties have CS 4, HP 5, OD 5; the hotkey set the approach rate only.
@@ -2942,6 +2950,7 @@ fn a_listed_score_opens_its_results_and_back_returns_to_the_song_select() {
         max_combo: 33,
         rank: *b"SH",
         mods: ScoreMods::from_acronyms(["HD", "DT"]),
+        multiplier: 1.18,
         date_ms: 1_794_681_000_000,
         hits,
         maximums,
@@ -2996,4 +3005,353 @@ fn an_opened_score_goes_back_and_retries_like_the_results_of_a_play() {
     s.tick(now + 3, &[key(KEY_ESCAPE)], &mut snap);
     s.tick(now + 3 + TRANSITION_NS, &[], &mut snap);
     assert_eq!(*s.stack().top(), AppScreen::SongSelect);
+}
+
+fn held(scancode: u16, down: bool) -> InputEvent {
+    InputEvent {
+        time_ns: 0,
+        kind: InputKind::Key { scancode, down },
+    }
+}
+
+#[test]
+fn ctrl_backspace_erases_a_word_on_press_and_on_repeat() {
+    let (mut s, mut snap, _producer) = in_song_select();
+    s.tick(at(1), &[text("one two three")], &mut snap);
+    s.tick(at(2), &[held(KEY_LEFT_CTRL, true)], &mut snap);
+    s.tick(at(3), &[key(KEY_BACKSPACE)], &mut snap);
+    assert_eq!(s.song_select().query().as_str(), "one two ");
+    s.tick(at(4), &[repeat(KEY_BACKSPACE)], &mut snap);
+    assert_eq!(s.song_select().query().as_str(), "one ");
+    s.tick(at(5), &[held(KEY_LEFT_CTRL, false)], &mut snap);
+    s.tick(at(6), &[key(KEY_BACKSPACE)], &mut snap);
+    assert_eq!(s.song_select().query().as_str(), "one");
+}
+
+#[test]
+fn typing_and_erasing_make_key_sounds() {
+    use crate::menu_sounds::MenuSound;
+    let at_sound = |sound| MenuSound::ALL.iter().position(|s| *s == sound).unwrap();
+    let (mut s, mut snap, _producer) = in_song_select();
+    let _ = s.take_ui_sounds();
+    s.tick(at(1), &[text("a")], &mut snap);
+    let noted = s.take_ui_sounds();
+    assert!(noted[at_sound(MenuSound::Type)] && !noted[at_sound(MenuSound::Erase)]);
+    s.tick(at(2), &[key(KEY_BACKSPACE)], &mut snap);
+    let noted = s.take_ui_sounds();
+    assert!(noted[at_sound(MenuSound::Erase)] && !noted[at_sound(MenuSound::Type)]);
+}
+
+#[test]
+fn the_side_button_filter_keeps_other_events() {
+    let x1 = |down| {
+        mouse(InputKind::MouseButton {
+            button: MouseButton::X1,
+            down,
+        })
+    };
+    let left = mouse(InputKind::MouseButton {
+        button: MouseButton::Left,
+        down: true,
+    });
+    let mut scratch = Vec::new();
+    let events = [x1(true), left, key(KEY_ESCAPE), x1(false)];
+    let kept = without_side_buttons(&events, &mut scratch);
+    assert_eq!(kept, [left, key(KEY_ESCAPE)]);
+    let plain = [left];
+    assert_eq!(without_side_buttons(&plain, &mut Vec::new()), plain);
+}
+
+#[test]
+fn the_mod_select_overlay_pops_in_and_out_with_sounds() {
+    use crate::menu_sounds::MenuSound;
+    let at = |sound| {
+        MenuSound::ALL
+            .iter()
+            .position(|s| *s == sound)
+            .expect("listed")
+    };
+    let (mut s, mut snap, _producer) = in_song_select();
+    let _ = s.take_ui_sounds();
+    let t = TRANSITION_NS;
+    s.song_select.mods_mut().open();
+    s.tick(t + 1, &[], &mut snap);
+    let noted = s.take_ui_sounds();
+    assert!(noted[at(MenuSound::ModsOpen)] && noted[at(MenuSound::ModColumn)]);
+    assert!(!noted[at(MenuSound::ModsClose)]);
+    s.tick(t + 2, &[], &mut snap);
+    assert!(!s.take_ui_sounds()[at(MenuSound::ModsOpen)]);
+    s.song_select.mods_mut().close();
+    s.tick(t + 3, &[], &mut snap);
+    let noted = s.take_ui_sounds();
+    assert!(noted[at(MenuSound::ModsClose)] && !noted[at(MenuSound::ModColumn)]);
+}
+
+fn button_press(button: MouseButton, down: bool) -> InputEvent {
+    mouse(InputKind::MouseButton { button, down })
+}
+
+/// Moves the pointer to the footer's `button` and clicks it.
+fn footer_click(
+    s: &mut ShellState,
+    snap: &mut ShellSnapshot,
+    n: u64,
+    button: slam_ui::song_select::FooterButton,
+) {
+    let [x, y] = s
+        .song_select
+        .footer_buttons(&s.song_layout)
+        .rect(button)
+        .expect("the button is shown")
+        .centre();
+    s.tick(
+        at(n),
+        &[
+            mouse(InputKind::MouseMove { x, y }),
+            button_press(MouseButton::Left, true),
+            button_press(MouseButton::Left, false),
+        ],
+        snap,
+    );
+}
+
+fn presets_of(s: &ShellState) -> Vec<&str> {
+    s.settings
+        .song_select
+        .mod_presets
+        .iter()
+        .map(String::as_str)
+        .collect()
+}
+
+#[test]
+fn the_footer_pins_applies_and_removes_mod_presets() {
+    use slam_ui::song_select::FooterButton;
+    let (mut s, mut snap, _producer) = in_song_select();
+    // Double Time selected through the panel, which is closed again.
+    s.tick(
+        at(1),
+        &[key(KEY_F1), key(KEY_F), key(KEY_ESCAPE)],
+        &mut snap,
+    );
+    assert_eq!(acronyms(&s), ["DT"]);
+    assert!(song_view(&snap).footer.pin && song_view(&snap).footer.reset);
+    assert!(presets_of(&s).is_empty());
+    // Pin: saved, shown, and the "+" gives way.
+    footer_click(&mut s, &mut snap, 2, FooterButton::Pin);
+    assert_eq!(presets_of(&s), ["DT"]);
+    assert!(s.take_save_request().is_some());
+    assert_eq!(&*song_view(&snap).presets[0], "DT");
+    assert!(!song_view(&snap).footer.pin, "already pinned");
+    // Reset deselects every mod and the reset button goes.
+    footer_click(&mut s, &mut snap, 3, FooterButton::Reset);
+    assert!(acronyms(&s).is_empty());
+    assert!(!song_view(&snap).footer.reset);
+    assert_eq!(presets_of(&s), ["DT"], "presets stay");
+    // Applying the preset selects its mods again.
+    footer_click(&mut s, &mut snap, 4, FooterButton::Preset(0));
+    assert_eq!(acronyms(&s), ["DT"]);
+    // A changed setting is a different set: the "+" comes back.
+    s.tick(at(5), &[key(KEY_LEFT_CTRL), key(KEY_UP)], &mut snap);
+    assert!(song_view(&snap).footer.pin);
+    footer_click(&mut s, &mut snap, 6, FooterButton::Pin);
+    assert_eq!(presets_of(&s).len(), 2);
+    assert!(presets_of(&s)[1].starts_with("DT(speed_change="));
+    // Right click removes.
+    let [x, y] = s
+        .song_select
+        .footer_buttons(&s.song_layout)
+        .rect(FooterButton::Preset(0))
+        .unwrap()
+        .centre();
+    s.tick(
+        at(7),
+        &[
+            mouse(InputKind::MouseMove { x, y }),
+            button_press(MouseButton::Right, true),
+        ],
+        &mut snap,
+    );
+    assert_eq!(presets_of(&s).len(), 1);
+    assert!(presets_of(&s)[0].starts_with("DT(speed_change="));
+    assert_eq!(song_view(&snap).presets.len(), 1);
+}
+
+#[test]
+fn at_most_six_presets_can_be_pinned() {
+    use slam_ui::song_select::FooterButton;
+    let (mut s, mut snap, _producer) = in_song_select();
+    s.settings.song_select.mod_presets = ["HD", "HR", "EZ", "HT", "SD", "PF"]
+        .map(str::to_owned)
+        .to_vec();
+    s.sync_presets();
+    s.tick(
+        at(1),
+        &[key(KEY_F1), key(KEY_F), key(KEY_ESCAPE)],
+        &mut snap,
+    );
+    assert_eq!(song_view(&snap).presets.len(), 6);
+    assert!(!song_view(&snap).footer.pin, "no room for a seventh");
+    s.pin_preset();
+    assert_eq!(presets_of(&s).len(), 6);
+    // Presets stay as they are on the bar: each applies its own mods.
+    footer_click(&mut s, &mut snap, 2, FooterButton::Preset(1));
+    assert_eq!(acronyms(&s), ["HR"]);
+}
+
+#[test]
+fn a_preset_with_nothing_known_applies_nothing() {
+    let (mut s, mut snap, _producer) = in_song_select();
+    s.settings.song_select.mod_presets = vec!["ZZ".to_owned()];
+    s.sync_presets();
+    s.apply_preset(0);
+    assert!(acronyms(&s).is_empty());
+    s.tick(at(1), &[], &mut snap);
+}
+
+#[test]
+fn right_clicking_a_mod_with_settings_opens_its_panel_at_the_pointer() {
+    use slam_ui::song_select::CustomisationState;
+    let (mut s, mut snap, _producer) = in_song_select();
+    s.tick(at(1), &[key(KEY_F1)], &mut snap);
+    let (column, index, _, _) = s
+        .song_select
+        .mods()
+        .iter()
+        .find(|(_, _, acronym, _)| *acronym == "DT")
+        .unwrap();
+    let [x, y] = s.song_layout.mods.tile_rect(column, index).centre();
+    // Not selected yet: the right click selects it and opens its settings there.
+    s.tick(
+        at(2),
+        &[
+            mouse(InputKind::MouseMove { x, y }),
+            button_press(MouseButton::Right, true),
+        ],
+        &mut snap,
+    );
+    assert_eq!(acronyms(&s), ["DT"]);
+    let c = customise(&snap);
+    assert_eq!(c.state, CustomisationState::Expanded);
+    assert_eq!(c.origin, (x, y));
+    // Another right click closes it.
+    s.tick(at(3), &[button_press(MouseButton::Right, true)], &mut snap);
+    assert_eq!(customise(&snap).state, CustomisationState::Collapsed);
+    assert!(song_view(&snap).mods.open);
+    // A mod without settings does nothing on a right click.
+    let (column, index, _, _) = s
+        .song_select
+        .mods()
+        .iter()
+        .find(|(_, _, acronym, _)| *acronym == "HR")
+        .unwrap();
+    let [x, y] = s.song_layout.mods.tile_rect(column, index).centre();
+    s.tick(
+        at(4),
+        &[
+            mouse(InputKind::MouseMove { x, y }),
+            button_press(MouseButton::Right, true),
+        ],
+        &mut snap,
+    );
+    assert_eq!(acronyms(&s), ["DT"]);
+    assert_eq!(customise(&snap).state, CustomisationState::Collapsed);
+}
+
+#[test]
+fn the_toolbar_is_hidden_on_the_results_and_slides_back_on_the_song_select() {
+    let (mut s, mut snap, _producer, now) = in_results();
+    // The slide out takes its time; after it nothing of the bar shows.
+    let ms = (s.theme.toolbar_slide_ms * 1e6) as u64;
+    s.tick(now + 1, &[], &mut snap);
+    s.tick(now + 1 + ms, &[], &mut snap);
+    assert!(!snap.toolbar.visible);
+    assert_eq!(snap.toolbar.slide, 0.0);
+    // Input on the bar's place goes to the results, not to the toolbar.
+    assert!(!s.toolbar_input(
+        InputKind::MouseButton {
+            button: MouseButton::Left,
+            down: true
+        },
+        now + 1 + ms
+    ));
+    s.tick(now + 2 + ms, &[key(KEY_ESCAPE)], &mut snap);
+    assert_eq!(*s.stack().top(), AppScreen::SongSelect);
+    // Back on the song select it comes in with the arriving screen (ADR-0126).
+    let later = now + 2 + ms;
+    assert!(snap.toolbar.visible);
+    s.tick(later + TRANSITION_NS / 2, &[], &mut snap);
+    assert!(snap.toolbar.slide > 0.0 && snap.toolbar.slide < 1.0);
+    assert!(snap.toolbar.follows);
+    s.tick(later + ms.max(TRANSITION_NS), &[], &mut snap);
+    assert_eq!(snap.toolbar.slide, 1.0);
+}
+
+#[test]
+fn the_results_start_at_the_top_without_the_toolbars_offset() {
+    let s = state();
+    assert_eq!(
+        s.results_layout.title.y,
+        s.theme.results_margin * s.theme.scale(720.0)
+    );
+}
+
+#[test]
+fn the_toolbar_is_there_as_the_menu_shows_after_the_intro() {
+    use slam_ui::intro::{LENGTH_NS, REVEAL_NS};
+    let mut s = state().with_intro(Arc::new(AtomicBool::new(true)));
+    let mut snap = ShellSnapshot::default();
+    let t0 = 1_000;
+    s.tick(t0, &[], &mut snap);
+    // Under the intro's black nothing of the bar moves yet.
+    s.tick(t0 + REVEAL_NS - 1, &[], &mut snap);
+    assert_eq!(snap.toolbar.slide, 0.0);
+    assert!(!snap.toolbar.visible);
+    // As the black starts to fade the bar starts sliding in with the menu.
+    s.tick(t0 + REVEAL_NS, &[], &mut snap);
+    assert!(snap.toolbar.visible);
+    let ms = (s.theme.toolbar_slide_ms * 1e6) as u64;
+    s.tick(t0 + REVEAL_NS + ms / 2, &[], &mut snap);
+    assert!(snap.toolbar.slide > 0.0 && snap.toolbar.slide < 1.0);
+    // The intro ends before the bar is in, and it goes on rather than popping.
+    assert!(t0 + LENGTH_NS < t0 + REVEAL_NS + ms);
+    s.tick(t0 + LENGTH_NS, &[], &mut snap);
+    assert_eq!(snap.intro, None);
+    assert!(snap.toolbar.slide > 0.0 && snap.toolbar.slide < 1.0);
+    s.tick(t0 + REVEAL_NS + ms, &[], &mut snap);
+    assert_eq!(snap.toolbar.slide, 1.0);
+}
+
+#[test]
+fn a_skipped_intro_brings_the_toolbar_with_the_menu() {
+    let mut s = state().with_intro(Arc::new(AtomicBool::new(true)));
+    let mut snap = ShellSnapshot::default();
+    s.tick(1_000, &[], &mut snap);
+    s.tick(1_000_000, &[key(KEY_ENTER)], &mut snap);
+    assert!(snap.intro.is_some_and(|i| i.skipped));
+    s.tick(1_000_000 + 1, &[], &mut snap);
+    assert!(snap.toolbar.visible, "the bar comes in with the skip");
+    // The bar does not take the skipping click, nor any press while the intro shows.
+    assert!(!s.toolbar_input(
+        InputKind::MouseButton {
+            button: MouseButton::Left,
+            down: true
+        },
+        1_000_000 + 2
+    ));
+}
+
+#[test]
+fn ctrl_f5_rescans_the_library_and_f5_alone_does_not() {
+    let (mut s, _snap, _producer) = in_song_select();
+    let f5 = InputKind::Key {
+        scancode: KEY_F5,
+        down: true,
+    };
+    assert!(!matches!(s.screen_input(f5), Some(ScreenInput::Rescan)));
+    s.track_modifiers(InputKind::Key {
+        scancode: KEY_LEFT_CTRL,
+        down: true,
+    });
+    assert!(matches!(s.screen_input(f5), Some(ScreenInput::Rescan)));
 }

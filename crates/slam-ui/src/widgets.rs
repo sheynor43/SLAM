@@ -20,6 +20,7 @@ pub mod dropdown;
 pub mod keybind;
 pub mod slider;
 pub mod toggle;
+pub mod value_edit;
 
 pub use dropdown::{
     Dropdown, DropdownAction, DropdownInput, DropdownLayout, DropdownView, MAX_VISIBLE_OPTIONS,
@@ -27,6 +28,7 @@ pub use dropdown::{
 pub use keybind::{KeyBind, KeyBindAction, KeyBindInput, KeyBindLayout, KeyBindView};
 pub use slider::{Slider, SliderAction, SliderInput, SliderLayout, SliderView};
 pub use toggle::{Toggle, ToggleAction, ToggleInput, ToggleLayout, ToggleView};
+pub use value_edit::{EDIT_CAPACITY, ValueEdit};
 
 /// Bytes reserved up front in every dynamic text buffer.
 pub(crate) const TEXT_CAPACITY: usize = 64;
@@ -59,6 +61,7 @@ pub(crate) fn tinted_button(
         seed,
         opacity,
         tint,
+        None,
     );
 }
 
@@ -114,7 +117,7 @@ fn shaded(colour: Color, factor: f32) -> Color {
 /// floating up in `accent`, fading out downwards, faster and more of them when the button is
 /// lit by hover (a fill other than the idle one) or selected (ADR-0131). Selected, the button
 /// also brightens towards the right in `accent`, gets an outline of it and, with the effects,
-/// glows, pulsing, and a sheen sweeps it.
+/// glows: pulsing with the clock, or by `beat` (0 to 1, ADR-0167) when given.
 #[allow(clippy::too_many_arguments)]
 fn push_button(
     shapes: &mut ShapeBatch,
@@ -127,6 +130,7 @@ fn push_button(
     seed: f32,
     fade: f32,
     accent: Color,
+    beat: Option<f32>,
 ) {
     let level = if highlighted {
         PatternLevel::Selected
@@ -150,15 +154,20 @@ fn push_button(
     push_shadow(shapes, &shape, theme, scale, fade);
     let effects = highlighted && theme.effects;
     if effects {
+        // On the beat the glow flares from half to full, as lazer's pulsing panel goes
+        // from 0.4 to 0.8 (`Panel.PulsatingBox`).
+        let (sheen, strength) = match beat {
+            Some(beat) => (0.0, 0.5 + 0.5 * beat.clamp(0.0, 1.0)),
+            None => (theme.glow_pulse, 1.0),
+        };
         shapes.push_shape(&Shape {
             glow: theme.glow_width * scale,
-            sheen: theme.glow_pulse,
-            colour: faded(accent, theme.glow_alpha * fade),
+            sheen,
+            colour: faded(accent, theme.glow_alpha * fade * strength),
             ..shape
         });
     }
     shapes.push_shape(&Shape {
-        sheen: if effects { theme.button_sheen } else { 0.0 },
         gradient: Some(Gradient::Horizontal(shaded(fill, theme.button_shade))),
         ..shape
     });
@@ -268,6 +277,14 @@ pub enum Look {
         fade: f32,
         tint: Color,
     },
+    /// A highlighted [`Look::TintedButton`] whose glow follows the music's beat, `beat` 0
+    /// to 1 (the song select's selection, ADR-0167).
+    BeatButton {
+        seed: f32,
+        fade: f32,
+        tint: Color,
+        beat: f32,
+    },
     /// A thin strip leaning like the buttons, small corners, no pattern: the colour mark on
     /// a difficulty row's left edge (ADR-0131).
     Strip,
@@ -315,6 +332,7 @@ pub fn draw(
             seed,
             fade,
             theme.accent,
+            None,
         ),
         Look::TintedButton {
             highlighted,
@@ -332,6 +350,25 @@ pub fn draw(
             seed,
             fade,
             tint,
+            None,
+        ),
+        Look::BeatButton {
+            seed,
+            fade,
+            tint,
+            beat,
+        } => push_button(
+            shapes,
+            white,
+            rect,
+            theme,
+            scale,
+            colour,
+            true,
+            seed,
+            fade,
+            tint,
+            Some(beat),
         ),
         Look::Strip => shapes.push_shape(&Shape {
             radius: (theme.button_radius * scale * 0.4).min(rect.width * 0.5),

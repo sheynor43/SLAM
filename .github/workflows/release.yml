@@ -113,18 +113,37 @@ jobs:
     steps:
       - uses: actions/checkout@v7
         with:
-          sparse-checkout: packaging/release-notes.md
+          sparse-checkout: |
+            packaging/release-notes.md
+            tools/sign-release
+            rust-toolchain.toml
           sparse-checkout-cone-mode: false
       - uses: actions/download-artifact@v8
         with:
           merge-multiple: true
+      # The in-game updater installs a file only if it carries a valid signature of the
+      # project's key (ADR-0185): ed25519 over the SHA-256 digest of each package, written
+      # to `<package>.sig`. Without the secret the release is published unsigned, and the
+      # updater leaves such a release alone (it looks for the signature).
+      - name: Sign the packages
+        env:
+          SLAM_UPDATE_KEY: ${{ secrets.SLAM_UPDATE_KEY }}
+        run: |
+          if [ -z "$SLAM_UPDATE_KEY" ]; then
+            echo "::warning::SLAM_UPDATE_KEY is not set: publishing the release without signatures"
+            exit 0
+          fi
+          cargo build --release --locked --manifest-path tools/sign-release/Cargo.toml
+          tools/sign-release/target/release/sign-release sign SLAM-*.AppImage SLAM-*.zip
       - name: Create release
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
+          shopt -s nullglob
+          files=(SLAM-*.AppImage SLAM-*.zip SLAM-*.sig)
           gh release create "$GITHUB_REF_NAME" --repo "$GITHUB_REPOSITORY" \
             --prerelease --title "SLAM $GITHUB_REF_NAME" --notes-file packaging/release-notes.md \
-            SLAM-*.AppImage SLAM-*.zip
+            "${files[@]}"
       # Rebuild the project site (sheynor-slam.pages.dev) right away instead of waiting for its
       # periodic check. Needs the SITE_DISPATCH_TOKEN secret; without it this step does nothing.
       - name: Update the project site

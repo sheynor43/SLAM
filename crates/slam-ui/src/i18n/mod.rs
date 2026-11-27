@@ -242,6 +242,21 @@ impl Localizer {
         Self::format_in(&self.fallback, key, None).unwrap_or(Cow::Borrowed(key))
     }
 
+    /// Formats `key` in English and in every other built-in language (those that have it),
+    /// whatever language is active: what a settings search matches, so a Russian word finds
+    /// the row under an English interface and the other way round (ADR-0167). Allocates:
+    /// call it off the hot paths.
+    pub fn format_every_language<'a>(&'a self, key: &'a str) -> Vec<Cow<'a, str>> {
+        let mut texts =
+            vec![Self::format_in(&self.fallback, key, None).unwrap_or(Cow::Borrowed(key))];
+        texts.extend(
+            self.languages
+                .iter()
+                .filter_map(|(_, bundle)| Self::format_in(bundle, key, None)),
+        );
+        texts
+    }
+
     /// Formats `key` (`message` or `message.attribute`). Falls back to English, then
     /// to the key itself.
     pub fn format<'a>(&'a self, key: &'a str, args: Option<&'a FluentArgs<'_>>) -> Cow<'a, str> {

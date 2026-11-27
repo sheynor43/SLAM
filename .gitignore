@@ -1,4 +1,5 @@
 /target
+/tools/sign-release/target
 *.log
 /cache
 .DS_Store

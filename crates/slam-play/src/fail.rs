@@ -110,6 +110,27 @@ pub fn neutral_track() -> [TrackAdjustment; 4] {
     TrackEffects::Neutral.adjustments(1.0)
 }
 
+/// The track's tempo (pitch kept) and frequency (with the pitch) for the rate mods of
+/// `mods`, as a play and the song select's preview apply them (ADR-0167).
+// Ported from osu!lazer 2026.1005.0-lazer: osu.Game/Rulesets/Mods/ModRateAdjust.cs (ApplyToTrack)
+pub fn mod_track_speed(mods: &slam_osu::mods::ModSet) -> (f64, f64) {
+    let change = mods.rate();
+    (change.rate / change.frequency, change.frequency)
+}
+
+/// Gives a menu track the rate mods' tempo and frequency, as lazer's song select does
+/// (`ApplyModTrackAdjustments`, ADR-0167). On an error, call again until the queue takes
+/// both.
+// Ported from osu!lazer 2026.1005.0-lazer: osu.Game/Overlays/MusicController.cs (ResetTrackAdjustments)
+pub fn apply_mod_track(
+    track: &mut impl TrackControl,
+    tempo: f64,
+    frequency: f64,
+) -> Result<(), PlayError> {
+    track.set_rate(tempo)?;
+    track.adjust(&TrackEffects::Neutral.adjustments(frequency))
+}
+
 /// Takes the play's effects and rate mods off the track: tempo 1 and the adjustments of a
 /// play without mods, for the shell when a play goes (ADR-0055). On an error, call again
 /// until the queue takes both.
@@ -247,6 +268,19 @@ fn grey(from: f32, to: f32, t: f32) -> f32 {
 
 #[cfg(test)]
 mod tests {
+
+    #[test]
+    fn rate_mods_speed_the_preview_like_lazer() {
+        use slam_osu::mods::{Mod, ModSet};
+        let speed = |acronym: &str| {
+            mod_track_speed(&ModSet::new(vec![Mod::from_acronym(acronym)]).unwrap())
+        };
+        // Double Time keeps the pitch, Nightcore takes it along, Half Time slows the tempo.
+        assert_eq!(speed("DT"), (1.5, 1.0));
+        assert_eq!(speed("NC"), (1.0, 1.5));
+        assert_eq!(speed("HT"), (0.75, 1.0));
+        assert_eq!(speed("HR"), (1.0, 1.0));
+    }
     use super::*;
 
     const MS: u64 = 1_000_000;

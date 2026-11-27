@@ -30,6 +30,11 @@ pipewire = { version = "0.10.1", features = ["v1_0_0"] }
 proptest = { version = "1.11.0", default-features = false, features = ["std"] }
 naga = { version = "30.0.1", default-features = false, features = ["wgsl-in", "glsl-out", "hlsl-out"] }
 rtrb = "0.4.0"
+# Self-update (ADR-0185): HTTPS to GitHub with rustls (no native TLS), ed25519 verification of
+# the release assets, semver comparison of the release tags.
+ureq = { version = "3.5.2", default-features = false, features = ["rustls"] }
+ed25519-dalek = { version = "3.0.0", default-features = false }
+semver = "1.0.28"
 rosu-pp = "=4.0.1"
 # Skin and background images (ADR-0034).
 png = "0.18.1"

@@ -3,10 +3,17 @@
 
 use std::sync::Arc;
 
+use std::ops::Range;
+
 use slam_render::atlas::{AtlasRegion, UvRect};
 use slam_render::shape::{EDGE_MARGIN, ShapeBatch};
 use slam_render::sprite::SpriteBatch;
 use slam_render::textures::TextureId;
+use slam_render::textures::Textures;
+use slam_render::{
+    BufferDesc, Color, DescError, Device, DeviceError, DrawError, IndexFormat, PipelineDesc,
+    RenderTargetDesc, TextureDesc,
+};
 use slam_render::{Extent, Limits, Origin};
 use slam_testkit::assert_no_alloc;
 use slam_text::{FontRegistry, GlyphAtlasConfig, glyph_atlas};
@@ -29,6 +36,12 @@ const MOD_COLUMNS: ModColumns = [
 ];
 
 fn list_of(count: u64) -> Arc<SongList> {
+    list_rated(count, 1.0)
+}
+
+/// `list_of` with every rating and performance times `factor`: the same rows, as a mod
+/// that changes the difficulty would republish them.
+fn list_rated(count: u64, factor: f32) -> Arc<SongList> {
     Arc::new(SongList {
         sets: (0..count)
             .map(|k| SetRow {
@@ -46,7 +59,9 @@ fn list_of(count: u64) -> Arc<SongList> {
                             ..SearchSource::default()
                         });
                         // Two rated, one not yet: pills, dots and the accent fallback.
-                        row.stars = (d < 2).then_some(1.5 + d as f32 * 2.7);
+                        // Rows are known by their keys, as the rolling numbers are.
+                        row.key = 1 + k * 3 + d;
+                        row.stars = (d < 2).then_some((1.5 + d as f32 * 2.7) * factor);
                         row.pp = row.stars.map(|s| s * s * 31.0);
                         row
                     })
@@ -116,13 +131,16 @@ fn labels() -> SongSelectLabels {
         loading: "loading".into(),
         empty: "empty".into(),
         choose_folder: "choose folder".into(),
-        hint: "hint".into(),
         no_audio: "no audio".into(),
+        footer_back: "Back".into(),
+        footer_pin: "+".into(),
+        footer_reset: "Reset mods".into(),
         pp_suffix: "pp".into(),
         search_placeholder: "search...".into(),
         search_no_matches: "no matches".into(),
         mods_title: "Mods".into(),
         mods_hint: "mods hint".into(),
+        mods_multiplier: "multiplier".into(),
         mods_customise: "Customise".into(),
         setting_texts: vec![
             ("mod-a", "Mod A".into()),
@@ -158,6 +176,8 @@ fn labels() -> SongSelectLabels {
             drain_rate: "HP".into(),
             scores: "Локальные рекорды".into(),
             no_scores: "Рекордов нет".into(),
+            accuracy: "ACCURACY".into(),
+            combo: "MAX COMBO".into(),
         },
     }
 }
@@ -168,28 +188,30 @@ struct Rig {
     shapes: ShapeBatch,
     text: SpriteBatch,
     thumbs: bool,
+    full: bool,
     rows: [Option<RowThumb>; MAX_VISIBLE_ROWS],
     now_ns: u64,
 }
 
 impl Rig {
     fn new() -> Rig {
+        Rig::with_theme(Theme {
+            song_difficulty_info: slam_ui::song_select::DifficultyInfo::StarsAndPp,
+            ..Theme::default()
+        })
+    }
+
+    fn with_theme(theme: Theme) -> Rig {
         let registry = Arc::new(FontRegistry::with_builtin());
         let glyphs = glyph_atlas(Arc::clone(&registry), &GlyphAtlasConfig::new(LIMITS)).unwrap();
         Rig {
             // Stars and pp: every text a difficulty row can show (ADR-0151).
-            view: SongSelectView::new(
-                registry,
-                Theme {
-                    song_difficulty_info: slam_ui::song_select::DifficultyInfo::StarsAndPp,
-                    ..Theme::default()
-                },
-                &labels(),
-            ),
+            view: SongSelectView::new(registry, theme, &labels()),
             glyphs,
             shapes: ShapeBatch::with_capacity(256),
             text: SpriteBatch::with_capacity(8192),
             thumbs: false,
+            full: false,
             rows: [None; MAX_VISIBLE_ROWS],
             now_ns: 0,
         }
@@ -214,6 +236,7 @@ impl Rig {
             white(),
             Thumbs {
                 enabled: self.thumbs,
+                full: self.full,
                 rows: &self.rows,
                 now_ns: self.now_ns,
             },
@@ -242,6 +265,32 @@ fn view_pushes_without_allocating_once_warm() {
         "{}",
         rig.shapes.len()
     );
+}
+
+#[test]
+fn rolling_ratings_and_pp_do_not_allocate() {
+    let mut rig = Rig::new();
+    let mut screen = SongSelect::new();
+    put(&mut screen, list_of(40));
+    screen.set_status(SongSelectStatus::Ready);
+    let before = screen.snapshot();
+    let ms = 1_000_000;
+    put(&mut screen, list_rated(40, 2.37));
+    let after = screen.snapshot();
+    // The widest numbers are shown once, so the buffers have their room.
+    rig.now_ns = 1_000 * ms;
+    rig.frame(&after);
+    rig.frame(&after);
+    rig.now_ns = 5_000 * ms;
+    rig.frame(&after);
+    rig.frame(&before);
+    // The rows come again with other ratings: their numbers roll for 750 ms.
+    assert_no_alloc(|| {
+        for step in 0..60u64 {
+            rig.now_ns = (5_100 + step * 16) * ms;
+            rig.frame(&before);
+        }
+    });
 }
 
 /// Shapes a song select frame may take: under half the shell's `MAX_SHAPES` (1024), so a
@@ -408,17 +457,16 @@ fn settings_panel_input_does_not_allocate() {
     put(&mut screen, list_of(10));
     *screen.mods_mut() = slam_ui::song_select::ModSelect::new(MOD_COLUMNS);
     let rows = setting_rows();
+    // The panel opens where the pointer is (ADR-0177).
     let [hx, hy] = layout.mods.customise.header.centre();
-    let track = layout
-        .mods
-        .customise
-        .slider(&layout.mods.customise.row_rect(1))
-        .hit;
+    let at = layout.mods.customise.at((hx, hy), rows.len());
+    let track = at.slider(&at.row_rect(1)).hit;
     assert_no_alloc(|| {
         screen.mods_mut().set_setting_rows(&rows);
         for (now, input) in [
             SongSelectInput::ToggleMods,
             SongSelectInput::PointerMove { x: hx, y: hy },
+            SongSelectInput::ToggleCustomisation,
             SongSelectInput::Down,
             SongSelectInput::Right,
             SongSelectInput::Left,
@@ -431,8 +479,16 @@ fn settings_panel_input_does_not_allocate() {
                 x: track.x + 10.0,
                 y: track.y + 2.0,
             },
-            SongSelectInput::PointerMove { x: 5.0, y: 700.0 },
+            SongSelectInput::PointerMove { x: 5.0, y: 600.0 },
             SongSelectInput::PointerRelease,
+            // Drag the panel by its header, then close it with a right click.
+            SongSelectInput::PointerPress {
+                x: at.header.x + 8.0,
+                y: at.header.y + 4.0,
+            },
+            SongSelectInput::PointerMove { x: 300.0, y: 300.0 },
+            SongSelectInput::PointerRelease,
+            SongSelectInput::SecondaryPress { x: 300.0, y: 300.0 },
             SongSelectInput::ToggleCustomisation,
             SongSelectInput::ToggleCustomisation,
         ]
@@ -762,4 +818,319 @@ fn thumbnails_do_not_allocate_once_warm_and_add_shapes() {
     rig.thumbs = false;
     rig.frame(&snapshot);
     assert!(with > rig.shapes.len(), "{with} vs {}", rig.shapes.len());
+}
+
+#[test]
+fn the_scrollbar_does_not_allocate_in_input_or_view() {
+    let mut rig = Rig::new();
+    let mut screen = SongSelect::new();
+    put(&mut screen, list_of(200));
+    screen.set_status(SongSelectStatus::Ready);
+    let layout = SongSelectLayout::new(1280.0, 720.0, &Theme::default());
+    let (x, y) = (
+        layout.scrollbar.x + layout.scrollbar.width / 2.0,
+        layout.scrollbar.y + layout.scrollbar.height / 2.0,
+    );
+    let pass = |rig: &mut Rig, screen: &mut SongSelect| {
+        for i in 0..60u64 {
+            rig.now_ns = i * 8_000_000;
+            for input in [
+                SongSelectInput::PointerMove { x, y },
+                SongSelectInput::PointerPress { x, y },
+                SongSelectInput::PointerMove { x, y: y + 30.0 },
+                SongSelectInput::PointerRelease,
+            ] {
+                std::hint::black_box(screen.input(input, &layout));
+            }
+            rig.frame(&screen.snapshot());
+        }
+    };
+    pass(&mut rig, &mut screen);
+    slam_testkit::assert_no_alloc(|| pass(&mut rig, &mut screen));
+}
+
+#[test]
+fn full_plate_thumbnails_do_not_allocate_do_not_shift_texts_and_cover_the_plate() {
+    let mut rig = Rig::new();
+    let mut screen = SongSelect::new();
+    put(&mut screen, list_of(200));
+    screen.set_status(SongSelectStatus::Ready);
+    let layout = SongSelectLayout::new(1280.0, 720.0, &Theme::default());
+    screen.input(SongSelectInput::Home, &layout);
+    let snapshot = screen.snapshot();
+    let (mut device, mut textures) = (UploadDevice::default(), Textures::with_capacity(16));
+    let mut warm = |rig: &mut Rig| {
+        // Glyphs are made on another thread: frame until the texts are all there.
+        for i in 0..2000 {
+            rig.now_ns = 10_000_000_000 + i * 600_000_000;
+            rig.frame(&snapshot);
+            if rig.glyphs.all_ready() && !rig.text.vertices().is_empty() {
+                break;
+            }
+            rig.glyphs.process(&mut device, &mut textures);
+            std::thread::sleep(std::time::Duration::from_millis(1));
+        }
+        // And once more, past every fade.
+        rig.now_ns += 5_000_000_000;
+        rig.frame(&snapshot);
+    };
+    // The texts without thumbnails, in a warm frame.
+    warm(&mut rig);
+    let plain_text: Vec<[f32; 2]> = rig.text.vertices().iter().map(|v| v.position).collect();
+    let plain_shapes = rig.shapes.len();
+    assert!(!plain_text.is_empty());
+    // Small thumbnails push the set rows' texts to the right.
+    rig.thumbs = true;
+    rig.rows = thumbnail_rows();
+    warm(&mut rig);
+    let small: Vec<[f32; 2]> = rig.text.vertices().iter().map(|v| v.position).collect();
+    assert_ne!(small, plain_text);
+    // Full plates leave them where they were, and add one image per loaded set row.
+    rig.full = true;
+    warm(&mut rig);
+    let full: Vec<[f32; 2]> = rig.text.vertices().iter().map(|v| v.position).collect();
+    assert_eq!(full, plain_text);
+    assert!(rig.shapes.len() > plain_shapes);
+    slam_testkit::assert_no_alloc(|| warm(&mut rig));
+}
+
+/// Takes texture uploads, so that glyphs get ready; nothing else is reached.
+#[derive(Default)]
+struct UploadDevice {
+    next: u32,
+}
+
+impl Device for UploadDevice {
+    type Texture = u32;
+    type Buffer = ();
+    type Pipeline = ();
+    type RenderTarget = ();
+
+    fn limits(&self) -> Limits {
+        LIMITS
+    }
+    fn create_texture(&mut self, _: &TextureDesc, _: Option<&[u8]>) -> Result<u32, DeviceError> {
+        self.next += 1;
+        Ok(self.next)
+    }
+    fn destroy_texture(&mut self, _: u32) {}
+    fn write_texture(&mut self, _: &u32, _: Origin, _: Extent, _: &[u8]) -> Result<(), DescError> {
+        Ok(())
+    }
+    fn create_buffer(&mut self, _: &BufferDesc, _: Option<&[u8]>) -> Result<(), DeviceError> {
+        unimplemented!()
+    }
+    fn destroy_buffer(&mut self, _: ()) {
+        unimplemented!()
+    }
+    fn write_buffer(&mut self, _: &(), _: u64, _: &[u8]) -> Result<(), DescError> {
+        unimplemented!()
+    }
+    fn create_pipeline(&mut self, _: &PipelineDesc<'_>) -> Result<(), DeviceError> {
+        unimplemented!()
+    }
+    fn destroy_pipeline(&mut self, _: ()) {
+        unimplemented!()
+    }
+    fn create_render_target(&mut self, _: &RenderTargetDesc) -> Result<(), DeviceError> {
+        unimplemented!()
+    }
+    fn destroy_render_target(&mut self, _: ()) {
+        unimplemented!()
+    }
+    fn render_target_texture<'a>(&self, _: &'a ()) -> &'a u32 {
+        unimplemented!()
+    }
+    fn begin_frame(&mut self, _: Color) -> Extent {
+        unimplemented!()
+    }
+    fn begin_pass(&mut self, _: Option<&()>, _: Option<Color>) -> Extent {
+        unimplemented!()
+    }
+    fn set_pipeline(&mut self, _: &()) {
+        unimplemented!()
+    }
+    fn set_vertex_buffer(&mut self, _: &(), _: u64) -> Result<(), DrawError> {
+        unimplemented!()
+    }
+    fn set_index_buffer(&mut self, _: &(), _: IndexFormat) -> Result<(), DrawError> {
+        unimplemented!()
+    }
+    fn set_uniform_buffer(&mut self, _: u32, _: &()) -> Result<(), DrawError> {
+        unimplemented!()
+    }
+    fn set_texture(&mut self, _: u32, _: &u32) -> Result<(), DrawError> {
+        unimplemented!()
+    }
+    fn draw(&mut self, _: Range<u32>) -> Result<(), DrawError> {
+        unimplemented!()
+    }
+    fn draw_indexed(&mut self, _: Range<u32>) -> Result<(), DrawError> {
+        unimplemented!()
+    }
+    fn present(&mut self) -> Result<(), DeviceError> {
+        unimplemented!()
+    }
+}
+
+/// One frame at `now_ns` with the pose shown; returns the alphas of the panel layer's shape
+/// and text vertices.
+fn panel_alphas(
+    rig: &mut Rig,
+    snapshot: &slam_ui::song_select::SongSelectSnapshot,
+    now_ns: u64,
+) -> (Vec<f32>, Vec<f32>) {
+    rig.shapes.clear();
+    rig.text.clear();
+    let split = rig.view.push(
+        &mut rig.shapes,
+        &mut rig.text,
+        &mut rig.glyphs,
+        1280.0,
+        720.0,
+        snapshot,
+        Pose::SHOWN,
+        white(),
+        Thumbs {
+            enabled: false,
+            full: false,
+            rows: &rig.rows,
+            now_ns,
+        },
+    );
+    let (shapes_at, text_at) = split
+        .panel
+        .unwrap_or((rig.shapes.len() as u32, rig.text.len() as u32));
+    let shapes = rig.shapes.vertices()[shapes_at as usize * 4..]
+        .iter()
+        .map(|v| v.colour[3])
+        .collect();
+    let text = rig.text.vertices()[text_at as usize * 4..]
+        .iter()
+        .map(|v| v.colour[3])
+        .collect();
+    (shapes, text)
+}
+
+#[test]
+fn the_mod_panel_fades_its_plates_and_texts_as_one_layer() {
+    // Without the stagger every part of the panel slides together, so one factor scales all.
+    let theme = Theme {
+        mod_column_stagger_ms: 0.0,
+        ..Theme::default()
+    };
+    let in_ms = theme.mod_panel_in_ms as u64;
+    let mut rig = Rig::with_theme(theme);
+    let mut screen = SongSelect::new();
+    put(&mut screen, list_of(10));
+    screen.set_status(SongSelectStatus::Ready);
+    *screen.mods_mut() = slam_ui::song_select::ModSelect::new(MOD_COLUMNS);
+    let closed = screen.snapshot();
+    screen.mods_mut().open();
+    let open = screen.snapshot();
+    let ms = 1_000_000u64;
+    panel_alphas(&mut rig, &closed, 1000 * ms);
+    // The slide starts when the view first sees the panel open.
+    panel_alphas(&mut rig, &open, 1000 * ms);
+    // Warm the glyph cache at the end of the slide, then look part way through it.
+    let (mut device, mut textures) = (UploadDevice::default(), Textures::with_capacity(16));
+    for _ in 0..2000 {
+        panel_alphas(&mut rig, &open, 1000 * ms + (in_ms + 100) * ms);
+        if rig.glyphs.all_ready() && !rig.text.vertices().is_empty() {
+            break;
+        }
+        rig.glyphs.process(&mut device, &mut textures);
+        std::thread::sleep(std::time::Duration::from_millis(1));
+    }
+    let (mid_shapes, mid_text) = panel_alphas(&mut rig, &open, 1000 * ms + 60 * ms);
+    let (full_shapes, full_text) = panel_alphas(&mut rig, &open, 1000 * ms + (in_ms + 100) * ms);
+    assert_eq!(mid_shapes.len(), full_shapes.len());
+    assert_eq!(mid_text.len(), full_text.len());
+    assert!(
+        mid_text.len() > 40,
+        "{} of {} sprites",
+        mid_text.len(),
+        rig.text.len()
+    );
+    let ratios: Vec<f32> = mid_shapes
+        .iter()
+        .zip(&full_shapes)
+        .chain(mid_text.iter().zip(&full_text))
+        .filter(|(_, full)| **full > 0.0)
+        .map(|(mid, full)| mid / full)
+        .collect();
+    let first = ratios[0];
+    assert!(first > 0.0 && first < 1.0, "{first}");
+    for r in &ratios {
+        assert!((r - first).abs() < 1e-3, "{r} vs {first}");
+    }
+}
+
+#[test]
+fn the_footer_works_and_draws_without_allocating() {
+    let mut rig = Rig::new();
+    let mut screen = SongSelect::new();
+    put(&mut screen, list_of(10));
+    screen.set_status(SongSelectStatus::Ready);
+    *screen.mods_mut() = slam_ui::song_select::ModSelect::new(MOD_COLUMNS);
+    screen.mods_mut().set_active(0, 0, true);
+    let presets: Arc<[Arc<str>]> = Arc::from([Arc::from("HD DT"), Arc::from("EZ")]);
+    screen.set_mod_presets(Arc::clone(&presets));
+    let layout = SongSelectLayout::new(1280.0, 720.0, &Theme::default());
+    let buttons = screen.footer_buttons(&layout);
+    assert!(buttons.pin.is_some() && buttons.reset.is_some());
+    let hovered = screen.snapshot();
+    // Warm: laid out presets, mods label and the slide.
+    rig.now_ns = 1_000_000;
+    rig.frame(&hovered);
+    rig.frame(&hovered);
+    let at = |r: slam_ui::menu::Rect| {
+        let [x, y] = r.centre();
+        (x, y)
+    };
+    let points = [
+        at(buttons.back),
+        at(buttons.mods),
+        at(buttons.presets[0]),
+        at(buttons.pin.unwrap()),
+        at(buttons.reset.unwrap()),
+    ];
+    assert_no_alloc(|| {
+        for (x, y) in points {
+            for input in [
+                SongSelectInput::PointerMove { x, y },
+                SongSelectInput::PointerPress { x, y },
+                SongSelectInput::PointerRelease,
+                SongSelectInput::SecondaryPress { x, y },
+            ] {
+                std::hint::black_box(screen.input(input, &layout));
+                std::hint::black_box(screen.footer_state());
+            }
+            // The Mods button toggled the panel; draw a frame of the state.
+            rig.now_ns += 16_000_000;
+            rig.frame(&screen.snapshot());
+        }
+    });
+    assert!(rig.shapes.len() > 8);
+}
+
+/// Rows just past the view's ends have their texts laid out already, so they do not pop in
+/// as they scroll into view (ADR-0172).
+#[test]
+fn rows_just_outside_the_view_are_laid_out() {
+    let mut rig = Rig::new();
+    let mut screen = SongSelect::new();
+    put(&mut screen, list_of(200));
+    screen.set_status(SongSelectStatus::Ready);
+    let layout = SongSelectLayout::new(1280.0, 720.0, &Theme::default());
+    screen.input(SongSelectInput::Scroll { lines: 20.0 }, &layout);
+    let snapshot = screen.snapshot();
+    rig.frame(&snapshot);
+    let visible = layout.visible_rows(&snapshot.geometry, snapshot.shown_scroll);
+    assert!(
+        rig.view.laid_out_rows() >= visible.len() + 3,
+        "{} laid out, {} in view",
+        rig.view.laid_out_rows(),
+        visible.len()
+    );
 }
